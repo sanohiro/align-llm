@@ -1,0 +1,27 @@
+module main
+
+import project
+
+// Keep the bootstrap entry point dependency-free while Align's package layer is still evolving.
+fn print_help() {
+  print(project.name())
+  print("Local LLM coding infrastructure written in Align")
+  print("Usage: main [--version | --status]")
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 1 {
+    print_help()
+  } else {
+    if args[1] == "--version" {
+      print(project.version())
+    } else {
+      if args[1] == "--status" {
+        print(project.status())
+      } else {
+        print_help()
+      }
+    }
+  }
+  return Ok(())
+}

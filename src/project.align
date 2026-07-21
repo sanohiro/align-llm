@@ -1,0 +1,5 @@
+module project
+
+pub fn name() -> str = "align-llm"
+pub fn version() -> str = "0.1.0-dev"
+pub fn status() -> str = "Align project scaffold is ready"

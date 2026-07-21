@@ -1,0 +1,67 @@
+# Developing align-llm with Align
+
+Align is developed in parallel with this project. There is no Align project manifest, package registry, general test runner, or configurable source search path yet. A program starts from one `.align` entry file, and imports resolve to files beneath that entry file's directory.
+
+## Local repository layout
+
+The default development layout keeps the language and engine repositories next to each other:
+
+```text
+Projects/
+  align/
+    target/release/alignc
+    docs/
+    examples/
+    apps/web/pkg/
+  align-llm/
+    src/main.align
+```
+
+`scripts/alignc` selects a compiler in this order:
+
+1. The executable named by `ALIGNC`.
+2. `../align/target/release/alignc`.
+3. `../align/target/debug/alignc`.
+4. `alignc` on `PATH`.
+
+This makes local work track the active language checkout while still allowing packaged compilers and CI-specific paths.
+
+## What to read
+
+Use the sibling repository as the source of truth:
+
+- Start with `../align/CLAUDE.md` for current implementation status and invariants.
+- Read `../align/draft.md` for the authoritative language design.
+- Read `../align/docs/guide/` for supported day-to-day syntax and APIs.
+- Search `../align/examples/` and compiler tests for compiling examples.
+- Check `../align/docs/open-questions.md` before depending on unsettled behavior.
+- For HTTP work, read `../align/docs/impl/15-pkg-web-plan.md`, `../align/docs/impl/pkg-design/web.md`, and `../align/apps/web/pkg/`.
+
+Do not copy the in-progress web package into this repository merely to make imports resolve. Until Align gains a package mechanism, either keep an application independent of it or coordinate an explicit vendoring decision with version and update rules.
+
+## Supported development loop
+
+```sh
+make check
+make fmt
+make run
+```
+
+`check-per-unit` validates imported modules through their public interfaces. The formatter rewrites only meaningless syntax variation and should run before a commit. Use `emit-mir`, `emit-llvm`, `explain-opt`, and `size` directly through the wrapper when validating performance claims:
+
+```sh
+./scripts/alignc emit-mir src/main.align
+./scripts/alignc explain-opt src/main.align --verbose
+./scripts/alignc size src/main.align --profile tiny
+```
+
+## Managing language dependencies
+
+When the engine needs a feature that does not compile in the current Align checkout:
+
+1. Confirm the feature is part of the settled language design.
+2. Reduce the need to the smallest compiler or standard-library capability.
+3. Implement and test that capability in `../align` as a separate, reviewable change.
+4. Update this repository only after the Align change is available at a named commit or release.
+
+This separation keeps engine work reproducible and prevents application code from becoming an accidental language specification.

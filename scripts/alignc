@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+align_repo="${ALIGN_REPO:-${project_root}/../align}"
+
+if [[ -n "${ALIGNC:-}" ]]; then
+  compiler="${ALIGNC}"
+elif [[ -x "${align_repo}/target/release/alignc" ]]; then
+  compiler="${align_repo}/target/release/alignc"
+elif [[ -x "${align_repo}/target/debug/alignc" ]]; then
+  compiler="${align_repo}/target/debug/alignc"
+elif command -v alignc >/dev/null 2>&1; then
+  compiler="$(command -v alignc)"
+else
+  printf '%s\n' "alignc was not found." >&2
+  printf '%s\n' "Build ../align, install alignc on PATH, or set ALIGNC=/path/to/alignc." >&2
+  exit 127
+fi
+
+exec "${compiler}" "$@"
