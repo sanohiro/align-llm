@@ -4,8 +4,9 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. PR #1 merged to `main` at `5cd2a42`
-(`Bootstrap the measured align-coder development cycle (#1)`)._
+_Last updated: 2026-07-25. The canonical resume point is `main` after the HANDOFF-only PR #2,
+based on PR #1's merge commit `5cd2a42` (`Bootstrap the measured align-coder development cycle
+(#1)`). No implementation work is active; the next roadmap item is the C0 fixture below._
 
 ## Current position
 
