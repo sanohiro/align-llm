@@ -1,0 +1,9 @@
+diff --git a/src/inclusive_range.py b/src/inclusive_range.py
+index 1094e80..c9f6d32 100644
+--- a/src/inclusive_range.py
++++ b/src/inclusive_range.py
+@@ -1,3 +1,3 @@
+ def inclusive_total(start: int, stop: int) -> int:
+     """Return the sum of every integer from start through stop."""
+-    return sum(range(start, stop))
++    return sum(range(start, stop + 1))

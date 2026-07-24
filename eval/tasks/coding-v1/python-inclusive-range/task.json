@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "python-inclusive-range",
+  "source_dir": "eval/fixtures/python-inclusive-range-v1/repository",
+  "source_revision": "1adf3697ea82a2da6fa9b9aa76f24fb51625ffca",
+  "allowed_edits": [
+    "src/inclusive_range.py"
+  ],
+  "validation_argv": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-v"
+  ],
+  "validation_timeout_seconds": 10
+}

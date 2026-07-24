@@ -14,3 +14,8 @@ Every recorded baseline must include:
 
 Do not record a baseline from a dirty worktree as a canonical comparison. Raw local experiments may
 be retained outside the repository until the producing change has a named commit.
+
+The baseline recorder rejects dirty worktrees and fewer than two samples. Build the executable, then
+use the command documented in `eval/runners/README.md`. `deterministic-reference` identifies a
+checked-in known-good candidate used to establish the scoring and timing pipeline; it is not a model
+quality result and must not be compared as if it were one.

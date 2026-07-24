@@ -12,4 +12,4 @@ JSON Lines include duration metadata, but the final summary contains only stable
 The runner fails if any task is not `PASS`, if the ordered task IDs differ from the checked-in
 `*-task-ids.txt` oracle, or if the final summary differs byte-for-byte from the expected file. The
 ID oracle detects omissions, substitutions, duplicates, and reordering; the summary independently
-checks the counts.
+checks the counts. Both `smoke-v1` and the real-repair `coding-v1` corpus have independent oracles.

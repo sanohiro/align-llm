@@ -10,3 +10,21 @@ diagnosis:
 ```text
 eval/runners/run-fixed.sh eval/tasks/smoke-v1.json
 ```
+
+`run-coding-task.py` materializes a fixture as a deterministic SHA-1 Git commit in a temporary
+directory. It checks the pinned revision, requires validation to fail before repair, applies a
+candidate patch, enforces the edit allowlist, and requires validation to pass afterward. Temporary
+checkout cleanup is automatic.
+
+Record a canonical baseline only from a clean commit after building the executable:
+
+```text
+make build
+python3 eval/runners/record-baseline.py \
+  --corpus eval/tasks/coding-v1.json \
+  --provider deterministic-reference \
+  --model checked-in-patch \
+  --prompt-version none \
+  --samples 2 \
+  --output eval/baselines/coding-v1-reference.json
+```
