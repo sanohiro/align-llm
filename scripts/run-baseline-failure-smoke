@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+
+def load_recorder(project_root: Path):
+    sys.dont_write_bytecode = True
+    module_path = project_root / "eval" / "runners" / "record-baseline.py"
+    spec = importlib.util.spec_from_file_location("record_baseline", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load baseline recorder")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def main() -> int:
+    project_root = Path(__file__).resolve().parents[1]
+    recorder = load_recorder(project_root)
+    with tempfile.TemporaryDirectory(prefix="align-llm-baseline-failure-") as temporary:
+        root = Path(temporary)
+        corpus = root / "corpus.json"
+        corpus.write_text("{}\n", encoding="utf-8")
+        evaluator = root / "failing-evaluator"
+        task = {
+            "schema_version": 1,
+            "task_id": "expected-failure",
+            "verdict": "FAIL",
+            "expected_code": 0,
+            "actual_code": 1,
+            "duration_ns": 123,
+            "stdout": "",
+            "stderr": "failure",
+        }
+        summary = {
+            "schema_version": 1,
+            "corpus_id": "failure-smoke",
+            "task_count": 1,
+            "pass_count": 0,
+            "fail_count": 1,
+        }
+        evaluator.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"print({json.dumps(json.dumps(task))})\n"
+            f"print({json.dumps(json.dumps(summary))})\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        evaluator.chmod(0o755)
+        result = recorder.record_run(evaluator, corpus, project_root, 1)
+
+    task_result = result["task_results"][0]
+    if (
+        task_result["verdict"] != "FAIL"
+        or task_result["time_to_passing_patch_ns"] is not None
+        or result["summary"]["fail_count"] != 1
+    ):
+        raise RuntimeError("baseline recorder changed a complete failing result")
+    print("non-passing baseline sample: retained")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

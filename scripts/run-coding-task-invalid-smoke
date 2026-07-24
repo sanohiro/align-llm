@@ -6,6 +6,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner="${project_root}/eval/runners/run-coding-task.py"
 task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
 patch="${project_root}/eval/expected/python-inclusive-range-disallowed.patch"
+side_effect_patch="${project_root}/eval/expected/python-inclusive-range-side-effect.patch"
 output_file="$(mktemp)"
 trap 'rm -f "${output_file}"' EXIT
 
@@ -23,3 +24,17 @@ if ! grep -Fq "candidate changed disallowed files: tests/test_inclusive_range.py
 fi
 
 printf '%s\n' "coding task disallowed edit: rejected"
+
+if python3 "${runner}" "${task}" "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a validation side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate created untracked files: candidate-side-effect.txt" "${output_file}"; then
+  printf '%s\n' "coding task did not report the validation side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task validation side effect: rejected"

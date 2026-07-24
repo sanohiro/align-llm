@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,10 @@ FIXTURE_GIT_ENV = {
 
 
 class TaskError(Exception):
+    pass
+
+
+class CommandTimedOut(TaskError):
     pass
 
 
@@ -80,21 +85,47 @@ def run(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
+        process = subprocess.Popen(
             argv,
             cwd=cwd,
             env=env,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_seconds,
+            start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except OSError as error:
         raise TaskError(f"command failed to run: {argv[0]}: {error}") from error
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+        details = [f"command timed out after {timeout_seconds} seconds: {argv[0]}"]
+        if stdout:
+            details.append(f"stdout:\n{stdout.rstrip()}")
+        if stderr:
+            details.append(f"stderr:\n{stderr.rstrip()}")
+        raise CommandTimedOut("\n".join(details))
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def fixture_environment() -> dict[str, str]:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update(FIXTURE_GIT_ENV)
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["LC_ALL"] = "C"
+    return environment
 
 
 def git_output(checkout: Path, *args: str) -> str:
-    result = run(["git", *args], checkout, 10)
+    result = run(["git", *args], checkout, 10, env=fixture_environment())
     if result.returncode != 0:
         raise TaskError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()
@@ -110,8 +141,7 @@ def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str)
     if init.returncode != 0:
         raise TaskError(f"git init failed: {init.stderr.strip()}")
 
-    fixture_env = os.environ.copy()
-    fixture_env.update(FIXTURE_GIT_ENV)
+    fixture_env = fixture_environment()
     for argv in (
         ["git", "config", "core.autocrlf", "false"],
         ["git", "config", "core.filemode", "true"],
@@ -149,6 +179,23 @@ def print_command_output(label: str, result: subprocess.CompletedProcess[str]) -
         print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
 
 
+def check_allowed_changes(checkout: Path, allowed_edits: list[str]) -> None:
+    changed = git_output(checkout, "diff", "--name-only", "--no-renames").splitlines()
+    untracked = git_output(
+        checkout,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+    ).splitlines()
+    if untracked:
+        raise TaskError(f"candidate created untracked files: {', '.join(untracked)}")
+    if not changed:
+        raise TaskError("candidate patch made no tracked changes")
+    disallowed = sorted(set(changed) - set(allowed_edits))
+    if disallowed:
+        raise TaskError(f"candidate changed disallowed files: {', '.join(disallowed)}")
+
+
 def validate_candidate(
     checkout: Path,
     patch: Path,
@@ -156,7 +203,7 @@ def validate_candidate(
     validation_argv: list[str],
     validation_timeout_seconds: int,
 ) -> None:
-    validation_env = os.environ.copy()
+    validation_env = fixture_environment()
     validation_env["PYTHONDONTWRITEBYTECODE"] = "1"
     before = run(
         validation_argv,
@@ -170,22 +217,20 @@ def validate_candidate(
     if git_output(checkout, "status", "--porcelain"):
         raise TaskError("validation changed the pinned fixture before repair")
 
-    check = run(["git", "apply", "--check", str(patch)], checkout, 10)
+    fixture_env = fixture_environment()
+    check = run(
+        ["git", "apply", "--check", str(patch)],
+        checkout,
+        10,
+        env=fixture_env,
+    )
     if check.returncode != 0:
         raise TaskError(f"candidate patch does not apply: {check.stderr.strip()}")
-    apply = run(["git", "apply", str(patch)], checkout, 10)
+    apply = run(["git", "apply", str(patch)], checkout, 10, env=fixture_env)
     if apply.returncode != 0:
         raise TaskError(f"candidate patch failed to apply: {apply.stderr.strip()}")
 
-    changed = git_output(checkout, "diff", "--name-only", "--no-renames").splitlines()
-    untracked = git_output(checkout, "ls-files", "--others", "--exclude-standard").splitlines()
-    if untracked:
-        raise TaskError(f"candidate created untracked files: {', '.join(untracked)}")
-    if not changed:
-        raise TaskError("candidate patch made no tracked changes")
-    disallowed = sorted(set(changed) - set(allowed_edits))
-    if disallowed:
-        raise TaskError(f"candidate changed disallowed files: {', '.join(disallowed)}")
+    check_allowed_changes(checkout, allowed_edits)
 
     after = run(
         validation_argv,
@@ -196,6 +241,7 @@ def validate_candidate(
     print_command_output("post-repair validation", after)
     if after.returncode != 0:
         raise TaskError("candidate patch did not pass validation")
+    check_allowed_changes(checkout, allowed_edits)
 
 
 def main() -> int:

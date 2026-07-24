@@ -15,12 +15,15 @@ Every recorded baseline must include:
 Do not record a baseline from a dirty worktree as a canonical comparison. Raw local experiments may
 be retained outside the repository until the producing change has a named commit.
 
-The baseline recorder rejects dirty worktrees and fewer than two samples. Build the executable, then
-use the command documented in `eval/runners/README.md`. `deterministic-reference` identifies a
+The baseline recorder rejects dirty worktrees and fewer than two samples, verifies and builds the
+pinned compiler, and rebuilds the measured executable. Use the command documented in
+`eval/runners/README.md`. `deterministic-reference` identifies a
 checked-in known-good candidate used to establish the scoring and timing pipeline; it is not a model
 quality result and must not be compared as if it were one.
 
 `coding-v1-reference.json` was recorded twice from its named clean commit. `make baseline-check`
 validates its commit ancestry, pinned Align revision, corpus and task identity, required metadata,
-per-run summaries, and recomputed time-to-passing-patch aggregates without comparing unstable
-timings against a new machine.
+full evaluation-artifact digest set, per-run summaries, and recomputed time-to-passing-patch
+aggregates without comparing unstable timings against a new machine. A task wrapper's
+`artifact_paths` binds its nested descriptor, fixture, validation runner, candidate producer, and
+other executable inputs to the baseline source commit.

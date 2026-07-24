@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runner="${project_root}/eval/runners/run-coding-task.py"
+task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
+patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+cd "${project_root}"
+GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0=i18n.commitEncoding \
+GIT_CONFIG_VALUE_0=ISO-8859-1 \
+  python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1
+
+if ! grep -Fq "fixture revision: 1adf3697ea82a2da6fa9b9aa76f24fb51625ffca" "${output_file}"; then
+  printf '%s\n' "coding task fixture changed under ambient Git configuration" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ambient Git configuration: isolated"

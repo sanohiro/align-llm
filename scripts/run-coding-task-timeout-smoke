@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runner="${project_root}/eval/runners/run-coding-task.py"
+source_task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
+patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
+timeout_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.timeout.XXXXXX.json")"
+marker="$(mktemp)"
+output_file="$(mktemp)"
+rm -f "${marker}"
+trap 'rm -f "${timeout_task}" "${marker}" "${output_file}"' EXIT
+
+python3 - "${source_task}" "${timeout_task}" "${marker}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+marker = sys.argv[3]
+child = (
+    "import pathlib,time; "
+    "time.sleep(2); "
+    f"pathlib.Path({marker!r}).write_text('survived', encoding='utf-8')"
+)
+parent = (
+    "import subprocess,sys,time; "
+    "subprocess.Popen([sys.executable, '-c', sys.argv[1]]); "
+    "print('before-timeout', flush=True); "
+    "print('timeout-detail', file=sys.stderr, flush=True); "
+    "time.sleep(10)"
+)
+task["id"] = "python-inclusive-range-timeout-smoke"
+task["validation_argv"] = ["python3", "-c", parent, child]
+task["validation_timeout_seconds"] = 1
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+cd "${project_root}"
+if python3 "${runner}" "${timeout_task}" "${patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a timed-out validation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+for expected in \
+  "command timed out after 1 seconds: python3" \
+  "stdout:" \
+  "before-timeout" \
+  "stderr:" \
+  "timeout-detail"; do
+  if ! grep -Fq "${expected}" "${output_file}"; then
+    printf '%s\n' "coding task timeout lost expected diagnostic: ${expected}" >&2
+    cat "${output_file}" >&2
+    exit 1
+  fi
+done
+
+sleep 3
+if [[ -e "${marker}" ]]; then
+  printf '%s\n' "coding task timeout left a descendant process running" >&2
+  exit 1
+fi
+if compgen -G "/tmp/align-llm-python-inclusive-range-timeout-smoke-*" >/dev/null; then
+  printf '%s\n' "coding task timeout left a temporary checkout behind" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task timeout: diagnostics retained and process group cleaned"

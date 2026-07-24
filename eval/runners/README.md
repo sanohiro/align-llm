@@ -15,12 +15,14 @@ eval/runners/run-fixed.sh eval/tasks/smoke-v1.json
 directory. It checks the pinned revision, requires validation to fail before repair, applies a
 candidate patch, enforces the edit allowlist, and requires validation to pass afterward. Temporary
 checkout cleanup is automatic. The CI gate also supplies a patch that changes a forbidden test file
-and requires an explicit allowlist rejection.
+and a passing patch that writes an untracked file during validation; both must be rejected after
+execution. Additional regressions prove ambient Git configuration cannot change the fixture revision
+and that a timed-out validation retains output, kills its process group, and removes its temporary
+checkout.
 
-Record a canonical baseline only from a clean commit after building the executable:
+Record a canonical baseline only from a clean commit:
 
 ```text
-make build
 python3 eval/runners/record-baseline.py \
   --corpus eval/tasks/coding-v1.json \
   --provider deterministic-reference \
@@ -29,3 +31,8 @@ python3 eval/runners/record-baseline.py \
   --samples 2 \
   --output eval/baselines/coding-v1-reference.json
 ```
+
+The recorder verifies and release-builds the pinned sibling Align compiler, rebuilds `main`, and
+rechecks source cleanliness before measurement. It accepts complete non-passing suite results so
+provider failures remain measurable; the CI smoke suite exercises that path with a complete failing
+JSON Lines result and nonzero evaluator exit.

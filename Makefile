@@ -29,6 +29,8 @@ eval-smoke: build
 eval-coding: build
 	./eval/runners/run-fixed.sh $(CODING_CORPUS)
 	./scripts/run-coding-task-invalid-smoke
+	./scripts/run-coding-task-git-config-smoke
+	./scripts/run-coding-task-timeout-smoke
 
 loop-smoke: build
 	./scripts/run-loop-smoke
@@ -36,6 +38,7 @@ loop-smoke: build
 baseline-check:
 	python3 ./eval/runners/verify-baseline.py
 	./scripts/run-baseline-invalid-smoke
+	./scripts/run-baseline-failure-smoke
 
 align-revision:
 	./scripts/check-align-revision

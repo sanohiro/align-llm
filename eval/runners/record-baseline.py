@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -36,6 +37,19 @@ def checked_output(argv: list[str], cwd: Path) -> str:
     return result.stdout.strip()
 
 
+def checked_run(argv: list[str], cwd: Path) -> None:
+    result = run(argv, cwd)
+    if result.returncode != 0:
+        raise BaselineError(
+            f"{' '.join(argv)} failed with exit code {result.returncode}: "
+            f"{result.stderr.strip()}"
+        )
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.stderr:
+        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
+
+
 def load_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -56,6 +70,68 @@ def cpu_model() -> str:
     return platform.processor() or "unknown"
 
 
+def resolve_inside(project_root: Path, relative: str, label: str) -> Path:
+    candidate = (project_root / relative).resolve()
+    try:
+        candidate.relative_to(project_root)
+    except ValueError as error:
+        raise BaselineError(f"{label} escapes the project root") from error
+    return candidate
+
+
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise BaselineError(f"cannot hash {path}: {error}") from error
+    return digest.hexdigest()
+
+
+def artifact_manifest(
+    project_root: Path,
+    corpus_path: Path,
+    corpus: dict[str, Any],
+) -> dict[str, Any]:
+    task_files = corpus.get("task_files")
+    if not isinstance(task_files, list) or not task_files:
+        raise BaselineError("corpus task_files must be a non-empty list")
+
+    files = {corpus_path}
+    for task_value in task_files:
+        if not isinstance(task_value, str) or not task_value:
+            raise BaselineError("corpus task path must be a non-empty string")
+        task_path = resolve_inside(project_root, task_value, "task path")
+        if not task_path.is_file():
+            raise BaselineError(f"task file does not exist: {task_path}")
+        files.add(task_path)
+        task = load_json(task_path)
+        artifact_paths = task.get("artifact_paths")
+        if not isinstance(artifact_paths, list) or not artifact_paths:
+            raise BaselineError(f"task does not declare artifact_paths: {task_path}")
+        for artifact_value in artifact_paths:
+            if not isinstance(artifact_value, str) or not artifact_value:
+                raise BaselineError("artifact path must be a non-empty string")
+            artifact_path = resolve_inside(project_root, artifact_value, "artifact path")
+            if artifact_path.is_dir():
+                artifact_files = [path for path in artifact_path.rglob("*") if path.is_file()]
+                if not artifact_files:
+                    raise BaselineError(f"artifact directory is empty: {artifact_path}")
+                files.update(path.resolve() for path in artifact_files)
+            elif artifact_path.is_file():
+                files.add(artifact_path)
+            else:
+                raise BaselineError(f"artifact does not exist: {artifact_path}")
+
+    rows = []
+    for path in sorted(files, key=lambda item: item.relative_to(project_root).as_posix()):
+        relative = path.relative_to(project_root).as_posix()
+        rows.append({"path": relative, "sha256": hash_file(path)})
+    return {"algorithm": "sha256", "files": rows}
+
+
 def parse_eval_output(stdout: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     try:
         rows = [json.loads(line) for line in stdout.splitlines() if line]
@@ -69,19 +145,43 @@ def parse_eval_output(stdout: str) -> tuple[list[dict[str, Any]], dict[str, Any]
         required = {"task_id", "verdict", "actual_code", "duration_ns"}
         if not isinstance(task, dict) or not required.issubset(task):
             raise BaselineError("evaluation task result does not match the expected schema")
-    if not isinstance(summary, dict) or "corpus_id" not in summary:
+    summary_fields = {
+        "schema_version",
+        "corpus_id",
+        "task_count",
+        "pass_count",
+        "fail_count",
+    }
+    if not isinstance(summary, dict) or set(summary) != summary_fields:
         raise BaselineError("evaluation summary does not match the expected schema")
     return task_results, summary
 
 
 def record_run(binary: Path, corpus_path: Path, project_root: Path, sample: int) -> dict[str, Any]:
     result = run([str(binary), "--eval", str(corpus_path)], project_root)
-    if result.returncode != 0:
+    try:
+        tasks, summary = parse_eval_output(result.stdout)
+    except BaselineError as error:
         raise BaselineError(
-            f"evaluation sample {sample} failed with exit code {result.returncode}: "
+            f"evaluation sample {sample} did not produce a complete result: {error}; "
+            f"exit code {result.returncode}; stderr: {result.stderr.strip()}"
+        ) from error
+    if summary["task_count"] != len(tasks):
+        raise BaselineError(f"evaluation sample {sample} summary task count is incorrect")
+    observed_passes = sum(task["verdict"] == "PASS" for task in tasks)
+    if (
+        summary["pass_count"] != observed_passes
+        or summary["fail_count"] != len(tasks) - observed_passes
+    ):
+        raise BaselineError(f"evaluation sample {sample} summary verdict counts are incorrect")
+    if summary["fail_count"] == 0 and result.returncode != 0:
+        raise BaselineError(
+            f"passing evaluation sample {sample} exited with code {result.returncode}: "
             f"{result.stderr.strip()}"
         )
-    tasks, summary = parse_eval_output(result.stdout)
+    if summary["fail_count"] != 0 and result.returncode == 0:
+        raise BaselineError(f"failing evaluation sample {sample} exited successfully")
+
     task_rows = []
     for task in tasks:
         duration = task["duration_ns"]
@@ -130,21 +230,28 @@ def main() -> int:
         if status:
             raise BaselineError("canonical baselines must be recorded from a clean worktree")
 
-        corpus_path = (project_root / args.corpus).resolve()
-        output_path = (project_root / args.output).resolve()
+        corpus_path = resolve_inside(project_root, args.corpus, "corpus")
+        output_path = resolve_inside(project_root, args.output, "output")
+        align_repo = Path(
+            os.environ.get("ALIGN_REPO", str(project_root.parent / "align"))
+        ).resolve()
+        pinned_compiler = align_repo / "target" / "release" / "alignc"
+        checked_run(["make", "align-build"], project_root)
+        checked_run(["make", f"ALIGNC={pinned_compiler}", "build"], project_root)
         binary = (project_root / "main").resolve()
         for path, label in ((corpus_path, "corpus"), (binary, "align-llm binary")):
             if not path.is_file():
                 raise BaselineError(f"{label} does not exist: {path}")
-        try:
-            corpus_path.relative_to(project_root)
-            output_path.relative_to(project_root)
-        except ValueError as error:
-            raise BaselineError("corpus and output must remain inside the project root") from error
+        status_after_build = checked_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"], project_root
+        )
+        if status_after_build:
+            raise BaselineError("baseline build changed the source worktree")
 
         corpus = load_json(corpus_path)
         if corpus.get("schema_version") != 1 or not isinstance(corpus.get("corpus_id"), str):
             raise BaselineError("corpus does not match schema version 1")
+        artifacts = artifact_manifest(project_root, corpus_path, corpus)
 
         runs = [
             record_run(binary, corpus_path, project_root, sample)
@@ -156,9 +263,6 @@ def main() -> int:
             for task in run_result["task_results"]
             if task["time_to_passing_patch_ns"] is not None
         ]
-        if not passing_times:
-            raise BaselineError("baseline contains no passing patch")
-
         baseline = {
             "schema_version": 1,
             "baseline_id": f"{corpus['corpus_id']}-{args.provider}-{args.model}",
@@ -172,6 +276,7 @@ def main() -> int:
                 "schema_version": corpus["schema_version"],
                 "path": str(corpus_path.relative_to(project_root)),
             },
+            "artifacts": artifacts,
             "provider": {
                 "id": args.provider,
                 "model": args.model,
@@ -189,12 +294,19 @@ def main() -> int:
             "sample_count": args.samples,
             "runs": runs,
             "aggregate": {
+                "task_attempt_count": sum(
+                    len(run_result["task_results"]) for run_result in runs
+                ),
                 "passing_attempt_count": len(passing_times),
-                "time_to_passing_patch_ns": {
-                    "minimum": min(passing_times),
-                    "median": int(statistics.median(passing_times)),
-                    "maximum": max(passing_times),
-                },
+                "time_to_passing_patch_ns": (
+                    {
+                        "minimum": min(passing_times),
+                        "median": int(statistics.median(passing_times)),
+                        "maximum": max(passing_times),
+                    }
+                    if passing_times
+                    else None
+                ),
             },
         }
         output_path.parent.mkdir(parents=True, exist_ok=True)

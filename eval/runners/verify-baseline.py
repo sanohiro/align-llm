@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import json
 import statistics
 import subprocess
@@ -40,6 +41,26 @@ def require_positive_integer(value: Any, label: str) -> int:
     return value
 
 
+def resolve_inside(project_root: Path, relative: str, label: str) -> Path:
+    candidate = (project_root / relative).resolve()
+    try:
+        candidate.relative_to(project_root)
+    except ValueError as error:
+        raise BaselineError(f"{label} escapes the project root") from error
+    return candidate
+
+
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise BaselineError(f"cannot hash {path}: {error}") from error
+    return digest.hexdigest()
+
+
 def verify_commit(project_root: Path, revision: str) -> None:
     exists = subprocess.run(
         ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
@@ -61,17 +82,16 @@ def verify_commit(project_root: Path, revision: str) -> None:
         raise BaselineError("align_llm_commit is not an ancestor of HEAD")
 
 
-def corpus_task_ids(project_root: Path, corpus: dict[str, Any]) -> list[str]:
+def corpus_tasks(
+    project_root: Path,
+    corpus: dict[str, Any],
+) -> tuple[list[str], set[Path]]:
     require_fields(corpus, {"id", "schema_version", "path"}, "corpus metadata")
     if corpus["schema_version"] != 1:
         raise BaselineError("unsupported corpus schema")
     corpus_id = require_non_empty_string(corpus["id"], "corpus id")
     relative_path = require_non_empty_string(corpus["path"], "corpus path")
-    corpus_path = (project_root / relative_path).resolve()
-    try:
-        corpus_path.relative_to(project_root)
-    except ValueError as error:
-        raise BaselineError("corpus path escapes the project root") from error
+    corpus_path = resolve_inside(project_root, relative_path, "corpus path")
     manifest = load_object(corpus_path)
     require_fields(manifest, {"schema_version", "corpus_id", "task_files"}, "corpus")
     if manifest["schema_version"] != 1 or manifest["corpus_id"] != corpus_id:
@@ -81,18 +101,84 @@ def corpus_task_ids(project_root: Path, corpus: dict[str, Any]) -> list[str]:
         raise BaselineError("corpus task_files must be a non-empty list")
 
     task_ids = []
+    artifact_files = {corpus_path}
     for relative_task_path in task_files:
         task_path_value = require_non_empty_string(relative_task_path, "task path")
-        task_path = (project_root / task_path_value).resolve()
-        try:
-            task_path.relative_to(project_root)
-        except ValueError as error:
-            raise BaselineError("task path escapes the project root") from error
+        task_path = resolve_inside(project_root, task_path_value, "task path")
         task = load_object(task_path)
+        artifact_files.add(task_path)
         task_ids.append(require_non_empty_string(task.get("id"), "task id"))
+        artifact_paths = task.get("artifact_paths")
+        if not isinstance(artifact_paths, list) or not artifact_paths:
+            raise BaselineError(f"task does not declare artifact_paths: {task_path}")
+        for artifact_value in artifact_paths:
+            artifact_relative = require_non_empty_string(artifact_value, "artifact path")
+            artifact_path = resolve_inside(project_root, artifact_relative, "artifact path")
+            if artifact_path.is_dir():
+                files = [path.resolve() for path in artifact_path.rglob("*") if path.is_file()]
+                if not files:
+                    raise BaselineError(f"artifact directory is empty: {artifact_path}")
+                artifact_files.update(files)
+            elif artifact_path.is_file():
+                artifact_files.add(artifact_path)
+            else:
+                raise BaselineError(f"artifact does not exist: {artifact_path}")
     if len(set(task_ids)) != len(task_ids):
         raise BaselineError("corpus contains duplicate task ids")
-    return task_ids
+    return task_ids, artifact_files
+
+
+def verify_artifacts(
+    artifacts: Any,
+    artifact_files: set[Path],
+    project_root: Path,
+    align_llm_commit: str,
+) -> None:
+    if not isinstance(artifacts, dict):
+        raise BaselineError("artifacts must be an object")
+    require_fields(artifacts, {"algorithm", "files"}, "artifacts")
+    if artifacts["algorithm"] != "sha256":
+        raise BaselineError("unsupported artifact digest algorithm")
+    rows = artifacts["files"]
+    if not isinstance(rows, list) or not rows:
+        raise BaselineError("artifact files must be a non-empty list")
+
+    expected_rows = []
+    for path in sorted(
+        artifact_files,
+        key=lambda item: item.relative_to(project_root).as_posix(),
+    ):
+        expected_rows.append(
+            {
+                "path": path.relative_to(project_root).as_posix(),
+                "sha256": hash_file(path),
+            }
+        )
+    if rows != expected_rows:
+        raise BaselineError("current evaluation artifacts differ from the recorded baseline")
+
+    for row in rows:
+        if not isinstance(row, dict):
+            raise BaselineError("artifact file entry must be an object")
+        require_fields(row, {"path", "sha256"}, "artifact file entry")
+        relative = require_non_empty_string(row["path"], "artifact file path")
+        digest = require_non_empty_string(row["sha256"], "artifact file sha256")
+        if len(digest) != 64:
+            raise BaselineError("artifact sha256 must be a full digest")
+        source = subprocess.run(
+            ["git", "show", f"{align_llm_commit}:{relative}"],
+            cwd=project_root,
+            check=False,
+            capture_output=True,
+        )
+        if source.returncode != 0:
+            raise BaselineError(
+                f"artifact is absent from the baseline source commit: {relative}"
+            )
+        if hashlib.sha256(source.stdout).hexdigest() != digest:
+            raise BaselineError(
+                f"artifact differs from the baseline source commit: {relative}"
+            )
 
 
 def verify_provider(provider: Any) -> None:
@@ -190,16 +276,23 @@ def verify_aggregate(aggregate: Any, passing_times: list[int]) -> None:
         raise BaselineError("aggregate must be an object")
     require_fields(
         aggregate,
-        {"passing_attempt_count", "time_to_passing_patch_ns"},
+        {"task_attempt_count", "passing_attempt_count", "time_to_passing_patch_ns"},
         "aggregate",
     )
-    if not passing_times:
-        raise BaselineError("baseline contains no passing attempts")
+    task_attempt_count = require_positive_integer(
+        aggregate["task_attempt_count"], "aggregate task_attempt_count"
+    )
+    if task_attempt_count < len(passing_times):
+        raise BaselineError("aggregate task_attempt_count is smaller than pass count")
     if aggregate["passing_attempt_count"] != len(passing_times):
         raise BaselineError("aggregate passing_attempt_count is incorrect")
     timing = aggregate["time_to_passing_patch_ns"]
+    if not passing_times:
+        if timing is not None:
+            raise BaselineError("aggregate timing must be null without a passing attempt")
+        return
     if not isinstance(timing, dict):
-        raise BaselineError("aggregate timing must be an object")
+        raise BaselineError("aggregate timing must be an object when a task passes")
     require_fields(timing, {"minimum", "median", "maximum"}, "aggregate timing")
     expected = {
         "minimum": min(passing_times),
@@ -221,6 +314,7 @@ def verify_baseline(path: Path, project_root: Path) -> None:
             "align_llm_commit",
             "align_revision",
             "corpus",
+            "artifacts",
             "provider",
             "environment",
             "sample_count",
@@ -254,11 +348,20 @@ def verify_baseline(path: Path, project_root: Path) -> None:
 
     verify_provider(baseline["provider"])
     verify_environment(baseline["environment"])
-    expected_task_ids = corpus_task_ids(project_root, baseline["corpus"])
+    expected_task_ids, artifact_files = corpus_tasks(project_root, baseline["corpus"])
+    verify_artifacts(
+        baseline["artifacts"],
+        artifact_files,
+        project_root,
+        align_llm_commit,
+    )
     sample_count = require_positive_integer(baseline["sample_count"], "sample_count")
     if sample_count < 2:
         raise BaselineError("canonical baseline must contain at least two samples")
     passing_times = verify_runs(baseline["runs"], sample_count, expected_task_ids)
+    task_attempt_count = sum(len(run["task_results"]) for run in baseline["runs"])
+    if baseline["aggregate"].get("task_attempt_count") != task_attempt_count:
+        raise BaselineError("aggregate task_attempt_count is incorrect")
     verify_aggregate(baseline["aggregate"], passing_times)
 
 
