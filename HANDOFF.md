@@ -4,9 +4,8 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is PR #1 on
-`agent/bootstrap-development-cycle`. The pushed review-fix series starts at `c9d47e5`; use
-`git rev-parse HEAD` for its latest commit._
+_Last updated: 2026-07-25. PR #1 merged to `main` at `5cd2a42`
+(`Bootstrap the measured align-coder development cycle (#1)`)._
 
 ## Current position
 
@@ -37,9 +36,9 @@ The repository is at the first align-coder delivery gates:
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
 
-## Active pull request
+## Completed bootstrap
 
-PR #1, `Bootstrap the measured align-coder development cycle`, contains the following intentionally
+PR #1, `Bootstrap the measured align-coder development cycle`, merged these intentionally
 integrated bootstrap surfaces:
 
 - `AGENTS.md` — Codex compatibility symlink to the canonical `CLAUDE.md`.
@@ -56,12 +55,11 @@ integrated bootstrap surfaces:
 - `src/eval.align` — declared JSON corpus loader and first deterministic C0 scorecard slice.
 - `src/repair.align` — first provider-independent verify/repair loop skeleton.
 
-The subjects remain separate commits for review, but the first executable evaluation, loop, CI,
-request lifecycle, and handoff rules cross-reference one another and are being reviewed as one
-bootstrap PR under the one-time exception in `CLAUDE.md`. This is not a precedent for mixing
-independently reviewable governance, request, and roadmap work after the foundation merges. Review
-found and the follow-up addresses diagnostic loss, loop bounds and exit coverage, task-identity
-checks, the effective compiler pin, request lifecycle evidence, and stale handoff state.
+The first executable evaluation, loop, CI, request lifecycle, and handoff rules were reviewed as one
+bootstrap PR under the one-time exception in `CLAUDE.md`. That exception is now consumed: future
+work returns to one roadmap gate or enabling slice per branch and PR. Review follow-ups resolved
+diagnostic loss, loop bounds and exit coverage, task-identity checks, empty-corpus acceptance, the
+effective compiler pin, request lifecycle evidence, and stale handoff state.
 
 ## Latest verification
 
@@ -92,17 +90,15 @@ python3 -m json.tool <each smoke-v1 task, manifest, and expected summary>
 
 ## Next steps
 
-1. Finish the final PR #1 follow-up review, rerun the local and GitHub gates, and merge only with no
-   valid finding open.
-2. Finish the C0 gate with at least one real coding-task fixture. Pin its source revision, make setup
+1. Finish the C0 gate with at least one real coding-task fixture. Pin its source revision, make setup
    and cleanup reproducible, define allowed edits and validation, and retain a canonical
    machine-readable result from a clean align-llm commit.
-3. Record the first baseline with the metadata required by `eval/baselines/README.md`, then repeat it
+2. Record the first baseline with the metadata required by `eval/baselines/README.md`, then repeat it
    to prove stable scoring before accepting any provider or prompt optimization.
-4. After the C0 gate is measured, implement C1's explicit provider boundary and common persisted
+3. After the C0 gate is measured, implement C1's explicit provider boundary and common persisted
    result format. Preserve the current verify/repair loop as a C4-oriented spike until C1 provides a
    real provider to drive it.
-5. Before merging code, follow `CLAUDE.md` exactly: open the PR, run review with high effort for
+4. Before merging code, follow `CLAUDE.md` exactly: open the PR, run review with high effort for
    non-trivial changes, scrutinize and reflect findings, push the follow-up, re-verify, then merge.
 
 ## Constraints to preserve
