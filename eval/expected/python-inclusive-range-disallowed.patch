@@ -1,0 +1,8 @@
+diff --git a/tests/test_inclusive_range.py b/tests/test_inclusive_range.py
+--- a/tests/test_inclusive_range.py
++++ b/tests/test_inclusive_range.py
+@@ -25,3 +25,4 @@ class InclusiveTotalTests(unittest.TestCase):
+ 
+ if __name__ == "__main__":
+     unittest.main()
++# Candidate patches must not alter tests.

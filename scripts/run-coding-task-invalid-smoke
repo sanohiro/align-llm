@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runner="${project_root}/eval/runners/run-coding-task.py"
+task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
+patch="${project_root}/eval/expected/python-inclusive-range-disallowed.patch"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+cd "${project_root}"
+if python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a disallowed edit" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate changed disallowed files: tests/test_inclusive_range.py" "${output_file}"; then
+  printf '%s\n' "coding task did not report the expected allowlist failure" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task disallowed edit: rejected"

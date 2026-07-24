@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
+  "recorded_at": "2026-07-24T23:27:20+00:00",
+  "align_llm_commit": "469c59a8369d18806c36a0b42b66e214e353c957",
+  "align_revision": "db942d2f705546c7d6b8c0334a462548c6446f84",
+  "corpus": {
+    "id": "coding-v1",
+    "schema_version": 1,
+    "path": "eval/tasks/coding-v1.json"
+  },
+  "provider": {
+    "id": "deterministic-reference",
+    "model": "checked-in-patch",
+    "prompt_version": "none"
+  },
+  "environment": {
+    "os": "Linux",
+    "os_release": "6.18.33.2-microsoft-standard-WSL2",
+    "architecture": "x86_64",
+    "cpu": "AMD Ryzen 9 5950X 16-Core Processor",
+    "logical_cpu_count": 32,
+    "python_version": "3.14.6",
+    "gpu": "not used"
+  },
+  "sample_count": 2,
+  "runs": [
+    {
+      "sample": 1,
+      "task_results": [
+        {
+          "task_id": "python-inclusive-range",
+          "verdict": "PASS",
+          "actual_code": 0,
+          "duration_ns": 165352312,
+          "time_to_passing_patch_ns": 165352312
+        }
+      ],
+      "summary": {
+        "task_count": 1,
+        "pass_count": 1,
+        "fail_count": 0
+      }
+    },
+    {
+      "sample": 2,
+      "task_results": [
+        {
+          "task_id": "python-inclusive-range",
+          "verdict": "PASS",
+          "actual_code": 0,
+          "duration_ns": 166593658,
+          "time_to_passing_patch_ns": 166593658
+        }
+      ],
+      "summary": {
+        "task_count": 1,
+        "pass_count": 1,
+        "fail_count": 0
+      }
+    }
+  ],
+  "aggregate": {
+    "passing_attempt_count": 2,
+    "time_to_passing_patch_ns": {
+      "minimum": 165352312,
+      "median": 165972985,
+      "maximum": 166593658
+    }
+  }
+}

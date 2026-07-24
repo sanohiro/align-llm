@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+baseline="${project_root}/eval/baselines/coding-v1-reference.json"
+invalid_baseline="$(mktemp "${project_root}/eval/baselines/.invalid.XXXXXX.json")"
+output_file="$(mktemp)"
+trap 'rm -f "${invalid_baseline}" "${output_file}"' EXIT
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["aggregate"]["time_to_passing_patch_ns"]["median"] += 1
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+cd "${project_root}"
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a corrupt aggregate" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "aggregate timing does not match task results" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the expected aggregate failure" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "corrupt baseline aggregate: rejected"

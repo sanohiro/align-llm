@@ -19,3 +19,8 @@ The baseline recorder rejects dirty worktrees and fewer than two samples. Build 
 use the command documented in `eval/runners/README.md`. `deterministic-reference` identifies a
 checked-in known-good candidate used to establish the scoring and timing pipeline; it is not a model
 quality result and must not be compared as if it were one.
+
+`coding-v1-reference.json` was recorded twice from its named clean commit. `make baseline-check`
+validates its commit ancestry, pinned Align revision, corpus and task identity, required metadata,
+per-run summaries, and recomputed time-to-passing-patch aggregates without comparing unstable
+timings against a new machine.

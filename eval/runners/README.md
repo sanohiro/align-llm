@@ -14,7 +14,8 @@ eval/runners/run-fixed.sh eval/tasks/smoke-v1.json
 `run-coding-task.py` materializes a fixture as a deterministic SHA-1 Git commit in a temporary
 directory. It checks the pinned revision, requires validation to fail before repair, applies a
 candidate patch, enforces the edit allowlist, and requires validation to pass afterward. Temporary
-checkout cleanup is automatic.
+checkout cleanup is automatic. The CI gate also supplies a patch that changes a forbidden test file
+and requires an explicit allowlist rejection.
 
 Record a canonical baseline only from a clean commit after building the executable:
 
