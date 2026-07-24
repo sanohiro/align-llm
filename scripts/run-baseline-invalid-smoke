@@ -32,3 +32,58 @@ if ! grep -Fq "aggregate timing does not match task results" "${output_file}"; t
 fi
 
 printf '%s\n' "corrupt baseline aggregate: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for run in baseline["runs"]:
+    task = run["task_results"][0]
+    task["verdict"] = "FAIL"
+    task["time_to_passing_patch_ns"] = None
+    run["summary"]["pass_count"] = 0
+    run["summary"]["fail_count"] = 1
+baseline["aggregate"]["passing_attempt_count"] = 0
+baseline["aggregate"]["time_to_passing_patch_ns"] = None
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a contradictory FAIL verdict" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "failing task actual_code equals expected_code" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the contradictory FAIL verdict" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "contradictory baseline verdict: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["runs"][0]["task_results"][0]["expected_code"] = False
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a boolean expected_code" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "task expected_code must be an integer" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the boolean expected_code" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "boolean baseline expected_code: rejected"

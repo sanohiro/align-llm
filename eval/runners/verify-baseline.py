@@ -105,6 +105,7 @@ def corpus_tasks(
         corpus_path,
         project_root / ".align-revision",
         project_root / ".gitattributes",
+        project_root / "eval" / "runners" / "record-baseline.py",
     }
     expected_codes = []
     for relative_task_path in task_files:
@@ -262,6 +263,11 @@ def verify_runs(
                 raise BaselineError("task result contains an unknown verdict")
             if not isinstance(task["actual_code"], int) or isinstance(task["actual_code"], bool):
                 raise BaselineError("task actual_code must be an integer")
+            if not isinstance(task["expected_code"], int) or isinstance(
+                task["expected_code"],
+                bool,
+            ):
+                raise BaselineError("task expected_code must be an integer")
             task_index = expected_task_ids.index(task["task_id"])
             if task["expected_code"] != expected_codes[task_index]:
                 raise BaselineError("task expected_code differs from the corpus")
@@ -274,8 +280,13 @@ def verify_runs(
                 if passing_time != duration:
                     raise BaselineError("passing task time differs from its duration")
                 passing_times.append(duration)
-            elif passing_time is not None:
-                raise BaselineError("non-passing task has a time_to_passing_patch")
+            else:
+                if passing_time is not None:
+                    raise BaselineError("non-passing task has a time_to_passing_patch")
+                if verdict == "FAIL" and task["actual_code"] == task["expected_code"]:
+                    raise BaselineError("failing task actual_code equals expected_code")
+                if verdict in {"TIMEOUT", "ERROR"} and task["actual_code"] != -1:
+                    raise BaselineError("non-completed task actual_code must be -1")
 
         summary = run["summary"]
         if not isinstance(summary, dict):

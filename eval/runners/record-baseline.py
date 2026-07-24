@@ -103,6 +103,7 @@ def artifact_manifest(
         corpus_path,
         project_root / ".align-revision",
         project_root / ".gitattributes",
+        project_root / "eval" / "runners" / "record-baseline.py",
     }
     for task_value in task_files:
         if not isinstance(task_value, str) or not task_value:
@@ -194,17 +195,32 @@ def record_run(binary: Path, corpus_path: Path, project_root: Path, sample: int)
 
     task_rows = []
     for task in tasks:
+        verdict = task["verdict"]
+        expected_code = task["expected_code"]
+        actual_code = task["actual_code"]
+        if verdict not in {"PASS", "FAIL", "TIMEOUT", "ERROR"}:
+            raise BaselineError("evaluation emitted an unknown task verdict")
+        if not isinstance(expected_code, int) or isinstance(expected_code, bool):
+            raise BaselineError("evaluation emitted a non-integer expected code")
+        if not isinstance(actual_code, int) or isinstance(actual_code, bool):
+            raise BaselineError("evaluation emitted a non-integer actual code")
+        if verdict == "PASS" and actual_code != expected_code:
+            raise BaselineError("passing task actual_code differs from expected_code")
+        if verdict == "FAIL" and actual_code == expected_code:
+            raise BaselineError("failing task actual_code equals expected_code")
+        if verdict in {"TIMEOUT", "ERROR"} and actual_code != -1:
+            raise BaselineError("non-completed task actual_code must be -1")
         duration = task["duration_ns"]
         if not isinstance(duration, int) or isinstance(duration, bool) or duration <= 0:
             raise BaselineError("evaluation emitted a non-positive task duration")
         task_rows.append(
             {
                 "task_id": task["task_id"],
-                "verdict": task["verdict"],
-                "expected_code": task["expected_code"],
-                "actual_code": task["actual_code"],
+                "verdict": verdict,
+                "expected_code": expected_code,
+                "actual_code": actual_code,
                 "duration_ns": duration,
-                "time_to_passing_patch_ns": duration if task["verdict"] == "PASS" else None,
+                "time_to_passing_patch_ns": duration if verdict == "PASS" else None,
             }
         )
     return {
@@ -262,6 +278,7 @@ def main() -> int:
         corpus = load_json(corpus_path)
         if corpus.get("schema_version") != 1 or not isinstance(corpus.get("corpus_id"), str):
             raise BaselineError("corpus does not match schema version 1")
+        source_commit = checked_output(["git", "rev-parse", "HEAD"], project_root)
         artifacts = artifact_manifest(project_root, corpus_path, corpus)
 
         runs = [
@@ -274,11 +291,20 @@ def main() -> int:
             for task in run_result["task_results"]
             if task["time_to_passing_patch_ns"] is not None
         ]
+        final_commit = checked_output(["git", "rev-parse", "HEAD"], project_root)
+        final_status = checked_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            project_root,
+        )
+        if final_commit != source_commit:
+            raise BaselineError("evaluation changed the source commit")
+        if final_status:
+            raise BaselineError("evaluation changed the source worktree")
         baseline = {
             "schema_version": 1,
             "baseline_id": f"{corpus['corpus_id']}-{args.provider}-{args.model}",
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "align_llm_commit": checked_output(["git", "rev-parse", "HEAD"], project_root),
+            "align_llm_commit": source_commit,
             "align_revision": (project_root / ".align-revision")
             .read_text(encoding="utf-8")
             .strip(),

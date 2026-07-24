@@ -26,4 +26,5 @@ validates its commit ancestry, pinned Align revision, corpus and task identity, 
 full evaluation-artifact digest set, per-run summaries, and recomputed time-to-passing-patch
 aggregates without comparing unstable timings against a new machine. A task wrapper's
 `artifact_paths` binds its nested descriptor, fixture, validation runner, candidate producer, and
-other executable inputs to the baseline source commit.
+other executable inputs to the baseline source commit. Global artifacts also bind the compiler pin,
+line-ending policy, and recorder that defines measurement semantics.

@@ -54,6 +54,23 @@ def main() -> int:
         evaluator.chmod(0o755)
         result = recorder.record_run(evaluator, corpus, project_root, 1)
 
+        task["actual_code"] = 0
+        evaluator.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"print({json.dumps(json.dumps(task))})\n"
+            f"print({json.dumps(json.dumps(summary))})\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        try:
+            recorder.record_run(evaluator, corpus, project_root, 2)
+        except recorder.BaselineError as error:
+            if "failing task actual_code equals expected_code" not in str(error):
+                raise
+        else:
+            raise RuntimeError("baseline recorder accepted a contradictory FAIL verdict")
+
     task_result = result["task_results"][0]
     if (
         task_result["verdict"] != "FAIL"
@@ -62,7 +79,7 @@ def main() -> int:
         or result["summary"]["fail_count"] != 1
     ):
         raise RuntimeError("baseline recorder changed a complete failing result")
-    print("non-passing baseline sample: retained")
+    print("non-passing baseline sample: retained; contradictory verdict rejected")
     return 0
 
 
