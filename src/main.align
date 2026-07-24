@@ -4,6 +4,7 @@ import project
 import verify
 import eval
 import repair
+import std.fs
 
 // Keep the bootstrap entry point dependency-free while Align's package layer is still evolving.
 fn print_help() {
@@ -15,9 +16,28 @@ fn print_help() {
 // A repair provider that declines to fix anything (always gives up). It lets the loop's control
 // exits be demonstrated without a model: an already-passing check needs no provider, and a
 // persistently failing check ends in GAVE_UP on the first iteration. A real provider (LLM + patch
-// apply) is a drop-in of the same `fn(str) -> bool` shape.
-fn decline_repair(diagnostics: str) -> bool {
+// apply) is a drop-in of the same `fn(str, str, i64) -> bool` shape.
+fn decline_repair(stdout: str, stderr: str, code: i64) -> bool {
   return false
+}
+
+// A deterministic repair fixture: it accepts only a stdout diagnostic, writes the marker that
+// makes the next verification pass, and therefore proves stdout reaches the provider and a repair
+// is re-verified. The shell runner removes the marker before and after the smoke test.
+fn repair_from_stdout(stdout: str, stderr: str, code: i64) -> bool {
+  if stdout != "FIX_ME" {
+    return false
+  }
+  return match fs.write_file("eval/.loop-smoke-marker", "fixed") {
+    Ok(_) => true,
+    Err(_) => false,
+  }
+}
+
+// A provider that asks for another verification without changing the command outcome. This
+// deterministically exercises exhaustion of a positive iteration budget.
+fn accept_without_change(stdout: str, stderr: str, code: i64) -> bool {
+  return stdout == "STILL_FAIL"
 }
 
 // Exercise the provider-independent coding loop (repair.drive) as a real client against git, with
@@ -31,6 +51,30 @@ fn loop_demo() {
   print("loop: persistent-failure")
   print(repair.outcome_label(r2.outcome))
   print(r2.iterations)
+  r3 := repair.drive(
+    repair_from_stdout,
+    "sh",
+    ["sh", "-c", "if test -f eval/.loop-smoke-marker; then exit 0; else printf FIX_ME; exit 1; fi"].to_array(),
+    ".",
+    30_000_000_000,
+    0,
+    2,
+  )
+  print("loop: stdout-repair")
+  print(repair.outcome_label(r3.outcome))
+  print(r3.iterations)
+  r4 := repair.drive(accept_without_change, "sh", ["sh", "-c", "printf STILL_FAIL; exit 1"].to_array(), ".", 30_000_000_000, 0, 2)
+  print("loop: exhausted")
+  print(repair.outcome_label(r4.outcome))
+  print(r4.iterations)
+  r5 := repair.drive(decline_repair, "sh", ["sh", "-c", "sleep 1"].to_array(), ".", 1_000_000, 0, 1)
+  print("loop: timeout")
+  print(repair.outcome_label(r5.outcome))
+  print(r5.iterations)
+  r6 := repair.drive(decline_repair, "__must_not_execute__", ["__must_not_execute__"].to_array(), ".", 30_000_000_000, 0, 0)
+  print("loop: zero-budget")
+  print(repair.outcome_label(r6.outcome))
+  print(r6.iterations)
 }
 
 // Exercise the newly shipped std.process captured-run surface (Align Request 1,

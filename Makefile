@@ -1,5 +1,6 @@
-ALIGNC := ./scripts/alignc
+ALIGNC ?= ./scripts/alignc
 ALIGN_REPO ?= ../align
+PINNED_ALIGNC := $(abspath $(ALIGN_REPO)/target/release/alignc)
 ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
 
@@ -33,4 +34,6 @@ align-build: align-revision
 	cargo build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
 		-p align_runtime -p align_driver
 
-ci: align-build format-check check build eval-smoke loop-smoke
+ci: align-build
+	@test -x "$(PINNED_ALIGNC)" || { echo "pinned Align compiler was not built at $(PINNED_ALIGNC)" >&2; exit 1; }
+	ALIGNC="$(PINNED_ALIGNC)" $(MAKE) format-check check build eval-smoke loop-smoke

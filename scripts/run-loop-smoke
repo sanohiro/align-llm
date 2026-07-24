@@ -6,7 +6,9 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 binary="${ALIGN_LLM_BIN:-${project_root}/main}"
 expected="${project_root}/eval/expected/loop-smoke.txt"
 output_file="$(mktemp)"
-trap 'rm -f "${output_file}"' EXIT
+marker="${project_root}/eval/.loop-smoke-marker"
+trap 'rm -f "${output_file}" "${marker}"' EXIT
+rm -f "${marker}"
 
 if [[ ! -x "${binary}" ]]; then
   make -C "${project_root}" build

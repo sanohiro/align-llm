@@ -4,3 +4,15 @@ PASSED
 loop: persistent-failure
 GAVE_UP
 1
+loop: stdout-repair
+PASSED
+2
+loop: exhausted
+EXHAUSTED
+2
+loop: timeout
+RUN_FAILED
+1
+loop: zero-budget
+EXHAUSTED
+0

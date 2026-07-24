@@ -1,0 +1,2 @@
+git-head-resolves
+git-missing-ref-is-128

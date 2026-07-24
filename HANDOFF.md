@@ -4,8 +4,8 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is uncommitted on `main` at
-`f362c57` (`Record Align language requests surfaced by align-llm`)._
+_Last updated: 2026-07-25. Active work is PR #1 on
+`agent/bootstrap-development-cycle`; use `git rev-parse HEAD` for its current pushed commit._
 
 ## Current position
 
@@ -28,15 +28,18 @@ The repository is at the first align-coder delivery gates:
 - `CLAUDE.md` and `docs/align-requests.md` define the Align request lifecycle, mandatory blocking
   metadata, dependent-slice pause rule, independent-work rule, and real-client resume/closure gate.
 - All three capabilities requested from the sibling Align repository in
-  `docs/align-requests.md` are shipped in Align v0.4.0. No open Align request currently blocks this
-  work.
+  `docs/align-requests.md` are shipped in Align v0.4.0. Requests 1 and 3 have real-client closure
+  evidence. Request 2 remains non-blocking at `ALIGN_MERGED` until the provider HTTP client supplies
+  plaintext and TLS timeout fixtures. No open Align request currently blocks C0 or the
+  provider-independent loop.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
 
-## Intentional uncommitted work
+## Active pull request
 
-Preserve these files; they are the current working set:
+PR #1, `Bootstrap the measured align-coder development cycle`, contains the following intentionally
+integrated bootstrap surfaces:
 
 - `AGENTS.md` — Codex compatibility symlink to the canonical `CLAUDE.md`.
 - `CLAUDE.md` — shared repository policy, English collaboration rules, mandatory
@@ -52,8 +55,12 @@ Preserve these files; they are the current working set:
 - `src/eval.align` — declared JSON corpus loader and first deterministic C0 scorecard slice.
 - `src/repair.align` — first provider-independent verify/repair loop skeleton.
 
-No pull request has been opened for this working set. Do not discard or overwrite these changes when
-resuming on another environment.
+The four subjects remain separate commits for review, but the first executable evaluation, loop,
+CI, request lifecycle, and handoff rules cross-reference one another and are being reviewed as one
+bootstrap PR. This is a deliberate exception for the initial repository foundation, not a
+precedent for mixing independently reviewable governance, request, and roadmap work. Review found
+and the follow-up addresses diagnostic loss, loop bounds and exit coverage, task-identity checks,
+the effective compiler pin, request lifecycle evidence, and stale handoff state.
 
 ## Latest verification
 
@@ -71,7 +78,8 @@ make ci
 # PASS — 5 units checked per-unit: project, verify, eval, repair, main
 # PASS — executable built as ./main
 # PASS — smoke-v1: 2 tasks, 2 PASS, 0 failed; summary matches the checked-in oracle
-# PASS — loop spike: immediate pass and declining-provider give-up paths match their oracle
+# PASS — loop spike: pass, give-up, stdout-driven repair/reverify, exhaustion, timeout, and
+# zero-budget paths match their oracle
 
 bash -n eval/runners/run-fixed.sh scripts/run-loop-smoke scripts/check-align-revision
 # PASS
@@ -82,9 +90,8 @@ python3 -m json.tool <each smoke-v1 task, manifest, and expected summary>
 
 ## Next steps
 
-1. Before publishing, separate the current dirty working set into reviewable branches or commits:
-   repository workflow, Align request records, C0 evaluation, and the C4-oriented loop spike must
-   not become one oversized pull request.
+1. Finish PR #1 review: commit and push the review follow-up, rerun the full local and GitHub gates,
+   repeat adversarial review on the behavioral changes, and merge only with no valid finding open.
 2. Finish the C0 gate with at least one real coding-task fixture. Pin its source revision, make setup
    and cleanup reproducible, define allowed edits and validation, and retain a canonical
    machine-readable result from a clean align-llm commit.
@@ -100,8 +107,9 @@ python3 -m json.tool <each smoke-v1 task, manifest, and expected summary>
 
 - Use `make check`, `make run`, `make fmt`, and `make build`; do not invent an Align manifest or
   package workflow.
-- `make ci` requires the sibling checkout to match `.align-revision`. Change that pin deliberately
-  and re-run the full gate when adopting a newer Align compiler.
+- `make ci` requires a clean sibling checkout at `.align-revision`, builds its release compiler,
+  and forces all project gates to use that exact executable. Change the pin deliberately and rerun
+  the full gate when adopting a newer Align compiler.
 - A captured process's stdout and stderr are region-bound views. Clone them before returning owned
   diagnostics, as `src/verify.align` does.
 - A Move struct with owned `string` fields cannot currently be a `Result` Ok payload. The current

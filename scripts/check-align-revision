@@ -6,7 +6,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 align_repo="${ALIGN_REPO:-${project_root}/../align}"
 expected="$(tr -d '[:space:]' < "${project_root}/.align-revision")"
 
-if [[ ! -d "${align_repo}/.git" ]]; then
+if ! git -C "${align_repo}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   printf '%s\n' "pinned Align checkout was not found at ${align_repo}" >&2
   exit 1
 fi
@@ -16,6 +16,13 @@ if [[ "${actual}" != "${expected}" ]]; then
   printf '%s\n' "Align revision mismatch" >&2
   printf '%s\n' "expected: ${expected}" >&2
   printf '%s\n' "actual:   ${actual}" >&2
+  exit 1
+fi
+
+dirty="$(git -C "${align_repo}" status --porcelain)"
+if [[ -n "${dirty}" ]]; then
+  printf '%s\n' "pinned Align checkout is dirty; canonical CI requires an exact source tree" >&2
+  printf '%s\n' "${dirty}" >&2
   exit 1
 fi
 

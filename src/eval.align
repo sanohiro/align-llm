@@ -36,6 +36,8 @@ TaskResult {
   expected_code: i64,
   actual_code: i64,
   duration_ns: i64,
+  stdout: str,
+  stderr: str,
 }
 
 SuiteResult {
@@ -57,6 +59,8 @@ fn run_one(task_id: str, cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64, 
   captured := verify.run(cmd, argv, cwd, timeout_ns)
   elapsed := time.instant() - started
   verdict := score(captured.status, captured.code, expected_code)
+  stdout: str := captured.stdout
+  stderr: str := captured.stderr
   result := TaskResult {
     schema_version: 1,
     task_id: task_id,
@@ -64,6 +68,8 @@ fn run_one(task_id: str, cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64, 
     expected_code: expected_code,
     actual_code: captured.code,
     duration_ns: elapsed,
+    stdout: stdout,
+    stderr: stderr,
   }
   print(json.encode(result))
   return verdict
@@ -87,13 +93,17 @@ pub fn run_suite(path: str) -> Result<(), Error> {
     }
     task_data := fs.read_file(corpus.task_files[i])?
     task: TaskSpec := json.decode(task_data)?
+    // Exercise both halves of Request 3 as a real client. The second decoded record is the one
+    // actually executed, so a scalar-array encode regression cannot silently retain the old argv.
+    encoded := json.encode(task)
+    roundtrip: TaskSpec := json.decode(encoded)?
     verdict := run_one(
-      task.id,
-      task.cmd,
-      task.argv,
-      task.cwd,
-      task.timeout_ns,
-      task.expected_code,
+      roundtrip.id,
+      roundtrip.cmd,
+      roundtrip.argv,
+      roundtrip.cwd,
+      roundtrip.timeout_ns,
+      roundtrip.expected_code,
     )
     match verdict {
       Pass => {

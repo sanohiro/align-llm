@@ -232,8 +232,10 @@ project units (`project`, `verify`, `eval`, `main`) pass `make check` per-unit a
 - **Timeout gate — PASS (runtime).** `sleep 10` under `c.timeout_ns(100_000_000)` returns
   `Err(Error.Timeout)` — the `Timeout` match arm fires (distinct from `Ok`/nonzero-exit/`Code`) and the
   process returns in ~0.4 s, not 10 s, so the child is killed at the deadline rather than waited out.
-- **`cwd` / `env` / `env_clear`** compile and are wired through `run_captured`; the `str` views are
-  region-bound to `out` and consumed at the call site (printed while the handle is live) as designed.
+- **`cwd` and `timeout_ns`** are wired through `run_captured`; the `str` views are region-bound to
+  `out` and consumed at the call site (printed while the handle is live) as designed. The shipped
+  `env` / `env_clear` setters are available for the future provider-command client, but this wrapper
+  does not expose them and makes no claim to test them.
 
 No non-UTF-8 tool output encountered yet, so the deferred bytes tier is not needed today; will flag if
 that changes. **Request 1 is closed from align-llm's side** — the verify/repair loop can build on it.
@@ -265,14 +267,14 @@ Two smaller Align idioms worth recording (not requests): an owned `string` does 
 ## Request 2 — `std.http` / `std.net`: I/O timeouts
 
 ```text
-Status: CLOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
-Blocked gate or slice: none at filing; first consumer was the provider HTTP client
+Blocked gate or slice: provider HTTP client acceptance gate (not reached yet)
 Independent work that may continue: C0 evaluation and provider-independent loop work
 Resume condition: plaintext and TLS timeout gates pass in align-llm
 Align commit or pull request: #633 98b1712, #634 1b21cdb
-align-llm verification: shipped timeout surface recorded; make ci PASS
+align-llm verification: pending plaintext and TLS timeout fixtures in the provider HTTP client
 ```
 
 ### Motivation
@@ -345,6 +347,13 @@ path too, same fd). `ns == 0` preserves today's blocking behavior exactly.
 **Gate.** A peer that accepts then never responds returns `Err(Timeout)` within the bound; a
 black-holed (never-accepting) address returns `Err(Timeout)` within the bound.
 
+### align-llm verification status
+
+The Align capability is merged and pinned, but align-llm does not yet have the provider HTTP client
+that consumes it. Therefore this request remains `ALIGN_MERGED`, is non-blocking for the current C0
+and provider-independent loop work, and must not advance to `ALIGN_LLM_VERIFIED` or `CLOSED` until
+`make ci` runs both the plaintext and TLS timeout fixtures named in the original acceptance gate.
+
 ---
 
 ## Request 3 — `core.json`: decode/encode scalar-array struct fields (`array<str>`, `array<i64>`, …)
@@ -357,7 +366,7 @@ Blocked gate or slice: none at filing; would block the C0 file loader and provid
 Independent work that may continue: code-defined C0 tasks and verify/repair loop work
 Resume condition: declared task records with argv: array<str> decode and run in align-llm
 Align commit or pull request: #635 a32a025
-align-llm verification: smoke-v1 file-backed corpus decodes argv and passes make ci
+align-llm verification: smoke-v1 decodes, re-encodes, decodes again, executes argv, and passes make ci
 ```
 
 ### Motivation
@@ -418,12 +427,10 @@ A record with an `array<str>` field (and, ideally, `array<i64>`/`array<f64>`) ro
 - `../align/examples/json_nested.align` — nested-struct decode precedent; `array<Choice>` noted there
   as "Slice C" (array-of-struct), the sibling of this request.
 
-### align-llm current state
+### align-llm state at filing
 
-`align-llm` does **not** work around this. The C0 harness (`src/eval.align`) ships with **code-defined
-tasks** for now (argv as an in-source `array<str>` literal, which is fine — the restriction is only on
-`json.decode`), and the JSON `eval/tasks/*.json` loader waits on this capability, then exercises it as
-a real client.
+At filing, `align-llm` did **not** work around this. The C0 harness used code-defined tasks while the
+JSON `eval/tasks/*.json` loader waited for the capability.
 
 ### Align response (2026-07-25 — COMPLETE, shipped #635)
 
@@ -451,6 +458,13 @@ a top-level array result would have to carry that region itself — the scalar t
 deliberately `Static`/returnable, so `array<str>` at top level is a separate region-carrying slice).
 
 Spec: `../align/docs/impl/core-design/json.md` (the "T1b + `array<str>`" section).
+
+### align-llm verification (2026-07-25 — CLOSED)
+
+`src/eval.align` now decodes every file-backed `TaskSpec`, re-encodes it, decodes that result again,
+and executes the second record's `argv`. `make ci` runs the smoke-v1 corpus through this path. This
+directly exercises the original decode-and-encode round-trip gate before the decoded command can
+count as passing.
 
 ---
 
