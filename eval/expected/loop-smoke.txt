@@ -1,0 +1,6 @@
+loop: already-passing
+PASSED
+1
+loop: persistent-failure
+GAVE_UP
+1

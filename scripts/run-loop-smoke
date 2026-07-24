@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+binary="${ALIGN_LLM_BIN:-${project_root}/main}"
+expected="${project_root}/eval/expected/loop-smoke.txt"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+if [[ ! -x "${binary}" ]]; then
+  make -C "${project_root}" build
+fi
+
+cd "${project_root}"
+"${binary}" --loop | tee "${output_file}"
+
+if ! cmp -s "${expected}" "${output_file}"; then
+  printf '%s\n' "loop smoke output differs from ${expected}" >&2
+  diff -u "${expected}" "${output_file}" >&2 || true
+  exit 1
+fi

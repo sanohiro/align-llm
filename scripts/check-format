@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+alignc="${project_root}/scripts/alignc"
+status=0
+
+while IFS= read -r -d '' file; do
+  if ! "${alignc}" fmt "${file}" | cmp -s - "${file}"; then
+    printf '%s\n' "Align source is not formatted: ${file}" >&2
+    status=1
+  fi
+done < <(find "${project_root}/src" -name '*.align' -type f -print0)
+
+exit "${status}"

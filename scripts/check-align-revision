@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+align_repo="${ALIGN_REPO:-${project_root}/../align}"
+expected="$(tr -d '[:space:]' < "${project_root}/.align-revision")"
+
+if [[ ! -d "${align_repo}/.git" ]]; then
+  printf '%s\n' "pinned Align checkout was not found at ${align_repo}" >&2
+  exit 1
+fi
+
+actual="$(git -C "${align_repo}" rev-parse HEAD)"
+if [[ "${actual}" != "${expected}" ]]; then
+  printf '%s\n' "Align revision mismatch" >&2
+  printf '%s\n' "expected: ${expected}" >&2
+  printf '%s\n' "actual:   ${actual}" >&2
+  exit 1
+fi
+
+printf '%s\n' "Align revision: ${actual}"

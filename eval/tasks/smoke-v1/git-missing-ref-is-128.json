@@ -1,0 +1,1 @@
+{"id":"git-missing-ref-is-128","cmd":"git","argv":["git","rev-parse","--verify","refs/heads/__align_llm_absent__"],"cwd":".","timeout_ns":30000000000,"expected_code":128}
