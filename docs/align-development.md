@@ -61,7 +61,13 @@ When the engine needs a feature that does not compile in the current Align check
 
 1. Confirm the feature is part of the settled language design.
 2. Reduce the need to the smallest compiler or standard-library capability.
-3. Implement and test that capability in `../align` as a separate, reviewable change.
-4. Update this repository only after the Align change is available at a named commit or release.
+3. Register it in `docs/align-requests.md` with the lifecycle and blocking metadata required by
+   `CLAUDE.md`.
+4. If it is blocking, pause only the dependent gate or slice and record the resume condition in
+   `HANDOFF.md`. Continue valid independent work without assuming the proposed surface.
+5. Implement and test that capability in `../align` as a separate, reviewable change.
+6. Update this repository only after the Align change is available at a named commit or release.
+7. Rebuild the pinned Align release compiler, update `.align-revision`, run `make ci`, and record the
+   real-client verification before closing the request.
 
 This separation keeps engine work reproducible and prevents application code from becoming an accidental language specification.

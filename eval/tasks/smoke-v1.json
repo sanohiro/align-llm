@@ -1,0 +1,1 @@
+{"schema_version":1,"corpus_id":"smoke-v1","task_files":["eval/tasks/smoke-v1/git-head-resolves.json","eval/tasks/smoke-v1/git-missing-ref-is-128.json"]}

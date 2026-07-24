@@ -1,0 +1,1 @@
+{"id":"git-head-resolves","cmd":"git","argv":["git","rev-parse","--verify","HEAD"],"cwd":".","timeout_ns":30000000000,"expected_code":0}
