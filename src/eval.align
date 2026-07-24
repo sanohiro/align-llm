@@ -1,0 +1,121 @@
+module eval
+
+import core.json
+import std.fs
+import std.time
+import verify
+
+// Deterministic scoring for the fixed coding-eval set (roadmap C0). The corpus is a
+// declared JSON record checked into eval/tasks/. Each task runs one captured,
+// timeout-bounded validation command and is scored only by observable exit status.
+
+pub Verdict { Pass, Fail, Timeout, RunError }
+
+pub fn verdict_label(v: Verdict) -> str = match v {
+  Pass => "PASS",
+  Fail => "FAIL",
+  Timeout => "TIMEOUT",
+  RunError => "ERROR",
+}
+
+TaskSpec {
+  id: str,
+  cmd: str,
+  argv: array<str>,
+  cwd: str,
+  timeout_ns: i64,
+  expected_code: i64,
+}
+
+TaskCorpus { schema_version: i64, corpus_id: str, task_files: array<str> }
+
+TaskResult {
+  schema_version: i64,
+  task_id: str,
+  verdict: str,
+  expected_code: i64,
+  actual_code: i64,
+  duration_ns: i64,
+}
+
+SuiteResult {
+  schema_version: i64,
+  corpus_id: str,
+  task_count: i64,
+  pass_count: i64,
+  fail_count: i64,
+}
+
+fn score(status: verify.RunStatus, code: i64, expected: i64) -> Verdict = match status {
+  Completed => if code == expected { Verdict.Pass } else { Verdict.Fail },
+  TimedOut => Verdict.Timeout,
+  SpawnFailed => Verdict.RunError,
+}
+
+fn run_one(task_id: str, cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64, expected_code: i64) -> Verdict {
+  started := time.instant()
+  captured := verify.run(cmd, argv, cwd, timeout_ns)
+  elapsed := time.instant() - started
+  verdict := score(captured.status, captured.code, expected_code)
+  result := TaskResult {
+    schema_version: 1,
+    task_id: task_id,
+    verdict: verdict_label(verdict),
+    expected_code: expected_code,
+    actual_code: captured.code,
+    duration_ns: elapsed,
+  }
+  print(json.encode(result))
+  return verdict
+}
+
+// Load and score a versioned corpus. Decode and use stay in one scope because TaskCorpus owns
+// dynamic arrays and Align intentionally does not return Move structs as Result Ok payloads yet.
+// The final JSON line is stable score data; per-task duration is measurement metadata.
+pub fn run_suite(path: str) -> Result<(), Error> {
+  data := fs.read_file(path)?
+  corpus: TaskCorpus := json.decode(data)?
+  if corpus.schema_version != 1 {
+    return Err(Error.Invalid)
+  }
+
+  mut i := 0
+  mut passed := 0
+  loop {
+    if i >= corpus.task_files.len() {
+      break
+    }
+    task_data := fs.read_file(corpus.task_files[i])?
+    task: TaskSpec := json.decode(task_data)?
+    verdict := run_one(
+      task.id,
+      task.cmd,
+      task.argv,
+      task.cwd,
+      task.timeout_ns,
+      task.expected_code,
+    )
+    match verdict {
+      Pass => {
+        passed = passed + 1
+      },
+      _ => {},
+    }
+    i = i + 1
+  }
+
+  total := corpus.task_files.len()
+  failed := total - passed
+  summary := SuiteResult {
+    schema_version: 1,
+    corpus_id: corpus.corpus_id,
+    task_count: total,
+    pass_count: passed,
+    fail_count: failed,
+  }
+  print(json.encode(summary))
+  if failed != 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}

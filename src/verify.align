@@ -1,0 +1,67 @@
+module verify
+
+import std.process
+
+// align-llm's foundational verification primitive: run a build/test/lint command,
+// capture its stdout/stderr as strings, and read the exit code — the core of the
+// verify/repair loop. Backed by std.process `process.command` (Align Request 1,
+// Slice 4 captured output + cwd, Slice 5 timeout_ns + Error.Timeout).
+//
+// The captured output lives in the `run_output` Move handle, whose `.stdout()` /
+// `.stderr()` views are region-bound to it, so the run is consumed here at the call
+// site (printed while the handle is alive) rather than returned to the caller.
+pub fn run_captured(cmd: str, argv: array<str>, cwd: str, timeout_ns: i64) -> Result<i64, Error> {
+  c := process.command(cmd, argv)
+  c.cwd(cwd)
+  c.timeout_ns(timeout_ns)
+  match c.run() {
+    Ok(out) => {
+      print("stdout:")
+      print(out.stdout())
+      print("stderr:")
+      print(out.stderr())
+      return Ok(out.code())
+    }
+    Err(e) => {
+      // A hung command is distinguishable from a nonzero exit or a transport error.
+      match e {
+        Timeout => print("command timed out"),
+        _ => print("command failed"),
+      }
+      return Err(e)
+    }
+  }
+}
+
+// A run's outcome as data, so a caller can branch on how the child ended without a `Result`.
+pub RunStatus { Completed, TimedOut, SpawnFailed }
+
+// A fully-owned snapshot of a captured run, handed back to the caller — unlike `run_captured`,
+// which prints and drops the views at the call site. A repair loop needs the diagnostics as owned
+// values to feed a provider, so `stdout`/`stderr` are `.clone()`d off the region-bound `run_output`
+// views into owned `string`s. The outcome is folded into `status` rather than returned as a
+// `Result`: a Move struct that owns heap `string` fields cannot yet be a `Result` Ok payload in
+// Align, while a bare Move-struct return is supported — so the failure categories live in the
+// struct. See docs/align-requests.md ("Result Ok payload cannot be a Move struct").
+pub Captured { status: RunStatus, code: i64, stdout: string, stderr: string }
+
+// Run a command captured and timeout-bounded, returning the owned outcome. Never fails outward:
+// a spawn/transport error and a timeout are reported as `status` (with an empty output), so the
+// caller has one uniform value to inspect.
+pub fn run(cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64) -> Captured {
+  c := process.command(cmd, argv.to_array())
+  c.cwd(cwd)
+  c.timeout_ns(timeout_ns)
+  return match c.run() {
+    Ok(out) => Captured {
+      status: RunStatus.Completed,
+      code: out.code(),
+      stdout: out.stdout().clone(),
+      stderr: out.stderr().clone(),
+    },
+    Err(e) => match e {
+      Timeout => Captured { status: RunStatus.TimedOut, code: -1, stdout: "".clone(), stderr: "".clone() },
+      _ => Captured { status: RunStatus.SpawnFailed, code: -1, stdout: "".clone(), stderr: "".clone() },
+    },
+  }
+}

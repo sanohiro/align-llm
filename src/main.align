@@ -1,12 +1,46 @@
 module main
 
 import project
+import verify
+import eval
+import repair
 
 // Keep the bootstrap entry point dependency-free while Align's package layer is still evolving.
 fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
-  print("Usage: main [--version | --status]")
+  print("Usage: main [--version | --status | --selfcheck | --eval [corpus] | --loop]")
+}
+
+// A repair provider that declines to fix anything (always gives up). It lets the loop's control
+// exits be demonstrated without a model: an already-passing check needs no provider, and a
+// persistently failing check ends in GAVE_UP on the first iteration. A real provider (LLM + patch
+// apply) is a drop-in of the same `fn(str) -> bool` shape.
+fn decline_repair(diagnostics: str) -> bool {
+  return false
+}
+
+// Exercise the provider-independent coding loop (repair.drive) as a real client against git, with
+// the declining provider. Prints each scenario's outcome label and iteration count.
+fn loop_demo() {
+  r1 := repair.drive(decline_repair, "git", ["git", "rev-parse", "--verify", "HEAD"].to_array(), ".", 30_000_000_000, 0, 3)
+  print("loop: already-passing")
+  print(repair.outcome_label(r1.outcome))
+  print(r1.iterations)
+  r2 := repair.drive(decline_repair, "git", ["git", "rev-parse", "--verify", "refs/heads/__align_llm_absent__"].to_array(), ".", 30_000_000_000, 0, 3)
+  print("loop: persistent-failure")
+  print(repair.outcome_label(r2.outcome))
+  print(r2.iterations)
+}
+
+// Exercise the newly shipped std.process captured-run surface (Align Request 1,
+// Slice 4/5) as a real client: run `git status --porcelain` in the repo root,
+// capturing its output, with a 30s timeout that surfaces a hang as Error.Timeout.
+fn self_check() -> Result<(), Error> {
+  code := verify.run_captured("git", ["git", "status", "--porcelain"].to_array(), ".", 30_000_000_000)?
+  print("exit code:")
+  print(code)
+  return Ok(())
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
@@ -19,7 +53,20 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       if args[1] == "--status" {
         print(project.status())
       } else {
-        print_help()
+        if args[1] == "--selfcheck" {
+          self_check()?
+        } else {
+          if args[1] == "--eval" {
+            corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
+            eval.run_suite(corpus)?
+          } else {
+            if args[1] == "--loop" {
+              loop_demo()
+            } else {
+              print_help()
+            }
+          }
+        }
       }
     }
   }

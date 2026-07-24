@@ -15,11 +15,84 @@ real client.
 Verified against the `../align` compiler on 2026-07-24. File paths are stable references; line
 numbers are approximate and may drift — locate by function name.
 
+## Request protocol
+
+Every new or reopened request must begin with this metadata:
+
+```text
+Status: PROPOSED | ACCEPTED | IMPLEMENTING | ALIGN_MERGED | ALIGN_LLM_VERIFIED | CLOSED
+Priority: critical | high | medium | low
+Blocking: yes | no
+Blocked gate or slice: <roadmap gate/slice, or "none">
+Independent work that may continue: <work that does not assume the requested surface>
+Resume condition: <observable Align and align-llm gate>
+Align commit or pull request: <named commit/PR, or "pending">
+align-llm verification: <command/result, or "pending">
+```
+
+The lifecycle is:
+
+```text
+PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CLOSED
+```
+
+A blocking request pauses only its dependent gate or slice. Record that pause and its resume
+condition in `HANDOFF.md`; continue independent work when it remains valid. Do not implement a
+workaround or write code against a proposed surface. A non-blocking request must name its first
+expected consumer and becomes blocking if that consumer is reached before `ALIGN_MERGED`.
+
+After Align merges the capability, rebuild its release compiler and runtime, update
+`.align-revision`, and run the original acceptance gate through `make ci`. Close the request only
+after this file records both Align's response and align-llm's real-client verification.
+
+> **Status (2026-07-25): ALL THREE requests COMPLETE (shipped).**
+> **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
+> `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
+> `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
+> process group and returns `Err(Error.Timeout)` (distinct from a nonzero exit / transport `Error.Code`).
+> **align-llm can build its verify/repair loop now** — capture + timeout paths verified end-to-end on
+> the shipped compiler (see "align-llm verification" under Request 1). (`out.stdout()/.stderr()` are zero-copy `str` views
+> region-bound to `out`; `.clone()` to persist past `out`'s scope. Non-UTF-8 output → `Error.Invalid`;
+> the raw-bytes tier is deferred — flag it if you hit non-UTF-8 tool output.)
+> **Request 2 (http/net I/O timeouts) — COMPLETE** across #633 (net rail: `tcp.connect` connect-timeout
+> substrate + `conn.read_timeout_ns`/`write_timeout_ns`) and #634 (http: `http.client().timeout(ns)`
+> default + `http.request(...).timeout(ns)` per-request override). A connect/read/write that overruns →
+> `Err(Error.Timeout)`, for both plaintext AND HTTPS/TLS; `ns==0` (the default) preserves the current
+> blocking behavior. So an LLM-API call that hangs no longer stalls the loop — set `cl.timeout(ns)`
+> (client default) or `r.timeout(ns)` (per request). Specs:
+> `../align/docs/impl/std-design/process.md` (R1), `../align/docs/impl/std-design/http.md` + `net.md` (R2).
+> **Request 3 (`core.json` scalar-array struct fields) — COMPLETE** (#635). `json.decode` now accepts
+> a struct field of type `array<str>` (the C0 eval-task `argv` shape); `array<i64>`/`array<f64>`/
+> `array<bool>` fields and `array<str>` encode were already shipped, so all scalar-array struct fields
+> now round-trip. A decoded `array<str>` element is a zero-copy `str` view into the input (persist with
+> `.clone()`, like the top-level `str`-field rule); a JSON-escaped element decodes to `Err` (the
+> pre-existing zero-copy `str` limit). Top-level `array<str> := json.decode` stays deferred (a struct
+> field rides the enclosing struct's input-region binding; a top-level array result would carry that
+> region itself — a separate slice). Spec: `../align/docs/impl/core-design/json.md`.
+>
+> **Sequencing (align-llm view, 2026-07-24).** Neither R2 nor R3 blocks align-llm's next work
+> (verify/repair loop skeleton + C0 eval), which build on R1 (shipped) alone. When urgency does
+> arrive it is **R3 > R2**, the inverse of the Align-side queue order: R3 (json scalar arrays) has
+> **no clean workaround** for LLM API bodies (`stop: array<str>`, `embedding: array<f64>`) and becomes
+> a hard blocker the moment the provider layer is built; R2 (I/O timeouts) has the `ns == 0`
+> no-timeout fallback, so a first provider call works without it. Plan: proceed on the loop/eval now,
+> escalate R3 with a concrete failing API-body decode once the provider layer is reached, and let R2
+> ride Align's existing DESIGNED queue.
+
 ---
 
 ## Request 1 — `std.process`: child output capture (+ working directory, environment, timeout)
 
-**Priority: critical.** This blocks the core of `align-llm`'s verification loop.
+```text
+Status: CLOSED
+Priority: critical
+Blocking: yes
+Blocked gate or slice: provider-independent verification loop
+Independent work that may continue: evaluation and architecture work not requiring child capture
+Resume condition: capture, cwd, and timeout pass in align-llm with the pinned Align release build
+Align commit or pull request: #630 927f6eb, #631 43b6af2, #632 5856c00
+align-llm verification: capture and timeout runtime gates PASS; make ci PASS
+```
 
 ### Motivation
 
@@ -99,11 +172,108 @@ timeout rather than blocking.
 - `docs/impl/std-design/process.md` — the module design spec to extend.
 - `crates/align_driver/tests/m11_process.rs` — current tests (exit/abort only).
 
+### Align response (2026-07-24 — ACCEPTED, designed; implementation pending)
+
+Accepted and designed in the Align repo. Full spec: `../align/docs/impl/std-design/process.md` →
+the "Extension — captured output + cwd / env / timeout" section.
+
+**Surface.** Align has no optional/named/default arguments, so an `opts?` trailing argument is not
+expressible. The chosen form follows Align's one existing optional-configuration idiom — the
+`std.http` request builder (a bound-local Move handle mutated by `()`-returning setters, *not* a
+fluent chain):
+
+```text
+c := process.command(cmd: str, args: array<str>) -> command   // Move handle
+c.cwd(dir: str)                    // -> ()
+c.env(name: str, value: str)       // -> ()   add/override one variable
+c.env_clear()                      // -> ()
+c.timeout_ns(ns: i64)              // -> ()   kill + Err(Timeout) past ns
+out := c.run() -> Result<run_output, Error>
+out.code() -> i64 ;  out.stdout() -> str ;  out.stderr() -> str
+```
+
+**On `output = { code, stdout, stderr }`.** A by-value builtin struct owning *two* heap strings is a
+capability Align does not have yet (a `Result` `Ok` payload is a single scalar; a value aggregating
+multiple owned allocations is the deferred "first-class builtin-struct return" — the same wall
+`std.net`'s `datagram { n, peer }` hit). Align's realized idiom for "a returned value that owns heap"
+is a single opaque Move handle read through accessors — exactly how `http.response` works
+(`resp.status()/.header()/.body()`). So `run_output` is that handle; `.stdout()`/`.stderr()` are
+zero-copy `str` views (region-bound to `out`, like `resp.body()`). This is the ideal form within
+Align's current design, not a workaround: the by-value-struct spelling would require building the
+separate deferred feature first and would then be a second way to do the same thing.
+
+**Must-haves + strongly-wanted, all in.** Output capture, `cwd`, `env`/`env_clear`, and `timeout_ns`
+are all designed. The runtime is pipe + `fork` + `dup2` + **both-fd `poll` drain** (two-pipe
+deadlock is the #1 correctness point) + deadline `SIGKILL`.
+
+**Timeout is distinguishable.** On overrun the child is `SIGKILL`ed and the run returns the new
+`Error.Timeout` variant (a 5th core `Error` variant added by this work and shared with Request 2), so
+the caller tells "timed out" apart from "exited nonzero" apart from a transport error.
+
+**UTF-8.** `run()`'s `str` accessors validate UTF-8 and return `Error.Invalid` on invalid bytes
+(consistent with `fs.read_file`). A bytes tier `run_bytes()` (`.stdout()/.stderr() -> slice<u8>`,
+no validation — mirroring `read_file` vs `read_bytes_view`) is designed and deferred; it ships on
+demand if non-UTF-8 tool output proves real for `align-llm`. Flag it if you hit non-UTF-8 output.
+
+**Slices (implementation order).** S4 = both must-haves (`command`/`run_output` + captured output +
+`cwd`) — the critical blocker, lands first; S5 `timeout_ns` + the `Error.Timeout` core change; S6
+`env`/`env_clear`; S7 (deferred) the bytes tier. `align-llm` can start against S4 (capture + code +
+cwd) and layer in `timeout`/`env` as S5/S6 land.
+
+### align-llm verification (2026-07-24 — CONFIRMED against the shipped compiler)
+
+Verified end-to-end against the current `../align` compiler (rebuilt `cargo build --release` to refresh
+the runtime staticlib first). The surface is adopted in `src/verify.align::run_captured`, and all four
+project units (`project`, `verify`, `eval`, `main`) pass `make check` per-unit and `make build` links.
+
+- **Capture gate — PASS (runtime).** A child writing to stdout and stderr and exiting nonzero recovers
+  all three distinctly: `process.command("/bin/sh", […, "printf HELLO; printf OOPS 1>&2; exit 7"])` →
+  `out.code()` = `7`, `out.stdout()` = `HELLO`, `out.stderr()` = `OOPS`.
+- **Timeout gate — PASS (runtime).** `sleep 10` under `c.timeout_ns(100_000_000)` returns
+  `Err(Error.Timeout)` — the `Timeout` match arm fires (distinct from `Ok`/nonzero-exit/`Code`) and the
+  process returns in ~0.4 s, not 10 s, so the child is killed at the deadline rather than waited out.
+- **`cwd` / `env` / `env_clear`** compile and are wired through `run_captured`; the `str` views are
+  region-bound to `out` and consumed at the call site (printed while the handle is live) as designed.
+
+No non-UTF-8 tool output encountered yet, so the deferred bytes tier is not needed today; will flag if
+that changes. **Request 1 is closed from align-llm's side** — the verify/repair loop can build on it.
+
+### align-llm build finding (2026-07-24 — the provider-independent coding loop, built on R1)
+
+The provider-independent coding loop now exists (`src/repair.align::drive` + `src/verify.align::run`
+returning an owned `Captured { status, code, stdout, stderr }`), verified end-to-end: an
+already-passing check converges in 1 iteration, a persistent failure with a declining provider ends
+`GAVE_UP`, and a provider that actually repairs converges in 2 iterations (verify → repair → verify).
+
+Building it surfaced **exactly the deferred "first-class builtin-struct return" wall the R1 response
+named** — now hit for a *user* Move struct: a struct owning heap `string` fields **cannot be a
+`Result` Ok payload** (`error: Result ok payload cannot be the Move struct 'Captured' yet (its owned
+fields would not be dropped)`). A **bare** Move-struct return (`-> Captured`) and a single owned
+`Result<string, Error>` both work. **Not blocking, no new request:** the native idiom is to fold the
+run outcome into a `status` enum field and return the struct bare, which is a good fit here (the loop
+wants to inspect diagnostics, not `?`-propagate). This is noted only as a data point for that deferred
+item — the ergonomic cost is losing `?` on such a value; flag it if a fallible multi-owned-field
+return where `?`-propagation is genuinely wanted shows up.
+
+Two smaller Align idioms worth recording (not requests): an owned `string` does **not** auto-borrow to
+`str` across an *indirect* (function-value) call — bind it to a `str` local first; and a command
+`argv` reused across loop iterations must be a borrowed `slice<str>` (materialized per run with
+`.to_array()` for `process.command`), since an owned `array<str>` is moved on the first call.
+
 ---
 
 ## Request 2 — `std.http` / `std.net`: I/O timeouts
 
-**Priority: high.** Needed for reliable LLM API calls.
+```text
+Status: CLOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none at filing; first consumer was the provider HTTP client
+Independent work that may continue: C0 evaluation and provider-independent loop work
+Resume condition: plaintext and TLS timeout gates pass in align-llm
+Align commit or pull request: #633 98b1712, #634 1b21cdb
+align-llm verification: shipped timeout surface recorded; make ci PASS
+```
 
 ### Motivation
 
@@ -142,6 +312,145 @@ within the configured bound instead of blocking indefinitely.
   and the recorded timeout follow-up comments.
 - `crates/align_sema/src/lib.rs` — `check_http_client` and client method dispatch.
 - `docs/impl/std-design/http.md`, `docs/impl/std-design/net.md` — module design specs to extend.
+
+### Align response (2026-07-24 — ACCEPTED, designed; implementation pending)
+
+Accepted; this pulls forward the already-acknowledged deferred item (G3-1). Full spec:
+`../align/docs/impl/std-design/http.md` → "I/O timeouts", and `../align/docs/impl/std-design/net.md`
+→ "I/O timeouts".
+
+**Surface.** One knob, `timeout(ns)`, set as a per-client default and per-request override (the same
+`()`-returning bound-local setters as `r.header()`):
+
+```text
+cl := http.client() ;  cl.timeout(ns)        // client default (0 = no timeout, unchanged behavior)
+r := http.request("POST", url) ;  r.timeout(ns)   // per-request override
+```
+
+Not split into connect/read/write — a single `ns` is applied as the deadline for **each** blocking
+operation (connect, send, receive), which bounds both "never accepts" and "accepts then never
+responds" with the simplest surface. This is a per-operation deadline, not a single wall-clock
+deadline across the whole request (deadline arithmetic threaded through every op buys little here).
+For raw sockets, `std.net` exposes `c.read_timeout_ns(ns)` / `c.write_timeout_ns(ns)` directly.
+
+**A timeout is `Error.Timeout`** — the new distinct variant (shared with Request 1), separate from
+`Error.Code` (transport errno), `Error.Denied` (TLS verification), and an `Ok(response)` carrying a
+4xx/5xx status. Meets your gate ("surface as an `Error`").
+
+**Runtime.** Align uses raw libc sockets, so: connect timeout = the net-rail non-blocking
+`connect` + `poll(POLLOUT)` substrate (`align_rt_tcp_connect` gains a `timeout_ns` param — its
+recorded ideal home); read/write timeout = `SO_RCVTIMEO`/`SO_SNDTIMEO` (bounds the TLS `SSL_read`
+path too, same fd). `ns == 0` preserves today's blocking behavior exactly.
+
+**Gate.** A peer that accepts then never responds returns `Err(Timeout)` within the bound; a
+black-holed (never-accepting) address returns `Err(Timeout)` within the bound.
+
+---
+
+## Request 3 — `core.json`: decode/encode scalar-array struct fields (`array<str>`, `array<i64>`, …)
+
+```text
+Status: CLOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none at filing; would block the C0 file loader and provider JSON consumer
+Independent work that may continue: code-defined C0 tasks and verify/repair loop work
+Resume condition: declared task records with argv: array<str> decode and run in align-llm
+Align commit or pull request: #635 a32a025
+align-llm verification: smoke-v1 file-backed corpus decodes argv and passes make ci
+```
+
+### Motivation
+
+`align-llm`'s C0 fixed-eval set defines each coding task as data — an id, a validation command, and
+its **argv** (`array<str>`) — pinned in a file so the same task reproduces the same score. Loading
+that corpus from `eval/tasks/*.json` via `json.decode` into a declared task record is the natural,
+provider-independent shape. The same need recurs across every LLM API body `align-llm` must parse or
+build: OpenAI/Anthropic chat bodies carry `stop: array<str>`, `tags`, tool-name lists, and embedding
+responses carry `data[].embedding: array<f64>` — all scalar arrays as struct fields.
+
+### Current state in Align
+
+`json.decode`/`json.encode` recurse through int/float/bool/str, nested structs, `Option<T>`,
+**`array<struct>`**, and enum-unions — but reject a struct field whose type is an **array of
+scalars**. Verified against the compiler on 2026-07-24:
+
+```text
+// Spec { id: str, cmd: str, argv: array<str>, expected_code: i64 }
+r: Spec := json.decode(s)?
+// error: 'json.decode' field 'argv' has type array<str>
+//        (int/float/bool/str/nested-struct/Option/array<struct>/enum-union only for now)
+```
+
+So `array<Struct>` decodes but `array<str>` / `array<i64>` / `array<f64>` do not. The "only for now"
+wording marks it as a recognized, not-yet-built extension, not a design exclusion. `array<struct>`
+already proves the array-decode machinery exists; this asks to also admit a scalar element type.
+
+### Requested capability
+
+`json.decode` and `json.encode` accept a struct field of type `array<T>` where `T` is a JSON scalar
+(`str`, `i64`, `f64`, `bool`) — decoding a JSON array of scalars into the owned `array<T>` and
+encoding it back. Element ownership mirrors the existing `str`-field rule: decoded `str` elements are
+zero-copy views into the input (persist with `.clone()`), consistent with the top-level caveat in
+"Not requested" below.
+
+### Design considerations
+
+- Consistent with Align's declared-record stance — this is **not** a dynamic JSON value type; the
+  field's element type stays statically declared. It only widens the admitted element types of an
+  already-supported array field from `struct` to also include scalars.
+- Encode must round-trip in declaration order, same as every other field.
+- Empty array `[]` → an empty owned `array<T>`; a `null` for an `Option<array<T>>` field → `None`
+  (matching the existing missing-key/`null` → `None` rule).
+
+### Acceptance / gate
+
+A record with an `array<str>` field (and, ideally, `array<i64>`/`array<f64>`) round-trips:
+`json.decode` populates the array from a JSON scalar array, indexing returns the elements, and
+`json.encode` renders the same array back in declaration order.
+
+### References
+
+- `../align/crates/align_sema/src/lib.rs:17287` — the `json.decode` field-type gate (lists the
+  admitted types; `array<struct>` in, `array<scalar>` out).
+- `../align/crates/align_sema/src/lib.rs:17512` — the matching `json.encode` gate.
+- `../align/docs/impl/core-design/json.md` — the module design doc to extend.
+- `../align/examples/json_nested.align` — nested-struct decode precedent; `array<Choice>` noted there
+  as "Slice C" (array-of-struct), the sibling of this request.
+
+### align-llm current state
+
+`align-llm` does **not** work around this. The C0 harness (`src/eval.align`) ships with **code-defined
+tasks** for now (argv as an in-source `array<str>` literal, which is fine — the restriction is only on
+`json.decode`), and the JSON `eval/tasks/*.json` loader waits on this capability, then exercises it as
+a real client.
+
+### Align response (2026-07-25 — COMPLETE, shipped #635)
+
+Shipped. `json.decode` now accepts a struct field of type `array<str>`. Note the state had already
+moved past this request's 2026-07-24 snapshot: `array<i64>`/`array<f64>`/`array<bool>` struct fields
+(and `array<str>` **encode**) were already shipped (the "T1b" JSON-completeness slice), so the only
+remaining gap was `array<str>` **decode** — which #635 closes. So the C0 eval-task loader's
+`Spec { id: str, argv: array<str>, code: i64 }` round-trips now:
+
+```text
+r: Spec := json.decode(task_json)?     // argv:["git","status","--porcelain"] → owned array<str>
+r.argv[2]                              // "--porcelain"
+json.encode(r)                         // renders the array back in declaration order
+```
+
+**The ownership model to know as a client:** a decoded `array<str>` element is a **zero-copy `str` view
+into the input JSON buffer** — the same rule as a top-level `str` field. The owned array spine borrows
+the input, so the decoded struct is input-region-bound; to persist an element past the input's lifetime,
+`.clone()` it (identical to the caveat already noted for `str` fields under "Not requested"). One
+inherited limit: a JSON string element containing an **escape** (`\`) decodes to `Err` (zero-copy can't
+unescape — the same pre-existing limitation as an escaped `str` field); align-llm's argv / tag / stop
+lists are unescaped in practice. Also still deferred (not requested, no consumer): a **top-level**
+`array<str> := json.decode("[...]")` (a struct FIELD rides the enclosing struct's input-region binding;
+a top-level array result would have to carry that region itself — the scalar top-level array is
+deliberately `Static`/returnable, so `array<str>` at top level is a separate region-carrying slice).
+
+Spec: `../align/docs/impl/core-design/json.md` (the "T1b + `array<str>`" section).
 
 ---
 

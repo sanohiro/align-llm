@@ -1,0 +1,57 @@
+module repair
+
+import verify
+
+// The provider-independent coding loop (roadmap: "the provider-independent coding loop"). It owns
+// only the control path: verify, and on failure hand the diagnostics to a repair provider, then
+// re-verify — bounded by `max_iters`. It knows nothing about how a repair is produced. The provider
+// is a function value `fn(str) -> bool` that, given the failing diagnostics, attempts a fix in the
+// workspace and returns whether it made a change worth re-verifying (false = it gives up). A real
+// provider will call an LLM and apply the returned patch; any function of the same shape is a
+// drop-in (a scripted fixer, a test double). Backed by `verify.run` (std.process capture, Request 1).
+
+// How the loop ended.
+pub Outcome { Passed, GaveUp, Exhausted, RunFailed }
+
+pub fn outcome_label(o: Outcome) -> str = match o {
+  Passed => "PASSED",
+  GaveUp => "GAVE_UP",
+  Exhausted => "EXHAUSTED",
+  RunFailed => "RUN_FAILED",
+}
+
+// The loop verdict plus the iteration count — the reproducible measurement the roadmap wants
+// (iterations to a passing patch). Scalar fields only, so it returns by value cleanly.
+pub LoopResult { outcome: Outcome, iterations: i64 }
+
+// Drive the verify/repair loop until the command reaches `expected_code`, the provider gives up,
+// the run itself fails (timeout / spawn error), or `max_iters` is hit. `iterations` counts verify
+// attempts, so an immediate pass is 1 and the provider is invoked at most `iterations - 1` times.
+pub fn drive(provider: fn (str) -> bool, cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64, expected_code: i64, max_iters: i64) -> LoopResult {
+  mut iters := 0
+  loop {
+    iters = iters + 1
+    cap := verify.run(cmd, argv, cwd, timeout_ns)
+    match cap.status {
+      Completed => {
+        if cap.code == expected_code {
+          break LoopResult { outcome: Outcome.Passed, iterations: iters }
+        }
+      },
+      _ => {
+        break LoopResult { outcome: Outcome.RunFailed, iterations: iters }
+      },
+    }
+    if iters >= max_iters {
+      break LoopResult { outcome: Outcome.Exhausted, iterations: iters }
+    }
+    // Not passing yet, and attempts remain: ask the provider to repair from the diagnostics.
+    // Bind the owned diagnostics to a `str` local so the `string` -> `str` borrow is explicit in
+    // the type flow before the indirect provider call.
+    diag: str := cap.stderr
+    changed := provider(diag)
+    if !changed {
+      break LoopResult { outcome: Outcome.GaveUp, iterations: iters }
+    }
+  }
+}
