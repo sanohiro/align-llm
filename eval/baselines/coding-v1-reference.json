@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "recorded_at": "2026-07-24T23:50:41+00:00",
-  "align_llm_commit": "e69bed10a7a98e56fef36641e0a59d426a7ba91f",
+  "recorded_at": "2026-07-24T23:57:20+00:00",
+  "align_llm_commit": "cd6f0a270b7f037d6eb1db14927ead7b5fb3e497",
   "align_revision": "db942d2f705546c7d6b8c0334a462548c6446f84",
   "corpus": {
     "id": "coding-v1",
@@ -35,6 +35,10 @@
       {
         "path": "eval/fixtures/python-inclusive-range-v1/repository/tests/test_inclusive_range.py",
         "sha256": "da4177b46f557ebf34febb56645c438d5364ff2e6ebbc41e251bfe690500467a"
+      },
+      {
+        "path": "eval/runners/record-baseline.py",
+        "sha256": "c81ce3429e67deffb9653aa2b859b8418b29cd2105e59019ef90e25b912f56c4"
       },
       {
         "path": "eval/runners/run-coding-task.py",
@@ -98,8 +102,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 174533808,
-          "time_to_passing_patch_ns": 174533808
+          "duration_ns": 174130425,
+          "time_to_passing_patch_ns": 174130425
         }
       ],
       "summary": {
@@ -116,8 +120,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 179581767,
-          "time_to_passing_patch_ns": 179581767
+          "duration_ns": 172835159,
+          "time_to_passing_patch_ns": 172835159
         }
       ],
       "summary": {
@@ -131,9 +135,9 @@
     "task_attempt_count": 2,
     "passing_attempt_count": 2,
     "time_to_passing_patch_ns": {
-      "minimum": 174533808,
-      "median": 177057787,
-      "maximum": 179581767
+      "minimum": 172835159,
+      "median": 173482792,
+      "maximum": 174130425
     }
   }
 }
