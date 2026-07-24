@@ -58,7 +58,7 @@ resuming on another environment.
 ## Latest verification
 
 Verified on 2026-07-25 with pinned Align commit
-`f23b550d93606203cdbeee4f9b97519c08aa4098`:
+`db942d2f705546c7d6b8c0334a462548c6446f84`:
 
 ```text
 make fmt
