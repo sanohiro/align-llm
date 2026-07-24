@@ -23,6 +23,7 @@ format-check:
 
 eval-smoke: build
 	./eval/runners/run-fixed.sh $(EVAL_CORPUS)
+	./scripts/run-eval-invalid-smoke
 
 loop-smoke: build
 	./scripts/run-loop-smoke

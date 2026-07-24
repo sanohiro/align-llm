@@ -78,7 +78,8 @@ make ci
 # PASS — formatter output matches every Align source file
 # PASS — 5 units checked per-unit: project, verify, eval, repair, main
 # PASS — executable built as ./main
-# PASS — smoke-v1: 2 tasks, 2 PASS, 0 failed; summary matches the checked-in oracle
+# PASS — smoke-v1: 2 tasks, 2 PASS, 0 failed; identity and summary oracles match
+# PASS — an empty corpus is rejected
 # PASS — loop spike: pass, give-up, stdout-driven repair/reverify, exhaustion, timeout, and
 # zero-budget paths match their oracle
 

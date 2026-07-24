@@ -17,3 +17,6 @@ Each referenced task file contains one command gate:
 Keep manifest order stable. `argv[0]` is the process name, matching `std.process`. Paths are resolved
 from the repository root; runners must execute from there. Adding a task requires updating the
 matching expected corpus summary.
+
+`empty-invalid.json` is a negative regression fixture: `make eval-smoke` requires the evaluator to
+reject an empty corpus before it can emit a passing summary.

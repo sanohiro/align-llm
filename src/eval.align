@@ -84,6 +84,9 @@ pub fn run_suite(path: str) -> Result<(), Error> {
   if corpus.schema_version != 1 {
     return Err(Error.Invalid)
   }
+  if corpus.task_files.len() == 0 {
+    return Err(Error.Invalid)
+  }
 
   mut i := 0
   mut passed := 0
