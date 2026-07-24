@@ -20,7 +20,7 @@ Align is under active development in the sibling repository at `../align`. Befor
 - `../align/examples/` for compiler-tested examples.
 - `../align/docs/impl/15-pkg-web-plan.md`, `../align/docs/impl/pkg-design/web.md`, and `../align/apps/web/pkg/` for the in-progress REST framework.
 
-Treat the checked-out compiler and its tests as the implemented surface. Do not invent a manifest, package resolver, test runner, or language feature that Align does not yet support. If this project needs missing Align functionality, document the dependency clearly and make the smallest coordinated change in the Align repository separately.
+Treat the checked-out compiler and its tests as the implemented surface. Do not invent a manifest, package resolver, test runner, or language feature that Align does not yet support. If this project needs missing Align functionality, record it in `docs/align-requests.md` (the register of genuine Align language/stdlib gaps that align-llm surfaces) and make the smallest coordinated change in the Align repository separately. align-llm is a driver for discovering Align's real needs — request missing language capabilities from Align rather than forcing them into this project.
 
 ## Project plans
 
