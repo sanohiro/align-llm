@@ -1,13 +1,70 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "recorded_at": "2026-07-24T23:27:20+00:00",
-  "align_llm_commit": "469c59a8369d18806c36a0b42b66e214e353c957",
+  "recorded_at": "2026-07-24T23:42:29+00:00",
+  "align_llm_commit": "375d93cedef96373c5e4e417c6c92076d68b9ff2",
   "align_revision": "db942d2f705546c7d6b8c0334a462548c6446f84",
   "corpus": {
     "id": "coding-v1",
     "schema_version": 1,
     "path": "eval/tasks/coding-v1.json"
+  },
+  "artifacts": {
+    "algorithm": "sha256",
+    "files": [
+      {
+        "path": "Makefile",
+        "sha256": "f0fd29ac053ef9e7f9928bcd32a6713e243688504a24e9248d52cd7fbc030b42"
+      },
+      {
+        "path": "eval/baselines/patches/python-inclusive-range.patch",
+        "sha256": "dd5cc51395782e77775d63d982973458200769318a7c5c94c4a54c4c999824ce"
+      },
+      {
+        "path": "eval/fixtures/python-inclusive-range-v1/repository/src/inclusive_range.py",
+        "sha256": "c8ca73ca0a72f5535be4b6bc9886ceb4b5be4573cf7b808c7cf1916136d4ae29"
+      },
+      {
+        "path": "eval/fixtures/python-inclusive-range-v1/repository/tests/test_inclusive_range.py",
+        "sha256": "da4177b46f557ebf34febb56645c438d5364ff2e6ebbc41e251bfe690500467a"
+      },
+      {
+        "path": "eval/runners/run-coding-task.py",
+        "sha256": "72e384f91cca16adce683ff413b16f8a575734e3bcdad5ab656fa8ef6ae81c19"
+      },
+      {
+        "path": "eval/tasks/coding-v1.json",
+        "sha256": "5bf04bc3cd48a6c66db3443d2d0bb468e08b6fcd45edc4564042b7e6c8313ada"
+      },
+      {
+        "path": "eval/tasks/coding-v1/python-inclusive-range.json",
+        "sha256": "a2107aaa0e849dca54e058d8fccce25115b54adc22762e40d15b8b881784a950"
+      },
+      {
+        "path": "eval/tasks/coding-v1/python-inclusive-range/task.json",
+        "sha256": "176666546ddae73f98c56fe421d911f6743c08fc3f093297a09f90b811995f93"
+      },
+      {
+        "path": "src/eval.align",
+        "sha256": "c43332ed882a95241541a3c55f25dc3d61e8a2658b915140e12be8a1ada9f5e8"
+      },
+      {
+        "path": "src/main.align",
+        "sha256": "bfef23d0c6bc5c343b95fcc264812be04c1d9a6d02e97cad96beaecf0a2ae04c"
+      },
+      {
+        "path": "src/project.align",
+        "sha256": "e5c0506bebf875abd9c57b5e504294c78d7d0d39b5c9c2c6f75003f00403052a"
+      },
+      {
+        "path": "src/repair.align",
+        "sha256": "2905e3e84ac8a44f721d33bc25012038b1ed8e5318c65d5b439b687977eeabd3"
+      },
+      {
+        "path": "src/verify.align",
+        "sha256": "6e9af29f143c09f600cced88c5a195ea0a5eaa531ff4efcee1723a70fe23380d"
+      }
+    ]
   },
   "provider": {
     "id": "deterministic-reference",
@@ -32,8 +89,8 @@
           "task_id": "python-inclusive-range",
           "verdict": "PASS",
           "actual_code": 0,
-          "duration_ns": 165352312,
-          "time_to_passing_patch_ns": 165352312
+          "duration_ns": 171713544,
+          "time_to_passing_patch_ns": 171713544
         }
       ],
       "summary": {
@@ -49,8 +106,8 @@
           "task_id": "python-inclusive-range",
           "verdict": "PASS",
           "actual_code": 0,
-          "duration_ns": 166593658,
-          "time_to_passing_patch_ns": 166593658
+          "duration_ns": 168646089,
+          "time_to_passing_patch_ns": 168646089
         }
       ],
       "summary": {
@@ -61,11 +118,12 @@
     }
   ],
   "aggregate": {
+    "task_attempt_count": 2,
     "passing_attempt_count": 2,
     "time_to_passing_patch_ns": {
-      "minimum": 165352312,
-      "median": 165972985,
-      "maximum": 166593658
+      "minimum": 168646089,
+      "median": 170179816,
+      "maximum": 171713544
     }
   }
 }
