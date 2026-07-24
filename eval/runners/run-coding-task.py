@@ -137,6 +137,7 @@ def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str)
         ["git", "init", "-q", "--initial-branch=main", "--object-format=sha1"],
         checkout,
         10,
+        env=fixture_environment(),
     )
     if init.returncode != 0:
         raise TaskError(f"git init failed: {init.stderr.strip()}")
@@ -179,8 +180,20 @@ def print_command_output(label: str, result: subprocess.CompletedProcess[str]) -
         print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
 
 
-def check_allowed_changes(checkout: Path, allowed_edits: list[str]) -> None:
-    changed = git_output(checkout, "diff", "--name-only", "--no-renames").splitlines()
+def check_allowed_changes(
+    checkout: Path,
+    allowed_edits: list[str],
+    source_revision: str,
+) -> None:
+    if git_output(checkout, "rev-parse", "HEAD") != source_revision:
+        raise TaskError("candidate changed the pinned fixture HEAD")
+    changed = git_output(
+        checkout,
+        "diff",
+        "--name-only",
+        "--no-renames",
+        source_revision,
+    ).splitlines()
     untracked = git_output(
         checkout,
         "ls-files",
@@ -202,6 +215,7 @@ def validate_candidate(
     allowed_edits: list[str],
     validation_argv: list[str],
     validation_timeout_seconds: int,
+    source_revision: str,
 ) -> None:
     validation_env = fixture_environment()
     validation_env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -230,7 +244,7 @@ def validate_candidate(
     if apply.returncode != 0:
         raise TaskError(f"candidate patch failed to apply: {apply.stderr.strip()}")
 
-    check_allowed_changes(checkout, allowed_edits)
+    check_allowed_changes(checkout, allowed_edits, source_revision)
 
     after = run(
         validation_argv,
@@ -241,7 +255,7 @@ def validate_candidate(
     print_command_output("post-repair validation", after)
     if after.returncode != 0:
         raise TaskError("candidate patch did not pass validation")
-    check_allowed_changes(checkout, allowed_edits)
+    check_allowed_changes(checkout, allowed_edits, source_revision)
 
 
 def main() -> int:
@@ -270,6 +284,7 @@ def main() -> int:
                 task["allowed_edits"],
                 task["validation_argv"],
                 task["validation_timeout_seconds"],
+                task["source_revision"],
             )
     except TaskError as error:
         print(f"task error: {error}", file=sys.stderr)

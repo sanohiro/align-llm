@@ -99,7 +99,11 @@ def artifact_manifest(
     if not isinstance(task_files, list) or not task_files:
         raise BaselineError("corpus task_files must be a non-empty list")
 
-    files = {corpus_path}
+    files = {
+        corpus_path,
+        project_root / ".align-revision",
+        project_root / ".gitattributes",
+    }
     for task_value in task_files:
         if not isinstance(task_value, str) or not task_value:
             raise BaselineError("corpus task path must be a non-empty string")
@@ -142,7 +146,13 @@ def parse_eval_output(stdout: str) -> tuple[list[dict[str, Any]], dict[str, Any]
     task_results = rows[:-1]
     summary = rows[-1]
     for task in task_results:
-        required = {"task_id", "verdict", "actual_code", "duration_ns"}
+        required = {
+            "task_id",
+            "verdict",
+            "expected_code",
+            "actual_code",
+            "duration_ns",
+        }
         if not isinstance(task, dict) or not required.issubset(task):
             raise BaselineError("evaluation task result does not match the expected schema")
     summary_fields = {
@@ -191,6 +201,7 @@ def record_run(binary: Path, corpus_path: Path, project_root: Path, sample: int)
             {
                 "task_id": task["task_id"],
                 "verdict": task["verdict"],
+                "expected_code": task["expected_code"],
                 "actual_code": task["actual_code"],
                 "duration_ns": duration,
                 "time_to_passing_patch_ns": duration if task["verdict"] == "PASS" else None,

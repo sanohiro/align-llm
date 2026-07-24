@@ -31,7 +31,7 @@ if python3 "${runner}" "${task}" "${side_effect_patch}" >"${output_file}" 2>&1; 
   exit 1
 fi
 
-if ! grep -Fq "candidate created untracked files: candidate-side-effect.txt" "${output_file}"; then
+if ! grep -Fq "candidate changed disallowed files: candidate-side-effect.txt" "${output_file}"; then
   printf '%s\n' "coding task did not report the validation side effect" >&2
   cat "${output_file}" >&2
   exit 1

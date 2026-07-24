@@ -85,7 +85,7 @@ def verify_commit(project_root: Path, revision: str) -> None:
 def corpus_tasks(
     project_root: Path,
     corpus: dict[str, Any],
-) -> tuple[list[str], set[Path]]:
+) -> tuple[list[str], list[int], set[Path]]:
     require_fields(corpus, {"id", "schema_version", "path"}, "corpus metadata")
     if corpus["schema_version"] != 1:
         raise BaselineError("unsupported corpus schema")
@@ -101,13 +101,22 @@ def corpus_tasks(
         raise BaselineError("corpus task_files must be a non-empty list")
 
     task_ids = []
-    artifact_files = {corpus_path}
+    artifact_files = {
+        corpus_path,
+        project_root / ".align-revision",
+        project_root / ".gitattributes",
+    }
+    expected_codes = []
     for relative_task_path in task_files:
         task_path_value = require_non_empty_string(relative_task_path, "task path")
         task_path = resolve_inside(project_root, task_path_value, "task path")
         task = load_object(task_path)
         artifact_files.add(task_path)
         task_ids.append(require_non_empty_string(task.get("id"), "task id"))
+        expected_code = task.get("expected_code")
+        if not isinstance(expected_code, int) or isinstance(expected_code, bool):
+            raise BaselineError("task expected_code must be an integer")
+        expected_codes.append(expected_code)
         artifact_paths = task.get("artifact_paths")
         if not isinstance(artifact_paths, list) or not artifact_paths:
             raise BaselineError(f"task does not declare artifact_paths: {task_path}")
@@ -125,7 +134,7 @@ def corpus_tasks(
                 raise BaselineError(f"artifact does not exist: {artifact_path}")
     if len(set(task_ids)) != len(task_ids):
         raise BaselineError("corpus contains duplicate task ids")
-    return task_ids, artifact_files
+    return task_ids, expected_codes, artifact_files
 
 
 def verify_artifacts(
@@ -207,7 +216,12 @@ def verify_environment(environment: Any) -> None:
     require_positive_integer(environment["logical_cpu_count"], "environment logical_cpu_count")
 
 
-def verify_runs(runs: Any, sample_count: int, expected_task_ids: list[str]) -> list[int]:
+def verify_runs(
+    runs: Any,
+    sample_count: int,
+    expected_task_ids: list[str],
+    expected_codes: list[int],
+) -> list[int]:
     if not isinstance(runs, list) or len(runs) != sample_count:
         raise BaselineError("runs length differs from sample_count")
 
@@ -236,6 +250,7 @@ def verify_runs(runs: Any, sample_count: int, expected_task_ids: list[str]) -> l
                 {
                     "task_id",
                     "verdict",
+                    "expected_code",
                     "actual_code",
                     "duration_ns",
                     "time_to_passing_patch_ns",
@@ -247,9 +262,14 @@ def verify_runs(runs: Any, sample_count: int, expected_task_ids: list[str]) -> l
                 raise BaselineError("task result contains an unknown verdict")
             if not isinstance(task["actual_code"], int) or isinstance(task["actual_code"], bool):
                 raise BaselineError("task actual_code must be an integer")
+            task_index = expected_task_ids.index(task["task_id"])
+            if task["expected_code"] != expected_codes[task_index]:
+                raise BaselineError("task expected_code differs from the corpus")
             duration = require_positive_integer(task["duration_ns"], "task duration_ns")
             passing_time = task["time_to_passing_patch_ns"]
             if verdict == "PASS":
+                if task["actual_code"] != task["expected_code"]:
+                    raise BaselineError("passing task actual_code differs from expected_code")
                 pass_count += 1
                 if passing_time != duration:
                     raise BaselineError("passing task time differs from its duration")
@@ -348,7 +368,10 @@ def verify_baseline(path: Path, project_root: Path) -> None:
 
     verify_provider(baseline["provider"])
     verify_environment(baseline["environment"])
-    expected_task_ids, artifact_files = corpus_tasks(project_root, baseline["corpus"])
+    expected_task_ids, expected_codes, artifact_files = corpus_tasks(
+        project_root,
+        baseline["corpus"],
+    )
     verify_artifacts(
         baseline["artifacts"],
         artifact_files,
@@ -358,7 +381,12 @@ def verify_baseline(path: Path, project_root: Path) -> None:
     sample_count = require_positive_integer(baseline["sample_count"], "sample_count")
     if sample_count < 2:
         raise BaselineError("canonical baseline must contain at least two samples")
-    passing_times = verify_runs(baseline["runs"], sample_count, expected_task_ids)
+    passing_times = verify_runs(
+        baseline["runs"],
+        sample_count,
+        expected_task_ids,
+        expected_codes,
+    )
     task_attempt_count = sum(len(run["task_results"]) for run in baseline["runs"])
     if baseline["aggregate"].get("task_attempt_count") != task_attempt_count:
         raise BaselineError("aggregate task_attempt_count is incorrect")

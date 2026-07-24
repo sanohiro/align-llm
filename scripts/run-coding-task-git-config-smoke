@@ -7,12 +7,17 @@ runner="${project_root}/eval/runners/run-coding-task.py"
 task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
 patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
 output_file="$(mktemp)"
-trap 'rm -f "${output_file}"' EXIT
+template_dir="$(mktemp -d)"
+mkdir -p "${template_dir}/info"
+printf '%s\n' "*.py" > "${template_dir}/info/exclude"
+trap 'rm -f "${output_file}"; rm -r "${template_dir}"' EXIT
 
 cd "${project_root}"
-GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_COUNT=2 \
 GIT_CONFIG_KEY_0=i18n.commitEncoding \
 GIT_CONFIG_VALUE_0=ISO-8859-1 \
+GIT_CONFIG_KEY_1=init.templateDir \
+GIT_CONFIG_VALUE_1="${template_dir}" \
   python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1
 
 if ! grep -Fq "fixture revision: 1adf3697ea82a2da6fa9b9aa76f24fb51625ffca" "${output_file}"; then

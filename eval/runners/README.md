@@ -15,10 +15,10 @@ eval/runners/run-fixed.sh eval/tasks/smoke-v1.json
 directory. It checks the pinned revision, requires validation to fail before repair, applies a
 candidate patch, enforces the edit allowlist, and requires validation to pass afterward. Temporary
 checkout cleanup is automatic. The CI gate also supplies a patch that changes a forbidden test file
-and a passing patch that writes an untracked file during validation; both must be rejected after
-execution. Additional regressions prove ambient Git configuration cannot change the fixture revision
-and that a timed-out validation retains output, kills its process group, and removes its temporary
-checkout.
+and a passing patch that writes and stages a forbidden file during validation; both must be rejected
+against the original fixture commit after execution. Additional regressions prove ambient Git
+configuration cannot change the fixture revision and that a timed-out validation retains output,
+kills its process group, and removes its temporary checkout.
 
 Record a canonical baseline only from a clean commit:
 
