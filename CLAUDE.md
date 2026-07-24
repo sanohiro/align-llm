@@ -179,6 +179,11 @@ align-llm must verify the capability as the real client.
 - For roadmap work, use one branch per gate or enabling slice. Do not mix repository-governance
   changes, Align request records, and product implementation in one pull request when they can be
   reviewed independently.
+- The initial repository bootstrap may combine those surfaces only when they form one executable
+  development-cycle foundation, cross-reference one another, remain separated into scoped commits,
+  and the pull request explicitly records the exception and receives full adversarial review.
+  After that foundation merges, the normal one-gate or one-enabling-slice rule has no bootstrap
+  exception.
 - Keep commits small and scoped to one roadmap gate or enabling change.
 - Include the relevant check, evaluation, or benchmark result in every pull request description.
 - Do not claim performance improvements without a reproducible baseline and measurement.

@@ -7,6 +7,8 @@ the diff; it is a risk guide, not a request for speculative refactoring.
 
 - The pull request names one roadmap gate or enabling slice.
 - Unrelated governance, Align request, generated artifact, and product changes are excluded.
+- If the one-time initial-bootstrap exception in `CLAUDE.md` applies, its coupled surfaces and
+  scoped commits are identified explicitly in the pull request.
 - Completion claims cite an observable gate and its evidence.
 
 ## Align correctness

@@ -28,6 +28,12 @@ fn repair_from_stdout(stdout: str, stderr: str, code: i64) -> bool {
   if stdout != "FIX_ME" {
     return false
   }
+  if stderr != "DETAILS" {
+    return false
+  }
+  if code != 23 {
+    return false
+  }
   return match fs.write_file("eval/.loop-smoke-marker", "fixed") {
     Ok(_) => true,
     Err(_) => false,
@@ -54,7 +60,7 @@ fn loop_demo() {
   r3 := repair.drive(
     repair_from_stdout,
     "sh",
-    ["sh", "-c", "if test -f eval/.loop-smoke-marker; then exit 0; else printf FIX_ME; exit 1; fi"].to_array(),
+    ["sh", "-c", "if test -f eval/.loop-smoke-marker; then exit 0; else printf FIX_ME; printf DETAILS 1>&2; exit 23; fi"].to_array(),
     ".",
     30_000_000_000,
     0,
@@ -63,6 +69,10 @@ fn loop_demo() {
   print("loop: stdout-repair")
   print(repair.outcome_label(r3.outcome))
   print(r3.iterations)
+  match fs.remove("eval/.loop-smoke-marker") {
+    Ok(_) => {},
+    Err(_) => {},
+  }
   r4 := repair.drive(accept_without_change, "sh", ["sh", "-c", "printf STILL_FAIL; exit 1"].to_array(), ".", 30_000_000_000, 0, 2)
   print("loop: exhausted")
   print(repair.outcome_label(r4.outcome))

@@ -5,7 +5,8 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #1 on
-`agent/bootstrap-development-cycle`; use `git rev-parse HEAD` for its current pushed commit._
+`agent/bootstrap-development-cycle`. The pushed review-fix series starts at `c9d47e5`; use
+`git rev-parse HEAD` for its latest commit._
 
 ## Current position
 
@@ -55,12 +56,12 @@ integrated bootstrap surfaces:
 - `src/eval.align` — declared JSON corpus loader and first deterministic C0 scorecard slice.
 - `src/repair.align` — first provider-independent verify/repair loop skeleton.
 
-The four subjects remain separate commits for review, but the first executable evaluation, loop,
-CI, request lifecycle, and handoff rules cross-reference one another and are being reviewed as one
-bootstrap PR. This is a deliberate exception for the initial repository foundation, not a
-precedent for mixing independently reviewable governance, request, and roadmap work. Review found
-and the follow-up addresses diagnostic loss, loop bounds and exit coverage, task-identity checks,
-the effective compiler pin, request lifecycle evidence, and stale handoff state.
+The subjects remain separate commits for review, but the first executable evaluation, loop, CI,
+request lifecycle, and handoff rules cross-reference one another and are being reviewed as one
+bootstrap PR under the one-time exception in `CLAUDE.md`. This is not a precedent for mixing
+independently reviewable governance, request, and roadmap work after the foundation merges. Review
+found and the follow-up addresses diagnostic loss, loop bounds and exit coverage, task-identity
+checks, the effective compiler pin, request lifecycle evidence, and stale handoff state.
 
 ## Latest verification
 
@@ -90,8 +91,8 @@ python3 -m json.tool <each smoke-v1 task, manifest, and expected summary>
 
 ## Next steps
 
-1. Finish PR #1 review: commit and push the review follow-up, rerun the full local and GitHub gates,
-   repeat adversarial review on the behavioral changes, and merge only with no valid finding open.
+1. Finish the final PR #1 follow-up review, rerun the local and GitHub gates, and merge only with no
+   valid finding open.
 2. Finish the C0 gate with at least one real coding-task fixture. Pin its source revision, make setup
    and cleanup reproducible, define allowed edits and validation, and retain a canonical
    machine-readable result from a clean align-llm commit.
