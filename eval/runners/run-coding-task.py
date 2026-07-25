@@ -107,11 +107,15 @@ def require_process_containment() -> None:
         raise TaskError("process containment requires Linux child-subreaper support")
 
 
-def descendant_process_ids(root_pids: set[int]) -> set[int]:
+def descendant_process_ids(
+    root_pids: set[int], deadline: float | None = None
+) -> set[int]:
     parents: dict[int, list[int]] = {}
     if not sys.platform.startswith("linux"):
         return set()
     for status_path in Path("/proc").glob("[0-9]*/status"):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TaskError("validation resource scan exceeded its time limit")
         try:
             pid = int(status_path.parent.name)
             lines = status_path.read_text(encoding="utf-8").splitlines()
@@ -820,31 +824,38 @@ def check_allowed_changes(
 
 def directory_modes(checkout: Path) -> dict[str, int]:
     modes: dict[str, int] = {"": checkout.lstat().st_mode & 0o7777}
-    for directory, child_directories, _filenames in os.walk(
-        checkout, followlinks=False
-    ):
-        current = Path(directory)
-        if current == checkout:
-            child_directories[:] = [
-                name for name in child_directories if name != ".git"
-            ]
-        for name in tuple(child_directories):
-            path = current / name
-            if path.is_symlink():
-                child_directories.remove(name)
-                continue
-            try:
-                metadata = path.lstat()
-            except OSError as error:
-                raise TaskError(
-                    f"cannot inspect validation directory {path.relative_to(checkout)}: "
-                    f"{error}"
-                ) from error
-            if not stat.S_ISDIR(metadata.st_mode):
-                raise TaskError(
-                    f"validation directory changed type: {path.relative_to(checkout)}"
-                )
-            modes[path.relative_to(checkout).as_posix()] = metadata.st_mode & 0o7777
+    deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
+    pending = [checkout]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError as error:
+            raise TaskError(
+                f"cannot inspect validation directory {current.relative_to(checkout)}: "
+                f"{error}"
+            ) from error
+        with entries:
+            for entry in entries:
+                if current == checkout and entry.name == ".git":
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TaskError("validation resource scan exceeded its time limit")
+                path = Path(entry.path)
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except OSError as error:
+                    raise TaskError(
+                        f"cannot inspect validation directory {path.relative_to(checkout)}: "
+                        f"{error}"
+                    ) from error
+                if stat.S_ISLNK(metadata.st_mode):
+                    continue
+                if not stat.S_ISDIR(metadata.st_mode):
+                    continue
+                relative = path.relative_to(checkout).as_posix()
+                modes[relative] = metadata.st_mode & 0o7777
+                pending.append(path)
     return modes
 
 
@@ -923,32 +934,41 @@ def validation_worktree_usage(
     file_count = 0
     visible_inodes: set[tuple[int, int]] = set()
     deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
-    for directory, child_directories, filenames in os.walk(
-        checkout, followlinks=False
-    ):
-        current = Path(directory)
-        if current == checkout:
-            child_directories[:] = [
-                name for name in child_directories if name != ".git"
-            ]
-        for name in tuple(child_directories) + tuple(filenames):
-            if time.monotonic() >= deadline:
-                raise TaskError("validation resource scan exceeded its time limit")
-            path = current / name
-            try:
-                metadata = path.lstat()
-            except OSError as error:
-                raise TaskError(
-                    f"cannot inspect validation worktree path {path.relative_to(checkout)}: "
-                    f"{error}"
-                ) from error
-            file_count += 1
-            if file_count > MAX_VALIDATION_WORKTREE_FILES:
-                raise TaskError(
-                    "validation exceeded the writable worktree file limit "
-                    f"({MAX_VALIDATION_WORKTREE_FILES} files)"
-                )
-            if stat.S_ISREG(metadata.st_mode):
+    pending = [checkout]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError as error:
+            raise TaskError(
+                f"cannot inspect validation directory {current.relative_to(checkout)}: "
+                f"{error}"
+            ) from error
+        with entries:
+            for entry in entries:
+                if current == checkout and entry.name == ".git":
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TaskError("validation resource scan exceeded its time limit")
+                path = Path(entry.path)
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except OSError as error:
+                    raise TaskError(
+                        f"cannot inspect validation worktree path {path.relative_to(checkout)}: "
+                        f"{error}"
+                    ) from error
+                file_count += 1
+                if file_count > MAX_VALIDATION_WORKTREE_FILES:
+                    raise TaskError(
+                        "validation exceeded the writable worktree file limit "
+                        f"({MAX_VALIDATION_WORKTREE_FILES} files)"
+                    )
+                if stat.S_ISDIR(metadata.st_mode):
+                    pending.append(path)
+                    continue
+                if not stat.S_ISREG(metadata.st_mode):
+                    continue
                 total_bytes += metadata.st_size
                 visible_inodes.add((metadata.st_dev, metadata.st_ino))
                 if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
@@ -963,7 +983,8 @@ def validation_process_usage(process: subprocess.Popen[bytes]) -> set[int]:
     roots = {process.pid}
     if CHILD_SUBREAPER_ENABLED:
         roots.add(os.getpid())
-    process_ids = {process.pid} | descendant_process_ids(roots)
+    deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
+    process_ids = {process.pid} | descendant_process_ids(roots, deadline)
     process_ids.discard(os.getpid())
     if len(process_ids) > MAX_VALIDATION_PROCESSES:
         raise TaskError(
