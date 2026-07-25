@@ -18,8 +18,9 @@ validation runs in a bubblewrap sandbox with isolated process, mount, IPC, and n
 only the temporary checkout worktree is writable while its `.git` metadata remains read-only, and
 execution fails closed unless Linux child-subreaper support and a probe of the required
 `/usr/bin/bwrap` namespaces succeed. The validation process has bounded address space, CPU time,
-resident memory, process count, and open files; `/tmp` is a size-limited tmpfs, and the runner
-monitors the writable checkout for bounded file-count and aggregate-size usage. The monitor also
+resident memory, process count, and open files; `/tmp` and `/dev/shm` are size-limited tmpfs
+mounts, and the runner monitors the writable checkout for bounded file-count and aggregate-size
+usage. The monitor also
 accounts for deleted-but-open regular files and descendant resident memory, and aborts a resource
 scan if it cannot finish within its small polling budget. Directory modes are snapshotted before
 validation and rejected if a candidate or validator changes them, including the checkout root.

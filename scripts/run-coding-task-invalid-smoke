@@ -459,6 +459,38 @@ command = module.validation_sandbox_command(["python3", "-c", "pass"], project_r
 if "/usr/bin/prlimit" not in command or str(module.MAX_VALIDATION_TMPFS_BYTES) not in command:
     raise RuntimeError("validation resource limits were not applied to the sandbox")
 
+with tempfile.TemporaryDirectory(prefix="align-llm-tmpfs-smoke-") as temporary:
+    checkout = Path(temporary) / "repository"
+    checkout.mkdir()
+    (checkout / ".git").mkdir()
+    command = module.validation_sandbox_command(
+        [
+            "python3",
+            "-c",
+            (
+                "import pathlib,os; "
+                "stats=os.statvfs('/dev/shm'); "
+                "print(stats.f_blocks * stats.f_frsize); "
+                "pathlib.Path('/dev/shm/smoke').write_bytes(b'ok')"
+            ),
+        ],
+        checkout,
+        10,
+    )
+    result = subprocess.run(
+        command,
+        env=module.validation_environment(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"bounded /dev/shm validation failed: {result.stderr}")
+    if int(result.stdout.strip()) > module.MAX_VALIDATION_TMPFS_BYTES:
+        raise RuntimeError("validation /dev/shm is not size limited")
+
+print("coding task /dev/shm quota: enforced")
+
 with tempfile.TemporaryDirectory(prefix="align-llm-replace-smoke-") as temporary:
     repository = Path(temporary)
     environment = module.fixture_environment()
