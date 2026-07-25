@@ -224,7 +224,9 @@ def verify_environment(environment: Any) -> None:
         "architecture",
         "cpu",
         "logical_cpu_count",
-        "python_version",
+        "task_python_executable",
+        "task_python_resolved_executable",
+        "task_python_version",
         "gpu",
     }
     require_fields(environment, required, "environment metadata")

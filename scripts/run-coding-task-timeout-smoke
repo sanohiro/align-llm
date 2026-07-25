@@ -10,9 +10,10 @@ timeout_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.timeout.XXXXXX.jso
 marker="$(mktemp)"
 normal_marker="$(mktemp)"
 output_file="$(mktemp)"
+temp_root="$(mktemp -d)"
 rm -f "${marker}"
 rm -f "${normal_marker}"
-trap 'rm -f "${timeout_task}" "${marker}" "${normal_marker}" "${output_file}"' EXIT
+trap 'rm -f "${timeout_task}" "${marker}" "${normal_marker}" "${output_file}"; rm -r "${temp_root}"' EXIT
 
 python3 - "${source_task}" "${timeout_task}" "${marker}" <<'PY'
 import json
@@ -41,7 +42,7 @@ Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
 PY
 
 cd "${project_root}"
-if python3 "${runner}" "${timeout_task}" "${patch}" >"${output_file}" 2>&1; then
+if TMPDIR="${temp_root}" python3 "${runner}" "${timeout_task}" "${patch}" >"${output_file}" 2>&1; then
   printf '%s\n' "coding task unexpectedly accepted a timed-out validation" >&2
   cat "${output_file}" >&2
   exit 1
@@ -65,7 +66,7 @@ if [[ -e "${marker}" ]]; then
   printf '%s\n' "coding task timeout left a descendant process running" >&2
   exit 1
 fi
-if compgen -G "/tmp/align-llm-python-inclusive-range-timeout-smoke-*" >/dev/null; then
+if compgen -G "${temp_root}/align-llm-python-inclusive-range-timeout-smoke-*" >/dev/null; then
   printf '%s\n' "coding task timeout left a temporary checkout behind" >&2
   exit 1
 fi

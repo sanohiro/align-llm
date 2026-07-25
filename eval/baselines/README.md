@@ -27,4 +27,5 @@ full evaluation-artifact digest set, per-run summaries, and recomputed time-to-p
 aggregates without comparing unstable timings against a new machine. A task wrapper's
 `artifact_paths` binds its nested descriptor, fixture, validation runner, candidate producer, and
 other executable inputs to the baseline source commit. Global artifacts also bind the compiler pin,
-line-ending policy, and recorder that defines measurement semantics.
+line-ending policy, and recorder that defines measurement semantics. Environment metadata identifies
+the requested and resolved Python executable and version that ran the measured task.

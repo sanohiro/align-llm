@@ -154,13 +154,14 @@ def artifact_manifest(
 def corpus_task_expectations(
     project_root: Path,
     corpus: dict[str, Any],
-) -> tuple[list[str], list[int]]:
+) -> tuple[list[str], list[int], list[str]]:
     task_files = corpus.get("task_files")
     if not isinstance(task_files, list) or not task_files:
         raise BaselineError("corpus task_files must be a non-empty list")
 
     task_ids = []
     expected_codes = []
+    task_commands = []
     for task_value in task_files:
         if not isinstance(task_value, str) or not task_value:
             raise BaselineError("corpus task path must be a non-empty string")
@@ -173,9 +174,67 @@ def corpus_task_expectations(
         expected_codes.append(
             require_integer(task.get("expected_code"), "corpus task expected_code")
         )
+        command = task.get("cmd")
+        if not isinstance(command, str) or not command:
+            raise BaselineError("corpus task command must be a non-empty string")
+        task_commands.append(command)
     if len(set(task_ids)) != len(task_ids):
         raise BaselineError("corpus contains duplicate task ids")
-    return task_ids, expected_codes
+    return task_ids, expected_codes, task_commands
+
+
+def task_python_environment(
+    project_root: Path,
+    task_commands: list[str],
+) -> dict[str, str]:
+    unique_commands = set(task_commands)
+    if len(unique_commands) != 1:
+        raise BaselineError(
+            "baseline schema version 1 requires one Python command for all corpus tasks"
+        )
+    requested_executable = task_commands[0]
+    if not Path(requested_executable).is_absolute():
+        raise BaselineError("corpus Python command must be an absolute path")
+    probe = run(
+        [
+            requested_executable,
+            "-I",
+            "-c",
+            (
+                "import json,platform,sys;"
+                "from pathlib import Path;"
+                "print(json.dumps({"
+                "'resolved_executable':str(Path(sys.executable).resolve()),"
+                "'version':platform.python_version()"
+                "}))"
+            ),
+        ],
+        project_root,
+    )
+    if probe.returncode != 0:
+        raise BaselineError(
+            f"cannot inspect corpus Python command: {probe.stderr.strip()}"
+        )
+    try:
+        metadata = json.loads(probe.stdout)
+    except json.JSONDecodeError as error:
+        raise BaselineError("corpus Python command emitted invalid metadata") from error
+    if not isinstance(metadata, dict) or set(metadata) != {
+        "resolved_executable",
+        "version",
+    }:
+        raise BaselineError("corpus Python command emitted incomplete metadata")
+    resolved_executable = metadata["resolved_executable"]
+    version = metadata["version"]
+    if not isinstance(resolved_executable, str) or not resolved_executable:
+        raise BaselineError("resolved corpus Python executable must be a non-empty string")
+    if not isinstance(version, str) or not version:
+        raise BaselineError("corpus Python version must be a non-empty string")
+    return {
+        "task_python_executable": requested_executable,
+        "task_python_resolved_executable": resolved_executable,
+        "task_python_version": version,
+    }
 
 
 def parse_eval_output(
@@ -358,7 +417,11 @@ def main() -> int:
             raise BaselineError("corpus id must be a non-empty string")
         source_commit = checked_output(["git", "rev-parse", "HEAD"], project_root)
         artifacts = artifact_manifest(project_root, corpus_path, corpus)
-        expected_task_ids, expected_codes = corpus_task_expectations(project_root, corpus)
+        expected_task_ids, expected_codes, task_commands = corpus_task_expectations(
+            project_root,
+            corpus,
+        )
+        task_python = task_python_environment(project_root, task_commands)
 
         runs = [
             record_run(
@@ -412,7 +475,7 @@ def main() -> int:
                 "architecture": platform.machine(),
                 "cpu": cpu_model(),
                 "logical_cpu_count": os.cpu_count(),
-                "python_version": platform.python_version(),
+                **task_python,
                 "gpu": "not used",
             },
             "sample_count": args.samples,

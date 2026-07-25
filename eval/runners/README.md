@@ -38,4 +38,5 @@ python3 eval/runners/record-baseline.py \
 The recorder verifies and release-builds the pinned sibling Align compiler, rebuilds `main`, and
 rechecks source cleanliness before measurement. It accepts complete non-passing suite results so
 provider failures remain measurable; the CI smoke suite exercises that path with a complete failing
-JSON Lines result and nonzero evaluator exit.
+JSON Lines result and nonzero evaluator exit. Environment metadata records both the requested and
+resolved absolute Python executable, plus the version used by the measured corpus task.
