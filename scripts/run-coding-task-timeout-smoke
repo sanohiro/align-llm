@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runner="${project_root}/eval/runners/run-coding-task.py"
+source_task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
+patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
+timeout_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.timeout.XXXXXX.json")"
+normal_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.normal.XXXXXX.json")"
+marker="$(mktemp)"
+normal_marker="$(mktemp)"
+output_file="$(mktemp)"
+temp_root="$(mktemp -d)"
+timeout_token="align-llm-timeout-descendant-${BASHPID}-${RANDOM}"
+normal_token="align-llm-normal-descendant-${BASHPID}-${RANDOM}"
+rm -f "${marker}"
+rm -f "${normal_marker}"
+trap 'rm -f "${timeout_task}" "${normal_task}" "${marker}" "${normal_marker}" "${output_file}"; rm -r "${temp_root}"' EXIT
+
+assert_no_process() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+token = os.fsencode(sys.argv[1])
+survivors = []
+for command_line in Path("/proc").glob("[0-9]*/cmdline"):
+    try:
+        pid = int(command_line.parent.name)
+        content = command_line.read_bytes()
+    except (OSError, ValueError):
+        continue
+    if pid != os.getpid() and token in content:
+        survivors.append(pid)
+if survivors:
+    raise RuntimeError(f"descendant processes survived containment: {survivors}")
+PY
+}
+
+python3 - "${source_task}" "${timeout_task}" "${marker}" "${timeout_token}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+marker = sys.argv[3]
+token = sys.argv[4]
+child = (
+    "import os,pathlib,time; "
+    "os.setsid(); "
+    "time.sleep(2); "
+    f"pathlib.Path({marker!r}).write_text('survived', encoding='utf-8'); "
+    "time.sleep(30)"
+)
+parent = (
+    "import subprocess,sys,time; "
+    "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
+    "print('before-timeout', flush=True); "
+    "print('timeout-detail', file=sys.stderr, flush=True); "
+    "time.sleep(10)"
+)
+task["id"] = "python-inclusive-range-timeout-smoke"
+task["validation_argv"] = ["python3", "-c", parent, child, token]
+task["validation_timeout_seconds"] = 1
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+cd "${project_root}"
+if TMPDIR="${temp_root}" python3 "${runner}" "${timeout_task}" "${patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a timed-out validation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+for expected in \
+  "command timed out after 1 seconds: python3" \
+  "stdout:" \
+  "before-timeout" \
+  "stderr:" \
+  "timeout-detail"; do
+  if ! grep -Fq "${expected}" "${output_file}"; then
+    printf '%s\n' "coding task timeout lost expected diagnostic: ${expected}" >&2
+    cat "${output_file}" >&2
+    exit 1
+  fi
+done
+
+sleep 3
+if [[ -e "${marker}" ]]; then
+  printf '%s\n' "coding task timeout left a descendant process running" >&2
+  exit 1
+fi
+assert_no_process "${timeout_token}"
+if compgen -G "${temp_root}/align-llm-coding-task-*" >/dev/null; then
+  printf '%s\n' "coding task timeout left a temporary checkout behind" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task timeout: diagnostics retained and process group cleaned"
+
+python3 - "${source_task}" "${normal_task}" "${normal_token}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+child = "import os,time; os.setsid(); time.sleep(30)"
+parent = (
+    "import subprocess,sys,unittest; "
+    "subprocess.Popen("
+    "[sys.executable, '-c', sys.argv[1], sys.argv[2]], "
+    "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+    "suite=unittest.defaultTestLoader.discover('tests'); "
+    "result=unittest.TextTestRunner(verbosity=2).run(suite); "
+    "sys.exit(0 if result.wasSuccessful() else 1)"
+)
+task["id"] = "python-inclusive-range-normal-cleanup-smoke"
+task["validation_argv"] = ["python3", "-c", parent, child, sys.argv[3]]
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+TMPDIR="${temp_root}" python3 "${runner}" "${normal_task}" "${patch}" >"${output_file}" 2>&1
+sleep 1
+assert_no_process "${normal_token}"
+
+python3 - "${runner}" "${normal_marker}" "${project_root}" <<'PY'
+import importlib.util
+import sys
+import time
+from pathlib import Path
+
+runner_path = Path(sys.argv[1])
+marker = sys.argv[2]
+project_root = Path(sys.argv[3])
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("run_coding_task", runner_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load coding task runner")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+subreaper_enabled = module.CHILD_SUBREAPER_ENABLED
+module.CHILD_SUBREAPER_ENABLED = False
+try:
+    try:
+        module.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import pathlib,sys,time; time.sleep(1); "
+                    "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+                ),
+                marker,
+            ],
+            project_root,
+            5,
+        )
+    except module.TaskError as error:
+        if "requires Linux child-subreaper support" not in str(error):
+            raise
+    else:
+        raise RuntimeError("runner did not fail closed without child-subreaper support")
+finally:
+    module.CHILD_SUBREAPER_ENABLED = subreaper_enabled
+time.sleep(2)
+if Path(marker).exists():
+    raise RuntimeError("fail-closed process containment launched a child")
+
+try:
+    module.run(
+        [
+            sys.executable,
+            "-c",
+            "import os,time; os.close(1); os.close(2); time.sleep(2)",
+        ],
+        project_root,
+        1,
+    )
+except module.CommandTimedOut:
+    pass
+except Exception as error:
+    raise RuntimeError("closed output descriptors broke timeout cleanup") from error
+else:
+    raise RuntimeError("closed output descriptors did not time out")
+
+binary_output = module.run(
+    [
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.buffer.write(bytes([255]))",
+    ],
+    project_root,
+    5,
+)
+if binary_output.returncode != 0 or binary_output.stdout != "\N{REPLACEMENT CHARACTER}":
+    raise RuntimeError("non-UTF-8 command output was not preserved with replacement decoding")
+
+large_output = module.run(
+    [
+        sys.executable,
+        "-c",
+        (
+            "import sys; "
+            "sys.stdout.write('x' * (65536 + 1024)); "
+            "sys.stderr.write('y' * (65536 + 1024))"
+        ),
+    ],
+    project_root,
+    5,
+)
+for stream, marker in (
+    (large_output.stdout, "[output truncated]"),
+    (large_output.stderr, "[output truncated]"),
+):
+    if len(stream.encode("utf-8")) > module.MAX_COMMAND_OUTPUT_BYTES or marker not in stream:
+        raise RuntimeError("command output was not bounded before buffering")
+PY
+
+printf '%s\n' "coding task normal completion: descendant process group cleaned"
+printf '%s\n' "coding task missing child subreaper: failed closed"
+printf '%s\n' "coding task non-UTF-8 output: replacement diagnostic retained"
+printf '%s\n' "coding task unbounded output: bounded before buffering"

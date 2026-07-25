@@ -1,0 +1,7 @@
+diff --git a/src/inclusive_range.py b/src/inclusive_range.py
+index 1094e80..c9f6d32 100644
+--- a/src/inclusive_range.py
++++ b/src/inclusive_range.py
+@@ -3 +3 @@ def inclusive_total(start: int, stop: int) -> int:
+-    return sum(range(start, stop))
++    return sum(range(start, stop + 1))

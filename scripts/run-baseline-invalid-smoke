@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+baseline="${project_root}/eval/baselines/coding-v1-reference.json"
+invalid_baseline="$(mktemp "${project_root}/eval/baselines/.invalid.XXXXXX.json")"
+output_file="$(mktemp)"
+replacement_namespace="refs/align-llm-smoke/replace-${BASHPID}"
+replacement_ref=""
+cleanup() {
+  status=$?
+  rm -f "${invalid_baseline}" "${output_file}"
+  if [[ -n "${replacement_ref}" ]]; then
+    git -C "${project_root}" update-ref -d "${replacement_ref}" || true
+  fi
+  rmdir "${project_root}/.git/${replacement_namespace}" 2>/dev/null || true
+  # Keep the shared parent: another concurrent smoke invocation may be using it.
+  exit "${status}"
+}
+trap cleanup EXIT
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["aggregate"]["time_to_passing_patch_ns"]["median"] += 1
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+cd "${project_root}"
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a corrupt aggregate" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "aggregate timing does not match task results" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the expected aggregate failure" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "corrupt baseline aggregate: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for run in baseline["runs"]:
+    task = run["task_results"][0]
+    task["verdict"] = "FAIL"
+    task["time_to_passing_patch_ns"] = None
+    run["summary"]["pass_count"] = 0
+    run["summary"]["fail_count"] = 1
+baseline["aggregate"]["passing_attempt_count"] = 0
+baseline["aggregate"]["time_to_passing_patch_ns"] = None
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a contradictory FAIL verdict" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "failing task actual_code equals expected_code" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the contradictory FAIL verdict" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "contradictory baseline verdict: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["runs"][0]["task_results"][0]["expected_code"] = False
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a boolean expected_code" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "task expected_code must be an integer" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the boolean expected_code" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "boolean baseline expected_code: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["runs"][0]["summary"]["pass_count"] = True
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a boolean summary count" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "run summary pass_count must be an integer" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the boolean summary count" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "boolean baseline summary count: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["aggregate"]["time_to_passing_patch_ns"]["median"] = float(
+    baseline["aggregate"]["time_to_passing_patch_ns"]["median"]
+)
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a floating-point timing" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "aggregate timing median must be an integer" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the floating-point timing" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "floating-point baseline timing: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["aggregate"] = []
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a non-object aggregate" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "aggregate must be an object" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the non-object aggregate" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if grep -Fq "Traceback" "${output_file}"; then
+  printf '%s\n' "baseline checker raised an uncontrolled aggregate exception" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "non-object baseline aggregate: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["runs"][0]["task_results"][0]["verdict"] = []
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a non-string verdict" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "task result contains an unknown verdict" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the non-string verdict" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if grep -Fq "Traceback" "${output_file}"; then
+  printf '%s\n' "baseline checker raised an uncontrolled verdict exception" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "non-string baseline verdict: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["runs"][0]["task_results"][0]["stdout"] = "x" * (64 * 1024 + 1)
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted oversized diagnostics" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "task stdout exceeds the 64 KiB diagnostic limit" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report oversized diagnostics" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "oversized baseline diagnostics: rejected"
+
+python3 - "${baseline}" <<'PY'
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+baseline_path = Path(sys.argv[1])
+baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+baseline["runs"][0]["task_results"][0]["duration_ns"] += 1
+module_path = Path("eval/runners/verify-baseline.py").resolve()
+spec = importlib.util.spec_from_file_location("verify_baseline", module_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load baseline verifier")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.verify_canonical_oracle(
+        baseline,
+        module_path.parents[2],
+        baseline["canonical_oracle_commit"],
+    )
+except module.BaselineError as error:
+    if "immutable oracle" not in str(error):
+        raise
+else:
+    raise RuntimeError("baseline verifier accepted a timing change against the oracle")
+PY
+
+printf '%s\n' "canonical baseline oracle: timing mutation rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["environment"]["task_python_executable"] = "/not/the/corpus/runtime"
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted an unrelated Python runtime" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "recorded Python executable differs from the corpus task command" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the unrelated Python runtime" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "unrelated baseline Python runtime: rejected"
+
+python3 - <<'PY'
+import importlib.util
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+sys.dont_write_bytecode = True
+module_path = Path("eval/runners/record-baseline.py").resolve()
+spec = importlib.util.spec_from_file_location("record_baseline", module_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load baseline recorder")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+with tempfile.TemporaryDirectory(prefix="align-llm-baseline-git-config-") as temporary:
+    repository = Path(temporary)
+    marker = repository / "hook-ran"
+    hook = repository / "fsmonitor-hook"
+    hook.write_text(
+        f"#!/bin/sh\nprintf escaped > {marker}\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    environment = module.git_environment()
+    subprocess.run(
+        ["git", "init", "-q", "--initial-branch=main"],
+        cwd=repository,
+        env=environment,
+        check=True,
+    )
+    os.environ.update(
+        {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": str(hook),
+        }
+    )
+    module.checked_output(["git", "status", "--porcelain"], repository)
+    if marker.exists():
+        raise RuntimeError("baseline recorder honored ambient Git hook configuration")
+PY
+
+printf '%s\n' "baseline recorder Git configuration: isolated"
+
+source_commit="$(
+  python3 - "${baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["align_llm_commit"])
+PY
+)"
+replacement_ref="${replacement_namespace}/${source_commit}"
+replacement_target="HEAD"
+if [[ "$(git rev-parse HEAD)" == "${source_commit}" ]]; then
+  replacement_target="HEAD^"
+fi
+mkdir -p "${project_root}/.git/${replacement_namespace}"
+git update-ref "${replacement_ref}" "${replacement_target}"
+ordinary_tree="$(
+  GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
+    git rev-parse "${source_commit}^{tree}"
+)"
+source_tree="$(
+  GIT_NO_REPLACE_OBJECTS=1 \
+    git rev-parse "${source_commit}^{tree}"
+)"
+if [[ "${ordinary_tree}" == "${source_tree}" ]]; then
+  printf '%s\n' "baseline replacement smoke did not alter object resolution" >&2
+  exit 1
+fi
+
+if ! GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
+  python3 ./eval/runners/verify-baseline.py >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker honored mutable Git replacement state" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+git update-ref -d "${replacement_ref}"
+replacement_ref=""
+printf '%s\n' "baseline Git replacement object: ignored"

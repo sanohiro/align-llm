@@ -1,0 +1,5 @@
+diff --git a/tests/test_inclusive_range.py b/tests/test_inclusive_range.py
+--- a/tests/test_inclusive_range.py
++++ b/tests/test_inclusive_range.py
+@@ -27,0 +28 @@ if __name__ == "__main__":
++# Candidate patches must not alter tests.

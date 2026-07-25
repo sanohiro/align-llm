@@ -9,7 +9,12 @@ Evaluation is the first delivery track because every later optimization needs a 
 
 Each task should identify its repository revision, allowed tools, timeout, checks, scoring rules, and cleanup procedure. Never accept a prompt, context, provider, or runtime optimization without comparing it against the fixed task set and recording regressions.
 
-The first executable corpus is `tasks/smoke-v1.json`. Run the complete local gate with:
+`tasks/smoke-v1.json` checks the evaluator itself. `tasks/coding-v1.json` is the first real repair
+corpus: its runner constructs a pinned Git repository, proves the defect is observable, applies a
+candidate patch under an edit allowlist, and runs the declared validation command inside a
+bubblewrap sandbox. The coding corpus currently requires Linux child-subreaper support, a successful
+`/usr/bin/bwrap` namespace probe, and `/usr/bin/prlimit`; it fails closed when any containment or
+resource-control mechanism is unavailable. Run the complete local gate with:
 
 ```text
 make ci

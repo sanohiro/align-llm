@@ -18,5 +18,10 @@ Keep manifest order stable. `argv[0]` is the process name, matching `std.process
 from the repository root; runners must execute from there. Adding a task requires updating the
 matching expected corpus summary.
 
+`coding-v1/` contains real repair-task metadata. Its descriptor pins a deterministic Git revision,
+declares the source fixture, edit allowlist, validation command, and validation timeout. The task
+description states the failure and constraints without embedding a preferred patch. The corpus
+adapter chooses the candidate patch or future provider output separately.
+
 `empty-invalid.json` is a negative regression fixture: `make eval-smoke` requires the evaluator to
 reject an empty corpus before it can emit a passing summary.

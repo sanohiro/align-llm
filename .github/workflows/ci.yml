@@ -25,6 +25,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         shell: bash
@@ -39,10 +41,19 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh 22
           sudo apt-get install -y llvm-22-dev clang-22 libclang-rt-22-dev \
-            libssl-dev zlib1g-dev libzstd-dev make perl
+            libssl-dev zlib1g-dev libzstd-dev bubblewrap make perl
           echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
           echo "LLVM_CONFIG=/usr/lib/llvm-22/bin/llvm-config" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare nested user-namespace bubblewrap launcher
+        shell: bash
+        run: |
+          launcher="${RUNNER_TEMP}/align-llm-bwrap"
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'exec /usr/bin/unshare --user --map-root-user -- /usr/bin/bwrap "$@"' > "$launcher"
+          chmod 755 "$launcher"
+          echo "ALIGN_LLM_BWRAP=$launcher" >> "$GITHUB_ENV"
 
       - name: Check out pinned Align revision
         shell: bash

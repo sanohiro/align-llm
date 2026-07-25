@@ -1,0 +1,638 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runner="${project_root}/eval/runners/run-coding-task.py"
+task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
+patch="${project_root}/eval/expected/python-inclusive-range-disallowed.patch"
+valid_patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
+side_effect_patch="${project_root}/eval/expected/python-inclusive-range-side-effect.patch"
+ignored_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-ignored-side-effect.patch"
+hidden_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-hidden-side-effect.patch"
+stat_cache_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-stat-cache-side-effect.patch"
+source_fixture="${project_root}/eval/fixtures/python-inclusive-range-v1/repository"
+output_file="$(mktemp)"
+host_marker="$(mktemp "${project_root}/.sandbox-host.XXXXXX")"
+sandbox_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.sandbox.XXXXXX.json")"
+ignored_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored.XXXXXX")"
+ignored_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored.XXXXXX.json")"
+ignored_side_effect_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored-side-effect.XXXXXX")"
+ignored_side_effect_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored-side-effect.XXXXXX.json")"
+unsafe_id_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.unsafe-id.XXXXXX.json")"
+whitespace_source="$(mktemp -d "${project_root}/eval/fixtures/.whitespace.XXXXXX")"
+whitespace_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.whitespace.XXXXXX.json")"
+rm -f "${host_marker}"
+trap 'rm -f "${output_file}" "${host_marker}" "${sandbox_task}" "${ignored_task}" "${ignored_side_effect_task}" "${unsafe_id_task}" "${whitespace_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}" "${whitespace_source}"' EXIT
+
+cd "${project_root}"
+if python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a disallowed edit" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate changed disallowed files: tests/test_inclusive_range.py" "${output_file}"; then
+  printf '%s\n' "coding task did not report the expected allowlist failure" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task disallowed edit: rejected"
+
+python3 - "${task}" "${unsafe_id_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+task["id"] = "../unsafe/task-id-" + ("x" * 512)
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if ! python3 "${runner}" "${unsafe_id_task}" "${valid_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task rejected a path-unsafe task id" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task path-unsafe id: isolated"
+
+python3 - \
+  "${task}" \
+  "${whitespace_task}" \
+  "${source_fixture}" \
+  "${whitespace_source}" \
+  "${project_root}" <<'PY'
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+source = Path(sys.argv[3])
+destination = Path(sys.argv[4])
+shutil.copytree(source, destination, dirs_exist_ok=True)
+(destination / "trailing-space ").write_text("space\n", encoding="utf-8")
+(destination / "trailing-newline\n").write_text("newline\n", encoding="utf-8")
+os.symlink("../outside", destination / "fixture-link")
+task["id"] = "whitespace-paths"
+task["source_dir"] = str(destination.relative_to(Path(sys.argv[5])))
+task["source_revision"] = "0" * 40
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+python3 "${runner}" "${whitespace_task}" "${valid_patch}" >"${output_file}" 2>&1 || true
+whitespace_revision="$(sed -n 's/.*got \([0-9a-f]\{40\}\)$/\1/p' "${output_file}")"
+if [[ ! "${whitespace_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+  printf '%s\n' "coding task smoke could not resolve the whitespace-path revision" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+python3 - "${whitespace_task}" "${whitespace_revision}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+task["source_revision"] = sys.argv[2]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if ! python3 "${runner}" "${whitespace_task}" "${valid_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task rejected tracked paths containing whitespace" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task whitespace paths: isolated"
+
+if python3 "${runner}" "${task}" "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a validation side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate created untracked files: candidate-side-effect.txt" "${output_file}"; then
+  printf '%s\n' "coding task did not report the validation side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task validation side effect: rejected"
+
+if python3 "${runner}" "${task}" "${hidden_side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an index-hidden side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate changed disallowed files: tests/test_inclusive_range.py" "${output_file}"; then
+  printf '%s\n' "coding task did not report the index-hidden side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task index-hidden side effect: rejected"
+
+if python3 "${runner}" "${task}" "${stat_cache_side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a stat-cache-hidden side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate changed disallowed files: tests/test_inclusive_range.py" "${output_file}"; then
+  printf '%s\n' "coding task did not report the stat-cache-hidden side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task stat-cache-hidden side effect: rejected"
+
+printf '%s\n' "ignored.txt" >"${ignored_source}/.gitignore"
+printf '%s\n' "uncommitted fixture input" >"${ignored_source}/ignored.txt"
+python3 - "${task}" "${ignored_task}" "${ignored_source}" "${project_root}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+task["id"] = "ignored-fixture-smoke"
+task["source_dir"] = str(Path(sys.argv[3]).relative_to(Path(sys.argv[4])))
+task["source_revision"] = "0" * 40
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" "${ignored_task}" "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an ignored fixture input" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "new fixture checkout contains uncommitted or ignored files" "${output_file}"; then
+  printf '%s\n' "coding task did not report the ignored fixture input" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ignored fixture input: rejected"
+
+python3 - \
+  "${task}" \
+  "${ignored_side_effect_task}" \
+  "${source_fixture}" \
+  "${ignored_side_effect_source}" \
+  "${project_root}" <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+shutil.copytree(Path(sys.argv[3]), Path(sys.argv[4]), dirs_exist_ok=True)
+(Path(sys.argv[4]) / ".gitignore").write_text(
+    "candidate-side-effect.txt\n*.cache\n",
+    encoding="utf-8",
+)
+task["id"] = "ignored-side-effect-smoke"
+task["source_dir"] = str(Path(sys.argv[4]).relative_to(Path(sys.argv[5])))
+task["source_revision"] = "0" * 40
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${ignored_side_effect_patch}" >"${output_file}" 2>&1 || true
+ignored_revision="$(
+  sed -n 's/.*got \([0-9a-f]\{40\}\)$/\1/p' "${output_file}"
+)"
+if [[ ! "${ignored_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+  printf '%s\n' "coding task smoke could not resolve the ignored-side-effect revision" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+python3 - "${ignored_side_effect_task}" "${ignored_revision}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+task["source_revision"] = sys.argv[2]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${ignored_side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an ignored candidate side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate created ignored files: candidate-side-effect.txt" "${output_file}"; then
+  printf '%s\n' "coding task did not report the ignored candidate side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ignored candidate side effect: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+task["validation_argv"] = [
+    "python3",
+    "-c",
+    (
+        "import pathlib,sys; "
+        "pathlib.Path('pre-repair.cache').write_text('unexpected', encoding='utf-8'); "
+        "sys.exit(1)"
+    ),
+]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an ignored pre-repair side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed the pinned fixture before repair" "${output_file}"; then
+  printf '%s\n' "coding task did not report the ignored pre-repair side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ignored pre-repair side effect: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
+    "import os,pathlib,sys,unittest; "
+    "target=pathlib.Path('src/inclusive_range.py'); "
+    "metadata=target.stat(); "
+    "target.write_bytes(target.read_bytes().replace(b'start, stop', b'xxxxx, stop')); "
+    "os.utime(target, ns=(metadata.st_atime_ns, metadata.st_mtime_ns)); "
+    "suite=unittest.defaultTestLoader.discover('tests'); "
+    "result=unittest.TextTestRunner(verbosity=2).run(suite); "
+    "sys.exit(0 if result.wasSuccessful() else 1)"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${project_root}/eval/baselines/patches/python-inclusive-range.patch" \
+  >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a pre-validation worktree mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed the pinned fixture before repair" "${output_file}"; then
+  printf '%s\n' "coding task did not report the pre-validation worktree mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task pre-validation worktree mutation: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
+    "import pathlib,stat,sys; "
+    "target=pathlib.Path('src/inclusive_range.py'); "
+    "target.chmod(target.stat().st_mode | stat.S_ISUID); "
+    "sys.exit(1)"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a special-mode pre-validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed the pinned fixture before repair" "${output_file}"; then
+  printf '%s\n' "coding task did not report the special-mode pre-validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task special-mode pre-validation mutation: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = "import pathlib,sys; pathlib.Path('.').chmod(0o555); sys.exit(1)"
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a directory-mode pre-validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed directory modes" "${output_file}"; then
+  printf '%s\n' "coding task did not report the directory-mode pre-validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task directory-mode pre-validation mutation: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
+    "import pathlib,sys,unittest; "
+    "target=pathlib.Path('src/inclusive_range.py'); "
+    "pathlib.Path('.').chmod(0o555) if 'stop + 1' in target.read_text(encoding='utf-8') else None; "
+    "suite=unittest.defaultTestLoader.discover('tests'); "
+    "result=unittest.TextTestRunner(verbosity=2).run(suite); "
+    "sys.exit(0 if result.wasSuccessful() else 1)"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${project_root}/eval/baselines/patches/python-inclusive-range.patch" \
+  >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a directory-mode post-validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed directory modes" "${output_file}"; then
+  printf '%s\n' "coding task did not report the directory-mode post-validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task directory-mode post-validation mutation: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
+    "import pathlib,sys,unittest; "
+    "target=pathlib.Path('src/inclusive_range.py'); "
+    "suite=unittest.defaultTestLoader.discover('tests'); "
+    "result=unittest.TextTestRunner(verbosity=2).run(suite); "
+    "target.write_text('corrupt after passing validation\\n') if result.wasSuccessful() else None; "
+    "sys.exit(0 if result.wasSuccessful() else 1)"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${project_root}/eval/baselines/patches/python-inclusive-range.patch" \
+  >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an allowed-file validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed the candidate worktree after repair: src/inclusive_range.py" "${output_file}"; then
+  printf '%s\n' "coding task did not report the allowed-file validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task allowed-file post-validation mutation: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
+    "import pathlib,time; "
+    "handles=[open(f'resource-{index}.bin','wb') for index in range(65)]; "
+    "[(handle.write(b'x' * (1024 * 1024)), handle.flush(), "
+    "pathlib.Path(handle.name).unlink()) for handle in handles]; "
+    "time.sleep(2)"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an oversized validation worktree" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation exceeded the writable worktree size limit" "${output_file}"; then
+  printf '%s\n' "coding task did not report the validation worktree size limit" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task validation worktree size: rejected"
+
+python3 - "${task}" "${sandbox_task}" "${host_marker}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+hook_body = f"#!/bin/sh\nprintf escaped > {sys.argv[3]}\n"
+validation = (
+    "import pathlib,subprocess,sys,unittest; "
+    "marker=pathlib.Path(sys.argv[1]); "
+    "hook=pathlib.Path('.git/fsmonitor-hook'); "
+    f"hook_body={json.dumps(hook_body)}; "
+    "\ntry: "
+    "hook.write_text(hook_body, encoding='utf-8'); hook.chmod(0o755); "
+    "subprocess.run(['git','config','core.fsmonitor',str(hook)], check=True)"
+    "\nexcept (OSError,subprocess.CalledProcessError): pass"
+    "\ntry: marker.write_text('escaped', encoding='utf-8')"
+    "\nexcept OSError: pass"
+    "\nsuite=unittest.defaultTestLoader.discover('tests'); "
+    "result=unittest.TextTestRunner(verbosity=2).run(suite); "
+    "sys.exit(0 if result.wasSuccessful() else 1)"
+)
+task["id"] = "python-inclusive-range-sandbox-smoke"
+task["validation_argv"] = ["python3", "-c", validation, sys.argv[3], sys.argv[3]]
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+python3 "${runner}" "${sandbox_task}" \
+  "${project_root}/eval/baselines/patches/python-inclusive-range.patch" \
+  >"${output_file}" 2>&1
+if [[ -e "${host_marker}" ]]; then
+  printf '%s\n' "coding task validation escaped its writable sandbox" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task host filesystem mutation: contained"
+
+python3 - "${runner}" "${project_root}" <<'PY'
+import importlib.util
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+runner_path = Path(sys.argv[1])
+project_root = Path(sys.argv[2])
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("run_coding_task", runner_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load coding task runner")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+available_bwrap = module.BWRAP_EXECUTABLE
+module.BWRAP_EXECUTABLE = Path("/missing/align-llm-bwrap")
+try:
+    try:
+        module.validation_sandbox_command(
+            ["python3", "-c", "pass"], project_root, 10
+        )
+    except module.TaskError as error:
+        if "validation sandbox is unavailable" not in str(error):
+            raise
+    else:
+        raise RuntimeError("validation did not fail closed without bubblewrap")
+finally:
+    module.BWRAP_EXECUTABLE = available_bwrap
+
+with tempfile.TemporaryDirectory(prefix="align-llm-bwrap-probe-smoke-") as temporary:
+    fake_bwrap = Path(temporary) / "bwrap"
+    fake_bwrap.write_text("#!/bin/sh\nprintf probe-failed >&2\nexit 1\n", encoding="utf-8")
+    fake_bwrap.chmod(0o755)
+    module.BWRAP_EXECUTABLE = fake_bwrap
+    try:
+        module.validation_sandbox_command(["python3", "-c", "pass"], project_root, 10)
+    except module.TaskError as error:
+        if "required bubblewrap namespaces" not in str(error):
+            raise
+    else:
+        raise RuntimeError("validation did not fail closed when namespace probing failed")
+    finally:
+        module.BWRAP_EXECUTABLE = available_bwrap
+
+command = module.validation_sandbox_command(["python3", "-c", "pass"], project_root, 10)
+if "/usr/bin/prlimit" not in command or str(module.MAX_VALIDATION_TMPFS_BYTES) not in command:
+    raise RuntimeError("validation resource limits were not applied to the sandbox")
+
+with tempfile.TemporaryDirectory(prefix="align-llm-tmpfs-smoke-") as temporary:
+    checkout = Path(temporary) / "repository"
+    checkout.mkdir()
+    (checkout / ".git").mkdir()
+    command = module.validation_sandbox_command(
+        [
+            "python3",
+            "-c",
+            (
+                "import pathlib,os; "
+                "stats=os.statvfs('/dev/shm'); "
+                "print(stats.f_blocks * stats.f_frsize); "
+                "pathlib.Path('/dev/shm/smoke').write_bytes(b'ok')"
+            ),
+        ],
+        checkout,
+        10,
+    )
+    result = subprocess.run(
+        command,
+        env=module.validation_environment(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"bounded /dev/shm validation failed: {result.stderr}")
+    if int(result.stdout.strip()) > module.MAX_VALIDATION_TMPFS_BYTES:
+        raise RuntimeError("validation /dev/shm is not size limited")
+
+print("coding task /dev/shm quota: enforced")
+
+with tempfile.TemporaryDirectory(prefix="align-llm-replace-smoke-") as temporary:
+    repository = Path(temporary)
+    environment = module.fixture_environment()
+
+    def git(*arguments: str) -> str:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=repository,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr)
+        return result.stdout.strip()
+
+    git("init", "-q", "--initial-branch=main", "--object-format=sha1")
+    target = repository / "value.txt"
+    target.write_text("original\n", encoding="utf-8")
+    git("add", "value.txt")
+    git("-c", "commit.gpgSign=false", "commit", "-q", "-m", "original")
+    original_commit = git("rev-parse", "HEAD")
+    target.write_text("replacement\n", encoding="utf-8")
+    git("add", "value.txt")
+    git("-c", "commit.gpgSign=false", "commit", "-q", "-m", "replacement")
+    replacement_commit = git("rev-parse", "HEAD")
+    git("replace", original_commit, replacement_commit)
+    tree = module.source_tree(repository, original_commit)
+    if tree.get("value.txt") != ("100644", module.git_blob_id(b"original\n")):
+        raise RuntimeError("fixture provenance honored a mutable Git replacement object")
+PY
+
+printf '%s\n' "coding task missing bubblewrap: failed closed"
+printf '%s\n' "coding task Git replacement object: ignored"

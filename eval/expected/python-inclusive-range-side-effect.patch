@@ -1,0 +1,8 @@
+diff --git a/src/inclusive_range.py b/src/inclusive_range.py
+--- a/src/inclusive_range.py
++++ b/src/inclusive_range.py
+@@ -3 +3,3 @@ def inclusive_total(start: int, stop: int) -> int:
+-    return sum(range(start, stop))
++    __import__("pathlib").Path("candidate-side-effect.txt").write_text("unexpected", encoding="utf-8")
++    __import__("subprocess").run(["git", "add", "candidate-side-effect.txt"], check=True)
++    return sum(range(start, stop + 1))

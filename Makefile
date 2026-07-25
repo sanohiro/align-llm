@@ -3,8 +3,9 @@ ALIGN_REPO ?= ../align
 override PINNED_ALIGNC := $(abspath $(ALIGN_REPO)/target/release/alignc)
 ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
+CODING_CORPUS := eval/tasks/coding-v1.json
 
-.PHONY: check run build fmt format-check eval-smoke loop-smoke align-revision align-build ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke baseline-check align-revision align-build ci
 
 check:
 	$(ALIGNC) check-per-unit $(ENTRY)
@@ -25,8 +26,19 @@ eval-smoke: build
 	./eval/runners/run-fixed.sh $(EVAL_CORPUS)
 	./scripts/run-eval-invalid-smoke
 
+eval-coding: build
+	./eval/runners/run-fixed.sh $(CODING_CORPUS)
+	./scripts/run-coding-task-invalid-smoke
+	./scripts/run-coding-task-git-config-smoke
+	./scripts/run-coding-task-timeout-smoke
+
 loop-smoke: build
 	./scripts/run-loop-smoke
+
+baseline-check:
+	python3 ./eval/runners/verify-baseline.py
+	./scripts/run-baseline-invalid-smoke
+	./scripts/run-baseline-failure-smoke
 
 align-revision:
 	./scripts/check-align-revision
@@ -37,4 +49,4 @@ align-build: align-revision
 
 ci: align-build
 	@test -x "$(PINNED_ALIGNC)" || { echo "pinned Align compiler was not built at $(PINNED_ALIGNC)" >&2; exit 1; }
-	$(MAKE) ALIGNC="$(PINNED_ALIGNC)" format-check check build eval-smoke loop-smoke
+	$(MAKE) ALIGNC="$(PINNED_ALIGNC)" format-check check build eval-smoke eval-coding loop-smoke baseline-check

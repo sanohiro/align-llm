@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runner="${project_root}/eval/runners/run-coding-task.py"
+task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
+patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
+output_file="$(mktemp)"
+template_dir="$(mktemp -d)"
+tool_dir="$(mktemp -d)"
+python_path="$(mktemp -d)"
+mkdir -p "${template_dir}/info"
+printf '%s\n' "*.py" > "${template_dir}/info/exclude"
+printf '%s\n' '#!/usr/bin/env sh' 'exit 97' >"${tool_dir}/python3"
+chmod +x "${tool_dir}/python3"
+printf '%s\n' 'raise RuntimeError("ambient PYTHONPATH reached validation")' \
+  >"${python_path}/unittest.py"
+python_bin="$(command -v python3)"
+trap 'rm -f "${output_file}"; rm -r "${template_dir}" "${tool_dir}" "${python_path}"' EXIT
+
+cd "${project_root}"
+GIT_CONFIG_COUNT=2 \
+GIT_CONFIG_KEY_0=i18n.commitEncoding \
+GIT_CONFIG_VALUE_0=ISO-8859-1 \
+GIT_CONFIG_KEY_1=init.templateDir \
+GIT_CONFIG_VALUE_1="${template_dir}" \
+  python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1
+
+if ! grep -Fq "fixture revision: 1adf3697ea82a2da6fa9b9aa76f24fb51625ffca" "${output_file}"; then
+  printf '%s\n' "coding task fixture changed under ambient Git configuration" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ambient Git configuration: isolated"
+
+python3 - <<'PY'
+import importlib.util
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+project_root = Path.cwd()
+modules = (
+    ("eval/runners/run-coding-task.py", "fixture_environment"),
+    ("eval/runners/record-baseline.py", "git_environment"),
+    ("eval/runners/verify-baseline.py", "git_environment"),
+    ("scripts/finalize-canonical-baseline.py", "git_environment"),
+)
+for relative_path, function_name in modules:
+    path = project_root / relative_path
+    spec = importlib.util.spec_from_file_location("git_environment_smoke", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    environment = getattr(module, function_name)()
+    if environment.get("GIT_ATTR_NOSYSTEM") != "1":
+        raise SystemExit(f"{path} does not disable system Git attributes")
+
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    global_home = root / "global-home"
+    (global_home / "git").mkdir(parents=True)
+    (global_home / "git" / "attributes").write_text(
+        "*.txt filter=ambient\n", encoding="utf-8"
+    )
+    repository = root / "repository"
+    setup_environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    setup_environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "XDG_CONFIG_HOME": str(global_home),
+            "HOME": str(global_home),
+        }
+    )
+    subprocess.run(
+        ["git", "init", str(repository)],
+        check=True,
+        capture_output=True,
+        env=setup_environment,
+    )
+    (repository / "sample.txt").write_text("sample\n", encoding="utf-8")
+    for relative_path, function_name in modules:
+        path = project_root / relative_path
+        spec = importlib.util.spec_from_file_location("git_environment_smoke", path)
+        if spec is None or spec.loader is None:
+            raise SystemExit(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = subprocess.run(
+            ["git", "check-attr", "filter", "--", "sample.txt"],
+            cwd=repository,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=getattr(module, function_name)(),
+        )
+        if result.returncode != 0 or result.stdout.strip() != "sample.txt: filter: unspecified":
+            raise SystemExit(
+                f"{path} did not isolate global Git attributes: "
+                f"{result.stdout.strip()}"
+            )
+PY
+
+printf '%s\n' "system Git attributes: isolated"
+
+PATH="${tool_dir}:${PATH}" \
+PYTHONPATH="${python_path}" \
+  "${python_bin}" "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1
+
+if ! grep -Fq "post-repair validation exit code: 0" "${output_file}"; then
+  printf '%s\n' "coding task validation used ambient Python settings" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ambient Python settings: isolated"
+
+if [[ ! -x "${project_root}/main" ]]; then
+  make -C "${project_root}" build
+fi
+PATH="${tool_dir}:${PATH}" \
+PYTHONPATH="${python_path}" \
+  "${project_root}/main" --eval "${project_root}/eval/tasks/coding-v1.json" \
+  >"${output_file}" 2>&1
+
+if ! grep -Fq '"task_id":"python-inclusive-range","verdict":"PASS"' "${output_file}"; then
+  printf '%s\n' "coding corpus dispatch used ambient Python settings" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding corpus Python dispatch: absolute and isolated"
