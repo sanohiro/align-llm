@@ -4,14 +4,12 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the C5 failure-memory slice on
-`c5-failure-memory`, implementation commit `05dbf75` and current handoff head `927b2b8` based on
-merged main commit `17da92c`; PR #12 is open for review and the working tree is clean._
+_Last updated: 2026-07-25. No implementation work is active. C5 failure memory merged to main in
+PR #12 at `5311bac`; the next roadmap item is C6 Prompt and Context Optimizer._
 
 ## Current position
 
-The repository has completed C0 through C4. The C5 implementation is complete locally and is open
-as PR #12.
+The repository has completed C0 through C5. Work is paused for the day after the C5 merge.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -23,17 +21,15 @@ as PR #12.
   after the result file is written.
 - `scripts/run-verification-loop-smoke` now proves persistence, same-task reuse, and the existing
   invalid-repair `REPAIR_FAILED` path. `failure-memory-smoke` is the named C5 make target.
-- Hosted Actions already runs this smoke through `verify-loop-smoke`; no new external retry loop is
+- Hosted Actions ran the supported C5 smoke successfully; no new external retry loop is
   warranted. The unavailable nested user-namespace `coding-v1` sandbox and stale C0 baseline check
   remain local/capable-runner gates only.
 
 ## Next steps
 
-1. Review PR #12 against `docs/review-checklist.md` with one bounded adversarial-review attempt and
-   address only valid findings.
-2. Check the supported hosted run once and merge after review/check success.
-3. After merge, update this file to C6 Prompt and Context Optimizer and continue on the next scoped
-   branch.
+1. Resume on the `c6-prompt-context` branch or create a fresh C6 branch from main.
+2. Read the C6 prompt hierarchy, fixed-evaluation, and A/B acceptance requirements before coding.
+3. Implement and verify C6 in its own PR; do not rerun the full CI loop for service-capacity errors.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
