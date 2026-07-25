@@ -5,8 +5,8 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is the C5 failure-memory slice on
-`c5-failure-memory`, implementation commit `05dbf75` and handoff commit `0246444` based on merged
-main commit `17da92c`; PR #12 is open for review and the working tree is clean._
+`c5-failure-memory`, implementation commit `05dbf75` and current handoff head `927b2b8` based on
+merged main commit `17da92c`; PR #12 is open for review and the working tree is clean._
 
 ## Current position
 
