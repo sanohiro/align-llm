@@ -149,3 +149,50 @@ flag is deliberately a conservative path heuristic until task-specific allowlist
 The parser currently expects standard unified-diff file markers; patch application and richer
 language-aware symbol resolution remain later slices. Use `make patch-eval-smoke` for shape,
 symbol, risk, recommended-test, and failure-persistence coverage.
+
+## Verification-loop development
+
+The C4 slice is `src/verification_loop.align`. It turns the read-only C3 report into a bounded,
+provider-independent verification loop. A task JSON document has this shape:
+
+```json
+{
+  "schema_version": 1,
+  "task_id": "task-name",
+  "root": "/path/to/worktree",
+  "candidate_patch": "/path/to/candidate.patch",
+  "repair_patch": "/path/to/repair.patch",
+  "build": { "cmd": "...", "argv": ["..."], "expected_code": 0 },
+  "targeted_test": { "cmd": "...", "argv": ["..."], "expected_code": 0 },
+  "full_test": { "cmd": "...", "argv": ["..."], "expected_code": 0 },
+  "timeout_ns": 10000000000,
+  "max_iterations": 3
+}
+```
+
+Set `repair_patch` to an empty string when the task should stop after the first failing stage.
+
+Run it with:
+
+```sh
+./main --verify-loop <task.json> <result.json>
+```
+
+The loop evaluates the candidate through C3, checks and applies it with `git apply`, then runs
+build, targeted-test, and full-test in order. A failed stage is captured with its exit code,
+duration, summary, stdout, and stderr. The repair prompt includes that diagnostic and the C3
+evaluation document. If a repair patch is configured and the iteration budget permits, it is
+checked and applied once, then the next iteration verifies the repaired worktree. The result uses
+`PASS`, `GAVE_UP`, `EXHAUSTED`, `REPAIR_FAILED`, or `INVALID` status labels and preserves all
+attempts for later provider or failure-memory work.
+
+The checked-in smoke fixture uses a deterministic repair patch to prove the gate without a model
+server:
+
+```sh
+make verify-loop-smoke
+```
+
+The repair patch is deliberately an input boundary, not a model implementation. A future provider
+can consume `repair_prompt` and return an equivalent patch without changing verification, timeout,
+or result handling.
