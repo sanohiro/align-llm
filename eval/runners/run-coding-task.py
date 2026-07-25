@@ -771,6 +771,7 @@ def check_allowed_changes(
     checkout: Path,
     allowed_edits: list[str],
     source_revision: str,
+    expected_directory_modes: dict[str, int],
 ) -> None:
     if git_output(checkout, "rev-parse", "HEAD") != source_revision:
         raise TaskError("candidate changed the pinned fixture HEAD")
@@ -780,6 +781,7 @@ def check_allowed_changes(
     )
     if flagged_paths:
         raise TaskError(f"candidate changed Git index flags: {', '.join(flagged_paths)}")
+    check_directory_modes(checkout, expected_directory_modes)
     changed = set(actual_worktree_changes(checkout, source_revision))
     changed.update(
         git_output(
@@ -816,7 +818,60 @@ def check_allowed_changes(
         raise TaskError(f"candidate changed disallowed files: {', '.join(disallowed)}")
 
 
-def check_pristine_checkout(checkout: Path, source_revision: str) -> None:
+def directory_modes(checkout: Path) -> dict[str, int]:
+    modes: dict[str, int] = {"": checkout.lstat().st_mode & 0o7777}
+    for directory, child_directories, _filenames in os.walk(
+        checkout, followlinks=False
+    ):
+        current = Path(directory)
+        if current == checkout:
+            child_directories[:] = [
+                name for name in child_directories if name != ".git"
+            ]
+        for name in tuple(child_directories):
+            path = current / name
+            if path.is_symlink():
+                child_directories.remove(name)
+                continue
+            try:
+                metadata = path.lstat()
+            except OSError as error:
+                raise TaskError(
+                    f"cannot inspect validation directory {path.relative_to(checkout)}: "
+                    f"{error}"
+                ) from error
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise TaskError(
+                    f"validation directory changed type: {path.relative_to(checkout)}"
+                )
+            modes[path.relative_to(checkout).as_posix()] = metadata.st_mode & 0o7777
+    return modes
+
+
+def check_directory_modes(
+    checkout: Path, expected_directory_modes: dict[str, int]
+) -> None:
+    observed = directory_modes(checkout)
+    if observed != expected_directory_modes:
+        changed = sorted(
+            set(observed) | set(expected_directory_modes),
+            key=lambda path: path or ".",
+        )
+        changed = [
+            path or "."
+            for path in changed
+            if observed.get(path) != expected_directory_modes.get(path)
+        ]
+        raise TaskError(
+            "validation changed directory modes: " + ", ".join(changed)
+        )
+
+
+def check_pristine_checkout(
+    checkout: Path,
+    source_revision: str,
+    expected_directory_modes: dict[str, int],
+) -> None:
     if git_output(checkout, "rev-parse", "HEAD") != source_revision:
         raise TaskError("validation changed the pinned fixture HEAD")
     index_records = git_output(checkout, "ls-files", "-v", "-z").split("\0")
@@ -825,6 +880,7 @@ def check_pristine_checkout(checkout: Path, source_revision: str) -> None:
     )
     if flagged_paths:
         raise TaskError(f"validation changed Git index flags: {', '.join(flagged_paths)}")
+    check_directory_modes(checkout, expected_directory_modes)
     if actual_worktree_changes(checkout, source_revision):
         raise TaskError("validation changed the pinned fixture worktree")
     untracked = git_output(
@@ -904,7 +960,11 @@ def validation_worktree_usage(
 
 
 def validation_process_usage(process: subprocess.Popen[bytes]) -> set[int]:
-    process_ids = {process.pid} | descendant_process_ids({process.pid})
+    roots = {process.pid}
+    if CHILD_SUBREAPER_ENABLED:
+        roots.add(os.getpid())
+    process_ids = {process.pid} | descendant_process_ids(roots)
+    process_ids.discard(os.getpid())
     if len(process_ids) > MAX_VALIDATION_PROCESSES:
         raise TaskError(
             "validation exceeded the process limit "
@@ -1000,6 +1060,7 @@ def validate_candidate(
     )
     validation_env = validation_environment()
     resource_check = lambda process: check_validation_resources(checkout, process)
+    expected_directory_modes = directory_modes(checkout)
     before = run(
         resolved_validation_argv,
         checkout,
@@ -1012,9 +1073,13 @@ def validate_candidate(
     if before.returncode == 0:
         raise TaskError("pinned fixture unexpectedly passes before repair")
     try:
-        check_pristine_checkout(checkout, source_revision)
+        check_pristine_checkout(
+            checkout, source_revision, expected_directory_modes
+        )
     except TaskError as error:
-        raise TaskError("validation changed the pinned fixture before repair") from error
+        raise TaskError(
+            f"validation changed the pinned fixture before repair: {error}"
+        ) from error
 
     fixture_env = fixture_environment()
     check = run(
@@ -1029,7 +1094,9 @@ def validate_candidate(
     if apply.returncode != 0:
         raise TaskError(f"candidate patch failed to apply: {apply.stderr.strip()}")
 
-    check_allowed_changes(checkout, allowed_edits, source_revision)
+    check_allowed_changes(
+        checkout, allowed_edits, source_revision, expected_directory_modes
+    )
 
     after = run(
         resolved_validation_argv,
@@ -1040,7 +1107,9 @@ def validate_candidate(
         resource_check=resource_check,
     )
     print_command_output("post-repair validation", after)
-    check_allowed_changes(checkout, allowed_edits, source_revision)
+    check_allowed_changes(
+        checkout, allowed_edits, source_revision, expected_directory_modes
+    )
     if after.returncode != 0:
         raise TaskError("candidate patch did not pass validation")
 
