@@ -5,7 +5,7 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline` at follow-up commit
-`527c3f9`, with canonical
+`a2786ab`, with canonical
 baseline source commit `f062daf`, immutable oracle commit `42e6082`, and refreshed result commit
 `527c3f9`. Resume at the PR head until it is merge-committed; after that, no implementation is
 active until the user asks to resume, with C1 as the next roadmap slice._
@@ -140,13 +140,12 @@ git diff --check
 
 ## Next steps
 
-1. Push `527c3f9`, repeat PR #3 review for the procfs-race and scoped bubblewrap launcher
-   hardening, require GitHub CI to pass with full checkout history, and merge with a merge commit
-   so the canonical baseline source commit remains reachable. Ubuntu hosted bubblewrap needs a
-   privileged launcher to initialize its isolated loopback; the workflow grants `sudo` only to a
-   temporary wrapper that executes `/usr/bin/bwrap`. The project gate remains a normal-user
-   process, and the runner passes the caller UID/GID and explicitly drops all validator
-   capabilities before execution while keeping `.git` read-only.
+1. Push `a2786ab`, repeat PR #3 review for the procfs-race and nested user-namespace bubblewrap
+   launcher hardening, require GitHub CI to pass with full checkout history, and merge with a merge
+   commit so the canonical baseline source commit remains reachable. The workflow keeps the project
+   gate unprivileged and launches bubblewrap through `/usr/bin/unshare --user --map-root-user`; the
+   runner passes the caller UID/GID and explicitly drops all validator capabilities before execution
+   while keeping `.git` read-only.
 2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
    provider boundary and common persisted result format.
 
