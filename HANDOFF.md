@@ -5,7 +5,7 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is the C2 repository-index slice on
-`c2-repo-index`; the first C2 implementation is in the working tree and is not committed yet._
+`c2-repo-index` at implementation commit `642cf9f`; the working tree is clean._
 
 ## Current position
 
@@ -57,7 +57,8 @@ The repository has completed C0 and C1 and is implementing C2:
   line-count, readability, and test-path metadata; `.align` files receive top-level module, type,
   function, and import records. The focused fixture covers a newline-containing path, revision
   binding, and persisted non-repository failure metadata. Symbol reference resolution and related
-  test ranking are not started.
+  test ranking are not started. The implementation is committed at `642cf9f`; the branch still
+  needs push, PR, review, and merge.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
@@ -177,7 +178,7 @@ feature implementation.
 
 ## Next steps
 
-1. Commit the C2 repository-index slice, push `c2-repo-index`, open a PR, and perform one
+1. Push `642cf9f` on `c2-repo-index`, open a PR, and perform one
    independent adversarial review.
 2. Apply only valid findings, rerun the focused index/provider verification, and merge with a merge
    commit. Do not repeat the full CI gate.
@@ -204,8 +205,7 @@ feature implementation.
   `std.process` per run.
 - Provider SSE parsing currently depends on Content-Length framing because Align's shipped
   `std.http` client rejects chunked response bodies; do not add a raw-socket compatibility layer.
-- C1 is merged at `b7068e6`. The current C2 implementation is intentionally uncommitted until the
-  scoped slice is complete and handoff is updated.
+- C1 is merged at `b7068e6`. The current C2 implementation is committed at `642cf9f`.
 - C2 uses Git's tracked-file list (`git ls-files -z`) rather than recursively probing filesystem
   entries; do not replace it with a directory walk that loses repository boundaries or newline
   safety.
