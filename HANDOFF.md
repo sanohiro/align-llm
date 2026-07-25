@@ -5,9 +5,9 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline` at follow-up commit
-`fbbb256`, with canonical
-baseline source commit `8a6030f`, immutable oracle commit `d9d7618`, and refreshed result commit
-`1d6d49e`. Resume at the PR head until it is merge-committed; after that, no implementation is
+`527c3f9`, with canonical
+baseline source commit `f062daf`, immutable oracle commit `42e6082`, and refreshed result commit
+`527c3f9`. Resume at the PR head until it is merge-committed; after that, no implementation is
 active until the user asks to resume, with C1 as the next roadmap slice._
 
 ## Current position
@@ -34,14 +34,14 @@ The repository has completed the C0 implementation and is ready to begin C1 afte
   symlinks are preserved during materialization, and the immutable baseline oracle binds the
   source commit and artifact manifest as well as measured results.
 - `eval/baselines/coding-v1-reference.json` is the first canonical machine-readable baseline. It was
-  recorded twice from clean commit `8a6030f` after rebuilding `main` with the verified pinned Align
+  recorded twice from clean commit `f062daf` after rebuilding `main` with the verified pinned Align
   compiler. It binds the complete declared evaluation artifact set to both SHA-256 digests and the
   source commit, including the verifier itself, while enumerating source inputs explicitly so new
   unrelated modules do not invalidate C0. It records the requested and resolved Python runtime used
-  for measurement and is checked against immutable oracle commit `d9d7618`. This deterministic
+  for measurement and is checked against immutable oracle commit `42e6082`. This deterministic
   reference validates scoring and timing, not model quality.
-- The refreshed baseline passed 2/2 attempts at 248,453,312 ns and 250,762,508 ns, with median time
-  to a passing patch of 249,607,910 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
+- The refreshed baseline passed 2/2 attempts at 250,806,078 ns and 253,289,429 ns, with median time
+  to a passing patch of 252,047,753 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
   timeout-bounded process execution in `src/verify.align`. This is enabling work shaped like the
   later C4 Verification Loop, not completion of C1. C1's provider abstraction, multiple provider
@@ -140,13 +140,13 @@ git diff --check
 
 ## Next steps
 
-1. Push `fbbb256`, repeat PR #3 review for the procfs-race and sandbox-capability hardening,
-   require GitHub CI to pass with full checkout history, and merge with a merge commit so the
-   canonical baseline source commit remains reachable. Ubuntu hosted bubblewrap needs the CI
-   launcher to run with the host privilege required to initialize its isolated loopback; the
-   workflow runs the outer gate with `sudo`, while the runner explicitly drops all capabilities
-   before executing the validator and keeps `.git` read-only. This preserves the existing sized
-   tmpfs mounts, which bubblewrap disallows in setuid mode.
+1. Push `527c3f9`, repeat PR #3 review for the procfs-race and scoped bubblewrap launcher
+   hardening, require GitHub CI to pass with full checkout history, and merge with a merge commit
+   so the canonical baseline source commit remains reachable. Ubuntu hosted bubblewrap needs a
+   privileged launcher to initialize its isolated loopback; the workflow grants `sudo` only to a
+   temporary wrapper that executes `/usr/bin/bwrap`. The project gate remains a normal-user
+   process, and the runner passes the caller UID/GID and explicitly drops all validator
+   capabilities before execution while keeping `.git` read-only.
 2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
    provider boundary and common persisted result format.
 
