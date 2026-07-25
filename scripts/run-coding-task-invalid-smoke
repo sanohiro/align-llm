@@ -418,6 +418,42 @@ from pathlib import Path
 path = Path(sys.argv[1])
 task = json.loads(path.read_text(encoding="utf-8"))
 validation = (
+    "import pathlib,sys,unittest; "
+    "target=pathlib.Path('src/inclusive_range.py'); "
+    "suite=unittest.defaultTestLoader.discover('tests'); "
+    "result=unittest.TextTestRunner(verbosity=2).run(suite); "
+    "target.write_text('corrupt after passing validation\\n') if result.wasSuccessful() else None; "
+    "sys.exit(0 if result.wasSuccessful() else 1)"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${project_root}/eval/baselines/patches/python-inclusive-range.patch" \
+  >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an allowed-file validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed the candidate worktree after repair: src/inclusive_range.py" "${output_file}"; then
+  printf '%s\n' "coding task did not report the allowed-file validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task allowed-file post-validation mutation: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
     "import pathlib,time; "
     "handles=[open(f'resource-{index}.bin','wb') for index in range(65)]; "
     "[(handle.write(b'x' * (1024 * 1024)), handle.flush(), "

@@ -735,6 +735,34 @@ def worktree_paths(checkout: Path) -> set[str]:
     return paths
 
 
+def worktree_snapshot(checkout: Path) -> dict[str, tuple[Any, ...]]:
+    snapshot: dict[str, tuple[Any, ...]] = {}
+    for relative in worktree_paths(checkout):
+        path = checkout / relative
+        try:
+            metadata = path.lstat()
+            mode = metadata.st_mode & 0o7777
+            if stat.S_ISLNK(metadata.st_mode):
+                snapshot[relative] = ("symlink", mode, os.readlink(path))
+            elif stat.S_ISREG(metadata.st_mode):
+                content = path.read_bytes()
+                snapshot[relative] = (
+                    "file",
+                    mode,
+                    len(content),
+                    hashlib.sha256(content).hexdigest(),
+                )
+            else:
+                snapshot[relative] = ("other", mode)
+        except OSError as error:
+            raise TaskError(f"cannot snapshot candidate worktree path {relative}: {error}") from error
+    return snapshot
+
+
+def index_snapshot(checkout: Path) -> str:
+    return git_output(checkout, "ls-files", "--stage", "-z", nul_terminated=True)
+
+
 def has_symlink_parent(checkout: Path, relative: str) -> bool:
     current = checkout
     for part in Path(relative).parts[:-1]:
@@ -1185,6 +1213,8 @@ def validate_candidate(
     check_allowed_changes(
         checkout, allowed_edits, source_revision, expected_directory_modes
     )
+    candidate_worktree = worktree_snapshot(checkout)
+    candidate_index = index_snapshot(checkout)
 
     after = run(
         resolved_validation_argv,
@@ -1198,6 +1228,22 @@ def validate_candidate(
     check_allowed_changes(
         checkout, allowed_edits, source_revision, expected_directory_modes
     )
+    observed_worktree = worktree_snapshot(checkout)
+    if observed_worktree != candidate_worktree:
+        changed = sorted(
+            set(candidate_worktree) | set(observed_worktree)
+        )
+        changed = [
+            path
+            for path in changed
+            if candidate_worktree.get(path) != observed_worktree.get(path)
+        ]
+        raise TaskError(
+            "validation changed the candidate worktree after repair: "
+            + ", ".join(changed)
+        )
+    if index_snapshot(checkout) != candidate_index:
+        raise TaskError("validation changed the candidate Git index after repair")
     if after.returncode != 0:
         raise TaskError("candidate patch did not pass validation")
 
