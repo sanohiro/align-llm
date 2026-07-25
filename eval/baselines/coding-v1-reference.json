@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "recorded_at": "2026-07-25T00:59:15+00:00",
-  "align_llm_commit": "eddfe8ea5880855146641c1da974c520f44ba961",
+  "recorded_at": "2026-07-25T01:06:28+00:00",
+  "align_llm_commit": "7a1e42d619d8d847f07e9ccce01299a7ed600dcd",
   "align_revision": "db942d2f705546c7d6b8c0334a462548c6446f84",
   "corpus": {
     "id": "coding-v1",
@@ -38,11 +38,15 @@
       },
       {
         "path": "eval/runners/record-baseline.py",
-        "sha256": "543cb1e2f6c242ab04c19f449e11a90cd27c56ed5174e169ce782415406f59de"
+        "sha256": "910e2c6ed8e94537ec23c643799a7662c8120d262d92bef4383bb9882f0fc80e"
       },
       {
         "path": "eval/runners/run-coding-task.py",
-        "sha256": "a8403da1cd6c3362d5fecd93b63fa792501d497fbb9299e0f9b7fe7c5bd3fe8c"
+        "sha256": "60696d3073ca711eed1a4ff712411d3833e89b9087804c43f3f08fb937b3960d"
+      },
+      {
+        "path": "eval/runners/verify-baseline.py",
+        "sha256": "3ee84509bafdffa36176e53103579a2f8f94248e42649a9eca2586fc36f9b362"
       },
       {
         "path": "eval/tasks/coding-v1.json",
@@ -50,7 +54,7 @@
       },
       {
         "path": "eval/tasks/coding-v1/python-inclusive-range.json",
-        "sha256": "5802d9964ad6ab651ebfd06da6bd2d5d3196c9da91a1731c9a20eeb6d462f6db"
+        "sha256": "7ca2bef14de2641ba9206b5fdf998c7021fbd6a76daa7a5fd7ad3467e922a1d4"
       },
       {
         "path": "eval/tasks/coding-v1/python-inclusive-range/task.json",
@@ -108,8 +112,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 208249882,
-          "time_to_passing_patch_ns": 208249882
+          "duration_ns": 232321771,
+          "time_to_passing_patch_ns": 232321771
         }
       ],
       "summary": {
@@ -126,8 +130,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 211481464,
-          "time_to_passing_patch_ns": 211481464
+          "duration_ns": 227093993,
+          "time_to_passing_patch_ns": 227093993
         }
       ],
       "summary": {
@@ -141,9 +145,9 @@
     "task_attempt_count": 2,
     "passing_attempt_count": 2,
     "time_to_passing_patch_ns": {
-      "minimum": 208249882,
-      "median": 209865673,
-      "maximum": 211481464
+      "minimum": 227093993,
+      "median": 229707882,
+      "maximum": 232321771
     }
   }
 }
