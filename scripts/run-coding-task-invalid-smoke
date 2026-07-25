@@ -42,7 +42,7 @@ if python3 "${runner}" "${task}" "${side_effect_patch}" >"${output_file}" 2>&1; 
   exit 1
 fi
 
-if ! grep -Fq "candidate changed disallowed files: candidate-side-effect.txt" "${output_file}"; then
+if ! grep -Fq "candidate created untracked files: candidate-side-effect.txt" "${output_file}"; then
   printf '%s\n' "coding task did not report the validation side effect" >&2
   cat "${output_file}" >&2
   exit 1
@@ -56,7 +56,7 @@ if python3 "${runner}" "${task}" "${hidden_side_effect_patch}" >"${output_file}"
   exit 1
 fi
 
-if ! grep -Fq "candidate changed Git index flags: tests/test_inclusive_range.py" "${output_file}"; then
+if ! grep -Fq "candidate changed disallowed files: tests/test_inclusive_range.py" "${output_file}"; then
   printf '%s\n' "coding task did not report the index-hidden side effect" >&2
   cat "${output_file}" >&2
   exit 1
@@ -209,9 +209,16 @@ import sys
 from pathlib import Path
 
 task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+hook_body = f"#!/bin/sh\nprintf escaped > {sys.argv[3]}\n"
 validation = (
-    "import pathlib,sys,unittest; "
+    "import pathlib,subprocess,sys,unittest; "
     "marker=pathlib.Path(sys.argv[1]); "
+    "hook=pathlib.Path('.git/fsmonitor-hook'); "
+    f"hook_body={json.dumps(hook_body)}; "
+    "\ntry: "
+    "hook.write_text(hook_body, encoding='utf-8'); hook.chmod(0o755); "
+    "subprocess.run(['git','config','core.fsmonitor',str(hook)], check=True)"
+    "\nexcept (OSError,subprocess.CalledProcessError): pass"
     "\ntry: marker.write_text('escaped', encoding='utf-8')"
     "\nexcept OSError: pass"
     "\nsuite=unittest.defaultTestLoader.discover('tests'); "
@@ -219,7 +226,7 @@ validation = (
     "sys.exit(0 if result.wasSuccessful() else 1)"
 )
 task["id"] = "python-inclusive-range-sandbox-smoke"
-task["validation_argv"] = ["python3", "-c", validation, sys.argv[3]]
+task["validation_argv"] = ["python3", "-c", validation, sys.argv[3], sys.argv[3]]
 Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
 PY
 

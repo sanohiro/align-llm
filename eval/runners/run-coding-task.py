@@ -377,6 +377,9 @@ def validation_sandbox_command(argv: list[str], checkout: Path) -> list[str]:
             "--bind",
             str(checkout),
             str(checkout),
+            "--ro-bind",
+            str(checkout / ".git"),
+            str(checkout / ".git"),
             "--chdir",
             str(checkout),
             "--",
@@ -631,9 +634,9 @@ def validate_candidate(
         command_name=validation_argv[0],
     )
     print_command_output("post-repair validation", after)
+    check_allowed_changes(checkout, allowed_edits, source_revision)
     if after.returncode != 0:
         raise TaskError("candidate patch did not pass validation")
-    check_allowed_changes(checkout, allowed_edits, source_revision)
 
 
 def main() -> int:

@@ -23,9 +23,14 @@ quality result and must not be compared as if it were one.
 
 `coding-v1-reference.json` was recorded twice from its named clean commit. `make baseline-check`
 validates its commit ancestry, pinned Align revision, corpus and task identity, required metadata,
-full evaluation-artifact digest set, per-run summaries, and recomputed time-to-passing-patch
-aggregates without comparing unstable timings against a new machine. A task wrapper's
+full evaluation-artifact digest set, independent canonical-record digest, per-run summaries, and
+recomputed time-to-passing-patch aggregates without comparing unstable timings against a new
+machine. A task wrapper's
 `artifact_paths` binds its nested descriptor, fixture, validation runner, candidate producer, and
 other executable inputs to the baseline source commit. Global artifacts also bind the compiler pin,
 line-ending policy, and recorder that defines measurement semantics. Environment metadata identifies
 the requested and resolved Python executable and version that ran the measured task.
+
+The canonical record's SHA-256 is stored separately in
+`eval/expected/coding-v1-reference.sha256`; changing the record without updating this independent
+oracle is rejected by `make baseline-check`.

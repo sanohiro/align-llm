@@ -17,6 +17,10 @@ class BaselineError(Exception):
     pass
 
 
+CANONICAL_BASELINE = Path("eval/baselines/coding-v1-reference.json")
+CANONICAL_DIGEST = Path("eval/expected/coding-v1-reference.sha256")
+
+
 def require_integer(value: Any, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise BaselineError(f"{label} must be an integer")
@@ -101,6 +105,16 @@ def hash_file(path: Path) -> str:
     except OSError as error:
         raise BaselineError(f"cannot hash {path}: {error}") from error
     return digest.hexdigest()
+
+
+def write_canonical_digest(output_path: Path, project_root: Path) -> None:
+    if output_path != project_root / CANONICAL_BASELINE:
+        return
+    digest_path = project_root / CANONICAL_DIGEST
+    digest_path.write_text(
+        f"{hash_file(output_path)}  {CANONICAL_BASELINE.as_posix()}\n",
+        encoding="ascii",
+    )
 
 
 def artifact_manifest(
@@ -499,6 +513,7 @@ def main() -> int:
         }
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
+        write_canonical_digest(output_path, project_root)
         print(f"recorded {args.samples} samples in {output_path.relative_to(project_root)}")
     except (BaselineError, OSError) as error:
         print(f"baseline error: {error}", file=sys.stderr)

@@ -15,8 +15,9 @@ eval/runners/run-fixed.sh eval/tasks/smoke-v1.json
 directory. It checks the pinned revision, requires validation to fail before repair, applies a
 candidate patch, enforces the edit allowlist, and requires validation to pass afterward. Candidate
 validation runs in a bubblewrap sandbox with isolated process, mount, IPC, and network namespaces;
-only the temporary checkout is writable, and execution fails closed unless Linux child-subreaper
-support and `/usr/bin/bwrap` are available. Temporary checkout cleanup is automatic. The CI gate
+only the temporary checkout worktree is writable while its `.git` metadata remains read-only, and
+execution fails closed unless Linux child-subreaper support and `/usr/bin/bwrap` are available.
+Temporary checkout cleanup is automatic. The CI gate
 also supplies a patch that changes a forbidden test file
 and a passing patch that writes and stages a forbidden file during validation; both must be rejected
 against the original fixture commit after execution. Additional regressions prove ambient Git

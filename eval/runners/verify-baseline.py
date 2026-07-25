@@ -15,6 +15,10 @@ class BaselineError(Exception):
     pass
 
 
+CANONICAL_BASELINE = Path("eval/baselines/coding-v1-reference.json")
+CANONICAL_DIGEST = Path("eval/expected/coding-v1-reference.sha256")
+
+
 def git_environment() -> dict[str, str]:
     environment = {
         key: value for key, value in os.environ.items() if not key.startswith("GIT_")
@@ -85,6 +89,19 @@ def hash_file(path: Path) -> str:
     except OSError as error:
         raise BaselineError(f"cannot hash {path}: {error}") from error
     return digest.hexdigest()
+
+
+def verify_canonical_digest(path: Path, project_root: Path) -> None:
+    canonical_path = project_root / CANONICAL_BASELINE
+    if path != canonical_path:
+        return
+    digest_path = project_root / CANONICAL_DIGEST
+    try:
+        expected = digest_path.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError) as error:
+        raise BaselineError(f"cannot load canonical baseline digest: {error}") from error
+    if expected != f"{hash_file(path)}  {CANONICAL_BASELINE.as_posix()}\n":
+        raise BaselineError("canonical baseline digest differs from the independent oracle")
 
 
 def verify_commit(project_root: Path, revision: str) -> None:
@@ -400,6 +417,7 @@ def verify_aggregate(
 
 def verify_baseline(path: Path, project_root: Path) -> None:
     baseline = load_object(path)
+    verify_canonical_digest(path, project_root)
     require_fields(
         baseline,
         {
