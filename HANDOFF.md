@@ -4,8 +4,8 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the uncommitted C1 provider slice on
-`c1-provider-boundary`, based on `bb739d9`._
+_Last updated: 2026-07-25. Active work is the C1 provider slice on
+`c1-provider-boundary` at implementation commit `1574590`; the working tree is clean._
 
 ## Current position
 
@@ -144,7 +144,7 @@ make fmt                         PASS
 make check                       PASS — 11 imported units, provider modules included
 make build                       PASS — executable built as ./main
 bash -n scripts/run-provider-smoke  PASS
-./scripts/run-provider-smoke     PASS — 3 providers, generate/stream, auth, exact token count, common result format
+./scripts/run-provider-smoke     PASS — 3 providers, generate/stream, auth, malformed stream, timeout, exact token count, common result format
 git diff --check                 PASS
 ```
 
@@ -181,10 +181,8 @@ remains unshipped.
   `std.process` per run.
 - Provider SSE parsing currently depends on Content-Length framing because Align's shipped
   `std.http` client rejects chunked response bodies; do not add a raw-socket compatibility layer.
-- Intentional uncommitted C1 files: `Makefile`, `README.md`, `HANDOFF.md`,
-  `docs/align-development.md`, `docs/align-requests.md`, `scripts/run-provider-smoke`, and
-  `src/model.align`, `src/provider.align`, `src/provider_http.align`, `src/provider_llama.align`,
-  `src/provider_openai.align`, `src/result.align`, `src/main.align`.
+- The C1 implementation is committed at `1574590`; keep the branch clean while it is published and
+  reviewed. No intentional uncommitted files remain.
 - Source, comments, diagnostics, commits, pull requests, reviews, and releases are written in
   English.
 
