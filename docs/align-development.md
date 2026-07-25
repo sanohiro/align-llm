@@ -162,6 +162,7 @@ provider-independent verification loop. A task JSON document has this shape:
   "root": "/path/to/worktree",
   "candidate_patch": "/path/to/candidate.patch",
   "repair_patch": "/path/to/repair.patch",
+  "memory_profile": "/path/to/repo.alignprof",
   "build": { "cmd": "...", "argv": ["..."], "expected_code": 0 },
   "targeted_test": { "cmd": "...", "argv": ["..."], "expected_code": 0 },
   "full_test": { "cmd": "...", "argv": ["..."], "expected_code": 0 },
@@ -171,6 +172,8 @@ provider-independent verification loop. A task JSON document has this shape:
 ```
 
 Set `repair_patch` to an empty string when the task should stop after the first failing stage.
+`memory_profile` is optional. Set it to a repo-local `.alignprof` path to enable failure memory, or
+omit it to preserve the C4 behavior without persistence.
 
 Run it with:
 
@@ -185,6 +188,22 @@ evaluation document. If a repair patch is configured and the iteration budget pe
 checked and applied once, then the next iteration verifies the repaired worktree. The result uses
 `PASS`, `GAVE_UP`, `EXHAUSTED`, `REPAIR_FAILED`, or `INVALID` status labels and preserves all
 attempts for later provider or failure-memory work.
+
+## Failure-memory development
+
+The C5 slice is `src/failure_memory.align`. When `memory_profile` is configured, each completed
+verification appends one JSON object to the profile rather than rewriting a mutable array. The
+event records the task and attempted patch, first failed stage/test, root-cause summary, repair
+result, successful and unsuccessful strategies, recommended tests, risky symbols, iteration
+counts, and risk score. The next run selects up to the three newest events for the same task and
+adds them to every repair prompt. A missing or unreadable profile starts with empty context, and a
+profile write/decode failure does not replace the already-written verification result.
+
+The fixed smoke proves persistence and reuse by running the same task twice:
+
+```sh
+make failure-memory-smoke
+```
 
 The checked-in smoke fixture uses a deterministic repair patch to prove the gate without a model
 server:

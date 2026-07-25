@@ -1,6 +1,7 @@
 module verification_loop
 
 import core.json
+import failure_memory
 import patch_eval
 import repo_index
 import std.fs
@@ -38,6 +39,7 @@ VerificationTask {
   root: str,
   candidate_patch: str,
   repair_patch: str,
+  memory_profile: Option<str>,
   build: CommandSpec,
   targeted_test: CommandSpec,
   full_test: CommandSpec,
@@ -258,6 +260,7 @@ fn apply_repair(root: str, patch_path: str, timeout_ns: i64) -> RepairRun {
 fn repair_prompt(
   task_id: str,
   evaluation_document: str,
+  memory_context: str,
   stage: str,
   expected_code: i64,
   actual_code: i64,
@@ -283,6 +286,12 @@ fn repair_prompt(
   b.write(stderr)
   b.write("\npatch evaluation:\n")
   b.write(evaluation_document)
+  b.write("\nmemory context:\n")
+  if memory_context.len() == 0 {
+    b.write("none")
+  } else {
+    b.write(memory_context)
+  }
   return b.to_string()
 }
 
@@ -385,6 +394,7 @@ fn run_attempt(
   candidate_applied: bool,
   repair_count: i64,
   evaluation_document: str,
+  memory_context: str,
 ) -> AttemptRun {
   mut stages := builder()
   mut stage_count := 0
@@ -396,7 +406,7 @@ fn run_attempt(
     stages.write(candidate_check.document)
     stage_count = stage_count + 1
     if !stage_passed(candidate_check.status) {
-      prompt := repair_prompt(task_id, evaluation_document, "candidate-apply-check", candidate_check.expected_code, candidate_check.actual_code, candidate_check.summary, candidate_check.stdout, candidate_check.stderr)
+      prompt := repair_prompt(task_id, evaluation_document, memory_context, "candidate-apply-check", candidate_check.expected_code, candidate_check.actual_code, candidate_check.summary, candidate_check.stdout, candidate_check.stderr)
       stage_document = stages.to_string()
       return AttemptRun {
         status: "FAIL".clone(),
@@ -414,7 +424,7 @@ fn run_attempt(
     stages.write(candidate_apply.document)
     stage_count = stage_count + 1
     if !stage_passed(candidate_apply.status) {
-      prompt := repair_prompt(task_id, evaluation_document, "candidate-apply", candidate_apply.expected_code, candidate_apply.actual_code, candidate_apply.summary, candidate_apply.stdout, candidate_apply.stderr)
+      prompt := repair_prompt(task_id, evaluation_document, memory_context, "candidate-apply", candidate_apply.expected_code, candidate_apply.actual_code, candidate_apply.summary, candidate_apply.stdout, candidate_apply.stderr)
       stage_document = stages.to_string()
       return AttemptRun {
         status: "FAIL".clone(),
@@ -435,7 +445,7 @@ fn run_attempt(
   stages.write(build_out.document)
   stage_count = stage_count + 1
   if !stage_passed(build_out.status) {
-    prompt := repair_prompt(task_id, evaluation_document, "build", build_out.expected_code, build_out.actual_code, build_out.summary, build_out.stdout, build_out.stderr)
+    prompt := repair_prompt(task_id, evaluation_document, memory_context, "build", build_out.expected_code, build_out.actual_code, build_out.summary, build_out.stdout, build_out.stderr)
     if repair_count > 0 || repair_patch.len() == 0 || iteration >= max_iterations {
       terminal := if iteration >= max_iterations { LoopStatus.Exhausted } else { LoopStatus.GaveUp }
       stage_document = stages.to_string()
@@ -489,7 +499,7 @@ fn run_attempt(
   stages.write(targeted_out.document)
   stage_count = stage_count + 1
   if !stage_passed(targeted_out.status) {
-    prompt := repair_prompt(task_id, evaluation_document, "targeted-test", targeted_out.expected_code, targeted_out.actual_code, targeted_out.summary, targeted_out.stdout, targeted_out.stderr)
+    prompt := repair_prompt(task_id, evaluation_document, memory_context, "targeted-test", targeted_out.expected_code, targeted_out.actual_code, targeted_out.summary, targeted_out.stdout, targeted_out.stderr)
     if repair_count > 0 || repair_patch.len() == 0 || iteration >= max_iterations {
       terminal := if iteration >= max_iterations { LoopStatus.Exhausted } else { LoopStatus.GaveUp }
       stage_document = stages.to_string()
@@ -556,7 +566,7 @@ fn run_attempt(
     }
   }
 
-  prompt := repair_prompt(task_id, evaluation_document, "full-test", full_out.expected_code, full_out.actual_code, full_out.summary, full_out.stdout, full_out.stderr)
+  prompt := repair_prompt(task_id, evaluation_document, memory_context, "full-test", full_out.expected_code, full_out.actual_code, full_out.summary, full_out.stdout, full_out.stderr)
   if repair_count > 0 || repair_patch.len() == 0 || iteration >= max_iterations {
     terminal := if iteration >= max_iterations { LoopStatus.Exhausted } else { LoopStatus.GaveUp }
     stage_document = stages.to_string()
@@ -605,7 +615,7 @@ fn run_attempt(
   }
 }
 
-fn run_task(task: VerificationTask) -> VerificationResult {
+fn run_task(task: VerificationTask, memory_context: str) -> VerificationResult {
   if task.schema_version != 1 || task.task_id.len() == 0 || task.root.len() == 0 {
     return invalid_result(task.task_id, 2)
   }
@@ -672,6 +682,7 @@ fn run_task(task: VerificationTask) -> VerificationResult {
       candidate_applied,
       repair_count,
       evaluation_document,
+      memory_context,
     )
     attempt_document := render_attempt(iteration, attempt.status, attempt.prompt, attempt.stages)
     attempts = append_attempt(attempts, attempt_document)
@@ -705,11 +716,26 @@ fn run_task(task: VerificationTask) -> VerificationResult {
 pub fn run_file(task_path: str, result_path: str) -> Result<RunSummary, Error> {
   data := fs.read_file(task_path)?
   task: VerificationTask := json.decode(data)?
-  result := run_task(task)
+  profile_view: str := task.memory_profile else ""
+  profile_path: string := profile_view.clone()
+  task_id: string := task.task_id.clone()
+  profile_path_view: str := profile_path
+  task_id_view: str := task_id
+  memory_context := failure_memory.load_context(profile_path_view, task_id_view)
+  result := run_task(task, memory_context)
   result_status := result.status
   result_iteration_count := result.iteration_count
   result_repair_count := result.repair_count
   fs.write_file(result_path, result.document)?
+  if profile_path.len() > 0 {
+    // Memory is an enhancement to repair prompts; a malformed or unwritable profile must not
+    // hide the verification result that was already written above.
+    memory_write := failure_memory.remember(result_path, profile_path_view)
+    match memory_write {
+      Ok(_) => {},
+      Err(_) => {},
+    }
+  }
   return Ok(RunSummary {
       status: result_status,
       iteration_count: result_iteration_count,
