@@ -268,7 +268,11 @@ print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["align_llm_commi
 PY
 )"
 replacement_ref="${replacement_namespace}/${source_commit}"
-git update-ref "${replacement_ref}" HEAD
+replacement_target="HEAD"
+if [[ "$(git rev-parse HEAD)" == "${source_commit}" ]]; then
+  replacement_target="HEAD^"
+fi
+git update-ref "${replacement_ref}" "${replacement_target}"
 ordinary_tree="$(
   GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
     git rev-parse "${source_commit}^{tree}"
