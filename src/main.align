@@ -9,6 +9,7 @@ import model
 import provider
 import repo_index
 import patch_eval
+import verification_loop
 import result
 import std.env
 import std.fs
@@ -18,7 +19,7 @@ import std.time
 fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
-  print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --select-tests <repo> <changed-path> <tests.json> [timeout-ns] | --evaluate-patch <repo> <patch.diff> <evaluation.json> [timeout-ns] | --eval [corpus] | --loop]")
+  print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --select-tests <repo> <changed-path> <tests.json> [timeout-ns] | --evaluate-patch <repo> <patch.diff> <evaluation.json> [timeout-ns] | --verify-loop <task.json> <result.json> | --eval [corpus] | --loop]")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
 
@@ -164,6 +165,24 @@ fn patch_evaluation_demo(args: array<str>) -> Result<(), Error> {
     Ready => { return Ok(()) },
     Partial => { return Err(Error.Invalid) },
     Failed => { return Err(Error.Invalid) },
+  }
+}
+
+fn verification_loop_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 4 {
+    return Err(Error.Invalid)
+  }
+  result := verification_loop.run_file(args[2], args[3])?
+  print("verification loop:")
+  print("status:")
+  print(verification_loop.loop_status_label(result.status))
+  print("iterations:")
+  print(result.iteration_count)
+  print("repairs:")
+  print(result.repair_count)
+  match result.status {
+    Passed => { return Ok(()) },
+    _ => { return Err(Error.Invalid) },
   }
 }
 
@@ -371,20 +390,24 @@ pub fn main(args: array<str>) -> Result<(), Error> {
             if args[1] == "--evaluate-patch" {
               patch_evaluation_demo(args)?
             } else {
-              if args[1] == "--select-tests" {
-                select_tests_demo(args)?
+              if args[1] == "--verify-loop" {
+                verification_loop_demo(args)?
               } else {
-                if args[1] == "--index" {
-                  index_demo(args)?
+                if args[1] == "--select-tests" {
+                  select_tests_demo(args)?
                 } else {
-                  if args[1] == "--eval" {
-                    corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
-                    eval.run_suite(corpus)?
+                  if args[1] == "--index" {
+                    index_demo(args)?
                   } else {
-                    if args[1] == "--loop" {
-                      loop_demo()
+                    if args[1] == "--eval" {
+                      corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
+                      eval.run_suite(corpus)?
                     } else {
-                      print_help()
+                      if args[1] == "--loop" {
+                        loop_demo()
+                      } else {
+                        print_help()
+                      }
                     }
                   }
                 }

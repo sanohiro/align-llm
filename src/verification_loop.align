@@ -1,0 +1,718 @@
+module verification_loop
+
+import core.json
+import patch_eval
+import repo_index
+import std.fs
+import std.time
+import verify
+
+// C4 turns the read-only C3 report into a bounded verification loop. The repair input is a
+// checked-in patch for the fixed smoke task; a model-backed provider can replace that input later
+// without changing the build, test, timeout, or result protocol.
+
+pub LoopStatus { Passed, Failed, GaveUp, Exhausted, RepairFailed, Invalid }
+
+pub VerificationResult {
+  document: string,
+  status: LoopStatus,
+  iteration_count: i64,
+  repair_count: i64,
+}
+
+pub RunSummary {
+  status: LoopStatus,
+  iteration_count: i64,
+  repair_count: i64,
+}
+
+CommandSpec {
+  cmd: str,
+  argv: array<str>,
+  expected_code: i64,
+}
+
+VerificationTask {
+  schema_version: i64,
+  task_id: str,
+  root: str,
+  candidate_patch: str,
+  repair_patch: str,
+  build: CommandSpec,
+  targeted_test: CommandSpec,
+  full_test: CommandSpec,
+  timeout_ns: i64,
+  max_iterations: i64,
+}
+
+LoopMeta {
+  schema_version: i64,
+  task_id: str,
+  status: str,
+  error_code: i64,
+  iteration_count: i64,
+  max_iterations: i64,
+  repair_count: i64,
+  evaluation_status: str,
+}
+
+AttemptMeta {
+  iteration: i64,
+  status: str,
+  repair_prompt: str,
+}
+
+StageRecord {
+  stage: str,
+  status: str,
+  expected_code: i64,
+  actual_code: i64,
+  duration_ns: i64,
+  summary: str,
+  stdout: str,
+  stderr: str,
+}
+
+StageStatus { StagePass, StageFail, StageTimeout, StageError, StageNotRun }
+
+FailureEvaluation {
+  schema_version: i64,
+  status: str,
+  error_code: i64,
+}
+
+StageOutcome {
+  status: StageStatus,
+  expected_code: i64,
+  actual_code: i64,
+  duration_ns: i64,
+  summary: string,
+  stdout: string,
+  stderr: string,
+  document: string,
+}
+
+RepairRun {
+  check_status: StageStatus,
+  check_code: i64,
+  check_document: string,
+  apply_status: StageStatus,
+  apply_code: i64,
+  apply_document: string,
+  applied: bool,
+}
+
+AttemptRun {
+  status: string,
+  final_status: LoopStatus,
+  code: i64,
+  candidate_applied: bool,
+  repaired: bool,
+  repair_count: i64,
+  prompt: string,
+  stages: string,
+}
+
+pub fn loop_status_label(status: LoopStatus) -> str = match status {
+  Passed => "PASS",
+  Failed => "FAIL",
+  GaveUp => "GAVE_UP",
+  Exhausted => "EXHAUSTED",
+  RepairFailed => "REPAIR_FAILED",
+  Invalid => "INVALID",
+}
+
+fn evaluation_status_label(status: repo_index.IndexStatus) -> str = match status {
+  Ready => "ok",
+  Partial => "partial",
+  Failed => "error",
+}
+
+fn stage_status(status: verify.RunStatus, code: i64, expected_code: i64) -> StageStatus {
+  return match status {
+    Completed => if code == expected_code { StageStatus.StagePass } else { StageStatus.StageFail },
+    TimedOut => StageStatus.StageTimeout,
+    SpawnFailed => StageStatus.StageError,
+  }
+}
+
+fn stage_status_label(status: StageStatus) -> str = match status {
+  StagePass => "PASS",
+  StageFail => "FAIL",
+  StageTimeout => "TIMEOUT",
+  StageError => "ERROR",
+  StageNotRun => "NOT_RUN",
+}
+
+fn stage_passed(status: StageStatus) -> bool = match status {
+  StagePass => true,
+  _ => false,
+}
+
+fn first_line(value: str) -> string {
+  end := value.find("\n") else value.len()
+  return value[0..end].trim().clone()
+}
+
+fn diagnostic_summary(stdout: str, stderr: str) -> string {
+  if stderr.len() > 0 {
+    return first_line(stderr)
+  }
+  if stdout.len() > 0 {
+    return first_line(stdout)
+  }
+  return "no diagnostic output".clone()
+}
+
+fn run_command(
+  stage: str,
+  cmd: str,
+  argv: slice<str>,
+  expected_code: i64,
+  root: str,
+  timeout_ns: i64,
+) -> StageOutcome {
+  started := time.instant()
+  captured := verify.run(cmd, argv, root, timeout_ns)
+  elapsed := time.instant() - started
+  status := stage_status(captured.status, captured.code, expected_code)
+  stdout := captured.stdout.clone()
+  stderr := captured.stderr.clone()
+  summary := diagnostic_summary(stdout, stderr)
+  status_view: str := stage_status_label(status)
+  summary_view: str := summary
+  stdout_view: str := stdout
+  stderr_view: str := stderr
+  record := StageRecord {
+    stage: stage,
+    status: status_view,
+    expected_code: expected_code,
+    actual_code: captured.code,
+    duration_ns: elapsed,
+    summary: summary_view,
+    stdout: stdout_view,
+    stderr: stderr_view,
+  }
+  document := json.encode(record).clone()
+  return StageOutcome {
+    status: status,
+    expected_code: expected_code,
+    actual_code: captured.code,
+    duration_ns: elapsed,
+    summary: summary.clone(),
+    stdout: stdout.clone(),
+    stderr: stderr.clone(),
+    document: document.clone(),
+  }
+}
+
+fn run_spec(
+  stage: str,
+  cmd: str,
+  argv: slice<str>,
+  expected_code: i64,
+  root: str,
+  timeout_ns: i64,
+) -> StageOutcome {
+  return run_command(stage, cmd, argv, expected_code, root, timeout_ns)
+}
+
+fn run_git(stage: str, check: bool, root: str, patch_path: str, timeout_ns: i64) -> StageOutcome {
+  argv := if check {
+    ["git", "apply", "--check", "--recount", patch_path].to_array()
+  } else {
+    ["git", "apply", "--recount", patch_path].to_array()
+  }
+  return run_command(stage, "git", argv, 0, root, timeout_ns)
+}
+
+fn apply_repair(root: str, patch_path: str, timeout_ns: i64) -> RepairRun {
+  checked := run_git("repair-apply-check", true, root, patch_path, timeout_ns)
+  check_status := checked.status
+  check_document: string := checked.document.clone()
+  if !stage_passed(checked.status) {
+    return RepairRun {
+      check_status: check_status,
+      check_code: checked.actual_code,
+      check_document: check_document,
+      apply_status: StageStatus.StageNotRun,
+      apply_code: -1,
+      apply_document: "".clone(),
+      applied: false,
+    }
+  }
+  applied := run_git("repair-apply", false, root, patch_path, timeout_ns)
+  apply_status := applied.status
+  apply_document: string := applied.document.clone()
+  return RepairRun {
+    check_status: check_status,
+    check_code: checked.actual_code,
+    check_document: check_document,
+    apply_status: apply_status,
+    apply_code: applied.actual_code,
+    apply_document: apply_document,
+    applied: stage_passed(applied.status),
+  }
+}
+
+fn repair_prompt(
+  task_id: str,
+  evaluation_document: str,
+  stage: str,
+  expected_code: i64,
+  actual_code: i64,
+  summary: str,
+  stdout: str,
+  stderr: str,
+) -> string {
+  b := builder()
+  b.write("Repair request\n")
+  b.write("task: ")
+  b.write(task_id)
+  b.write("\nstage: ")
+  b.write(stage)
+  b.write("\nexpected exit code: ")
+  b.write_int(expected_code)
+  b.write("\nactual exit code: ")
+  b.write_int(actual_code)
+  b.write("\nsummary: ")
+  b.write(summary)
+  b.write("\nstdout:\n")
+  b.write(stdout)
+  b.write("\nstderr:\n")
+  b.write(stderr)
+  b.write("\npatch evaluation:\n")
+  b.write(evaluation_document)
+  return b.to_string()
+}
+
+fn render_attempt(iteration: i64, status: str, prompt: str, stages: str) -> string {
+  meta := AttemptMeta { iteration: iteration, status: status, repair_prompt: prompt }
+  meta_json := json.encode(meta)
+  b := builder()
+  b.write(meta_json[0..meta_json.len() - 1])
+  b.write(",\"stages\":[")
+  b.write(stages)
+  b.write("]}")
+  return b.to_string()
+}
+
+fn append_attempt(existing: str, attempt: str) -> string {
+  b := builder()
+  if existing.len() > 0 {
+    b.write(existing)
+    b.write(",")
+  }
+  b.write(attempt)
+  return b.to_string()
+}
+
+fn render_document(
+  task_id: str,
+  status: LoopStatus,
+  error_code: i64,
+  iteration_count: i64,
+  max_iterations: i64,
+  repair_count: i64,
+  evaluation_status: str,
+  evaluation_document: str,
+  attempts: str,
+) -> string {
+  meta := LoopMeta {
+    schema_version: 1,
+    task_id: task_id,
+    status: loop_status_label(status),
+    error_code: error_code,
+    iteration_count: iteration_count,
+    max_iterations: max_iterations,
+    repair_count: repair_count,
+    evaluation_status: evaluation_status,
+  }
+  meta_json := json.encode(meta)
+  b := builder()
+  b.write(meta_json[0..meta_json.len() - 1])
+  b.write(",\"evaluation\":")
+  b.write(evaluation_document)
+  b.write(",\"attempts\":[")
+  b.write(attempts)
+  b.write("]}")
+  return b.to_string()
+}
+
+fn empty_evaluation(status: str, error_code: i64) -> string {
+  record := FailureEvaluation { schema_version: 1, status: status, error_code: error_code }
+  return json.encode(record).clone()
+}
+
+fn invalid_result(task_id: str, error_code: i64) -> VerificationResult {
+  evaluation := empty_evaluation("error", error_code)
+  invalid_document := render_document(
+    task_id,
+    LoopStatus.Invalid,
+    error_code,
+    0,
+    0,
+    0,
+    "error",
+    evaluation,
+    "",
+  )
+  return VerificationResult {
+    document: invalid_document.clone(),
+    status: LoopStatus.Invalid,
+    iteration_count: 0,
+    repair_count: 0,
+  }
+}
+
+fn run_attempt(
+  task_id: str,
+  root: str,
+  candidate_patch: str,
+  repair_patch: str,
+  build_cmd: str,
+  build_argv: slice<str>,
+  build_expected: i64,
+  targeted_cmd: str,
+  targeted_argv: slice<str>,
+  targeted_expected: i64,
+  full_cmd: str,
+  full_argv: slice<str>,
+  full_expected: i64,
+  timeout_ns: i64,
+  max_iterations: i64,
+  iteration: i64,
+  candidate_applied: bool,
+  repair_count: i64,
+  evaluation_document: str,
+) -> AttemptRun {
+  mut stages := builder()
+  mut stage_count := 0
+  mut candidate_done := candidate_applied
+  mut stage_document := "".clone()
+
+  if !candidate_done {
+    candidate_check := run_git("candidate-apply-check", true, root, candidate_patch, timeout_ns)
+    stages.write(candidate_check.document)
+    stage_count = stage_count + 1
+    if !stage_passed(candidate_check.status) {
+      prompt := repair_prompt(task_id, evaluation_document, "candidate-apply-check", candidate_check.expected_code, candidate_check.actual_code, candidate_check.summary, candidate_check.stdout, candidate_check.stderr)
+      stage_document = stages.to_string()
+      return AttemptRun {
+        status: "FAIL".clone(),
+        final_status: LoopStatus.Failed,
+        code: candidate_check.actual_code,
+        candidate_applied: false,
+        repaired: false,
+        repair_count: repair_count,
+        prompt: prompt.clone(),
+        stages: stage_document.clone(),
+      }
+    }
+    candidate_apply := run_git("candidate-apply", false, root, candidate_patch, timeout_ns)
+    stages.write(",")
+    stages.write(candidate_apply.document)
+    stage_count = stage_count + 1
+    if !stage_passed(candidate_apply.status) {
+      prompt := repair_prompt(task_id, evaluation_document, "candidate-apply", candidate_apply.expected_code, candidate_apply.actual_code, candidate_apply.summary, candidate_apply.stdout, candidate_apply.stderr)
+      stage_document = stages.to_string()
+      return AttemptRun {
+        status: "FAIL".clone(),
+        final_status: LoopStatus.Failed,
+        code: candidate_apply.actual_code,
+        candidate_applied: false,
+        repaired: false,
+        repair_count: repair_count,
+        prompt: prompt.clone(),
+        stages: stage_document.clone(),
+      }
+    }
+    candidate_done = true
+  }
+
+  build_out := run_spec("build", build_cmd, build_argv, build_expected, root, timeout_ns)
+  if stage_count > 0 { stages.write(",") }
+  stages.write(build_out.document)
+  stage_count = stage_count + 1
+  if !stage_passed(build_out.status) {
+    prompt := repair_prompt(task_id, evaluation_document, "build", build_out.expected_code, build_out.actual_code, build_out.summary, build_out.stdout, build_out.stderr)
+    if repair_count > 0 || repair_patch.len() == 0 || iteration >= max_iterations {
+      terminal := if iteration >= max_iterations { LoopStatus.Exhausted } else { LoopStatus.GaveUp }
+      stage_document = stages.to_string()
+      return AttemptRun {
+        status: loop_status_label(terminal).clone(),
+        final_status: terminal,
+        code: build_out.actual_code,
+        candidate_applied: candidate_done,
+        repaired: false,
+        repair_count: repair_count,
+        prompt: prompt.clone(),
+        stages: stage_document.clone(),
+      }
+    }
+    repair_build := apply_repair(root, repair_patch, timeout_ns)
+    stages.write(",")
+    stages.write(repair_build.check_document)
+    if stage_passed(repair_build.check_status) {
+      stages.write(",")
+      stages.write(repair_build.apply_document)
+    }
+    if !repair_build.applied {
+      code := if !stage_passed(repair_build.check_status) { repair_build.check_code } else { repair_build.apply_code }
+      stage_document = stages.to_string()
+      return AttemptRun {
+        status: "REPAIR_FAILED".clone(),
+        final_status: LoopStatus.RepairFailed,
+        code: code,
+        candidate_applied: candidate_done,
+        repaired: false,
+        repair_count: repair_count,
+        prompt: prompt.clone(),
+        stages: stage_document.clone(),
+      }
+    }
+    stage_document = stages.to_string()
+    return AttemptRun {
+      status: "REPAIRING".clone(),
+      final_status: LoopStatus.Failed,
+      code: build_out.actual_code,
+      candidate_applied: candidate_done,
+      repaired: true,
+      repair_count: repair_count + 1,
+      prompt: prompt.clone(),
+      stages: stage_document.clone(),
+    }
+  }
+
+  targeted_out := run_spec("targeted-test", targeted_cmd, targeted_argv, targeted_expected, root, timeout_ns)
+  stages.write(",")
+  stages.write(targeted_out.document)
+  stage_count = stage_count + 1
+  if !stage_passed(targeted_out.status) {
+    prompt := repair_prompt(task_id, evaluation_document, "targeted-test", targeted_out.expected_code, targeted_out.actual_code, targeted_out.summary, targeted_out.stdout, targeted_out.stderr)
+    if repair_count > 0 || repair_patch.len() == 0 || iteration >= max_iterations {
+      terminal := if iteration >= max_iterations { LoopStatus.Exhausted } else { LoopStatus.GaveUp }
+      stage_document = stages.to_string()
+      return AttemptRun {
+        status: loop_status_label(terminal).clone(),
+        final_status: terminal,
+        code: targeted_out.actual_code,
+        candidate_applied: candidate_done,
+        repaired: false,
+        repair_count: repair_count,
+        prompt: prompt.clone(),
+        stages: stage_document.clone(),
+      }
+    }
+    repair_targeted := apply_repair(root, repair_patch, timeout_ns)
+    stages.write(",")
+    stages.write(repair_targeted.check_document)
+    if stage_passed(repair_targeted.check_status) {
+      stages.write(",")
+      stages.write(repair_targeted.apply_document)
+    }
+    if !repair_targeted.applied {
+      code := if !stage_passed(repair_targeted.check_status) { repair_targeted.check_code } else { repair_targeted.apply_code }
+      stage_document = stages.to_string()
+      return AttemptRun {
+        status: "REPAIR_FAILED".clone(),
+        final_status: LoopStatus.RepairFailed,
+        code: code,
+        candidate_applied: candidate_done,
+        repaired: false,
+        repair_count: repair_count,
+        prompt: prompt.clone(),
+        stages: stage_document.clone(),
+      }
+    }
+    stage_document = stages.to_string()
+    return AttemptRun {
+      status: "REPAIRING".clone(),
+      final_status: LoopStatus.Failed,
+      code: targeted_out.actual_code,
+      candidate_applied: candidate_done,
+      repaired: true,
+      repair_count: repair_count + 1,
+      prompt: prompt.clone(),
+      stages: stage_document.clone(),
+    }
+  }
+
+  full_out := run_spec("full-test", full_cmd, full_argv, full_expected, root, timeout_ns)
+  stages.write(",")
+  stages.write(full_out.document)
+  stage_count = stage_count + 1
+  if stage_passed(full_out.status) {
+    stage_document = stages.to_string()
+    return AttemptRun {
+      status: "PASS".clone(),
+      final_status: LoopStatus.Passed,
+      code: -1,
+      candidate_applied: candidate_done,
+      repaired: false,
+      repair_count: repair_count,
+      prompt: "".clone(),
+      stages: stage_document.clone(),
+    }
+  }
+
+  prompt := repair_prompt(task_id, evaluation_document, "full-test", full_out.expected_code, full_out.actual_code, full_out.summary, full_out.stdout, full_out.stderr)
+  if repair_count > 0 || repair_patch.len() == 0 || iteration >= max_iterations {
+    terminal := if iteration >= max_iterations { LoopStatus.Exhausted } else { LoopStatus.GaveUp }
+    stage_document = stages.to_string()
+    return AttemptRun {
+      status: loop_status_label(terminal).clone(),
+      final_status: terminal,
+      code: full_out.actual_code,
+      candidate_applied: candidate_done,
+      repaired: false,
+      repair_count: repair_count,
+      prompt: prompt.clone(),
+      stages: stage_document.clone(),
+    }
+  }
+  repair_full := apply_repair(root, repair_patch, timeout_ns)
+  stages.write(",")
+  stages.write(repair_full.check_document)
+  if stage_passed(repair_full.check_status) {
+    stages.write(",")
+    stages.write(repair_full.apply_document)
+  }
+  if !repair_full.applied {
+    code := if !stage_passed(repair_full.check_status) { repair_full.check_code } else { repair_full.apply_code }
+    stage_document = stages.to_string()
+    return AttemptRun {
+      status: "REPAIR_FAILED".clone(),
+      final_status: LoopStatus.RepairFailed,
+      code: code,
+      candidate_applied: candidate_done,
+      repaired: false,
+      repair_count: repair_count,
+      prompt: prompt.clone(),
+      stages: stage_document.clone(),
+    }
+  }
+  stage_document = stages.to_string()
+  return AttemptRun {
+    status: "REPAIRING".clone(),
+    final_status: LoopStatus.Failed,
+    code: full_out.actual_code,
+    candidate_applied: candidate_done,
+    repaired: true,
+    repair_count: repair_count + 1,
+    prompt: prompt.clone(),
+    stages: stage_document.clone(),
+  }
+}
+
+fn run_task(task: VerificationTask) -> VerificationResult {
+  if task.schema_version != 1 || task.task_id.len() == 0 || task.root.len() == 0 {
+    return invalid_result(task.task_id, 2)
+  }
+  if task.candidate_patch.len() == 0 || task.timeout_ns <= 0 || task.max_iterations <= 0 {
+    return invalid_result(task.task_id, 2)
+  }
+  if task.build.argv.len() == 0 || task.targeted_test.argv.len() == 0 || task.full_test.argv.len() == 0 {
+    return invalid_result(task.task_id, 2)
+  }
+
+  evaluated := patch_eval.evaluate(task.root, task.candidate_patch, task.timeout_ns)
+  evaluation_status := evaluation_status_label(evaluated.status)
+  evaluation_document: str := evaluated.document
+  evaluation_failed := match evaluated.status {
+    Failed => true,
+    _ => false,
+  }
+  if evaluation_failed {
+    evaluation_failure_document := render_document(
+      task.task_id,
+      LoopStatus.Invalid,
+      2,
+      0,
+      task.max_iterations,
+      0,
+      evaluation_status,
+      evaluation_document,
+      "",
+    )
+    return VerificationResult {
+      document: evaluation_failure_document.clone(),
+      status: LoopStatus.Invalid,
+      iteration_count: 0,
+      repair_count: 0,
+    }
+  }
+
+  mut attempts := "".clone()
+  mut iteration := 0
+  mut repair_count := 0
+  mut candidate_applied := false
+  mut final_status := LoopStatus.Failed
+  mut final_code := -1
+  loop {
+    if iteration >= task.max_iterations { break }
+    iteration = iteration + 1
+    attempt := run_attempt(
+      task.task_id,
+      task.root,
+      task.candidate_patch,
+      task.repair_patch,
+      task.build.cmd,
+      task.build.argv,
+      task.build.expected_code,
+      task.targeted_test.cmd,
+      task.targeted_test.argv,
+      task.targeted_test.expected_code,
+      task.full_test.cmd,
+      task.full_test.argv,
+      task.full_test.expected_code,
+      task.timeout_ns,
+      task.max_iterations,
+      iteration,
+      candidate_applied,
+      repair_count,
+      evaluation_document,
+    )
+    attempt_document := render_attempt(iteration, attempt.status, attempt.prompt, attempt.stages)
+    attempts = append_attempt(attempts, attempt_document)
+    candidate_applied = attempt.candidate_applied
+    repair_count = attempt.repair_count
+    final_code = attempt.code
+    if !attempt.repaired {
+      final_status = attempt.final_status
+      break
+    }
+  }
+  final_document := render_document(
+    task.task_id,
+    final_status,
+    final_code,
+    iteration,
+    task.max_iterations,
+    repair_count,
+    evaluation_status,
+    evaluation_document,
+    attempts,
+  )
+  return VerificationResult {
+    document: final_document.clone(),
+    status: final_status,
+    iteration_count: iteration,
+    repair_count: repair_count,
+  }
+}
+
+pub fn run_file(task_path: str, result_path: str) -> Result<RunSummary, Error> {
+  data := fs.read_file(task_path)?
+  task: VerificationTask := json.decode(data)?
+  result := run_task(task)
+  result_status := result.status
+  result_iteration_count := result.iteration_count
+  result_repair_count := result.repair_count
+  fs.write_file(result_path, result.document)?
+  return Ok(RunSummary {
+      status: result_status,
+      iteration_count: result_iteration_count,
+      repair_count: result_repair_count,
+    })
+}

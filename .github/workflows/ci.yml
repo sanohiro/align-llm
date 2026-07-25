@@ -68,4 +68,4 @@ jobs:
           test -x "$ALIGN_REPO/target/release/alignc"
           make ALIGNC="$ALIGN_REPO/target/release/alignc" \
             format-check check build eval-smoke loop-smoke provider-smoke \
-            index-smoke test-selection-smoke
+            index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke
