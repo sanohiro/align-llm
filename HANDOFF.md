@@ -5,13 +5,13 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is the C5 failure-memory slice on
-`c5-failure-memory`, implementation commit `05dbf75` based on merged main commit `17da92c`; the
-working tree contains the intentional handoff update before the PR._
+`c5-failure-memory`, implementation commit `05dbf75` and handoff commit `0246444` based on merged
+main commit `17da92c`; PR #12 is open for review and the working tree is clean._
 
 ## Current position
 
-The repository has completed C0 through C4. The C5 implementation is complete locally; its PR has
-not been opened yet.
+The repository has completed C0 through C4. The C5 implementation is complete locally and is open
+as PR #12.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -29,12 +29,11 @@ not been opened yet.
 
 ## Next steps
 
-1. Finish the focused C5 verification, commit the implementation and this handoff, and keep the
-   branch scoped to C5.
-2. Push `c5-failure-memory`, open the C5 pull request, and review it against
-   `docs/review-checklist.md` with one bounded adversarial-review attempt.
-3. Address valid findings, check the supported hosted run once, merge after review/check success,
-   then update this file to C6 Prompt and Context Optimizer.
+1. Review PR #12 against `docs/review-checklist.md` with one bounded adversarial-review attempt and
+   address only valid findings.
+2. Check the supported hosted run once and merge after review/check success.
+3. After merge, update this file to C6 Prompt and Context Optimizer and continue on the next scoped
+   branch.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
