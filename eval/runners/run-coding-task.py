@@ -89,7 +89,9 @@ def run(
     timeout_seconds: int,
     *,
     env: dict[str, str] | None = None,
+    command_name: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    display_name = command_name or argv[0]
     try:
         process = subprocess.Popen(
             argv,
@@ -101,7 +103,7 @@ def run(
             start_new_session=True,
         )
     except OSError as error:
-        raise TaskError(f"command failed to run: {argv[0]}: {error}") from error
+        raise TaskError(f"command failed to run: {display_name}: {error}") from error
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
@@ -110,7 +112,7 @@ def run(
         except ProcessLookupError:
             pass
         stdout, stderr = process.communicate()
-        details = [f"command timed out after {timeout_seconds} seconds: {argv[0]}"]
+        details = [f"command timed out after {timeout_seconds} seconds: {display_name}"]
         if stdout:
             details.append(f"stdout:\n{stdout.rstrip()}")
         if stderr:
@@ -246,6 +248,7 @@ def validate_candidate(
         checkout,
         validation_timeout_seconds,
         env=validation_env,
+        command_name=validation_argv[0],
     )
     print_command_output("pre-repair validation", before)
     if before.returncode == 0:
@@ -273,6 +276,7 @@ def validate_candidate(
         checkout,
         validation_timeout_seconds,
         env=validation_env,
+        command_name=validation_argv[0],
     )
     print_command_output("post-repair validation", after)
     if after.returncode != 0:
