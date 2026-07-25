@@ -1066,10 +1066,15 @@ def check_validation_resources(
     checkout: Path, process: subprocess.Popen[bytes]
 ) -> None:
     process_ids = validation_process_usage(process)
-    total_bytes, _file_count, visible_inodes = validation_worktree_usage(checkout)
-    deleted_bytes, _deleted_file_count = deleted_open_file_usage(
+    total_bytes, file_count, visible_inodes = validation_worktree_usage(checkout)
+    deleted_bytes, deleted_file_count = deleted_open_file_usage(
         process_ids, visible_inodes
     )
+    if file_count + deleted_file_count > MAX_VALIDATION_WORKTREE_FILES:
+        raise TaskError(
+            "validation exceeded the writable worktree file limit "
+            f"({MAX_VALIDATION_WORKTREE_FILES} files)"
+        )
     total_bytes += deleted_bytes
     if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
         raise TaskError(
