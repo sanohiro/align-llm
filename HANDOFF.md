@@ -259,6 +259,7 @@ bash -n scripts/run-patch-eval-smoke  PASS
 make patch-eval-smoke            PASS — diff shape, hunk-context symbols, risk/public-API/unrelated signals, recommended tests, failure persistence
 make test-selection-smoke         PASS — C2 related-test regression
 make index-smoke                 PASS — C2 index and semantic-resolution regression
+make provider-smoke               PASS — C1 provider regression
 git diff --check                 PASS
 ```
 
