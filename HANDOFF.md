@@ -4,8 +4,9 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the C2 semantic-resolution slice on
-`c2-reference-resolution` at implementation commit `b5860ff`; the working tree is clean._
+_Last updated: 2026-07-25. Active work is the C2 related-test selection slice on
+`c2-related-tests` at implementation commit `2bb706d`; the working tree has the intentional
+handoff update below._
 
 ## Current position
 
@@ -62,8 +63,13 @@ The repository has completed C0, C1, and the first C2 index slice and is continu
   the importing file's directory; core/std references are external; private, missing, and module
   declaration-mismatch targets remain unresolved. The focused fixture covers all four outcomes,
   newline-containing paths, revision binding, and persisted non-repository failure metadata.
-  Related-test ranking is not started. The implementation is committed at `b5860ff` on
-  `c2-reference-resolution`; it needs push, PR, review, and merge.
+- PR #7 merged the semantic-resolution slice at merge commit
+  `91ec8455f9316a3c702cfbe17f609e376a43cc70`.
+- The related-test selection slice is implemented at `2bb706d` on `c2-related-tests`. It writes
+  a schema-version-1, revision-bound document for a changed path, recognizes tracked test paths,
+  ranks basename matches at 100 points, adds 20 points for a shared directory, and preserves Git
+  order for ties. The focused fixture covers ranking reasons, ordering, revision binding, and
+  persisted non-repository failure metadata. The branch needs push, PR, review, and merge.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
@@ -217,13 +223,31 @@ The independent review CLI completed one bounded run; its verbose internal outpu
 the runner, so the changed surface was also manually reviewed against the checklist and pinned
 Align module rules. No blocking functional finding remains. The full `make ci` gate was not rerun.
 
+## C2 related-test selection verification
+
+Verified on 2026-07-25 against the existing pinned Align compiler:
+
+```text
+make fmt                         PASS
+make check                       PASS — 12 imported units, including repo_index
+make build                       PASS — executable built as ./main
+bash -n scripts/run-index-smoke scripts/run-test-selection-smoke  PASS
+make test-selection-smoke        PASS — deterministic basename/directory ranking, stable order, revision binding, failure persistence
+make index-smoke                 PASS — prior C2 index and semantic-resolution coverage
+make provider-smoke              PASS — C1 provider regression
+git diff --check                 PASS
+```
+
+The full `make ci` gate was not rerun; repeated CI is intentionally out of scope for this feature
+implementation.
+
 ## Next steps
 
-1. Push `b5860ff` on `c2-reference-resolution`, open a PR, and review the changed surface once.
-2. Apply only valid findings, rerun the focused index/provider verification, and merge with a merge
-   commit. Do not repeat the full CI gate or wait on a non-returning reviewer.
-3. After merge, continue C2 with related-test selection. Keep
-   Request 4 limited to real chunked SSE acceptance; it does not block the index work.
+1. Push `2bb706d` on `c2-related-tests`, open a PR, and review the changed surface once.
+2. Apply only valid findings, rerun the focused related-test/index/provider verification, and merge
+   with a merge commit. Do not repeat the full CI gate or wait on a non-returning reviewer.
+3. After merge, continue with C3 Patch Evaluator. Keep Request 4 limited to real chunked SSE
+   acceptance; it does not block the evaluator work.
 
 ## Constraints to preserve
 
@@ -246,15 +270,15 @@ Align module rules. No blocking functional finding remains. The full `make ci` g
 - Provider SSE parsing currently depends on Content-Length framing because Align's shipped
   `std.http` client rejects chunked response bodies; do not add a raw-socket compatibility layer.
 - C1 is merged at `b7068e6`; the first C2 index slice is merged at `d59c5ce`; the lexical-reference
-  slice is merged at `348c3a5`; the current semantic-resolution implementation is committed at
-  `b5860ff`.
+  slice is merged at `348c3a5`; semantic resolution is merged at `91ec8455f9316a3c702cfbe17f609e376a43cc70`;
+  related-test selection is committed at `2bb706d`.
 - C2 uses Git's tracked-file list (`git ls-files -z`) rather than recursively probing filesystem
   entries; do not replace it with a directory walk that loses repository boundaries or newline
   safety.
 - C2 currently parses top-level Align declarations/imports and lexical references, then resolves
   same-file functions and tracked user-module public function/type targets using the importing
-  file's directory as the index base. Do not claim related-test ranking until its own acceptance
-  fixture passes.
+  file's directory as the index base. Related-test selection is path-based and deterministic; it
+  does not yet use the resolved symbol/reference graph.
 - Source, comments, diagnostics, commits, pull requests, reviews, and releases are written in
   English.
 
