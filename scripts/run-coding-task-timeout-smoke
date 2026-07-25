@@ -81,6 +81,7 @@ from pathlib import Path
 runner_path = Path(sys.argv[1])
 marker = sys.argv[2]
 project_root = Path(sys.argv[3])
+sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("run_coding_task", runner_path)
 if spec is None or spec.loader is None:
     raise RuntimeError("cannot load coding task runner")
