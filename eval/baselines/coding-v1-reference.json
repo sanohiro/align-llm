@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "recorded_at": "2026-07-25T00:33:54+00:00",
-  "align_llm_commit": "60ab1062cdff729d9b3c7ea92a2649e18eab7a83",
+  "recorded_at": "2026-07-25T00:42:19+00:00",
+  "align_llm_commit": "91d7ec09636eba806df5120971ad84671b2905af",
   "align_revision": "db942d2f705546c7d6b8c0334a462548c6446f84",
   "corpus": {
     "id": "coding-v1",
@@ -38,7 +38,7 @@
       },
       {
         "path": "eval/runners/record-baseline.py",
-        "sha256": "26b8224980bcee280dd52a910353e9ef7a26c365df61f308778d208f74792c4d"
+        "sha256": "543cb1e2f6c242ab04c19f449e11a90cd27c56ed5174e169ce782415406f59de"
       },
       {
         "path": "eval/runners/run-coding-task.py",
@@ -93,7 +93,9 @@
     "architecture": "x86_64",
     "cpu": "AMD Ryzen 9 5950X 16-Core Processor",
     "logical_cpu_count": 32,
-    "python_version": "3.14.6",
+    "task_python_executable": "/usr/bin/python3",
+    "task_python_resolved_executable": "/usr/bin/python3.13",
+    "task_python_version": "3.13.5",
     "gpu": "not used"
   },
   "sample_count": 2,
@@ -106,8 +108,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 196065556,
-          "time_to_passing_patch_ns": 196065556
+          "duration_ns": 201827666,
+          "time_to_passing_patch_ns": 201827666
         }
       ],
       "summary": {
@@ -124,8 +126,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 194445043,
-          "time_to_passing_patch_ns": 194445043
+          "duration_ns": 193537853,
+          "time_to_passing_patch_ns": 193537853
         }
       ],
       "summary": {
@@ -139,9 +141,9 @@
     "task_attempt_count": 2,
     "passing_attempt_count": 2,
     "time_to_passing_patch_ns": {
-      "minimum": 194445043,
-      "median": 195255299,
-      "maximum": 196065556
+      "minimum": 193537853,
+      "median": 197682759,
+      "maximum": 201827666
     }
   }
 }
