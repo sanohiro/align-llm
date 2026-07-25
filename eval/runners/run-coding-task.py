@@ -636,11 +636,11 @@ def validation_sandbox_command(
     return sandbox
 
 
-def git_output(checkout: Path, *args: str) -> str:
+def git_output(checkout: Path, *args: str, nul_terminated: bool = False) -> str:
     result = run(["git", *args], checkout, 10, env=fixture_environment())
     if result.returncode != 0:
         raise TaskError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
+    return result.stdout.rstrip("\0") if nul_terminated else result.stdout.strip()
 
 
 def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str) -> None:
@@ -700,6 +700,7 @@ def source_tree(checkout: Path, source_revision: str) -> dict[str, tuple[str, st
         "-z",
         "--full-tree",
         source_revision,
+        nul_terminated=True,
     ).split("\0")
     entries = {}
     for record in records:
@@ -788,7 +789,13 @@ def check_allowed_changes(
 ) -> None:
     if git_output(checkout, "rev-parse", "HEAD") != source_revision:
         raise TaskError("candidate changed the pinned fixture HEAD")
-    index_records = git_output(checkout, "ls-files", "-v", "-z").split("\0")
+    index_records = git_output(
+        checkout,
+        "ls-files",
+        "-v",
+        "-z",
+        nul_terminated=True,
+    ).split("\0")
     flagged_paths = sorted(
         record[2:] for record in index_records if record and not record.startswith("H ")
     )
@@ -797,29 +804,45 @@ def check_allowed_changes(
     check_directory_modes(checkout, expected_directory_modes)
     changed = set(actual_worktree_changes(checkout, source_revision))
     changed.update(
-        git_output(
+        path
+        for path in git_output(
             checkout,
             "diff",
             "--cached",
             "--name-only",
+            "-z",
             "--no-renames",
             "--no-ext-diff",
             source_revision,
-        ).splitlines()
+            nul_terminated=True,
+        ).split("\0")
+        if path
     )
-    untracked = git_output(
-        checkout,
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-    ).splitlines()
-    ignored = git_output(
-        checkout,
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-    ).splitlines()
+    untracked = [
+        path
+        for path in git_output(
+            checkout,
+            "ls-files",
+            "--others",
+            "-z",
+            "--exclude-standard",
+            nul_terminated=True,
+        ).split("\0")
+        if path
+    ]
+    ignored = [
+        path
+        for path in git_output(
+            checkout,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "-z",
+            "--exclude-standard",
+            nul_terminated=True,
+        ).split("\0")
+        if path
+    ]
     if untracked:
         raise TaskError(f"candidate created untracked files: {', '.join(untracked)}")
     if ignored:
@@ -894,7 +917,13 @@ def check_pristine_checkout(
 ) -> None:
     if git_output(checkout, "rev-parse", "HEAD") != source_revision:
         raise TaskError("validation changed the pinned fixture HEAD")
-    index_records = git_output(checkout, "ls-files", "-v", "-z").split("\0")
+    index_records = git_output(
+        checkout,
+        "ls-files",
+        "-v",
+        "-z",
+        nul_terminated=True,
+    ).split("\0")
     flagged_paths = sorted(
         record[2:] for record in index_records if record and not record.startswith("H ")
     )
@@ -903,23 +932,35 @@ def check_pristine_checkout(
     check_directory_modes(checkout, expected_directory_modes)
     if actual_worktree_changes(checkout, source_revision):
         raise TaskError("validation changed the pinned fixture worktree")
-    untracked = git_output(
-        checkout,
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-    ).splitlines()
+    untracked = [
+        path
+        for path in git_output(
+            checkout,
+            "ls-files",
+            "--others",
+            "-z",
+            "--exclude-standard",
+            nul_terminated=True,
+        ).split("\0")
+        if path
+    ]
     if untracked:
         raise TaskError(
             f"validation created untracked files: {', '.join(sorted(untracked))}"
         )
-    ignored = git_output(
-        checkout,
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-    ).splitlines()
+    ignored = [
+        path
+        for path in git_output(
+            checkout,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "-z",
+            "--exclude-standard",
+            nul_terminated=True,
+        ).split("\0")
+        if path
+    ]
     if ignored:
         raise TaskError(
             f"validation created ignored files: {', '.join(sorted(ignored))}"
@@ -929,9 +970,11 @@ def check_pristine_checkout(
         "diff",
         "--cached",
         "--name-only",
+        "-z",
         "--no-renames",
         "--no-ext-diff",
         source_revision,
+        nul_terminated=True,
     ):
         raise TaskError("validation changed the pinned fixture index")
 

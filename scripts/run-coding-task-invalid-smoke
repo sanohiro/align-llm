@@ -20,8 +20,10 @@ ignored_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored.XXXXXX.jso
 ignored_side_effect_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored-side-effect.XXXXXX")"
 ignored_side_effect_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored-side-effect.XXXXXX.json")"
 unsafe_id_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.unsafe-id.XXXXXX.json")"
+whitespace_source="$(mktemp -d "${project_root}/eval/fixtures/.whitespace.XXXXXX")"
+whitespace_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.whitespace.XXXXXX.json")"
 rm -f "${host_marker}"
-trap 'rm -f "${output_file}" "${host_marker}" "${sandbox_task}" "${ignored_task}" "${ignored_side_effect_task}" "${unsafe_id_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}"' EXIT
+trap 'rm -f "${output_file}" "${host_marker}" "${sandbox_task}" "${ignored_task}" "${ignored_side_effect_task}" "${unsafe_id_task}" "${whitespace_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}" "${whitespace_source}"' EXIT
 
 cd "${project_root}"
 if python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1; then
@@ -55,6 +57,56 @@ if ! python3 "${runner}" "${unsafe_id_task}" "${valid_patch}" >"${output_file}" 
 fi
 
 printf '%s\n' "coding task path-unsafe id: isolated"
+
+python3 - \
+  "${task}" \
+  "${whitespace_task}" \
+  "${source_fixture}" \
+  "${whitespace_source}" \
+  "${project_root}" <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+source = Path(sys.argv[3])
+destination = Path(sys.argv[4])
+shutil.copytree(source, destination, dirs_exist_ok=True)
+(destination / "trailing-space ").write_text("space\n", encoding="utf-8")
+(destination / "trailing-newline\n").write_text("newline\n", encoding="utf-8")
+task["id"] = "whitespace-paths"
+task["source_dir"] = str(destination.relative_to(Path(sys.argv[5])))
+task["source_revision"] = "0" * 40
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+python3 "${runner}" "${whitespace_task}" "${valid_patch}" >"${output_file}" 2>&1 || true
+whitespace_revision="$(sed -n 's/.*got \([0-9a-f]\{40\}\)$/\1/p' "${output_file}")"
+if [[ ! "${whitespace_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+  printf '%s\n' "coding task smoke could not resolve the whitespace-path revision" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+python3 - "${whitespace_task}" "${whitespace_revision}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+task["source_revision"] = sys.argv[2]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if ! python3 "${runner}" "${whitespace_task}" "${valid_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task rejected tracked paths containing whitespace" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task whitespace paths: isolated"
 
 if python3 "${runner}" "${task}" "${side_effect_patch}" >"${output_file}" 2>&1; then
   printf '%s\n' "coding task unexpectedly accepted a validation side effect" >&2
