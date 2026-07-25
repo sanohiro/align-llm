@@ -4,8 +4,8 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the C2 related-test selection slice on
-`c2-related-tests` at implementation commit `2bb706d`; the working tree has the intentional
+_Last updated: 2026-07-25. Active work is the C3 patch-evaluator slice on
+`c3-patch-evaluator` at implementation commit `3581c79`; the working tree has the intentional
 handoff update below._
 
 ## Current position
@@ -69,7 +69,13 @@ The repository has completed C0, C1, and the first C2 index slice and is continu
   a schema-version-1, revision-bound document for a changed path, recognizes tracked test paths,
   ranks basename matches at 100 points, adds 20 points for a shared directory, and preserves Git
   order for ties. The focused fixture covers ranking reasons, ordering, revision binding, and
-  persisted non-repository failure metadata. The branch needs push, PR, review, and merge.
+  persisted non-repository failure metadata.
+- PR #8 merged the related-test selection slice at merge commit `4cb217b7f901019e689bba36c88a41322d2cf51e`.
+- The C3 patch-evaluator slice is implemented at `3581c79` on `c3-patch-evaluator`. It parses
+  standard unified-diff file markers without applying the patch, records touched files and hunk
+  symbols, computes additions/deletions, complexity delta, public API and conservative unrelated
+  path flags, calculates a deterministic risk score, and reuses C2 to recommend tests. Its branch
+  needs push, PR, review, and merge.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
@@ -241,13 +247,31 @@ git diff --check                 PASS
 The full `make ci` gate was not rerun; repeated CI is intentionally out of scope for this feature
 implementation.
 
+## C3 patch-evaluator verification
+
+Verified on 2026-07-25 against the existing pinned Align compiler:
+
+```text
+make fmt                         PASS
+make check                       PASS — 13 imported units, including patch_eval
+make build                       PASS — executable built as ./main
+bash -n scripts/run-patch-eval-smoke  PASS
+make patch-eval-smoke            PASS — diff shape, hunk-context symbols, risk/public-API/unrelated signals, recommended tests, failure persistence
+make test-selection-smoke         PASS — C2 related-test regression
+make index-smoke                 PASS — C2 index and semantic-resolution regression
+git diff --check                 PASS
+```
+
+The full `make ci` gate was not rerun; repeated CI is intentionally out of scope for this feature
+implementation.
+
 ## Next steps
 
-1. Push `2bb706d` on `c2-related-tests`, open a PR, and review the changed surface once.
-2. Apply only valid findings, rerun the focused related-test/index/provider verification, and merge
-   with a merge commit. Do not repeat the full CI gate or wait on a non-returning reviewer.
-3. After merge, continue with C3 Patch Evaluator. Keep Request 4 limited to real chunked SSE
-   acceptance; it does not block the evaluator work.
+1. Push `3581c79` on `c3-patch-evaluator`, open a PR, and review the changed surface once.
+2. Apply only valid findings, rerun the focused patch-evaluator and C2 verification, and merge with
+   a merge commit. Do not repeat the full CI gate or wait on a non-returning reviewer.
+3. After merge, continue with C4 Verification Loop. Keep Request 4 limited to real chunked SSE
+   acceptance; it does not block the evaluator or verification work.
 
 ## Constraints to preserve
 
@@ -271,7 +295,8 @@ implementation.
   `std.http` client rejects chunked response bodies; do not add a raw-socket compatibility layer.
 - C1 is merged at `b7068e6`; the first C2 index slice is merged at `d59c5ce`; the lexical-reference
   slice is merged at `348c3a5`; semantic resolution is merged at `91ec8455f9316a3c702cfbe17f609e376a43cc70`;
-  related-test selection is committed at `2bb706d`.
+  related-test selection is merged at `4cb217b7f901019e689bba36c88a41322d2cf51e`; the current
+  patch evaluator is committed at `3581c79`.
 - C2 uses Git's tracked-file list (`git ls-files -z`) rather than recursively probing filesystem
   entries; do not replace it with a directory walk that loses repository boundaries or newline
   safety.
@@ -279,6 +304,10 @@ implementation.
   same-file functions and tracked user-module public function/type targets using the importing
   file's directory as the index base. Related-test selection is path-based and deterministic; it
   does not yet use the resolved symbol/reference graph.
+- C3 currently parses standard unified-diff markers read-only. It uses hunk context for a bounded
+  symbol signal, conservative path heuristics for unrelated diff, and a documented line-signal
+  risk score. Do not claim full language-aware diff analysis or patch application until later
+  slices ship.
 - Source, comments, diagnostics, commits, pull requests, reviews, and releases are written in
   English.
 
