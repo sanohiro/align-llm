@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import statistics
 import subprocess
 import sys
@@ -12,6 +13,17 @@ from typing import Any
 
 class BaselineError(Exception):
     pass
+
+
+def git_environment() -> dict[str, str]:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment["LC_ALL"] = "C"
+    return environment
 
 
 def load_object(path: Path) -> dict[str, Any]:
@@ -82,6 +94,7 @@ def verify_commit(project_root: Path, revision: str) -> None:
         check=False,
         capture_output=True,
         text=True,
+        env=git_environment(),
     )
     if exists.returncode != 0:
         raise BaselineError("align_llm_commit is not available in the repository")
@@ -91,6 +104,7 @@ def verify_commit(project_root: Path, revision: str) -> None:
         check=False,
         capture_output=True,
         text=True,
+        env=git_environment(),
     )
     if ancestor.returncode != 0:
         raise BaselineError("align_llm_commit is not an ancestor of HEAD")
@@ -203,6 +217,7 @@ def verify_artifacts(
             cwd=project_root,
             check=False,
             capture_output=True,
+            env=git_environment(),
         )
         if source.returncode != 0:
             raise BaselineError(

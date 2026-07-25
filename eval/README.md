@@ -11,7 +11,9 @@ Each task should identify its repository revision, allowed tools, timeout, check
 
 `tasks/smoke-v1.json` checks the evaluator itself. `tasks/coding-v1.json` is the first real repair
 corpus: its runner constructs a pinned Git repository, proves the defect is observable, applies a
-candidate patch under an edit allowlist, and runs the declared validation command. Run the complete
+candidate patch under an edit allowlist, and runs the declared validation command inside a
+bubblewrap sandbox. The coding corpus currently requires Linux child-subreaper support and
+`/usr/bin/bwrap`; it fails closed when either containment mechanism is unavailable. Run the complete
 local gate with:
 
 ```text

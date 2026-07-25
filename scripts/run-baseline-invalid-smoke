@@ -6,7 +6,9 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 baseline="${project_root}/eval/baselines/coding-v1-reference.json"
 invalid_baseline="$(mktemp "${project_root}/eval/baselines/.invalid.XXXXXX.json")"
 output_file="$(mktemp)"
-trap 'rm -f "${invalid_baseline}" "${output_file}"' EXIT
+replacement_namespace="refs/align-llm-smoke/replace"
+replacement_ref=""
+trap 'rm -f "${invalid_baseline}" "${output_file}"; if [[ -n "${replacement_ref}" ]]; then git -C "${project_root}" update-ref -d "${replacement_ref}"; fi' EXIT
 
 python3 - "${baseline}" "${invalid_baseline}" <<'PY'
 import json
@@ -221,3 +223,38 @@ if ! grep -Fq "recorded Python executable differs from the corpus task command" 
 fi
 
 printf '%s\n' "unrelated baseline Python runtime: rejected"
+
+source_commit="$(
+  python3 - "${baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["align_llm_commit"])
+PY
+)"
+replacement_ref="${replacement_namespace}/${source_commit}"
+git update-ref "${replacement_ref}" HEAD
+ordinary_tree="$(
+  GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
+    git rev-parse "${source_commit}^{tree}"
+)"
+source_tree="$(
+  GIT_NO_REPLACE_OBJECTS=1 \
+    git rev-parse "${source_commit}^{tree}"
+)"
+if [[ "${ordinary_tree}" == "${source_tree}" ]]; then
+  printf '%s\n' "baseline replacement smoke did not alter object resolution" >&2
+  exit 1
+fi
+
+if ! GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
+  python3 ./eval/runners/verify-baseline.py >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker honored mutable Git replacement state" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+git update-ref -d "${replacement_ref}"
+replacement_ref=""
+printf '%s\n' "baseline Git replacement object: ignored"

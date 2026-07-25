@@ -13,15 +13,20 @@ eval/runners/run-fixed.sh eval/tasks/smoke-v1.json
 
 `run-coding-task.py` materializes a fixture as a deterministic SHA-1 Git commit in a temporary
 directory. It checks the pinned revision, requires validation to fail before repair, applies a
-candidate patch, enforces the edit allowlist, and requires validation to pass afterward. Temporary
-checkout cleanup is automatic. The CI gate also supplies a patch that changes a forbidden test file
+candidate patch, enforces the edit allowlist, and requires validation to pass afterward. Candidate
+validation runs in a bubblewrap sandbox with isolated process, mount, IPC, and network namespaces;
+only the temporary checkout is writable, and execution fails closed unless Linux child-subreaper
+support and `/usr/bin/bwrap` are available. Temporary checkout cleanup is automatic. The CI gate
+also supplies a patch that changes a forbidden test file
 and a passing patch that writes and stages a forbidden file during validation; both must be rejected
 against the original fixture commit after execution. Additional regressions prove ambient Git
 configuration cannot change the fixture revision and that a timed-out validation retains output,
 kills its descendant process tree, and removes its temporary checkout. Fixture setup rejects ignored
 inputs, validation command ownership includes cleaning descendants after normal completion, and
-non-UTF-8 diagnostics are retained with replacement decoding. The fixed coding corpus dispatches
-through an absolute system Python path so ambient `PATH` cannot select another interpreter.
+non-UTF-8 diagnostics are retained with replacement decoding. Validation receives a minimal
+environment without caller credentials, and all provenance-related Git operations disable
+replacement objects. The fixed coding corpus dispatches through an absolute system Python path so
+ambient `PATH` cannot select another interpreter.
 
 Record a canonical baseline only from a clean commit:
 

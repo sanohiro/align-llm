@@ -24,6 +24,7 @@ FIXTURE_GIT_ENV = {
     "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
 }
 PR_SET_CHILD_SUBREAPER = 36
+BWRAP_EXECUTABLE = Path("/usr/bin/bwrap")
 
 
 def enable_child_subreaper() -> bool:
@@ -50,6 +51,11 @@ class TaskError(Exception):
 
 class CommandTimedOut(TaskError):
     pass
+
+
+def require_process_containment() -> None:
+    if not CHILD_SUBREAPER_ENABLED:
+        raise TaskError("process containment requires Linux child-subreaper support")
 
 
 def descendant_process_ids(root_pids: set[int]) -> set[int]:
@@ -219,6 +225,7 @@ def run(
     command_name: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     display_name = command_name or argv[0]
+    require_process_containment()
     try:
         process = subprocess.Popen(
             argv,
@@ -265,20 +272,20 @@ def run(
 
 def fixture_environment() -> dict[str, str]:
     environment = {
-        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+        "HOME": "/tmp/home",
+        "PATH": "/usr/bin:/bin",
+        "TMPDIR": "/tmp",
     }
     environment.update(FIXTURE_GIT_ENV)
     environment["GIT_CONFIG_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     environment["LC_ALL"] = "C"
     return environment
 
 
 def validation_environment() -> dict[str, str]:
     environment = fixture_environment()
-    for key in tuple(environment):
-        if key.startswith("PYTHON"):
-            environment.pop(key)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONNOUSERSITE"] = "1"
     return environment
@@ -288,6 +295,95 @@ def validation_command(argv: list[str]) -> list[str]:
     if argv[0] == "python3":
         return [str(Path(sys.executable).resolve()), *argv[1:]]
     return argv
+
+
+def create_sandbox_parent_argv(path: Path, existing_roots: tuple[Path, ...]) -> list[str]:
+    arguments = []
+    parents = list(path.parents)
+    parents.reverse()
+    for parent in parents:
+        if parent == Path("/"):
+            continue
+        if any(parent == root or parent.is_relative_to(root) for root in existing_roots):
+            continue
+        arguments.extend(["--dir", str(parent)])
+    return arguments
+
+
+def validation_sandbox_command(argv: list[str], checkout: Path) -> list[str]:
+    if not BWRAP_EXECUTABLE.is_file() or not os.access(BWRAP_EXECUTABLE, os.X_OK):
+        raise TaskError(
+            f"validation sandbox is unavailable: {BWRAP_EXECUTABLE} is required"
+        )
+
+    resolved = validation_command(argv)
+    executable = Path(resolved[0]).resolve()
+    system_root = Path("/usr")
+    python_root = Path(sys.base_prefix).resolve()
+    readonly_roots = [system_root]
+    sandbox = [
+        str(BWRAP_EXECUTABLE),
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-all",
+        "--ro-bind",
+        str(system_root),
+        str(system_root),
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--symlink",
+        "usr/sbin",
+        "/sbin",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--dir",
+        "/tmp/home",
+    ]
+    if python_root != system_root and not python_root.is_relative_to(system_root):
+        sandbox.extend(
+            create_sandbox_parent_argv(
+                python_root,
+                tuple(readonly_roots),
+            )
+        )
+        sandbox.extend(["--ro-bind", str(python_root), str(python_root)])
+        readonly_roots.append(python_root)
+    if not any(
+        executable == root or executable.is_relative_to(root) for root in readonly_roots
+    ):
+        raise TaskError(
+            f"validation executable is outside the sandbox runtime: {executable}"
+        )
+
+    sandbox.extend(
+        create_sandbox_parent_argv(
+            checkout,
+            tuple(readonly_roots),
+        )
+    )
+    sandbox.extend(
+        [
+            "--bind",
+            str(checkout),
+            str(checkout),
+            "--chdir",
+            str(checkout),
+            "--",
+            *resolved,
+        ]
+    )
+    return sandbox
 
 
 def git_output(checkout: Path, *args: str) -> str:
@@ -491,7 +587,7 @@ def validate_candidate(
     validation_timeout_seconds: int,
     source_revision: str,
 ) -> None:
-    resolved_validation_argv = validation_command(validation_argv)
+    resolved_validation_argv = validation_sandbox_command(validation_argv, checkout)
     validation_env = validation_environment()
     before = run(
         resolved_validation_argv,

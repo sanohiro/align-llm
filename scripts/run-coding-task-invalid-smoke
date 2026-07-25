@@ -12,11 +12,14 @@ hidden_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-h
 stat_cache_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-stat-cache-side-effect.patch"
 source_fixture="${project_root}/eval/fixtures/python-inclusive-range-v1/repository"
 output_file="$(mktemp)"
+host_marker="$(mktemp "${project_root}/.sandbox-host.XXXXXX")"
+sandbox_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.sandbox.XXXXXX.json")"
 ignored_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored.XXXXXX")"
 ignored_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored.XXXXXX.json")"
 ignored_side_effect_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored-side-effect.XXXXXX")"
 ignored_side_effect_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored-side-effect.XXXXXX.json")"
-trap 'rm -f "${output_file}" "${ignored_task}" "${ignored_side_effect_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}"' EXIT
+rm -f "${host_marker}"
+trap 'rm -f "${output_file}" "${host_marker}" "${sandbox_task}" "${ignored_task}" "${ignored_side_effect_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}"' EXIT
 
 cd "${project_root}"
 if python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1; then
@@ -199,3 +202,98 @@ if ! grep -Fq "validation changed the pinned fixture before repair" "${output_fi
 fi
 
 printf '%s\n' "coding task ignored pre-repair side effect: rejected"
+
+python3 - "${task}" "${sandbox_task}" "${host_marker}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+validation = (
+    "import pathlib,sys,unittest; "
+    "marker=pathlib.Path(sys.argv[1]); "
+    "\ntry: marker.write_text('escaped', encoding='utf-8')"
+    "\nexcept OSError: pass"
+    "\nsuite=unittest.defaultTestLoader.discover('tests'); "
+    "result=unittest.TextTestRunner(verbosity=2).run(suite); "
+    "sys.exit(0 if result.wasSuccessful() else 1)"
+)
+task["id"] = "python-inclusive-range-sandbox-smoke"
+task["validation_argv"] = ["python3", "-c", validation, sys.argv[3]]
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+python3 "${runner}" "${sandbox_task}" \
+  "${project_root}/eval/baselines/patches/python-inclusive-range.patch" \
+  >"${output_file}" 2>&1
+if [[ -e "${host_marker}" ]]; then
+  printf '%s\n' "coding task validation escaped its writable sandbox" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task host filesystem mutation: contained"
+
+python3 - "${runner}" "${project_root}" <<'PY'
+import importlib.util
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+runner_path = Path(sys.argv[1])
+project_root = Path(sys.argv[2])
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("run_coding_task", runner_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load coding task runner")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+available_bwrap = module.BWRAP_EXECUTABLE
+module.BWRAP_EXECUTABLE = Path("/missing/align-llm-bwrap")
+try:
+    try:
+        module.validation_sandbox_command(["python3", "-c", "pass"], project_root)
+    except module.TaskError as error:
+        if "validation sandbox is unavailable" not in str(error):
+            raise
+    else:
+        raise RuntimeError("validation did not fail closed without bubblewrap")
+finally:
+    module.BWRAP_EXECUTABLE = available_bwrap
+
+with tempfile.TemporaryDirectory(prefix="align-llm-replace-smoke-") as temporary:
+    repository = Path(temporary)
+    environment = module.fixture_environment()
+
+    def git(*arguments: str) -> str:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=repository,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr)
+        return result.stdout.strip()
+
+    git("init", "-q", "--initial-branch=main", "--object-format=sha1")
+    target = repository / "value.txt"
+    target.write_text("original\n", encoding="utf-8")
+    git("add", "value.txt")
+    git("-c", "commit.gpgSign=false", "commit", "-q", "-m", "original")
+    original_commit = git("rev-parse", "HEAD")
+    target.write_text("replacement\n", encoding="utf-8")
+    git("add", "value.txt")
+    git("-c", "commit.gpgSign=false", "commit", "-q", "-m", "replacement")
+    replacement_commit = git("rev-parse", "HEAD")
+    git("replace", original_commit, replacement_commit)
+    tree = module.source_tree(repository, original_commit)
+    if tree.get("value.txt") != ("100644", module.git_blob_id(b"original\n")):
+        raise RuntimeError("fixture provenance honored a mutable Git replacement object")
+PY
+
+printf '%s\n' "coding task missing bubblewrap: failed closed"
+printf '%s\n' "coding task Git replacement object: ignored"
