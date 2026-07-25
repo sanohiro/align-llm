@@ -268,7 +268,7 @@ fn analyze_segment(segment: str) -> PatchSegment {
       hunk_symbol = symbol_match(hunk_context(line))
       hunk_symbol_emitted = false
     } else {
-      if line.starts_with("+") && !line.starts_with("+++") {
+      if line.starts_with("+") && (seen_hunk || !line.starts_with("+++")) {
         code := line[1..line.len()]
         additions = additions + 1
         complexity_delta = complexity_delta + complexity_weight(code)
@@ -289,7 +289,7 @@ fn analyze_segment(segment: str) -> PatchSegment {
           }
         }
       }
-      if line.starts_with("-") && !line.starts_with("---") {
+      if line.starts_with("-") && (seen_hunk || !line.starts_with("---")) {
         code := line[1..line.len()]
         deletions = deletions + 1
         complexity_delta = complexity_delta - complexity_weight(code)

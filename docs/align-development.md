@@ -143,7 +143,7 @@ build; those actions belong to C4. The CLI writes a schema-version-1 document:
 The document records touched files and hunk-context symbols, additions/deletions, a simple
 complexity delta (`if`, `match`, `loop`, `&&`, and `||` signals), public API-line changes, a
 deterministic risk score, and the C2 recommended-test candidates for the first non-test file. The
-risk score starts with changed lines, adds 20 for a public API line, 25 for a test/documentation/
+risk score starts with changed lines, adds 20 for a public API change, 25 for a test/documentation/
 metadata path flagged as unrelated, and five per positive complexity point. The `unrelated_diff`
 flag is deliberately a conservative path heuristic until task-specific allowlists are connected.
 The parser currently expects standard unified-diff file markers; patch application and richer
