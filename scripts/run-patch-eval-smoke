@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+temp_dir=$(mktemp -d)
+repo_dir="$temp_dir/repository"
+patch_path="$temp_dir/candidate.patch"
+evaluation_path="$temp_dir/evaluation.json"
+failed_path="$temp_dir/failed.json"
+
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+python3 - "$repo_dir" "$patch_path" <<'PY'
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+patch = Path(sys.argv[2])
+(repo / "src").mkdir(parents=True)
+(repo / "tests").mkdir()
+(repo / "src" / "inclusive_range.py").write_text(
+    "def inclusive_total(start: int, stop: int) -> int:\n    return sum(range(start, stop))\n",
+    encoding="utf-8",
+)
+(repo / "tests" / "test_inclusive_range.py").write_text(
+    "def test_inclusive_range():\n    assert True\n", encoding="utf-8"
+)
+(repo / "tests" / "test_other.py").write_text(
+    "def test_other():\n    assert True\n", encoding="utf-8"
+)
+(repo / "src" / "api.align").write_text("module api\npub fn old() -> i64 = 1\n", encoding="utf-8")
+patch.write_text(
+    """diff --git a/src/inclusive_range.py b/src/inclusive_range.py
+index 0000000..1111111 100644
+--- a/src/inclusive_range.py
++++ b/src/inclusive_range.py
+@@ -2 +2 @@ def inclusive_total(start: int, stop: int) -> int:
+-    return sum(range(start, stop))
++    return sum(range(start, stop + 1))
+diff --git a/tests/test_inclusive_range.py b/tests/test_inclusive_range.py
+--- a/tests/test_inclusive_range.py
++++ b/tests/test_inclusive_range.py
+@@ -1 +1 @@ def test_inclusive_range():
+-    assert True
++    assert True  # candidate test edit
+diff --git a/src/api.align b/src/api.align
+--- a/src/api.align
++++ b/src/api.align
+@@ -2 +2 @@
+-pub fn old() -> i64 = 1
++pub fn new() -> i64 = 1
+""",
+    encoding="utf-8",
+)
+PY
+
+git init -q "$repo_dir"
+git -C "$repo_dir" config user.email smoke@example.invalid
+git -C "$repo_dir" config user.name "Patch Eval Smoke"
+git -C "$repo_dir" add --all
+git -C "$repo_dir" commit -qm initial
+
+"$root_dir/main" --evaluate-patch "$repo_dir" "$patch_path" "$evaluation_path"
+
+python3 - "$repo_dir" "$patch_path" "$evaluation_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+patch = Path(sys.argv[2])
+evaluation = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+
+assert evaluation["schema_version"] == 1, evaluation
+assert evaluation["root"] == str(repo), evaluation
+assert evaluation["patch_path"] == str(patch), evaluation
+assert evaluation["status"] == "ok", evaluation
+assert evaluation["error_code"] == -1, evaluation
+assert evaluation["touched_file_count"] == 3, evaluation
+assert evaluation["touched_symbol_count"] == 3, evaluation
+assert evaluation["risk_score"] == 51, evaluation
+assert evaluation["unrelated_diff"] is True, evaluation
+assert evaluation["public_api_change"] is True, evaluation
+assert evaluation["complexity_delta"] == 0, evaluation
+assert evaluation["recommended_test_count"] == 2, evaluation
+
+files = {item["path"]: item for item in evaluation["files"]}
+assert files["src/inclusive_range.py"] == {
+    "path": "src/inclusive_range.py",
+    "additions": 1,
+    "deletions": 1,
+    "complexity_delta": 0,
+    "risk_score": 2,
+    "unrelated": False,
+    "public_api_change": False,
+}, files
+assert files["tests/test_inclusive_range.py"]["unrelated"] is True, files
+assert files["src/api.align"]["public_api_change"] is True, files
+
+symbols = {(item["path"], item["name"], item["kind"]) for item in evaluation["symbols"]}
+assert ("src/inclusive_range.py", "inclusive_total", "function") in symbols, symbols
+assert ("tests/test_inclusive_range.py", "test_inclusive_range", "function") in symbols, symbols
+assert ("src/api.align", "old", "public-function") in symbols, symbols
+assert evaluation["recommended_tests"] == [
+    {"path": "tests/test_inclusive_range.py", "score": 100, "reason": "basename-match"},
+    {"path": "tests/test_other.py", "score": 0, "reason": "generic"},
+], evaluation
+PY
+
+if "$root_dir/main" --evaluate-patch "$repo_dir" "$temp_dir/missing.patch" "$failed_path"; then
+  exit 1
+fi
+python3 - "$failed_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+failed = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert failed["schema_version"] == 1, failed
+assert failed["status"] == "error", failed
+assert failed["error_code"] == 2, failed
+assert failed["touched_file_count"] == 0, failed
+assert failed["files"] == [], failed
+assert failed["symbols"] == [], failed
+assert failed["recommended_tests"] == [], failed
+PY
+
+printf '%s\n' "patch evaluator smoke: diff shape, symbol/risk signals, recommended tests, and failure persistence PASS"

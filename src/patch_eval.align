@@ -1,0 +1,508 @@
+module patch_eval
+
+import core.json
+import repo_index
+import std.fs
+import std.path
+
+// C3 starts with a read-only unified-diff evaluator. It reports deterministic patch shape and
+// risk signals, then reuses the C2 path selector for recommended tests. Applying a patch and
+// running validation remain C4 responsibilities.
+
+pub PatchEvaluation {
+  document: string,
+  status: repo_index.IndexStatus,
+  touched_file_count: i64,
+  touched_symbol_count: i64,
+}
+
+PatchMeta {
+  schema_version: i64,
+  root: str,
+  patch_path: str,
+  status: str,
+  error_code: i64,
+  touched_file_count: i64,
+  touched_symbol_count: i64,
+  risk_score: i64,
+  unrelated_diff: bool,
+  public_api_change: bool,
+  complexity_delta: i64,
+  recommended_test_count: i64,
+}
+
+PatchFile {
+  path: str,
+  additions: i64,
+  deletions: i64,
+  complexity_delta: i64,
+  risk_score: i64,
+  unrelated: bool,
+  public_api_change: bool,
+}
+
+PatchSymbol { path: str, name: str, kind: str }
+
+SymbolMatch { name: str, kind: str }
+
+PatchSegment {
+  path: string,
+  file_json: string,
+  symbols_json: string,
+  additions: i64,
+  deletions: i64,
+  complexity_delta: i64,
+  risk_score: i64,
+  unrelated: bool,
+  public_api_change: bool,
+}
+
+pub fn evaluate(root: str, patch_path: str, timeout_ns: i64) -> PatchEvaluation {
+  patch := fs.read_file(patch_path) else {
+    return failed_evaluation(root, patch_path, 2)
+  }
+  patch_view: str := patch
+
+  mut files_body := builder()
+  mut symbols_body := builder()
+  mut touched_file_count := 0
+  mut touched_symbol_count := 0
+  mut risk_score := 0
+  mut complexity_delta := 0
+  mut unrelated_diff := false
+  mut public_api_change := false
+  mut primary_path := "".clone()
+  mut patch_cursor := 0
+
+  loop {
+    segment_start := find_diff_header(patch_view, patch_cursor)
+    if segment_start >= patch_view.len() { break }
+    segment_end := find_diff_header(patch_view, segment_start + 1)
+    segment := patch_view[segment_start..segment_end]
+    analyzed := analyze_segment(segment)
+    if analyzed.path.len() == 0 {
+      return failed_evaluation(root, patch_path, 1)
+    }
+
+    if touched_file_count > 0 { files_body.write(",") }
+    files_body.write(analyzed.file_json)
+    if analyzed.symbols_json.len() > 0 {
+      if touched_symbol_count > 0 { symbols_body.write(",") }
+      symbols_body.write(analyzed.symbols_json)
+    }
+    touched_file_count = touched_file_count + 1
+    touched_symbol_count = touched_symbol_count + count_symbols(analyzed.symbols_json)
+    risk_score = risk_score + analyzed.risk_score
+    complexity_delta = complexity_delta + analyzed.complexity_delta
+    if analyzed.unrelated { unrelated_diff = true }
+    if analyzed.public_api_change { public_api_change = true }
+    analyzed_path: str := analyzed.path
+    if primary_path.len() == 0 && !is_test_path(analyzed_path) {
+      primary_path = analyzed.path.clone()
+    }
+    patch_cursor = segment_end
+  }
+
+  if touched_file_count == 0 {
+    return failed_evaluation(root, patch_path, 1)
+  }
+
+  mut status := repo_index.IndexStatus.Ready
+  mut status_label := "ok"
+  mut error_code := -1
+  mut recommended_tests_json := "".clone()
+  mut recommended_test_count := 0
+  if primary_path.len() > 0 {
+    selected := repo_index.select_tests(root, primary_path, timeout_ns)
+    selected_document: str := selected.document
+    recommended_tests_json = extract_candidates(selected_document).clone()
+    recommended_test_count = selected.candidate_count
+    match selected.status {
+      Ready => {},
+      Partial => {
+        status = repo_index.IndexStatus.Partial
+        status_label = "partial"
+        error_code = 2
+      },
+      Failed => {
+        status = repo_index.IndexStatus.Failed
+        status_label = "error"
+        error_code = 2
+      },
+    }
+  }
+
+  document := render_document(
+    root,
+    patch_path,
+    status_label,
+    error_code,
+    touched_file_count,
+    touched_symbol_count,
+    risk_score,
+    unrelated_diff,
+    public_api_change,
+    complexity_delta,
+    recommended_test_count,
+    files_body.to_string(),
+    symbols_body.to_string(),
+    recommended_tests_json,
+  )
+  return PatchEvaluation {
+    document: document.clone(),
+    status: status,
+    touched_file_count: touched_file_count,
+    touched_symbol_count: touched_symbol_count,
+  }
+}
+
+fn failed_evaluation(root: str, patch_path: str, error_code: i64) -> PatchEvaluation {
+  document := render_document(
+    root,
+    patch_path,
+    "error",
+    error_code,
+    0,
+    0,
+    0,
+    false,
+    false,
+    0,
+    0,
+    "",
+    "",
+    "",
+  )
+  return PatchEvaluation {
+    document: document.clone(),
+    status: repo_index.IndexStatus.Failed,
+    touched_file_count: 0,
+    touched_symbol_count: 0,
+  }
+}
+
+fn render_document(
+  root: str,
+  patch_path: str,
+  status: str,
+  error_code: i64,
+  touched_file_count: i64,
+  touched_symbol_count: i64,
+  risk_score: i64,
+  unrelated_diff: bool,
+  public_api_change: bool,
+  complexity_delta: i64,
+  recommended_test_count: i64,
+  files_json: str,
+  symbols_json: str,
+  recommended_tests_json: str,
+) -> string {
+  meta := PatchMeta {
+    schema_version: 1,
+    root: root,
+    patch_path: patch_path,
+    status: status,
+    error_code: error_code,
+    touched_file_count: touched_file_count,
+    touched_symbol_count: touched_symbol_count,
+    risk_score: risk_score,
+    unrelated_diff: unrelated_diff,
+    public_api_change: public_api_change,
+    complexity_delta: complexity_delta,
+    recommended_test_count: recommended_test_count,
+  }
+  meta_json := json.encode(meta)
+  b := builder()
+  b.write(meta_json[0..meta_json.len() - 1])
+  b.write(",\"files\":[")
+  b.write(files_json)
+  b.write("],\"symbols\":[")
+  b.write(symbols_json)
+  b.write("],\"recommended_tests\":[")
+  b.write(recommended_tests_json)
+  b.write("]}")
+  return b.to_string()
+}
+
+fn analyze_segment(segment: str) -> PatchSegment {
+  mut old_path := ""
+  mut new_path := ""
+  mut fallback_path := ""
+  mut saw_old_header := false
+  mut saw_new_header := false
+  mut seen_hunk := false
+  mut additions := 0
+  mut deletions := 0
+  mut complexity_delta := 0
+  mut public_api_change := false
+  mut symbols_body := builder()
+  mut symbol_count := 0
+  mut hunk_symbol := SymbolMatch { name: "", kind: "" }
+  mut hunk_symbol_emitted := false
+  mut cursor := 0
+
+  loop {
+    if cursor >= segment.len() { break }
+    line_end := match segment[cursor..segment.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => segment.len(),
+    }
+    line := segment[cursor..line_end]
+    if !seen_hunk {
+      if line.starts_with("diff --git ") {
+        fallback_path = diff_header_new_path(line[11..line.len()])
+      } else {
+        if line.starts_with("--- ") {
+          old_path = diff_marker_path(line[4..line.len()])
+          saw_old_header = true
+        }
+        if line.starts_with("+++ ") {
+          new_path = diff_marker_path(line[4..line.len()])
+          saw_new_header = true
+        }
+      }
+    }
+
+    if line.starts_with("@@") {
+      seen_hunk = true
+      hunk_symbol = symbol_match(hunk_context(line))
+      hunk_symbol_emitted = false
+    } else {
+      if line.starts_with("+") && (seen_hunk || !line.starts_with("+++")) {
+        code := line[1..line.len()]
+        additions = additions + 1
+        complexity_delta = complexity_delta + complexity_weight(code)
+        if is_public_api_line(code) { public_api_change = true }
+        candidate := symbol_match(code)
+        if candidate.name.len() > 0 {
+          hunk_symbol = candidate
+          if !hunk_symbol_emitted {
+            symbols_body.write(symbol_json_for(new_path, candidate))
+            symbol_count = symbol_count + 1
+            hunk_symbol_emitted = true
+          }
+        } else {
+          if !hunk_symbol_emitted && hunk_symbol.name.len() > 0 {
+            symbols_body.write(symbol_json_for(new_path, hunk_symbol))
+            symbol_count = symbol_count + 1
+            hunk_symbol_emitted = true
+          }
+        }
+      }
+      if line.starts_with("-") && (seen_hunk || !line.starts_with("---")) {
+        code := line[1..line.len()]
+        deletions = deletions + 1
+        complexity_delta = complexity_delta - complexity_weight(code)
+        if is_public_api_line(code) { public_api_change = true }
+        candidate := symbol_match(code)
+        if candidate.name.len() > 0 {
+          hunk_symbol = candidate
+        }
+        if !hunk_symbol_emitted && hunk_symbol.name.len() > 0 {
+          symbols_body.write(symbol_json_for(old_path, hunk_symbol))
+          symbol_count = symbol_count + 1
+          hunk_symbol_emitted = true
+        }
+      }
+    }
+    cursor = if line_end < segment.len() { line_end + 1 } else { segment.len() }
+  }
+
+  path_name := if saw_new_header && new_path.len() > 0 {
+    new_path
+  } else if saw_old_header && old_path.len() > 0 {
+    old_path
+  } else {
+    fallback_path
+  }
+  unrelated := is_unrelated_path(path_name)
+  mut risk_score := additions + deletions
+  if unrelated { risk_score = risk_score + 25 }
+  if public_api_change { risk_score = risk_score + 20 }
+  if complexity_delta > 0 { risk_score = risk_score + complexity_delta * 5 }
+  file_record := PatchFile {
+    path: path_name,
+    additions: additions,
+    deletions: deletions,
+    complexity_delta: complexity_delta,
+    risk_score: risk_score,
+    unrelated: unrelated,
+    public_api_change: public_api_change,
+  }
+  return PatchSegment {
+    path: path_name.clone(),
+    file_json: json.encode(file_record).clone(),
+    symbols_json: symbols_body.to_string(),
+    additions: additions,
+    deletions: deletions,
+    complexity_delta: complexity_delta,
+    risk_score: risk_score,
+    unrelated: unrelated,
+    public_api_change: public_api_change,
+  }
+}
+
+fn symbol_json_for(path_name: str, candidate: SymbolMatch) -> string {
+  record := PatchSymbol { path: path_name, name: candidate.name, kind: candidate.kind }
+  return json.encode(record).clone()
+}
+
+fn count_symbols(symbols_json: str) -> i64 {
+  if symbols_json.len() == 0 { return 0 }
+  mut count := 1
+  mut cursor := 0
+  loop {
+    if cursor >= symbols_json.len() { break }
+    found := match symbols_json[cursor..symbols_json.len()].find("},{") {
+      Some(offset) => offset,
+      None => -1,
+    }
+    if found < 0 { break }
+    offset := found
+    count = count + 1
+    cursor = cursor + offset + 3
+  }
+  return count
+}
+
+fn find_diff_header(text: str, start: i64) -> i64 {
+  mut cursor := start
+  loop {
+    if cursor >= text.len() { return text.len() }
+    line_end := match text[cursor..text.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => text.len(),
+    }
+    line := text[cursor..line_end]
+    if line.starts_with("diff --git ") { return cursor }
+    cursor = if line_end < text.len() { line_end + 1 } else { text.len() }
+  }
+}
+
+fn diff_marker_path(value: str) -> str {
+  if value == "/dev/null" { return "" }
+  if value.starts_with("a/") || value.starts_with("b/") {
+    return value[2..value.len()]
+  }
+  return value
+}
+
+fn diff_header_new_path(header: str) -> str {
+  marker := header.find(" b/") else {
+    if header.starts_with("a/") { return header[2..header.len()] }
+    return ""
+  }
+  return header[marker + 3..header.len()]
+}
+
+fn hunk_context(line: str) -> str {
+  first := line.find("@@") else { return "" }
+  remaining := line[first + 2..line.len()]
+  second := remaining.find("@@") else { return "" }
+  start := first + 2 + second + 2
+  return line[start..line.len()].trim()
+}
+
+fn symbol_match(line: str) -> SymbolMatch {
+  text := line.trim()
+  if text.starts_with("pub fn ") {
+    return SymbolMatch { name: first_token(text[7..text.len()]), kind: "public-function" }
+  }
+  if text.starts_with("fn ") {
+    return SymbolMatch { name: first_token(text[3..text.len()]), kind: "function" }
+  }
+  if text.starts_with("def ") {
+    return SymbolMatch { name: first_token(text[4..text.len()]), kind: "function" }
+  }
+  if text.starts_with("class ") {
+    return SymbolMatch { name: first_token(text[6..text.len()]), kind: "class" }
+  }
+  if text.starts_with("pub struct ") {
+    return SymbolMatch { name: first_token(text[11..text.len()]), kind: "public-struct" }
+  }
+  if text.starts_with("struct ") {
+    return SymbolMatch { name: first_token(text[7..text.len()]), kind: "struct" }
+  }
+  if text.starts_with("pub enum ") {
+    return SymbolMatch { name: first_token(text[9..text.len()]), kind: "public-enum" }
+  }
+  if text.starts_with("enum ") {
+    return SymbolMatch { name: first_token(text[5..text.len()]), kind: "enum" }
+  }
+  if text.starts_with("module ") {
+    return SymbolMatch { name: first_token(text[7..text.len()]), kind: "module" }
+  }
+  if text.starts_with("pub ") && text.contains("{") {
+    return SymbolMatch { name: first_token(text[4..text.len()]), kind: "public-declaration" }
+  }
+  return SymbolMatch { name: "", kind: "" }
+}
+
+fn first_token(value: str) -> str {
+  text := value.trim()
+  if text.len() == 0 { return text }
+  mut end := text.len()
+  space := text.find(" ") else text.len()
+  tab := text.find("\t") else text.len()
+  open := text.find("(") else text.len()
+  brace := text.find("{") else text.len()
+  colon := text.find(":") else text.len()
+  if space < end { end = space }
+  if tab < end { end = tab }
+  if open < end { end = open }
+  if brace < end { end = brace }
+  if colon < end { end = colon }
+  return text[0..end]
+}
+
+fn is_public_api_line(line: str) -> bool {
+  text := line.trim()
+  return text.starts_with("pub ") || text.starts_with("export ")
+}
+
+fn complexity_weight(line: str) -> i64 {
+  text := line.trim()
+  mut weight := 0
+  if text.starts_with("if ") || text.starts_with("if(") || text.contains(" if ") { weight = weight + 1 }
+  if text.starts_with("match ") || text.contains(" match ") { weight = weight + 2 }
+  if text.starts_with("loop") || text.contains(" loop") { weight = weight + 1 }
+  if text.contains("&&") { weight = weight + 1 }
+  if text.contains("||") { weight = weight + 1 }
+  return weight
+}
+
+fn path_stem(path_name: str) -> str {
+  base := path.base(path_name)
+  extension := path.ext(path_name)
+  if extension.len() == 0 || extension.len() > base.len() { return base }
+  return base[0..base.len() - extension.len()]
+}
+
+fn is_test_path(path_name: str) -> bool {
+  if path_name.starts_with("test") || path_name.starts_with("tests/") || path_name.starts_with("test/") {
+    return true
+  }
+  if path_name.contains("/tests/") || path_name.contains("/test/") { return true }
+  if path_name.ends_with("_test.align") || path_name.ends_with("_test.py") { return true }
+  return false
+}
+
+fn is_unrelated_path(path_name: str) -> bool {
+  if is_test_path(path_name) { return true }
+  if path_name.starts_with("docs/") || path_name.starts_with(".github/") || path_name.starts_with("eval/") {
+    return true
+  }
+  if path_name == "README.md" || path_name == "HANDOFF.md" || path_name == ".align-revision" {
+    return true
+  }
+  return false
+}
+
+fn extract_candidates(document: str) -> str {
+  marker := ",\"candidates\":["
+  start := document.find(marker) else { return "" }
+  value_start := start + marker.len()
+  end := document.rfind("]") else { return "" }
+  if end < value_start { return "" }
+  return document[value_start..end]
+}
