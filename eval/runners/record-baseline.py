@@ -117,6 +117,7 @@ def artifact_manifest(
         project_root / ".align-revision",
         project_root / ".gitattributes",
         project_root / "eval" / "runners" / "record-baseline.py",
+        project_root / "eval" / "runners" / "verify-baseline.py",
         project_root / "scripts" / "check-align-revision",
     }
     for task_value in task_files:

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import ctypes
+import hashlib
 import json
 import os
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -344,6 +346,94 @@ def print_command_output(label: str, result: subprocess.CompletedProcess[str]) -
         print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
 
 
+def source_tree(checkout: Path, source_revision: str) -> dict[str, tuple[str, str]]:
+    records = git_output(
+        checkout,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        source_revision,
+    ).split("\0")
+    entries = {}
+    for record in records:
+        if not record:
+            continue
+        try:
+            metadata, relative = record.split("\t", 1)
+            mode, object_type, object_id = metadata.split()
+        except ValueError as error:
+            raise TaskError("pinned fixture tree contains an invalid entry") from error
+        if object_type != "blob" or mode not in {"100644", "100755", "120000"}:
+            raise TaskError(f"unsupported pinned fixture tree entry: {relative}")
+        entries[relative] = (mode, object_id)
+    return entries
+
+
+def worktree_paths(checkout: Path) -> set[str]:
+    paths = set()
+    for directory, child_directories, filenames in os.walk(checkout, followlinks=False):
+        current = Path(directory)
+        if current == checkout:
+            child_directories[:] = [
+                name for name in child_directories if name != ".git"
+            ]
+        for name in tuple(child_directories):
+            path = current / name
+            if path.is_symlink():
+                paths.add(path.relative_to(checkout).as_posix())
+                child_directories.remove(name)
+        for name in filenames:
+            paths.add((current / name).relative_to(checkout).as_posix())
+    return paths
+
+
+def has_symlink_parent(checkout: Path, relative: str) -> bool:
+    current = checkout
+    for part in Path(relative).parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def git_blob_id(data: bytes) -> str:
+    header = f"blob {len(data)}\0".encode()
+    return hashlib.sha1(header + data).hexdigest()
+
+
+def actual_worktree_changes(checkout: Path, source_revision: str) -> list[str]:
+    expected = source_tree(checkout, source_revision)
+    observed_paths = worktree_paths(checkout)
+    changed = observed_paths - set(expected)
+    for relative, (mode, object_id) in expected.items():
+        path = checkout / relative
+        if relative not in observed_paths or has_symlink_parent(checkout, relative):
+            changed.add(relative)
+            continue
+        try:
+            metadata = path.lstat()
+            if mode == "120000":
+                if not stat.S_ISLNK(metadata.st_mode):
+                    changed.add(relative)
+                    continue
+                content = os.fsencode(os.readlink(path))
+            else:
+                if not stat.S_ISREG(metadata.st_mode):
+                    changed.add(relative)
+                    continue
+                executable = bool(metadata.st_mode & 0o111)
+                if executable != (mode == "100755"):
+                    changed.add(relative)
+                    continue
+                content = path.read_bytes()
+        except OSError as error:
+            raise TaskError(f"cannot inspect candidate worktree path {relative}: {error}") from error
+        if git_blob_id(content) != object_id:
+            changed.add(relative)
+    return sorted(changed)
+
+
 def check_allowed_changes(
     checkout: Path,
     allowed_edits: list[str],
@@ -357,13 +447,18 @@ def check_allowed_changes(
     )
     if flagged_paths:
         raise TaskError(f"candidate changed Git index flags: {', '.join(flagged_paths)}")
-    changed = git_output(
-        checkout,
-        "diff",
-        "--name-only",
-        "--no-renames",
-        source_revision,
-    ).splitlines()
+    changed = set(actual_worktree_changes(checkout, source_revision))
+    changed.update(
+        git_output(
+            checkout,
+            "diff",
+            "--cached",
+            "--name-only",
+            "--no-renames",
+            "--no-ext-diff",
+            source_revision,
+        ).splitlines()
+    )
     untracked = git_output(
         checkout,
         "ls-files",
