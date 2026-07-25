@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -74,21 +75,56 @@ def descendant_process_ids(root_pids: set[int]) -> set[int]:
     return descendants
 
 
-def kill_owned_processes(process: subprocess.Popen[bytes]) -> None:
+def kill_process_ids(process_ids: set[int]) -> None:
+    for pid in process_ids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def kill_owned_processes(process: subprocess.Popen[bytes]) -> set[int]:
     roots = {process.pid}
     if CHILD_SUBREAPER_ENABLED:
         roots.add(os.getpid())
     descendants = descendant_process_ids(roots)
     descendants.discard(os.getpid())
-    for pid in descendants:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    descendants.discard(process.pid)
+    kill_process_ids(descendants)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    return descendants
+
+
+def kill_adopted_descendants() -> set[int]:
+    if not CHILD_SUBREAPER_ENABLED:
+        return set()
+    descendants = descendant_process_ids({os.getpid()})
+    descendants.discard(os.getpid())
+    kill_process_ids(descendants)
+    return descendants
+
+
+def reap_owned_processes(process_ids: set[int], timeout_seconds: float = 1.0) -> None:
+    if not CHILD_SUBREAPER_ENABLED:
+        return
+    pending = set(process_ids)
+    deadline = time.monotonic() + timeout_seconds
+    while pending:
+        for pid in tuple(pending):
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                if not Path(f"/proc/{pid}").exists():
+                    pending.remove(pid)
+                continue
+            if waited == pid:
+                pending.remove(pid)
+        if not pending or time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
 
 
 def decode_output(output: bytes | None) -> str:
@@ -99,7 +135,7 @@ def communicate_after_kill(
     process: subprocess.Popen[bytes],
     timeout_error: subprocess.TimeoutExpired,
 ) -> tuple[str, str]:
-    kill_owned_processes(process)
+    owned_processes = kill_owned_processes(process)
     try:
         stdout, stderr = process.communicate(timeout=1)
     except subprocess.TimeoutExpired as cleanup_error:
@@ -112,7 +148,9 @@ def communicate_after_kill(
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            kill_owned_processes(process)
+            owned_processes.update(kill_owned_processes(process))
+    owned_processes.update(kill_adopted_descendants())
+    reap_owned_processes(owned_processes)
     return decode_output(stdout), decode_output(stderr)
 
 
@@ -201,7 +239,7 @@ def run(
             details.append(f"stderr:\n{stderr.rstrip()}")
         raise CommandTimedOut("\n".join(details))
     except BaseException:
-        kill_owned_processes(process)
+        owned_processes = kill_owned_processes(process)
         try:
             process.communicate(timeout=1)
         except subprocess.TimeoutExpired:
@@ -209,8 +247,11 @@ def run(
                 process.stdout.close()
             if process.stderr is not None:
                 process.stderr.close()
+        owned_processes.update(kill_adopted_descendants())
+        reap_owned_processes(owned_processes)
         raise
-    kill_owned_processes(process)
+    owned_processes = kill_adopted_descendants()
+    reap_owned_processes(owned_processes)
     stdout = decode_output(raw_stdout)
     stderr = decode_output(raw_stderr)
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
@@ -306,6 +347,12 @@ def check_allowed_changes(
 ) -> None:
     if git_output(checkout, "rev-parse", "HEAD") != source_revision:
         raise TaskError("candidate changed the pinned fixture HEAD")
+    index_records = git_output(checkout, "ls-files", "-v", "-z").split("\0")
+    flagged_paths = sorted(
+        record[2:] for record in index_records if record and not record.startswith("H ")
+    )
+    if flagged_paths:
+        raise TaskError(f"candidate changed Git index flags: {', '.join(flagged_paths)}")
     changed = git_output(
         checkout,
         "diff",

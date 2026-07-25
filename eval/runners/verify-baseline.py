@@ -99,7 +99,7 @@ def verify_commit(project_root: Path, revision: str) -> None:
 def corpus_tasks(
     project_root: Path,
     corpus: dict[str, Any],
-) -> tuple[list[str], list[int], set[Path]]:
+) -> tuple[list[str], list[int], set[Path], str]:
     require_fields(corpus, {"id", "schema_version", "path"}, "corpus metadata")
     if require_integer(corpus["schema_version"], "corpus metadata schema_version") != 1:
         raise BaselineError("unsupported corpus schema")
@@ -126,6 +126,7 @@ def corpus_tasks(
         project_root / "scripts" / "check-align-revision",
     }
     expected_codes = []
+    task_commands = []
     for relative_task_path in task_files:
         task_path_value = require_non_empty_string(relative_task_path, "task path")
         task_path = resolve_inside(project_root, task_path_value, "task path")
@@ -134,6 +135,7 @@ def corpus_tasks(
         task_ids.append(require_non_empty_string(task.get("id"), "task id"))
         expected_code = task.get("expected_code")
         expected_codes.append(require_integer(expected_code, "task expected_code"))
+        task_commands.append(require_non_empty_string(task.get("cmd"), "task command"))
         artifact_paths = task.get("artifact_paths")
         if not isinstance(artifact_paths, list) or not artifact_paths:
             raise BaselineError(f"task does not declare artifact_paths: {task_path}")
@@ -151,7 +153,11 @@ def corpus_tasks(
                 raise BaselineError(f"artifact does not exist: {artifact_path}")
     if len(set(task_ids)) != len(task_ids):
         raise BaselineError("corpus contains duplicate task ids")
-    return task_ids, expected_codes, artifact_files
+    if len(set(task_commands)) != 1:
+        raise BaselineError(
+            "baseline schema version 1 requires one Python command for all corpus tasks"
+        )
+    return task_ids, expected_codes, artifact_files, task_commands[0]
 
 
 def verify_artifacts(
@@ -215,7 +221,7 @@ def verify_provider(provider: Any) -> None:
         require_non_empty_string(provider[field], f"provider {field}")
 
 
-def verify_environment(environment: Any) -> None:
+def verify_environment(environment: Any, task_command: str) -> None:
     if not isinstance(environment, dict):
         raise BaselineError("environment metadata must be an object")
     required = {
@@ -233,6 +239,11 @@ def verify_environment(environment: Any) -> None:
     for field in required - {"logical_cpu_count"}:
         require_non_empty_string(environment[field], f"environment {field}")
     require_positive_integer(environment["logical_cpu_count"], "environment logical_cpu_count")
+    if environment["task_python_executable"] != task_command:
+        raise BaselineError("recorded Python executable differs from the corpus task command")
+    for field in ("task_python_executable", "task_python_resolved_executable"):
+        if not Path(environment[field]).is_absolute():
+            raise BaselineError(f"environment {field} must be an absolute path")
 
 
 def verify_runs(
@@ -415,11 +426,11 @@ def verify_baseline(path: Path, project_root: Path) -> None:
         raise BaselineError("baseline Align revision differs from .align-revision")
 
     verify_provider(baseline["provider"])
-    verify_environment(baseline["environment"])
-    expected_task_ids, expected_codes, artifact_files = corpus_tasks(
+    expected_task_ids, expected_codes, artifact_files, task_command = corpus_tasks(
         project_root,
         baseline["corpus"],
     )
+    verify_environment(baseline["environment"], task_command)
     verify_artifacts(
         baseline["artifacts"],
         artifact_files,

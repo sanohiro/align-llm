@@ -197,3 +197,27 @@ if grep -Fq "Traceback" "${output_file}"; then
 fi
 
 printf '%s\n' "non-string baseline verdict: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["environment"]["task_python_executable"] = "/not/the/corpus/runtime"
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted an unrelated Python runtime" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "recorded Python executable differs from the corpus task command" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the unrelated Python runtime" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "unrelated baseline Python runtime: rejected"

@@ -8,6 +8,7 @@ task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
 patch="${project_root}/eval/expected/python-inclusive-range-disallowed.patch"
 side_effect_patch="${project_root}/eval/expected/python-inclusive-range-side-effect.patch"
 ignored_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-ignored-side-effect.patch"
+hidden_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-hidden-side-effect.patch"
 source_fixture="${project_root}/eval/fixtures/python-inclusive-range-v1/repository"
 output_file="$(mktemp)"
 ignored_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored.XXXXXX")"
@@ -44,6 +45,20 @@ if ! grep -Fq "candidate changed disallowed files: candidate-side-effect.txt" "$
 fi
 
 printf '%s\n' "coding task validation side effect: rejected"
+
+if python3 "${runner}" "${task}" "${hidden_side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an index-hidden side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate changed Git index flags: tests/test_inclusive_range.py" "${output_file}"; then
+  printf '%s\n' "coding task did not report the index-hidden side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task index-hidden side effect: rejected"
 
 printf '%s\n' "ignored.txt" >"${ignored_source}/.gitignore"
 printf '%s\n' "uncommitted fixture input" >"${ignored_source}/ignored.txt"
