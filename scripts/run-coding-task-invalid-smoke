@@ -65,6 +65,7 @@ python3 - \
   "${whitespace_source}" \
   "${project_root}" <<'PY'
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -75,6 +76,7 @@ destination = Path(sys.argv[4])
 shutil.copytree(source, destination, dirs_exist_ok=True)
 (destination / "trailing-space ").write_text("space\n", encoding="utf-8")
 (destination / "trailing-newline\n").write_text("newline\n", encoding="utf-8")
+os.symlink("../outside", destination / "fixture-link")
 task["id"] = "whitespace-paths"
 task["source_dir"] = str(destination.relative_to(Path(sys.argv[5])))
 task["source_revision"] = "0" * 40

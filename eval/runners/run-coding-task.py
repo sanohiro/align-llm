@@ -644,7 +644,7 @@ def git_output(checkout: Path, *args: str, nul_terminated: bool = False) -> str:
 
 
 def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str) -> None:
-    shutil.copytree(source, checkout)
+    shutil.copytree(source, checkout, symlinks=True)
     init = run(
         ["git", "init", "-q", "--initial-branch=main", "--object-format=sha1"],
         checkout,

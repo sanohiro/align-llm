@@ -122,8 +122,10 @@ def canonical_projection(baseline: dict[str, Any]) -> dict[str, Any]:
         for field in (
             "schema_version",
             "baseline_id",
+            "align_llm_commit",
             "align_revision",
             "corpus",
+            "artifacts",
             "provider",
             "environment",
             "sample_count",
