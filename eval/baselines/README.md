@@ -40,3 +40,6 @@ regenerating the mutable digest is rejected by `make baseline-check`.
 
 Persisted task diagnostics are capped and verified at 64 KiB per stream; oversized output retains a
 UTF-8-safe prefix and an explicit truncation marker.
+
+Use the pending-record and finalizer flow documented in `eval/runners/README.md` so
+`canonical_oracle_commit` names the commit that contains the immutable result oracle.

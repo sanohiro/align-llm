@@ -37,7 +37,8 @@ Validation executables must resolve inside the read-only system runtime (`/usr` 
 Python installation); fixture-local executables are intentionally rejected until they have an
 explicit sandbox mount policy.
 
-Record a canonical baseline only from a clean commit:
+Record a pending baseline only from a clean commit. The pending file is intentionally outside the
+canonical path until its immutable oracle has been committed:
 
 ```text
 python3 eval/runners/record-baseline.py \
@@ -46,8 +47,20 @@ python3 eval/runners/record-baseline.py \
   --model checked-in-patch \
   --prompt-version none \
   --samples 2 \
-  --output eval/baselines/coding-v1-reference.json
+  --output eval/baselines/.coding-v1-reference.pending.json
 ```
+
+Commit `eval/expected/coding-v1-reference-oracle.json` from the pending result, then finalize the
+canonical record with that oracle commit:
+
+```text
+python3 scripts/finalize-canonical-baseline.py \
+  --input eval/baselines/.coding-v1-reference.pending.json \
+  --oracle-commit <full-oracle-commit>
+```
+
+The finalizer writes `eval/baselines/coding-v1-reference.json` and its digest. Remove the pending
+file after the canonical result is committed.
 
 The recorder verifies and release-builds the pinned sibling Align compiler, rebuilds `main`, and
 rechecks source cleanliness before measurement. It accepts complete non-passing suite results so
