@@ -5,9 +5,9 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline`, with canonical
-baseline source commit `bbd335b`, immutable oracle commit `c7fb756`, and refreshed result commit
-`66db3d2`. Resume at the PR head until
-it is merge-committed; afterward resume from `main` and begin the C1 slice below._
+baseline source commit `fae2e8e`, immutable oracle commit `3558f2e`, and refreshed result commit
+`b2e502d`. Resume at the PR head until it is merge-committed; after that, no implementation is
+active until the user asks to resume, with C1 as the next roadmap slice._
 
 ## Current position
 
@@ -18,17 +18,20 @@ The repository has completed the C0 implementation and is ready to begin C1 afte
   separately supplied candidate, enforces allowed edits before and after validation, runs validation
   in a bubblewrap namespace with only its temporary checkout worktree writable and its `.git`
   metadata read-only, retains timeout diagnostics, kills its owned descendant process tree, and
-  cleans its temporary checkout. It fails closed when Linux child-subreaper support or bubblewrap
-  is unavailable, and post-validation host Git checks cannot be configured by the candidate.
+  cleans its temporary checkout. It probes the required bubblewrap namespaces and fails closed when
+  Linux child-subreaper support, bubblewrap, or the validation resource wrapper is unavailable;
+  validation also has bounded address space, CPU time, file size, process count, open files, tmpfs,
+  and writable-worktree size/file-count limits. Post-validation host Git checks cannot be configured
+  by the candidate.
 - `eval/baselines/coding-v1-reference.json` is the first canonical machine-readable baseline. It was
-  recorded twice from clean commit `bbd335b` after rebuilding `main` with the verified pinned Align
+  recorded twice from clean commit `fae2e8e` after rebuilding `main` with the verified pinned Align
   compiler. It binds the complete declared evaluation artifact set to both SHA-256 digests and the
   source commit, including the verifier itself, while enumerating source inputs explicitly so new
   unrelated modules do not invalidate C0. It records the requested and resolved Python runtime used
-  for measurement and is checked against immutable oracle commit `c7fb756`. This deterministic
+  for measurement and is checked against immutable oracle commit `3558f2e`. This deterministic
   reference validates scoring and timing, not model quality.
-- The refreshed baseline passed 2/2 attempts at 255,699,025 ns and 248,965,934 ns, with median time
-  to a passing patch of 252,332,479 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
+- The refreshed baseline passed 2/2 attempts at 238,306,613 ns and 244,407,813 ns, with median time
+  to a passing patch of 241,357,213 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
   timeout-bounded process execution in `src/verify.align`. This is enabling work shaped like the
   later C4 Verification Loop, not completion of C1. C1's provider abstraction, multiple provider
@@ -119,15 +122,11 @@ git diff --check
 
 ## Next steps
 
-1. Push the final C0 follow-up, repeat PR #3 review after the validation-containment, provenance,
-   diagnostics, and immutable-oracle changes, require GitHub CI to pass with full checkout history,
-   and merge with a merge commit so the canonical baseline source commit remains reachable.
-2. Start one C1 branch for the explicit provider boundary and common persisted result format. Keep
-   provider data and dispatch separate from verification and scoring.
-3. Add the smallest real HTTP provider slice and plaintext/TLS timeout fixtures. That is the first
-   consumer needed to move Align Request 2 from `ALIGN_MERGED` through real-client verification.
-4. Add at least one second provider implementation and run the same `coding-v1` task through both
-   providers before claiming the C1 gate.
+1. Push the final C0 follow-up, repeat PR #3 review after the validation-containment and resource
+   hardening changes, require GitHub CI to pass with full checkout history, and merge with a merge
+   commit so the canonical baseline source commit remains reachable.
+2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
+   provider boundary and common persisted result format.
 
 ## Constraints to preserve
 
