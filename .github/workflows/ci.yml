@@ -46,12 +46,12 @@ jobs:
           echo "LLVM_CONFIG=/usr/lib/llvm-22/bin/llvm-config" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
-      - name: Prepare privileged bubblewrap launcher
+      - name: Prepare nested user-namespace bubblewrap launcher
         shell: bash
         run: |
           launcher="${RUNNER_TEMP}/align-llm-bwrap"
           printf '%s\n' '#!/usr/bin/env bash' \
-            'exec /usr/bin/sudo -n /usr/bin/bwrap "$@"' > "$launcher"
+            'exec /usr/bin/unshare --user --map-root-user -- /usr/bin/bwrap "$@"' > "$launcher"
           chmod 755 "$launcher"
           echo "ALIGN_LLM_BWRAP=$launcher" >> "$GITHUB_ENV"
 
