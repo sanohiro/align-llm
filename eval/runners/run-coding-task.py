@@ -1111,34 +1111,37 @@ def deleted_open_file_usage(
             descriptors = (Path("/proc") / str(pid) / "fd").iterdir()
         except OSError:
             continue
-        for descriptor in descriptors:
-            if time.monotonic() >= deadline:
-                raise TaskError("validation resource scan exceeded its time limit")
-            try:
-                target = os.readlink(descriptor)
-                if not target.endswith(" (deleted)"):
+        try:
+            for descriptor in descriptors:
+                if time.monotonic() >= deadline:
+                    raise TaskError("validation resource scan exceeded its time limit")
+                try:
+                    target = os.readlink(descriptor)
+                    if not target.endswith(" (deleted)"):
+                        continue
+                    metadata = descriptor.stat()
+                except OSError:
                     continue
-                metadata = descriptor.stat()
-            except OSError:
-                continue
-            if not stat.S_ISREG(metadata.st_mode):
-                continue
-            inode = (metadata.st_dev, metadata.st_ino)
-            if inode in seen_inodes:
-                continue
-            seen_inodes.add(inode)
-            file_count += 1
-            if file_count > MAX_VALIDATION_WORKTREE_FILES:
-                raise TaskError(
-                    "validation exceeded the writable worktree file limit "
-                    f"({MAX_VALIDATION_WORKTREE_FILES} files)"
-                )
-            total_bytes += metadata.st_size
-            if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
-                raise TaskError(
-                    "validation exceeded the writable worktree size limit "
-                    f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
-                )
+                if not stat.S_ISREG(metadata.st_mode):
+                    continue
+                inode = (metadata.st_dev, metadata.st_ino)
+                if inode in seen_inodes:
+                    continue
+                seen_inodes.add(inode)
+                file_count += 1
+                if file_count > MAX_VALIDATION_WORKTREE_FILES:
+                    raise TaskError(
+                        "validation exceeded the writable worktree file limit "
+                        f"({MAX_VALIDATION_WORKTREE_FILES} files)"
+                    )
+                total_bytes += metadata.st_size
+                if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
+                    raise TaskError(
+                        "validation exceeded the writable worktree size limit "
+                        f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
+                    )
+        except OSError:
+            continue
     return total_bytes, file_count
 
 
