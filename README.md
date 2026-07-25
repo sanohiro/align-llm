@@ -17,9 +17,9 @@ operations; transparent estimated versus exact token counts; and one versioned J
 The provider smoke fixture exercises all three adapters without requiring a model server. Streaming
 currently requires a Content-Length-framed response because the shipped Align HTTP client still
 rejects chunked response bodies; that limitation is tracked in `docs/align-requests.md`.
-C2 now has its first repository-index slice: tracked files, Align declarations, imports, and
-test-path candidates are persisted as one revision-bound JSON document. Reference resolution is
-the next index slice.
+C2 now has a repository-index slice for tracked files, Align declarations/imports, lexical
+references, and test-path candidates, persisted as one revision-bound JSON document. Semantic
+reference resolution and related-test ranking are the next index slices.
 
 ## Prerequisites
 
