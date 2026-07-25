@@ -1019,8 +1019,9 @@ def validation_process_usage(process: subprocess.Popen[bytes]) -> set[int]:
 
 def deleted_open_file_usage(
     process_ids: set[int], visible_inodes: set[tuple[int, int]]
-) -> int:
+) -> tuple[int, int]:
     total_bytes = 0
+    file_count = 0
     seen_inodes = set(visible_inodes)
     deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
     for pid in process_ids:
@@ -1046,13 +1047,19 @@ def deleted_open_file_usage(
             if inode in seen_inodes:
                 continue
             seen_inodes.add(inode)
+            file_count += 1
+            if file_count > MAX_VALIDATION_WORKTREE_FILES:
+                raise TaskError(
+                    "validation exceeded the writable worktree file limit "
+                    f"({MAX_VALIDATION_WORKTREE_FILES} files)"
+                )
             total_bytes += metadata.st_size
             if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
                 raise TaskError(
                     "validation exceeded the writable worktree size limit "
                     f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
                 )
-    return total_bytes
+    return total_bytes, file_count
 
 
 def check_validation_resources(
@@ -1060,7 +1067,10 @@ def check_validation_resources(
 ) -> None:
     process_ids = validation_process_usage(process)
     total_bytes, _file_count, visible_inodes = validation_worktree_usage(checkout)
-    total_bytes += deleted_open_file_usage(process_ids, visible_inodes)
+    deleted_bytes, _deleted_file_count = deleted_open_file_usage(
+        process_ids, visible_inodes
+    )
+    total_bytes += deleted_bytes
     if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
         raise TaskError(
             "validation exceeded the writable worktree size limit "
