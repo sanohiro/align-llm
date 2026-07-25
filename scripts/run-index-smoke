@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+temp_dir=$(mktemp -d)
+repo_dir="$temp_dir/repository"
+index_path="$temp_dir/index.json"
+failed_path="$temp_dir/failed.json"
+
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+python3 - "$repo_dir" <<'PY'
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+(repo / "src").mkdir(parents=True)
+(repo / "tests").mkdir()
+(repo / "src" / "app.align").write_text(
+    "module demo\nimport std.fs\n\nDemo { value: i64 }\npub fn run() -> i64 {\n  return 1\n}\n",
+    encoding="utf-8",
+)
+(repo / "src" / "odd\nname.align").write_text(
+    "module odd\nimport core.json\nfn parse() -> i64 {\n  return 2\n}\n",
+    encoding="utf-8",
+)
+(repo / "tests" / "test_app.py").write_text("def test_app():\n    assert True\n", encoding="utf-8")
+(repo / "README.md").write_text("fixture\n", encoding="utf-8")
+PY
+
+git init -q "$repo_dir"
+git -C "$repo_dir" config user.email smoke@example.invalid
+git -C "$repo_dir" config user.name "Index Smoke"
+git -C "$repo_dir" add --all
+git -C "$repo_dir" commit -qm initial
+
+"$root_dir/main" --index "$repo_dir" "$index_path"
+
+python3 - "$repo_dir" "$index_path" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+index = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+tracked = subprocess.check_output(
+    ["git", "-C", str(repo), "ls-files", "-z"], text=False
+).split(b"\0")
+tracked = {item.decode("utf-8") for item in tracked if item}
+
+assert index["schema_version"] == 1, index
+assert index["status"] == "ok", index
+assert index["revision"] == subprocess.check_output(
+    ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+).strip(), index
+assert index["file_count"] == len(tracked) == 4, (index, tracked)
+assert index["unreadable_count"] == 0, index
+files = {entry["path"]: entry for entry in index["files"]}
+assert "src/odd\nname.align" in files, files
+assert files["src/odd\nname.align"]["language"] == "align", files
+assert files["tests/test_app.py"]["is_test"] is True, files
+
+symbols = {(entry["path"], entry["name"], entry["kind"]) for entry in index["symbols"]}
+assert ("src/app.align", "demo", "module") in symbols, symbols
+assert ("src/app.align", "Demo", "type") in symbols, symbols
+assert ("src/app.align", "run", "function") in symbols, symbols
+assert ("src/odd\nname.align", "parse", "function") in symbols, symbols
+imports = {(entry["path"], entry["name"]) for entry in index["imports"]}
+assert ("src/app.align", "std.fs") in imports, imports
+assert ("src/odd\nname.align", "core.json") in imports, imports
+assert index["test_candidates"] == [{"path": "tests/test_app.py", "reason": "test-path"}], index
+PY
+
+mkdir "$temp_dir/not-a-repository"
+if "$root_dir/main" --index "$temp_dir/not-a-repository" "$failed_path"; then
+  exit 1
+fi
+python3 - "$failed_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+failed = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert failed["status"] == "error", failed
+assert failed["error_code"] == 128, failed
+assert failed["files"] == [], failed
+PY
+
+printf '%s\n' "repo index smoke: tracked files, NUL-safe path, declarations/imports/tests, and failure persistence PASS"

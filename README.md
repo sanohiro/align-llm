@@ -17,6 +17,9 @@ operations; transparent estimated versus exact token counts; and one versioned J
 The provider smoke fixture exercises all three adapters without requiring a model server. Streaming
 currently requires a Content-Length-framed response because the shipped Align HTTP client still
 rejects chunked response bodies; that limitation is tracked in `docs/align-requests.md`.
+C2 now has its first repository-index slice: tracked files, Align declarations, imports, and
+test-path candidates are persisted as one revision-bound JSON document. Reference resolution is
+the next index slice.
 
 ## Prerequisites
 
@@ -52,6 +55,7 @@ make run
 make fmt
 make build
 make provider-smoke
+make index-smoke
 ```
 
 `make check` checks the complete import graph one module at a time. `make run` compiles and runs the bootstrap CLI. `make build` writes the `main` executable in the repository root; it is ignored by Git.
@@ -64,6 +68,12 @@ The provider demonstration accepts an explicit endpoint and writes the common re
 ./main --provider openai-local http://127.0.0.1:8080/v1/chat/completions model - "repair the range" result.json
 # Cloud keys are read from the named environment variable, never from argv.
 OPENAI_API_KEY=... ./main --provider cloud https://api.openai.com/v1/chat/completions model OPENAI_API_KEY "repair the range" result.json
+```
+
+Build the first repository index slice from a Git worktree:
+
+```sh
+./main --index . index.json
 ```
 
 ## Plans
