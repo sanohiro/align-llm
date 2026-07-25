@@ -60,10 +60,14 @@ jobs:
         env:
           ALIGN_REPO: ${{ github.workspace }}/align
         run: |
-          bwrap="$(command -v bwrap)"
-          cleanup() {
-            sudo -n chmod u-s "$bwrap"
-          }
-          trap cleanup EXIT
-          sudo -n chmod u+s "$bwrap"
-          make ci
+          sudo -n env \
+            "HOME=${HOME}" \
+            "RUSTUP_HOME=${RUSTUP_HOME:-${HOME}/.rustup}" \
+            "CARGO_HOME=${CARGO_HOME:-${HOME}/.cargo}" \
+            "PATH=${PATH}" \
+            "ALIGN_REPO=${ALIGN_REPO}" \
+            "RUST_VERSION=${RUST_VERSION}" \
+            "CARGO_TERM_COLOR=${CARGO_TERM_COLOR}" \
+            "LLVM_SYS_221_PREFIX=${LLVM_SYS_221_PREFIX}" \
+            "LLVM_CONFIG=${LLVM_CONFIG}" \
+            make ci
