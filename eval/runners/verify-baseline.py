@@ -17,6 +17,7 @@ class BaselineError(Exception):
 
 CANONICAL_BASELINE = Path("eval/baselines/coding-v1-reference.json")
 CANONICAL_DIGEST = Path("eval/expected/coding-v1-reference.sha256")
+MAX_DIAGNOSTIC_BYTES = 64 * 1024
 
 
 def git_environment() -> dict[str, str]:
@@ -48,6 +49,14 @@ def require_fields(value: dict[str, Any], expected: set[str], label: str) -> Non
 def require_non_empty_string(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise BaselineError(f"{label} must be a non-empty string")
+    return value
+
+
+def require_diagnostic(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise BaselineError(f"{label} must be a string")
+    if len(value.encode("utf-8", errors="replace")) > MAX_DIAGNOSTIC_BYTES:
+        raise BaselineError(f"{label} exceeds the 64 KiB diagnostic limit")
     return value
 
 
@@ -337,8 +346,8 @@ def verify_runs(
             if task["expected_code"] != expected_codes[task_index]:
                 raise BaselineError("task expected_code differs from the corpus")
             duration = require_positive_integer(task["duration_ns"], "task duration_ns")
-            if not isinstance(task["stdout"], str) or not isinstance(task["stderr"], str):
-                raise BaselineError("task diagnostics must be strings")
+            require_diagnostic(task["stdout"], "task stdout")
+            require_diagnostic(task["stderr"], "task stderr")
             passing_time = task["time_to_passing_patch_ns"]
             if verdict == "PASS":
                 if task["actual_code"] != task["expected_code"]:

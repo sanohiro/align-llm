@@ -36,5 +36,5 @@ The canonical record's SHA-256 is stored separately in
 `eval/expected/coding-v1-reference.sha256`; changing the record without updating this independent
 oracle is rejected by `make baseline-check`.
 
-Persisted task diagnostics are capped at 64 KiB per stream; oversized output retains a UTF-8-safe
-prefix and an explicit truncation marker.
+Persisted task diagnostics are capped and verified at 64 KiB per stream; oversized output retains a
+UTF-8-safe prefix and an explicit truncation marker.

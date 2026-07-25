@@ -216,6 +216,30 @@ import sys
 from pathlib import Path
 
 baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["runs"][0]["task_results"][0]["stdout"] = "x" * (64 * 1024 + 1)
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted oversized diagnostics" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "task stdout exceeds the 64 KiB diagnostic limit" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report oversized diagnostics" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "oversized baseline diagnostics: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 baseline["environment"]["task_python_executable"] = "/not/the/corpus/runtime"
 Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
 PY
