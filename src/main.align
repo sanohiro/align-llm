@@ -99,6 +99,8 @@ fn index_demo(args: array<str>) -> Result<(), Error> {
   print(built.symbol_count)
   print("imports:")
   print(built.import_count)
+  print("references:")
+  print(built.reference_count)
   print("test candidates:")
   print(built.test_count)
   match built.status {

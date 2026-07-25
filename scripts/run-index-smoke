@@ -20,7 +20,9 @@ repo = Path(sys.argv[1])
 (repo / "src").mkdir(parents=True)
 (repo / "tests").mkdir()
 (repo / "src" / "app.align").write_text(
-    "module demo\nimport std.fs\n\nDemo { value: i64 }\npub fn run() -> i64 {\n  return 1\n}\n",
+    "module demo\nimport std.fs\nimport geom\n\nDemo { value: i64 }\npub fn run() -> i64 {\n  // ignored() and geom.ignored() stay in the comment\n  text := \"fake() and geom.fake()\"\n"
+    "  quoted := \"escaped \\\"fake()\\\" and geom.fake()\"\n"
+    "  value := geom.square(5)\n  fs.read_file(\"README.md\")\n  return helper(value)\n}\nfn helper(value: i64) -> i64 = value\n",
     encoding="utf-8",
 )
 (repo / "src" / "odd\nname.align").write_text(
@@ -52,7 +54,7 @@ tracked = subprocess.check_output(
 ).split(b"\0")
 tracked = {item.decode("utf-8") for item in tracked if item}
 
-assert index["schema_version"] == 1, index
+assert index["schema_version"] == 2, index
 assert index["status"] == "ok", index
 assert index["revision"] == subprocess.check_output(
     ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
@@ -71,7 +73,16 @@ assert ("src/app.align", "run", "function") in symbols, symbols
 assert ("src/odd\nname.align", "parse", "function") in symbols, symbols
 imports = {(entry["path"], entry["name"]) for entry in index["imports"]}
 assert ("src/app.align", "std.fs") in imports, imports
+assert ("src/app.align", "geom") in imports, imports
 assert ("src/odd\nname.align", "core.json") in imports, imports
+references = {
+    (entry["path"], entry["qualifier"], entry["name"], entry["kind"], entry["line"])
+    for entry in index["references"]
+}
+assert index["reference_count"] == len(references) == 3, (index, references)
+assert ("src/app.align", "geom", "square", "qualified", 10) in references, references
+assert ("src/app.align", "fs", "read_file", "qualified", 11) in references, references
+assert ("src/app.align", "", "helper", "local-call", 12) in references, references
 assert index["test_candidates"] == [{"path": "tests/test_app.py", "reason": "test-path"}], index
 PY
 
@@ -90,4 +101,4 @@ assert failed["error_code"] == 128, failed
 assert failed["files"] == [], failed
 PY
 
-printf '%s\n' "repo index smoke: tracked files, NUL-safe path, declarations/imports/tests, and failure persistence PASS"
+printf '%s\n' "repo index smoke: tracked files, NUL-safe path, declarations/imports/references/tests, and failure persistence PASS"

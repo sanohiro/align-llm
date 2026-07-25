@@ -5,10 +5,9 @@ import std.fs
 import std.path
 import verify
 
-// C2's first slice is deliberately repository-boundary-first: Git supplies the tracked file list,
-// including names that contain newlines, and the Align parser records declarations/imports only
-// for the first target language. Symbol references are a later slice; the output keeps the
-// provider-independent JSON boundary stable while the index grows.
+// C2 remains repository-boundary-first: Git supplies the tracked file list, including names that
+// contain newlines. The Align parser now adds lexical references for imported qualified names and
+// local calls; semantic resolution and related-test ranking remain later slices.
 
 pub IndexStatus { Ready, Partial, Failed }
 
@@ -18,6 +17,7 @@ pub IndexBuild {
   file_count: i64,
   symbol_count: i64,
   import_count: i64,
+  reference_count: i64,
   test_count: i64,
   unreadable_count: i64,
 }
@@ -31,6 +31,7 @@ IndexMeta {
   file_count: i64,
   symbol_count: i64,
   import_count: i64,
+  reference_count: i64,
   test_count: i64,
   unreadable_count: i64,
 }
@@ -45,15 +46,18 @@ IndexFile {
 
 IndexSymbol { path: str, name: str, kind: str, line: i64 }
 IndexImport { path: str, name: str, line: i64 }
+IndexReference { path: str, qualifier: str, name: str, kind: str, line: i64 }
 IndexTest { path: str, reason: str }
 
 FileFragments {
   file_json: string,
   symbols_json: string,
   imports_json: string,
+  references_json: string,
   tests_json: string,
   symbol_count: i64,
   import_count: i64,
+  reference_count: i64,
   test_count: i64,
   readable: bool,
 }
@@ -62,13 +66,14 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
   revision_run := verify.run("git", ["git", "rev-parse", "--verify", "HEAD"].to_array(), root, timeout_ns)
   if !process_succeeded(revision_run.status, revision_run.code) {
     failed_root := root.clone()
-    failed_document := render_document(failed_root, "", "error", revision_run.code, 0, 0, 0, 0, 0, "", "", "", "")
+    failed_document := render_document(failed_root, "", "error", revision_run.code, 0, 0, 0, 0, 0, 0, "", "", "", "", "")
     return IndexBuild {
       document: failed_document.clone(),
       status: IndexStatus.Failed,
       file_count: 0,
       symbol_count: 0,
       import_count: 0,
+      reference_count: 0,
       test_count: 0,
       unreadable_count: 0,
     }
@@ -78,13 +83,14 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
   files_run := verify.run("git", ["git", "ls-files", "-z"].to_array(), root, timeout_ns)
   if !process_succeeded(files_run.status, files_run.code) {
     failed_root := root.clone()
-    failed_document := render_document(failed_root, "", "error", files_run.code, 0, 0, 0, 0, 0, "", "", "", "")
+    failed_document := render_document(failed_root, "", "error", files_run.code, 0, 0, 0, 0, 0, 0, "", "", "", "", "")
     return IndexBuild {
       document: failed_document.clone(),
       status: IndexStatus.Failed,
       file_count: 0,
       symbol_count: 0,
       import_count: 0,
+      reference_count: 0,
       test_count: 0,
       unreadable_count: 0,
     }
@@ -93,16 +99,19 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
   mut files_body := builder()
   mut symbols_body := builder()
   mut imports_body := builder()
+  mut references_body := builder()
   mut tests_body := builder()
   mut file_count := 0
   mut symbol_count := 0
   mut import_count := 0
+  mut reference_count := 0
   mut test_count := 0
   mut unreadable_count := 0
   mut file_cursor := 0
   mut first_file := true
   mut first_symbol := true
   mut first_import := true
+  mut first_reference := true
   mut first_test := true
   listing: str := files_run.stdout
 
@@ -122,6 +131,7 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
     files_body.write(fragments.file_json)
     if fragments.symbol_count > 0 { symbol_count = symbol_count + fragments.symbol_count }
     if fragments.import_count > 0 { import_count = import_count + fragments.import_count }
+    if fragments.reference_count > 0 { reference_count = reference_count + fragments.reference_count }
     if fragments.test_count > 0 { test_count = test_count + fragments.test_count }
     if !fragments.readable { unreadable_count = unreadable_count + 1 }
     file_count = file_count + 1
@@ -135,6 +145,11 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
       if !first_import { imports_body.write(",") }
       first_import = false
       imports_body.write(fragments.imports_json)
+    }
+    if fragments.references_json.len() > 0 {
+      if !first_reference { references_body.write(",") }
+      first_reference = false
+      references_body.write(fragments.references_json)
     }
     if fragments.tests_json.len() > 0 {
       if !first_test { tests_body.write(",") }
@@ -153,11 +168,13 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
     file_count,
     symbol_count,
     import_count,
+    reference_count,
     test_count,
     unreadable_count,
     files_body.to_string(),
     symbols_body.to_string(),
     imports_body.to_string(),
+    references_body.to_string(),
     tests_body.to_string(),
   )
   return IndexBuild {
@@ -166,6 +183,7 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
     file_count: file_count,
     symbol_count: symbol_count,
     import_count: import_count,
+    reference_count: reference_count,
     test_count: test_count,
     unreadable_count: unreadable_count,
   }
@@ -179,15 +197,17 @@ fn render_document(
   file_count: i64,
   symbol_count: i64,
   import_count: i64,
+  reference_count: i64,
   test_count: i64,
   unreadable_count: i64,
   files_json: str,
   symbols_json: str,
   imports_json: str,
+  references_json: str,
   tests_json: str,
 ) -> string {
   meta := IndexMeta {
-    schema_version: 1,
+    schema_version: 2,
     root: root,
     revision: revision,
     status: status,
@@ -195,6 +215,7 @@ fn render_document(
     file_count: file_count,
     symbol_count: symbol_count,
     import_count: import_count,
+    reference_count: reference_count,
     test_count: test_count,
     unreadable_count: unreadable_count,
   }
@@ -207,6 +228,8 @@ fn render_document(
   b.write(symbols_json)
   b.write("],\"imports\":[")
   b.write(imports_json)
+  b.write("],\"references\":[")
+  b.write(references_json)
   b.write("],\"test_candidates\":[")
   b.write(tests_json)
   b.write("]}")
@@ -227,9 +250,11 @@ fn inspect_file(root: str, relative: str) -> FileFragments {
       file_json: json.encode(file_record).clone(),
       symbols_json: "".clone(),
       imports_json: "".clone(),
+      references_json: "".clone(),
       tests_json: test_json(relative),
       symbol_count: 0,
       import_count: 0,
+      reference_count: 0,
       test_count: if is_test_path(relative) { 1 } else { 0 },
       readable: false,
     }
@@ -237,8 +262,10 @@ fn inspect_file(root: str, relative: str) -> FileFragments {
 
   mut symbols_body := builder()
   mut imports_body := builder()
+  mut references_body := builder()
   mut symbol_count := 0
   mut import_count := 0
+  mut reference_count := 0
   mut first_symbol := true
   mut first_import := true
   mut cursor := 0
@@ -253,6 +280,15 @@ fn inspect_file(root: str, relative: str) -> FileFragments {
     line := source[cursor..line_end].trim_end()
     top_level := line == line.trim_start()
     trimmed := line.trim()
+    if align_source {
+      code := strip_literals_and_comments(line)
+      extracted := extract_references(relative, source, code, line_number)
+      if extracted.json.len() > 0 {
+        if reference_count > 0 { references_body.write(",") }
+        references_body.write(extracted.json)
+      }
+      reference_count = reference_count + extracted.count
+    }
     if align_source && top_level && trimmed.len() > 0 && !trimmed.starts_with("//") {
       if trimmed.starts_with("import ") {
         module_name := first_token(trimmed[7..trimmed.len()])
@@ -290,12 +326,279 @@ fn inspect_file(root: str, relative: str) -> FileFragments {
     file_json: json.encode(file_record).clone(),
     symbols_json: symbols_body.to_string(),
     imports_json: imports_body.to_string(),
+    references_json: references_body.to_string(),
     tests_json: test_json(relative),
     symbol_count: symbol_count,
     import_count: import_count,
+    reference_count: reference_count,
     test_count: if is_test_path(relative) { 1 } else { 0 },
     readable: true,
   }
+}
+
+ReferenceLine { json: string, count: i64 }
+
+fn extract_references(path_name: str, source: str, code: str, line_number: i64) -> ReferenceLine {
+  mut body := builder()
+  mut count := 0
+  mut cursor := 0
+  mut definition_open_skipped := false
+  function_name := declaration_function_name(code.trim())
+  loop {
+    if cursor >= code.len() { break }
+    remaining := code[cursor..code.len()]
+    remaining_len := remaining.len()
+    dot_offset := remaining.find(".") else remaining_len
+    open_offset := remaining.find("(") else remaining_len
+    if dot_offset == remaining_len && open_offset == remaining_len { break }
+
+    if dot_offset < open_offset {
+      dot := cursor + dot_offset
+      qualifier := last_token(code[0..dot])
+      name := first_segment(code[dot + 1..code.len()])
+      if qualifier.len() > 0 && name.len() > 0 && is_reference_identifier(name) && is_imported_qualifier(source, qualifier) {
+        record := IndexReference {
+          path: path_name,
+          qualifier: qualifier,
+          name: name,
+          kind: "qualified",
+          line: line_number,
+        }
+        if count > 0 { body.write(",") }
+        body.write(json.encode(record))
+        count = count + 1
+      }
+      cursor = dot + 1
+    } else {
+      open := cursor + open_offset
+      before := code[0..open].trim_end()
+      name := last_token(before)
+      is_definition_open := name == function_name && !definition_open_skipped
+      if is_definition_open { definition_open_skipped = true }
+      if is_reference_identifier(name) && !before.contains(".") && !is_call_keyword(name) && !is_definition_open {
+        record := IndexReference {
+          path: path_name,
+          qualifier: "",
+          name: name,
+          kind: "local-call",
+          line: line_number,
+        }
+        if count > 0 { body.write(",") }
+        body.write(json.encode(record))
+        count = count + 1
+      }
+      cursor = open + 1
+    }
+  }
+  return ReferenceLine { json: body.to_string(), count: count }
+}
+
+fn declaration_function_name(line: str) -> str {
+  if line.starts_with("pub fn ") { return first_token(line[7..line.len()]) }
+  if line.starts_with("fn ") { return first_token(line[3..line.len()]) }
+  return ""
+}
+
+fn is_call_keyword(name: str) -> bool {
+  return name == "fn" || name == "if" || name == "loop" || name == "match" || name == "else" || name == "return"
+}
+
+fn is_reference_identifier(name: str) -> bool {
+  if name.len() == 0 || name == "_" { return false }
+  if name.starts_with("0") || name.starts_with("1") || name.starts_with("2") || name.starts_with("3") {
+    return false
+  }
+  if name.starts_with("4") || name.starts_with("5") || name.starts_with("6") || name.starts_with("7") {
+    return false
+  }
+  if name.starts_with("8") || name.starts_with("9") { return false }
+  return true
+}
+
+fn is_imported_qualifier(source: str, candidate: str) -> bool {
+  mut cursor := 0
+  loop {
+    if cursor >= source.len() { break }
+    line_end := match source[cursor..source.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => source.len(),
+    }
+    line := source[cursor..line_end].trim_end()
+    trimmed := line.trim()
+    if line == line.trim_start() && trimmed.starts_with("import ") {
+      module_name := first_token(trimmed[7..trimmed.len()])
+      if import_prefix(module_name) == candidate { return true }
+    }
+    cursor = if line_end < source.len() { line_end + 1 } else { source.len() }
+  }
+  return false
+}
+
+fn import_prefix(module_name: str) -> str {
+  if module_name.starts_with("core.") || module_name.starts_with("std.") {
+    dot := module_name.rfind(".") else { return module_name }
+    return module_name[dot + 1..module_name.len()]
+  }
+  return module_name
+}
+
+fn strip_literals_and_comments(line: str) -> string {
+  mut body := builder()
+  mut cursor := 0
+  loop {
+    if cursor >= line.len() { break }
+    remaining := line[cursor..line.len()]
+    remaining_len := remaining.len()
+    double_offset := remaining.find("\"") else remaining_len
+    single_offset := remaining.find("'") else remaining_len
+    comment_offset := remaining.find("//") else remaining_len
+    quote_offset := double_offset.min(single_offset)
+    if comment_offset < quote_offset {
+      body.write(line[cursor..cursor + comment_offset])
+      break
+    }
+    if quote_offset == remaining_len {
+      body.write(line[cursor..line.len()])
+      break
+    }
+    quote := cursor + quote_offset
+    body.write(line[cursor..quote])
+    body.write(" ")
+    delimiter := if double_offset < single_offset { "\"" } else { "'" }
+    after_quote := quote + 1
+    closing := literal_end(line[after_quote..line.len()], delimiter)
+    if closing >= line.len() - after_quote { break }
+    cursor = after_quote + closing + 1
+  }
+  return body.to_string()
+}
+
+fn literal_end(text: str, delimiter: str) -> i64 {
+  mut cursor := 0
+  loop {
+    if cursor >= text.len() { return text.len() }
+    offset := text[cursor..text.len()].find(delimiter) else { return text.len() }
+    absolute := cursor + offset
+    if !is_escaped(text[0..absolute]) { return absolute }
+    cursor = absolute + 1
+  }
+}
+
+fn is_escaped(text: str) -> bool {
+  mut remaining := text
+  mut slash_count := 0
+  loop {
+    if !remaining.ends_with("\\") { break }
+    remaining = remaining[0..remaining.len() - 1]
+    slash_count = slash_count + 1
+  }
+  return slash_count % 2 == 1
+}
+
+fn first_segment(value: str) -> str {
+  text := value.trim()
+  if text.len() == 0 { return text }
+  mut end := text.len()
+  space := text.find(" ") else text.len()
+  tab := text.find("\t") else text.len()
+  dot := text.find(".") else text.len()
+  open := text.find("(") else text.len()
+  close := text.find(")") else text.len()
+  brace := text.find("{") else text.len()
+  bracket := text.find("[") else text.len()
+  comma := text.find(",") else text.len()
+  colon := text.find(":") else text.len()
+  equal := text.find("=") else text.len()
+  semicolon := text.find(";") else text.len()
+  question := text.find("?") else text.len()
+  bang := text.find("!") else text.len()
+  plus := text.find("+") else text.len()
+  minus := text.find("-") else text.len()
+  star := text.find("*") else text.len()
+  slash := text.find("/") else text.len()
+  percent := text.find("%") else text.len()
+  less := text.find("<") else text.len()
+  greater := text.find(">") else text.len()
+  ampersand := text.find("&") else text.len()
+  pipe := text.find("|") else text.len()
+  if space < end { end = space }
+  if tab < end { end = tab }
+  if dot < end { end = dot }
+  if open < end { end = open }
+  if close < end { end = close }
+  if brace < end { end = brace }
+  if bracket < end { end = bracket }
+  if comma < end { end = comma }
+  if colon < end { end = colon }
+  if equal < end { end = equal }
+  if semicolon < end { end = semicolon }
+  if question < end { end = question }
+  if bang < end { end = bang }
+  if plus < end { end = plus }
+  if minus < end { end = minus }
+  if star < end { end = star }
+  if slash < end { end = slash }
+  if percent < end { end = percent }
+  if less < end { end = less }
+  if greater < end { end = greater }
+  if ampersand < end { end = ampersand }
+  if pipe < end { end = pipe }
+  return text[0..end]
+}
+
+fn last_token(value: str) -> str {
+  text := value.trim_end()
+  if text.len() == 0 { return text }
+  mut start := -1
+  space := text.rfind(" ") else -1
+  tab := text.rfind("\t") else -1
+  open := text.rfind("(") else -1
+  close := text.rfind(")") else -1
+  bracket := text.rfind("[") else -1
+  close_bracket := text.rfind("]") else -1
+  brace := text.rfind("{") else -1
+  close_brace := text.rfind("}") else -1
+  comma := text.rfind(",") else -1
+  colon := text.rfind(":") else -1
+  equal := text.rfind("=") else -1
+  semicolon := text.rfind(";") else -1
+  plus := text.rfind("+") else -1
+  minus := text.rfind("-") else -1
+  star := text.rfind("*") else -1
+  slash := text.rfind("/") else -1
+  percent := text.rfind("%") else -1
+  less := text.rfind("<") else -1
+  greater := text.rfind(">") else -1
+  bang := text.rfind("!") else -1
+  question := text.rfind("?") else -1
+  ampersand := text.rfind("&") else -1
+  pipe := text.rfind("|") else -1
+  newline := text.rfind("\n") else -1
+  if space > start { start = space }
+  if tab > start { start = tab }
+  if open > start { start = open }
+  if close > start { start = close }
+  if bracket > start { start = bracket }
+  if close_bracket > start { start = close_bracket }
+  if brace > start { start = brace }
+  if close_brace > start { start = close_brace }
+  if comma > start { start = comma }
+  if colon > start { start = colon }
+  if equal > start { start = equal }
+  if semicolon > start { start = semicolon }
+  if plus > start { start = plus }
+  if minus > start { start = minus }
+  if star > start { start = star }
+  if slash > start { start = slash }
+  if percent > start { start = percent }
+  if less > start { start = less }
+  if greater > start { start = greater }
+  if bang > start { start = bang }
+  if question > start { start = question }
+  if ampersand > start { start = ampersand }
+  if pipe > start { start = pipe }
+  if newline > start { start = newline }
+  return text[start + 1..text.len()]
 }
 
 fn declaration_name(line: str) -> str {

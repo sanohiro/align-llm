@@ -4,12 +4,12 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the C2 repository-index slice on
-`c2-repo-index` at implementation commit `642cf9f`; the working tree is clean._
+_Last updated: 2026-07-25. Active work is the C2 lexical-reference slice on
+`c2-reference-index` at implementation commit `493ecd9`; the working tree is clean._
 
 ## Current position
 
-The repository has completed C0 and C1 and is implementing C2:
+The repository has completed C0, C1, and the first C2 index slice and is continuing C2:
 
 - C0 now has both the evaluator smoke corpus and `coding-v1`, a real off-by-one repair task.
   The coding runner creates the exact pinned Git revision, proves the pre-repair failure, applies a
@@ -52,13 +52,16 @@ The repository has completed C0 and C1 and is implementing C2:
 - Requests 1 and 3 have real-client closure evidence; Request 2 is shipped at `ALIGN_MERGED`.
   Request 4 is a new proposed blocker only for real chunked SSE acceptance; non-streaming C1 work
   remains independent.
-- Current C2 state: `src/repo_index.align` and `main --index` implement the first repository-index
-  slice. Git tracked files are read with `ls-files -z`; all tracked files receive language,
-  line-count, readability, and test-path metadata; `.align` files receive top-level module, type,
-  function, and import records. The focused fixture covers a newline-containing path, revision
-  binding, and persisted non-repository failure metadata. Symbol reference resolution and related
-  test ranking are not started. The implementation is committed at `642cf9f`; the branch still
-  needs push, PR, review, and merge.
+- PR #5 merged the first C2 repository-index slice at `d59c5ce`. Git tracked files are read with
+  `ls-files -z`; all tracked files receive language, line-count, readability, and test-path
+  metadata; `.align` files receive top-level module, type, function, and import records.
+- Current C2 state: `src/repo_index.align` now adds lexical references for imported qualified names
+  and local calls. It strips comments, strings, and escaped delimiters before scanning, persists a
+  schema-v2 `references` array and count, and leaves semantic resolution and related-test ranking
+  for later slices. The focused fixture covers qualified/local references, false-reference
+  exclusion, newline-containing paths, revision binding, and persisted non-repository failure
+  metadata. The implementation is committed at `493ecd9` on `c2-reference-index`; it needs push,
+  PR, review, and merge.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
@@ -176,13 +179,30 @@ git diff --check                 PASS
 The full `make ci` gate was not rerun; CI repetition is intentionally out of scope for this
 feature implementation.
 
+## C2 lexical-reference verification
+
+Verified on 2026-07-25 against the existing pinned Align compiler:
+
+```text
+make fmt                         PASS
+make check                       PASS — 12 imported units, including repo_index
+make build                       PASS — executable built as ./main
+bash -n scripts/run-index-smoke  PASS
+make index-smoke                 PASS — qualified/local references, escaped string and comment exclusion, prior C2 coverage
+make provider-smoke              PASS — C1 provider regression
+git diff --check                 PASS
+```
+
+The independent adversarial reviewer did not return within one bounded wait and was shut down;
+manual review of the changed surface found no blocking functional finding. The full `make ci` gate
+was not rerun.
+
 ## Next steps
 
-1. Push `642cf9f` on `c2-repo-index`, open a PR, and perform one
-   independent adversarial review.
+1. Push `493ecd9` on `c2-reference-index`, open a PR, and review the changed surface once.
 2. Apply only valid findings, rerun the focused index/provider verification, and merge with a merge
-   commit. Do not repeat the full CI gate.
-3. After merge, continue C2 with symbol-reference extraction and related-test selection. Keep
+   commit. Do not repeat the full CI gate or wait on a non-returning reviewer.
+3. After merge, continue C2 with semantic reference resolution and related-test selection. Keep
    Request 4 limited to real chunked SSE acceptance; it does not block the index work.
 
 ## Constraints to preserve
@@ -205,12 +225,14 @@ feature implementation.
   `std.process` per run.
 - Provider SSE parsing currently depends on Content-Length framing because Align's shipped
   `std.http` client rejects chunked response bodies; do not add a raw-socket compatibility layer.
-- C1 is merged at `b7068e6`. The current C2 implementation is committed at `642cf9f`.
+- C1 is merged at `b7068e6`; the first C2 index slice is merged at `d59c5ce`; the current lexical
+  reference implementation is committed at `493ecd9`.
 - C2 uses Git's tracked-file list (`git ls-files -z`) rather than recursively probing filesystem
   entries; do not replace it with a directory walk that loses repository boundaries or newline
   safety.
-- C2 currently parses only top-level Align declarations and imports. Do not claim reference
-  resolution or related-test ranking until their own acceptance fixture passes.
+- C2 currently parses top-level Align declarations/imports and lexical references for imported
+  qualified names/local calls. Do not claim semantic reference resolution or related-test ranking
+  until their own acceptance fixtures pass.
 - Source, comments, diagnostics, commits, pull requests, reviews, and releases are written in
   English.
 
