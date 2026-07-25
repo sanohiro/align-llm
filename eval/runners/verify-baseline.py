@@ -161,8 +161,10 @@ def verify_canonical_oracle(
     expected_fields = {
         "schema_version",
         "baseline_id",
+        "align_llm_commit",
         "align_revision",
         "corpus",
+        "artifacts",
         "provider",
         "environment",
         "sample_count",
