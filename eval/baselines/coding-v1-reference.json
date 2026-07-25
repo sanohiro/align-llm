@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "recorded_at": "2026-07-25T01:22:19+00:00",
-  "align_llm_commit": "b13ca8fdab96bd8521e90b0408892c2f56a22902",
+  "recorded_at": "2026-07-25T03:54:10+00:00",
+  "align_llm_commit": "82ab2dacdc0baec9fe68c6866f19452c8e8f137d",
   "align_revision": "db942d2f705546c7d6b8c0334a462548c6446f84",
   "corpus": {
     "id": "coding-v1",
@@ -38,15 +38,15 @@
       },
       {
         "path": "eval/runners/record-baseline.py",
-        "sha256": "910e2c6ed8e94537ec23c643799a7662c8120d262d92bef4383bb9882f0fc80e"
+        "sha256": "fadb15d223ef9d378ec741dd9dfbc7e1c13a7af73702b4e28e7c89305996ba82"
       },
       {
         "path": "eval/runners/run-coding-task.py",
-        "sha256": "eedd16dcb6a5a5db46358cb2e8c64d27922c06606be8cb534f7266edfe14c763"
+        "sha256": "9bab053d4569a71ffe75f7859a381d69d36a01738db56d2f8a856f8cb5d45ad7"
       },
       {
         "path": "eval/runners/verify-baseline.py",
-        "sha256": "83e3c724319540ced3379e76df7ca0632cbccaabd19ee9d2b73152300ecff0a5"
+        "sha256": "962fd4f34ca9f2648daab9a1b55dbb15f8dafa44a059b2a94affb4a6f191c539"
       },
       {
         "path": "eval/tasks/coding-v1.json",
@@ -112,8 +112,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 235041679,
-          "time_to_passing_patch_ns": 235041679
+          "duration_ns": 227677970,
+          "time_to_passing_patch_ns": 227677970
         }
       ],
       "summary": {
@@ -130,8 +130,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 220186808,
-          "time_to_passing_patch_ns": 220186808
+          "duration_ns": 226146077,
+          "time_to_passing_patch_ns": 226146077
         }
       ],
       "summary": {
@@ -145,9 +145,9 @@
     "task_attempt_count": 2,
     "passing_attempt_count": 2,
     "time_to_passing_patch_ns": {
-      "minimum": 220186808,
-      "median": 227614243,
-      "maximum": 235041679
+      "minimum": 226146077,
+      "median": 226912023,
+      "maximum": 227677970
     }
   }
 }
