@@ -112,5 +112,21 @@ revision-bound JSON document written by:
 Use `make index-smoke` for the focused fixture. It checks declaration/import/reference extraction,
 user-module public resolution, local resolution, external and unresolved statuses, a
 newline-containing tracked path, string/comment exclusion, test-candidate selection, revision
-binding, and persisted failure metadata for a non-repository path. Related-test ranking remains a
-later C2 slice.
+binding, and persisted failure metadata for a non-repository path.
+
+### Related-test selection
+
+The related-test selector uses the same revision-bound Git `ls-files -z` boundary as the index. It
+accepts one changed path and writes a schema-version-1 selection document:
+
+```sh
+./main --select-tests <repo> <changed-path> <tests.json> [timeout-ns]
+```
+
+Tracked paths recognized as tests are ranked by a deterministic path heuristic. A basename/stem
+match contributes 100 points, a shared directory contributes 20 points, and candidates with
+neither signal remain at score 0. The JSON includes the score and reason for every candidate;
+equal scores retain Git listing order. The selector is intentionally path-based and does not yet
+use the resolved symbol/reference graph, so symbol-specific ranking remains a later C2 slice.
+Use `make test-selection-smoke` for the fixture covering ranking order, reasons, revision binding,
+and persisted failure metadata.

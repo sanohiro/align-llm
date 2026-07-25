@@ -8,7 +8,8 @@ import verify
 // C2 remains repository-boundary-first: Git supplies the tracked file list, including names that
 // contain newlines. The Align parser records lexical references and resolves the ones that can be
 // tied to tracked user symbols; external builtins, private symbols, and missing targets stay
-// explicit in the result. Related-test ranking remains a later slice.
+// explicit in the result. Related-test selection is path-based until symbol-specific ranking is
+// available.
 
 pub IndexStatus { Ready, Partial, Failed }
 
@@ -21,6 +22,13 @@ pub IndexBuild {
   reference_count: i64,
   test_count: i64,
   unreadable_count: i64,
+}
+
+pub TestSelection {
+  document: string,
+  status: IndexStatus,
+  changed_path: string,
+  candidate_count: i64,
 }
 
 IndexMeta {
@@ -58,6 +66,18 @@ IndexReference {
   line: i64,
 }
 IndexTest { path: str, reason: str }
+
+SelectionMeta {
+  schema_version: i64,
+  root: str,
+  revision: str,
+  status: str,
+  error_code: i64,
+  changed_path: str,
+  candidate_count: i64,
+}
+
+RelatedTest { path: str, score: i64, reason: str }
 
 FileFragments {
   file_json: string,
@@ -199,6 +219,78 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
   }
 }
 
+pub fn select_tests(root: str, changed_path: str, timeout_ns: i64) -> TestSelection {
+  revision_run := verify.run("git", ["git", "rev-parse", "--verify", "HEAD"].to_array(), root, timeout_ns)
+  if !process_succeeded(revision_run.status, revision_run.code) {
+    failed_root := root.clone()
+    failed_changed_path := changed_path.clone()
+    failed_document := render_selection_document(failed_root, "", "error", revision_run.code, failed_changed_path, 0, "")
+    return TestSelection {
+      document: failed_document.clone(),
+      status: IndexStatus.Failed,
+      changed_path: changed_path.clone(),
+      candidate_count: 0,
+    }
+  }
+  revision := revision_run.stdout.trim().clone()
+
+  files_run := verify.run("git", ["git", "ls-files", "-z"].to_array(), root, timeout_ns)
+  if !process_succeeded(files_run.status, files_run.code) {
+    failed_root := root.clone()
+    failed_changed_path := changed_path.clone()
+    failed_document := render_selection_document(failed_root, "", "error", files_run.code, failed_changed_path, 0, "")
+    return TestSelection {
+      document: failed_document.clone(),
+      status: IndexStatus.Failed,
+      changed_path: changed_path.clone(),
+      candidate_count: 0,
+    }
+  }
+
+  mut candidates_body := builder()
+  mut candidate_count := 0
+  listing: str := files_run.stdout
+  mut score := 120
+  loop {
+    if score < 0 { break }
+    mut file_cursor := 0
+    loop {
+      if file_cursor >= listing.len() { break }
+      file_end := match listing[file_cursor..listing.len()].find("\0") {
+        Some(offset) => file_cursor + offset,
+        None => listing.len(),
+      }
+      relative := listing[file_cursor..file_end]
+      file_cursor = if file_end < listing.len() { file_end + 1 } else { listing.len() }
+      if relative.len() == 0 { break }
+      if is_test_path(relative) && related_test_score(changed_path, relative) == score {
+        reason := related_test_reason(changed_path, relative)
+        record := RelatedTest { path: relative, score: score, reason: reason }
+        if candidate_count > 0 { candidates_body.write(",") }
+        candidates_body.write(json.encode(record))
+        candidate_count = candidate_count + 1
+      }
+    }
+    score = score - 1
+  }
+
+  document := render_selection_document(
+    root,
+    revision,
+    "ok",
+    -1,
+    changed_path,
+    candidate_count,
+    candidates_body.to_string(),
+  )
+  return TestSelection {
+    document: document.clone(),
+    status: IndexStatus.Ready,
+    changed_path: changed_path.clone(),
+    candidate_count: candidate_count,
+  }
+}
+
 fn render_document(
   root: str,
   revision: str,
@@ -242,6 +334,33 @@ fn render_document(
   b.write(references_json)
   b.write("],\"test_candidates\":[")
   b.write(tests_json)
+  b.write("]}")
+  return b.to_string()
+}
+
+fn render_selection_document(
+  root: str,
+  revision: str,
+  status: str,
+  error_code: i64,
+  changed_path: str,
+  candidate_count: i64,
+  candidates_json: str,
+) -> string {
+  meta := SelectionMeta {
+    schema_version: 1,
+    root: root,
+    revision: revision,
+    status: status,
+    error_code: error_code,
+    changed_path: changed_path,
+    candidate_count: candidate_count,
+  }
+  meta_json := json.encode(meta)
+  b := builder()
+  b.write(meta_json[0..meta_json.len() - 1])
+  b.write(",\"candidates\":[")
+  b.write(candidates_json)
   b.write("]}")
   return b.to_string()
 }
@@ -836,6 +955,43 @@ fn language_of(path_name: str) -> str {
   if path_name.ends_with(".yml") || path_name.ends_with(".yaml") { return "yaml" }
   if path_name.ends_with(".sh") { return "shell" }
   return "unknown"
+}
+
+fn path_stem(path_name: str) -> str {
+  base := path.base(path_name)
+  extension := path.ext(path_name)
+  if extension.len() == 0 || extension.len() > base.len() {
+    return base
+  }
+  return base[0..base.len() - extension.len()]
+}
+
+fn related_test_basename_match(changed_path: str, test_path: str) -> bool {
+  changed_stem := path_stem(changed_path)
+  test_stem := path_stem(test_path)
+  if changed_stem.len() == 0 || test_stem.len() == 0 {
+    return false
+  }
+  return test_stem.contains(changed_stem) || changed_stem.contains(test_stem)
+}
+
+fn related_test_same_directory(changed_path: str, test_path: str) -> bool {
+  return path.dir(changed_path) == path.dir(test_path)
+}
+
+fn related_test_score(changed_path: str, test_path: str) -> i64 {
+  name_score := if related_test_basename_match(changed_path, test_path) { 100 } else { 0 }
+  directory_score := if related_test_same_directory(changed_path, test_path) { 20 } else { 0 }
+  return name_score + directory_score
+}
+
+fn related_test_reason(changed_path: str, test_path: str) -> str {
+  name_match := related_test_basename_match(changed_path, test_path)
+  same_directory := related_test_same_directory(changed_path, test_path)
+  if name_match && same_directory { return "basename-match+same-directory" }
+  if name_match { return "basename-match" }
+  if same_directory { return "same-directory" }
+  return "generic"
 }
 
 fn is_test_path(path_name: str) -> bool {

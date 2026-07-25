@@ -19,7 +19,8 @@ currently requires a Content-Length-framed response because the shipped Align HT
 rejects chunked response bodies; that limitation is tracked in `docs/align-requests.md`.
 C2 now has a repository-index slice for tracked files, Align declarations/imports, lexical
 references, semantic resolution status, and test-path candidates, persisted as one revision-bound
-JSON document. Related-test ranking is the next index slice.
+JSON document. It also provides deterministic path-based related-test selection with ranked
+candidates and persisted selection metadata.
 
 ## Prerequisites
 
@@ -56,6 +57,7 @@ make fmt
 make build
 make provider-smoke
 make index-smoke
+make test-selection-smoke
 ```
 
 `make check` checks the complete import graph one module at a time. `make run` compiles and runs the bootstrap CLI. `make build` writes the `main` executable in the repository root; it is ignored by Git.
@@ -74,6 +76,12 @@ Build the first repository index slice from a Git worktree:
 
 ```sh
 ./main --index . index.json
+```
+
+Select related tests for a changed tracked path:
+
+```sh
+./main --select-tests . src/main.align related-tests.json
 ```
 
 ## Plans
