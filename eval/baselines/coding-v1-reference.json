@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "recorded_at": "2026-07-24T23:57:20+00:00",
-  "align_llm_commit": "cd6f0a270b7f037d6eb1db14927ead7b5fb3e497",
+  "recorded_at": "2026-07-25T00:07:25+00:00",
+  "align_llm_commit": "7584a3233386ba9d8eda86ed4b163734cff3c4a8",
   "align_revision": "db942d2f705546c7d6b8c0334a462548c6446f84",
   "corpus": {
     "id": "coding-v1",
@@ -42,7 +42,7 @@
       },
       {
         "path": "eval/runners/run-coding-task.py",
-        "sha256": "77f7f2ed4b11483cf5860680459ceaa3018233f2355185ee5e01211ba9265455"
+        "sha256": "788b52a7cc6dac16921ec3a93538846dd8616da074238c628abfb54e77b1a1da"
       },
       {
         "path": "eval/tasks/coding-v1.json",
@@ -102,8 +102,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 174130425,
-          "time_to_passing_patch_ns": 174130425
+          "duration_ns": 171863822,
+          "time_to_passing_patch_ns": 171863822
         }
       ],
       "summary": {
@@ -120,8 +120,8 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 172835159,
-          "time_to_passing_patch_ns": 172835159
+          "duration_ns": 174430679,
+          "time_to_passing_patch_ns": 174430679
         }
       ],
       "summary": {
@@ -135,9 +135,9 @@
     "task_attempt_count": 2,
     "passing_attempt_count": 2,
     "time_to_passing_patch_ns": {
-      "minimum": 172835159,
-      "median": 173482792,
-      "maximum": 174130425
+      "minimum": 171863822,
+      "median": 173147250,
+      "maximum": 174430679
     }
   }
 }
