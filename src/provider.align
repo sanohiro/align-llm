@@ -1,0 +1,44 @@
+module provider
+
+import model
+import provider_llama
+import provider_openai
+
+// Provider-independent dispatch. There are no implicit interfaces in Align: adding a provider
+// means adding one explicit enum arm to each operation, so the supported surface stays visible.
+pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> = match config.kind {
+  CloudOpenAI => provider_openai.generate(config, request),
+  LocalOpenAI => provider_openai.generate(config, request),
+  LlamaCpp => provider_llama.generate(config, request),
+}
+
+pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> = match config.kind {
+  CloudOpenAI => provider_openai.stream(config, request),
+  LocalOpenAI => provider_openai.stream(config, request),
+  LlamaCpp => provider_llama.stream(config, request),
+}
+
+pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.TokenCount, Error> = match config.kind {
+  CloudOpenAI => provider_openai.count_tokens(config, text),
+  LocalOpenAI => provider_openai.count_tokens(config, text),
+  LlamaCpp => provider_llama.count_tokens(config, text),
+}
+
+pub fn model_info(config: model.ProviderConfig) -> model.ModelInfo {
+  info_provider := match config.kind {
+    CloudOpenAI => "cloud-openai",
+    LocalOpenAI => "openai-local",
+    LlamaCpp => "llama.cpp",
+  }
+  exact := match config.kind {
+    LlamaCpp => config.tokenize_endpoint.len() > 0,
+    _ => false,
+  }
+  return model.ModelInfo {
+    provider: info_provider,
+    model: config.model,
+    endpoint: config.endpoint,
+    supports_stream: true,
+    token_count_exact: exact,
+  }
+}

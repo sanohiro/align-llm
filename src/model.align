@@ -1,0 +1,32 @@
+module model
+
+// Provider-independent data types. Provider implementations consume these records and return
+// only the values the current Align ownership model can represent safely at the boundary.
+
+pub ProviderKind { CloudOpenAI, LocalOpenAI, LlamaCpp }
+
+pub ProviderConfig {
+  kind: ProviderKind,
+  endpoint: str,
+  model: str,
+  api_key: str,
+  timeout_ns: i64,
+  tokenize_endpoint: str,
+}
+
+pub GenerationRequest {
+  system: str,
+  user: str,
+  max_tokens: i64,
+  temperature: f64,
+}
+
+pub TokenCount { count: i64, exact: bool }
+
+pub ModelInfo {
+  provider: str,
+  model: str,
+  endpoint: str,
+  supports_stream: bool,
+  token_count_exact: bool,
+}

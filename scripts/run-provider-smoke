@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+temp_dir=$(mktemp -d)
+ready_file="$temp_dir/ready"
+observed_file="$temp_dir/observed"
+server_pid=""
+
+cleanup() {
+  if test -n "$server_pid"; then
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+  fi
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+python3 - "$ready_file" "$observed_file" <<'PY' &
+import json
+import os
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+ready_path, observed_path = sys.argv[1:]
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        payload = json.loads(self.rfile.read(length))
+        with open(observed_path, "a", encoding="utf-8") as observed:
+            observed.write(
+                json.dumps(
+                    {
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization", ""),
+                        "stream": bool(payload.get("stream", False)),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+
+        if self.path == "/tokenize":
+            body = json.dumps({"tokens": [11, 12, 13, 14]}).encode("utf-8")
+            content_type = "application/json"
+        elif self.path == "/v1/chat/completions":
+            if payload.get("stream", False):
+                body = (
+                    'data: {"choices":[{"delta":{"content":"OPENAI-"}}]}\n'
+                    'data: {"choices":[{"delta":{"content":"STREAM"}}]}\n'
+                    "data: [DONE]\n"
+                ).encode("utf-8")
+                content_type = "text/event-stream"
+            else:
+                body = json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "OPENAI-GENERATED",
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+                content_type = "application/json"
+        elif self.path == "/completion":
+            if payload.get("stream", False):
+                body = (
+                    'data: {"content":"LLAMA-"}\n'
+                    'data: {"content":"STREAM"}\n'
+                    "data: [DONE]\n"
+                ).encode("utf-8")
+                content_type = "text/event-stream"
+            else:
+                body = json.dumps({"content": "LLAMA-GENERATED"}).encode("utf-8")
+                content_type = "application/json"
+        elif self.path == "/incomplete":
+            body = 'data: {"choices":[{"delta":{"content":"PARTIAL"}}]}\n'.encode("utf-8")
+            content_type = "text/event-stream"
+        elif self.path == "/slow":
+            time.sleep(0.25)
+            body = json.dumps(
+                {"choices": [{"message": {"role": "assistant", "content": "TOO-LATE"}}]}
+            ).encode("utf-8")
+            content_type = "application/json"
+        else:
+            self.send_error(404)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        return
+
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+with open(ready_path, "w", encoding="ascii") as ready:
+    ready.write(str(server.server_port))
+    ready.flush()
+    os.fsync(ready.fileno())
+server.serve_forever()
+PY
+server_pid=$!
+
+for _ in $(seq 1 100); do
+  if test -s "$ready_file"; then
+    break
+  fi
+  sleep 0.02
+done
+test -s "$ready_file"
+port=$(<"$ready_file")
+
+run_provider() {
+  "$root_dir/main" --provider "$@"
+}
+
+run_provider openai-local "http://127.0.0.1:$port/v1/chat/completions" smoke-openai - "repair the range" "$temp_dir/openai.json"
+run_provider cloud "http://127.0.0.1:$port/v1/chat/completions" smoke-cloud test-key "repair the range" "$temp_dir/cloud.json"
+run_provider llama "http://127.0.0.1:$port/completion" smoke-llama - "repair the range" "$temp_dir/llama.json" generate "http://127.0.0.1:$port/tokenize"
+run_provider openai-local "http://127.0.0.1:$port/v1/chat/completions" smoke-openai - "stream the repair" "$temp_dir/openai-stream.json" stream
+run_provider llama "http://127.0.0.1:$port/completion" smoke-llama - "stream the repair" "$temp_dir/llama-stream.json" stream
+if run_provider cloud "http://127.0.0.1:$port/v1/chat/completions" smoke-cloud - "missing auth" "$temp_dir/cloud-missing.json"; then
+  exit 1
+fi
+if run_provider openai-local "http://127.0.0.1:$port/incomplete" smoke-openai - "incomplete stream" "$temp_dir/incomplete.json" stream; then
+  exit 1
+fi
+if run_provider openai-local "http://127.0.0.1:$port/slow" smoke-openai - "timeout" "$temp_dir/timeout.json" generate - 100000000; then
+  exit 1
+fi
+
+python3 - "$temp_dir" "$observed_file" <<'PY'
+import json
+import pathlib
+import sys
+
+temp_dir = pathlib.Path(sys.argv[1])
+observed_path = pathlib.Path(sys.argv[2])
+expected = {
+    "openai.json": ("openai-local", "generate", "OPENAI-GENERATED"),
+    "cloud.json": ("cloud-openai", "generate", "OPENAI-GENERATED"),
+    "llama.json": ("llama.cpp", "generate", "LLAMA-GENERATED"),
+    "openai-stream.json": ("openai-local", "stream", "OPENAI-STREAM"),
+    "llama-stream.json": ("llama.cpp", "stream", "LLAMA-STREAM"),
+}
+
+for name, (provider, operation, output) in expected.items():
+    record = json.loads((temp_dir / name).read_text(encoding="utf-8"))
+    assert record["schema_version"] == 1, (name, record)
+    assert record["provider"] == provider, (name, record)
+    assert record["operation"] == operation, (name, record)
+    assert record["status"] == "ok", (name, record)
+    assert record["output"] == output, (name, record)
+    assert record["error"] == "", (name, record)
+    assert record["elapsed_ns"] >= 0, (name, record)
+
+observed = [json.loads(line) for line in observed_path.read_text(encoding="utf-8").splitlines()]
+assert any(
+    row["path"] == "/v1/chat/completions"
+    and row["authorization"] == "Bearer test-key"
+    and not row["stream"]
+    for row in observed
+), observed
+assert any(row["path"] == "/tokenize" for row in observed), observed
+assert sum(row["stream"] for row in observed) == 3, observed
+
+missing_auth = json.loads((temp_dir / "cloud-missing.json").read_text(encoding="utf-8"))
+assert missing_auth["status"] == "error", missing_auth
+assert missing_auth["error"] == "denied", missing_auth
+assert missing_auth["output"] == "", missing_auth
+
+incomplete = json.loads((temp_dir / "incomplete.json").read_text(encoding="utf-8"))
+assert incomplete["status"] == "error", incomplete
+assert incomplete["error"] == "invalid", incomplete
+assert incomplete["output"] == "", incomplete
+
+timeout = json.loads((temp_dir / "timeout.json").read_text(encoding="utf-8"))
+assert timeout["status"] == "error", timeout
+assert timeout["error"] == "timeout", timeout
+assert timeout["output"] == "", timeout
+
+llama = json.loads((temp_dir / "llama.json").read_text(encoding="utf-8"))
+assert llama["prompt_tokens"] == 8, llama
+assert llama["completion_tokens"] == 4, llama
+assert llama["total_tokens"] == 12, llama
+assert llama["token_count_exact"] is True, llama
+print("provider smoke: 3 providers, generate/stream, auth, exact token count, and common result format PASS")
+PY

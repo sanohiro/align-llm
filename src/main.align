@@ -1,16 +1,165 @@
 module main
 
+import core.json
 import project
 import verify
 import eval
 import repair
+import model
+import provider
+import result
 import std.fs
+import std.time
 
 // Keep the bootstrap entry point dependency-free while Align's package layer is still evolving.
 fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
   print("Usage: main [--version | --status | --selfcheck | --eval [corpus] | --loop]")
+  print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
+}
+
+fn parse_provider_kind(value: str) -> Result<model.ProviderKind, Error> {
+  if value == "cloud" {
+    return Ok(model.ProviderKind.CloudOpenAI)
+  }
+  if value == "openai-local" {
+    return Ok(model.ProviderKind.LocalOpenAI)
+  }
+  if value == "llama" {
+    return Ok(model.ProviderKind.LlamaCpp)
+  }
+  return Err(Error.Invalid)
+}
+
+fn error_label(e: Error) -> str = match e {
+  NotFound => "not-found",
+  Invalid => "invalid",
+  Denied => "denied",
+  Timeout => "timeout",
+  Code(_) => "provider-status",
+}
+
+fn parse_i64(value: str) -> Result<i64, Error> {
+  number: i64 := json.decode(value)?
+  return Ok(number)
+}
+
+fn count_or_unknown(config: model.ProviderConfig, text: str) -> model.TokenCount {
+  return match provider.count_tokens(config, text) {
+    Ok(count) => count,
+    Err(_) => model.TokenCount { count: -1, exact: false },
+  }
+}
+
+fn count_prompt(config: model.ProviderConfig, request: model.GenerationRequest) -> model.TokenCount {
+  system_count := count_or_unknown(config, request.system)
+  user_count := count_or_unknown(config, request.user)
+  if system_count.count < 0 || user_count.count < 0 {
+    return model.TokenCount { count: -1, exact: false }
+  }
+  return model.TokenCount {
+    count: system_count.count + user_count.count,
+    exact: system_count.exact && user_count.exact,
+  }
+}
+
+fn provider_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 8 {
+    return Err(Error.Invalid)
+  }
+  kind := parse_provider_kind(args[2])?
+  mode := if args.len() >= 9 { args[8] } else { "generate" }
+  if mode != "generate" && mode != "stream" {
+    return Err(Error.Invalid)
+  }
+  api_key := if args[5] == "-" { "" } else { args[5] }
+  tokenize_endpoint := if args.len() >= 10 && args[9] != "-" { args[9] } else { "" }
+  timeout_ns := if args.len() >= 11 { parse_i64(args[10])? } else { 30_000_000_000 }
+  if timeout_ns < 0 {
+    return Err(Error.Invalid)
+  }
+  config := model.ProviderConfig {
+    kind: kind,
+    endpoint: args[3],
+    model: args[4],
+    api_key: api_key,
+    timeout_ns: timeout_ns,
+    tokenize_endpoint: tokenize_endpoint,
+  }
+  request := model.GenerationRequest {
+    system: "You are a coding assistant. Return a concise patch-oriented answer.",
+    user: args[6],
+    max_tokens: 256,
+    temperature: 0.0,
+  }
+  info := provider.model_info(config)
+  started := time.instant()
+  generated := if mode == "stream" {
+    provider.stream(config, request)
+  } else {
+    provider.generate(config, request)
+  }
+  elapsed := time.instant() - started
+  match generated {
+    Ok(text) => {
+      prompt_count := count_prompt(config, request)
+      completion_count := count_or_unknown(config, text)
+      total := if prompt_count.count >= 0 && completion_count.count >= 0 {
+        prompt_count.count + completion_count.count
+      } else {
+        -1
+      }
+      exact := prompt_count.exact && completion_count.exact
+      text_view: str := text
+      record := result.GenerationRecord {
+        schema_version: 1,
+        operation: mode,
+        provider: info.provider,
+        model: info.model,
+        endpoint: info.endpoint,
+        status: "ok",
+        output: text_view,
+        prompt_tokens: prompt_count.count,
+        completion_tokens: completion_count.count,
+        total_tokens: total,
+        token_count_exact: exact,
+        elapsed_ns: elapsed,
+        error: "",
+      }
+      result.save(args[7], record)?
+      print("provider:")
+      print(info.provider)
+      print("model:")
+      print(info.model)
+      print("operation:")
+      print(mode)
+      print("status:")
+      print("PASS")
+      print("output:")
+      print(text)
+    }
+    Err(e) => {
+      record := result.GenerationRecord {
+        schema_version: 1,
+        operation: mode,
+        provider: info.provider,
+        model: info.model,
+        endpoint: info.endpoint,
+        status: "error",
+        output: "",
+        prompt_tokens: -1,
+        completion_tokens: -1,
+        total_tokens: -1,
+        token_count_exact: false,
+        elapsed_ns: elapsed,
+        error: error_label(e),
+      }
+      result.save(args[7], record)?
+      return Err(e)
+    }
+  }
+  return Ok(())
 }
 
 // A repair provider that declines to fix anything (always gives up). It lets the loop's control
@@ -110,14 +259,18 @@ pub fn main(args: array<str>) -> Result<(), Error> {
         if args[1] == "--selfcheck" {
           self_check()?
         } else {
-          if args[1] == "--eval" {
-            corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
-            eval.run_suite(corpus)?
+          if args[1] == "--provider" {
+            provider_demo(args)?
           } else {
-            if args[1] == "--loop" {
-              loop_demo()
+            if args[1] == "--eval" {
+              corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
+              eval.run_suite(corpus)?
             } else {
-              print_help()
+              if args[1] == "--loop" {
+                loop_demo()
+              } else {
+                print_help()
+              }
             }
           }
         }

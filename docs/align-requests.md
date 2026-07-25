@@ -45,7 +45,7 @@ After Align merges the capability, rebuild its release compiler and runtime, upd
 `.align-revision`, and run the original acceptance gate through `make ci`. Close the request only
 after this file records both Align's response and align-llm's real-client verification.
 
-> **Status (2026-07-25): ALL THREE requests COMPLETE (shipped).**
+> **Status (2026-07-25): Requests 1 and 3 are CLOSED; Request 2 is ALIGN_MERGED; Request 4 is PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -467,6 +467,47 @@ directly exercises the original decode-and-encode round-trip gate before the dec
 count as passing.
 
 ---
+
+## Request 4 — `std.http`: client-side chunked response de-framing for provider SSE
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C1 streaming provider acceptance
+Independent work that may continue: non-streaming provider calls, token counting, common result persistence, C2 preparation
+Resume condition: a pinned Align compiler decodes a valid chunked SSE response and rejects truncated or malformed chunk framing; align-llm's provider stream smoke passes against that wire format
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation
+
+OpenAI-compatible streaming APIs normally return server-sent events with HTTP/1.1
+`Transfer-Encoding: chunked`. The C1 provider adapters now parse the SSE event body and assemble
+delta content, but the shipped `std.http` client is Content-Length-only and rejects chunked response
+bodies before the provider can see them. A raw-socket workaround in align-llm would duplicate HTTP
+framing and violate the standard-library boundary.
+
+### Requested capability
+
+Extend the existing `std.http` client response path to de-frame a valid chunked response into the
+same zero-copy/owned response body exposed by `resp.body()`. Preserve the existing malformed-message
+and truncation error behavior, and keep response status and headers unchanged. The provider layer
+does not need a second streaming transport API; `cl.request` should remain the single HTTP boundary.
+
+### Acceptance / gate
+
+An HTTP fixture sends two SSE chunks and a terminating zero chunk. `provider.stream` returns their
+concatenated content for both the OpenAI-compatible and llama.cpp adapters. A missing terminator,
+invalid chunk size, or truncated chunk returns `Error.Invalid` and does not produce a partial success.
+
+### Current align-llm evidence
+
+`src/provider_openai.align` and `src/provider_llama.align` implement the adapter-level SSE parser and
+pass `make provider-smoke` with Content-Length-framed fixtures. The same fixture must be switched to
+chunked framing after Align ships this capability; until then, only the streaming acceptance slice
+is paused and the non-streaming provider work remains valid.
 
 ## Not requested (respecting Align's design)
 

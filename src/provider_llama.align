@@ -1,0 +1,118 @@
+module provider_llama
+
+import core.json
+import model
+import provider_http
+
+LlamaRequest {
+  prompt: str,
+  n_predict: i64,
+  temperature: f64,
+  stream: bool,
+}
+
+LlamaResponse { content: str }
+LlamaTokenRequest { content: str }
+LlamaTokenResponse { tokens: array<i64> }
+StreamParsed { ok: bool, text: string }
+
+pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
+  body := request_body(request, false)
+  response := provider_http.post_json(config.endpoint, config.api_key, body, config.timeout_ns)?
+  decoded: LlamaResponse := json.decode(response)?
+  return Ok(decoded.content.clone())
+}
+
+pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
+  body := request_body(request, true)
+  response := provider_http.post_json(config.endpoint, config.api_key, body, config.timeout_ns)?
+  response_view: str := response
+  parsed := parse_stream(response_view)
+  if !parsed.ok {
+    return Err(Error.Invalid)
+  }
+  text := parsed.text.clone()
+  return Ok(text)
+}
+
+pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.TokenCount, Error> {
+  if config.tokenize_endpoint.len() == 0 {
+    return Ok(model.TokenCount { count: estimate_tokens(text), exact: false })
+  }
+  payload := LlamaTokenRequest { content: text }
+  body := json.encode(payload)
+  response := provider_http.post_json(config.tokenize_endpoint, config.api_key, body, config.timeout_ns)?
+  decoded: LlamaTokenResponse := json.decode(response)?
+  return Ok(model.TokenCount { count: decoded.tokens.len(), exact: true })
+}
+
+fn request_body(request: model.GenerationRequest, streaming: bool) -> string {
+  prompt := prompt_text(request)
+  prompt_view: str := prompt
+  payload := LlamaRequest {
+    prompt: prompt_view,
+    n_predict: request.max_tokens,
+    temperature: request.temperature,
+    stream: streaming,
+  }
+  return json.encode(payload).clone()
+}
+
+fn prompt_text(request: model.GenerationRequest) -> string {
+  b := builder()
+  if request.system.len() > 0 {
+    b.write(request.system)
+    b.write("\n\n")
+  }
+  b.write(request.user)
+  return b.to_string()
+}
+
+fn estimate_tokens(text: str) -> i64 {
+  if text.len() == 0 {
+    return 0
+  }
+  return (text.len() + 3) / 4
+}
+
+fn parse_stream(body: str) -> StreamParsed {
+  mut output := builder()
+  mut cursor := 0
+  mut saw_data := false
+  mut finished := false
+  loop {
+    if cursor >= body.len() || finished {
+      break
+    }
+    line_end := match body[cursor..body.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => body.len(),
+    }
+    line := body[cursor..line_end].trim_end()
+    cursor = if line_end < body.len() { line_end + 1 } else { body.len() }
+    if line.starts_with("data:") {
+      data := line[5..line.len()].trim()
+      if data == "[DONE]" {
+        saw_data = true
+        finished = true
+      } else {
+        arena {
+          event := json.doc(data) else {
+            return StreamParsed { ok: false, text: "".clone() }
+          }
+          match event.get("content").as_str() {
+            Some(content) => {
+              output.write(content)
+              saw_data = true
+            },
+            None => {},
+          }
+        }
+      }
+    }
+  }
+  if !saw_data || !finished {
+    return StreamParsed { ok: false, text: "".clone() }
+  }
+  return StreamParsed { ok: true, text: output.to_string() }
+}

@@ -1,0 +1,35 @@
+module provider_http
+
+import std.http
+
+// The common transport boundary for all model adapters. The adapters own JSON schema and response
+// interpretation; this module owns HTTP headers, timeout policy, status handling, and UTF-8 body
+// ownership.
+pub fn post_json(endpoint: str, api_key: str, body: str, timeout_ns: i64) -> Result<string, Error> {
+  client := http.client()
+  if timeout_ns > 0 {
+    client.timeout(timeout_ns)
+  }
+  request := http.request("POST", endpoint)
+  request.header("Content-Type", "application/json")
+  if api_key.len() > 0 {
+    auth := bearer(api_key)
+    request.header("Authorization", auth)
+  }
+  request.body(body.bytes())
+  response := client.request(request)?
+  status := response.status()
+  if status < 200 || status >= 300 {
+    return Err(Error.Code(status as i32))
+  }
+  bytes := response.body()
+  text := bytes.as_str()?
+  return Ok(text.clone())
+}
+
+fn bearer(api_key: str) -> string {
+  b := builder()
+  b.write("Bearer ")
+  b.write(api_key)
+  return b.to_string()
+}
