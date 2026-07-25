@@ -1,0 +1,381 @@
+module repo_index
+
+import core.json
+import std.fs
+import std.path
+import verify
+
+// C2's first slice is deliberately repository-boundary-first: Git supplies the tracked file list,
+// including names that contain newlines, and the Align parser records declarations/imports only
+// for the first target language. Symbol references are a later slice; the output keeps the
+// provider-independent JSON boundary stable while the index grows.
+
+pub IndexStatus { Ready, Partial, Failed }
+
+pub IndexBuild {
+  document: string,
+  status: IndexStatus,
+  file_count: i64,
+  symbol_count: i64,
+  import_count: i64,
+  test_count: i64,
+  unreadable_count: i64,
+}
+
+IndexMeta {
+  schema_version: i64,
+  root: str,
+  revision: str,
+  status: str,
+  error_code: i64,
+  file_count: i64,
+  symbol_count: i64,
+  import_count: i64,
+  test_count: i64,
+  unreadable_count: i64,
+}
+
+IndexFile {
+  path: str,
+  language: str,
+  line_count: i64,
+  readable: bool,
+  is_test: bool,
+}
+
+IndexSymbol { path: str, name: str, kind: str, line: i64 }
+IndexImport { path: str, name: str, line: i64 }
+IndexTest { path: str, reason: str }
+
+FileFragments {
+  file_json: string,
+  symbols_json: string,
+  imports_json: string,
+  tests_json: string,
+  symbol_count: i64,
+  import_count: i64,
+  test_count: i64,
+  readable: bool,
+}
+
+pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
+  revision_run := verify.run("git", ["git", "rev-parse", "--verify", "HEAD"].to_array(), root, timeout_ns)
+  if !process_succeeded(revision_run.status, revision_run.code) {
+    failed_root := root.clone()
+    failed_document := render_document(failed_root, "", "error", revision_run.code, 0, 0, 0, 0, 0, "", "", "", "")
+    return IndexBuild {
+      document: failed_document.clone(),
+      status: IndexStatus.Failed,
+      file_count: 0,
+      symbol_count: 0,
+      import_count: 0,
+      test_count: 0,
+      unreadable_count: 0,
+    }
+  }
+  revision := revision_run.stdout.trim().clone()
+
+  files_run := verify.run("git", ["git", "ls-files", "-z"].to_array(), root, timeout_ns)
+  if !process_succeeded(files_run.status, files_run.code) {
+    failed_root := root.clone()
+    failed_document := render_document(failed_root, "", "error", files_run.code, 0, 0, 0, 0, 0, "", "", "", "")
+    return IndexBuild {
+      document: failed_document.clone(),
+      status: IndexStatus.Failed,
+      file_count: 0,
+      symbol_count: 0,
+      import_count: 0,
+      test_count: 0,
+      unreadable_count: 0,
+    }
+  }
+
+  mut files_body := builder()
+  mut symbols_body := builder()
+  mut imports_body := builder()
+  mut tests_body := builder()
+  mut file_count := 0
+  mut symbol_count := 0
+  mut import_count := 0
+  mut test_count := 0
+  mut unreadable_count := 0
+  mut file_cursor := 0
+  mut first_file := true
+  mut first_symbol := true
+  mut first_import := true
+  mut first_test := true
+  listing: str := files_run.stdout
+
+  loop {
+    if file_cursor >= listing.len() { break }
+    file_end := match listing[file_cursor..listing.len()].find("\0") {
+      Some(offset) => file_cursor + offset,
+      None => listing.len(),
+    }
+    relative := listing[file_cursor..file_end]
+    file_cursor = if file_end < listing.len() { file_end + 1 } else { listing.len() }
+    if relative.len() == 0 { break }
+
+    fragments := inspect_file(root, relative)
+    if !first_file { files_body.write(",") }
+    first_file = false
+    files_body.write(fragments.file_json)
+    if fragments.symbol_count > 0 { symbol_count = symbol_count + fragments.symbol_count }
+    if fragments.import_count > 0 { import_count = import_count + fragments.import_count }
+    if fragments.test_count > 0 { test_count = test_count + fragments.test_count }
+    if !fragments.readable { unreadable_count = unreadable_count + 1 }
+    file_count = file_count + 1
+
+    if fragments.symbols_json.len() > 0 {
+      if !first_symbol { symbols_body.write(",") }
+      first_symbol = false
+      symbols_body.write(fragments.symbols_json)
+    }
+    if fragments.imports_json.len() > 0 {
+      if !first_import { imports_body.write(",") }
+      first_import = false
+      imports_body.write(fragments.imports_json)
+    }
+    if fragments.tests_json.len() > 0 {
+      if !first_test { tests_body.write(",") }
+      first_test = false
+      tests_body.write(fragments.tests_json)
+    }
+  }
+
+  status := if unreadable_count == 0 { "ok" } else { "partial" }
+  build_status := if unreadable_count == 0 { IndexStatus.Ready } else { IndexStatus.Partial }
+  document: string := render_document(
+    root,
+    revision,
+    status,
+    -1,
+    file_count,
+    symbol_count,
+    import_count,
+    test_count,
+    unreadable_count,
+    files_body.to_string(),
+    symbols_body.to_string(),
+    imports_body.to_string(),
+    tests_body.to_string(),
+  )
+  return IndexBuild {
+    document: document.clone(),
+    status: build_status,
+    file_count: file_count,
+    symbol_count: symbol_count,
+    import_count: import_count,
+    test_count: test_count,
+    unreadable_count: unreadable_count,
+  }
+}
+
+fn render_document(
+  root: str,
+  revision: str,
+  status: str,
+  error_code: i64,
+  file_count: i64,
+  symbol_count: i64,
+  import_count: i64,
+  test_count: i64,
+  unreadable_count: i64,
+  files_json: str,
+  symbols_json: str,
+  imports_json: str,
+  tests_json: str,
+) -> string {
+  meta := IndexMeta {
+    schema_version: 1,
+    root: root,
+    revision: revision,
+    status: status,
+    error_code: error_code,
+    file_count: file_count,
+    symbol_count: symbol_count,
+    import_count: import_count,
+    test_count: test_count,
+    unreadable_count: unreadable_count,
+  }
+  meta_json := json.encode(meta)
+  b := builder()
+  b.write(meta_json[0..meta_json.len() - 1])
+  b.write(",\"files\":[")
+  b.write(files_json)
+  b.write("],\"symbols\":[")
+  b.write(symbols_json)
+  b.write("],\"imports\":[")
+  b.write(imports_json)
+  b.write("],\"test_candidates\":[")
+  b.write(tests_json)
+  b.write("]}")
+  return b.to_string()
+}
+
+fn inspect_file(root: str, relative: str) -> FileFragments {
+  full_path := path.join(root, relative)
+  source := fs.read_file(full_path) else {
+    file_record := IndexFile {
+      path: relative,
+      language: language_of(relative),
+      line_count: -1,
+      readable: false,
+      is_test: is_test_path(relative),
+    }
+    return FileFragments {
+      file_json: json.encode(file_record).clone(),
+      symbols_json: "".clone(),
+      imports_json: "".clone(),
+      tests_json: test_json(relative),
+      symbol_count: 0,
+      import_count: 0,
+      test_count: if is_test_path(relative) { 1 } else { 0 },
+      readable: false,
+    }
+  }
+
+  mut symbols_body := builder()
+  mut imports_body := builder()
+  mut symbol_count := 0
+  mut import_count := 0
+  mut first_symbol := true
+  mut first_import := true
+  mut cursor := 0
+  mut line_number := 1
+  align_source := relative.ends_with(".align")
+  loop {
+    if cursor >= source.len() { break }
+    line_end := match source[cursor..source.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => source.len(),
+    }
+    line := source[cursor..line_end].trim_end()
+    top_level := line == line.trim_start()
+    trimmed := line.trim()
+    if align_source && top_level && trimmed.len() > 0 && !trimmed.starts_with("//") {
+      if trimmed.starts_with("import ") {
+        module_name := first_token(trimmed[7..trimmed.len()])
+        import_record := IndexImport { path: relative, name: module_name, line: line_number }
+        import_json := json.encode(import_record)
+        if !first_import { imports_body.write(",") }
+        first_import = false
+        imports_body.write(import_json)
+        import_count = import_count + 1
+      } else {
+        symbol_name := declaration_name(trimmed)
+        symbol_kind := declaration_kind(trimmed)
+        if symbol_name.len() > 0 {
+          symbol_record := IndexSymbol { path: relative, name: symbol_name, kind: symbol_kind, line: line_number }
+          symbol_json := json.encode(symbol_record)
+          if !first_symbol { symbols_body.write(",") }
+          first_symbol = false
+          symbols_body.write(symbol_json)
+          symbol_count = symbol_count + 1
+        }
+      }
+    }
+    cursor = if line_end < source.len() { line_end + 1 } else { source.len() }
+    line_number = line_number + 1
+  }
+
+  file_record := IndexFile {
+    path: relative,
+    language: language_of(relative),
+    line_count: count_lines(source),
+    readable: true,
+    is_test: is_test_path(relative),
+  }
+  return FileFragments {
+    file_json: json.encode(file_record).clone(),
+    symbols_json: symbols_body.to_string(),
+    imports_json: imports_body.to_string(),
+    tests_json: test_json(relative),
+    symbol_count: symbol_count,
+    import_count: import_count,
+    test_count: if is_test_path(relative) { 1 } else { 0 },
+    readable: true,
+  }
+}
+
+fn declaration_name(line: str) -> str {
+  if line.starts_with("pub fn ") { return first_token(line[7..line.len()]) }
+  if line.starts_with("fn ") { return first_token(line[3..line.len()]) }
+  if line.starts_with("module ") { return first_token(line[7..line.len()]) }
+  open := line.find("{") else { return "" }
+  mut candidate := line[0..open].trim()
+  if candidate.starts_with("pub ") { candidate = candidate[4..candidate.len()].trim() }
+  if candidate.starts_with("fn ") || candidate.starts_with("import ") || candidate.len() == 0 {
+    return ""
+  }
+  return first_token(candidate)
+}
+
+fn process_succeeded(status: verify.RunStatus, code: i64) -> bool {
+  return match status {
+    Completed => code == 0,
+    TimedOut => false,
+    SpawnFailed => false,
+  }
+}
+
+fn declaration_kind(line: str) -> str {
+  if line.starts_with("pub fn ") || line.starts_with("fn ") { return "function" }
+  if line.starts_with("module ") { return "module" }
+  return "type"
+}
+
+fn first_token(value: str) -> str {
+  text := value.trim()
+  if text.len() == 0 { return text }
+  space := text.find(" ") else text.len()
+  paren := text.find("(") else text.len()
+  brace := text.find("{") else text.len()
+  end := space.min(paren).min(brace)
+  return text[0..end]
+}
+
+fn count_lines(source: str) -> i64 {
+  mut count := 0
+  mut cursor := 0
+  loop {
+    if cursor >= source.len() { break }
+    count = count + 1
+    line_end := match source[cursor..source.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => source.len(),
+    }
+    cursor = if line_end < source.len() { line_end + 1 } else { source.len() }
+  }
+  return count
+}
+
+fn language_of(path_name: str) -> str {
+  if path_name.ends_with(".align") { return "align" }
+  if path_name.ends_with(".py") { return "python" }
+  if path_name.ends_with(".rs") { return "rust" }
+  if path_name.ends_with(".md") { return "markdown" }
+  if path_name.ends_with(".json") { return "json" }
+  if path_name.ends_with(".yml") || path_name.ends_with(".yaml") { return "yaml" }
+  if path_name.ends_with(".sh") { return "shell" }
+  return "unknown"
+}
+
+fn is_test_path(path_name: str) -> bool {
+  if path_name.starts_with("test") || path_name.starts_with("tests/") || path_name.starts_with("test/") {
+    return true
+  }
+  if path_name.contains("/tests/") || path_name.contains("/test/") {
+    return true
+  }
+  if path_name.ends_with("_test.align") || path_name.ends_with("_test.py") {
+    return true
+  }
+  return false
+}
+
+fn test_json(path_name: str) -> string {
+  if !is_test_path(path_name) { return "".clone() }
+  record := IndexTest { path: path_name, reason: "test-path" }
+  return json.encode(record).clone()
+}

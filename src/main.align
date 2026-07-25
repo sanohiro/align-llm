@@ -7,6 +7,7 @@ import eval
 import repair
 import model
 import provider
+import repo_index
 import result
 import std.env
 import std.fs
@@ -16,7 +17,7 @@ import std.time
 fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
-  print("Usage: main [--version | --status | --selfcheck | --eval [corpus] | --loop]")
+  print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --eval [corpus] | --loop]")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
 
@@ -72,6 +73,38 @@ fn load_api_key(name: str) -> Result<string, Error> {
   return match env.get(name) {
     Some(value) => Ok(value),
     None => Err(Error.Denied),
+  }
+}
+
+fn index_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() < 4 {
+    return Err(Error.Invalid)
+  }
+  timeout_ns := if args.len() >= 5 { parse_i64(args[4])? } else { 30_000_000_000 }
+  if timeout_ns < 0 {
+    return Err(Error.Invalid)
+  }
+  built := repo_index.build(args[2], timeout_ns)
+  fs.write_file(args[3], built.document)?
+  print("index:")
+  print("status:")
+  match built.status {
+    Ready => print("PASS"),
+    Partial => print("PARTIAL"),
+    Failed => print("FAIL"),
+  }
+  print("files:")
+  print(built.file_count)
+  print("symbols:")
+  print(built.symbol_count)
+  print("imports:")
+  print(built.import_count)
+  print("test candidates:")
+  print(built.test_count)
+  match built.status {
+    Ready => { return Ok(()) },
+    Partial => { return Err(Error.Invalid) },
+    Failed => { return Err(Error.Invalid) },
   }
 }
 
@@ -276,14 +309,18 @@ pub fn main(args: array<str>) -> Result<(), Error> {
           if args[1] == "--provider" {
             provider_demo(args)?
           } else {
-            if args[1] == "--eval" {
-              corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
-              eval.run_suite(corpus)?
+            if args[1] == "--index" {
+              index_demo(args)?
             } else {
-              if args[1] == "--loop" {
-                loop_demo()
+              if args[1] == "--eval" {
+                corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
+                eval.run_suite(corpus)?
               } else {
-                print_help()
+                if args[1] == "--loop" {
+                  loop_demo()
+                } else {
+                  print_help()
+                }
               }
             }
           }

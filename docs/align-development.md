@@ -90,3 +90,20 @@ Use `make provider-smoke` for the focused fixture. It starts a temporary HTTP se
 local OpenAI-compatible and llama.cpp generate/stream calls, checks environment-backed Bearer
 authentication, Cloud HTTP rejection, SSE failure handling, exact tokenizer counts, HTTP status
 diagnostics, and the shared result records. Real Cloud OpenAI calls require HTTPS.
+
+## Repository-index development
+
+The first C2 slice is `src/repo_index.align`. It asks Git for the tracked file list with
+`ls-files -z`, so repository boundaries and filenames containing newlines remain explicit. For
+tracked files it records language classification, line count, readability, and test-path
+candidates. `.align` files additionally contribute top-level module, type, function, and import
+records. The result is a revision-bound JSON document written by:
+
+```sh
+./main --index <repo> <index.json> [timeout-ns]
+```
+
+Use `make index-smoke` for the focused fixture. It checks declaration/import extraction, a
+newline-containing tracked path, test-candidate selection, revision binding, and persisted failure
+metadata for a non-repository path. Symbol reference resolution and related-test ranking remain
+later C2 slices.

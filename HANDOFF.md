@@ -4,12 +4,12 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the C1 provider slice on
-`c1-provider-boundary` at implementation commit `55a7761`; the working tree is clean._
+_Last updated: 2026-07-25. Active work is the C2 repository-index slice on
+`c2-repo-index`; the first C2 implementation is in the working tree and is not committed yet._
 
 ## Current position
 
-The repository has completed C0 and is implementing C1:
+The repository has completed C0 and C1 and is implementing C2:
 
 - C0 now has both the evaluator smoke corpus and `coding-v1`, a real off-by-one repair task.
   The coding runner creates the exact pinned Git revision, proves the pre-repair failure, applies a
@@ -40,8 +40,9 @@ The repository has completed C0 and is implementing C1:
 - The refreshed baseline passed 2/2 attempts at 250,806,078 ns and 253,289,429 ns, with median time
   to a passing patch of 252,047,753 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
-  timeout-bounded process execution in `src/verify.align`. C1 now adds the provider abstraction,
-  three provider adapters, token-count metadata, and a common persisted result format.
+  timeout-bounded process execution in `src/verify.align`. C1 added the provider abstraction,
+  three provider adapters, token-count metadata, and a common persisted result format; PR #4 is
+  merged at `b7068e6`.
 - `src/main.align` exposes `--eval`, `--loop`, and `--selfcheck` demonstrations for these slices.
 - `.align-revision`, `make ci`, `.github/workflows/ci.yml`, the pull request template, and
   `docs/review-checklist.md` now make the local check, pinned compiler, fixed evaluation, review, and
@@ -51,11 +52,12 @@ The repository has completed C0 and is implementing C1:
 - Requests 1 and 3 have real-client closure evidence; Request 2 is shipped at `ALIGN_MERGED`.
   Request 4 is a new proposed blocker only for real chunked SSE acceptance; non-streaming C1 work
   remains independent.
-- Current C1 state: Align modules, three provider adapters, common JSON persistence, secure provider
-  boundaries, actionable HTTP status persistence, and the focused provider smoke are implemented.
-  The branch has PR #4 open; its initial independent review was applied except for the CI-target
-  suggestion, which is intentionally out of scope. A follow-up review is still required before
-  merge.
+- Current C2 state: `src/repo_index.align` and `main --index` implement the first repository-index
+  slice. Git tracked files are read with `ls-files -z`; all tracked files receive language,
+  line-count, readability, and test-path metadata; `.align` files receive top-level module, type,
+  function, and import records. The focused fixture covers a newline-containing path, revision
+  binding, and persisted non-repository failure metadata. Symbol reference resolution and related
+  test ranking are not started.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
@@ -156,14 +158,31 @@ relevant verification, and CI repetition is not useful while the Align chunked-r
 remains unshipped. The focused smoke uses a temporary HTTP fixture; real Cloud OpenAI calls require
 HTTPS and read the key from an environment variable name supplied to the CLI.
 
+## C2 verification
+
+Verified on 2026-07-25 against the existing pinned Align compiler:
+
+```text
+make fmt                         PASS
+make check                       PASS — 12 imported units, including repo_index
+make build                       PASS — executable built as ./main
+bash -n scripts/run-index-smoke  PASS
+make index-smoke                 PASS — tracked files, NUL-safe path, declarations/imports/tests, revision binding, failure persistence
+make provider-smoke              PASS — C1 provider regression smoke
+git diff --check                 PASS
+```
+
+The full `make ci` gate was not rerun; CI repetition is intentionally out of scope for this
+feature implementation.
+
 ## Next steps
 
-1. Push the review follow-up `55a7761`, perform a fresh independent adversarial review of the
-   updated PR #4, and apply only any valid remaining findings.
-2. Rerun only the focused provider verification after a material follow-up, then merge PR #4 with a
-   merge commit. Do not repeat the full CI gate unless a concrete issue requires it.
-3. After merge, start the next C1 slice. Keep Request 4 as the only blocker for real chunked SSE;
-   continue non-streaming provider and result work independently.
+1. Commit the C2 repository-index slice, push `c2-repo-index`, open a PR, and perform one
+   independent adversarial review.
+2. Apply only valid findings, rerun the focused index/provider verification, and merge with a merge
+   commit. Do not repeat the full CI gate.
+3. After merge, continue C2 with symbol-reference extraction and related-test selection. Keep
+   Request 4 limited to real chunked SSE acceptance; it does not block the index work.
 
 ## Constraints to preserve
 
@@ -185,8 +204,13 @@ HTTPS and read the key from an environment variable name supplied to the CLI.
   `std.process` per run.
 - Provider SSE parsing currently depends on Content-Length framing because Align's shipped
   `std.http` client rejects chunked response bodies; do not add a raw-socket compatibility layer.
-- The C1 implementation and review fixes are committed at `55a7761`; keep the branch clean while it is published and
-  reviewed. No intentional uncommitted files remain.
+- C1 is merged at `b7068e6`. The current C2 implementation is intentionally uncommitted until the
+  scoped slice is complete and handoff is updated.
+- C2 uses Git's tracked-file list (`git ls-files -z`) rather than recursively probing filesystem
+  entries; do not replace it with a directory walk that loses repository boundaries or newline
+  safety.
+- C2 currently parses only top-level Align declarations and imports. Do not claim reference
+  resolution or related-test ranking until their own acceptance fixture passes.
 - Source, comments, diagnostics, commits, pull requests, reviews, and releases are written in
   English.
 
