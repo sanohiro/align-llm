@@ -6,8 +6,9 @@ import std.path
 import verify
 
 // C2 remains repository-boundary-first: Git supplies the tracked file list, including names that
-// contain newlines. The Align parser now adds lexical references for imported qualified names and
-// local calls; semantic resolution and related-test ranking remain later slices.
+// contain newlines. The Align parser records lexical references and resolves the ones that can be
+// tied to tracked user symbols; external builtins, private symbols, and missing targets stay
+// explicit in the result. Related-test ranking remains a later slice.
 
 pub IndexStatus { Ready, Partial, Failed }
 
@@ -46,7 +47,16 @@ IndexFile {
 
 IndexSymbol { path: str, name: str, kind: str, line: i64 }
 IndexImport { path: str, name: str, line: i64 }
-IndexReference { path: str, qualifier: str, name: str, kind: str, line: i64 }
+IndexReference {
+  path: str,
+  qualifier: str,
+  name: str,
+  kind: str,
+  resolution: str,
+  target_path: str,
+  target_name: str,
+  line: i64,
+}
 IndexTest { path: str, reason: str }
 
 FileFragments {
@@ -125,7 +135,7 @@ pub fn build(root: str, timeout_ns: i64) -> IndexBuild {
     file_cursor = if file_end < listing.len() { file_end + 1 } else { listing.len() }
     if relative.len() == 0 { break }
 
-    fragments := inspect_file(root, relative)
+    fragments := inspect_file(root, relative, listing)
     if !first_file { files_body.write(",") }
     first_file = false
     files_body.write(fragments.file_json)
@@ -207,7 +217,7 @@ fn render_document(
   tests_json: str,
 ) -> string {
   meta := IndexMeta {
-    schema_version: 2,
+    schema_version: 3,
     root: root,
     revision: revision,
     status: status,
@@ -236,7 +246,7 @@ fn render_document(
   return b.to_string()
 }
 
-fn inspect_file(root: str, relative: str) -> FileFragments {
+fn inspect_file(root: str, relative: str, listing: str) -> FileFragments {
   full_path := path.join(root, relative)
   source := fs.read_file(full_path) else {
     file_record := IndexFile {
@@ -282,7 +292,7 @@ fn inspect_file(root: str, relative: str) -> FileFragments {
     trimmed := line.trim()
     if align_source {
       code := strip_literals_and_comments(line)
-      extracted := extract_references(relative, source, code, line_number)
+      extracted := extract_references(root, relative, source, code, line_number, listing)
       if extracted.json.len() > 0 {
         if reference_count > 0 { references_body.write(",") }
         references_body.write(extracted.json)
@@ -337,8 +347,9 @@ fn inspect_file(root: str, relative: str) -> FileFragments {
 }
 
 ReferenceLine { json: string, count: i64 }
+Resolution { status: string, target_path: string }
 
-fn extract_references(path_name: str, source: str, code: str, line_number: i64) -> ReferenceLine {
+fn extract_references(root: str, path_name: str, source: str, code: str, line_number: i64, listing: str) -> ReferenceLine {
   mut body := builder()
   mut count := 0
   mut cursor := 0
@@ -357,11 +368,17 @@ fn extract_references(path_name: str, source: str, code: str, line_number: i64) 
       qualifier := last_token(code[0..dot])
       name := first_segment(code[dot + 1..code.len()])
       if qualifier.len() > 0 && name.len() > 0 && is_reference_identifier(name) && is_imported_qualifier(source, qualifier) {
+        resolution := resolve_reference(root, path_name, source, qualifier, name, "qualified", listing)
+        resolution_status: str := resolution.status
+        target_path: str := resolution.target_path
         record := IndexReference {
           path: path_name,
           qualifier: qualifier,
           name: name,
           kind: "qualified",
+          resolution: resolution_status,
+          target_path: target_path,
+          target_name: name,
           line: line_number,
         }
         if count > 0 { body.write(",") }
@@ -376,11 +393,17 @@ fn extract_references(path_name: str, source: str, code: str, line_number: i64) 
       is_definition_open := name == function_name && !definition_open_skipped
       if is_definition_open { definition_open_skipped = true }
       if is_reference_identifier(name) && !before.contains(".") && !is_call_keyword(name) && !is_definition_open {
+        resolution := resolve_reference(root, path_name, source, "", name, "local-call", listing)
+        resolution_status: str := resolution.status
+        target_path: str := resolution.target_path
         record := IndexReference {
           path: path_name,
           qualifier: "",
           name: name,
           kind: "local-call",
+          resolution: resolution_status,
+          target_path: target_path,
+          target_name: name,
           line: line_number,
         }
         if count > 0 { body.write(",") }
@@ -391,6 +414,157 @@ fn extract_references(path_name: str, source: str, code: str, line_number: i64) 
     }
   }
   return ReferenceLine { json: body.to_string(), count: count }
+}
+
+fn resolve_reference(
+  root: str,
+  path_name: str,
+  source: str,
+  qualifier: str,
+  name: str,
+  kind: str,
+  listing: str,
+) -> Resolution {
+  if kind == "local-call" {
+    if has_local_function(source, name) {
+      return Resolution { status: "resolved".clone(), target_path: path_name.clone() }
+    }
+    return Resolution { status: "unresolved".clone(), target_path: "".clone() }
+  }
+
+  module_name := imported_module(source, qualifier) else {
+    return Resolution { status: "unresolved".clone(), target_path: "".clone() }
+  }
+  if module_name.starts_with("core.") || module_name.starts_with("std.") {
+    return Resolution { status: "external".clone(), target_path: "".clone() }
+  }
+
+  // The index has no single compiler entry file, so use the importing file's directory as the
+  // repository-index resolution base.
+  directory := path.dir(path_name)
+  target_relative := module_file_path(directory, module_name)
+  target_relative_view: str := target_relative
+  if !is_tracked_path(listing, target_relative_view) {
+    return Resolution { status: "unresolved".clone(), target_path: target_relative.clone() }
+  }
+  target_full := path.join(root, target_relative_view)
+  target_source := fs.read_file(target_full) else {
+    return Resolution { status: "unresolved".clone(), target_path: target_relative.clone() }
+  }
+  if !has_module_declaration(target_source, module_name) {
+    return Resolution { status: "unresolved".clone(), target_path: target_relative.clone() }
+  }
+  if has_public_symbol(target_source, name) {
+    return Resolution { status: "resolved".clone(), target_path: target_relative.clone() }
+  }
+  return Resolution { status: "unresolved".clone(), target_path: target_relative.clone() }
+}
+
+fn imported_module(source: str, candidate: str) -> Option<str> {
+  mut cursor := 0
+  loop {
+    if cursor >= source.len() { break }
+    line_end := match source[cursor..source.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => source.len(),
+    }
+    line := source[cursor..line_end].trim_end()
+    trimmed := line.trim()
+    if line == line.trim_start() && trimmed.starts_with("import ") {
+      module_name := first_token(trimmed[7..trimmed.len()])
+      if import_prefix(module_name) == candidate { return Some(module_name) }
+    }
+    cursor = if line_end < source.len() { line_end + 1 } else { source.len() }
+  }
+  return None
+}
+
+fn module_file_path(directory: str, module_name: str) -> string {
+  mut body := builder()
+  mut cursor := 0
+  loop {
+    if cursor >= module_name.len() { break }
+    dot := match module_name[cursor..module_name.len()].find(".") {
+      Some(offset) => cursor + offset,
+      None => module_name.len(),
+    }
+    if cursor > 0 { body.write("/") }
+    body.write(module_name[cursor..dot])
+    if dot >= module_name.len() { break }
+    cursor = dot + 1
+  }
+  body.write(".align")
+  module_path := body.to_string()
+  return path.join(directory, module_path)
+}
+
+fn is_tracked_path(listing: str, expected: str) -> bool {
+  mut cursor := 0
+  loop {
+    if cursor >= listing.len() { break }
+    end := match listing[cursor..listing.len()].find("\0") {
+      Some(offset) => cursor + offset,
+      None => listing.len(),
+    }
+    if listing[cursor..end] == expected { return true }
+    if end >= listing.len() { break }
+    cursor = end + 1
+  }
+  return false
+}
+
+fn has_local_function(source: str, name: str) -> bool {
+  mut cursor := 0
+  loop {
+    if cursor >= source.len() { break }
+    line_end := match source[cursor..source.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => source.len(),
+    }
+    line := source[cursor..line_end].trim_end()
+    trimmed := line.trim()
+    if line == line.trim_start() && trimmed.len() > 0 && !trimmed.starts_with("//") {
+      if declaration_kind(trimmed) == "function" && declaration_name(trimmed) == name { return true }
+    }
+    cursor = if line_end < source.len() { line_end + 1 } else { source.len() }
+  }
+  return false
+}
+
+fn has_module_declaration(source: str, module_name: str) -> bool {
+  mut cursor := 0
+  loop {
+    if cursor >= source.len() { break }
+    line_end := match source[cursor..source.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => source.len(),
+    }
+    line := source[cursor..line_end].trim_end()
+    trimmed := line.trim()
+    if line == line.trim_start() && declaration_kind(trimmed) == "module" && declaration_name(trimmed) == module_name {
+      return true
+    }
+    cursor = if line_end < source.len() { line_end + 1 } else { source.len() }
+  }
+  return false
+}
+
+fn has_public_symbol(source: str, name: str) -> bool {
+  mut cursor := 0
+  loop {
+    if cursor >= source.len() { break }
+    line_end := match source[cursor..source.len()].find("\n") {
+      Some(offset) => cursor + offset,
+      None => source.len(),
+    }
+    line := source[cursor..line_end].trim_end()
+    trimmed := line.trim()
+    if line == line.trim_start() && trimmed.starts_with("pub ") {
+      if declaration_name(trimmed) == name { return true }
+    }
+    cursor = if line_end < source.len() { line_end + 1 } else { source.len() }
+  }
+  return false
 }
 
 fn declaration_function_name(line: str) -> str {
