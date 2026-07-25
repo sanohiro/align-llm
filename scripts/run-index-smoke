@@ -22,7 +22,11 @@ repo = Path(sys.argv[1])
 (repo / "src" / "app.align").write_text(
     "module demo\nimport std.fs\nimport geom\n\nDemo { value: i64 }\npub fn run() -> i64 {\n  // ignored() and geom.ignored() stay in the comment\n  text := \"fake() and geom.fake()\"\n"
     "  quoted := \"escaped \\\"fake()\\\" and geom.fake()\"\n"
-    "  value := geom.square(5)\n  fs.read_file(\"README.md\")\n  return helper(value)\n}\nfn helper(value: i64) -> i64 = value\n",
+    "  point := geom.Point { x: 1 }\n  value := geom.square(5)\n  hidden := geom.hidden()\n  fs.read_file(\"README.md\")\n  return helper(value)\n}\nfn helper(value: i64) -> i64 = value\n",
+    encoding="utf-8",
+)
+(repo / "src" / "geom.align").write_text(
+    "module geom\npub Point { x: i64 }\npub fn square(x: i64) -> i64 = x * x\nfn hidden() -> i64 = 0\n",
     encoding="utf-8",
 )
 (repo / "src" / "odd\nname.align").write_text(
@@ -54,12 +58,12 @@ tracked = subprocess.check_output(
 ).split(b"\0")
 tracked = {item.decode("utf-8") for item in tracked if item}
 
-assert index["schema_version"] == 2, index
+assert index["schema_version"] == 3, index
 assert index["status"] == "ok", index
 assert index["revision"] == subprocess.check_output(
     ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
 ).strip(), index
-assert index["file_count"] == len(tracked) == 4, (index, tracked)
+assert index["file_count"] == len(tracked) == 5, (index, tracked)
 assert index["unreadable_count"] == 0, index
 files = {entry["path"]: entry for entry in index["files"]}
 assert "src/odd\nname.align" in files, files
@@ -71,18 +75,34 @@ assert ("src/app.align", "demo", "module") in symbols, symbols
 assert ("src/app.align", "Demo", "type") in symbols, symbols
 assert ("src/app.align", "run", "function") in symbols, symbols
 assert ("src/odd\nname.align", "parse", "function") in symbols, symbols
+assert ("src/geom.align", "Point", "type") in symbols, symbols
+assert ("src/geom.align", "square", "function") in symbols, symbols
+assert ("src/geom.align", "hidden", "function") in symbols, symbols
 imports = {(entry["path"], entry["name"]) for entry in index["imports"]}
 assert ("src/app.align", "std.fs") in imports, imports
 assert ("src/app.align", "geom") in imports, imports
 assert ("src/odd\nname.align", "core.json") in imports, imports
 references = {
-    (entry["path"], entry["qualifier"], entry["name"], entry["kind"], entry["line"])
+    (entry["path"], entry["qualifier"], entry["name"], entry["kind"], entry["line"]): entry
     for entry in index["references"]
 }
-assert index["reference_count"] == len(references) == 3, (index, references)
-assert ("src/app.align", "geom", "square", "qualified", 10) in references, references
-assert ("src/app.align", "fs", "read_file", "qualified", 11) in references, references
-assert ("src/app.align", "", "helper", "local-call", 12) in references, references
+assert index["reference_count"] == len(references) == 5, (index, references)
+point = references[("src/app.align", "geom", "Point", "qualified", 10)]
+assert point["resolution"] == "resolved", point
+assert point["target_path"] == "src/geom.align", point
+assert point["target_name"] == "Point", point
+square = references[("src/app.align", "geom", "square", "qualified", 11)]
+assert square["resolution"] == "resolved", square
+assert square["target_path"] == "src/geom.align", square
+hidden = references[("src/app.align", "geom", "hidden", "qualified", 12)]
+assert hidden["resolution"] == "unresolved", hidden
+assert hidden["target_path"] == "src/geom.align", hidden
+external = references[("src/app.align", "fs", "read_file", "qualified", 13)]
+assert external["resolution"] == "external", external
+assert external["target_path"] == "", external
+helper = references[("src/app.align", "", "helper", "local-call", 14)]
+assert helper["resolution"] == "resolved", helper
+assert helper["target_path"] == "src/app.align", helper
 assert index["test_candidates"] == [{"path": "tests/test_app.py", "reason": "test-path"}], index
 PY
 
@@ -96,9 +116,11 @@ import sys
 from pathlib import Path
 
 failed = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert failed["schema_version"] == 3, failed
 assert failed["status"] == "error", failed
 assert failed["error_code"] == 128, failed
 assert failed["files"] == [], failed
+assert failed["references"] == [], failed
 PY
 
-printf '%s\n' "repo index smoke: tracked files, NUL-safe path, declarations/imports/references/tests, and failure persistence PASS"
+printf '%s\n' "repo index smoke: tracked files, NUL-safe path, declarations/imports/references/resolution/tests, and failure persistence PASS"

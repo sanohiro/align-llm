@@ -97,15 +97,20 @@ The current C2 slice is `src/repo_index.align`. It asks Git for the tracked file
 `ls-files -z`, so repository boundaries and filenames containing newlines remain explicit. For
 tracked files it records language classification, line count, readability, and test-path
 candidates. `.align` files additionally contribute top-level module, type, function, and import
-records, plus lexical references to imported qualified names and local calls. The reference
-records preserve the source qualifier, member name, kind, and line; they are intentionally not
-semantic resolution. The result is a revision-bound JSON document written by:
+records, plus lexical references to imported qualified names and local calls. Each reference keeps
+the source qualifier, member name, kind, resolution status, target path, target name, and line.
+Tracked user-module public symbols and same-file functions resolve to targets; core/std references
+are marked external, while private or missing targets remain unresolved. Because the index CLI
+receives a repository root rather than one compiler entry file, user-module resolution uses the
+importing file's directory as its conservative base. The result is a schema-version-3,
+revision-bound JSON document written by:
 
 ```sh
 ./main --index <repo> <index.json> [timeout-ns]
 ```
 
 Use `make index-smoke` for the focused fixture. It checks declaration/import/reference extraction,
-a newline-containing tracked path, string/comment exclusion, test-candidate selection, revision
-binding, and persisted failure metadata for a non-repository path. Semantic reference resolution
-and related-test ranking remain later C2 slices.
+user-module public resolution, local resolution, external and unresolved statuses, a
+newline-containing tracked path, string/comment exclusion, test-candidate selection, revision
+binding, and persisted failure metadata for a non-repository path. Related-test ranking remains a
+later C2 slice.
