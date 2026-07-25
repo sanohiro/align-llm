@@ -4,31 +4,37 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the C4 verification-loop slice on
-`c4-verification-loop` at commit `07880b5`; the working tree is clean._
+_Last updated: 2026-07-25. Active work is the C5 failure-memory slice on
+`c5-failure-memory`, implementation commit `05dbf75` based on merged main commit `17da92c`; the
+working tree contains the intentional handoff update before the PR._
 
 ## Current position
 
-The repository has completed C0 through C3 and the C4 implementation is complete locally.
+The repository has completed C0 through C4. The C5 implementation is complete locally; its PR has
+not been opened yet.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
-- C4 commit `07880b5` adds `src/verification_loop.align` and `--verify-loop <task.json>
-  <result.json>`. It evaluates and applies a candidate patch, runs build/targeted/full stages with
-  timeout-bounded captured output, emits structured attempt/stage JSON and repair prompts, and
-  applies one deterministic repair patch before re-verifying.
-- `scripts/run-verification-loop-smoke` proves the fixed-task gate and the invalid-repair
-  `REPAIR_FAILED` path. The repair patch is the provider-independent seam; model-backed repair is
-  not implemented yet.
-- The hosted workflow now includes the supported C4 smoke. The unavailable nested user-namespace
-  `coding-v1` sandbox and stale C0 baseline check remain local/capable-runner gates only.
+- PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
+  `--verify-loop <task.json> <result.json>`, with candidate evaluation/application, bounded
+  build/targeted/full verification, captured diagnostics, repair prompts, and one deterministic
+  repair patch.
+- C5 commit `05dbf75` adds `src/failure_memory.align`, optional `memory_profile` task input, append-only
+  JSONL events, and matching-event injection into repair prompts. Profile failures are non-blocking
+  after the result file is written.
+- `scripts/run-verification-loop-smoke` now proves persistence, same-task reuse, and the existing
+  invalid-repair `REPAIR_FAILED` path. `failure-memory-smoke` is the named C5 make target.
+- Hosted Actions already runs this smoke through `verify-loop-smoke`; no new external retry loop is
+  warranted. The unavailable nested user-namespace `coding-v1` sandbox and stale C0 baseline check
+  remain local/capable-runner gates only.
 
 ## Next steps
 
-1. Push `c4-verification-loop` and open the C4 pull request with the verification results below.
-2. Review the PR against `docs/review-checklist.md`; make one bounded adversarial-review attempt
-   if the review command is available, then address only valid findings.
-3. Wait for the supported hosted check once, merge after review/check success, and update this file
-   to the next roadmap slice (C5 failure memory).
+1. Finish the focused C5 verification, commit the implementation and this handoff, and keep the
+   branch scoped to C5.
+2. Push `c5-failure-memory`, open the C5 pull request, and review it against
+   `docs/review-checklist.md` with one bounded adversarial-review attempt.
+3. Address valid findings, check the supported hosted run once, merge after review/check success,
+   then update this file to C6 Prompt and Context Optimizer.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
@@ -79,6 +85,27 @@ git diff --check                 PASS
 
 The full `make ci` gate was not rerun for C4. The supported hosted workflow was updated to include
 the C4 smoke; no repeated retry is warranted for external service-capacity errors.
+
+## C5 verification
+
+Verified on 2026-07-25 against the current sibling Align checkout:
+
+```text
+make fmt                         PASS
+make format-check                PASS
+make check                       PASS — 15 imported units, including failure_memory
+make build                       PASS
+bash -n scripts/run-verification-loop-smoke  PASS
+make index-smoke                 PASS — C2 regression
+make test-selection-smoke        PASS — C2 regression
+make patch-eval-smoke            PASS — C3 regression
+make provider-smoke              PASS — C1 regression
+make failure-memory-smoke        PASS — profile persistence, same-task prompt reuse, legacy task compatibility, and REPAIR_FAILED
+git diff --check                 PASS
+```
+
+The full `make ci` gate was not rerun for C5. Hosted Actions already exercises the supported
+verification-loop smoke; repeated external service-capacity retries remain out of scope.
 
 ## Historical verification
 
@@ -242,7 +269,7 @@ The follow-up `053357e` also classifies changed hunk lines that begin with `+++`
 after the hunk marker, preserving valid unified-diff content. The full `make ci` gate was not
 rerun; repeated CI is intentionally out of scope for this feature implementation.
 
-## Next steps
+## Superseded C3 handoff
 
 1. Push `3581c79` and `053357e` on `c3-patch-evaluator`, update PR #9, and review the changed
    surface once.
