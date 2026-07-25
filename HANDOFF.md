@@ -5,8 +5,8 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline`, with canonical
-baseline source commit `9fef27a`, immutable oracle commit `e64a405`, and refreshed result commit
-`acf267f`. Resume at the PR head until it is merge-committed; after that, no implementation is
+baseline source commit `312dc55`, immutable oracle commit `a7cdfe6`, and refreshed result commit
+`891395e`. Resume at the PR head until it is merge-committed; after that, no implementation is
 active until the user asks to resume, with C1 as the next roadmap slice._
 
 ## Current position
@@ -25,16 +25,17 @@ The repository has completed the C0 implementation and is ready to begin C1 afte
   size/file-count limits. Task-controlled IDs cannot influence temporary paths. Deleted-but-open
   files,
   adopted descendants, directory modes, and bounded resource scans are checked. Post-validation host
-  Git checks cannot be configured by the candidate.
+  Git checks cannot be configured by the candidate. Fixture and baseline Git subprocesses disable
+  both system configuration and system attributes, and replacement objects are ignored.
 - `eval/baselines/coding-v1-reference.json` is the first canonical machine-readable baseline. It was
-  recorded twice from clean commit `9fef27a` after rebuilding `main` with the verified pinned Align
+  recorded twice from clean commit `312dc55` after rebuilding `main` with the verified pinned Align
   compiler. It binds the complete declared evaluation artifact set to both SHA-256 digests and the
   source commit, including the verifier itself, while enumerating source inputs explicitly so new
   unrelated modules do not invalidate C0. It records the requested and resolved Python runtime used
-  for measurement and is checked against immutable oracle commit `e64a405`. This deterministic
+  for measurement and is checked against immutable oracle commit `a7cdfe6`. This deterministic
   reference validates scoring and timing, not model quality.
-- The refreshed baseline passed 2/2 attempts at 244,772,544 ns and 235,739,090 ns, with median time
-  to a passing patch of 240,255,817 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
+- The refreshed baseline passed 2/2 attempts at 229,146,312 ns and 236,638,330 ns, with median time
+  to a passing patch of 232,892,321 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
   timeout-bounded process execution in `src/verify.align`. This is enabling work shaped like the
   later C4 Verification Loop, not completion of C1. C1's provider abstraction, multiple provider
@@ -98,7 +99,8 @@ make ci
 # PASS — coding-v1: pinned fixture repair 1/1 PASS; disallowed edits and validation side effects
 # rejected, including index-flag-, stat-cache-hidden-, special-mode, and directory-mode mutations;
 # ignored fixture inputs and validation side effects rejected; ambient Git and Python settings and
-# corpus interpreter dispatch isolated; timeout and normal-completion process-tree cleanup,
+# corpus interpreter dispatch isolated; system Git configuration and attributes disabled; timeout
+# and normal-completion process-tree cleanup,
 # descendant reaping, and temporary checkout cleanup verified; missing child-subreaper, bubblewrap
 # namespace, or resource wrapper support fails closed; validation cannot mutate the host filesystem or
 # Git metadata; Git replacement objects are ignored; pre-validation byte/mode and untracked/ignored
@@ -130,9 +132,9 @@ git diff --check
 
 ## Next steps
 
-1. Push the final C0 follow-up, repeat PR #3 review after the validation-containment and resource
-   hardening changes, require GitHub CI to pass with full checkout history, and merge with a merge
-   commit so the canonical baseline source commit remains reachable.
+1. Push the final C0 follow-up, repeat PR #3 review after the Git attribute isolation change,
+   require GitHub CI to pass with full checkout history, and merge with a merge commit so the
+   canonical baseline source commit remains reachable.
 2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
    provider boundary and common persisted result format.
 
