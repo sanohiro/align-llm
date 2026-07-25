@@ -37,6 +37,9 @@ printf '%s\n' "coding task ambient Git configuration: isolated"
 
 python3 - <<'PY'
 import importlib.util
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 project_root = Path.cwd()
@@ -56,6 +59,54 @@ for relative_path, function_name in modules:
     environment = getattr(module, function_name)()
     if environment.get("GIT_ATTR_NOSYSTEM") != "1":
         raise SystemExit(f"{path} does not disable system Git attributes")
+
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    global_home = root / "global-home"
+    (global_home / "git").mkdir(parents=True)
+    (global_home / "git" / "attributes").write_text(
+        "*.txt filter=ambient\n", encoding="utf-8"
+    )
+    repository = root / "repository"
+    setup_environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    setup_environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "XDG_CONFIG_HOME": str(global_home),
+            "HOME": str(global_home),
+        }
+    )
+    subprocess.run(
+        ["git", "init", str(repository)],
+        check=True,
+        capture_output=True,
+        env=setup_environment,
+    )
+    (repository / "sample.txt").write_text("sample\n", encoding="utf-8")
+    for relative_path, function_name in modules:
+        path = project_root / relative_path
+        spec = importlib.util.spec_from_file_location("git_environment_smoke", path)
+        if spec is None or spec.loader is None:
+            raise SystemExit(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = subprocess.run(
+            ["git", "check-attr", "filter", "--", "sample.txt"],
+            cwd=repository,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=getattr(module, function_name)(),
+        )
+        if result.returncode != 0 or result.stdout.strip() != "sample.txt: filter: unspecified":
+            raise SystemExit(
+                f"{path} did not isolate global Git attributes: "
+                f"{result.stdout.strip()}"
+            )
 PY
 
 printf '%s\n' "system Git attributes: isolated"

@@ -29,6 +29,7 @@ def git_environment() -> dict[str, str]:
     environment["GIT_ATTR_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment["XDG_CONFIG_HOME"] = os.devnull
     environment["LC_ALL"] = "C"
     return environment
 
