@@ -8,7 +8,9 @@ task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
 patch="${project_root}/eval/expected/python-inclusive-range-disallowed.patch"
 side_effect_patch="${project_root}/eval/expected/python-inclusive-range-side-effect.patch"
 output_file="$(mktemp)"
-trap 'rm -f "${output_file}"' EXIT
+ignored_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored.XXXXXX")"
+ignored_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored.XXXXXX.json")"
+trap 'rm -f "${output_file}" "${ignored_task}"; rm -r "${ignored_source}"' EXIT
 
 cd "${project_root}"
 if python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1; then
@@ -38,3 +40,31 @@ if ! grep -Fq "candidate changed disallowed files: candidate-side-effect.txt" "$
 fi
 
 printf '%s\n' "coding task validation side effect: rejected"
+
+printf '%s\n' "ignored.txt" >"${ignored_source}/.gitignore"
+printf '%s\n' "uncommitted fixture input" >"${ignored_source}/ignored.txt"
+python3 - "${task}" "${ignored_task}" "${ignored_source}" "${project_root}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+task["id"] = "ignored-fixture-smoke"
+task["source_dir"] = str(Path(sys.argv[3]).relative_to(Path(sys.argv[4])))
+task["source_revision"] = "0" * 40
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" "${ignored_task}" "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an ignored fixture input" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "new fixture checkout contains uncommitted or ignored files" "${output_file}"; then
+  printf '%s\n' "coding task did not report the ignored fixture input" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ignored fixture input: rejected"

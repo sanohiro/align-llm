@@ -29,6 +29,13 @@ class CommandTimedOut(TaskError):
     pass
 
 
+def kill_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def load_task(path: Path) -> dict[str, Any]:
     try:
         task = json.loads(path.read_text(encoding="utf-8"))
@@ -107,10 +114,7 @@ def run(
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        kill_process_group(process)
         stdout, stderr = process.communicate()
         details = [f"command timed out after {timeout_seconds} seconds: {display_name}"]
         if stdout:
@@ -118,6 +122,11 @@ def run(
         if stderr:
             details.append(f"stderr:\n{stderr.rstrip()}")
         raise CommandTimedOut("\n".join(details))
+    except BaseException:
+        kill_process_group(process)
+        process.communicate()
+        raise
+    kill_process_group(process)
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
@@ -187,13 +196,13 @@ def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str)
         if result.returncode != 0:
             raise TaskError(f"{' '.join(argv)} failed: {result.stderr.strip()}")
 
+    if git_output(checkout, "status", "--porcelain", "--ignored", "--untracked-files=all"):
+        raise TaskError("new fixture checkout contains uncommitted or ignored files")
     actual_revision = git_output(checkout, "rev-parse", "HEAD")
     if actual_revision != expected_revision:
         raise TaskError(
             f"fixture revision mismatch: expected {expected_revision}, got {actual_revision}"
         )
-    if git_output(checkout, "status", "--porcelain"):
-        raise TaskError("new fixture checkout is dirty")
 
 
 def print_command_output(label: str, result: subprocess.CompletedProcess[str]) -> None:

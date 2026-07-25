@@ -52,7 +52,13 @@ def main() -> int:
             encoding="utf-8",
         )
         evaluator.chmod(0o755)
-        result = recorder.record_run(evaluator, corpus, project_root, 1)
+        result = recorder.record_run(
+            evaluator,
+            corpus,
+            project_root,
+            1,
+            "failure-smoke",
+        )
 
         task["actual_code"] = 0
         evaluator.write_text(
@@ -64,12 +70,66 @@ def main() -> int:
             encoding="utf-8",
         )
         try:
-            recorder.record_run(evaluator, corpus, project_root, 2)
+            recorder.record_run(
+                evaluator,
+                corpus,
+                project_root,
+                2,
+                "failure-smoke",
+            )
         except recorder.BaselineError as error:
             if "failing task actual_code equals expected_code" not in str(error):
                 raise
         else:
             raise RuntimeError("baseline recorder accepted a contradictory FAIL verdict")
+
+        task["actual_code"] = 1
+        summary["pass_count"] = False
+        evaluator.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"print({json.dumps(json.dumps(task))})\n"
+            f"print({json.dumps(json.dumps(summary))})\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        try:
+            recorder.record_run(
+                evaluator,
+                corpus,
+                project_root,
+                3,
+                "failure-smoke",
+            )
+        except recorder.BaselineError as error:
+            if "summary pass_count must be an integer" not in str(error):
+                raise
+        else:
+            raise RuntimeError("baseline recorder accepted a boolean summary count")
+
+        summary["pass_count"] = 0
+        summary["corpus_id"] = "wrong-corpus"
+        evaluator.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"print({json.dumps(json.dumps(task))})\n"
+            f"print({json.dumps(json.dumps(summary))})\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        try:
+            recorder.record_run(
+                evaluator,
+                corpus,
+                project_root,
+                4,
+                "failure-smoke",
+            )
+        except recorder.BaselineError as error:
+            if "summary corpus_id differs from the requested corpus" not in str(error):
+                raise
+        else:
+            raise RuntimeError("baseline recorder accepted the wrong corpus identity")
 
     task_result = result["task_results"][0]
     if (
@@ -79,7 +139,10 @@ def main() -> int:
         or result["summary"]["fail_count"] != 1
     ):
         raise RuntimeError("baseline recorder changed a complete failing result")
-    print("non-passing baseline sample: retained; contradictory verdict rejected")
+    print(
+        "non-passing baseline sample: retained; contradictory verdict, "
+        "malformed counts, and corpus mismatch rejected"
+    )
     return 0
 
 

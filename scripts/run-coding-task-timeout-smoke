@@ -8,9 +8,11 @@ source_task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.js
 patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
 timeout_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.timeout.XXXXXX.json")"
 marker="$(mktemp)"
+normal_marker="$(mktemp)"
 output_file="$(mktemp)"
 rm -f "${marker}"
-trap 'rm -f "${timeout_task}" "${marker}" "${output_file}"' EXIT
+rm -f "${normal_marker}"
+trap 'rm -f "${timeout_task}" "${marker}" "${normal_marker}" "${output_file}"' EXIT
 
 python3 - "${source_task}" "${timeout_task}" "${marker}" <<'PY'
 import json
@@ -68,3 +70,44 @@ if compgen -G "/tmp/align-llm-python-inclusive-range-timeout-smoke-*" >/dev/null
 fi
 
 printf '%s\n' "coding task timeout: diagnostics retained and process group cleaned"
+
+python3 - "${runner}" "${normal_marker}" "${project_root}" <<'PY'
+import importlib.util
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+runner_path = Path(sys.argv[1])
+marker = sys.argv[2]
+project_root = Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location("run_coding_task", runner_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load coding task runner")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+child = (
+    "import pathlib,sys,time; "
+    "time.sleep(1); "
+    "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+)
+parent = (
+    "import subprocess,sys; "
+    "subprocess.Popen("
+    "[sys.executable, '-c', sys.argv[1], sys.argv[2]], "
+    "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+)
+result = module.run(
+    [sys.executable, "-c", parent, child, marker],
+    project_root,
+    5,
+)
+if result.returncode != 0:
+    raise RuntimeError("normal-return process-group smoke parent failed")
+time.sleep(2)
+if Path(marker).exists():
+    raise RuntimeError("normal-return command left a descendant process running")
+PY
+
+printf '%s\n' "coding task normal completion: descendant process group cleaned"

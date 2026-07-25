@@ -319,7 +319,11 @@ def verify_runs(
     return passing_times
 
 
-def verify_aggregate(aggregate: Any, passing_times: list[int]) -> None:
+def verify_aggregate(
+    aggregate: Any,
+    passing_times: list[int],
+    expected_task_attempt_count: int,
+) -> None:
     if not isinstance(aggregate, dict):
         raise BaselineError("aggregate must be an object")
     require_fields(
@@ -330,6 +334,8 @@ def verify_aggregate(aggregate: Any, passing_times: list[int]) -> None:
     task_attempt_count = require_positive_integer(
         aggregate["task_attempt_count"], "aggregate task_attempt_count"
     )
+    if task_attempt_count != expected_task_attempt_count:
+        raise BaselineError("aggregate task_attempt_count is incorrect")
     if task_attempt_count < len(passing_times):
         raise BaselineError("aggregate task_attempt_count is smaller than pass count")
     passing_attempt_count = require_non_negative_integer(
@@ -422,9 +428,7 @@ def verify_baseline(path: Path, project_root: Path) -> None:
         expected_codes,
     )
     task_attempt_count = sum(len(run["task_results"]) for run in baseline["runs"])
-    if baseline["aggregate"].get("task_attempt_count") != task_attempt_count:
-        raise BaselineError("aggregate task_attempt_count is incorrect")
-    verify_aggregate(baseline["aggregate"], passing_times)
+    verify_aggregate(baseline["aggregate"], passing_times, task_attempt_count)
 
 
 def main() -> int:

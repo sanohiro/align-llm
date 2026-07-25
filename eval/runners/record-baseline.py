@@ -17,6 +17,19 @@ class BaselineError(Exception):
     pass
 
 
+def require_integer(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise BaselineError(f"{label} must be an integer")
+    return value
+
+
+def require_non_negative_integer(value: Any, label: str) -> int:
+    integer = require_integer(value, label)
+    if integer < 0:
+        raise BaselineError(f"{label} must be a non-negative integer")
+    return integer
+
+
 def run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -137,7 +150,10 @@ def artifact_manifest(
     return {"algorithm": "sha256", "files": rows}
 
 
-def parse_eval_output(stdout: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def parse_eval_output(
+    stdout: str,
+    expected_corpus_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     try:
         rows = [json.loads(line) for line in stdout.splitlines() if line]
     except json.JSONDecodeError as error:
@@ -148,14 +164,23 @@ def parse_eval_output(stdout: str) -> tuple[list[dict[str, Any]], dict[str, Any]
     summary = rows[-1]
     for task in task_results:
         required = {
+            "schema_version",
             "task_id",
             "verdict",
             "expected_code",
             "actual_code",
             "duration_ns",
+            "stdout",
+            "stderr",
         }
-        if not isinstance(task, dict) or not required.issubset(task):
+        if not isinstance(task, dict) or set(task) != required:
             raise BaselineError("evaluation task result does not match the expected schema")
+        if require_integer(task["schema_version"], "task schema_version") != 1:
+            raise BaselineError("evaluation task result uses an unsupported schema")
+        if not isinstance(task["task_id"], str) or not task["task_id"]:
+            raise BaselineError("evaluation task id must be a non-empty string")
+        if not isinstance(task["stdout"], str) or not isinstance(task["stderr"], str):
+            raise BaselineError("evaluation task output must be strings")
     summary_fields = {
         "schema_version",
         "corpus_id",
@@ -165,13 +190,25 @@ def parse_eval_output(stdout: str) -> tuple[list[dict[str, Any]], dict[str, Any]
     }
     if not isinstance(summary, dict) or set(summary) != summary_fields:
         raise BaselineError("evaluation summary does not match the expected schema")
+    if require_integer(summary["schema_version"], "summary schema_version") != 1:
+        raise BaselineError("evaluation summary uses an unsupported schema")
+    if summary["corpus_id"] != expected_corpus_id:
+        raise BaselineError("evaluation summary corpus_id differs from the requested corpus")
+    for field in ("task_count", "pass_count", "fail_count"):
+        require_non_negative_integer(summary[field], f"summary {field}")
     return task_results, summary
 
 
-def record_run(binary: Path, corpus_path: Path, project_root: Path, sample: int) -> dict[str, Any]:
+def record_run(
+    binary: Path,
+    corpus_path: Path,
+    project_root: Path,
+    sample: int,
+    expected_corpus_id: str,
+) -> dict[str, Any]:
     result = run([str(binary), "--eval", str(corpus_path)], project_root)
     try:
-        tasks, summary = parse_eval_output(result.stdout)
+        tasks, summary = parse_eval_output(result.stdout, expected_corpus_id)
     except BaselineError as error:
         raise BaselineError(
             f"evaluation sample {sample} did not produce a complete result: {error}; "
@@ -276,13 +313,21 @@ def main() -> int:
             raise BaselineError("baseline build changed the source worktree")
 
         corpus = load_json(corpus_path)
-        if corpus.get("schema_version") != 1 or not isinstance(corpus.get("corpus_id"), str):
+        if require_integer(corpus.get("schema_version"), "corpus schema_version") != 1:
             raise BaselineError("corpus does not match schema version 1")
+        if not isinstance(corpus.get("corpus_id"), str) or not corpus["corpus_id"]:
+            raise BaselineError("corpus id must be a non-empty string")
         source_commit = checked_output(["git", "rev-parse", "HEAD"], project_root)
         artifacts = artifact_manifest(project_root, corpus_path, corpus)
 
         runs = [
-            record_run(binary, corpus_path, project_root, sample)
+            record_run(
+                binary,
+                corpus_path,
+                project_root,
+                sample,
+                corpus["corpus_id"],
+            )
             for sample in range(1, args.samples + 1)
         ]
         passing_times = [
