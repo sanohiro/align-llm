@@ -10,6 +10,7 @@ Every recorded baseline must include:
 - provider, model, and prompt version;
 - OS, architecture, and relevant hardware profile;
 - per-task verdict and duration;
+- captured task stdout and stderr diagnostics;
 - aggregate pass count and time-to-passing-patch statistics.
 
 Do not record a baseline from a dirty worktree as a canonical comparison. Raw local experiments may

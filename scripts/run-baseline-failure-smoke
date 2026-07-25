@@ -172,6 +172,8 @@ def main() -> int:
         task_result["verdict"] != "FAIL"
         or task_result["expected_code"] != 0
         or task_result["time_to_passing_patch_ns"] is not None
+        or task_result["stdout"] != ""
+        or task_result["stderr"] != "failure"
         or result["summary"]["fail_count"] != 1
     ):
         raise RuntimeError("baseline recorder changed a complete failing result")

@@ -582,6 +582,29 @@ def check_allowed_changes(
         raise TaskError(f"candidate changed disallowed files: {', '.join(disallowed)}")
 
 
+def check_pristine_checkout(checkout: Path, source_revision: str) -> None:
+    if git_output(checkout, "rev-parse", "HEAD") != source_revision:
+        raise TaskError("validation changed the pinned fixture HEAD")
+    index_records = git_output(checkout, "ls-files", "-v", "-z").split("\0")
+    flagged_paths = sorted(
+        record[2:] for record in index_records if record and not record.startswith("H ")
+    )
+    if flagged_paths:
+        raise TaskError(f"validation changed Git index flags: {', '.join(flagged_paths)}")
+    if actual_worktree_changes(checkout, source_revision):
+        raise TaskError("validation changed the pinned fixture worktree")
+    if git_output(
+        checkout,
+        "diff",
+        "--cached",
+        "--name-only",
+        "--no-renames",
+        "--no-ext-diff",
+        source_revision,
+    ):
+        raise TaskError("validation changed the pinned fixture index")
+
+
 def validate_candidate(
     checkout: Path,
     patch: Path,
@@ -602,14 +625,10 @@ def validate_candidate(
     print_command_output("pre-repair validation", before)
     if before.returncode == 0:
         raise TaskError("pinned fixture unexpectedly passes before repair")
-    if git_output(
-        checkout,
-        "status",
-        "--porcelain",
-        "--ignored",
-        "--untracked-files=all",
-    ):
-        raise TaskError("validation changed the pinned fixture before repair")
+    try:
+        check_pristine_checkout(checkout, source_revision)
+    except TaskError as error:
+        raise TaskError("validation changed the pinned fixture before repair") from error
 
     fixture_env = fixture_environment()
     check = run(

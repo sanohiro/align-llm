@@ -6,9 +6,19 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 baseline="${project_root}/eval/baselines/coding-v1-reference.json"
 invalid_baseline="$(mktemp "${project_root}/eval/baselines/.invalid.XXXXXX.json")"
 output_file="$(mktemp)"
-replacement_namespace="refs/align-llm-smoke/replace"
+replacement_namespace="refs/align-llm-smoke/replace-${BASHPID}"
 replacement_ref=""
-trap 'rm -f "${invalid_baseline}" "${output_file}"; if [[ -n "${replacement_ref}" ]]; then git -C "${project_root}" update-ref -d "${replacement_ref}"; fi' EXIT
+cleanup() {
+  status=$?
+  rm -f "${invalid_baseline}" "${output_file}"
+  if [[ -n "${replacement_ref}" ]]; then
+    git -C "${project_root}" update-ref -d "${replacement_ref}" || true
+  fi
+  rmdir "${project_root}/.git/${replacement_namespace}" 2>/dev/null || true
+  rmdir "${project_root}/.git/refs/align-llm-smoke" 2>/dev/null || true
+  exit "${status}"
+}
+trap cleanup EXIT
 
 python3 - "${baseline}" "${invalid_baseline}" <<'PY'
 import json

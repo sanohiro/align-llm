@@ -203,6 +203,44 @@ fi
 
 printf '%s\n' "coding task ignored pre-repair side effect: rejected"
 
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
+    "import os,pathlib,sys,unittest; "
+    "target=pathlib.Path('src/inclusive_range.py'); "
+    "metadata=target.stat(); "
+    "target.write_bytes(target.read_bytes().replace(b'start, stop', b'xxxxx, stop')); "
+    "os.utime(target, ns=(metadata.st_atime_ns, metadata.st_mtime_ns)); "
+    "suite=unittest.defaultTestLoader.discover('tests'); "
+    "result=unittest.TextTestRunner(verbosity=2).run(suite); "
+    "sys.exit(0 if result.wasSuccessful() else 1)"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${project_root}/eval/baselines/patches/python-inclusive-range.patch" \
+  >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a pre-validation worktree mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed the pinned fixture before repair" "${output_file}"; then
+  printf '%s\n' "coding task did not report the pre-validation worktree mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task pre-validation worktree mutation: rejected"
+
 python3 - "${task}" "${sandbox_task}" "${host_marker}" <<'PY'
 import json
 import sys

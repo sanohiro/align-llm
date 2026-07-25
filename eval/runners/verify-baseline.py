@@ -318,6 +318,8 @@ def verify_runs(
                     "actual_code",
                     "duration_ns",
                     "time_to_passing_patch_ns",
+                    "stdout",
+                    "stderr",
                 },
                 "task result",
             )
@@ -335,6 +337,8 @@ def verify_runs(
             if task["expected_code"] != expected_codes[task_index]:
                 raise BaselineError("task expected_code differs from the corpus")
             duration = require_positive_integer(task["duration_ns"], "task duration_ns")
+            if not isinstance(task["stdout"], str) or not isinstance(task["stderr"], str):
+                raise BaselineError("task diagnostics must be strings")
             passing_time = task["time_to_passing_patch_ns"]
             if verdict == "PASS":
                 if task["actual_code"] != task["expected_code"]:

@@ -367,6 +367,8 @@ def record_run(
                 "actual_code": actual_code,
                 "duration_ns": duration,
                 "time_to_passing_patch_ns": duration if verdict == "PASS" else None,
+                "stdout": task["stdout"],
+                "stderr": task["stderr"],
             }
         )
     if [task["task_id"] for task in task_rows] != expected_task_ids:
