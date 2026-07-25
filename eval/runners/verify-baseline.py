@@ -529,7 +529,6 @@ def verify_baseline(path: Path, project_root: Path) -> None:
         baseline["canonical_oracle_commit"],
         "canonical_oracle_commit",
     )
-    verify_canonical_oracle(baseline, project_root, canonical_oracle_commit)
     expected_align_revision = (
         (project_root / ".align-revision").read_text(encoding="utf-8").strip()
     )
@@ -559,6 +558,7 @@ def verify_baseline(path: Path, project_root: Path) -> None:
     )
     task_attempt_count = sum(len(run["task_results"]) for run in baseline["runs"])
     verify_aggregate(baseline["aggregate"], passing_times, task_attempt_count)
+    verify_canonical_oracle(baseline, project_root, canonical_oracle_commit)
 
 
 def main() -> int:
