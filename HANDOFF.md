@@ -5,7 +5,7 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is the C1 provider slice on
-`c1-provider-boundary` at implementation commit `1574590`; the working tree is clean._
+`c1-provider-boundary` at implementation commit `55a7761`; the working tree is clean._
 
 ## Current position
 
@@ -51,8 +51,11 @@ The repository has completed C0 and is implementing C1:
 - Requests 1 and 3 have real-client closure evidence; Request 2 is shipped at `ALIGN_MERGED`.
   Request 4 is a new proposed blocker only for real chunked SSE acceptance; non-streaming C1 work
   remains independent.
-- Current C1 state: Align modules, three provider adapters, common JSON persistence, and the focused
-  provider smoke are implemented. The branch still needs commit, PR, independent review, and merge.
+- Current C1 state: Align modules, three provider adapters, common JSON persistence, secure provider
+  boundaries, actionable HTTP status persistence, and the focused provider smoke are implemented.
+  The branch has PR #4 open; its initial independent review was applied except for the CI-target
+  suggestion, which is intentionally out of scope. A follow-up review is still required before
+  merge.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
@@ -144,19 +147,20 @@ make fmt                         PASS
 make check                       PASS — 11 imported units, provider modules included
 make build                       PASS — executable built as ./main
 bash -n scripts/run-provider-smoke  PASS
-./scripts/run-provider-smoke     PASS — 3 providers, generate/stream, auth, malformed stream, timeout, exact token count, common result format
+./scripts/run-provider-smoke     PASS — provider adapters, env-backed auth, Cloud HTTP rejection, SSE error and DONE-only rejection, timeout, HTTP status 429, exact assembled Llama prompt count, common result format v2
 git diff --check                 PASS
 ```
 
 `make ci` has intentionally not been rerun for this feature slice; the focused provider gate is the
 relevant verification, and CI repetition is not useful while the Align chunked-response capability
-remains unshipped.
+remains unshipped. The focused smoke uses a temporary HTTP fixture; real Cloud OpenAI calls require
+HTTPS and read the key from an environment variable name supplied to the CLI.
 
 ## Next steps
 
-1. Review the current C1 diff against `docs/review-checklist.md`, commit it, push
-   `c1-provider-boundary`, open the PR, and perform an independent adversarial review.
-2. Apply any valid findings, rerun only the focused provider verification, then merge the PR with a
+1. Push the review follow-up `55a7761`, perform a fresh independent adversarial review of the
+   updated PR #4, and apply only any valid remaining findings.
+2. Rerun only the focused provider verification after a material follow-up, then merge PR #4 with a
    merge commit. Do not repeat the full CI gate unless a concrete issue requires it.
 3. After merge, start the next C1 slice. Keep Request 4 as the only blocker for real chunked SSE;
    continue non-streaming provider and result work independently.
@@ -181,7 +185,7 @@ remains unshipped.
   `std.process` per run.
 - Provider SSE parsing currently depends on Content-Length framing because Align's shipped
   `std.http` client rejects chunked response bodies; do not add a raw-socket compatibility layer.
-- The C1 implementation is committed at `1574590`; keep the branch clean while it is published and
+- The C1 implementation and review fixes are committed at `55a7761`; keep the branch clean while it is published and
   reviewed. No intentional uncommitted files remain.
 - Source, comments, diagnostics, commits, pull requests, reviews, and releases are written in
   English.
