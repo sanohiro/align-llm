@@ -93,13 +93,15 @@ make ci
 # PASS — smoke-v1: 2 tasks, 2 PASS, 0 failed; identity and summary oracles match
 # PASS — an empty corpus is rejected
 # PASS — coding-v1: pinned fixture repair 1/1 PASS; disallowed edits and validation side effects
-# rejected, including index-flag- and stat-cache-hidden edits; ignored fixture inputs and validation
-# side effects rejected; ambient Git and Python settings and corpus interpreter dispatch isolated;
-# timeout and normal-completion process-tree cleanup, descendant reaping, and temporary checkout
-# cleanup verified; missing child-subreaper or bubblewrap support fails closed; validation cannot
-# mutate the host filesystem or Git metadata; Git replacement objects are ignored; pre-validation
-# byte/mode and untracked/ignored mutations are rejected; non-UTF-8 diagnostics retained and
-# bounded before buffering; non-passing baseline stdout and stderr diagnostics are persisted
+# rejected, including index-flag-, stat-cache-hidden-, and special-mode mutations; ignored fixture
+# inputs and validation side effects rejected; ambient Git and Python settings and corpus interpreter
+# dispatch isolated; timeout and normal-completion process-tree cleanup, descendant reaping, and
+# temporary checkout cleanup verified; missing child-subreaper, bubblewrap namespace, or resource
+# wrapper support fails closed; validation cannot mutate the host filesystem or Git metadata; Git
+# replacement objects are ignored; pre-validation byte/mode and untracked/ignored mutations are
+# rejected; validation tmpfs, process/file/address-space limits, and writable-worktree quotas are
+# enforced; non-UTF-8 diagnostics retained and bounded before buffering; non-passing baseline stdout
+# and stderr diagnostics are persisted
 # PASS — canonical baseline metadata, source commit, artifact digests, immutable oracle, task identity, summaries,
 # corpus task order and expected codes, and strictly typed numeric aggregates verified; malformed
 # aggregates and verdicts rejected; measured Python runtime, pin checker provenance, and complete
