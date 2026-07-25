@@ -5,8 +5,8 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline`, with canonical
-baseline source commit `d0bc83f`, immutable oracle commit `5c27c39`, and refreshed result commit
-`ab531a1`. Resume at the PR head until it is merge-committed; after that, no implementation is
+baseline source commit `002ffc4`, immutable oracle commit `790183d`, and refreshed result commit
+`bb5a56e`. Resume at the PR head until it is merge-committed; after that, no implementation is
 active until the user asks to resume, with C1 as the next roadmap slice._
 
 ## Current position
@@ -33,14 +33,14 @@ The repository has completed the C0 implementation and is ready to begin C1 afte
   symlinks are preserved during materialization, and the immutable baseline oracle binds the
   source commit and artifact manifest as well as measured results.
 - `eval/baselines/coding-v1-reference.json` is the first canonical machine-readable baseline. It was
-  recorded twice from clean commit `d0bc83f` after rebuilding `main` with the verified pinned Align
+  recorded twice from clean commit `002ffc4` after rebuilding `main` with the verified pinned Align
   compiler. It binds the complete declared evaluation artifact set to both SHA-256 digests and the
   source commit, including the verifier itself, while enumerating source inputs explicitly so new
   unrelated modules do not invalidate C0. It records the requested and resolved Python runtime used
-  for measurement and is checked against immutable oracle commit `5c27c39`. This deterministic
+  for measurement and is checked against immutable oracle commit `790183d`. This deterministic
   reference validates scoring and timing, not model quality.
-- The refreshed baseline passed 2/2 attempts at 251,747,596 ns and 246,415,779 ns, with median time
-  to a passing patch of 249,081,687 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
+- The refreshed baseline passed 2/2 attempts at 244,580,630 ns and 251,433,086 ns, with median time
+  to a passing patch of 248,006,858 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
   timeout-bounded process execution in `src/verify.align`. This is enabling work shaped like the
   later C4 Verification Loop, not completion of C1. C1's provider abstraction, multiple provider
@@ -93,7 +93,7 @@ Verified on 2026-07-25 with pinned Align commit
 make fmt
 # PASS — all Align source formatted; the previous dash-incompatible `read -d` recipe was fixed
 
-make ci
+make ci (using a clean detached checkout of the pinned Align revision)
 # PASS — pinned Align revision matches
 # PASS — pinned Align compiler and runtime release build is current
 # PASS — formatter output matches every Align source file
@@ -139,8 +139,8 @@ git diff --check
 
 ## Next steps
 
-1. Push the final C0 follow-up, repeat PR #3 review after oracle-provenance, symlink, and
-   validation-mutation hardening,
+1. Push the final C0 follow-up, repeat PR #3 review after schema-validation, oracle-provenance,
+   symlink, and validation-mutation hardening,
    require GitHub CI to pass with full checkout history, and merge with a merge commit so the
    canonical baseline source commit remains reachable.
 2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
