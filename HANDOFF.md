@@ -5,8 +5,8 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is the C3 patch-evaluator slice on
-`c3-patch-evaluator` at implementation commit `3581c79`; the working tree has the intentional
-handoff update below._
+`c3-patch-evaluator` at implementation commit `3581c79` with review fix `053357e`; the working
+tree has the intentional handoff update below._
 
 ## Current position
 
@@ -48,6 +48,9 @@ The repository has completed C0, C1, and the first C2 index slice and is continu
 - `.align-revision`, `make ci`, `.github/workflows/ci.yml`, the pull request template, and
   `docs/review-checklist.md` now make the local check, pinned compiler, fixed evaluation, review, and
   merge expectations executable across environments.
+- PR #10 merged the hosted-CI capability fix at `a95c530`: GitHub Actions now runs the pinned
+  compiler and supported smoke/check gates without the unavailable nested user-namespace sandbox;
+  the complete `make ci` gate remains for local or capable self-hosted runners.
 - `CLAUDE.md` and `docs/align-requests.md` define the Align request lifecycle, mandatory blocking
   metadata, dependent-slice pause rule, independent-work rule, and real-client resume/closure gate.
 - Requests 1 and 3 have real-client closure evidence; Request 2 is shipped at `ALIGN_MERGED`.
@@ -71,11 +74,11 @@ The repository has completed C0, C1, and the first C2 index slice and is continu
   order for ties. The focused fixture covers ranking reasons, ordering, revision binding, and
   persisted non-repository failure metadata.
 - PR #8 merged the related-test selection slice at merge commit `4cb217b7f901019e689bba36c88a41322d2cf51e`.
-- The C3 patch-evaluator slice is implemented at `3581c79` on `c3-patch-evaluator`. It parses
-  standard unified-diff file markers without applying the patch, records touched files and hunk
-  symbols, computes additions/deletions, complexity delta, public API and conservative unrelated
-  path flags, calculates a deterministic risk score, and reuses C2 to recommend tests. Its branch
-  needs push, PR, review, and merge.
+- The C3 patch-evaluator slice is implemented at `3581c79` on `c3-patch-evaluator`, with review fix
+  `053357e`. It parses standard unified-diff file markers without applying the patch, records
+  touched files and hunk symbols, computes additions/deletions, complexity delta, public API and
+  conservative unrelated path flags, calculates a deterministic risk score, and reuses C2 to
+  recommend tests. PR #9 is open and needs the follow-up push, review, and merge.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
@@ -263,12 +266,14 @@ make provider-smoke               PASS — C1 provider regression
 git diff --check                 PASS
 ```
 
-The full `make ci` gate was not rerun; repeated CI is intentionally out of scope for this feature
-implementation.
+The follow-up `053357e` also classifies changed hunk lines that begin with `+++` or `---` as data
+after the hunk marker, preserving valid unified-diff content. The full `make ci` gate was not
+rerun; repeated CI is intentionally out of scope for this feature implementation.
 
 ## Next steps
 
-1. Push `3581c79` on `c3-patch-evaluator`, open a PR, and review the changed surface once.
+1. Push `3581c79` and `053357e` on `c3-patch-evaluator`, update PR #9, and review the changed
+   surface once.
 2. Apply only valid findings, rerun the focused patch-evaluator and C2 verification, and merge with
    a merge commit. Do not repeat the full CI gate or wait on a non-returning reviewer.
 3. After merge, continue with C4 Verification Loop. Keep Request 4 limited to real chunked SSE
