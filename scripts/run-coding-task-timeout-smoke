@@ -77,6 +77,7 @@ python3 - "${runner}" "${normal_marker}" "${project_root}" <<'PY'
 import importlib.util
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -135,6 +136,24 @@ if Path(marker).exists():
     raise RuntimeError("normal-return command left a descendant process running")
 if direct_zombies():
     raise RuntimeError("normal-return command left a descendant zombie")
+
+subreaper_enabled = module.CHILD_SUBREAPER_ENABLED
+with tempfile.TemporaryDirectory(prefix="align-llm-no-subreaper-smoke-") as temporary:
+    fallback_marker = Path(temporary) / "survived"
+    module.CHILD_SUBREAPER_ENABLED = False
+    try:
+        fallback_result = module.run(
+            [sys.executable, "-c", parent, child, grandchild, str(fallback_marker)],
+            project_root,
+            5,
+        )
+    finally:
+        module.CHILD_SUBREAPER_ENABLED = subreaper_enabled
+    if fallback_result.returncode != 0:
+        raise RuntimeError("no-subreaper process-group smoke parent failed")
+    time.sleep(2)
+    if fallback_marker.exists():
+        raise RuntimeError("no-subreaper command left a descendant process running")
 
 binary_output = module.run(
     [

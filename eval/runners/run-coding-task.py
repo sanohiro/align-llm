@@ -250,6 +250,10 @@ def run(
         owned_processes.update(kill_adopted_descendants())
         reap_owned_processes(owned_processes)
         raise
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     owned_processes = kill_adopted_descendants()
     reap_owned_processes(owned_processes)
     stdout = decode_output(raw_stdout)
