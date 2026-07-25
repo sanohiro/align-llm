@@ -7,10 +7,14 @@ runner="${project_root}/eval/runners/run-coding-task.py"
 task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
 patch="${project_root}/eval/expected/python-inclusive-range-disallowed.patch"
 side_effect_patch="${project_root}/eval/expected/python-inclusive-range-side-effect.patch"
+ignored_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-ignored-side-effect.patch"
+source_fixture="${project_root}/eval/fixtures/python-inclusive-range-v1/repository"
 output_file="$(mktemp)"
 ignored_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored.XXXXXX")"
 ignored_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored.XXXXXX.json")"
-trap 'rm -f "${output_file}" "${ignored_task}"; rm -r "${ignored_source}"' EXIT
+ignored_side_effect_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored-side-effect.XXXXXX")"
+ignored_side_effect_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored-side-effect.XXXXXX.json")"
+trap 'rm -f "${output_file}" "${ignored_task}" "${ignored_side_effect_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}"' EXIT
 
 cd "${project_root}"
 if python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1; then
@@ -68,3 +72,100 @@ if ! grep -Fq "new fixture checkout contains uncommitted or ignored files" "${ou
 fi
 
 printf '%s\n' "coding task ignored fixture input: rejected"
+
+python3 - \
+  "${task}" \
+  "${ignored_side_effect_task}" \
+  "${source_fixture}" \
+  "${ignored_side_effect_source}" \
+  "${project_root}" <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+shutil.copytree(Path(sys.argv[3]), Path(sys.argv[4]), dirs_exist_ok=True)
+(Path(sys.argv[4]) / ".gitignore").write_text(
+    "candidate-side-effect.txt\n*.cache\n",
+    encoding="utf-8",
+)
+task["id"] = "ignored-side-effect-smoke"
+task["source_dir"] = str(Path(sys.argv[4]).relative_to(Path(sys.argv[5])))
+task["source_revision"] = "0" * 40
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${ignored_side_effect_patch}" >"${output_file}" 2>&1 || true
+ignored_revision="$(
+  sed -n 's/.*got \([0-9a-f]\{40\}\)$/\1/p' "${output_file}"
+)"
+if [[ ! "${ignored_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+  printf '%s\n' "coding task smoke could not resolve the ignored-side-effect revision" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+python3 - "${ignored_side_effect_task}" "${ignored_revision}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+task["source_revision"] = sys.argv[2]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${ignored_side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an ignored candidate side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "candidate created ignored files: candidate-side-effect.txt" "${output_file}"; then
+  printf '%s\n' "coding task did not report the ignored candidate side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ignored candidate side effect: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+task["validation_argv"] = [
+    "python3",
+    "-c",
+    (
+        "import pathlib,sys; "
+        "pathlib.Path('pre-repair.cache').write_text('unexpected', encoding='utf-8'); "
+        "sys.exit(1)"
+    ),
+]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an ignored pre-repair side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed the pinned fixture before repair" "${output_file}"; then
+  printf '%s\n' "coding task did not report the ignored pre-repair side effect" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ignored pre-repair side effect: rejected"

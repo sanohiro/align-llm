@@ -233,8 +233,17 @@ def check_allowed_changes(
         "--others",
         "--exclude-standard",
     ).splitlines()
+    ignored = git_output(
+        checkout,
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+    ).splitlines()
     if untracked:
         raise TaskError(f"candidate created untracked files: {', '.join(untracked)}")
+    if ignored:
+        raise TaskError(f"candidate created ignored files: {', '.join(ignored)}")
     if not changed:
         raise TaskError("candidate patch made no tracked changes")
     disallowed = sorted(set(changed) - set(allowed_edits))
@@ -262,7 +271,13 @@ def validate_candidate(
     print_command_output("pre-repair validation", before)
     if before.returncode == 0:
         raise TaskError("pinned fixture unexpectedly passes before repair")
-    if git_output(checkout, "status", "--porcelain"):
+    if git_output(
+        checkout,
+        "status",
+        "--porcelain",
+        "--ignored",
+        "--untracked-files=all",
+    ):
         raise TaskError("validation changed the pinned fixture before repair")
 
     fixture_env = fixture_environment()

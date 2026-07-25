@@ -275,7 +275,12 @@ def verify_runs(
                 "task result",
             )
             verdict = task["verdict"]
-            if verdict not in {"PASS", "FAIL", "TIMEOUT", "ERROR"}:
+            if not isinstance(verdict, str) or verdict not in {
+                "PASS",
+                "FAIL",
+                "TIMEOUT",
+                "ERROR",
+            }:
                 raise BaselineError("task result contains an unknown verdict")
             require_integer(task["actual_code"], "task actual_code")
             require_integer(task["expected_code"], "task expected_code")

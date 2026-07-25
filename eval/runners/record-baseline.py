@@ -150,6 +150,33 @@ def artifact_manifest(
     return {"algorithm": "sha256", "files": rows}
 
 
+def corpus_task_expectations(
+    project_root: Path,
+    corpus: dict[str, Any],
+) -> tuple[list[str], list[int]]:
+    task_files = corpus.get("task_files")
+    if not isinstance(task_files, list) or not task_files:
+        raise BaselineError("corpus task_files must be a non-empty list")
+
+    task_ids = []
+    expected_codes = []
+    for task_value in task_files:
+        if not isinstance(task_value, str) or not task_value:
+            raise BaselineError("corpus task path must be a non-empty string")
+        task_path = resolve_inside(project_root, task_value, "task path")
+        task = load_json(task_path)
+        task_id = task.get("id")
+        if not isinstance(task_id, str) or not task_id:
+            raise BaselineError("corpus task id must be a non-empty string")
+        task_ids.append(task_id)
+        expected_codes.append(
+            require_integer(task.get("expected_code"), "corpus task expected_code")
+        )
+    if len(set(task_ids)) != len(task_ids):
+        raise BaselineError("corpus contains duplicate task ids")
+    return task_ids, expected_codes
+
+
 def parse_eval_output(
     stdout: str,
     expected_corpus_id: str,
@@ -205,6 +232,8 @@ def record_run(
     project_root: Path,
     sample: int,
     expected_corpus_id: str,
+    expected_task_ids: list[str],
+    expected_codes: list[int],
 ) -> dict[str, Any]:
     result = run([str(binary), "--eval", str(corpus_path)], project_root)
     try:
@@ -235,7 +264,12 @@ def record_run(
         verdict = task["verdict"]
         expected_code = task["expected_code"]
         actual_code = task["actual_code"]
-        if verdict not in {"PASS", "FAIL", "TIMEOUT", "ERROR"}:
+        if not isinstance(verdict, str) or verdict not in {
+            "PASS",
+            "FAIL",
+            "TIMEOUT",
+            "ERROR",
+        }:
             raise BaselineError("evaluation emitted an unknown task verdict")
         if not isinstance(expected_code, int) or isinstance(expected_code, bool):
             raise BaselineError("evaluation emitted a non-integer expected code")
@@ -260,6 +294,10 @@ def record_run(
                 "time_to_passing_patch_ns": duration if verdict == "PASS" else None,
             }
         )
+    if [task["task_id"] for task in task_rows] != expected_task_ids:
+        raise BaselineError("evaluation task ids or order differ from the requested corpus")
+    if [task["expected_code"] for task in task_rows] != expected_codes:
+        raise BaselineError("evaluation expected codes differ from the requested corpus")
     return {
         "sample": sample,
         "task_results": task_rows,
@@ -319,6 +357,7 @@ def main() -> int:
             raise BaselineError("corpus id must be a non-empty string")
         source_commit = checked_output(["git", "rev-parse", "HEAD"], project_root)
         artifacts = artifact_manifest(project_root, corpus_path, corpus)
+        expected_task_ids, expected_codes = corpus_task_expectations(project_root, corpus)
 
         runs = [
             record_run(
@@ -327,6 +366,8 @@ def main() -> int:
                 project_root,
                 sample,
                 corpus["corpus_id"],
+                expected_task_ids,
+                expected_codes,
             )
             for sample in range(1, args.samples + 1)
         ]

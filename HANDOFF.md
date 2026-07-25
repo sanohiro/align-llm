@@ -91,7 +91,10 @@ make ci
 # PASS — loop spike: pass, give-up, stdout-driven repair/reverify, exhaustion, timeout, and
 # zero-budget paths match their oracle
 
-bash -n eval/runners/run-fixed.sh scripts/run-*
+for file in eval/runners/run-fixed.sh scripts/check-* scripts/run-eval-invalid-smoke \
+  scripts/run-loop-smoke scripts/run-baseline-invalid-smoke scripts/run-coding-task-*; do
+  bash -n "$file"
+done
 # PASS
 
 python3 -m json.tool <each task, manifest, expected summary, and canonical baseline>

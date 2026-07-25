@@ -43,6 +43,8 @@ def main() -> int:
             "pass_count": 0,
             "fail_count": 1,
         }
+        expected_task_ids = ["expected-failure"]
+        expected_codes = [0]
         evaluator.write_text(
             "#!/usr/bin/env python3\n"
             "import sys\n"
@@ -58,6 +60,8 @@ def main() -> int:
             project_root,
             1,
             "failure-smoke",
+            expected_task_ids,
+            expected_codes,
         )
 
         task["actual_code"] = 0
@@ -76,6 +80,8 @@ def main() -> int:
                 project_root,
                 2,
                 "failure-smoke",
+                expected_task_ids,
+                expected_codes,
             )
         except recorder.BaselineError as error:
             if "failing task actual_code equals expected_code" not in str(error):
@@ -100,6 +106,8 @@ def main() -> int:
                 project_root,
                 3,
                 "failure-smoke",
+                expected_task_ids,
+                expected_codes,
             )
         except recorder.BaselineError as error:
             if "summary pass_count must be an integer" not in str(error):
@@ -124,12 +132,40 @@ def main() -> int:
                 project_root,
                 4,
                 "failure-smoke",
+                expected_task_ids,
+                expected_codes,
             )
         except recorder.BaselineError as error:
             if "summary corpus_id differs from the requested corpus" not in str(error):
                 raise
         else:
             raise RuntimeError("baseline recorder accepted the wrong corpus identity")
+
+        summary["corpus_id"] = "failure-smoke"
+        task["task_id"] = "wrong-task"
+        evaluator.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"print({json.dumps(json.dumps(task))})\n"
+            f"print({json.dumps(json.dumps(summary))})\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        try:
+            recorder.record_run(
+                evaluator,
+                corpus,
+                project_root,
+                5,
+                "failure-smoke",
+                expected_task_ids,
+                expected_codes,
+            )
+        except recorder.BaselineError as error:
+            if "task ids or order differ from the requested corpus" not in str(error):
+                raise
+        else:
+            raise RuntimeError("baseline recorder accepted the wrong task identity")
 
     task_result = result["task_results"][0]
     if (
@@ -141,7 +177,7 @@ def main() -> int:
         raise RuntimeError("baseline recorder changed a complete failing result")
     print(
         "non-passing baseline sample: retained; contradictory verdict, "
-        "malformed counts, and corpus mismatch rejected"
+        "malformed counts, corpus mismatch, and task mismatch rejected"
     )
     return 0
 
