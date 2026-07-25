@@ -4,6 +4,7 @@ import ctypes
 import hashlib
 import json
 import os
+import selectors
 import signal
 import shutil
 import stat
@@ -25,6 +26,8 @@ FIXTURE_GIT_ENV = {
 }
 PR_SET_CHILD_SUBREAPER = 36
 BWRAP_EXECUTABLE = Path("/usr/bin/bwrap")
+MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
+COMMAND_OUTPUT_TRUNCATION_MARKER = b"\n[output truncated]"
 
 
 def enable_child_subreaper() -> bool:
@@ -51,6 +54,40 @@ class TaskError(Exception):
 
 class CommandTimedOut(TaskError):
     pass
+
+
+class BoundedOutput:
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.truncated = False
+
+    def append(self, chunk: bytes) -> None:
+        if self.truncated:
+            return
+        remaining = MAX_COMMAND_OUTPUT_BYTES - len(self.data)
+        if len(chunk) > remaining:
+            self.data.extend(chunk[:remaining])
+            self.truncated = True
+        else:
+            self.data.extend(chunk)
+
+    def bytes(self) -> bytes:
+        if not self.truncated:
+            return bytes(self.data)
+        prefix_limit = max(
+            0,
+            MAX_COMMAND_OUTPUT_BYTES - len(COMMAND_OUTPUT_TRUNCATION_MARKER),
+        )
+        return bytes(self.data[:prefix_limit]) + COMMAND_OUTPUT_TRUNCATION_MARKER
+
+    def text(self) -> str:
+        return self.bytes().decode("utf-8", errors="replace")
+
+
+class OutputTimeout(subprocess.TimeoutExpired):
+    def __init__(self, command: list[str], timeout: int, captures: dict[str, BoundedOutput]):
+        super().__init__(command, timeout)
+        self.captures = captures
 
 
 def require_process_containment() -> None:
@@ -139,27 +176,97 @@ def decode_output(output: bytes | None) -> str:
     return (output or b"").decode("utf-8", errors="replace")
 
 
+def read_process_output(
+    process: subprocess.Popen[bytes],
+    captures: dict[str, BoundedOutput],
+    timeout_seconds: float,
+) -> None:
+    streams = {
+        "stdout": process.stdout,
+        "stderr": process.stderr,
+    }
+    selector = selectors.DefaultSelector()
+    try:
+        for name, stream in streams.items():
+            if stream is None or stream.closed:
+                continue
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, name)
+
+        deadline = time.monotonic() + timeout_seconds
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OutputTimeout(process.args, int(timeout_seconds), captures)
+            events = selector.select(remaining)
+            if not events:
+                raise OutputTimeout(process.args, int(timeout_seconds), captures)
+            for key, _ in events:
+                stream = key.fileobj
+                try:
+                    chunk = os.read(stream.fileno(), 65536)
+                except BlockingIOError:
+                    continue
+                if chunk:
+                    captures[key.data].append(chunk)
+                    continue
+                selector.unregister(stream)
+                stream.close()
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OutputTimeout(process.args, int(timeout_seconds), captures)
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise OutputTimeout(process.args, int(timeout_seconds), captures) from error
+    finally:
+        for key in tuple(selector.get_map().values()):
+            stream = key.fileobj
+            try:
+                selector.unregister(stream)
+            except KeyError:
+                pass
+        selector.close()
+
+
+def close_process_streams(process: subprocess.Popen[bytes]) -> None:
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            stream.close()
+
+
 def communicate_after_kill(
     process: subprocess.Popen[bytes],
     timeout_error: subprocess.TimeoutExpired,
 ) -> tuple[str, str]:
     owned_processes = kill_owned_processes(process)
+    captures = getattr(timeout_error, "captures", None)
+    if captures is None:
+        captures = {
+            "stdout": BoundedOutput(),
+            "stderr": BoundedOutput(),
+        }
+        captures["stdout"].append(timeout_error.output or b"")
+        captures["stderr"].append(timeout_error.stderr or b"")
     try:
-        stdout, stderr = process.communicate(timeout=1)
-    except subprocess.TimeoutExpired as cleanup_error:
-        stdout = cleanup_error.output or timeout_error.output
-        stderr = cleanup_error.stderr or timeout_error.stderr
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
+        read_process_output(process, captures, 1)
+    except subprocess.TimeoutExpired:
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             owned_processes.update(kill_owned_processes(process))
+    finally:
+        close_process_streams(process)
+    if process.poll() is None:
+        owned_processes.update(kill_owned_processes(process))
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            close_process_streams(process)
     owned_processes.update(kill_adopted_descendants())
     reap_owned_processes(owned_processes)
-    return decode_output(stdout), decode_output(stderr)
+    return captures["stdout"].text(), captures["stderr"].text()
 
 
 def load_task(path: Path) -> dict[str, Any]:
@@ -237,8 +344,12 @@ def run(
         )
     except OSError as error:
         raise TaskError(f"command failed to run: {display_name}: {error}") from error
+    captures = {
+        "stdout": BoundedOutput(),
+        "stderr": BoundedOutput(),
+    }
     try:
-        raw_stdout, raw_stderr = process.communicate(timeout=timeout_seconds)
+        read_process_output(process, captures, timeout_seconds)
     except subprocess.TimeoutExpired as error:
         stdout, stderr = communicate_after_kill(process, error)
         details = [f"command timed out after {timeout_seconds} seconds: {display_name}"]
@@ -250,12 +361,9 @@ def run(
     except BaseException:
         owned_processes = kill_owned_processes(process)
         try:
-            process.communicate(timeout=1)
+            read_process_output(process, captures, 1)
         except subprocess.TimeoutExpired:
-            if process.stdout is not None:
-                process.stdout.close()
-            if process.stderr is not None:
-                process.stderr.close()
+            close_process_streams(process)
         owned_processes.update(kill_adopted_descendants())
         reap_owned_processes(owned_processes)
         raise
@@ -265,8 +373,8 @@ def run(
         pass
     owned_processes = kill_adopted_descendants()
     reap_owned_processes(owned_processes)
-    stdout = decode_output(raw_stdout)
-    stderr = decode_output(raw_stderr)
+    stdout = captures["stdout"].text()
+    stderr = captures["stderr"].text()
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 

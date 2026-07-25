@@ -33,6 +33,17 @@ def bounded_diagnostic(value: str) -> str:
     return prefix + DIAGNOSTIC_TRUNCATION_MARKER
 
 
+def git_environment() -> dict[str, str]:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment["LC_ALL"] = "C"
+    return environment
+
+
 def require_integer(value: Any, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise BaselineError(f"{label} must be an integer")
@@ -54,6 +65,7 @@ def run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
             check=False,
             capture_output=True,
             text=True,
+            env=git_environment(),
         )
     except OSError as error:
         raise BaselineError(f"cannot run {argv[0]}: {error}") from error
@@ -406,6 +418,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt-version", required=True)
     parser.add_argument("--samples", type=int, default=2)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--canonical-oracle-commit", default="")
     return parser.parse_args()
 
 
@@ -484,6 +497,7 @@ def main() -> int:
             "baseline_id": f"{corpus['corpus_id']}-{args.provider}-{args.model}",
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "align_llm_commit": source_commit,
+            "canonical_oracle_commit": args.canonical_oracle_commit,
             "align_revision": (project_root / ".align-revision")
             .read_text(encoding="utf-8")
             .strip(),

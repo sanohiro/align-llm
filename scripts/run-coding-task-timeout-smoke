@@ -169,6 +169,23 @@ time.sleep(2)
 if Path(marker).exists():
     raise RuntimeError("fail-closed process containment launched a child")
 
+try:
+    module.run(
+        [
+            sys.executable,
+            "-c",
+            "import os,time; os.close(1); os.close(2); time.sleep(2)",
+        ],
+        project_root,
+        1,
+    )
+except module.CommandTimedOut:
+    pass
+except Exception as error:
+    raise RuntimeError("closed output descriptors broke timeout cleanup") from error
+else:
+    raise RuntimeError("closed output descriptors did not time out")
+
 binary_output = module.run(
     [
         sys.executable,
@@ -180,8 +197,29 @@ binary_output = module.run(
 )
 if binary_output.returncode != 0 or binary_output.stdout != "\N{REPLACEMENT CHARACTER}":
     raise RuntimeError("non-UTF-8 command output was not preserved with replacement decoding")
+
+large_output = module.run(
+    [
+        sys.executable,
+        "-c",
+        (
+            "import sys; "
+            "sys.stdout.write('x' * (65536 + 1024)); "
+            "sys.stderr.write('y' * (65536 + 1024))"
+        ),
+    ],
+    project_root,
+    5,
+)
+for stream, marker in (
+    (large_output.stdout, "[output truncated]"),
+    (large_output.stderr, "[output truncated]"),
+):
+    if len(stream.encode("utf-8")) > module.MAX_COMMAND_OUTPUT_BYTES or marker not in stream:
+        raise RuntimeError("command output was not bounded before buffering")
 PY
 
 printf '%s\n' "coding task normal completion: descendant process group cleaned"
 printf '%s\n' "coding task missing child subreaper: failed closed"
 printf '%s\n' "coding task non-UTF-8 output: replacement diagnostic retained"
+printf '%s\n' "coding task unbounded output: bounded before buffering"

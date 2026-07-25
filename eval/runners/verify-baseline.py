@@ -17,6 +17,7 @@ class BaselineError(Exception):
 
 CANONICAL_BASELINE = Path("eval/baselines/coding-v1-reference.json")
 CANONICAL_DIGEST = Path("eval/expected/coding-v1-reference.sha256")
+CANONICAL_ORACLE = Path("eval/expected/coding-v1-reference-oracle.json")
 MAX_DIAGNOSTIC_BYTES = 64 * 1024
 
 
@@ -111,6 +112,63 @@ def verify_canonical_digest(path: Path, project_root: Path) -> None:
         raise BaselineError(f"cannot load canonical baseline digest: {error}") from error
     if expected != f"{hash_file(path)}  {CANONICAL_BASELINE.as_posix()}\n":
         raise BaselineError("canonical baseline digest differs from the independent oracle")
+
+
+def canonical_projection(baseline: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: baseline[field]
+        for field in (
+            "schema_version",
+            "baseline_id",
+            "align_revision",
+            "corpus",
+            "provider",
+            "environment",
+            "sample_count",
+            "runs",
+            "aggregate",
+        )
+    }
+
+
+def verify_canonical_oracle(
+    baseline: dict[str, Any],
+    project_root: Path,
+    oracle_commit: str,
+) -> None:
+    if len(oracle_commit) != 40:
+        raise BaselineError("canonical_oracle_commit must be a full Git commit ID")
+    verify_commit(project_root, oracle_commit)
+    source = subprocess.run(
+        ["git", "show", f"{oracle_commit}:{CANONICAL_ORACLE.as_posix()}"],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+        env=git_environment(),
+    )
+    if source.returncode != 0:
+        raise BaselineError("canonical oracle is absent from its recorded source commit")
+    try:
+        oracle = json.loads(source.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BaselineError("canonical oracle is not valid JSON") from error
+    if not isinstance(oracle, dict):
+        raise BaselineError("canonical oracle must be an object")
+    expected_fields = {
+        "schema_version",
+        "baseline_id",
+        "align_revision",
+        "corpus",
+        "provider",
+        "environment",
+        "sample_count",
+        "runs",
+        "aggregate",
+    }
+    if set(oracle) != expected_fields:
+        raise BaselineError("canonical oracle fields do not match baseline schema version 1")
+    if oracle != canonical_projection(baseline):
+        raise BaselineError("canonical baseline differs from its immutable oracle")
 
 
 def verify_commit(project_root: Path, revision: str) -> None:
@@ -438,6 +496,7 @@ def verify_baseline(path: Path, project_root: Path) -> None:
             "baseline_id",
             "recorded_at",
             "align_llm_commit",
+            "canonical_oracle_commit",
             "align_revision",
             "corpus",
             "artifacts",
@@ -466,6 +525,11 @@ def verify_baseline(path: Path, project_root: Path) -> None:
     if len(align_llm_commit) != 40:
         raise BaselineError("align_llm_commit must be a full Git commit ID")
     verify_commit(project_root, align_llm_commit)
+    canonical_oracle_commit = require_non_empty_string(
+        baseline["canonical_oracle_commit"],
+        "canonical_oracle_commit",
+    )
+    verify_canonical_oracle(baseline, project_root, canonical_oracle_commit)
     expected_align_revision = (
         (project_root / ".align-revision").read_text(encoding="utf-8").strip()
     )

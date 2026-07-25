@@ -234,6 +234,37 @@ fi
 
 printf '%s\n' "oversized baseline diagnostics: rejected"
 
+python3 - "${baseline}" <<'PY'
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+baseline_path = Path(sys.argv[1])
+baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+baseline["runs"][0]["task_results"][0]["duration_ns"] += 1
+module_path = Path("eval/runners/verify-baseline.py").resolve()
+spec = importlib.util.spec_from_file_location("verify_baseline", module_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load baseline verifier")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.verify_canonical_oracle(
+        baseline,
+        module_path.parents[2],
+        baseline["canonical_oracle_commit"],
+    )
+except module.BaselineError as error:
+    if "immutable oracle" not in str(error):
+        raise
+else:
+    raise RuntimeError("baseline verifier accepted a timing change against the oracle")
+PY
+
+printf '%s\n' "canonical baseline oracle: timing mutation rejected"
+
 python3 - "${baseline}" "${invalid_baseline}" <<'PY'
 import json
 import sys
@@ -257,6 +288,53 @@ if ! grep -Fq "recorded Python executable differs from the corpus task command" 
 fi
 
 printf '%s\n' "unrelated baseline Python runtime: rejected"
+
+python3 - <<'PY'
+import importlib.util
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+sys.dont_write_bytecode = True
+module_path = Path("eval/runners/record-baseline.py").resolve()
+spec = importlib.util.spec_from_file_location("record_baseline", module_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load baseline recorder")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+with tempfile.TemporaryDirectory(prefix="align-llm-baseline-git-config-") as temporary:
+    repository = Path(temporary)
+    marker = repository / "hook-ran"
+    hook = repository / "fsmonitor-hook"
+    hook.write_text(
+        f"#!/bin/sh\nprintf escaped > {marker}\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    environment = module.git_environment()
+    subprocess.run(
+        ["git", "init", "-q", "--initial-branch=main"],
+        cwd=repository,
+        env=environment,
+        check=True,
+    )
+    os.environ.update(
+        {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": str(hook),
+        }
+    )
+    module.checked_output(["git", "status", "--porcelain"], repository)
+    if marker.exists():
+        raise RuntimeError("baseline recorder honored ambient Git hook configuration")
+PY
+
+printf '%s\n' "baseline recorder Git configuration: isolated"
 
 source_commit="$(
   python3 - "${baseline}" <<'PY'
