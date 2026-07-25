@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 FIXTURE_GIT_ENV = {
@@ -26,8 +26,18 @@ FIXTURE_GIT_ENV = {
 }
 PR_SET_CHILD_SUBREAPER = 36
 BWRAP_EXECUTABLE = Path("/usr/bin/bwrap")
+PRLIMIT_EXECUTABLE = Path("/usr/bin/prlimit")
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 COMMAND_OUTPUT_TRUNCATION_MARKER = b"\n[output truncated]"
+MAX_VALIDATION_TMPFS_BYTES = 64 * 1024 * 1024
+MAX_VALIDATION_WORKTREE_BYTES = 64 * 1024 * 1024
+MAX_VALIDATION_WORKTREE_FILES = 8192
+MAX_VALIDATION_ADDRESS_SPACE_BYTES = 512 * 1024 * 1024
+MAX_VALIDATION_FILE_BYTES = 64 * 1024 * 1024
+MAX_VALIDATION_PROCESSES = 256
+MAX_VALIDATION_OPEN_FILES = 512
+RESOURCE_POLL_INTERVAL_SECONDS = 0.25
+BWRAP_PROBE_TIMEOUT_SECONDS = 2
 
 
 def enable_child_subreaper() -> bool:
@@ -176,10 +186,28 @@ def decode_output(output: bytes | None) -> str:
     return (output or b"").decode("utf-8", errors="replace")
 
 
+def wait_for_process(
+    process: subprocess.Popen[bytes],
+    deadline: float,
+    resource_check: Callable[[], None] | None,
+) -> None:
+    while process.poll() is None:
+        if resource_check is not None:
+            resource_check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, 0)
+        try:
+            process.wait(timeout=min(remaining, RESOURCE_POLL_INTERVAL_SECONDS))
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def read_process_output(
     process: subprocess.Popen[bytes],
     captures: dict[str, BoundedOutput],
     timeout_seconds: float,
+    resource_check: Callable[[], None] | None = None,
 ) -> None:
     streams = {
         "stdout": process.stdout,
@@ -195,11 +223,20 @@ def read_process_output(
 
         deadline = time.monotonic() + timeout_seconds
         while selector.get_map():
+            if resource_check is not None:
+                resource_check()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise OutputTimeout(process.args, int(timeout_seconds), captures)
-            events = selector.select(remaining)
+            events = selector.select(
+                min(remaining, RESOURCE_POLL_INTERVAL_SECONDS)
+                if resource_check is not None
+                else remaining
+            )
             if not events:
+                if resource_check is not None:
+                    resource_check()
+                    continue
                 raise OutputTimeout(process.args, int(timeout_seconds), captures)
             for key, _ in events:
                 stream = key.fileobj
@@ -217,7 +254,9 @@ def read_process_output(
         if remaining <= 0:
             raise OutputTimeout(process.args, int(timeout_seconds), captures)
         try:
-            process.wait(timeout=remaining)
+            wait_for_process(process, deadline, resource_check)
+            if resource_check is not None:
+                resource_check()
         except subprocess.TimeoutExpired as error:
             raise OutputTimeout(process.args, int(timeout_seconds), captures) from error
     finally:
@@ -330,6 +369,7 @@ def run(
     *,
     env: dict[str, str] | None = None,
     command_name: str | None = None,
+    resource_check: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     display_name = command_name or argv[0]
     require_process_containment()
@@ -349,7 +389,7 @@ def run(
         "stderr": BoundedOutput(),
     }
     try:
-        read_process_output(process, captures, timeout_seconds)
+        read_process_output(process, captures, timeout_seconds, resource_check)
     except subprocess.TimeoutExpired as error:
         stdout, stderr = communicate_after_kill(process, error)
         details = [f"command timed out after {timeout_seconds} seconds: {display_name}"]
@@ -405,6 +445,80 @@ def validation_command(argv: list[str]) -> list[str]:
     return argv
 
 
+def sandbox_probe_command() -> list[str]:
+    return [
+        str(BWRAP_EXECUTABLE),
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-all",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--symlink",
+        "usr/sbin",
+        "/sbin",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--size",
+        str(MAX_VALIDATION_TMPFS_BYTES),
+        "--tmpfs",
+        "/tmp",
+        "--dir",
+        "/tmp/home",
+        "--",
+        "/usr/bin/python3",
+        "-c",
+        "pass",
+    ]
+
+
+def require_sandbox_capability() -> None:
+    try:
+        probe = subprocess.run(
+            sandbox_probe_command(),
+            check=False,
+            capture_output=True,
+            timeout=BWRAP_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise TaskError(
+            "validation sandbox is unavailable: required bubblewrap namespaces "
+            "could not be created"
+        ) from error
+    if probe.returncode != 0:
+        diagnostic = (probe.stderr or probe.stdout).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        suffix = f": {diagnostic}" if diagnostic else ""
+        raise TaskError(
+            "validation sandbox is unavailable: required bubblewrap namespaces "
+            f"could not be created{suffix}"
+        )
+
+
+def validation_resource_limits(timeout_seconds: int) -> list[str]:
+    return [
+        str(PRLIMIT_EXECUTABLE),
+        f"--as={MAX_VALIDATION_ADDRESS_SPACE_BYTES}",
+        f"--fsize={MAX_VALIDATION_FILE_BYTES}",
+        f"--nproc={MAX_VALIDATION_PROCESSES}",
+        f"--nofile={MAX_VALIDATION_OPEN_FILES}",
+        f"--cpu={max(1, timeout_seconds + 1)}",
+        "--",
+    ]
+
+
 def create_sandbox_parent_argv(path: Path, existing_roots: tuple[Path, ...]) -> list[str]:
     arguments = []
     parents = list(path.parents)
@@ -418,11 +532,18 @@ def create_sandbox_parent_argv(path: Path, existing_roots: tuple[Path, ...]) -> 
     return arguments
 
 
-def validation_sandbox_command(argv: list[str], checkout: Path) -> list[str]:
+def validation_sandbox_command(
+    argv: list[str], checkout: Path, timeout_seconds: int
+) -> list[str]:
     if not BWRAP_EXECUTABLE.is_file() or not os.access(BWRAP_EXECUTABLE, os.X_OK):
         raise TaskError(
             f"validation sandbox is unavailable: {BWRAP_EXECUTABLE} is required"
         )
+    if not PRLIMIT_EXECUTABLE.is_file() or not os.access(PRLIMIT_EXECUTABLE, os.X_OK):
+        raise TaskError(
+            f"validation sandbox is unavailable: {PRLIMIT_EXECUTABLE} is required"
+        )
+    require_sandbox_capability()
 
     resolved = validation_command(argv)
     executable = Path(resolved[0]).resolve()
@@ -453,6 +574,8 @@ def validation_sandbox_command(argv: list[str], checkout: Path) -> list[str]:
         "/proc",
         "--dev",
         "/dev",
+        "--size",
+        str(MAX_VALIDATION_TMPFS_BYTES),
         "--tmpfs",
         "/tmp",
         "--dir",
@@ -491,6 +614,7 @@ def validation_sandbox_command(argv: list[str], checkout: Path) -> list[str]:
             "--chdir",
             str(checkout),
             "--",
+            *validation_resource_limits(timeout_seconds),
             *resolved,
         ]
     )
@@ -629,8 +753,8 @@ def actual_worktree_changes(checkout: Path, source_revision: str) -> list[str]:
                 if not stat.S_ISREG(metadata.st_mode):
                     changed.add(relative)
                     continue
-                executable = bool(metadata.st_mode & 0o111)
-                if executable != (mode == "100755"):
+                expected_mode = 0o755 if mode == "100755" else 0o644
+                if (metadata.st_mode & 0o7777) != expected_mode:
                     changed.add(relative)
                     continue
                 content = path.read_bytes()
@@ -734,6 +858,46 @@ def check_pristine_checkout(checkout: Path, source_revision: str) -> None:
         raise TaskError("validation changed the pinned fixture index")
 
 
+def validation_worktree_usage(checkout: Path) -> tuple[int, int]:
+    total_bytes = 0
+    file_count = 0
+    for directory, child_directories, filenames in os.walk(
+        checkout, followlinks=False
+    ):
+        current = Path(directory)
+        if current == checkout:
+            child_directories[:] = [
+                name for name in child_directories if name != ".git"
+            ]
+        for name in tuple(child_directories) + tuple(filenames):
+            path = current / name
+            try:
+                metadata = path.lstat()
+            except OSError as error:
+                raise TaskError(
+                    f"cannot inspect validation worktree path {path.relative_to(checkout)}: "
+                    f"{error}"
+                ) from error
+            file_count += 1
+            if stat.S_ISREG(metadata.st_mode):
+                total_bytes += metadata.st_size
+    return total_bytes, file_count
+
+
+def check_validation_resources(checkout: Path) -> None:
+    total_bytes, file_count = validation_worktree_usage(checkout)
+    if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
+        raise TaskError(
+            "validation exceeded the writable worktree size limit "
+            f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
+        )
+    if file_count > MAX_VALIDATION_WORKTREE_FILES:
+        raise TaskError(
+            "validation exceeded the writable worktree file limit "
+            f"({MAX_VALIDATION_WORKTREE_FILES} files)"
+        )
+
+
 def validate_candidate(
     checkout: Path,
     patch: Path,
@@ -742,14 +906,18 @@ def validate_candidate(
     validation_timeout_seconds: int,
     source_revision: str,
 ) -> None:
-    resolved_validation_argv = validation_sandbox_command(validation_argv, checkout)
+    resolved_validation_argv = validation_sandbox_command(
+        validation_argv, checkout, validation_timeout_seconds
+    )
     validation_env = validation_environment()
+    resource_check = lambda: check_validation_resources(checkout)
     before = run(
         resolved_validation_argv,
         checkout,
         validation_timeout_seconds,
         env=validation_env,
         command_name=validation_argv[0],
+        resource_check=resource_check,
     )
     print_command_output("pre-repair validation", before)
     if before.returncode == 0:
@@ -780,6 +948,7 @@ def validate_candidate(
         validation_timeout_seconds,
         env=validation_env,
         command_name=validation_argv[0],
+        resource_check=resource_check,
     )
     print_command_output("post-repair validation", after)
     check_allowed_changes(checkout, allowed_edits, source_revision)

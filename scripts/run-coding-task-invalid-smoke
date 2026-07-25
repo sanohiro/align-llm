@@ -241,6 +241,71 @@ fi
 
 printf '%s\n' "coding task pre-validation worktree mutation: rejected"
 
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
+    "import pathlib,stat,sys; "
+    "target=pathlib.Path('src/inclusive_range.py'); "
+    "target.chmod(target.stat().st_mode | stat.S_ISUID); "
+    "sys.exit(1)"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted a special-mode pre-validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation changed the pinned fixture before repair" "${output_file}"; then
+  printf '%s\n' "coding task did not report the special-mode pre-validation mutation" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task special-mode pre-validation mutation: rejected"
+
+python3 - "${ignored_side_effect_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+task = json.loads(path.read_text(encoding="utf-8"))
+validation = (
+    "import pathlib; "
+    "[pathlib.Path(f'resource-{index}.bin').write_bytes(b'x' * (1024 * 1024)) "
+    "for index in range(65)]"
+)
+task["validation_argv"] = ["python3", "-c", validation]
+path.write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if python3 "${runner}" \
+  "${ignored_side_effect_task}" \
+  "${side_effect_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task unexpectedly accepted an oversized validation worktree" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "validation exceeded the writable worktree size limit" "${output_file}"; then
+  printf '%s\n' "coding task did not report the validation worktree size limit" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task validation worktree size: rejected"
+
 python3 - "${task}" "${sandbox_task}" "${host_marker}" <<'PY'
 import json
 import sys
@@ -298,7 +363,9 @@ available_bwrap = module.BWRAP_EXECUTABLE
 module.BWRAP_EXECUTABLE = Path("/missing/align-llm-bwrap")
 try:
     try:
-        module.validation_sandbox_command(["python3", "-c", "pass"], project_root)
+        module.validation_sandbox_command(
+            ["python3", "-c", "pass"], project_root, 10
+        )
     except module.TaskError as error:
         if "validation sandbox is unavailable" not in str(error):
             raise
@@ -306,6 +373,25 @@ try:
         raise RuntimeError("validation did not fail closed without bubblewrap")
 finally:
     module.BWRAP_EXECUTABLE = available_bwrap
+
+with tempfile.TemporaryDirectory(prefix="align-llm-bwrap-probe-smoke-") as temporary:
+    fake_bwrap = Path(temporary) / "bwrap"
+    fake_bwrap.write_text("#!/bin/sh\nprintf probe-failed >&2\nexit 1\n", encoding="utf-8")
+    fake_bwrap.chmod(0o755)
+    module.BWRAP_EXECUTABLE = fake_bwrap
+    try:
+        module.validation_sandbox_command(["python3", "-c", "pass"], project_root, 10)
+    except module.TaskError as error:
+        if "required bubblewrap namespaces" not in str(error):
+            raise
+    else:
+        raise RuntimeError("validation did not fail closed when namespace probing failed")
+    finally:
+        module.BWRAP_EXECUTABLE = available_bwrap
+
+command = module.validation_sandbox_command(["python3", "-c", "pass"], project_root, 10)
+if "/usr/bin/prlimit" not in command or str(module.MAX_VALIDATION_TMPFS_BYTES) not in command:
+    raise RuntimeError("validation resource limits were not applied to the sandbox")
 
 with tempfile.TemporaryDirectory(prefix="align-llm-replace-smoke-") as temporary:
     repository = Path(temporary)
