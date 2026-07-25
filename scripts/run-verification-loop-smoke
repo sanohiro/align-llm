@@ -9,13 +9,15 @@ repair_patch="$temp_dir/repair.patch"
 bad_repair_patch="$temp_dir/bad-repair.patch"
 task_path="$temp_dir/task.json"
 result_path="$temp_dir/result.json"
+second_result_path="$temp_dir/second-result.json"
+profile_path="$temp_dir/profile.alignprof"
 
 cleanup() {
   rm -rf "$temp_dir"
 }
 trap cleanup EXIT
 
-python3 - "$repo_dir" "$candidate_patch" "$repair_patch" "$bad_repair_patch" "$task_path" <<'PY'
+python3 - "$repo_dir" "$candidate_patch" "$repair_patch" "$bad_repair_patch" "$task_path" "$profile_path" <<'PY'
 import difflib
 import json
 import sys
@@ -26,6 +28,7 @@ candidate_patch = Path(sys.argv[2])
 repair_patch = Path(sys.argv[3])
 bad_repair_patch = Path(sys.argv[4])
 task_path = Path(sys.argv[5])
+profile_path = Path(sys.argv[6])
 
 (repo / "src").mkdir(parents=True)
 (repo / "tests").mkdir()
@@ -77,6 +80,7 @@ task = {
     "root": str(repo),
     "candidate_patch": str(candidate_patch),
     "repair_patch": str(repair_patch),
+    "memory_profile": str(profile_path),
     "build": {
         "cmd": "/usr/bin/python3",
         "argv": ["/usr/bin/python3", "-m", "py_compile", "src/value.py"],
@@ -106,7 +110,7 @@ git -C "$repo_dir" commit -qm initial
 
 "$root_dir/main" --verify-loop "$task_path" "$result_path"
 
-python3 - "$repo_dir" "$result_path" <<'PY'
+python3 - "$repo_dir" "$result_path" "$profile_path" <<'PY'
 import json
 import subprocess
 import sys
@@ -114,6 +118,7 @@ from pathlib import Path
 
 repo = Path(sys.argv[1])
 result = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+profile = Path(sys.argv[3])
 
 assert result["schema_version"] == 1, result
 assert result["task_id"] == "verification-loop-inclusive-range", result
@@ -162,6 +167,58 @@ assert (repo / "src" / "value.py").read_text(encoding="utf-8") == (
     "def inclusive_range(start, stop):\n"
     "    return list(range(start, stop + 1))\n"
 )
+profile_lines = [line for line in profile.read_text(encoding="utf-8").splitlines() if line]
+assert len(profile_lines) == 1, profile_lines
+event = json.loads(profile_lines[0])
+assert event["task_id"] == "verification-loop-inclusive-range", event
+assert event["repair_result"] == "PASS_AFTER_REPAIR", event
+assert event["failure_stage"] == "targeted-test", event
+assert event["failed_test"] == "targeted-test", event
+assert event["attempted_patch"].endswith("candidate.patch"), event
+assert event["successful_strategy"] == "deterministic-repair-patch", event
+assert event["unsuccessful_strategy"] == "candidate-patch-failed-validation", event
+PY
+
+git -C "$repo_dir" reset --hard -q HEAD
+"$root_dir/main" --verify-loop "$task_path" "$second_result_path"
+
+python3 - "$second_result_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert result["status"] == "PASS", result
+prompt = result["attempts"][0]["repair_prompt"]
+assert "memory context:" in prompt, prompt
+assert "PASS_AFTER_REPAIR" in prompt, prompt
+assert "targeted-test" in prompt, prompt
+PY
+
+git -C "$repo_dir" reset --hard -q HEAD
+legacy_task_path="$temp_dir/legacy-task.json"
+legacy_result_path="$temp_dir/legacy-result.json"
+python3 - "$task_path" "$legacy_task_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+task.pop("memory_profile")
+task["task_id"] = "verification-loop-legacy-task"
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+"$root_dir/main" --verify-loop "$legacy_task_path" "$legacy_result_path"
+python3 - "$legacy_result_path" "$profile_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert result["status"] == "PASS", result
+profile_lines = [line for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines() if line]
+assert len(profile_lines) == 2, profile_lines
 PY
 
 git -C "$repo_dir" reset --hard -q HEAD

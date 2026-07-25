@@ -1,0 +1,255 @@
+module failure_memory
+
+import core.json
+import std.fs
+
+// C5 stores one compact, typed event per verification result. The profile is JSONL rather than a
+// mutable JSON array: updates remain append-only and do not need a dynamic struct-array editor.
+// Each event keeps the reusable failure signal, repair outcome, related tests, and risky symbols;
+// the verification loop can select matching lines for the next repair prompt.
+
+pub MemorySummary {
+  record_count: i64,
+  repaired: bool,
+}
+
+MemoryEvent {
+  schema_version: i64,
+  root: str,
+  task_id: str,
+  attempted_patch: str,
+  final_status: str,
+  failure_stage: str,
+  failed_test: str,
+  failure_status: str,
+  root_cause: str,
+  repair_result: str,
+  successful_strategy: str,
+  unsuccessful_strategy: str,
+  iteration_count: i64,
+  repair_count: i64,
+  risk_score: i64,
+  recommended_tests: str,
+  risky_symbols: str,
+}
+
+MemoryResult {
+  schema_version: i64,
+  task_id: str,
+  status: str,
+  error_code: i64,
+  iteration_count: i64,
+  max_iterations: i64,
+  repair_count: i64,
+  evaluation_status: str,
+}
+
+MemoryKey { task_id: str }
+
+MemoryFailure {
+  stage: string,
+  status: string,
+  summary: string,
+}
+
+fn parse_integer(value: str) -> Result<i64, Error> {
+  number: i64 := json.decode(value)?
+  return Ok(number)
+}
+
+// Return the most recent three events for this task, newest first. A missing or unreadable profile
+// is intentionally an empty context: memory must improve repair prompts without blocking the real
+// verification path.
+pub fn load_context(profile_path: str, task_id: str) -> string {
+  if profile_path.len() == 0 || task_id.len() == 0 {
+    return "".clone()
+  }
+  data := fs.read_file(profile_path) else {
+    return "".clone()
+  }
+  key := MemoryKey { task_id: task_id }
+  key_json := json.encode(key)
+  marker_view: str := key_json[1..key_json.len() - 1]
+
+  mut cursor := data.len()
+  mut matches := 0
+  mut context := builder()
+  loop {
+    if cursor <= 0 || matches >= 3 { break }
+    line_break := data[0..cursor].rfind("\n") else -1
+    line_start := if line_break < 0 { 0 } else { line_break + 1 }
+    line := data[line_start..cursor]
+    if line.len() > 0 && line.contains(marker_view) {
+      if matches > 0 { context.write("\n") }
+      context.write(line)
+      matches = matches + 1
+    }
+    cursor = if line_break < 0 { 0 } else { line_break }
+  }
+  return context.to_string()
+}
+
+// C4 emits compact JSON, so these helpers intentionally target its stable field form. The values
+// used for stage labels, statuses, and paths are simple generated strings; diagnostics remain in
+// the original result document and are not reinterpreted as executable data.
+fn json_string_value_at(document: str, marker: str, from: i64) -> string {
+  if from < 0 || from >= document.len() { return "".clone() }
+  tail := document[from..document.len()]
+  relative := tail.find(marker) else -1
+  if relative < 0 { return "".clone() }
+  value_start := from + relative + marker.len()
+  closing := document[value_start..document.len()].find("\"") else -1
+  if closing < 0 { return "".clone() }
+  return document[value_start..value_start + closing].clone()
+}
+
+fn json_array_value_at(document: str, marker: str, from: i64) -> string {
+  if from < 0 || from >= document.len() { return "".clone() }
+  tail := document[from..document.len()]
+  relative := tail.find(marker) else -1
+  if relative < 0 { return "".clone() }
+  value_start := from + relative + marker.len()
+  closing := document[value_start..document.len()].find("]") else -1
+  if closing < 0 { return "".clone() }
+  return document[value_start..value_start + closing + 1].clone()
+}
+
+fn json_integer_value_at(document: str, marker: str, from: i64) -> i64 {
+  if from < 0 || from >= document.len() { return 0 }
+  tail := document[from..document.len()]
+  relative := tail.find(marker) else -1
+  if relative < 0 { return 0 }
+  value_start := from + relative + marker.len()
+  remainder := document[value_start..document.len()]
+  comma := remainder.find(",") else remainder.len()
+  brace := remainder.find("}") else remainder.len()
+  end := if comma < brace { comma } else { brace }
+  if end <= 0 { return 0 }
+  value := document[value_start..value_start + end]
+  number := parse_integer(value) else 0
+  return number
+}
+
+fn first_failure(document: str) -> MemoryFailure {
+  stage_marker := "\"stage\":\""
+  status_marker := "\"status\":\""
+  summary_marker := "\"summary\":\""
+  mut cursor := 0
+  loop {
+    if cursor >= document.len() { break }
+    tail := document[cursor..document.len()]
+    stage_relative := tail.find(stage_marker) else -1
+    if stage_relative < 0 { break }
+    stage_position := cursor + stage_relative
+    stage := json_string_value_at(document, stage_marker, stage_position)
+    status := json_string_value_at(document, status_marker, stage_position + stage_marker.len())
+    status_view: str := status
+    if status_view != "PASS" && status_view.len() > 0 {
+      summary := json_string_value_at(document, summary_marker, stage_position + stage_marker.len())
+      return MemoryFailure {
+        stage: stage,
+        status: status,
+        summary: summary,
+      }
+    }
+    cursor = stage_position + stage_marker.len()
+  }
+  return MemoryFailure {
+    stage: "none".clone(),
+    status: "none".clone(),
+    summary: "no failed stage recorded".clone(),
+  }
+}
+
+fn render_event(result: MemoryResult, document: str) -> string {
+  failure := first_failure(document)
+  root := json_string_value_at(document, "\"root\":\"", 0)
+  mut attempted_patch := json_string_value_at(document, "\"patch_path\":\"", 0)
+  if attempted_patch.len() == 0 { attempted_patch = "none".clone() }
+  mut recommended_tests := json_array_value_at(document, "\"recommended_tests\":[", 0)
+  if recommended_tests.len() == 0 { recommended_tests = "none".clone() }
+  mut risky_symbols := json_array_value_at(document, "\"symbols\":[", 0)
+  if risky_symbols.len() == 0 { risky_symbols = "none".clone() }
+
+  root_cause_builder := builder()
+  root_cause_builder.write(failure.stage)
+  root_cause_builder.write(" / ")
+  root_cause_builder.write(failure.status)
+  root_cause_builder.write(": ")
+  root_cause_builder.write(failure.summary)
+  root_cause := root_cause_builder.to_string()
+
+  repair_result := if result.status == "PASS" && result.repair_count > 0 {
+    "PASS_AFTER_REPAIR".clone()
+  } else {
+    result.status.clone()
+  }
+  successful_strategy := if result.status == "PASS" && result.repair_count > 0 {
+    "deterministic-repair-patch".clone()
+  } else {
+    "none".clone()
+  }
+  unsuccessful_strategy := if result.repair_count > 0 {
+    "candidate-patch-failed-validation".clone()
+  } else {
+    "no-repair-strategy-applied".clone()
+  }
+
+  failure_stage_view: str := failure.stage
+  failure_status_view: str := failure.status
+  root_cause_view: str := root_cause
+  repair_result_view: str := repair_result
+  successful_strategy_view: str := successful_strategy
+  recommended_tests_view: str := recommended_tests
+  risky_symbols_view: str := risky_symbols
+  root_view: str := root
+  attempted_patch_view: str := attempted_patch
+  unsuccessful_strategy_view: str := unsuccessful_strategy
+  event := MemoryEvent {
+    schema_version: 1,
+    root: root_view,
+    task_id: result.task_id,
+    attempted_patch: attempted_patch_view,
+    final_status: result.status,
+    failure_stage: failure_stage_view,
+    failed_test: failure_stage_view,
+    failure_status: failure_status_view,
+    root_cause: root_cause_view,
+    repair_result: repair_result_view,
+    successful_strategy: successful_strategy_view,
+    unsuccessful_strategy: unsuccessful_strategy_view,
+    iteration_count: result.iteration_count,
+    repair_count: result.repair_count,
+    risk_score: json_integer_value_at(document, "\"risk_score\":", 0),
+    recommended_tests: recommended_tests_view,
+    risky_symbols: risky_symbols_view,
+  }
+  return json.encode(event).clone()
+}
+
+pub fn remember(result_path: str, profile_path: str) -> Result<MemorySummary, Error> {
+  if result_path.len() == 0 || profile_path.len() == 0 {
+    return Err(Error.Invalid)
+  }
+  data := fs.read_file(result_path)?
+  result: MemoryResult := json.decode(data)?
+  result_status := result.status.clone()
+  result_repair_count := result.repair_count
+  event := render_event(result, data)
+  existing := fs.read_file(profile_path) else {
+    "".clone()
+  }
+  output := builder()
+  if existing.len() > 0 {
+    output.write(existing)
+    output.write("\n")
+  }
+  output.write(event)
+  output.write("\n")
+  fs.write_file(profile_path, output)?
+  result_status_view: str := result_status
+  return Ok(MemorySummary {
+      record_count: 1,
+      repaired: result_status_view == "PASS" && result_repair_count > 0,
+    })
+}
