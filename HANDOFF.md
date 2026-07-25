@@ -5,7 +5,7 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline`, with canonical
-baseline source commit `82ab2da` and refreshed result commit `51c99b9`. Resume at the PR head until
+baseline source commit `c0b9874` and refreshed result commit `b1ed211`. Resume at the PR head until
 it is merge-committed; afterward resume from `main` and begin the C1 slice below._
 
 ## Current position
@@ -20,13 +20,13 @@ The repository has completed the C0 implementation and is ready to begin C1 afte
   cleans its temporary checkout. It fails closed when Linux child-subreaper support or bubblewrap
   is unavailable, and post-validation host Git checks cannot be configured by the candidate.
 - `eval/baselines/coding-v1-reference.json` is the first canonical machine-readable baseline. It was
-  recorded twice from clean commit `82ab2da` after rebuilding `main` with the verified pinned Align
+  recorded twice from clean commit `c0b9874` after rebuilding `main` with the verified pinned Align
   compiler. It binds the complete declared evaluation artifact set to both SHA-256 digests and the
   source commit, including the verifier itself, while enumerating source inputs explicitly so new
   unrelated modules do not invalidate C0. It records the requested and resolved Python runtime used
   for measurement. This deterministic reference validates scoring and timing, not model quality.
-- The first baseline passed 2/2 attempts at 227,677,970 ns and 226,146,077 ns, with median time to a
-  passing patch of 226,912,023 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
+- The refreshed baseline passed 2/2 attempts at 247,627,642 ns and 248,097,351 ns, with median time
+  to a passing patch of 247,862,496 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
   timeout-bounded process execution in `src/verify.align`. This is enabling work shaped like the
   later C4 Verification Loop, not completion of C1. C1's provider abstraction, multiple provider
@@ -92,8 +92,9 @@ make ci
 # side effects rejected; ambient Git and Python settings and corpus interpreter dispatch isolated;
 # timeout and normal-completion process-tree cleanup, descendant reaping, and temporary checkout
 # cleanup verified; missing child-subreaper or bubblewrap support fails closed; validation cannot
-# mutate the host filesystem or Git metadata; Git replacement objects are ignored; non-UTF-8
-# diagnostics retained
+# mutate the host filesystem or Git metadata; Git replacement objects are ignored; pre-validation
+# byte/mode and untracked/ignored mutations are rejected; non-UTF-8 diagnostics retained and
+# bounded; non-passing baseline stdout and stderr diagnostics are persisted
 # PASS — canonical baseline metadata, source commit, artifact digests, task identity, summaries,
 # corpus task order and expected codes, and strictly typed numeric aggregates verified; malformed
 # aggregates and verdicts rejected; measured Python runtime, pin checker provenance, and complete
@@ -116,9 +117,9 @@ git diff --check
 
 ## Next steps
 
-1. Repeat PR #3 review after the validation-containment and provenance follow-up, push it, require GitHub CI to pass
-   with full checkout history, and merge with a merge commit so canonical baseline source commit
-   `82ab2da` remains reachable.
+1. Repeat PR #3 review after the validation-containment, provenance, and diagnostics follow-up,
+   push it, require GitHub CI to pass with full checkout history, and merge with a merge commit so
+   the canonical baseline source commit remains reachable.
 2. Start one C1 branch for the explicit provider boundary and common persisted result format. Keep
    provider data and dispatch separate from verification and scoring.
 3. Add the smallest real HTTP provider slice and plaintext/TLS timeout fixtures. That is the first
