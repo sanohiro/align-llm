@@ -4,84 +4,35 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the C3 patch-evaluator slice on
-`c3-patch-evaluator` at implementation commit `3581c79` with review fix `053357e`; the working
-tree has the intentional handoff update below._
+_Last updated: 2026-07-25. Active work is the C4 verification-loop slice on
+`c4-verification-loop` at commit `07880b5`; the working tree is clean._
 
 ## Current position
 
-The repository has completed C0, C1, and the first C2 index slice and is continuing C2:
+The repository has completed C0 through C3 and the C4 implementation is complete locally.
 
-- C0 now has both the evaluator smoke corpus and `coding-v1`, a real off-by-one repair task.
-  The coding runner creates the exact pinned Git revision, proves the pre-repair failure, applies a
-  separately supplied candidate, enforces allowed edits before and after validation, runs validation
-  in a bubblewrap namespace with only its temporary checkout worktree writable and its `.git`
-  metadata read-only, retains timeout diagnostics, kills its owned descendant process tree, and
-  cleans its temporary checkout. It probes the required bubblewrap namespaces and fails closed when
-  Linux child-subreaper support, bubblewrap, or the validation resource wrapper is unavailable;
-  validation also has bounded address space, aggregate resident memory, CPU time, file size, process
-  count, open files, bounded `/tmp` and `/dev/shm` tmpfs mounts, and writable-worktree
-  size/file-count limits. Task-controlled IDs cannot influence temporary paths. Deleted-but-open
-  files,
-  adopted descendants, directory modes, and bounded resource scans are checked. Post-validation host
-  Git checks cannot be configured by the candidate. Fixture and baseline Git subprocesses disable
-  both system configuration and system attributes, global attributes are disabled with a fixed
-  XDG configuration path, replacement objects are ignored, and NUL-delimited Git paths preserve
-  whitespace and newlines. Post-repair validation mutations to even allowlisted files or the Git
-  index are rejected by comparing the candidate state before and after validation. Fixture
-  symlinks are preserved during materialization, and the immutable baseline oracle binds the
-  source commit and artifact manifest as well as measured results.
-- `eval/baselines/coding-v1-reference.json` is the first canonical machine-readable baseline. It was
-  recorded twice from clean commit `f062daf` after rebuilding `main` with the verified pinned Align
-  compiler. It binds the complete declared evaluation artifact set to both SHA-256 digests and the
-  source commit, including the verifier itself, while enumerating source inputs explicitly so new
-  unrelated modules do not invalidate C0. It records the requested and resolved Python runtime used
-  for measurement and is checked against immutable oracle commit `42e6082`. This deterministic
-  reference validates scoring and timing, not model quality.
-- The refreshed baseline passed 2/2 attempts at 250,806,078 ns and 253,289,429 ns, with median time
-  to a passing patch of 252,047,753 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
-- A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
-  timeout-bounded process execution in `src/verify.align`. C1 added the provider abstraction,
-  three provider adapters, token-count metadata, and a common persisted result format; PR #4 is
-  merged at `b7068e6`.
-- `src/main.align` exposes `--eval`, `--loop`, and `--selfcheck` demonstrations for these slices.
-- `.align-revision`, `make ci`, `.github/workflows/ci.yml`, the pull request template, and
-  `docs/review-checklist.md` now make the local check, pinned compiler, fixed evaluation, review, and
-  merge expectations executable across environments.
-- PR #10 merged the hosted-CI capability fix at `a95c530`: GitHub Actions now runs the pinned
-  compiler and supported smoke/check gates without the unavailable nested user-namespace sandbox;
-  the complete `make ci` gate remains for local or capable self-hosted runners.
-- `CLAUDE.md` and `docs/align-requests.md` define the Align request lifecycle, mandatory blocking
-  metadata, dependent-slice pause rule, independent-work rule, and real-client resume/closure gate.
-- Requests 1 and 3 have real-client closure evidence; Request 2 is shipped at `ALIGN_MERGED`.
-  Request 4 is a new proposed blocker only for real chunked SSE acceptance; non-streaming C1 work
-  remains independent.
-- PR #5 merged the first C2 repository-index slice at `d59c5ce`. Git tracked files are read with
-  `ls-files -z`; all tracked files receive language, line-count, readability, and test-path
-  metadata; `.align` files receive top-level module, type, function, and import records.
-- PR #6 merged the lexical-reference slice at `348c3a5`. It strips comments, strings, and escaped
-  delimiters before recording imported qualified names and local calls in the `references` array.
-- Current C2 state: `src/repo_index.align` now adds schema-v3 resolution status and targets.
-  Same-file functions resolve locally; tracked user-module public functions/types resolve through
-  the importing file's directory; core/std references are external; private, missing, and module
-  declaration-mismatch targets remain unresolved. The focused fixture covers all four outcomes,
-  newline-containing paths, revision binding, and persisted non-repository failure metadata.
-- PR #7 merged the semantic-resolution slice at merge commit
-  `91ec8455f9316a3c702cfbe17f609e376a43cc70`.
-- The related-test selection slice is implemented at `2bb706d` on `c2-related-tests`. It writes
-  a schema-version-1, revision-bound document for a changed path, recognizes tracked test paths,
-  ranks basename matches at 100 points, adds 20 points for a shared directory, and preserves Git
-  order for ties. The focused fixture covers ranking reasons, ordering, revision binding, and
-  persisted non-repository failure metadata.
-- PR #8 merged the related-test selection slice at merge commit `4cb217b7f901019e689bba36c88a41322d2cf51e`.
-- The C3 patch-evaluator slice is implemented at `3581c79` on `c3-patch-evaluator`, with review fix
-  `053357e`. It parses standard unified-diff file markers without applying the patch, records
-  touched files and hunk symbols, computes additions/deletions, complexity delta, public API and
-  conservative unrelated path flags, calculates a deterministic risk score, and reuses C2 to
-  recommend tests. PR #9 is open and needs the follow-up push, review, and merge.
+- PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
+- C4 commit `07880b5` adds `src/verification_loop.align` and `--verify-loop <task.json>
+  <result.json>`. It evaluates and applies a candidate patch, runs build/targeted/full stages with
+  timeout-bounded captured output, emits structured attempt/stage JSON and repair prompts, and
+  applies one deterministic repair patch before re-verifying.
+- `scripts/run-verification-loop-smoke` proves the fixed-task gate and the invalid-repair
+  `REPAIR_FAILED` path. The repair patch is the provider-independent seam; model-backed repair is
+  not implemented yet.
+- The hosted workflow now includes the supported C4 smoke. The unavailable nested user-namespace
+  `coding-v1` sandbox and stale C0 baseline check remain local/capable-runner gates only.
 
-The central metric remains time to a passing patch. Do not start align-runtime work before the
-fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
+## Next steps
+
+1. Push `c4-verification-loop` and open the C4 pull request with the verification results below.
+2. Review the PR against `docs/review-checklist.md`; make one bounded adversarial-review attempt
+   if the review command is available, then address only valid findings.
+3. Wait for the supported hosted check once, merge after review/check success, and update this file
+   to the next roadmap slice (C5 failure memory).
+
+Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
+service-capacity condition, not a repository or Actions failure. The central metric remains time to
+a passing patch.
 
 ## Completed bootstrap
 
@@ -108,7 +59,28 @@ work returns to one roadmap gate or enabling slice per branch and PR. Review fol
 diagnostic loss, loop bounds and exit coverage, task-identity checks, empty-corpus acceptance, the
 effective compiler pin, request lifecycle evidence, and stale handoff state.
 
-## Latest verification
+## C4 verification
+
+Verified on 2026-07-25 against the current sibling Align checkout:
+
+```text
+make fmt                         PASS
+make format-check                PASS
+make check                       PASS — 14 imported units, including verification_loop
+make build                       PASS
+bash -n scripts/run-verification-loop-smoke  PASS
+make index-smoke                 PASS
+make test-selection-smoke        PASS
+make patch-eval-smoke            PASS
+make provider-smoke              PASS
+make verify-loop-smoke           PASS — initial targeted failure repaired to full PASS in 2 iterations; invalid repair persisted as REPAIR_FAILED
+git diff --check                 PASS
+```
+
+The full `make ci` gate was not rerun for C4. The supported hosted workflow was updated to include
+the C4 smoke; no repeated retry is warranted for external service-capacity errors.
+
+## Historical verification
 
 Verified on 2026-07-25 with pinned Align commit
 `db942d2f705546c7d6b8c0334a462548c6446f84`:
