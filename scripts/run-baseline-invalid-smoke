@@ -87,3 +87,53 @@ if ! grep -Fq "task expected_code must be an integer" "${output_file}"; then
 fi
 
 printf '%s\n' "boolean baseline expected_code: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["runs"][0]["summary"]["pass_count"] = True
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a boolean summary count" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "run summary pass_count must be an integer" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the boolean summary count" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "boolean baseline summary count: rejected"
+
+python3 - "${baseline}" "${invalid_baseline}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+baseline["aggregate"]["time_to_passing_patch_ns"]["median"] = float(
+    baseline["aggregate"]["time_to_passing_patch_ns"]["median"]
+)
+Path(sys.argv[2]).write_text(json.dumps(baseline), encoding="utf-8")
+PY
+
+if python3 ./eval/runners/verify-baseline.py "${invalid_baseline}" >"${output_file}" 2>&1; then
+  printf '%s\n' "baseline checker unexpectedly accepted a floating-point timing" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+if ! grep -Fq "aggregate timing median must be an integer" "${output_file}"; then
+  printf '%s\n' "baseline checker did not report the floating-point timing" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "floating-point baseline timing: rejected"

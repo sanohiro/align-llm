@@ -35,6 +35,8 @@ def load_task(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as error:
         raise TaskError(f"cannot load task descriptor: {error}") from error
 
+    if not isinstance(task, dict):
+        raise TaskError("task descriptor must be a JSON object")
     required = {
         "schema_version",
         "id",
@@ -46,7 +48,11 @@ def load_task(path: Path) -> dict[str, Any]:
     }
     if set(task) != required:
         raise TaskError("task descriptor fields do not match schema version 1")
-    if task["schema_version"] != 1:
+    if (
+        not isinstance(task["schema_version"], int)
+        or isinstance(task["schema_version"], bool)
+        or task["schema_version"] != 1
+    ):
         raise TaskError("unsupported task descriptor schema")
     if not isinstance(task["id"], str) or not task["id"]:
         raise TaskError("task id must be a non-empty string")
@@ -122,6 +128,22 @@ def fixture_environment() -> dict[str, str]:
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
     environment["LC_ALL"] = "C"
     return environment
+
+
+def validation_environment() -> dict[str, str]:
+    environment = fixture_environment()
+    for key in tuple(environment):
+        if key.startswith("PYTHON"):
+            environment.pop(key)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONNOUSERSITE"] = "1"
+    return environment
+
+
+def validation_command(argv: list[str]) -> list[str]:
+    if argv[0] == "python3":
+        return [str(Path(sys.executable).resolve()), *argv[1:]]
+    return argv
 
 
 def git_output(checkout: Path, *args: str) -> str:
@@ -217,10 +239,10 @@ def validate_candidate(
     validation_timeout_seconds: int,
     source_revision: str,
 ) -> None:
-    validation_env = fixture_environment()
-    validation_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    resolved_validation_argv = validation_command(validation_argv)
+    validation_env = validation_environment()
     before = run(
-        validation_argv,
+        resolved_validation_argv,
         checkout,
         validation_timeout_seconds,
         env=validation_env,
@@ -247,7 +269,7 @@ def validate_candidate(
     check_allowed_changes(checkout, allowed_edits, source_revision)
 
     after = run(
-        validation_argv,
+        resolved_validation_argv,
         checkout,
         validation_timeout_seconds,
         env=validation_env,

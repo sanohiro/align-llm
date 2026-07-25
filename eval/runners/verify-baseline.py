@@ -35,10 +35,24 @@ def require_non_empty_string(value: Any, label: str) -> str:
     return value
 
 
-def require_positive_integer(value: Any, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise BaselineError(f"{label} must be a positive integer")
+def require_integer(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise BaselineError(f"{label} must be an integer")
     return value
+
+
+def require_positive_integer(value: Any, label: str) -> int:
+    integer = require_integer(value, label)
+    if integer <= 0:
+        raise BaselineError(f"{label} must be a positive integer")
+    return integer
+
+
+def require_non_negative_integer(value: Any, label: str) -> int:
+    integer = require_integer(value, label)
+    if integer < 0:
+        raise BaselineError(f"{label} must be a non-negative integer")
+    return integer
 
 
 def resolve_inside(project_root: Path, relative: str, label: str) -> Path:
@@ -87,14 +101,17 @@ def corpus_tasks(
     corpus: dict[str, Any],
 ) -> tuple[list[str], list[int], set[Path]]:
     require_fields(corpus, {"id", "schema_version", "path"}, "corpus metadata")
-    if corpus["schema_version"] != 1:
+    if require_integer(corpus["schema_version"], "corpus metadata schema_version") != 1:
         raise BaselineError("unsupported corpus schema")
     corpus_id = require_non_empty_string(corpus["id"], "corpus id")
     relative_path = require_non_empty_string(corpus["path"], "corpus path")
     corpus_path = resolve_inside(project_root, relative_path, "corpus path")
     manifest = load_object(corpus_path)
     require_fields(manifest, {"schema_version", "corpus_id", "task_files"}, "corpus")
-    if manifest["schema_version"] != 1 or manifest["corpus_id"] != corpus_id:
+    if (
+        require_integer(manifest["schema_version"], "corpus schema_version") != 1
+        or manifest["corpus_id"] != corpus_id
+    ):
         raise BaselineError("baseline corpus metadata differs from the corpus manifest")
     task_files = manifest["task_files"]
     if not isinstance(task_files, list) or not task_files:
@@ -115,9 +132,7 @@ def corpus_tasks(
         artifact_files.add(task_path)
         task_ids.append(require_non_empty_string(task.get("id"), "task id"))
         expected_code = task.get("expected_code")
-        if not isinstance(expected_code, int) or isinstance(expected_code, bool):
-            raise BaselineError("task expected_code must be an integer")
-        expected_codes.append(expected_code)
+        expected_codes.append(require_integer(expected_code, "task expected_code"))
         artifact_paths = task.get("artifact_paths")
         if not isinstance(artifact_paths, list) or not artifact_paths:
             raise BaselineError(f"task does not declare artifact_paths: {task_path}")
@@ -231,7 +246,8 @@ def verify_runs(
         if not isinstance(run, dict):
             raise BaselineError("run must be an object")
         require_fields(run, {"sample", "task_results", "summary"}, "run")
-        if run["sample"] != expected_sample:
+        sample = require_positive_integer(run["sample"], "run sample")
+        if sample != expected_sample:
             raise BaselineError("run sample numbers are not contiguous")
         task_results = run["task_results"]
         if not isinstance(task_results, list):
@@ -261,13 +277,8 @@ def verify_runs(
             verdict = task["verdict"]
             if verdict not in {"PASS", "FAIL", "TIMEOUT", "ERROR"}:
                 raise BaselineError("task result contains an unknown verdict")
-            if not isinstance(task["actual_code"], int) or isinstance(task["actual_code"], bool):
-                raise BaselineError("task actual_code must be an integer")
-            if not isinstance(task["expected_code"], int) or isinstance(
-                task["expected_code"],
-                bool,
-            ):
-                raise BaselineError("task expected_code must be an integer")
+            require_integer(task["actual_code"], "task actual_code")
+            require_integer(task["expected_code"], "task expected_code")
             task_index = expected_task_ids.index(task["task_id"])
             if task["expected_code"] != expected_codes[task_index]:
                 raise BaselineError("task expected_code differs from the corpus")
@@ -277,6 +288,10 @@ def verify_runs(
                 if task["actual_code"] != task["expected_code"]:
                     raise BaselineError("passing task actual_code differs from expected_code")
                 pass_count += 1
+                require_positive_integer(
+                    passing_time,
+                    "task time_to_passing_patch_ns",
+                )
                 if passing_time != duration:
                     raise BaselineError("passing task time differs from its duration")
                 passing_times.append(duration)
@@ -292,6 +307,8 @@ def verify_runs(
         if not isinstance(summary, dict):
             raise BaselineError("run summary must be an object")
         require_fields(summary, {"task_count", "pass_count", "fail_count"}, "run summary")
+        for field in ("task_count", "pass_count", "fail_count"):
+            require_non_negative_integer(summary[field], f"run summary {field}")
         expected_summary = {
             "task_count": len(task_results),
             "pass_count": pass_count,
@@ -315,7 +332,11 @@ def verify_aggregate(aggregate: Any, passing_times: list[int]) -> None:
     )
     if task_attempt_count < len(passing_times):
         raise BaselineError("aggregate task_attempt_count is smaller than pass count")
-    if aggregate["passing_attempt_count"] != len(passing_times):
+    passing_attempt_count = require_non_negative_integer(
+        aggregate["passing_attempt_count"],
+        "aggregate passing_attempt_count",
+    )
+    if passing_attempt_count != len(passing_times):
         raise BaselineError("aggregate passing_attempt_count is incorrect")
     timing = aggregate["time_to_passing_patch_ns"]
     if not passing_times:
@@ -325,6 +346,8 @@ def verify_aggregate(aggregate: Any, passing_times: list[int]) -> None:
     if not isinstance(timing, dict):
         raise BaselineError("aggregate timing must be an object when a task passes")
     require_fields(timing, {"minimum", "median", "maximum"}, "aggregate timing")
+    for field in ("minimum", "median", "maximum"):
+        require_positive_integer(timing[field], f"aggregate timing {field}")
     expected = {
         "minimum": min(passing_times),
         "median": int(statistics.median(passing_times)),
@@ -354,7 +377,7 @@ def verify_baseline(path: Path, project_root: Path) -> None:
         },
         "baseline",
     )
-    if baseline["schema_version"] != 1:
+    if require_integer(baseline["schema_version"], "baseline schema_version") != 1:
         raise BaselineError("unsupported baseline schema")
     require_non_empty_string(baseline["baseline_id"], "baseline_id")
     recorded_at = require_non_empty_string(baseline["recorded_at"], "recorded_at")

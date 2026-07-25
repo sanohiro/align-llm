@@ -8,9 +8,16 @@ task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
 patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
 output_file="$(mktemp)"
 template_dir="$(mktemp -d)"
+tool_dir="$(mktemp -d)"
+python_path="$(mktemp -d)"
 mkdir -p "${template_dir}/info"
 printf '%s\n' "*.py" > "${template_dir}/info/exclude"
-trap 'rm -f "${output_file}"; rm -r "${template_dir}"' EXIT
+printf '%s\n' '#!/usr/bin/env sh' 'exit 97' >"${tool_dir}/python3"
+chmod +x "${tool_dir}/python3"
+printf '%s\n' 'raise RuntimeError("ambient PYTHONPATH reached validation")' \
+  >"${python_path}/unittest.py"
+python_bin="$(command -v python3)"
+trap 'rm -f "${output_file}"; rm -r "${template_dir}" "${tool_dir}" "${python_path}"' EXIT
 
 cd "${project_root}"
 GIT_CONFIG_COUNT=2 \
@@ -27,3 +34,15 @@ if ! grep -Fq "fixture revision: 1adf3697ea82a2da6fa9b9aa76f24fb51625ffca" "${ou
 fi
 
 printf '%s\n' "coding task ambient Git configuration: isolated"
+
+PATH="${tool_dir}:${PATH}" \
+PYTHONPATH="${python_path}" \
+  "${python_bin}" "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1
+
+if ! grep -Fq "post-repair validation exit code: 0" "${output_file}"; then
+  printf '%s\n' "coding task validation used ambient Python settings" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task ambient Python settings: isolated"
