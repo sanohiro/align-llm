@@ -4,15 +4,12 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline` at follow-up commit
-`a2786ab`, with canonical
-baseline source commit `f062daf`, immutable oracle commit `42e6082`, and refreshed result commit
-`527c3f9`. Resume at the PR head until it is merge-committed; after that, no implementation is
-active until the user asks to resume, with C1 as the next roadmap slice._
+_Last updated: 2026-07-25. Active work is the C1 provider slice on
+`c1-provider-boundary` at implementation commit `55a7761`; the working tree is clean._
 
 ## Current position
 
-The repository has completed the C0 implementation and is ready to begin C1 after PR #3 merges:
+The repository has completed C0 and is implementing C1:
 
 - C0 now has both the evaluator smoke corpus and `coding-v1`, a real off-by-one repair task.
   The coding runner creates the exact pinned Git revision, proves the pre-repair failure, applies a
@@ -43,19 +40,22 @@ The repository has completed the C0 implementation and is ready to begin C1 afte
 - The refreshed baseline passed 2/2 attempts at 250,806,078 ns and 253,289,429 ns, with median time
   to a passing patch of 252,047,753 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
-  timeout-bounded process execution in `src/verify.align`. This is enabling work shaped like the
-  later C4 Verification Loop, not completion of C1. C1's provider abstraction, multiple provider
-  implementations, and common persisted result format are not implemented.
+  timeout-bounded process execution in `src/verify.align`. C1 now adds the provider abstraction,
+  three provider adapters, token-count metadata, and a common persisted result format.
 - `src/main.align` exposes `--eval`, `--loop`, and `--selfcheck` demonstrations for these slices.
 - `.align-revision`, `make ci`, `.github/workflows/ci.yml`, the pull request template, and
   `docs/review-checklist.md` now make the local check, pinned compiler, fixed evaluation, review, and
   merge expectations executable across environments.
 - `CLAUDE.md` and `docs/align-requests.md` define the Align request lifecycle, mandatory blocking
   metadata, dependent-slice pause rule, independent-work rule, and real-client resume/closure gate.
-- All three capabilities requested from the sibling Align repository in
-  `docs/align-requests.md` are shipped in Align v0.4.0. Requests 1 and 3 have real-client closure
-  evidence. Request 2 remains non-blocking at `ALIGN_MERGED` until the C1 provider HTTP client
-  supplies plaintext and TLS timeout fixtures. No open Align request currently blocks C1.
+- Requests 1 and 3 have real-client closure evidence; Request 2 is shipped at `ALIGN_MERGED`.
+  Request 4 is a new proposed blocker only for real chunked SSE acceptance; non-streaming C1 work
+  remains independent.
+- Current C1 state: Align modules, three provider adapters, common JSON persistence, secure provider
+  boundaries, actionable HTTP status persistence, and the focused provider smoke are implemented.
+  The branch has PR #4 open; its initial independent review was applied except for the CI-target
+  suggestion, which is intentionally out of scope. A follow-up review is still required before
+  merge.
 
 The central metric remains time to a passing patch. Do not start align-runtime work before the
 fixed evaluation and provider-independent coding-loop gates establish a measurable baseline.
@@ -138,16 +138,32 @@ git diff --check
 # PASS
 ```
 
+## C1 verification
+
+Verified on 2026-07-25 against the existing pinned Align compiler:
+
+```text
+make fmt                         PASS
+make check                       PASS — 11 imported units, provider modules included
+make build                       PASS — executable built as ./main
+bash -n scripts/run-provider-smoke  PASS
+./scripts/run-provider-smoke     PASS — provider adapters, env-backed auth, Cloud HTTP rejection, SSE error and DONE-only rejection, timeout, HTTP status 429, exact assembled Llama prompt count, common result format v2
+git diff --check                 PASS
+```
+
+`make ci` has intentionally not been rerun for this feature slice; the focused provider gate is the
+relevant verification, and CI repetition is not useful while the Align chunked-response capability
+remains unshipped. The focused smoke uses a temporary HTTP fixture; real Cloud OpenAI calls require
+HTTPS and read the key from an environment variable name supplied to the CLI.
+
 ## Next steps
 
-1. Push `a2786ab`, repeat PR #3 review for the procfs-race and nested user-namespace bubblewrap
-   launcher hardening, require GitHub CI to pass with full checkout history, and merge with a merge
-   commit so the canonical baseline source commit remains reachable. The workflow keeps the project
-   gate unprivileged and launches bubblewrap through `/usr/bin/unshare --user --map-root-user`; the
-   runner passes the caller UID/GID and explicitly drops all validator capabilities before execution
-   while keeping `.git` read-only.
-2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
-   provider boundary and common persisted result format.
+1. Push the review follow-up `55a7761`, perform a fresh independent adversarial review of the
+   updated PR #4, and apply only any valid remaining findings.
+2. Rerun only the focused provider verification after a material follow-up, then merge PR #4 with a
+   merge commit. Do not repeat the full CI gate unless a concrete issue requires it.
+3. After merge, start the next C1 slice. Keep Request 4 as the only blocker for real chunked SSE;
+   continue non-streaming provider and result work independently.
 
 ## Constraints to preserve
 
@@ -167,6 +183,10 @@ git diff --check
   value.
 - Reusable command arguments cross loop iterations as `slice<str>` and are materialized for
   `std.process` per run.
+- Provider SSE parsing currently depends on Content-Length framing because Align's shipped
+  `std.http` client rejects chunked response bodies; do not add a raw-socket compatibility layer.
+- The C1 implementation and review fixes are committed at `55a7761`; keep the branch clean while it is published and
+  reviewed. No intentional uncommitted files remain.
 - Source, comments, diagnostics, commits, pull requests, reviews, and releases are written in
   English.
 

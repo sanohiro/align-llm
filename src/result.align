@@ -1,0 +1,28 @@
+module result
+
+import core.json
+import std.fs
+
+// Versioned provider-independent result format. All three adapters write this exact record so
+// evaluation can compare provider behavior without knowing adapter-specific response shapes.
+pub GenerationRecord {
+  schema_version: i64,
+  operation: str,
+  provider: str,
+  model: str,
+  endpoint: str,
+  status: str,
+  output: str,
+  prompt_tokens: i64,
+  completion_tokens: i64,
+  total_tokens: i64,
+  token_count_exact: bool,
+  elapsed_ns: i64,
+  error: str,
+  error_code: i64,
+}
+
+pub fn save(path: str, record: GenerationRecord) -> Result<(), Error> {
+  data := json.encode(record)
+  return fs.write_file(path, data)
+}

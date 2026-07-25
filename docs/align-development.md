@@ -71,3 +71,22 @@ When the engine needs a feature that does not compile in the current Align check
    real-client verification before closing the request.
 
 This separation keeps engine work reproducible and prevents application code from becoming an accidental language specification.
+
+## Provider development
+
+The C1 provider surface lives in `src/model.align` and `src/provider.align`. `model.ProviderConfig`
+holds the explicit provider kind, endpoint, model, API key, timeout, and optional llama.cpp
+tokenizer endpoint. `provider.generate`, `provider.stream`, `provider.count_tokens`, and
+`provider.model_info` dispatch only through the declared `ProviderKind` enum.
+
+The OpenAI adapters send `/v1/chat/completions`; the llama.cpp adapter sends `/completion` and can
+use `/tokenize` for exact counts. OpenAI-compatible token counts are deliberately marked as
+estimated. Cloud OpenAI requires an `https://` endpoint and reads its bearer key from `std.env`.
+Successful and failed calls are persisted through `result.GenerationRecord`, whose
+`schema_version` is `2`, whose `error_code` preserves an HTTP status when available, and whose
+shape is independent of the adapter.
+
+Use `make provider-smoke` for the focused fixture. It starts a temporary HTTP server, exercises
+local OpenAI-compatible and llama.cpp generate/stream calls, checks environment-backed Bearer
+authentication, Cloud HTTP rejection, SSE failure handling, exact tokenizer counts, HTTP status
+diagnostics, and the shared result records. Real Cloud OpenAI calls require HTTPS.
