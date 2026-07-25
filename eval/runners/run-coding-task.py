@@ -432,6 +432,7 @@ def fixture_environment() -> dict[str, str]:
     }
     environment.update(FIXTURE_GIT_ENV)
     environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_ATTR_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     environment["LC_ALL"] = "C"
