@@ -24,6 +24,14 @@ pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.Tok
   LlamaCpp => provider_llama.count_tokens(config, text),
 }
 
+pub fn count_prompt(config: model.ProviderConfig, request: model.GenerationRequest) -> model.TokenCount {
+  return match config.kind {
+    CloudOpenAI => provider_openai.count_prompt(config, request),
+    LocalOpenAI => provider_openai.count_prompt(config, request),
+    LlamaCpp => provider_llama.count_prompt(config, request),
+  }
+}
+
 pub fn model_info(config: model.ProviderConfig) -> model.ModelInfo {
   info_provider := match config.kind {
     CloudOpenAI => "cloud-openai",

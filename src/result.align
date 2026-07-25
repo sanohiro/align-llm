@@ -19,6 +19,7 @@ pub GenerationRecord {
   token_count_exact: bool,
   elapsed_ns: i64,
   error: str,
+  error_code: i64,
 }
 
 pub fn save(path: str, record: GenerationRecord) -> Result<(), Error> {

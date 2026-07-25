@@ -39,14 +39,17 @@ class Handler(BaseHTTPRequestHandler):
                         "path": self.path,
                         "authorization": self.headers.get("Authorization", ""),
                         "stream": bool(payload.get("stream", False)),
+                        "content": payload.get("content", ""),
                     },
                     sort_keys=True,
                 )
                 + "\n"
             )
 
+        status = 200
         if self.path == "/tokenize":
-            body = json.dumps({"tokens": [11, 12, 13, 14]}).encode("utf-8")
+            token_count = 8 if "\n\n" in payload.get("content", "") else 4
+            body = json.dumps({"tokens": list(range(11, 11 + token_count))}).encode("utf-8")
             content_type = "application/json"
         elif self.path == "/v1/chat/completions":
             if payload.get("stream", False):
@@ -84,6 +87,16 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/incomplete":
             body = 'data: {"choices":[{"delta":{"content":"PARTIAL"}}]}\n'.encode("utf-8")
             content_type = "text/event-stream"
+        elif self.path == "/error-stream":
+            body = 'data: {"error":{"message":"rate limited"}}\n data: [DONE]\n'.encode("utf-8")
+            content_type = "text/event-stream"
+        elif self.path == "/done-only":
+            body = "data: [DONE]\n".encode("utf-8")
+            content_type = "text/event-stream"
+        elif self.path == "/status":
+            body = json.dumps({"error": {"message": "rate limited"}}).encode("utf-8")
+            content_type = "application/json"
+            status = 429
         elif self.path == "/slow":
             time.sleep(0.25)
             body = json.dumps(
@@ -94,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -126,15 +139,35 @@ run_provider() {
   "$root_dir/main" --provider "$@"
 }
 
+run_provider_with_key() {
+  env OPENAI_API_KEY=test-key "$root_dir/main" --provider "$@"
+}
+
+run_provider_without_key() {
+  env -u OPENAI_API_KEY "$root_dir/main" --provider "$@"
+}
+
 run_provider openai-local "http://127.0.0.1:$port/v1/chat/completions" smoke-openai - "repair the range" "$temp_dir/openai.json"
-run_provider cloud "http://127.0.0.1:$port/v1/chat/completions" smoke-cloud test-key "repair the range" "$temp_dir/cloud.json"
+run_provider_with_key openai-local "http://127.0.0.1:$port/v1/chat/completions" smoke-openai OPENAI_API_KEY "repair the range" "$temp_dir/openai-auth.json"
 run_provider llama "http://127.0.0.1:$port/completion" smoke-llama - "repair the range" "$temp_dir/llama.json" generate "http://127.0.0.1:$port/tokenize"
 run_provider openai-local "http://127.0.0.1:$port/v1/chat/completions" smoke-openai - "stream the repair" "$temp_dir/openai-stream.json" stream
 run_provider llama "http://127.0.0.1:$port/completion" smoke-llama - "stream the repair" "$temp_dir/llama-stream.json" stream
-if run_provider cloud "http://127.0.0.1:$port/v1/chat/completions" smoke-cloud - "missing auth" "$temp_dir/cloud-missing.json"; then
+if run_provider_with_key cloud "http://127.0.0.1:$port/v1/chat/completions" smoke-cloud OPENAI_API_KEY "cloud over http" "$temp_dir/cloud-http.json"; then
+  exit 1
+fi
+if run_provider_without_key cloud "https://api.openai.com/v1/chat/completions" smoke-cloud - "missing auth" "$temp_dir/cloud-missing.json"; then
   exit 1
 fi
 if run_provider openai-local "http://127.0.0.1:$port/incomplete" smoke-openai - "incomplete stream" "$temp_dir/incomplete.json" stream; then
+  exit 1
+fi
+if run_provider openai-local "http://127.0.0.1:$port/error-stream" smoke-openai - "error stream" "$temp_dir/error-stream.json" stream; then
+  exit 1
+fi
+if run_provider openai-local "http://127.0.0.1:$port/done-only" smoke-openai - "done only" "$temp_dir/done-only.json" stream; then
+  exit 1
+fi
+if run_provider openai-local "http://127.0.0.1:$port/status" smoke-openai - "status error" "$temp_dir/status.json" generate; then
   exit 1
 fi
 if run_provider openai-local "http://127.0.0.1:$port/slow" smoke-openai - "timeout" "$temp_dir/timeout.json" generate - 100000000; then
@@ -150,7 +183,7 @@ temp_dir = pathlib.Path(sys.argv[1])
 observed_path = pathlib.Path(sys.argv[2])
 expected = {
     "openai.json": ("openai-local", "generate", "OPENAI-GENERATED"),
-    "cloud.json": ("cloud-openai", "generate", "OPENAI-GENERATED"),
+    "openai-auth.json": ("openai-local", "generate", "OPENAI-GENERATED"),
     "llama.json": ("llama.cpp", "generate", "LLAMA-GENERATED"),
     "openai-stream.json": ("openai-local", "stream", "OPENAI-STREAM"),
     "llama-stream.json": ("llama.cpp", "stream", "LLAMA-STREAM"),
@@ -158,12 +191,13 @@ expected = {
 
 for name, (provider, operation, output) in expected.items():
     record = json.loads((temp_dir / name).read_text(encoding="utf-8"))
-    assert record["schema_version"] == 1, (name, record)
+    assert record["schema_version"] == 2, (name, record)
     assert record["provider"] == provider, (name, record)
     assert record["operation"] == operation, (name, record)
     assert record["status"] == "ok", (name, record)
     assert record["output"] == output, (name, record)
     assert record["error"] == "", (name, record)
+    assert record["error_code"] == -1, (name, record)
     assert record["elapsed_ns"] >= 0, (name, record)
 
 observed = [json.loads(line) for line in observed_path.read_text(encoding="utf-8").splitlines()]
@@ -173,18 +207,40 @@ assert any(
     and not row["stream"]
     for row in observed
 ), observed
-assert any(row["path"] == "/tokenize" for row in observed), observed
-assert sum(row["stream"] for row in observed) == 3, observed
+assert sum(row["path"] == "/tokenize" for row in observed) == 2, observed
+assert any(row["path"] == "/tokenize" and "\n\n" in row["content"] for row in observed), observed
+assert sum(row["stream"] for row in observed) == 5, observed
+
+cloud_http = json.loads((temp_dir / "cloud-http.json").read_text(encoding="utf-8"))
+assert cloud_http["status"] == "error", cloud_http
+assert cloud_http["error"] == "invalid", cloud_http
+assert cloud_http["error_code"] == -1, cloud_http
 
 missing_auth = json.loads((temp_dir / "cloud-missing.json").read_text(encoding="utf-8"))
 assert missing_auth["status"] == "error", missing_auth
 assert missing_auth["error"] == "denied", missing_auth
 assert missing_auth["output"] == "", missing_auth
+assert missing_auth["error_code"] == -1, missing_auth
 
 incomplete = json.loads((temp_dir / "incomplete.json").read_text(encoding="utf-8"))
 assert incomplete["status"] == "error", incomplete
 assert incomplete["error"] == "invalid", incomplete
 assert incomplete["output"] == "", incomplete
+
+error_stream = json.loads((temp_dir / "error-stream.json").read_text(encoding="utf-8"))
+assert error_stream["status"] == "error", error_stream
+assert error_stream["error"] == "invalid", error_stream
+assert error_stream["output"] == "", error_stream
+
+done_only = json.loads((temp_dir / "done-only.json").read_text(encoding="utf-8"))
+assert done_only["status"] == "error", done_only
+assert done_only["error"] == "invalid", done_only
+assert done_only["output"] == "", done_only
+
+status = json.loads((temp_dir / "status.json").read_text(encoding="utf-8"))
+assert status["status"] == "error", status
+assert status["error"] == "provider-status", status
+assert status["error_code"] == 429, status
 
 timeout = json.loads((temp_dir / "timeout.json").read_text(encoding="utf-8"))
 assert timeout["status"] == "error", timeout
@@ -196,5 +252,5 @@ assert llama["prompt_tokens"] == 8, llama
 assert llama["completion_tokens"] == 4, llama
 assert llama["total_tokens"] == 12, llama
 assert llama["token_count_exact"] is True, llama
-print("provider smoke: 3 providers, generate/stream, auth, exact token count, and common result format PASS")
+print("provider smoke: adapters, secure auth, SSE failures, status diagnostics, exact prompt count, and common result format PASS")
 PY

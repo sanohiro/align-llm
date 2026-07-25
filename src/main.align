@@ -8,6 +8,7 @@ import repair
 import model
 import provider
 import result
+import std.env
 import std.fs
 import std.time
 
@@ -16,7 +17,7 @@ fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
   print("Usage: main [--version | --status | --selfcheck | --eval [corpus] | --loop]")
-  print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
+  print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
 
 fn parse_provider_kind(value: str) -> Result<model.ProviderKind, Error> {
@@ -40,6 +41,14 @@ fn error_label(e: Error) -> str = match e {
   Code(_) => "provider-status",
 }
 
+fn error_code(e: Error) -> i64 = match e {
+  NotFound => -1,
+  Invalid => -1,
+  Denied => -1,
+  Timeout => -1,
+  Code(code) => code as i64,
+}
+
 fn parse_i64(value: str) -> Result<i64, Error> {
   number: i64 := json.decode(value)?
   return Ok(number)
@@ -53,14 +62,16 @@ fn count_or_unknown(config: model.ProviderConfig, text: str) -> model.TokenCount
 }
 
 fn count_prompt(config: model.ProviderConfig, request: model.GenerationRequest) -> model.TokenCount {
-  system_count := count_or_unknown(config, request.system)
-  user_count := count_or_unknown(config, request.user)
-  if system_count.count < 0 || user_count.count < 0 {
-    return model.TokenCount { count: -1, exact: false }
+  return provider.count_prompt(config, request)
+}
+
+fn load_api_key(name: str) -> Result<string, Error> {
+  if name == "-" {
+    return Ok("".clone())
   }
-  return model.TokenCount {
-    count: system_count.count + user_count.count,
-    exact: system_count.exact && user_count.exact,
+  return match env.get(name) {
+    Some(value) => Ok(value),
+    None => Err(Error.Denied),
   }
 }
 
@@ -73,7 +84,8 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
   if mode != "generate" && mode != "stream" {
     return Err(Error.Invalid)
   }
-  api_key := if args[5] == "-" { "" } else { args[5] }
+  api_key := load_api_key(args[5])?
+  api_key_view: str := api_key
   tokenize_endpoint := if args.len() >= 10 && args[9] != "-" { args[9] } else { "" }
   timeout_ns := if args.len() >= 11 { parse_i64(args[10])? } else { 30_000_000_000 }
   if timeout_ns < 0 {
@@ -83,7 +95,7 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
     kind: kind,
     endpoint: args[3],
     model: args[4],
-    api_key: api_key,
+    api_key: api_key_view,
     timeout_ns: timeout_ns,
     tokenize_endpoint: tokenize_endpoint,
   }
@@ -113,7 +125,7 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
       exact := prompt_count.exact && completion_count.exact
       text_view: str := text
       record := result.GenerationRecord {
-        schema_version: 1,
+        schema_version: 2,
         operation: mode,
         provider: info.provider,
         model: info.model,
@@ -126,6 +138,7 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
         token_count_exact: exact,
         elapsed_ns: elapsed,
         error: "",
+        error_code: -1,
       }
       result.save(args[7], record)?
       print("provider:")
@@ -141,7 +154,7 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
     }
     Err(e) => {
       record := result.GenerationRecord {
-        schema_version: 1,
+        schema_version: 2,
         operation: mode,
         provider: info.provider,
         model: info.model,
@@ -154,6 +167,7 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
         token_count_exact: false,
         elapsed_ns: elapsed,
         error: error_label(e),
+        error_code: error_code(e),
       }
       result.save(args[7], record)?
       return Err(e)

@@ -81,9 +81,12 @@ tokenizer endpoint. `provider.generate`, `provider.stream`, `provider.count_toke
 
 The OpenAI adapters send `/v1/chat/completions`; the llama.cpp adapter sends `/completion` and can
 use `/tokenize` for exact counts. OpenAI-compatible token counts are deliberately marked as
-estimated. Successful and failed calls are persisted through `result.GenerationRecord`, whose
-`schema_version` is `1` and whose shape is independent of the adapter.
+estimated. Cloud OpenAI requires an `https://` endpoint and reads its bearer key from `std.env`.
+Successful and failed calls are persisted through `result.GenerationRecord`, whose
+`schema_version` is `2`, whose `error_code` preserves an HTTP status when available, and whose
+shape is independent of the adapter.
 
 Use `make provider-smoke` for the focused fixture. It starts a temporary HTTP server, exercises
-cloud OpenAI-compatible, local OpenAI-compatible, and llama.cpp generate/stream calls, checks
-Bearer authentication and exact tokenizer counts, and validates the shared result records.
+local OpenAI-compatible and llama.cpp generate/stream calls, checks environment-backed Bearer
+authentication, Cloud HTTP rejection, SSE failure handling, exact tokenizer counts, HTTP status
+diagnostics, and the shared result records. Real Cloud OpenAI calls require HTTPS.

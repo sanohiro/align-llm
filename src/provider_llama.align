@@ -17,6 +17,7 @@ LlamaTokenResponse { tokens: array<i64> }
 StreamParsed { ok: bool, text: string }
 
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
+  validate_kind(config.kind)?
   body := request_body(request, false)
   response := provider_http.post_json(config.endpoint, config.api_key, body, config.timeout_ns)?
   decoded: LlamaResponse := json.decode(response)?
@@ -24,6 +25,7 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
 }
 
 pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
+  validate_kind(config.kind)?
   body := request_body(request, true)
   response := provider_http.post_json(config.endpoint, config.api_key, body, config.timeout_ns)?
   response_view: str := response
@@ -36,6 +38,7 @@ pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) ->
 }
 
 pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.TokenCount, Error> {
+  validate_kind(config.kind)?
   if config.tokenize_endpoint.len() == 0 {
     return Ok(model.TokenCount { count: estimate_tokens(text), exact: false })
   }
@@ -44,6 +47,46 @@ pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.Tok
   response := provider_http.post_json(config.tokenize_endpoint, config.api_key, body, config.timeout_ns)?
   decoded: LlamaTokenResponse := json.decode(response)?
   return Ok(model.TokenCount { count: decoded.tokens.len(), exact: true })
+}
+
+pub fn prompt_text(request: model.GenerationRequest) -> string {
+  b := builder()
+  if request.system.len() > 0 {
+    b.write(request.system)
+    b.write("\n\n")
+  }
+  b.write(request.user)
+  return b.to_string()
+}
+
+pub fn count_prompt(config: model.ProviderConfig, request: model.GenerationRequest) -> model.TokenCount {
+  validate_kind(config.kind) else {
+    return model.TokenCount { count: -1, exact: false }
+  }
+  prompt := prompt_text(request)
+  if config.tokenize_endpoint.len() == 0 {
+    count := if prompt.len() == 0 { 0 } else { (prompt.len() + 3) / 4 }
+    return model.TokenCount { count: count, exact: false }
+  }
+  prompt_view: str := prompt
+  payload := LlamaTokenRequest { content: prompt_view }
+  body := json.encode(payload)
+  response := provider_http.post_json(config.tokenize_endpoint, config.api_key, body, config.timeout_ns) else {
+    return model.TokenCount { count: -1, exact: false }
+  }
+  response_view: str := response
+  arena {
+    decoded := json.doc(response_view) else {
+      return model.TokenCount { count: -1, exact: false }
+    }
+    return model.TokenCount { count: decoded.get("tokens").len(), exact: true }
+  }
+}
+
+fn validate_kind(kind: model.ProviderKind) -> Result<(), Error> = match kind {
+  CloudOpenAI => Err(Error.Invalid),
+  LocalOpenAI => Err(Error.Invalid),
+  LlamaCpp => Ok(()),
 }
 
 fn request_body(request: model.GenerationRequest, streaming: bool) -> string {
@@ -58,16 +101,6 @@ fn request_body(request: model.GenerationRequest, streaming: bool) -> string {
   return json.encode(payload).clone()
 }
 
-fn prompt_text(request: model.GenerationRequest) -> string {
-  b := builder()
-  if request.system.len() > 0 {
-    b.write(request.system)
-    b.write("\n\n")
-  }
-  b.write(request.user)
-  return b.to_string()
-}
-
 fn estimate_tokens(text: str) -> i64 {
   if text.len() == 0 {
     return 0
@@ -78,7 +111,7 @@ fn estimate_tokens(text: str) -> i64 {
 fn parse_stream(body: str) -> StreamParsed {
   mut output := builder()
   mut cursor := 0
-  mut saw_data := false
+  mut saw_content := false
   mut finished := false
   loop {
     if cursor >= body.len() || finished {
@@ -93,17 +126,21 @@ fn parse_stream(body: str) -> StreamParsed {
     if line.starts_with("data:") {
       data := line[5..line.len()].trim()
       if data == "[DONE]" {
-        saw_data = true
         finished = true
       } else {
         arena {
           event := json.doc(data) else {
             return StreamParsed { ok: false, text: "".clone() }
           }
+          match event.get("error").kind() {
+            Missing => {},
+            Null => {},
+            _ => { return StreamParsed { ok: false, text: "".clone() } },
+          }
           match event.get("content").as_str() {
             Some(content) => {
               output.write(content)
-              saw_data = true
+              saw_content = true
             },
             None => {},
           }
@@ -111,7 +148,7 @@ fn parse_stream(body: str) -> StreamParsed {
       }
     }
   }
-  if !saw_data || !finished {
+  if !saw_content || !finished {
     return StreamParsed { ok: false, text: "".clone() }
   }
   return StreamParsed { ok: true, text: output.to_string() }

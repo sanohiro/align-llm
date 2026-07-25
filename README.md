@@ -62,6 +62,8 @@ The provider demonstration accepts an explicit endpoint and writes the common re
 
 ```sh
 ./main --provider openai-local http://127.0.0.1:8080/v1/chat/completions model - "repair the range" result.json
+# Cloud keys are read from the named environment variable, never from argv.
+OPENAI_API_KEY=... ./main --provider cloud https://api.openai.com/v1/chat/completions model OPENAI_API_KEY "repair the range" result.json
 ```
 
 ## Plans
