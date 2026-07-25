@@ -5,7 +5,7 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline` at follow-up commit
-`1d6d49e`, with canonical
+`fbbb256`, with canonical
 baseline source commit `8a6030f`, immutable oracle commit `d9d7618`, and refreshed result commit
 `1d6d49e`. Resume at the PR head until it is merge-committed; after that, no implementation is
 active until the user asks to resume, with C1 as the next roadmap slice._
@@ -140,12 +140,13 @@ git diff --check
 
 ## Next steps
 
-1. Push `1d6d49e`, repeat PR #3 review for the procfs-race and sandbox-capability hardening,
+1. Push `fbbb256`, repeat PR #3 review for the procfs-race and sandbox-capability hardening,
    require GitHub CI to pass with full checkout history, and merge with a merge commit so the
-   canonical baseline source commit remains reachable. Ubuntu hosted bubblewrap needs its
-   supported temporary setuid-root launcher to initialize the isolated loopback; the workflow
-   enables that bit only for the gate and removes it in an EXIT trap. The gate itself stays a
-   normal-user process, and the runner explicitly drops all validator capabilities.
+   canonical baseline source commit remains reachable. Ubuntu hosted bubblewrap needs the CI
+   launcher to run with the host privilege required to initialize its isolated loopback; the
+   workflow runs the outer gate with `sudo`, while the runner explicitly drops all capabilities
+   before executing the validator and keeps `.git` read-only. This preserves the existing sized
+   tmpfs mounts, which bubblewrap disallows in setuid mode.
 2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
    provider boundary and common persisted result format.
 
