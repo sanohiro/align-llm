@@ -4,7 +4,8 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline`, with canonical
+_Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline` at follow-up commit
+`be179cd`, with canonical
 baseline source commit `002ffc4`, immutable oracle commit `790183d`, and refreshed result commit
 `bb5a56e`. Resume at the PR head until it is merge-committed; after that, no implementation is
 active until the user asks to resume, with C1 as the next roadmap slice._
@@ -139,10 +140,12 @@ git diff --check
 
 ## Next steps
 
-1. Push the final C0 follow-up, repeat PR #3 review after schema-validation, oracle-provenance,
-   symlink, and validation-mutation hardening,
-   require GitHub CI to pass with full checkout history, and merge with a merge commit so the
-   canonical baseline source commit remains reachable.
+1. Push `be179cd`, repeat PR #3 review for the CI-only bubblewrap capability setup, require
+   GitHub CI to pass with full checkout history, and merge with a merge commit so the canonical
+   baseline source commit remains reachable. The previous GitHub run failed before coding-v1
+   because Ubuntu hosted bubblewrap could not initialize its isolated loopback (`RTM_NEWADDR`);
+   the follow-up grants only `/usr/bin/bwrap` `CAP_NET_ADMIN` in the workflow and preserves
+   network namespace isolation.
 2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
    provider boundary and common persisted result format.
 
