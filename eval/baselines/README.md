@@ -35,3 +35,6 @@ the requested and resolved Python executable and version that ran the measured t
 The canonical record's SHA-256 is stored separately in
 `eval/expected/coding-v1-reference.sha256`; changing the record without updating this independent
 oracle is rejected by `make baseline-check`.
+
+Persisted task diagnostics are capped at 64 KiB per stream; oversized output retains a UTF-8-safe
+prefix and an explicit truncation marker.

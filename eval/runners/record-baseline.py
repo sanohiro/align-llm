@@ -19,6 +19,18 @@ class BaselineError(Exception):
 
 CANONICAL_BASELINE = Path("eval/baselines/coding-v1-reference.json")
 CANONICAL_DIGEST = Path("eval/expected/coding-v1-reference.sha256")
+MAX_DIAGNOSTIC_BYTES = 64 * 1024
+DIAGNOSTIC_TRUNCATION_MARKER = "\n[diagnostic truncated]"
+
+
+def bounded_diagnostic(value: str) -> str:
+    encoded = value.encode("utf-8", errors="replace")
+    if len(encoded) <= MAX_DIAGNOSTIC_BYTES:
+        return value
+    marker = DIAGNOSTIC_TRUNCATION_MARKER.encode("utf-8")
+    prefix_budget = max(0, MAX_DIAGNOSTIC_BYTES - len(marker))
+    prefix = encoded[:prefix_budget].decode("utf-8", errors="ignore")
+    return prefix + DIAGNOSTIC_TRUNCATION_MARKER
 
 
 def require_integer(value: Any, label: str) -> int:
@@ -367,8 +379,8 @@ def record_run(
                 "actual_code": actual_code,
                 "duration_ns": duration,
                 "time_to_passing_patch_ns": duration if verdict == "PASS" else None,
-                "stdout": task["stdout"],
-                "stderr": task["stderr"],
+                "stdout": bounded_diagnostic(task["stdout"]),
+                "stderr": bounded_diagnostic(task["stderr"]),
             }
         )
     if [task["task_id"] for task in task_rows] != expected_task_ids:

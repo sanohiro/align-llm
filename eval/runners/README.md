@@ -25,7 +25,8 @@ configuration cannot change the fixture revision and that a timed-out validation
 kills its descendant process tree, and removes its temporary checkout. Fixture setup rejects ignored
 inputs, validation command ownership includes cleaning descendants after normal completion, and
 pre-validation mutations are compared against the pinned bytes and modes before patch application.
-Non-UTF-8 diagnostics are retained with replacement decoding. Validation receives a minimal
+Non-UTF-8 diagnostics are retained with replacement decoding, and each persisted stdout or stderr
+stream is bounded to 64 KiB with a truncation marker. Validation receives a minimal
 environment without caller credentials, and all provenance-related Git operations disable
 replacement objects. The fixed coding corpus dispatches through an absolute system Python path so
 ambient `PATH` cannot select another interpreter.

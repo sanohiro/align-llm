@@ -593,6 +593,27 @@ def check_pristine_checkout(checkout: Path, source_revision: str) -> None:
         raise TaskError(f"validation changed Git index flags: {', '.join(flagged_paths)}")
     if actual_worktree_changes(checkout, source_revision):
         raise TaskError("validation changed the pinned fixture worktree")
+    untracked = git_output(
+        checkout,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+    ).splitlines()
+    if untracked:
+        raise TaskError(
+            f"validation created untracked files: {', '.join(sorted(untracked))}"
+        )
+    ignored = git_output(
+        checkout,
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+    ).splitlines()
+    if ignored:
+        raise TaskError(
+            f"validation created ignored files: {', '.join(sorted(ignored))}"
+        )
     if git_output(
         checkout,
         "diff",
