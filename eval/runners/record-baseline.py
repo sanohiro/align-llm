@@ -117,6 +117,7 @@ def artifact_manifest(
         project_root / ".align-revision",
         project_root / ".gitattributes",
         project_root / "eval" / "runners" / "record-baseline.py",
+        project_root / "scripts" / "check-align-revision",
     }
     for task_value in task_files:
         if not isinstance(task_value, str) or not task_value:

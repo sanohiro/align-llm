@@ -18,8 +18,10 @@ checkout cleanup is automatic. The CI gate also supplies a patch that changes a 
 and a passing patch that writes and stages a forbidden file during validation; both must be rejected
 against the original fixture commit after execution. Additional regressions prove ambient Git
 configuration cannot change the fixture revision and that a timed-out validation retains output,
-kills its process group, and removes its temporary checkout. Fixture setup rejects ignored inputs,
-and validation command ownership includes cleaning descendant processes after normal completion.
+kills its descendant process tree, and removes its temporary checkout. Fixture setup rejects ignored
+inputs, validation command ownership includes cleaning descendants after normal completion, and
+non-UTF-8 diagnostics are retained with replacement decoding. The fixed coding corpus dispatches
+through an absolute system Python path so ambient `PATH` cannot select another interpreter.
 
 Record a canonical baseline only from a clean commit:
 

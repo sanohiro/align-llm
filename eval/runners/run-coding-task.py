@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ctypes
 import json
 import os
 import signal
@@ -19,6 +20,25 @@ FIXTURE_GIT_ENV = {
     "GIT_COMMITTER_EMAIL": "fixture@align-llm.invalid",
     "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
 }
+PR_SET_CHILD_SUBREAPER = 36
+
+
+def enable_child_subreaper() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        return ctypes.CDLL(None, use_errno=True).prctl(
+            PR_SET_CHILD_SUBREAPER,
+            1,
+            0,
+            0,
+            0,
+        ) == 0
+    except (AttributeError, OSError):
+        return False
+
+
+CHILD_SUBREAPER_ENABLED = enable_child_subreaper()
 
 
 class TaskError(Exception):
@@ -29,11 +49,71 @@ class CommandTimedOut(TaskError):
     pass
 
 
-def kill_process_group(process: subprocess.Popen[str]) -> None:
+def descendant_process_ids(root_pids: set[int]) -> set[int]:
+    parents: dict[int, list[int]] = {}
+    if not sys.platform.startswith("linux"):
+        return set()
+    for status_path in Path("/proc").glob("[0-9]*/status"):
+        try:
+            pid = int(status_path.parent.name)
+            lines = status_path.read_text(encoding="utf-8").splitlines()
+            parent_line = next(line for line in lines if line.startswith("PPid:"))
+            parent = int(parent_line.split()[1])
+        except (OSError, StopIteration, ValueError):
+            continue
+        parents.setdefault(parent, []).append(pid)
+
+    descendants = set()
+    pending = list(root_pids)
+    while pending:
+        parent = pending.pop()
+        for child in parents.get(parent, []):
+            if child not in descendants:
+                descendants.add(child)
+                pending.append(child)
+    return descendants
+
+
+def kill_owned_processes(process: subprocess.Popen[bytes]) -> None:
+    roots = {process.pid}
+    if CHILD_SUBREAPER_ENABLED:
+        roots.add(os.getpid())
+    descendants = descendant_process_ids(roots)
+    descendants.discard(os.getpid())
+    for pid in descendants:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def decode_output(output: bytes | None) -> str:
+    return (output or b"").decode("utf-8", errors="replace")
+
+
+def communicate_after_kill(
+    process: subprocess.Popen[bytes],
+    timeout_error: subprocess.TimeoutExpired,
+) -> tuple[str, str]:
+    kill_owned_processes(process)
+    try:
+        stdout, stderr = process.communicate(timeout=1)
+    except subprocess.TimeoutExpired as cleanup_error:
+        stdout = cleanup_error.output or timeout_error.output
+        stderr = cleanup_error.stderr or timeout_error.stderr
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            kill_owned_processes(process)
+    return decode_output(stdout), decode_output(stderr)
 
 
 def load_task(path: Path) -> dict[str, Any]:
@@ -106,16 +186,14 @@ def run(
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
         )
     except OSError as error:
         raise TaskError(f"command failed to run: {display_name}: {error}") from error
     try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        kill_process_group(process)
-        stdout, stderr = process.communicate()
+        raw_stdout, raw_stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr = communicate_after_kill(process, error)
         details = [f"command timed out after {timeout_seconds} seconds: {display_name}"]
         if stdout:
             details.append(f"stdout:\n{stdout.rstrip()}")
@@ -123,10 +201,18 @@ def run(
             details.append(f"stderr:\n{stderr.rstrip()}")
         raise CommandTimedOut("\n".join(details))
     except BaseException:
-        kill_process_group(process)
-        process.communicate()
+        kill_owned_processes(process)
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
         raise
-    kill_process_group(process)
+    kill_owned_processes(process)
+    stdout = decode_output(raw_stdout)
+    stderr = decode_output(raw_stderr)
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 

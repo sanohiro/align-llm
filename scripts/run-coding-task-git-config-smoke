@@ -46,3 +46,19 @@ if ! grep -Fq "post-repair validation exit code: 0" "${output_file}"; then
 fi
 
 printf '%s\n' "coding task ambient Python settings: isolated"
+
+if [[ ! -x "${project_root}/main" ]]; then
+  make -C "${project_root}" build
+fi
+PATH="${tool_dir}:${PATH}" \
+PYTHONPATH="${python_path}" \
+  "${project_root}/main" --eval "${project_root}/eval/tasks/coding-v1.json" \
+  >"${output_file}" 2>&1
+
+if ! grep -Fq '"task_id":"python-inclusive-range","verdict":"PASS"' "${output_file}"; then
+  printf '%s\n' "coding corpus dispatch used ambient Python settings" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding corpus Python dispatch: absolute and isolated"

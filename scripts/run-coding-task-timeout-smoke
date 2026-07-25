@@ -22,7 +22,8 @@ from pathlib import Path
 task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 marker = sys.argv[3]
 child = (
-    "import pathlib,time; "
+    "import os,pathlib,time; "
+    "os.setsid(); "
     "time.sleep(2); "
     f"pathlib.Path({marker!r}).write_text('survived', encoding='utf-8')"
 )
@@ -109,6 +110,19 @@ if result.returncode != 0:
 time.sleep(2)
 if Path(marker).exists():
     raise RuntimeError("normal-return command left a descendant process running")
+
+binary_output = module.run(
+    [
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.buffer.write(bytes([255]))",
+    ],
+    project_root,
+    5,
+)
+if binary_output.returncode != 0 or binary_output.stdout != "\N{REPLACEMENT CHARACTER}":
+    raise RuntimeError("non-UTF-8 command output was not preserved with replacement decoding")
 PY
 
 printf '%s\n' "coding task normal completion: descendant process group cleaned"
+printf '%s\n' "coding task non-UTF-8 output: replacement diagnostic retained"
