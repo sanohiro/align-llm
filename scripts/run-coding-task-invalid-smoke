@@ -282,9 +282,11 @@ from pathlib import Path
 path = Path(sys.argv[1])
 task = json.loads(path.read_text(encoding="utf-8"))
 validation = (
-    "import pathlib; "
-    "[pathlib.Path(f'resource-{index}.bin').write_bytes(b'x' * (1024 * 1024)) "
-    "for index in range(65)]"
+    "import pathlib,time; "
+    "handles=[open(f'resource-{index}.bin','wb') for index in range(65)]; "
+    "[(handle.write(b'x' * (1024 * 1024)), handle.flush(), "
+    "pathlib.Path(handle.name).unlink()) for handle in handles]; "
+    "time.sleep(2)"
 )
 task["validation_argv"] = ["python3", "-c", validation]
 path.write_text(json.dumps(task), encoding="utf-8")
