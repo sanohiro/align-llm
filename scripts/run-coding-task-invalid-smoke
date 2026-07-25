@@ -6,6 +6,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner="${project_root}/eval/runners/run-coding-task.py"
 task="${project_root}/eval/tasks/coding-v1/python-inclusive-range/task.json"
 patch="${project_root}/eval/expected/python-inclusive-range-disallowed.patch"
+valid_patch="${project_root}/eval/baselines/patches/python-inclusive-range.patch"
 side_effect_patch="${project_root}/eval/expected/python-inclusive-range-side-effect.patch"
 ignored_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-ignored-side-effect.patch"
 hidden_side_effect_patch="${project_root}/eval/expected/python-inclusive-range-hidden-side-effect.patch"
@@ -18,8 +19,9 @@ ignored_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored.XXXXXX")"
 ignored_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored.XXXXXX.json")"
 ignored_side_effect_source="$(mktemp -d "${project_root}/eval/fixtures/.ignored-side-effect.XXXXXX")"
 ignored_side_effect_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.ignored-side-effect.XXXXXX.json")"
+unsafe_id_task="$(mktemp "${project_root}/eval/tasks/coding-v1/.unsafe-id.XXXXXX.json")"
 rm -f "${host_marker}"
-trap 'rm -f "${output_file}" "${host_marker}" "${sandbox_task}" "${ignored_task}" "${ignored_side_effect_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}"' EXIT
+trap 'rm -f "${output_file}" "${host_marker}" "${sandbox_task}" "${ignored_task}" "${ignored_side_effect_task}" "${unsafe_id_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}"' EXIT
 
 cd "${project_root}"
 if python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1; then
@@ -35,6 +37,24 @@ if ! grep -Fq "candidate changed disallowed files: tests/test_inclusive_range.py
 fi
 
 printf '%s\n' "coding task disallowed edit: rejected"
+
+python3 - "${task}" "${unsafe_id_task}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+task = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+task["id"] = "../unsafe/task-id-" + ("x" * 512)
+Path(sys.argv[2]).write_text(json.dumps(task), encoding="utf-8")
+PY
+
+if ! python3 "${runner}" "${unsafe_id_task}" "${valid_patch}" >"${output_file}" 2>&1; then
+  printf '%s\n' "coding task rejected a path-unsafe task id" >&2
+  cat "${output_file}" >&2
+  exit 1
+fi
+
+printf '%s\n' "coding task path-unsafe id: isolated"
 
 if python3 "${runner}" "${task}" "${side_effect_patch}" >"${output_file}" 2>&1; then
   printf '%s\n' "coding task unexpectedly accepted a validation side effect" >&2

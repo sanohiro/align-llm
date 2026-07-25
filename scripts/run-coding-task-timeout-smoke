@@ -93,7 +93,7 @@ if [[ -e "${marker}" ]]; then
   exit 1
 fi
 assert_no_process "${timeout_token}"
-if compgen -G "${temp_root}/align-llm-python-inclusive-range-timeout-smoke-*" >/dev/null; then
+if compgen -G "${temp_root}/align-llm-coding-task-*" >/dev/null; then
   printf '%s\n' "coding task timeout left a temporary checkout behind" >&2
   exit 1
 fi

@@ -1174,7 +1174,9 @@ def main() -> int:
         if not patch_path.is_file():
             raise TaskError(f"candidate patch is not a file: {patch_path}")
 
-        with tempfile.TemporaryDirectory(prefix=f"align-llm-{task['id']}-") as temporary:
+        # Keep descriptor-controlled text out of the filesystem prefix. Task IDs are labels,
+        # not path components, and may contain separators or be unusually long.
+        with tempfile.TemporaryDirectory(prefix="align-llm-coding-task-") as temporary:
             checkout = Path(temporary) / "repository"
             create_pinned_checkout(source, checkout, task["source_revision"])
             print(f"fixture revision: {task['source_revision']}")
