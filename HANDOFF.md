@@ -5,7 +5,7 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline`, with canonical
-baseline source commit `eddfe8e` and refreshed result commit `8443906`. Resume at the PR head until
+baseline source commit `7a1e42d` and refreshed result commit `60465cd`. Resume at the PR head until
 it is merge-committed; afterward resume from `main` and begin the C1 slice below._
 
 ## Current position
@@ -17,12 +17,13 @@ The repository has completed the C0 implementation and is ready to begin C1 afte
   separately supplied candidate, enforces allowed edits before and after validation, retains timeout
   diagnostics, kills its owned descendant process tree, and cleans its temporary checkout.
 - `eval/baselines/coding-v1-reference.json` is the first canonical machine-readable baseline. It was
-  recorded twice from clean commit `eddfe8e` after rebuilding `main` with the verified pinned Align
+  recorded twice from clean commit `7a1e42d` after rebuilding `main` with the verified pinned Align
   compiler. It binds the complete declared evaluation artifact set to both SHA-256 digests and the
-  source commit, and records the requested and resolved Python runtime used for measurement. This
-  deterministic reference validates scoring and timing, not model quality.
-- The first baseline passed 2/2 attempts at 208,249,882 ns and 211,481,464 ns, with median time to a
-  passing patch of 209,865,673 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
+  source commit, including the verifier itself, while enumerating source inputs explicitly so new
+  unrelated modules do not invalidate C0. It records the requested and resolved Python runtime used
+  for measurement. This deterministic reference validates scoring and timing, not model quality.
+- The first baseline passed 2/2 attempts at 232,321,771 ns and 227,093,993 ns, with median time to a
+  passing patch of 229,707,882 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
   timeout-bounded process execution in `src/verify.align`. This is enabling work shaped like the
   later C4 Verification Loop, not completion of C1. C1's provider abstraction, multiple provider
@@ -84,10 +85,10 @@ make ci
 # PASS — smoke-v1: 2 tasks, 2 PASS, 0 failed; identity and summary oracles match
 # PASS — an empty corpus is rejected
 # PASS — coding-v1: pinned fixture repair 1/1 PASS; disallowed edits and validation side effects
-# rejected, including an index-flag-hidden edit; ignored fixture inputs and validation side effects
-# rejected; ambient Git and Python settings and corpus interpreter dispatch isolated; timeout and
-# normal-completion process-tree cleanup with and without child-subreaper support, descendant
-# reaping, and temporary checkout cleanup verified; non-UTF-8 diagnostics retained
+# rejected, including index-flag- and stat-cache-hidden edits; ignored fixture inputs and validation
+# side effects rejected; ambient Git and Python settings and corpus interpreter dispatch isolated;
+# timeout and normal-completion process-tree cleanup with and without child-subreaper support,
+# descendant reaping, and temporary checkout cleanup verified; non-UTF-8 diagnostics retained
 # PASS — canonical baseline metadata, source commit, artifact digests, task identity, summaries,
 # corpus task order and expected codes, and strictly typed numeric aggregates verified; malformed
 # aggregates and verdicts rejected; measured Python runtime, pin checker provenance, and complete
@@ -111,7 +112,7 @@ git diff --check
 ## Next steps
 
 1. Finish PR #3 review follow-up, push it, require GitHub CI to pass with full checkout history, and
-   merge with a merge commit so canonical baseline source commit `eddfe8e` remains reachable.
+   merge with a merge commit so canonical baseline source commit `7a1e42d` remains reachable.
 2. Start one C1 branch for the explicit provider boundary and common persisted result format. Keep
    provider data and dispatch separate from verification and scoring.
 3. Add the smallest real HTTP provider slice and plaintext/TLS timeout fixtures. That is the first
