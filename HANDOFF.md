@@ -5,8 +5,8 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-25. Active work is PR #3 on `c0-real-task-baseline`, with canonical
-baseline source commit `8cd0c91`, immutable oracle commit `f575df6`, and refreshed result commit
-`c8197ba`. Resume at the PR head until it is merge-committed; after that, no implementation is
+baseline source commit `d0bc83f`, immutable oracle commit `5c27c39`, and refreshed result commit
+`ab531a1`. Resume at the PR head until it is merge-committed; after that, no implementation is
 active until the user asks to resume, with C1 as the next roadmap slice._
 
 ## Current position
@@ -29,16 +29,18 @@ The repository has completed the C0 implementation and is ready to begin C1 afte
   both system configuration and system attributes, global attributes are disabled with a fixed
   XDG configuration path, replacement objects are ignored, and NUL-delimited Git paths preserve
   whitespace and newlines. Post-repair validation mutations to even allowlisted files or the Git
-  index are rejected by comparing the candidate state before and after validation.
+  index are rejected by comparing the candidate state before and after validation. Fixture
+  symlinks are preserved during materialization, and the immutable baseline oracle binds the
+  source commit and artifact manifest as well as measured results.
 - `eval/baselines/coding-v1-reference.json` is the first canonical machine-readable baseline. It was
-  recorded twice from clean commit `8cd0c91` after rebuilding `main` with the verified pinned Align
+  recorded twice from clean commit `d0bc83f` after rebuilding `main` with the verified pinned Align
   compiler. It binds the complete declared evaluation artifact set to both SHA-256 digests and the
   source commit, including the verifier itself, while enumerating source inputs explicitly so new
   unrelated modules do not invalidate C0. It records the requested and resolved Python runtime used
-  for measurement and is checked against immutable oracle commit `f575df6`. This deterministic
+  for measurement and is checked against immutable oracle commit `5c27c39`. This deterministic
   reference validates scoring and timing, not model quality.
-- The refreshed baseline passed 2/2 attempts at 252,814,442 ns and 248,896,376 ns, with median time
-  to a passing patch of 250,855,409 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
+- The refreshed baseline passed 2/2 attempts at 251,747,596 ns and 246,415,779 ns, with median time
+  to a passing patch of 249,081,687 ns on the recorded WSL2/AMD Ryzen 9 5950X environment.
 - A verify/repair control-loop spike exists in `src/repair.align`, backed by captured and
   timeout-bounded process execution in `src/verify.align`. This is enabling work shaped like the
   later C4 Verification Loop, not completion of C1. C1's provider abstraction, multiple provider
@@ -111,8 +113,8 @@ make ci
 # mutations are rejected; validation `/tmp` and `/dev/shm` tmpfs, process/file/address-space,
 # aggregate RSS, deleted-open-FD,
 # adopted-descendant, aggregate file-count, and writable-worktree quotas are enforced with bounded
-# scans; NUL-delimited Git path handling and whitespace-path regression isolated; post-validation
-# allowlisted-file mutation rejected; non-UTF-8
+# scans; NUL-delimited Git path handling and whitespace-path regression isolated; symlink fixture
+# preservation and post-validation allowlisted-file mutation rejected; non-UTF-8
 # diagnostics retained and bounded before buffering; non-passing baseline stdout and stderr
 # diagnostics are persisted; concurrent baseline replacement-ref smoke runs are isolated
 # PASS — canonical baseline metadata, source commit, artifact digests, immutable oracle, task identity, summaries,
@@ -137,7 +139,8 @@ git diff --check
 
 ## Next steps
 
-1. Push the final C0 follow-up, repeat PR #3 review after validation-mutation hardening,
+1. Push the final C0 follow-up, repeat PR #3 review after oracle-provenance, symlink, and
+   validation-mutation hardening,
    require GitHub CI to pass with full checkout history, and merge with a merge commit so the
    canonical baseline source commit remains reachable.
 2. Stop after PR #3 is merge-committed. When work resumes, start one C1 branch for the explicit
