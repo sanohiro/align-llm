@@ -20,7 +20,8 @@ rejects chunked response bodies; that limitation is tracked in `docs/align-reque
 C2 now has a repository-index slice for tracked files, Align declarations/imports, lexical
 references, semantic resolution status, and test-path candidates, persisted as one revision-bound
 JSON document. It also provides deterministic path-based related-test selection with ranked
-candidates and persisted selection metadata.
+candidates and persisted selection metadata. C3 now adds a read-only unified-diff evaluator with
+touched-file and symbol records, deterministic risk signals, and recommended tests.
 
 ## Prerequisites
 
@@ -58,6 +59,7 @@ make build
 make provider-smoke
 make index-smoke
 make test-selection-smoke
+make patch-eval-smoke
 ```
 
 `make check` checks the complete import graph one module at a time. `make run` compiles and runs the bootstrap CLI. `make build` writes the `main` executable in the repository root; it is ignored by Git.
@@ -82,6 +84,12 @@ Select related tests for a changed tracked path:
 
 ```sh
 ./main --select-tests . src/main.align related-tests.json
+```
+
+Evaluate a patch without applying it:
+
+```sh
+./main --evaluate-patch . candidate.patch patch-evaluation.json
 ```
 
 ## Plans
