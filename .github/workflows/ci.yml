@@ -41,10 +41,16 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh 22
           sudo apt-get install -y llvm-22-dev clang-22 libclang-rt-22-dev \
-            libssl-dev zlib1g-dev libzstd-dev bubblewrap make perl
+            libssl-dev zlib1g-dev libzstd-dev bubblewrap libcap2-bin make perl
           echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
           echo "LLVM_CONFIG=/usr/lib/llvm-22/bin/llvm-config" >> "$GITHUB_ENV"
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare bubblewrap network namespace
+        shell: bash
+        run: |
+          sudo -n setcap cap_net_admin+ep "$(command -v bwrap)"
+          getcap "$(command -v bwrap)"
 
       - name: Check out pinned Align revision
         shell: bash
