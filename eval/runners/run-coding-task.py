@@ -25,7 +25,7 @@ FIXTURE_GIT_ENV = {
     "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
 }
 PR_SET_CHILD_SUBREAPER = 36
-BWRAP_EXECUTABLE = Path("/usr/bin/bwrap")
+BWRAP_EXECUTABLE = Path(os.environ.get("ALIGN_LLM_BWRAP", "/usr/bin/bwrap"))
 PRLIMIT_EXECUTABLE = Path("/usr/bin/prlimit")
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 COMMAND_OUTPUT_TRUNCATION_MARKER = b"\n[output truncated]"
@@ -458,6 +458,10 @@ def sandbox_probe_command() -> list[str]:
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
+        "--uid",
+        str(os.getuid()),
+        "--gid",
+        str(os.getgid()),
         "--cap-drop",
         "ALL",
         "--ro-bind",
@@ -568,6 +572,10 @@ def validation_sandbox_command(
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
+        "--uid",
+        str(os.getuid()),
+        "--gid",
+        str(os.getgid()),
         "--cap-drop",
         "ALL",
         "--ro-bind",
