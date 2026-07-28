@@ -7,8 +7,8 @@ Conversation history and per-machine memory are not project state.
 _Last updated: 2026-07-28. The repository-governance slice on
 `agent/autonomous-execution-policy` is prepared from merged main commit `5311bac`. Its substantive
 checkpoints are the initial design/autonomy policy at `d919cec` and the final SHA-bound review
-terminal-state policy, checklist, and pull request template at `cd529a1`; the worktree is expected
-to be clean. After this
+terminal-state policy, checklist, and pull request template introduced at `cd529a1` and corrected
+for refreshable final-state evidence at `ee68fdf`; the worktree is expected to be clean. After this
 slice merges, C0 through C5 remain complete and C6 design is the next roadmap work._
 
 ## Current position
