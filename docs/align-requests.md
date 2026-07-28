@@ -616,8 +616,9 @@ Required semantics:
   receive bound;
 - the client default applies to `get`, `post`, `request`, and every `get_many` worker. `get_many`
   snapshots the client cap once before launching workers, and every exchange in that invocation uses
-  the same effective cap. A batch keeps its existing deterministic lowest-index error rule; a limit
-  failure produces no response array and frees every successful sibling response handle;
+  the same effective cap. A batch keeps its existing deterministic lowest-index error rule regardless
+  of worker completion order or error kind; a limit failure produces no response array and frees
+  every successful sibling response handle;
 - a positive client or request cap is explicit even when its value is exactly `HTTP_MAX_BODY`; zero
   and unset are not explicit. Thus, whenever either scope has a positive cap, a payload-bearing
   response above the effective cap returns the limit-specific outcome, including when the only
@@ -642,20 +643,31 @@ Required semantics:
   - reject `101 Switching Protocols` as `Error.Invalid`, with no response handle and no pooled
     connection. Request 4 rejects `CONNECT` before a network side effect, so tunneled bytes never
     enter the bounded whole-body path;
-  - validate a chunk-size line and its extensions before comparing size. For a syntactically valid
-    hexadecimal magnitude, compare checked cumulative decoded bytes with the effective cap before
-    converting to target `usize`, allocating payload storage, or reading that chunk's payload. If
-    either scope has a positive cap, an excess returns the limit-specific outcome even when the
-    magnitude also exceeds target `usize` or `HTTP_MAX_BODY`; without a positive cap, target/global
-    excess remains `Error.Invalid`. Malformed size or extension syntax returns `Error.Invalid`
-    first. A valid size within the cap whose payload, delimiter, terminal chunk, or trailers are
-    truncated remains `Error.Invalid`;
+  - give the complete chunk-size line, including extensions and terminating CRLF, a named fixed
+    `HTTP_MAX_CHUNK_LINE` byte guard in Align's HTTP design. Missing termination within the guard or
+    any byte beyond the guard returns `Error.Invalid` before syntax, magnitude, or cap comparison.
+    For a complete line within the guard, validate size and extension syntax before comparing size.
+    Malformed syntax returns `Error.Invalid` first. For a syntactically valid hexadecimal magnitude,
+    compare checked cumulative decoded bytes with the effective cap before converting to target
+    `usize`, allocating payload storage, or requesting another transport read. If either scope has a
+    positive cap, an excess returns the limit-specific outcome even when the magnitude also exceeds
+    target `usize` or `HTTP_MAX_BODY`; without a positive cap, target/global excess remains
+    `Error.Invalid`. A valid size within the cap whose payload, delimiter, terminal chunk, or trailers
+    are truncated remains `Error.Invalid`;
+- a fixed-size transport read used to discover a response-head terminator or a chunk-size-line
+  terminator may already contain payload bytes past the boundary that makes an excess recognizable.
+  This is the only co-read exception: all such bytes remain in the single
+  `HTTP_CLIENT_READ_CHUNK` scratch allowance, are never copied into retained decoded payload after
+  the excess is known, and cause no subsequent transport read. The same rule applies to
+  Content-Length, close-delimited, and chunked framing;
 - for a payload-bearing response, reject a `Content-Length` above the selected cap without reserving
-  from that untrusted declared length or performing another body read. The fixed-size read that
-  discovers the header terminator may already contain body bytes; that bounded co-read is allowed;
-- stop a close-delimited body by reading at most the remaining payload allowance plus one probe
-  byte. A de-framed chunked response uses the validated size-line rule above and does not read a
-  payload probe after a declared cumulative excess;
+  from that untrusted declared length or performing another transport read after the excess becomes
+  recognizable;
+- for a close-delimited body, first consume any payload already present in the bounded
+  framing-discovery scratch. If that proves excess, fail without another read. Otherwise request at
+  most the remaining payload allowance plus one probe byte. A de-framed chunked response uses the
+  guarded, validated size-line rule above and does not request a payload probe after a declared
+  cumulative excess;
 - return a machine-distinguishable limit-exceeded outcome whose stable public discriminant is not
   shared with malformed framing, truncation, another I/O failure, or an HTTP status. A dedicated
   `Error` variant is viable. If Align uses `Error.Code`, it must reserve and document a stable code
@@ -665,7 +677,8 @@ Required semantics:
   accumulator, exclude the partially consumed TCP/TLS connection from the idle pool, and close it
   through the existing transport teardown. The client remains usable for a later request on a new
   clean connection;
-- apply identically to HTTP and HTTPS;
+- apply the cap selection, limit outcome, cleanup, post-decision no-read rule, and Align-owned
+  byte-storage ceiling identically to HTTP and HTTPS;
 - preserve the current default behavior only when neither scope has a positive cap. A positive
   `HTTP_MAX_BODY` value remains explicit and uses the limit-specific outcome on excess;
 - keep the response Move ownership and zero-copy body view unchanged for successful bounded
@@ -675,7 +688,7 @@ Required semantics:
 - use checked integer conversion at every native boundary.
 
 The receive buffer must not grow from the declared `Content-Length`. At every point in an exchange,
-the peak aggregate live response-byte storage must be no more than:
+the peak aggregate live Align HTTP-runtime-owned response-byte storage must be no more than:
 
 ```text
 selected body cap + HTTP_MAX_HEADER_BLOCK + HTTP_CLIENT_READ_CHUNK
@@ -683,11 +696,15 @@ selected body cap + HTTP_MAX_HEADER_BLOCK + HTTP_CLIENT_READ_CHUNK
 
 The current named constants are 262,144 and 32,768 bytes. Therefore the 262,144-byte consumer cap
 has a numeric ceiling of 557,056 bytes. Aggregate response-byte storage is the sum of the capacities
-of every simultaneously live byte buffer holding raw head/framing/trailer bytes, retained decoded
-payload, co-read/probe bytes, plus any fixed raw-read scratch capacity. This ceiling does not include
-allocator metadata, the response handle's fixed fields, or structurally bounded offset/decoder
-records. An implementation may reuse or combine byte regions, but may not give separate byte
-accumulators independent copies of any allowance.
+of every simultaneously live byte buffer that the Align HTTP runtime directly owns for raw
+head/framing/trailer bytes, retained decoded payload, co-read/probe bytes, or fixed raw-read scratch.
+This ceiling excludes allocator metadata, the response handle's fixed fields, structurally bounded
+offset/decoder records, kernel socket buffers, and opaque TLS-library record buffers behind `SSL*`.
+Those transport-owned buffers are outside Align's response allocator and runtime-owner
+instrumentation; they may not be sized from the peer-declared `Content-Length`, chunk magnitude,
+selected cap, or accumulated response length. Any plaintext or TLS staging buffer added or owned by
+the Align HTTP runtime is inside the formula. An implementation may reuse or combine byte regions,
+but may not give separate Align-owned byte accumulators independent copies of any allowance.
 
 Structural metadata is bounded independently. A final response's header/trailer offset records share
 the existing `HTTP_MAX_HEADERS` count; interim offset records are discarded before parsing the next
@@ -702,9 +719,11 @@ one allowance per parser component. `selected body cap` covers only retained dec
 `HTTP_MAX_HEADER_BLOCK` is the single cumulative wire-byte allowance for every interim and final
 response head and the single byte-storage allowance shared with retained raw chunk metadata or
 trailers; one reused `HTTP_CLIENT_READ_CHUNK` scratch buffer covers raw framing and payload input.
-Chunk-size lines, extensions, and trailers need their own syntax/length guards, but may not
-accumulate byte storage outside those terms. The one close-delimited probe byte is an observation in
-the reused scratch buffer and does not enlarge retained payload.
+The named `HTTP_MAX_CHUNK_LINE` guard applies before chunk syntax and cap comparison and consumes
+space only inside the shared framing/scratch allowances; trailers need their own syntax/length
+guards but may not accumulate byte storage outside those terms. Discovery co-read and the one
+close-delimited probe byte are observations in the reused scratch buffer and do not enlarge retained
+payload.
 
 This request does not require a general async or client-streaming API. A bounded whole-body response
 is sufficient for the first real consumer and composes with Request 4's future chunk de-framing.
@@ -733,16 +752,22 @@ An Align client configured with a 262,144-byte cap:
    `HTTP_MAX_HEADER_BLOCK`, and `101 Switching Protocols`, return `Error.Invalid`, no response
    handle, and a closed rather than pooled connection;
 6. accepts an exact-cap close-delimited response, and rejects a 262,145-byte close-delimited
-   response with the same limit-specific outcome after reading no more than one probe byte beyond
-   the cap;
-7. enforces the same behavior over HTTPS;
-8. uses runtime-owner instrumentation to prove that peak aggregate live response-byte storage—the
-   sum of every simultaneously live byte-buffer capacity plus fixed raw-read scratch capacity—is at
-   most 557,056 bytes, and that no byte allocation request or capacity is derived from the oversized
-   declared length. A separate assertion proves response header/trailer offsets never exceed
-   `HTTP_MAX_HEADERS`, only one interim/final offset table is live, decoder structural state is
-   constant-size, and no structural capacity depends on body length, declared length, chunk count,
-   chunk-size magnitude, or trailer bytes;
+   response with the same limit-specific outcome. Same-read and split-read cases separately prove
+   that framing-discovery co-read stays in the one scratch buffer, no co-read excess becomes retained
+   payload, no transport read follows a recognizable excess, and otherwise at most one requested
+   probe byte crosses the cap;
+7. enforces the same cap, outcome, cleanup, post-decision-read, and Align-owned storage behavior over
+   HTTPS. The verified-TLS runtime case proves that its Align-owned application read/staging buffers
+   are counted by the same instrumentation, while opaque libssl and kernel transport buffers are
+   excluded and receive no capacity derived from response framing or length;
+8. uses runtime-owner instrumentation to prove that peak aggregate live Align HTTP-runtime-owned
+   response-byte storage—the sum of every simultaneously live Align-owned response-byte-buffer
+   capacity plus fixed raw-read scratch capacity—is at most 557,056 bytes, and that no byte
+   allocation request or capacity is derived from the oversized declared length. A separate
+   assertion proves response header/trailer offsets never exceed `HTTP_MAX_HEADERS`, only one
+   interim/final offset table is live, decoder structural state is constant-size, and no structural
+   capacity depends on body length, declared length, chunk count, chunk-size magnitude, or trailer
+   bytes;
 9. proves an unconfigured or client-zero effective cap remains exactly `HTTP_MAX_BODY` in a
    runtime-owner unit test, accepts a 262,145-byte response without a smaller cap, and returns the
    existing `Error.Invalid` for a syntactically valid Content-Length above `HTTP_MAX_BODY`;
@@ -756,23 +781,31 @@ An Align client configured with a 262,144-byte cap:
     valid Content-Length of `HTTP_MAX_BODY + 1`, while zero/unset fixtures retain `Error.Invalid`;
 11. configures only the client-level 262,144-byte cap and calls `get_many` at concurrency greater
     than one with successful small siblings and one 262,145-byte response. The batch returns the
-    limit-specific outcome under the existing lowest-index rule, produces no response array, frees
-    every successful sibling response handle, and closes the failed exchange. An exact-cap batch
-    succeeds, and runtime-owner instrumentation proves every worker used the one cap snapshot and
-    each exchange observed the byte/structural bounds independently;
+    limit-specific outcome, produces no response array, frees every successful sibling response
+    handle, and closes the failed exchange. Two additional multi-error batches invert completion
+    order: a lower-index delayed malformed-framing error beats a higher-index early limit error, and
+    a lower-index delayed limit error beats a higher-index early malformed-framing error. Both
+    produce no array, finish and free successful siblings, and tear down each failed exchange. An
+    exact-cap batch succeeds, and runtime-owner instrumentation proves every worker used the one cap
+    snapshot and each exchange observed the byte/structural bounds independently;
 12. proves a limit failure returns no response handle, frees its accumulator, and closes rather than
     pools the partial connection. Plaintext and verified-TLS sequential fixtures send an oversized
     response and then a valid small request through the same client, and prove the second request
     uses a new clean connection;
 13. after Request 4 ships, accepts an exact-cap de-framed chunked response, including its terminating
     chunk and trailers, and rejects a 262,145-byte decoded payload with the same limit-specific
-    outcome immediately after its valid size line, before payload allocation/read. A syntactically
-    valid oversized hexadecimal magnitude above target `usize`/`HTTP_MAX_BODY` has the same explicit-
-    cap outcome; a malformed size/extension and a truncated within-cap chunk remain `Error.Invalid`.
-    A many-tiny-chunks fixture proves decoded payload, raw framing/metadata/trailer byte buffers, and
-    scratch do not exceed the combined 557,056-byte ceiling, while structural state stays constant
-    and independent of chunk count. Plaintext and verified-TLS sequential fixtures prove an exact-cap
-    terminal chunk/trailer response remains pool-eligible and the next request reuses the connection.
+    outcome immediately after its complete, within-guard valid size line, before another transport
+    read or payload allocation. Any payload already co-read with that line remains only in scratch
+    and is not retained. A syntactically valid oversized hexadecimal magnitude above target
+    `usize`/`HTTP_MAX_BODY` but within `HTTP_MAX_CHUNK_LINE` has the same explicit-cap outcome; a
+    malformed size/extension, a missing line terminator at the guard, a terminated line one byte over
+    the guard, and a truncated within-cap chunk return `Error.Invalid`. Boundary fixtures prove a
+    complete valid line at the guard is parsed before cap comparison, while guard excess wins even
+    when a numeric prefix would exceed the cap. A many-tiny-chunks fixture proves decoded payload,
+    raw framing/metadata/trailer byte buffers, and scratch do not exceed the combined 557,056-byte
+    Align-owned ceiling, while structural state stays constant and independent of chunk count.
+    Plaintext and verified-TLS sequential fixtures prove an exact-cap terminal chunk/trailer response
+    remains pool-eligible and the next request reuses the connection.
     The request that reaches `ALIGN_MERGED` second owns these cases and items 4–5 before it may advance
     to `ALIGN_LLM_VERIFIED`; its lifecycle record names both shipped commits and the combined
     verification. The earlier request need not be reopened. For a joint Align delivery, Request 5's
