@@ -521,16 +521,23 @@ partially consumed response remain ineligible and close.
 The trailer section, from the first byte after the terminal zero-chunk line through the empty line
 that terminates trailers, has a named fixed `HTTP_MAX_TRAILER_BLOCK` cumulative wire-byte guard in
 Align's HTTP design. Its current value is `HTTP_MAX_HEADER_BLOCK`; it is a separate parser counter
-but reuses the existing header/framing byte storage rather than adding another allocation allowance.
-A complete, syntactically valid trailer block whose terminating CRLF ends exactly at the guard is
-accepted. If the terminator is not recognizable within the guard, or recognizing it would require
-one byte beyond the guard, return `Error.Invalid`, perform no later transport read, expose no
-response, and close rather than pool the connection. Guard excess is decided before parsing syntax
-or field-count state that depends on bytes beyond the guard. For a complete block within the guard,
-validate trailer syntax and the shared `HTTP_MAX_HEADERS` count normally. A decoded-body cap excess
-recognized before the terminal chunk retains the limit-specific outcome and does not read trailers;
-after the terminal chunk, trailer guard, syntax, count, or truncation failures are malformed
-framing and return `Error.Invalid`.
+but does not add another allocation allowance. Trailer fields are framing metadata in this
+whole-body surface: validate them incrementally in the reused read scratch, but do not retain their
+raw bytes or offsets, merge them into the response headers, or expose them through the existing
+header accessor. Final response headers remain retained and byte-for-byte discoverable. Trailer
+field count consumes the unused portion of the same `HTTP_MAX_HEADERS` budget as the final headers,
+using only a scalar counter. A complete, syntactically valid trailer block whose terminating CRLF
+ends exactly at the guard is accepted. If the terminator is not recognizable within the guard, or
+recognizing it would require one byte beyond the guard, return `Error.Invalid`, perform no later
+transport read, expose no response, and close rather than pool the connection. Guard excess is
+decided before parsing syntax or field-count state that depends on bytes beyond the guard. For a
+complete block within the guard, validate trailer syntax and the shared field-count budget normally.
+A read after the terminal chunk requests at most the trailer guard's remaining wire bytes; trailer
+discovery has no over-guard probe or co-read exception. Trailer bytes already co-read into the reused
+scratch while parsing the terminal chunk count against the guard before any later read. A
+decoded-body cap excess recognized before the terminal chunk retains the limit-specific outcome and
+does not read trailers; after the terminal chunk, trailer guard, syntax, count, or truncation
+failures are malformed framing and return `Error.Invalid`.
 
 ### Acceptance / gate
 
@@ -554,10 +561,13 @@ return `Error.Invalid`, no response handle, and close the connection. A `CONNECT
 Trailer boundary fixtures accept a syntactically valid block whose terminating empty line ends
 exactly at `HTTP_MAX_TRAILER_BLOCK`, and reject a terminator one byte beyond the guard, a
 continuously arriving unterminated trailer line, malformed syntax within the guard, and a trailer
-count that exceeds the shared `HTTP_MAX_HEADERS` count. Plaintext and verified-TLS cases prove the
+count that exceeds the final headers' remaining `HTTP_MAX_HEADERS` budget. A direct fixture gives a
+final header and trailer the same name with distinctive values and proves header lookup returns only
+the original final-header value. Plaintext and verified-TLS cases prove the
 unterminated/over-guard paths stop after the first recognizable excess, retain no response, and
-close without another read; runtime-owner instrumentation proves the separate wire counter adds no
-byte-storage allowance.
+close without another read; runtime-owner instrumentation proves no trailer byte or offset survives
+parsing, every post-terminal-chunk read was clamped to the remaining trailer guard, and the separate
+wire counter adds no byte-storage allowance.
 
 Plaintext and verified-TLS sequential fixtures return a complete chunked response and then a second
 small response over the same connection. The bodyless matrix does the same for `HEAD`, `204`, and
@@ -699,15 +709,21 @@ Required semantics:
     are truncated remains `Error.Invalid`;
   - after a terminal zero-chunk line, count every trailer-section wire byte through the terminating
     empty line against a named fixed `HTTP_MAX_TRAILER_BLOCK`, whose current value is
-    `HTTP_MAX_HEADER_BLOCK`. This is a separate parser counter that reuses the single
-    header/framing byte-storage allowance. Accept a complete, valid block ending exactly at the
+    `HTTP_MAX_HEADER_BLOCK`. This is a separate scalar parser counter and does not add a storage
+    allowance. Validate trailer fields incrementally in the reused read scratch, but retain no raw
+    trailer bytes or offsets, do not merge them into the final response headers, and do not expose
+    them through existing header lookup. Trailer field count consumes the unused portion of the
+    final headers' `HTTP_MAX_HEADERS` budget. Accept a complete, valid block ending exactly at the
     guard. If its terminator is not recognizable within the guard or needs one byte beyond it,
     return `Error.Invalid` without another read, response handle, or pooled connection. Guard excess
     is decided before syntax or count state that requires an over-guard byte; a complete block
-    within the guard then undergoes normal trailer syntax and shared-`HTTP_MAX_HEADERS` validation.
-    A decoded-body excess recognized before the terminal chunk keeps the limit-specific outcome and
-    performs no trailer read; after that chunk, trailer guard, syntax, count, and truncation failures
-    are `Error.Invalid`;
+    within the guard then undergoes normal trailer syntax and shared field-count validation. A
+    post-terminal-chunk transport read requests at most the remaining trailer guard; there is no
+    over-guard probe or trailer-discovery co-read exception. Trailer bytes already co-read into the
+    reused scratch while parsing the terminal chunk count before any later read. A decoded-body
+    excess recognized before the terminal chunk keeps the limit-specific outcome and performs no
+    trailer read; after that chunk, trailer guard, syntax, count, and truncation failures are
+    `Error.Invalid`;
 - a fixed-size transport read used to discover a response-head terminator or a chunk-size-line
   terminator may already contain payload bytes past the boundary that makes an excess recognizable.
   This is the only co-read exception: all such bytes remain in the single
@@ -760,25 +776,28 @@ selected cap, or accumulated response length. Any plaintext or TLS staging buffe
 the Align HTTP runtime is inside the formula. An implementation may reuse or combine byte regions,
 but may not give separate Align-owned byte accumulators independent copies of any allowance.
 
-Structural metadata is bounded independently. A final response's header/trailer offset records share
-the existing `HTTP_MAX_HEADERS` count; interim offset records are discarded before parsing the next
-head, and at most one interim or final table is live during framing. Chunk decoder state is constant
-size and may not grow with body length, declared `Content-Length`, chunk count, chunk-size magnitude,
-or trailer bytes. Any implementation that needs another structural table must give it a named fixed
-count/byte cap in Align's HTTP design and include it in the runtime-owner structural-metadata test;
-it is not permitted to hide response bytes in the structural exclusion.
+Structural metadata is bounded independently. Only the final response's header offset records
+survive parsing. Interim offset records are discarded before parsing the next head, and at most one
+interim or final table is live during framing. Trailer fields have no offsets or retained raw bytes;
+a scalar count consumes the unused portion of the final headers' existing `HTTP_MAX_HEADERS` budget.
+Chunk decoder state is constant size and may not grow with body length, declared `Content-Length`,
+chunk count, chunk-size magnitude, or trailer bytes. Any implementation that needs another
+structural table must give it a named fixed count/byte cap in Align's HTTP design and include it in
+the runtime-owner structural-metadata test; it is not permitted to hide response bytes in the
+structural exclusion.
 
 When Request 4 adds chunk de-framing, the formula remains a combined receive-buffer ceiling, not
 one allowance per parser component. `selected body cap` covers only retained decoded payload;
 `HTTP_MAX_HEADER_BLOCK` is the single cumulative wire-byte allowance for every interim and final
-response head and the single byte-storage allowance shared with retained raw chunk metadata or
-trailers; one reused `HTTP_CLIENT_READ_CHUNK` scratch buffer covers raw framing and payload input.
+response head and the single byte-storage allowance shared with retained raw chunk metadata; one
+reused `HTTP_CLIENT_READ_CHUNK` scratch buffer covers raw framing, transient trailer bytes, and
+payload input.
 The named `HTTP_MAX_CHUNK_LINE` guard applies before chunk syntax and cap comparison and consumes
 space only inside the shared framing/scratch allowances. The named `HTTP_MAX_TRAILER_BLOCK` counter
-separately bounds trailer wire progress at the same fixed value as `HTTP_MAX_HEADER_BLOCK`, but
-reuses that byte-storage allowance and may not accumulate storage outside these terms. Discovery
-co-read and the one close-delimited probe byte are observations in the reused scratch buffer and do
-not enlarge retained payload.
+separately bounds trailer wire progress at the same fixed value as `HTTP_MAX_HEADER_BLOCK`; trailer
+bytes are validated and discarded incrementally in the reused scratch and never consume retained
+header/framing storage. Discovery co-read and the one close-delimited probe byte are observations in
+the reused scratch buffer and do not enlarge retained payload.
 
 This request does not require a general async or client-streaming API. A bounded whole-body response
 is sufficient for the first real consumer and composes with Request 4's future chunk de-framing.
@@ -838,10 +857,10 @@ An Align client configured with a 262,144-byte cap:
    response-byte storage—the sum of every simultaneously live Align-owned response-byte-buffer
    capacity plus fixed raw-read scratch capacity—is at most 557,056 bytes, and that no byte
    allocation request or capacity is derived from the oversized declared length. A separate
-   assertion proves response header/trailer offsets never exceed `HTTP_MAX_HEADERS`, only one
-   interim/final offset table is live, decoder structural state is constant-size, and no structural
-   capacity depends on body length, declared length, chunk count, chunk-size magnitude, or trailer
-   bytes;
+   assertion proves only final-header offsets survive, trailer fields consume the remaining
+   `HTTP_MAX_HEADERS` count without offsets or retained bytes, only one interim/final offset table is
+   live, decoder structural state is constant-size, and no structural capacity depends on body
+   length, declared length, chunk count, chunk-size magnitude, or trailer bytes;
 9. proves an unconfigured or client-zero effective cap remains exactly `HTTP_MAX_BODY` in a
    runtime-owner unit test, accepts a 262,145-byte response without a smaller cap, and returns the
    existing `Error.Invalid` for a syntactically valid Content-Length above `HTTP_MAX_BODY`;
@@ -883,10 +902,16 @@ An Align client configured with a 262,144-byte cap:
     Align-owned ceiling, while structural state stays constant and independent of chunk count.
     Trailer fixtures accept a valid block whose terminating empty line ends exactly at
     `HTTP_MAX_TRAILER_BLOCK`, and reject a terminator one byte beyond the guard, a continuously
-    arriving unterminated trailer line, malformed syntax within the guard, and a shared
-    `HTTP_MAX_HEADERS` count excess. Plaintext and verified-TLS over-guard cases prove
-    `Error.Invalid`, no response, no pooling, no read after the recognizable excess, and no byte
-    allocation beyond the combined ceiling. A decoded-body limit recognized before the terminal
+    arriving unterminated trailer line, malformed syntax within the guard, and exhaustion of the
+    final headers' remaining `HTTP_MAX_HEADERS` budget. A same-name final-header/trailer fixture
+    proves header lookup returns only the original final-header value. Plaintext and verified-TLS
+    over-guard cases prove `Error.Invalid`, no response, no pooling, no read after the recognizable
+    excess, every post-terminal-chunk read is clamped to the remaining trailer guard, and no byte
+    allocation exceeds the combined ceiling. Runtime-owner instrumentation proves no trailer raw
+    bytes or offsets survive incremental validation. A combined boundary case retains a final head
+    ending exactly at `HTTP_MAX_HEADER_BLOCK`, an exact-cap decoded body, and an exact-guard trailer
+    streamed through the reused scratch, and proves peak storage is exactly the combined ceiling
+    rather than head plus trailer wire volume. A decoded-body limit recognized before the terminal
     chunk remains the limit-specific outcome and does not read any trailer byte.
     Plaintext and verified-TLS sequential fixtures prove an exact-cap terminal chunk/trailer response
     remains pool-eligible and the next request reuses the connection.
