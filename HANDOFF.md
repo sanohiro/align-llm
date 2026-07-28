@@ -6,9 +6,9 @@ Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-28. The active enabling slice is
 `agent/align-bounded-http-response-request`, based on merged governance commit `65e19b7`. It
-registers Align Request 5 at substantive commits `a12b7d5` and `e46ac58`, discovered during C6
-design review. No C6 implementation has started. On `agent/c6-prompt-context-design`, the primary
-worktree intentionally has modified `HANDOFF.md` and untracked
+registers Align Request 5 at substantive commits `a12b7d5`, `e46ac58`, and `5d8965b`, discovered
+during C6 design review. No C6 implementation has started. On `agent/c6-prompt-context-design`,
+the primary worktree intentionally has modified `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md`; both belong to the C6 design draft and must not be
 discarded._
 
