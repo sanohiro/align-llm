@@ -26,9 +26,10 @@ Use `N/A` with a reason when the change makes no performance claim.
 
 - Ownership, error-handling, or compatibility risks:
 
-### Preflight review envelope
+### Preflight or refreshed preflight review envelope
 
 - Record or link:
+- Kind (`pre-open` or `preflight-equivalent refresh`):
 - Head SHA:
 - Base-tip SHA:
 - Merge-base SHA:

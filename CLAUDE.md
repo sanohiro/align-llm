@@ -316,15 +316,19 @@ synthetic-merge SHA, check name, status, and external record.
   delta and final state, and publish fresh attestations for the new SHA set. Repeat the full
   high-effort adversarial review when behavior, design, an authoritative specification, or
   repository governance changes materially.
+- If the head SHA or base-tip SHA changes after the pull request opens, perform a
+  preflight-equivalent refresh against the full final diff and record it as the refreshed preflight
+  envelope. This refresh replaces the stale pre-open envelope for merge readiness; it does not
+  replace either required post-open review envelope.
 
 A pull request is merge-ready only when its current head SHA, base-tip SHA, and merge-base SHA match
-the latest preflight envelope and every required post-open review envelope. For a non-trivial pull
-request, one host-native envelope and one separate independent-adversarial envelope must each be
-`CLEAN` for that SHA set. Every finding from every review has a recorded disposition; every applied
-finding that changes content creates a new SHA set and therefore requires new envelopes. All
-required checks separately pass for the current head and base-tip integration, no valid finding
-remains, and no later content push exists. A base-tip change makes both review and check evidence
-stale.
+the original preflight envelope or, when required, its latest preflight-equivalent refresh, plus
+every required post-open review envelope. For a non-trivial pull request, one host-native envelope
+and one separate independent-adversarial envelope must each be `CLEAN` for that SHA set. Every
+finding from every review has a recorded disposition; every applied finding that changes content
+creates a new SHA set and therefore requires new envelopes. All required checks separately pass for
+the current head and base-tip integration, no valid finding remains, and no later content push
+exists. A base-tip change makes both review and check evidence stale.
 
 ### Claude Code review adapter
 

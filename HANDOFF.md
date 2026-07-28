@@ -50,8 +50,7 @@ a passing patch.
 Verified on 2026-07-28:
 
 ```text
-git diff --check                 PASS
-terminal-state design review    APPROVED with required clarifications; incorporated through cd529a1
+git diff --check    PASS
 ```
 
 Pull request review and check state is intentionally external GitHub metadata bound to exact SHAs,
