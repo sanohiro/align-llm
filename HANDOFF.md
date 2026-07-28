@@ -7,8 +7,10 @@ Conversation history and per-machine memory are not project state.
 _Last updated: 2026-07-28. The active enabling slice is
 `agent/align-bounded-http-response-request`, based on merged governance commit `65e19b7`. It
 registers Align Request 5 at substantive commits `a12b7d5` and `e46ac58`, discovered during C6
-design review. No C6 implementation has started. The primary worktree intentionally retains the
-uncommitted C6 design draft on `agent/c6-prompt-context-design`; do not discard it._
+design review. No C6 implementation has started. On `agent/c6-prompt-context-design`, the primary
+worktree intentionally has modified `HANDOFF.md` and untracked
+`docs/specs/c6-prompt-context-optimizer.md`; both belong to the C6 design draft and must not be
+discarded._
 
 ## Current position
 
@@ -35,8 +37,11 @@ deterministic evaluator work remain independent.
 ## Next steps
 
 1. Review and merge the Request 5 registration as its own enabling pull request.
-2. Refresh `agent/c6-prompt-context-design` from merged main, finish the frozen-design review loop,
-   and merge the design only after current SHA-bound preflight and post-open reviews.
+2. In the primary worktree, commit its modified `HANDOFF.md` and untracked
+   `docs/specs/c6-prompt-context-optimizer.md` together as an initial C6 design checkpoint before
+   integrating merged main. Then merge `origin/main`, resolve `HANDOFF.md` by preserving both the
+   merged Request 5 lifecycle and the C6 design state, and finish the frozen-design review loop.
+   Merge the design only after current SHA-bound preflight and post-open reviews.
 3. Implement independent C6 slices in reviewed order. Do not implement the provider-proposal slice
    against a hypothetical Align API; resume it only through the request lifecycle.
 

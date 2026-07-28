@@ -519,7 +519,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6 provider-proposal slice and real-provider prompt-optimizer gate
 Independent work that may continue: C6 artifacts, renderer, pure scorer, activation lifecycle, and deterministic A/B evaluator
-Resume condition: after ALIGN_MERGED, a separate bounded-response adoption slice pins the shipped Align release, integrates the cap at provider_http, and passes the oversized-response fixture and make ci; only then does the C6 provider-proposal slice resume
+Resume condition: after ALIGN_MERGED, a separate bounded-response adoption slice pins the shipped Align release, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and make ci; only then does the C6 provider-proposal slice resume
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -551,35 +551,52 @@ ceiling is much larger than a provider operation's declared response contract.
 
 ### Requested capability
 
-Add the smallest idiom-consistent client control that limits response-body bytes while the body is
-being received. The final surface is Align's design decision; a request- or client-level setter
-would fit the existing timeout builder:
+Add idiom-consistent client-default and request-level controls that limit response-body bytes while
+the body is being received. Both scopes are required so one client can carry a safe default while
+selected operations narrow it. The exact method spelling remains Align's design decision; the
+existing timeout builder suggests:
 
 ```text
 request.max_response_body_bytes(limit: i64)
-// or client.max_response_body_bytes(limit: i64)
+client.max_response_body_bytes(limit: i64)
 ```
 
 Required semantics:
 
+- a positive selected cap must be in `1..=HTTP_MAX_BODY`. A larger positive value, a negative
+  value, or a value not representable as target `usize` is a programmer error that aborts before
+  builder state changes. The selected cap can only narrow the existing global ceiling;
+- an unset or zero client cap has effective value `HTTP_MAX_BODY`. An unset or zero request cap
+  inherits that client effective value. A positive request cap has effective value
+  `min(client effective cap, request cap)`, so one request can narrow but never widen its client's
+  receive bound;
+- validate `Content-Length` syntax and framing conflicts first. A non-decimal value, conflicting
+  duplicate lengths, or a `Transfer-Encoding` conflict remains malformed `Error.Invalid`. For a
+  syntactically valid decimal magnitude, an explicit selected-cap excess returns the limit-specific
+  outcome even when the magnitude also exceeds target `usize` or `HTTP_MAX_BODY`; without an
+  explicit cap, target overflow or `HTTP_MAX_BODY` excess keeps the existing `Error.Invalid`;
 - after the header is parsed, reject a `Content-Length` above the selected cap without reserving
   from that untrusted declared length or performing another body read. The fixed-size read that
   discovers the header terminator may already contain body bytes; that bounded co-read is allowed;
-- stop a close-delimited or future de-framed chunked body by reading at most the remaining allowance
-  plus one probe byte once framing is known;
+- stop a close-delimited body by reading at most the remaining payload allowance plus one probe
+  byte. For future chunk de-framing, the same rule applies to decoded payload bytes, not raw
+  framing bytes;
 - return a machine-distinguishable limit-exceeded outcome whose stable public discriminant is not
-  shared with malformed framing, truncation, or another I/O failure. A dedicated `Error` variant or
-  a documented `Error.Code` value are both viable; the final taxonomy remains Align's design
-  decision;
+  shared with malformed framing, truncation, another I/O failure, or an HTTP status. A dedicated
+  `Error` variant is viable. If Align uses `Error.Code`, it must reserve and document a stable code
+  outside `100..=599` and outside every raw OS error code on all supported targets; the final
+  taxonomy and exact reserved value remain Align's design decision;
+- on every limit-specific failure, return no response handle or body, free the response
+  accumulator, exclude the partially consumed TCP/TLS connection from the idle pool, and close it
+  through the existing transport teardown. The client remains usable for a later request on a new
+  clean connection;
 - apply identically to HTTP and HTTPS;
 - preserve the current default behavior when no explicit smaller cap is selected;
 - keep the response Move ownership and zero-copy body view unchanged for successful bounded
   responses;
 - follow the existing HTTP timeout-setter convention for zero: a request-level zero clears the
   override and inherits its client, while a client-level zero restores the existing default;
-- reject a negative or target-`usize`-unrepresentable limit as a programmer error before changing
-  builder state, matching the existing abort-on-invalid builder setters and using checked integer
-  conversion.
+- use checked integer conversion at every native boundary.
 
 The receive buffer must not grow from the declared `Content-Length`. Its largest requested
 response-byte accumulation allocation must be no more than:
@@ -593,6 +610,14 @@ has a numeric ceiling of 557,056 bytes for that allocation request. This ceiling
 worst-case fixed header span and header-discovery co-read; it does not attempt to specify allocator
 metadata or unrelated fixed client state.
 
+When Request 4 adds chunk de-framing, the formula remains a combined receive-buffer ceiling, not
+one allowance per parser component. `selected body cap` covers only retained decoded payload;
+`HTTP_MAX_HEADER_BLOCK` is the single combined allowance for the response head and any retained
+chunk metadata or trailers; one reused `HTTP_CLIENT_READ_CHUNK` scratch buffer covers raw framing
+and payload input. Chunk-size lines, extensions, and trailers need their own syntax/length guards,
+but may not accumulate outside those terms. The one probe byte is a decoded-payload observation in
+the reused scratch buffer and does not enlarge the retained payload.
+
 This request does not require a general async or client-streaming API. A bounded whole-body response
 is sufficient for the first real consumer and composes with Request 4's future chunk de-framing.
 
@@ -603,30 +628,47 @@ An Align client configured with a 262,144-byte cap:
 1. accepts an exact-cap Content-Length response and exposes the complete body;
 2. rejects a Content-Length of 262,145 with the limit-specific outcome immediately after parsing
    the header, without a declared-length reservation or a subsequent body read;
-3. accepts an exact-cap close-delimited response, and rejects a 262,145-byte close-delimited
+3. returns the limit-specific outcome for a syntactically valid decimal `Content-Length` magnitude
+   above the selected cap even when it is above target `usize` or `HTTP_MAX_BODY`, while malformed
+   or conflicting framing returns `Error.Invalid` first. The same oversized magnitude on an
+   unconfigured client retains the existing `Error.Invalid`;
+4. accepts an exact-cap close-delimited response, and rejects a 262,145-byte close-delimited
    response with the same limit-specific outcome after reading no more than one probe byte beyond
    the cap;
-4. enforces the same behavior over HTTPS;
-5. uses an instrumented regression to prove that the largest response-byte accumulation allocation
+5. enforces the same behavior over HTTPS;
+6. uses an instrumented regression to prove that the largest response-byte accumulation allocation
    request is at most 557,056 bytes and that no allocation request is derived from the oversized
    declared length;
-6. leaves an unconfigured client's current behavior unchanged, demonstrated by accepting a
-   262,145-byte response without selecting the smaller cap;
-7. proves zero clears/inherits as specified. Runtime-owner unit tests at the validation/store
-   boundary prove a negative limit and, on a target where it exists, a positive `i64` not
-   representable as `usize` are rejected before a previously valid builder value can change.
-   Process-level fixtures separately prove the public setters abort and issue no network request;
-8. after Request 4 ships, accepts an exact-cap de-framed chunked response and rejects a
-   262,145-byte de-framed chunked response with the same limit-specific outcome. Once that surface
-   exists, this conditional case is required before Request 5 can close.
+7. proves an unconfigured or client-zero effective cap remains exactly `HTTP_MAX_BODY` in a
+   runtime-owner unit test, and accepts a 262,145-byte response without a smaller cap;
+8. proves request zero inherits the client, a positive request cap narrows a larger client cap, and
+   a larger positive request cap cannot widen a smaller client cap. Runtime-owner tests at the
+   validation/store boundary accept exactly `HTTP_MAX_BODY`, and prove `HTTP_MAX_BODY + 1`, a
+   negative limit, and, on a target where it exists, a positive `i64` not representable as `usize`
+   abort before a previously valid builder value can change. Process-level fixtures separately
+   prove both public setters abort and issue no network request;
+9. proves a limit failure returns no response handle, frees its accumulator, and closes rather than
+   pools the partial connection. Plaintext and verified-TLS sequential fixtures send an oversized
+   response and then a valid small request through the same client, and prove the second request
+   uses a new clean connection;
+10. after Request 4 ships, accepts an exact-cap de-framed chunked response, including its terminating
+    chunk and trailers, and rejects a 262,145-byte decoded payload with the same limit-specific
+    outcome. A many-tiny-chunks fixture proves framing does not accumulate outside the combined
+    557,056-byte ceiling. Once that surface exists, these conditional cases are required before
+    Request 5 can close;
+11. proves the limit outcome remains distinguishable through `provider_http` from a real HTTP 413
+    and another non-2xx response. The limit fixture returns the shipped limit discriminant and no
+    body; the status fixtures retain `Error.Code(413)` and their exact HTTP status codes.
 
 After Align marks this request `ALIGN_MERGED`, align-llm starts a separate bounded-response adoption
 slice. That enabling slice—not the blocked C6 provider-proposal slice—rebuilds the sibling release
 compiler/runtime, updates `.align-revision`, makes `provider_http` apply the cap, and runs a
-transport fixture proving an oversized response maps the limit-specific transport outcome to
-`PROVIDER_RESPONSE_TOO_LARGE` without returning a body. It does not decode a proposal or create a
-C6 proposal artifact. The request advances to `ALIGN_LLM_VERIFIED` only when that real-client
-fixture and `make ci` pass; only then does the C6 provider-proposal slice resume.
+transport fixture proving an oversized response propagates the exact shipped limit discriminant,
+returns no body, and leaves the client able to use a new clean connection. It does not decode a
+proposal, create a C6 proposal artifact, or introduce a C6 persisted error label. The request
+advances to `ALIGN_LLM_VERIFIED` only when that real-client fixture and `make ci` pass. The later
+reviewed C6 provider-proposal slice owns conversion from the shipped transport discriminant to its
+persisted proposal error label, and resumes only after this adoption gate.
 
 ### References
 
