@@ -4,12 +4,11 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-28. Repository-governance work is active on
-`agent/autonomous-execution-policy`, based on merged main commit `5311bac`. The substantive
-checkpoints are design/autonomy policy commit `d919cec`, governance follow-up policy commit
-`d4f07bf`, and review-checklist commit `0b1535c`; current `HEAD` includes this handoff correction
-and expects a clean worktree. The slice adopts design-before-implementation, long-running progress,
-and autonomous PR convergence rules from the sibling Align repository before C6 design begins._
+_Last updated: 2026-07-28. The repository-governance slice on
+`agent/autonomous-execution-policy` is prepared from merged main commit `5311bac`. Its substantive
+checkpoints are the initial design/autonomy policy at `d919cec` and the final SHA-bound review
+terminal-state policy and checklist at `a352846`; the worktree is expected to be clean. After this
+slice merges, C0 through C5 remain complete and C6 design is the next roadmap work._
 
 ## Current position
 
@@ -32,13 +31,13 @@ policy only; no C6 product implementation has started.
 
 ## Next steps
 
-1. Verify the final base diff, push the branch, and open the autonomous-execution
-   repository-governance PR with the preflight findings and checks recorded.
-2. Review the final pushed PR diff independently, resolve valid findings, rerun affected checks,
-   wait for required GitHub checks, and merge.
-3. Refresh `main`, create a fresh C6 design branch, write the C6 public contract and acceptance
+1. If `a352846` is not on `origin/main`, resolve the GitHub pull request for
+   `agent/autonomous-execution-policy` and complete its SHA-bound reviews, checks, and merge without
+   branch commits that merely mirror pull request metadata.
+2. Once the policy is on `main`, refresh `main`, create a fresh C6 design branch, write the C6
+   public contract and acceptance
    matrix, and merge it only after independent design review.
-4. Implement C6 in the smallest reviewed vertical slices. Do not rerun an unchanged full CI or
+3. Implement C6 in the smallest reviewed vertical slices. Do not rerun an unchanged full CI or
    external-service request after a documented capacity failure.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
@@ -51,11 +50,11 @@ Verified on 2026-07-28:
 
 ```text
 git diff --check                 PASS
-independent adversarial review  6 findings; all addressed
-fresh adversarial re-review     2 findings; all addressed
-convergence re-review           1 handoff finding addressed; CLEAN at f3d802b
-host-native preflight review    6 findings addressed; current-HEAD re-review pending
+terminal-state design review    APPROVED with required clarifications; incorporated at a352846
 ```
+
+Pull request review and check state is intentionally external GitHub metadata bound to exact SHAs,
+not a branch commit recorded here.
 
 ## Completed bootstrap
 
