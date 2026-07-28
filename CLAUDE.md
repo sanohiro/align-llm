@@ -286,8 +286,10 @@ must not open and immediately merge it.
 6. Scrutinize every finding against the code. Apply valid findings; do not apply suggestions
    blindly. Record a concrete reason for rejecting any finding. Batch related fixes into one
    coherent follow-up commit when possible.
-7. Push the review follow-up. Re-run affected verification, and repeat review when the follow-up
-   materially changes behavior, design, an authoritative specification, or repository governance.
+7. Push the review follow-up and re-run affected verification. Every post-review push receives at
+   least a scoped review of its delta and the final pushed state. Repeat the full high-effort,
+   adversarial review when the follow-up materially changes behavior, design, an authoritative
+   specification, or repository governance.
 8. Merge only after required checks pass and no valid review finding remains unresolved.
 
 ### Claude Code review adapter
