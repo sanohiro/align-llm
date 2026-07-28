@@ -4,18 +4,41 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-28. The repository-governance slice on
-`agent/autonomous-execution-policy` is prepared from merged main commit `5311bac`. Its substantive
-checkpoints are the initial design/autonomy policy at `d919cec` and the final SHA-bound review
-terminal-state policy, checklist, and pull request template introduced at `cd529a1` and corrected
-for refreshable final-state evidence at `ee68fdf` and tested-integration identity at `265ea57`; the
-worktree is expected to be clean. After this slice merges, C0 through C5 remain complete and C6
-design is the next roadmap work._
+_Last updated: 2026-07-28. The active enabling slice is
+`agent/align-bounded-http-response-request`, based on merged governance commit `65e19b7`. It
+registers Align Request 5 at initial commits `a12b7d5`, `e46ac58`, and `5d8965b`, with the complete
+request contract at `c0768f8`. It was discovered during C6 design review; no C6 implementation has
+started. On `agent/c6-prompt-context-design`,
+the primary worktree intentionally has modified `HANDOFF.md` and untracked
+`docs/specs/c6-prompt-context-optimizer.md`; both belong to the C6 design draft and must not be
+discarded._
 
 ## Current position
 
-The repository has completed C0 through C5. The current enabling slice updates the shared agent
-policy only; no C6 product implementation has started.
+The repository has completed C0 through C5. C6 design review demonstrated that the current
+`std.http` provider boundary buffers up to one GiB before an application-level size check can run.
+Request 5 asks Align for a caller-selected receive-time response-body cap. Only the provider
+proposal and real-provider gate are blocked; artifact, renderer, scorer, activation, and
+deterministic evaluator work remain independent.
+
+The bounded-receive contract applies its cap only after method/status-aware body framing. Final
+`HEAD`/`204`/`304` responses have zero payload; non-`101` informational heads consume no payload and
+continue to the final response without losing co-read bytes, while unsupported `101` upgrades fail
+and close. Method tokens are case-sensitive, and Content-Length magnitude comparison normalizes
+leading zeroes without target-size conversion. Request 4 and Request 5 share a combined
+de-framing/bounded-receive gate; whichever reaches
+`ALIGN_MERGED` second owns bodyless, interim-to-final, exact-cap, cap-plus-one, many-tiny-chunks,
+trailer-guard, and aggregate-storage integration verification before `ALIGN_LLM_VERIFIED`. If they
+ship together, Request 5's bounded-response adoption owns that gate and neither request reaches
+`ALIGN_LLM_VERIFIED` until it passes. The numeric ceiling applies to Align HTTP-runtime-owned
+response-byte storage; opaque TLS/kernel transport buffers are excluded, while final-header offset
+tables and decoder records have separate fixed structural caps. Bounded discovery co-read stays in
+one scratch allowance and stops after an excess is recognizable. A named fixed trailer-block wire
+guard prevents a continuously arriving unterminated trailer from evading the storage ceiling or
+timeout policy; trailer fields are validated incrementally but not retained or exposed. Successful
+self-delimited responses remain pool-eligible, read-to-close responses do not, and
+`get`/`post`/`request`/`get_many` all preserve the configured cap semantics. `get_many` workers share
+one client-cap snapshot and deterministic lowest-index error selection.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -33,14 +56,14 @@ policy only; no C6 product implementation has started.
 
 ## Next steps
 
-1. If `origin/main:CLAUDE.md` does not contain the `Review attestations and terminal merge state`
-   contract, resolve the GitHub pull request for `agent/autonomous-execution-policy` and complete its
-   SHA-bound reviews, checks, and merge without branch commits that merely mirror pull request
-   metadata.
-2. Once the policy is on `main`, refresh `main`, create a fresh C6 design branch, write the C6
-   public contract and acceptance matrix, and merge it only after independent design review.
-3. Implement C6 in the smallest reviewed vertical slices. Do not rerun an unchanged full CI or
-   external-service request after a documented capacity failure.
+1. Review and merge the Request 5 registration as its own enabling pull request.
+2. In the primary worktree, commit its modified `HANDOFF.md` and untracked
+   `docs/specs/c6-prompt-context-optimizer.md` together as an initial C6 design checkpoint before
+   integrating merged main. Then merge `origin/main`, resolve `HANDOFF.md` by preserving both the
+   merged Request 5 lifecycle and the C6 design state, and finish the frozen-design review loop.
+   Merge the design only after current SHA-bound preflight and post-open reviews.
+3. Implement independent C6 slices in reviewed order. Do not implement the provider-proposal slice
+   against a hypothetical Align API; resume it only through the request lifecycle.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
