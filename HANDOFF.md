@@ -4,12 +4,16 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. No implementation work is active. C5 failure memory merged to main in
-PR #12 at `5311bac`; the next roadmap item is C6 Prompt and Context Optimizer._
+_Last updated: 2026-07-28. Repository-governance work is active on
+`agent/autonomous-execution-policy`, policy commit `d919cec`, based on merged main commit
+`5311bac`. The current checkpoint includes this handoff update and expects a clean worktree. It
+adopts design-before-implementation, long-running progress, and autonomous PR convergence rules
+from the sibling Align repository before C6 design begins._
 
 ## Current position
 
-The repository has completed C0 through C5. Work is paused for the day after the C5 merge.
+The repository has completed C0 through C5. The current enabling slice updates the shared agent
+policy only; no C6 product implementation has started.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -27,13 +31,28 @@ The repository has completed C0 through C5. Work is paused for the day after the
 
 ## Next steps
 
-1. Resume on the `c6-prompt-context` branch or create a fresh C6 branch from main.
-2. Read the C6 prompt hierarchy, fixed-evaluation, and A/B acceptance requirements before coding.
-3. Implement and verify C6 in its own PR; do not rerun the full CI loop for service-capacity errors.
+1. Commit this handoff checkpoint, verify the final base diff, push the branch, and open the
+   autonomous-execution repository-governance PR with the preflight findings and checks recorded.
+2. Review the final pushed PR diff independently, resolve valid findings, rerun affected checks,
+   wait for required GitHub checks, and merge.
+3. Refresh `main`, create a fresh C6 design branch, write the C6 public contract and acceptance
+   matrix, and merge it only after independent design review.
+4. Implement C6 in the smallest reviewed vertical slices. Do not rerun an unchanged full CI or
+   external-service request after a documented capacity failure.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
+
+## Current governance verification
+
+Verified on 2026-07-28:
+
+```text
+git diff --check                 PASS
+independent adversarial review  6 findings; all addressed
+fresh adversarial re-review     2 findings; all addressed; final clean recheck pending
+```
 
 ## Completed bootstrap
 
