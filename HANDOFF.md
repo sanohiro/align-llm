@@ -4,14 +4,18 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-25. Active work is the C5 failure-memory slice on
-`c5-failure-memory`, implementation commit `05dbf75` and current handoff head `927b2b8` based on
-merged main commit `17da92c`; PR #12 is open for review and the working tree is clean._
+_Last updated: 2026-07-28. The repository-governance slice on
+`agent/autonomous-execution-policy` is prepared from merged main commit `5311bac`. Its substantive
+checkpoints are the initial design/autonomy policy at `d919cec` and the final SHA-bound review
+terminal-state policy, checklist, and pull request template introduced at `cd529a1` and corrected
+for refreshable final-state evidence at `ee68fdf` and tested-integration identity at `265ea57`; the
+worktree is expected to be clean. After this slice merges, C0 through C5 remain complete and C6
+design is the next roadmap work._
 
 ## Current position
 
-The repository has completed C0 through C4. The C5 implementation is complete locally and is open
-as PR #12.
+The repository has completed C0 through C5. The current enabling slice updates the shared agent
+policy only; no C6 product implementation has started.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -23,21 +27,35 @@ as PR #12.
   after the result file is written.
 - `scripts/run-verification-loop-smoke` now proves persistence, same-task reuse, and the existing
   invalid-repair `REPAIR_FAILED` path. `failure-memory-smoke` is the named C5 make target.
-- Hosted Actions already runs this smoke through `verify-loop-smoke`; no new external retry loop is
+- Hosted Actions ran the supported C5 smoke successfully; no new external retry loop is
   warranted. The unavailable nested user-namespace `coding-v1` sandbox and stale C0 baseline check
   remain local/capable-runner gates only.
 
 ## Next steps
 
-1. Review PR #12 against `docs/review-checklist.md` with one bounded adversarial-review attempt and
-   address only valid findings.
-2. Check the supported hosted run once and merge after review/check success.
-3. After merge, update this file to C6 Prompt and Context Optimizer and continue on the next scoped
-   branch.
+1. If `origin/main:CLAUDE.md` does not contain the `Review attestations and terminal merge state`
+   contract, resolve the GitHub pull request for `agent/autonomous-execution-policy` and complete its
+   SHA-bound reviews, checks, and merge without branch commits that merely mirror pull request
+   metadata.
+2. Once the policy is on `main`, refresh `main`, create a fresh C6 design branch, write the C6
+   public contract and acceptance matrix, and merge it only after independent design review.
+3. Implement C6 in the smallest reviewed vertical slices. Do not rerun an unchanged full CI or
+   external-service request after a documented capacity failure.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
+
+## Current governance verification
+
+Verified on 2026-07-28:
+
+```text
+git diff --check    PASS
+```
+
+Pull request review and check state is intentionally external GitHub metadata bound to exact SHAs,
+not a branch commit recorded here.
 
 ## Completed bootstrap
 
