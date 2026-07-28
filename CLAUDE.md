@@ -191,24 +191,104 @@ align-llm must verify the capability as the real client.
   paths.
 - Keep provider-specific behavior behind explicit data and dispatch boundaries.
 
+## Design before implementation
+
+Do not use implementation or repeated full-diff review to discover the contract for a non-trivial
+roadmap gate. Before coding a change that adds a public CLI, persisted format, ownership boundary,
+external process or network boundary, or coordinated behavior across three or more modules:
+
+1. Write or update the plan of record under `docs/specs/`. Record the exact public commands and
+   types, inputs and defaults, statuses and errors, ownership and allocation, persisted identity and
+   schema version, deterministic validation order, prerequisite gate, acceptance tests, metrics,
+   and every source of truth that must agree. Mark fields that do not apply as `N/A` with a concrete
+   reason instead of inventing a contract.
+2. Perform an author-side consistency pass. Every normative promise must appear in the public
+   contract, every field must have defined semantics, and every acceptance claim must map to a
+   reproducible test or measurement.
+3. For cross-cutting implementation, add a closure matrix covering construction, success, failure,
+   cleanup, early exit, malformed input, and every affected module. Before coding, each applicable
+   cell must name its intended owner module and exact regression test or benchmark, or be explicitly
+   deferred.
+4. Run a fresh independent adversarial review of the design, invariants, acceptance coverage, and
+   proposed pull request boundaries. Resolve valid findings before implementation starts.
+5. Merge the reviewed design or enabling-slice pull request before opening a dependent
+   implementation pull request. Split implementation into the smallest independently correct
+   vertical slices; if a slice is expected to exceed roughly 1,000 changed hand-written lines,
+   record why it cannot be split safely.
+
+For applicable surfaces, the contract ledger and closure matrix must also cover:
+
+- argument and result ownership, lifetime, allocation, validation, construction, move-in,
+  move-out, source nulling, replacement, return, and cleanup or `Drop`;
+- text and wire encoding, embedded NUL handling, deterministic error precedence, and validation
+  before side effects;
+- canonical persisted or exchanged scalar widths, tags, field and sequence order, malformed-input
+  rejection, and independently checked semantic-to-byte and byte-to-semantic golden vectors;
+- explicit CLI and build inputs without unnamed ambient configuration; and
+- overlap exclusion for process-global or connection-global state, failed-second-operation
+  behavior, exhaustion, error, and cleanup restoration order.
+
+Mark an inapplicable dimension as `N/A` with its reason; omission is not a decision.
+
+Keep the plan authoritative during implementation. When a finding changes the public surface,
+update the plan first and propagate that decision through code, tests, and documentation in one
+pass. Before code review, perform a matrix-to-diff pass: every applicable cell must point to the
+actual implementation and a passing regression test or to an explicit deferral in the plan.
+
+## Autonomous execution and convergence
+
+When an agent is asked to continue through roadmap work, a completed pull request is a checkpoint,
+not a stopping condition. Prepare `HANDOFF.md` on the merging branch to describe the expected
+post-merge checkpoint. After the merge, refresh `main` and start the next eligible gate or enabling
+slice; correct merge-dependent handoff details in the first commit of that branch. Do not create a
+recursive handoff-only pull request solely to record that the previous pull request merged. Stop
+only when the user asks, the roadmap has no eligible work, or no safe independent work remains
+after blockers are recorded.
+
+Elapsed time is not a stopping criterion for a useful command, review, test, or investigation.
+
+- Inspect actual progress at least once per minute while work is running. Check process state, new
+  output, the latest completed phase, and whether the work is producing new relevant evidence.
+  Report the current phase and that evidence during extended work.
+- Stop or redirect only after evidence of a stall, repeated analysis, scope drift, an external
+  capacity failure, or an actual tool failure. Do not repeat an unchanged failing invocation
+  without new evidence that it can succeed.
+- Treat an automation timeout as the end of that invocation only. Preserve useful logs, findings,
+  and completed phases, then resume from the first unfinished area instead of restarting the whole
+  scope.
+- Keep every iteration evidence-producing: a smaller verified slice, a resolved finding, a new
+  measurement, or a recorded blocker. If implementation work goes two hours without a PR-ready
+  checkpoint, excluding a single required command that is still making progress, re-scope to
+  the next smaller independently correct slice and record why in `HANDOFF.md`.
+- When a reviewer finds a bug, audit the complete diff for the same root-cause class and fix that
+  class in one pass. If the second review of a revised diff finds a new critical correctness issue,
+  stop the local patch loop and revisit the design, invariants, and pull request boundary.
+
 ## Pull request review and merge workflow
 
-Review is mandatory before merging any pull request that changes code. Opening a pull request is not
-completion, and an agent must not open and immediately merge it.
+Review is mandatory before merging any pull request that changes code, an authoritative design or
+specification, or repository governance. Opening a pull request is not completion, and an agent
+must not open and immediately merge it.
 
-1. Run the checks, evaluations, or benchmarks appropriate to the change.
-2. Open the pull request with an English title and description. Include the exact verification
+1. Finish a coherent, independently mergeable implementation; do not use a draft pull request as a
+   scratchpad for basic correctness work.
+2. Run the checks, evaluations, or benchmarks appropriate to the change.
+3. For a non-trivial change, inspect the full base diff and run a fresh independent adversarial
+   preflight review before opening the pull request. Resolve valid findings locally.
+4. Open the pull request with an English title and description. Include the exact verification
    results and any relevant baseline or measurement.
-3. Review the open pull request before merging. Use high review effort for any non-trivial change.
+5. Review the final pushed diff after the pull request is open. Use high review effort for any
+   non-trivial change.
    Apply `docs/review-checklist.md` to the changed surface.
    When the tooling supports subagents, also use an independent adversarial reviewer for
    non-trivial changes to look for correctness, ownership, error-handling, test-coverage, and
    regression risks.
-4. Scrutinize every finding against the code. Apply valid findings; do not apply suggestions
-   blindly. Record a concrete reason for rejecting any finding.
-5. Push the review follow-up. Re-run affected verification, and repeat review when the follow-up
+6. Scrutinize every finding against the code. Apply valid findings; do not apply suggestions
+   blindly. Record a concrete reason for rejecting any finding. Batch related fixes into one
+   coherent follow-up commit when possible.
+7. Push the review follow-up. Re-run affected verification, and repeat review when the follow-up
    materially changes behavior or design.
-6. Merge only after required checks pass and no valid review finding remains unresolved.
+8. Merge only after required checks pass and no valid review finding remains unresolved.
 
 ### Claude Code review adapter
 
