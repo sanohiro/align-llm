@@ -62,6 +62,8 @@ Use `N/A` with a reason when the change makes no performance claim.
 ### Check evidence
 
 - Head SHA:
+- Tested base-tip SHA:
+- Merge-base or synthetic-merge SHA:
 - Required check names, statuses, and links:
 
 - [ ] Independent adversarial review completed for a non-trivial change

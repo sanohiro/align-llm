@@ -302,7 +302,8 @@ must not open and immediately merge it.
 Review evidence is external, immutable with respect to the reviewed branch, and bound to the exact
 diff. Every review envelope records its own head SHA, base-branch tip SHA, merge-base SHA, reviewer,
 review kind and scope, verdict, and finding dispositions. Use `none` explicitly when there are no
-findings. Check evidence separately records the head SHA, check name, status, and external record.
+findings. Check evidence separately records the head SHA, tested base-tip SHA, merge-base or
+synthetic-merge SHA, check name, status, and external record.
 
 - Record the clean preflight and verification in the pull request description when opening it.
 - Record post-open host-native and independent-adversarial reviews separately. A native GitHub
@@ -321,8 +322,9 @@ the latest preflight envelope and every required post-open review envelope. For 
 request, one host-native envelope and one separate independent-adversarial envelope must each be
 `CLEAN` for that SHA set. Every finding from every review has a recorded disposition; every applied
 finding that changes content creates a new SHA set and therefore requires new envelopes. All
-required checks separately pass for the current head, no valid finding remains, and no later
-content push exists.
+required checks separately pass for the current head and base-tip integration, no valid finding
+remains, and no later content push exists. A base-tip change makes both review and check evidence
+stale.
 
 ### Claude Code review adapter
 
