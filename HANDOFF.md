@@ -5,10 +5,11 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-28. Repository-governance work is active on
-`agent/autonomous-execution-policy`, policy commit `d919cec`, based on merged main commit
-`5311bac`. The current checkpoint includes this handoff update and expects a clean worktree. It
-adopts design-before-implementation, long-running progress, and autonomous PR convergence rules
-from the sibling Align repository before C6 design begins._
+`agent/autonomous-execution-policy`, based on merged main commit `5311bac`. The substantive
+checkpoints are design/autonomy policy commit `d919cec`, governance follow-up policy commit
+`d4f07bf`, and review-checklist commit `0b1535c`; current `HEAD` includes this handoff correction
+and expects a clean worktree. The slice adopts design-before-implementation, long-running progress,
+and autonomous PR convergence rules from the sibling Align repository before C6 design begins._
 
 ## Current position
 
@@ -53,7 +54,7 @@ git diff --check                 PASS
 independent adversarial review  6 findings; all addressed
 fresh adversarial re-review     2 findings; all addressed
 convergence re-review           1 handoff finding addressed; CLEAN at f3d802b
-host-native preflight review    3 findings addressed; current-HEAD re-review pending
+host-native preflight review    5 findings addressed; current-HEAD re-review pending
 ```
 
 ## Completed bootstrap

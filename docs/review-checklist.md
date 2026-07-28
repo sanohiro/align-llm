@@ -20,7 +20,8 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
 - A non-trivial public contract maps every normative promise and field to a reproducible acceptance
   test or measurement before implementation starts.
 - Cross-cutting plans name intended owner modules, failure and cleanup paths, and exact regression
-  tests before coding, then map them to the final implementation before code review.
+  tests before coding, then map them to the final implementation before code review, or record an
+  explicit deferral with its rationale in the plan of record.
 - Review requirements cover the final pushed state and require another review after material
   behavior, design, specification, or governance follow-ups.
 - `HANDOFF.md` identifies the active branch and relevant commit, completed and unfinished work,
