@@ -519,7 +519,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6 provider-proposal slice and real-provider prompt-optimizer gate
 Independent work that may continue: C6 artifacts, renderer, pure scorer, activation lifecycle, and deterministic A/B evaluator
-Resume condition: a pinned Align release enforces a caller-selected response-body cap while receiving, and align-llm's oversized-provider fixture and make ci pass
+Resume condition: after ALIGN_MERGED, a separate bounded-response adoption slice pins the shipped Align release, integrates the cap at provider_http, and passes the oversized-response fixture and make ci; only then does the C6 provider-proposal slice resume
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -620,11 +620,13 @@ An Align client configured with a 262,144-byte cap:
    262,145-byte de-framed chunked response with the same limit-specific outcome. Once that surface
    exists, this conditional case is required before Request 5 can close.
 
-After Align merges the capability, align-llm rebuilds the sibling release compiler/runtime,
-updates `.align-revision`, makes `provider_http` apply the cap, and runs a fixture proving an
-oversized proposal maps the limit-specific transport outcome to
-`PROVIDER_RESPONSE_TOO_LARGE` without a successful artifact. The C6 provider-proposal slice resumes
-only after that real-client gate and `make ci` pass.
+After Align marks this request `ALIGN_MERGED`, align-llm starts a separate bounded-response adoption
+slice. That enabling slice—not the blocked C6 provider-proposal slice—rebuilds the sibling release
+compiler/runtime, updates `.align-revision`, makes `provider_http` apply the cap, and runs a
+transport fixture proving an oversized response maps the limit-specific transport outcome to
+`PROVIDER_RESPONSE_TOO_LARGE` without returning a body. It does not decode a proposal or create a
+C6 proposal artifact. The request advances to `ALIGN_LLM_VERIFIED` only when that real-client
+fixture and `make ci` pass; only then does the C6 provider-proposal slice resume.
 
 ### References
 
