@@ -501,6 +501,9 @@ the request method and response status before reading a body. A final response t
 `204` and `304` responses, expose zero body bytes even when a response such as `HEAD` or `304`
 legitimately carries `Content-Length` or supported `Transfer-Encoding: chunked` metadata. The latter
 remains discoverable as a header but does not enter the chunk decoder.
+HTTP method tokens are case-sensitive: only exact uppercase `HEAD` selects HEAD response semantics.
+Lowercase or mixed-case tokens such as `head` are extension methods and use ordinary response
+framing.
 
 An informational response other than `101` is an interim head, not the response returned to the
 caller. Validate it, consume no payload, preserve any following bytes already read from the
@@ -511,6 +514,7 @@ allowance, so repeated informational responses cannot accumulate memory or run w
 so it returns `Error.Invalid`, exposes no response, and closes rather than pools the connection.
 For the same reason, `cl.request` rejects the exact `CONNECT` method as `Error.Invalid` before DNS,
 connect, or write; a successful CONNECT would switch to a tunnel this API cannot represent.
+Lowercase or mixed-case `connect` is not that protocol method and is sent and framed normally.
 
 Successful self-delimited responses preserve the existing R3 reuse-by-default contract. After a
 terminal chunk and valid trailers, or after a bodyless final `HEAD`/`204`/`304` head, the connection
@@ -556,7 +560,9 @@ that the final status/body is returned without losing co-read bytes. Any `Conten
 `Transfer-Encoding` on those informational heads returns `Error.Invalid` before final-response
 advancement. A cumulative interim-head span above `HTTP_MAX_HEADER_BLOCK`, and a `101` response,
 return `Error.Invalid`, no response handle, and close the connection. A `CONNECT` fixture returns
-`Error.Invalid` before the fixture observes any network request.
+`Error.Invalid` before the fixture observes any network request. Lowercase `head` and `connect`
+counter-fixtures reach the server, return payload-bearing Content-Length responses, expose their
+complete bodies, and preserve ordinary keep-alive framing and reuse.
 
 Trailer boundary fixtures accept a syntactically valid block whose terminating empty line ends
 exactly at `HTTP_MAX_TRAILER_BLOCK`, and reject a terminator one byte beyond the guard, a
@@ -672,7 +678,11 @@ Required semantics:
   head the available framing surface accepts. A non-decimal value, conflicting duplicate lengths,
   or a `Transfer-Encoding` conflict remains malformed `Error.Invalid`. For a payload-bearing final
   response with a syntactically valid decimal magnitude, an explicit-cap excess returns the
-  limit-specific outcome even when the magnitude also exceeds target `usize` or `HTTP_MAX_BODY`;
+  limit-specific outcome even when the magnitude also exceeds target `usize` or `HTTP_MAX_BODY`.
+  Compare decimal magnitudes after ignoring leading zeroes, without converting the untrusted value
+  to target `usize`; digit count or raw lexical order is not a magnitude comparison. Duplicate
+  Content-Length fields are equal when their normalized numeric magnitudes are equal, even if their
+  leading-zero spelling differs;
 - once Request 4's method/status-aware framing is available, compose it with the cap as follows:
   - after a head's syntax and framing conflicts are validated, select body framing from the request
     method and response status. A final response to `HEAD`, and final `204` and `304` responses, have
@@ -687,7 +697,9 @@ Required semantics:
     forbidden and returns `Error.Invalid`. Malformed decimal or transfer-coding syntax, conflicting
     duplicate lengths, unsupported transfer codings, and a simultaneous
     `Content-Length`/`Transfer-Encoding` combination return `Error.Invalid` on `HEAD` and `304`
-    before body suppression;
+    before body suppression. Match request methods case-sensitively: only exact uppercase `HEAD`
+    selects HEAD response semantics, while `head` and other case variants use ordinary
+    payload-bearing response framing;
   - a non-`101` informational head has zero payload but is not returned. Preserve co-read bytes,
     continue through subsequent informational heads to the final response, and apply the selected
     cap only to that final response's payload. Count the complete wire span of all interim and final
@@ -816,13 +828,19 @@ An Align client configured with a 262,144-byte cap:
    `Error.Invalid`, and `Error.Invalid`. Plaintext and verified-TLS sequential fixtures separately
    use an exact-cap Content-Length response under a positive client-level cap and under a narrower
    positive request-level cap; each proves the successful response is returned to the idle pool and
-   the next request through the same client reuses that exact connection;
+   the next request through the same client reuses that exact connection. The dispatch matrix also
+   accepts leading-zero exact-cap values such as `000262144`, treats duplicate `262144` and
+   `000262144` fields as numerically equal, and returns the limit-specific outcome for leading-zero
+   cap-plus-one `000262145`;
 3. returns the limit-specific outcome for a payload-bearing response with a syntactically valid
    decimal `Content-Length` magnitude above the selected cap even when it is above target `usize` or
    `HTTP_MAX_BODY`, while malformed or conflicting framing returns `Error.Invalid` first. The same
    oversized magnitude on an unconfigured client retains the existing `Error.Invalid`. A valid
    within-cap Content-Length whose body is truncated returns `Error.Invalid`, and a distinct
-   transport failure retains its existing discriminant rather than becoming the limit outcome;
+   transport failure retains its existing discriminant rather than becoming the limit outcome.
+   Arbitrary-precision cases add many leading zeroes to within-cap, cap-plus-one, and above-target
+   magnitudes and prove normalization occurs before digit-count/magnitude comparison without
+   changing malformed or overflow precedence;
 4. once Request 4's method/status-aware framing exists, accepts `HEAD` and `304` responses that
    advertise a syntactically valid decimal `Content-Length` above target `usize` and
    `HTTP_MAX_BODY` but transfer no body, exposes an empty body, and neither returns the limit
@@ -834,7 +852,11 @@ An Align client configured with a 262,144-byte cap:
    simultaneous `Content-Length`/`Transfer-Encoding` on `HEAD` and `304` return `Error.Invalid`.
    Runtime-owner cases prove a final `204` selects zero received payload with no framing fields,
    while any `Content-Length` or `Transfer-Encoding` on `204` returns `Error.Invalid` before body
-   suppression;
+   suppression. An exact uppercase `HEAD` fixture returns no payload as above; a lowercase `head`
+   counter-fixture with an exact-cap Content-Length body uses ordinary framing, returns the complete
+   body, and remains pool-eligible. A lowercase `connect` counter-fixture likewise reaches the
+   server and uses ordinary response framing, while exact uppercase `CONNECT` remains pre-network
+   `Error.Invalid`;
 5. once Request 4 exists, same-read and split-read fixtures send one or more non-`101`
    informational heads, including `100`, `102`, `103`, and `199`, followed by a final response. They
    prove only the final status/body is returned, no co-read final bytes are lost, an exact-cap final
