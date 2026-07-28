@@ -27,7 +27,9 @@ and close. Request 4 and Request 5 share a combined de-framing/bounded-receive g
 `ALIGN_MERGED` second owns bodyless, interim-to-final, exact-cap, cap-plus-one, many-tiny-chunks, and
 aggregate-storage integration verification before `ALIGN_LLM_VERIFIED`. If they ship together,
 Request 5's bounded-response adoption owns that gate and neither request reaches
-`ALIGN_LLM_VERIFIED` until it passes.
+`ALIGN_LLM_VERIFIED` until it passes. The numeric ceiling applies to aggregate response-byte storage;
+header/trailer offset tables and decoder records have separate fixed structural caps. Successful
+self-delimited responses remain pool-eligible, and `get_many` workers share one client-cap snapshot.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
