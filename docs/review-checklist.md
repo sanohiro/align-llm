@@ -24,8 +24,9 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
   explicit deferral with its rationale in the plan of record.
 - Review requirements cover the final pushed state and require another review after material
   behavior, design, specification, or governance follow-ups.
-- Preflight and post-open evidence records the exact head SHA, base-tip SHA, merge-base SHA,
-  reviewer, review kind and scope, verdict, checks, and finding dispositions outside the branch.
+- Each preflight and post-open review envelope independently records the exact head SHA, base-tip
+  SHA, merge-base SHA, reviewer, review kind and scope, verdict, and finding dispositions outside
+  the branch. Check evidence is separate and cannot substitute for review evidence.
 - Merge readiness requires current SHA-bound evidence, passing required checks, clean required
   reviews, no unresolved valid finding, and no later content push.
 - `HANDOFF.md` identifies the active branch and relevant commit, completed and unfinished work,

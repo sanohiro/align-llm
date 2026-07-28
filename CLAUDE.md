@@ -300,13 +300,15 @@ must not open and immediately merge it.
 ### Review attestations and terminal merge state
 
 Review evidence is external, immutable with respect to the reviewed branch, and bound to the exact
-diff. Every attestation records the head SHA, base-branch tip SHA, merge-base SHA, reviewer, review
-kind and scope, verdict, checks, and finding dispositions.
+diff. Every review envelope records its own head SHA, base-branch tip SHA, merge-base SHA, reviewer,
+review kind and scope, verdict, and finding dispositions. Use `none` explicitly when there are no
+findings. Check evidence separately records the head SHA, check name, status, and external record.
 
 - Record the clean preflight and verification in the pull request description when opening it.
 - Record post-open host-native and independent-adversarial reviews separately. A native GitHub
-  review, check, or status associated with the exact commit is sufficient. A general pull request
-  comment is sufficient only when its body includes every attestation field above.
+  review is sufficient only when its body contains the complete review envelope. Otherwise use a
+  dedicated pull request description or comment record containing the envelope. GitHub checks and
+  statuses are check evidence only and never satisfy a review-envelope requirement.
 - Pull request descriptions, reviews, comments, checks, and statuses are non-content metadata.
   Recording them must not modify the branch or trigger another review cycle.
 - Any content push invalidates prior final-state evidence. Rerun affected verification, review the
@@ -315,9 +317,12 @@ kind and scope, verdict, checks, and finding dispositions.
   repository governance changes materially.
 
 A pull request is merge-ready only when its current head SHA, base-tip SHA, and merge-base SHA match
-the latest required attestations; all required checks pass for that head; all required post-open
-reviews are clean or all findings have recorded dispositions followed by clean review; no valid
-finding remains; and no later content push exists.
+the latest preflight envelope and every required post-open review envelope. For a non-trivial pull
+request, one host-native envelope and one separate independent-adversarial envelope must each be
+`CLEAN` for that SHA set. Every finding from every review has a recorded disposition; every applied
+finding that changes content creates a new SHA set and therefore requires new envelopes. All
+required checks separately pass for the current head, no valid finding remains, and no later
+content push exists.
 
 ### Claude Code review adapter
 
