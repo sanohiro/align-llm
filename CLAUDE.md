@@ -25,6 +25,11 @@ must identify:
 - blockers, constraints, and decisions that the next session must preserve;
 - any intentional uncommitted files that must not be discarded.
 
+`HANDOFF.md` owns durable branch and project continuity plus the expected post-merge next work.
+Transient pull request checks, reviews, and attestations live in GitHub and must not be mirrored by
+follow-up branch commits. Recording or updating non-content pull request metadata is not a project
+state change.
+
 Architecture and delivery order remain authoritative in `docs/specs/`; `HANDOFF.md` records only the
 current position within those plans. Do not put credentials, machine-specific secrets, or disposable
 scratch details in it. When no work is active, say so explicitly and name the next roadmap item.
@@ -291,6 +296,28 @@ must not open and immediately merge it.
    adversarial review when the follow-up materially changes behavior, design, an authoritative
    specification, or repository governance.
 8. Merge only after required checks pass and no valid review finding remains unresolved.
+
+### Review attestations and terminal merge state
+
+Review evidence is external, immutable with respect to the reviewed branch, and bound to the exact
+diff. Every attestation records the head SHA, base-branch tip SHA, merge-base SHA, reviewer, review
+kind and scope, verdict, checks, and finding dispositions.
+
+- Record the clean preflight and verification in the pull request description when opening it.
+- Record post-open host-native and independent-adversarial reviews separately. A native GitHub
+  review, check, or status associated with the exact commit is sufficient. A general pull request
+  comment is sufficient only when its body includes every attestation field above.
+- Pull request descriptions, reviews, comments, checks, and statuses are non-content metadata.
+  Recording them must not modify the branch or trigger another review cycle.
+- Any content push invalidates prior final-state evidence. Rerun affected verification, review the
+  delta and final state, and publish fresh attestations for the new SHA set. Repeat the full
+  high-effort adversarial review when behavior, design, an authoritative specification, or
+  repository governance changes materially.
+
+A pull request is merge-ready only when its current head SHA, base-tip SHA, and merge-base SHA match
+the latest required attestations; all required checks pass for that head; all required post-open
+reviews are clean or all findings have recorded dispositions followed by clean review; no valid
+finding remains; and no later content push exists.
 
 ### Claude Code review adapter
 
