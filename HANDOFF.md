@@ -7,7 +7,7 @@ Conversation history and per-machine memory are not project state.
 _Last updated: 2026-07-28. The repository-governance slice on
 `agent/autonomous-execution-policy` is prepared from merged main commit `5311bac`. Its substantive
 checkpoints are the initial design/autonomy policy at `d919cec` and the final SHA-bound review
-terminal-state policy, checklist, and pull request template at `c00a6a2`; the worktree is expected
+terminal-state policy, checklist, and pull request template at `cd529a1`; the worktree is expected
 to be clean. After this
 slice merges, C0 through C5 remain complete and C6 design is the next roadmap work._
 
@@ -51,7 +51,7 @@ Verified on 2026-07-28:
 
 ```text
 git diff --check                 PASS
-terminal-state design review    APPROVED with required clarifications; incorporated at c00a6a2
+terminal-state design review    APPROVED with required clarifications; incorporated through cd529a1
 ```
 
 Pull request review and check state is intentionally external GitHub metadata bound to exact SHAs,
