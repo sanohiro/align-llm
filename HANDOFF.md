@@ -6,9 +6,9 @@ Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-28. The active enabling slice is
 `agent/align-bounded-http-response-request`, based on merged governance commit `65e19b7`. It
-registers Align Request 5 at initial commits `a12b7d5`, `e46ac58`, and `5d8965b`, with the complete
-request contract at `5fb89db`. It was discovered during C6 design review; no C6 implementation has
-started. On `agent/c6-prompt-context-design`,
+registers Align Request 5 at initial commits `a12b7d5`, `e46ac58`, and `5d8965b`; preflight
+follow-ups continue from `5fb89db`. It was discovered during C6 design review; no C6 implementation
+has started. On `agent/c6-prompt-context-design`,
 the primary worktree intentionally has modified `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md`; both belong to the C6 design draft and must not be
 discarded._
@@ -32,8 +32,9 @@ Request 5's bounded-response adoption owns that gate and neither request reaches
 response-byte storage; opaque TLS/kernel transport buffers are excluded, while header/trailer offset
 tables and decoder records have separate fixed structural caps. Bounded discovery co-read stays in
 one scratch allowance and stops after an excess is recognizable. Successful self-delimited responses
-remain pool-eligible, and `get_many` workers share one client-cap snapshot and deterministic
-lowest-index error selection.
+remain pool-eligible, read-to-close responses do not, and `get`/`post`/`request`/`get_many` all
+preserve the configured cap semantics. `get_many` workers share one client-cap snapshot and
+deterministic lowest-index error selection.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and

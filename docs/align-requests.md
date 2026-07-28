@@ -493,8 +493,9 @@ framing and violate the standard-library boundary.
 
 Extend the existing `std.http` client response path to de-frame a valid chunked response into the
 same zero-copy/owned response body exposed by `resp.body()`. Preserve the existing malformed-message
-and truncation error behavior, and keep response status and headers unchanged. The provider layer
-does not need a second streaming transport API; `cl.request` should remain the single HTTP boundary.
+and truncation error behavior, and keep response status and headers byte-for-byte discoverable
+through the existing accessors after body compaction. The provider layer does not need a second
+streaming transport API; `cl.request` should remain the single HTTP boundary.
 As already assigned to this de-framing slice by Align's HTTP plan, select response-body framing from
 the request method and response status before reading a body. A final response to `HEAD`, and final
 `204` and `304` responses, expose zero body bytes even when a response such as `HEAD` or `304`
@@ -521,6 +522,9 @@ partially consumed response remain ineligible and close.
 An HTTP fixture sends two SSE chunks and a terminating zero chunk. `provider.stream` returns their
 concatenated content for both the OpenAI-compatible and llama.cpp adapters. A missing terminator,
 invalid chunk size, or truncated chunk returns `Error.Invalid` and does not produce a partial success.
+A direct `cl.request` fixture returns `206` with a distinctive response header and a chunked body;
+after de-framing, `status()` is exactly `206`, the header lookup returns its exact value, and
+`body()` returns only decoded payload bytes.
 `HEAD` and `304` fixtures with a syntactically valid nonzero `Content-Length` return an empty body
 without waiting for those bytes; the runtime-owner framing matrix also covers `204`. Same-read and
 split-read fixtures send one or more `100`/`103` interim heads followed by a final response and prove
@@ -533,7 +537,9 @@ Plaintext and verified-TLS sequential fixtures return a complete chunked respons
 small response over the same connection. The bodyless matrix does the same for `HEAD`, `204`, and
 `304`. Each fixture proves that a successful self-delimited first response is pooled only after its
 complete framing is consumed; `Connection: close`, residual bytes, malformed framing, and `101`
-counter-cases use a new connection or fail as specified.
+counter-cases use a new connection or fail as specified. A separate successful close-delimited
+fixture returns its first response at EOF and proves that a later request through the same client
+opens a new connection rather than pooling the read-to-close exchange.
 
 The combined de-framing/bounded-receive gate is owned by whichever of Request 4 and Request 5 reaches
 `ALIGN_MERGED` second. If Request 5 is already available when this request ships, Request 4 may not
@@ -633,8 +639,13 @@ Required semantics:
   - after a head's syntax and framing conflicts are validated, select body framing from the request
     method and response status. A final response to `HEAD`, and final `204` and `304` responses, have
     zero received payload; a syntactically valid `Content-Length` that is permitted as metadata
-    (notably on `HEAD` and `304`) is not compared with the selected cap, causes no body allocation,
-    and causes no body read;
+    (on `HEAD` and `304`) is validated as an arbitrary-precision decimal string without conversion
+    to target `usize`, is not compared with either the selected cap or `HTTP_MAX_BODY`, causes no
+    body allocation, and causes no body read. A `Content-Length` or `Transfer-Encoding` field on
+    `204`, or on a `100`/`103` informational head, is forbidden and returns `Error.Invalid`.
+    Malformed decimal syntax, conflicting duplicate lengths, and a simultaneous
+    `Content-Length`/`Transfer-Encoding` combination return `Error.Invalid` on `HEAD` and `304`
+    before body suppression;
   - a non-`101` informational head has zero payload but is not returned. Preserve co-read bytes,
     continue through subsequent informational heads to the final response, and apply the selected
     cap only to that final response's payload. Count the complete wire span of all interim and final
@@ -732,18 +743,29 @@ is sufficient for the first real consumer and composes with Request 4's future c
 
 An Align client configured with a 262,144-byte cap:
 
-1. accepts an exact-cap Content-Length response and exposes the complete body;
-2. rejects a payload-bearing Content-Length response of 262,145 with the limit-specific outcome
-   after parsing and selecting body framing, without a declared-length reservation or a subsequent
-   body read;
+1. runs a client-default dispatch matrix through `get`, `post`, and `request`: every entry point
+   accepts an exact-cap Content-Length response and exposes the complete body;
+2. the same `get`/`post`/`request` matrix rejects a payload-bearing Content-Length response of
+   262,145 with the limit-specific outcome after parsing and selecting body framing, without a
+   declared-length reservation or a subsequent body read. It also repeats a declared
+   `HTTP_MAX_BODY + 1` with the client cap explicitly set to positive `HTTP_MAX_BODY`, client zero,
+   and client unset, proving each entry point returns respectively the limit-specific outcome,
+   `Error.Invalid`, and `Error.Invalid`;
 3. returns the limit-specific outcome for a payload-bearing response with a syntactically valid
    decimal `Content-Length` magnitude above the selected cap even when it is above target `usize` or
    `HTTP_MAX_BODY`, while malformed or conflicting framing returns `Error.Invalid` first. The same
-   oversized magnitude on an unconfigured client retains the existing `Error.Invalid`;
+   oversized magnitude on an unconfigured client retains the existing `Error.Invalid`. A valid
+   within-cap Content-Length whose body is truncated returns `Error.Invalid`, and a distinct
+   transport failure retains its existing discriminant rather than becoming the limit outcome;
 4. once Request 4's method/status-aware framing exists, accepts `HEAD` and `304` responses that
-   advertise a syntactically valid `Content-Length` above 262,144 but transfer no body, exposes an
-   empty body, and neither returns the limit outcome nor consumes bytes belonging to a following
-   response. A runtime-owner case proves a final `204` also selects zero received payload;
+   advertise a syntactically valid decimal `Content-Length` above target `usize` and
+   `HTTP_MAX_BODY` but transfer no body, exposes an empty body, and neither returns the limit
+   outcome, performs a magnitude-sized allocation, nor consumes bytes belonging to a following
+   response. Malformed decimal syntax, conflicting duplicate lengths, and simultaneous
+   `Content-Length`/`Transfer-Encoding` on `HEAD` and `304` return `Error.Invalid`. Runtime-owner
+   cases prove a final `204` selects zero received payload with no framing fields, while any
+   `Content-Length` or `Transfer-Encoding` on `204` or on an interim `100`/`103` returns
+   `Error.Invalid` before body suppression or final-response advancement;
 5. once Request 4 exists, same-read and split-read fixtures send one or more `100`/`103` interim
    heads followed by a final response. They prove only the final status/body is returned, no co-read
    final bytes are lost, an exact-cap final body succeeds, a cap-plus-one final body returns the
@@ -786,8 +808,11 @@ An Align client configured with a 262,144-byte cap:
     order: a lower-index delayed malformed-framing error beats a higher-index early limit error, and
     a lower-index delayed limit error beats a higher-index early malformed-framing error. Both
     produce no array, finish and free successful siblings, and tear down each failed exchange. An
-    exact-cap batch succeeds, and runtime-owner instrumentation proves every worker used the one cap
-    snapshot and each exchange observed the byte/structural bounds independently;
+    exact-cap batch succeeds. Declared `HTTP_MAX_BODY + 1` batches under an explicitly positive
+    client `HTTP_MAX_BODY`, client zero, and client unset respectively return the limit-specific
+    outcome, `Error.Invalid`, and `Error.Invalid`, proving the batch snapshot retains the
+    explicit-versus-default distinction. Runtime-owner instrumentation proves every worker used the
+    one cap snapshot and each exchange observed the byte/structural bounds independently;
 12. proves a limit failure returns no response handle, frees its accumulator, and closes rather than
     pools the partial connection. Plaintext and verified-TLS sequential fixtures send an oversized
     response and then a valid small request through the same client, and prove the second request
