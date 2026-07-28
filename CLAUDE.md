@@ -287,7 +287,7 @@ must not open and immediately merge it.
    blindly. Record a concrete reason for rejecting any finding. Batch related fixes into one
    coherent follow-up commit when possible.
 7. Push the review follow-up. Re-run affected verification, and repeat review when the follow-up
-   materially changes behavior or design.
+   materially changes behavior, design, an authoritative specification, or repository governance.
 8. Merge only after required checks pass and no valid review finding remains unresolved.
 
 ### Claude Code review adapter
