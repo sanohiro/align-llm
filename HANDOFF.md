@@ -31,8 +31,8 @@ policy only; no C6 product implementation has started.
 
 ## Next steps
 
-1. Commit this handoff checkpoint, verify the final base diff, push the branch, and open the
-   autonomous-execution repository-governance PR with the preflight findings and checks recorded.
+1. Verify the final base diff, push the branch, and open the autonomous-execution
+   repository-governance PR with the preflight findings and checks recorded.
 2. Review the final pushed PR diff independently, resolve valid findings, rerun affected checks,
    wait for required GitHub checks, and merge.
 3. Refresh `main`, create a fresh C6 design branch, write the C6 public contract and acceptance
@@ -51,7 +51,8 @@ Verified on 2026-07-28:
 ```text
 git diff --check                 PASS
 independent adversarial review  6 findings; all addressed
-fresh adversarial re-review     2 findings; all addressed; final clean recheck pending
+fresh adversarial re-review     2 findings; all addressed
+convergence re-review           1 handoff finding; addressed; final clean recheck pending
 ```
 
 ## Completed bootstrap
