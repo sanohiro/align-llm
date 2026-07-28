@@ -302,8 +302,11 @@ must not open and immediately merge it.
 Review evidence is external, immutable with respect to the reviewed branch, and bound to the exact
 diff. Every review envelope records its own head SHA, base-branch tip SHA, merge-base SHA, reviewer,
 review kind and scope, verdict, and finding dispositions. Use `none` explicitly when there are no
-findings. Check evidence separately records the head SHA, tested base-tip SHA, merge-base or
-synthetic-merge SHA, check name, status, and external record.
+findings. Check evidence separately records the head SHA, tested base-tip SHA, merge-base SHA,
+tested integration commit or tree identity, check name, status, and external record. The tested
+integration may be the head commit only when its merge base equals the tested base tip; otherwise
+it must identify a synthetic merge or equivalent tree that combines those exact head and base-tip
+SHAs.
 
 - Record the clean preflight and verification in the pull request description when opening it.
 - Record post-open host-native and independent-adversarial reviews separately. A native GitHub

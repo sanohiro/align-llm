@@ -28,8 +28,10 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
   SHA, merge-base SHA, reviewer, review kind and scope, verdict, and finding dispositions outside
   the branch. A head or base-tip change after opening requires a full-diff preflight-equivalent
   refresh that replaces the stale pre-open envelope without replacing either post-open review.
-  Check evidence separately records the head, tested base-tip, and merge-base or synthetic-merge
-  SHA and cannot substitute for review evidence.
+  Check evidence separately records the head, tested base-tip, merge-base, and tested integration
+  commit or tree and cannot substitute for review evidence. The head is a valid tested integration
+  only when its merge base equals the tested base tip; otherwise evidence names the synthetic merge
+  or equivalent tree for those exact inputs.
 - Merge readiness requires current SHA-bound evidence, passing required checks, clean required
   reviews, no unresolved valid finding, and no later content push.
 - `HANDOFF.md` identifies the active branch and relevant commit, completed and unfinished work,

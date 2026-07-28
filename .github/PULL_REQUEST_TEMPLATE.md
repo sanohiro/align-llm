@@ -64,7 +64,9 @@ Use `N/A` with a reason when the change makes no performance claim.
 
 - Head SHA:
 - Tested base-tip SHA:
-- Merge-base or synthetic-merge SHA:
+- Merge-base SHA:
+- Tested integration commit or tree (head only when merge-base equals tested base-tip; otherwise
+  synthetic merge or equivalent):
 - Required check names, statuses, and links:
 
 - [ ] Independent adversarial review completed for a non-trivial change
