@@ -52,7 +52,8 @@ Verified on 2026-07-28:
 git diff --check                 PASS
 independent adversarial review  6 findings; all addressed
 fresh adversarial re-review     2 findings; all addressed
-convergence re-review           1 handoff finding addressed; final CLEAN
+convergence re-review           1 handoff finding addressed; CLEAN at f3d802b
+host-native preflight review    3 findings addressed; current-HEAD re-review pending
 ```
 
 ## Completed bootstrap
