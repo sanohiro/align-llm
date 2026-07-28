@@ -4,18 +4,19 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-28. The repository-governance slice on
-`agent/autonomous-execution-policy` is prepared from merged main commit `5311bac`. Its substantive
-checkpoints are the initial design/autonomy policy at `d919cec` and the final SHA-bound review
-terminal-state policy, checklist, and pull request template introduced at `cd529a1` and corrected
-for refreshable final-state evidence at `ee68fdf` and tested-integration identity at `265ea57`; the
-worktree is expected to be clean. After this slice merges, C0 through C5 remain complete and C6
-design is the next roadmap work._
+_Last updated: 2026-07-28. The active enabling slice is
+`agent/align-bounded-http-response-request`, based on merged governance commit `65e19b7`. It
+registers Align Request 5, discovered during C6 design review. No C6 implementation has started.
+The primary worktree intentionally retains the uncommitted C6 design draft on
+`agent/c6-prompt-context-design`; do not discard it._
 
 ## Current position
 
-The repository has completed C0 through C5. The current enabling slice updates the shared agent
-policy only; no C6 product implementation has started.
+The repository has completed C0 through C5. C6 design review demonstrated that the current
+`std.http` provider boundary buffers up to one GiB before an application-level size check can run.
+Request 5 asks Align for a caller-selected receive-time response-body cap. Only the provider
+proposal and real-provider gate are blocked; artifact, renderer, scorer, activation, and
+deterministic evaluator work remain independent.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -33,14 +34,11 @@ policy only; no C6 product implementation has started.
 
 ## Next steps
 
-1. If `origin/main:CLAUDE.md` does not contain the `Review attestations and terminal merge state`
-   contract, resolve the GitHub pull request for `agent/autonomous-execution-policy` and complete its
-   SHA-bound reviews, checks, and merge without branch commits that merely mirror pull request
-   metadata.
-2. Once the policy is on `main`, refresh `main`, create a fresh C6 design branch, write the C6
-   public contract and acceptance matrix, and merge it only after independent design review.
-3. Implement C6 in the smallest reviewed vertical slices. Do not rerun an unchanged full CI or
-   external-service request after a documented capacity failure.
+1. Review and merge the Request 5 registration as its own enabling pull request.
+2. Refresh `agent/c6-prompt-context-design` from merged main, finish the frozen-design review loop,
+   and merge the design only after current SHA-bound preflight and post-open reviews.
+3. Implement independent C6 slices in reviewed order. Do not implement the provider-proposal slice
+   against a hypothetical Align API; resume it only through the request lifecycle.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to

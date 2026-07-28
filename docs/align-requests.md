@@ -45,7 +45,7 @@ After Align merges the capability, rebuild its release compiler and runtime, upd
 `.align-revision`, and run the original acceptance gate through `make ci`. Close the request only
 after this file records both Align's response and align-llm's real-client verification.
 
-> **Status (2026-07-25): Requests 1 and 3 are CLOSED; Request 2 is ALIGN_MERGED; Request 4 is PROPOSED.**
+> **Status (2026-07-28): Requests 1 and 3 are CLOSED; Request 2 is ALIGN_MERGED; Requests 4 and 5 are PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -508,6 +508,132 @@ invalid chunk size, or truncated chunk returns `Error.Invalid` and does not prod
 pass `make provider-smoke` with Content-Length-framed fixtures. The same fixture must be switched to
 chunked framing after Align ships this capability; until then, only the streaming acceptance slice
 is paused and the non-streaming provider work remains valid.
+
+---
+
+## Request 5 — `std.http`: bounded client response bodies
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6 provider-proposal slice and real-provider prompt-optimizer gate
+Independent work that may continue: C6 artifacts, renderer, pure scorer, activation lifecycle, and deterministic A/B evaluator
+Resume condition: a pinned Align release enforces a caller-selected response-body cap while receiving, and align-llm's oversized-provider fixture and make ci pass
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation
+
+C6 asks a model provider for a declared prompt/context proposal and must reject a response larger
+than 262,144 bytes before decoding it. A check after the current provider call returns is too late:
+the whole response has already been allocated. A misconfigured or hostile endpoint can therefore
+consume memory far beyond the C6 contract before align-llm can reject it.
+
+This is a transport-boundary concern, not an application parser feature. align-llm must not build a
+second HTTP client or run the existing whole-body call and describe a post-allocation length check
+as bounded receiving.
+
+### Current-state evidence
+
+Verified at sibling Align commit `891eb3e37b61526fd096c25d95107f1f69060a45` on
+2026-07-28:
+
+- `src/provider_http.align::post_json` calls `client.request(request)` and then
+  `response.body()`, which exposes the already-buffered complete body.
+- `../align/crates/align_runtime/src/lib.rs` sets `HTTP_MAX_BODY` to `1 << 30`.
+- The current `std.http` client has no request/client response-body cap and no client-side bounded
+  response reader. Its streaming surface is server-response output, not client-response input.
+
+Timeouts bound elapsed blocking but do not bound bytes or allocation. The existing one-GiB runtime
+ceiling is much larger than a provider operation's declared response contract.
+
+### Requested capability
+
+Add the smallest idiom-consistent client control that limits response-body bytes while the body is
+being received. The final surface is Align's design decision; a request- or client-level setter
+would fit the existing timeout builder:
+
+```text
+request.max_response_body_bytes(limit: i64)
+// or client.max_response_body_bytes(limit: i64)
+```
+
+Required semantics:
+
+- after the header is parsed, reject a `Content-Length` above the selected cap without reserving
+  from that untrusted declared length or performing another body read. The fixed-size read that
+  discovers the header terminator may already contain body bytes; that bounded co-read is allowed;
+- stop a close-delimited or future de-framed chunked body by reading at most the remaining allowance
+  plus one probe byte once framing is known;
+- return a machine-distinguishable limit-exceeded outcome whose stable public discriminant is not
+  shared with malformed framing, truncation, or another I/O failure. A dedicated `Error` variant or
+  a documented `Error.Code` value are both viable; the final taxonomy remains Align's design
+  decision;
+- apply identically to HTTP and HTTPS;
+- preserve the current default behavior when no explicit smaller cap is selected;
+- keep the response Move ownership and zero-copy body view unchanged for successful bounded
+  responses;
+- follow the existing HTTP timeout-setter convention for zero: a request-level zero clears the
+  override and inherits its client, while a client-level zero restores the existing default;
+- reject a negative or target-`usize`-unrepresentable limit as a programmer error before changing
+  builder state, matching the existing abort-on-invalid builder setters and using checked integer
+  conversion.
+
+The receive buffer must not grow from the declared `Content-Length`. Its largest requested
+response-byte accumulation allocation must be no more than:
+
+```text
+selected body cap + HTTP_MAX_HEADER_BLOCK + HTTP_CLIENT_READ_CHUNK
+```
+
+The current named constants are 262,144 and 32,768 bytes. Therefore the 262,144-byte consumer cap
+has a numeric ceiling of 557,056 bytes for that allocation request. This ceiling includes the
+worst-case fixed header span and header-discovery co-read; it does not attempt to specify allocator
+metadata or unrelated fixed client state.
+
+This request does not require a general async or client-streaming API. A bounded whole-body response
+is sufficient for the first real consumer and composes with Request 4's future chunk de-framing.
+
+### Acceptance / gate
+
+An Align client configured with a 262,144-byte cap:
+
+1. accepts an exact-cap Content-Length response and exposes the complete body;
+2. rejects a Content-Length of 262,145 with the limit-specific outcome immediately after parsing
+   the header, without a declared-length reservation or a subsequent body read;
+3. accepts an exact-cap close-delimited response, and rejects a 262,145-byte close-delimited
+   response with the same limit-specific outcome after reading no more than one probe byte beyond
+   the cap;
+4. enforces the same behavior over HTTPS;
+5. uses an instrumented regression to prove that the largest response-byte accumulation allocation
+   request is at most 557,056 bytes and that no allocation request is derived from the oversized
+   declared length;
+6. leaves an unconfigured client's current behavior unchanged, demonstrated by accepting a
+   262,145-byte response without selecting the smaller cap;
+7. proves zero clears/inherits as specified. Runtime-owner unit tests at the validation/store
+   boundary prove a negative limit and, on a target where it exists, a positive `i64` not
+   representable as `usize` are rejected before a previously valid builder value can change.
+   Process-level fixtures separately prove the public setters abort and issue no network request;
+8. after Request 4 ships, accepts an exact-cap de-framed chunked response and rejects a
+   262,145-byte de-framed chunked response with the same limit-specific outcome. Once that surface
+   exists, this conditional case is required before Request 5 can close.
+
+After Align merges the capability, align-llm rebuilds the sibling release compiler/runtime,
+updates `.align-revision`, makes `provider_http` apply the cap, and runs a fixture proving an
+oversized proposal maps the limit-specific transport outcome to
+`PROVIDER_RESPONSE_TOO_LARGE` without a successful artifact. The C6 provider-proposal slice resumes
+only after that real-client gate and `make ci` pass.
+
+### References
+
+- `src/provider_http.align` — current whole-body provider transport consumer.
+- `../align/crates/align_runtime/src/lib.rs` — `HTTP_MAX_BODY` and client response accumulation.
+- `../align/docs/impl/std-design/http.md` — authoritative HTTP design to extend.
+- `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — committed C6 delivery order and system
+  architecture. The detailed C6 design remains an intentional uncommitted draft on its separate
+  design branch until this enabling request is registered.
 
 ## Not requested (respecting Align's design)
 
