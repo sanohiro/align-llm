@@ -910,8 +910,8 @@ An Align client configured with a 262,144-byte cap:
     allocation exceeds the combined ceiling. Runtime-owner instrumentation proves no trailer raw
     bytes or offsets survive incremental validation. A combined boundary case retains a final head
     ending exactly at `HTTP_MAX_HEADER_BLOCK`, an exact-cap decoded body, and an exact-guard trailer
-    streamed through the reused scratch, and proves peak storage is exactly the combined ceiling
-    rather than head plus trailer wire volume. A decoded-body limit recognized before the terminal
+    streamed through the reused scratch, and proves peak storage does not exceed the combined
+    ceiling or gain a trailer-wire-volume term. A decoded-body limit recognized before the terminal
     chunk remains the limit-specific outcome and does not read any trailer byte.
     Plaintext and verified-TLS sequential fixtures prove an exact-cap terminal chunk/trailer response
     remains pool-eligible and the next request reuses the connection.
