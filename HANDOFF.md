@@ -7,7 +7,8 @@ Conversation history and per-machine memory are not project state.
 _Last updated: 2026-07-28. The repository-governance slice on
 `agent/autonomous-execution-policy` is prepared from merged main commit `5311bac`. Its substantive
 checkpoints are the initial design/autonomy policy at `d919cec` and the final SHA-bound review
-terminal-state policy and checklist at `a352846`; the worktree is expected to be clean. After this
+terminal-state policy, checklist, and pull request template at `c00a6a2`; the worktree is expected
+to be clean. After this
 slice merges, C0 through C5 remain complete and C6 design is the next roadmap work._
 
 ## Current position
@@ -31,12 +32,12 @@ policy only; no C6 product implementation has started.
 
 ## Next steps
 
-1. If `a352846` is not on `origin/main`, resolve the GitHub pull request for
-   `agent/autonomous-execution-policy` and complete its SHA-bound reviews, checks, and merge without
-   branch commits that merely mirror pull request metadata.
+1. If `origin/main:CLAUDE.md` does not contain the `Review attestations and terminal merge state`
+   contract, resolve the GitHub pull request for `agent/autonomous-execution-policy` and complete its
+   SHA-bound reviews, checks, and merge without branch commits that merely mirror pull request
+   metadata.
 2. Once the policy is on `main`, refresh `main`, create a fresh C6 design branch, write the C6
-   public contract and acceptance
-   matrix, and merge it only after independent design review.
+   public contract and acceptance matrix, and merge it only after independent design review.
 3. Implement C6 in the smallest reviewed vertical slices. Do not rerun an unchanged full CI or
    external-service request after a documented capacity failure.
 
@@ -50,7 +51,7 @@ Verified on 2026-07-28:
 
 ```text
 git diff --check                 PASS
-terminal-state design review    APPROVED with required clarifications; incorporated at a352846
+terminal-state design review    APPROVED with required clarifications; incorporated at c00a6a2
 ```
 
 Pull request review and check state is intentionally external GitHub metadata bound to exact SHAs,
