@@ -25,7 +25,9 @@ The bounded-receive contract applies its cap only after method/status-aware body
 continue to the final response without losing co-read bytes, while unsupported `101` upgrades fail
 and close. Request 4 and Request 5 share a combined de-framing/bounded-receive gate; whichever reaches
 `ALIGN_MERGED` second owns bodyless, interim-to-final, exact-cap, cap-plus-one, many-tiny-chunks, and
-aggregate-storage integration verification before `ALIGN_LLM_VERIFIED`.
+aggregate-storage integration verification before `ALIGN_LLM_VERIFIED`. If they ship together,
+Request 5's bounded-response adoption owns that gate and neither request reaches
+`ALIGN_LLM_VERIFIED` until it passes.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and

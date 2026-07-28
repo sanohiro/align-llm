@@ -476,7 +476,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C1 streaming provider acceptance
 Independent work that may continue: non-streaming provider calls, token counting, common result persistence, C2 preparation
-Resume condition: after ALIGN_MERGED, a pinned Align compiler decodes valid chunked SSE and rejects truncated or malformed framing, and align-llm's provider stream smoke passes; if Request 5 reached ALIGN_MERGED first, the same adoption slice must also pass the combined bodyless/chunk-cap/aggregate-storage gate before this request reaches ALIGN_LLM_VERIFIED
+Resume condition: after ALIGN_MERGED, a pinned Align compiler decodes valid chunked SSE and rejects truncated or malformed framing, and align-llm's provider stream smoke passes; if Request 5 reached ALIGN_MERGED first, the Request 4 adoption slice must pass the combined bodyless/chunk-cap/aggregate-storage gate; if both capabilities ship together, Request 5's bounded-response adoption owns that gate; this request cannot reach ALIGN_LLM_VERIFIED until the applicable gate passes
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -507,6 +507,8 @@ response exposed. All interim and final heads share one cumulative `HTTP_MAX_HEA
 allowance, so repeated informational responses cannot accumulate memory or run without a byte bound.
 `101 Switching Protocols` is different: the whole-body HTTP client has no upgraded-protocol handle,
 so it returns `Error.Invalid`, exposes no response, and closes rather than pools the connection.
+For the same reason, `cl.request` rejects the exact `CONNECT` method as `Error.Invalid` before DNS,
+connect, or write; a successful CONNECT would switch to a tunnel this API cannot represent.
 
 ### Acceptance / gate
 
@@ -518,7 +520,8 @@ without waiting for those bytes; the runtime-owner framing matrix also covers `2
 split-read fixtures send one or more `100`/`103` interim heads followed by a final response and prove
 that the final status/body is returned without losing co-read bytes. A cumulative interim-head span
 above `HTTP_MAX_HEADER_BLOCK`, and a `101` response, return `Error.Invalid`, no response handle, and
-close the connection.
+close the connection. A `CONNECT` fixture returns `Error.Invalid` before the fixture observes any
+network request.
 
 The combined de-framing/bounded-receive gate is owned by whichever of Request 4 and Request 5 reaches
 `ALIGN_MERGED` second. If Request 5 is already available when this request ships, Request 4 may not
@@ -526,7 +529,10 @@ advance to `ALIGN_LLM_VERIFIED` until the exact-cap, cap-plus-one, many-tiny-chu
 interim-to-final, and bodyless-response-above-cap cases in Request 5 pass against both shipped
 commits. If Request 4 ships first, Request 5 owns that same combined gate. The request that landed
 first need not be reopened; the second request's lifecycle record must name both Align commits and
-the combined align-llm verification.
+the combined align-llm verification. If both capabilities ship in one Align commit or pull request,
+or both register entries advance to `ALIGN_MERGED` together, Request 5's bounded-response adoption
+slice owns the combined gate; neither request may reach `ALIGN_LLM_VERIFIED` until that slice names
+the joint delivery and records the combined verification.
 
 ### Current align-llm evidence
 
@@ -545,7 +551,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6 provider-proposal slice and real-provider prompt-optimizer gate
 Independent work that may continue: C6 artifacts, renderer, pure scorer, activation lifecycle, and deterministic A/B evaluator
-Resume condition: after ALIGN_MERGED, a separate bounded-response adoption slice pins the shipped Align release, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and make ci; if Request 4 reached ALIGN_MERGED first, that slice must also pass the combined bodyless/chunk-cap/aggregate-storage gate before this request reaches ALIGN_LLM_VERIFIED; only then does the C6 provider-proposal slice resume
+Resume condition: after ALIGN_MERGED, a separate bounded-response adoption slice pins the shipped Align release, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and make ci; if Request 4 reached ALIGN_MERGED first or both capabilities ship together, that slice also owns and must pass the combined bodyless/chunk-cap/aggregate-storage gate before Request 5 reaches ALIGN_LLM_VERIFIED, and for a joint delivery neither request may reach ALIGN_LLM_VERIFIED first; only then does the C6 provider-proposal slice resume
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -589,30 +595,37 @@ client.max_response_body_bytes(limit: i64)
 
 Required semantics:
 
-- a positive selected cap must be in `1..=HTTP_MAX_BODY`. A larger positive value, a negative
+- a positive configured cap must be in `1..=HTTP_MAX_BODY`. A larger positive value, a negative
   value, or a value not representable as target `usize` is a programmer error that aborts before
-  builder state changes. The selected cap can only narrow the existing global ceiling;
+  builder state changes. The configured cap can only narrow the existing global ceiling;
 - an unset or zero client cap has effective value `HTTP_MAX_BODY`. An unset or zero request cap
   inherits that client effective value. A positive request cap has effective value
   `min(client effective cap, request cap)`, so one request can narrow but never widen its client's
   receive bound;
-- validate every interim and final head's `Content-Length` syntax and framing conflicts first. A
-  non-decimal value, conflicting duplicate lengths, or a `Transfer-Encoding` conflict remains
-  malformed `Error.Invalid`. For a payload-bearing final response with a syntactically valid decimal
-  magnitude, an explicit selected-cap excess returns the limit-specific outcome even when the
-  magnitude also exceeds target `usize` or `HTTP_MAX_BODY`; without an explicit cap, target overflow
-  or `HTTP_MAX_BODY` excess keeps the existing `Error.Invalid`;
-- after a head's syntax and framing conflicts are validated, select body framing from the request
-  method and response status. A final response to `HEAD`, and final `204` and `304` responses, have
-  zero received payload; a syntactically valid `Content-Length` that is permitted as metadata
-  (notably on `HEAD` and `304`) is not compared with the selected cap, causes no body allocation,
-  and causes no body read;
-- a non-`101` informational head has zero payload but is not returned. Preserve co-read bytes,
-  continue through subsequent informational heads to the final response, and apply the selected cap
-  only to that final response's payload. Count the complete wire span of all interim and final heads
-  against one cumulative `HTTP_MAX_HEADER_BLOCK` allowance even when parsed interim storage is
-  discarded. Reject `101 Switching Protocols` as `Error.Invalid`, with no response handle and no
-  pooled connection, because this whole-body client exposes no upgraded transport;
+- a positive client or request cap is explicit even when its value is exactly `HTTP_MAX_BODY`; zero
+  and unset are not explicit. Thus, whenever either scope has a positive cap, a payload-bearing
+  response above the effective cap returns the limit-specific outcome, including when the only
+  positive cap is exactly `HTTP_MAX_BODY`. When neither scope has a positive cap, target overflow or
+  `HTTP_MAX_BODY` excess retains the existing `Error.Invalid`;
+- validate `Content-Length` syntax and framing conflicts before cap comparison for every response
+  head the available framing surface accepts. A non-decimal value, conflicting duplicate lengths,
+  or a `Transfer-Encoding` conflict remains malformed `Error.Invalid`. For a payload-bearing final
+  response with a syntactically valid decimal magnitude, an explicit-cap excess returns the
+  limit-specific outcome even when the magnitude also exceeds target `usize` or `HTTP_MAX_BODY`;
+- once Request 4's method/status-aware framing is available, compose it with the cap as follows:
+  - after a head's syntax and framing conflicts are validated, select body framing from the request
+    method and response status. A final response to `HEAD`, and final `204` and `304` responses, have
+    zero received payload; a syntactically valid `Content-Length` that is permitted as metadata
+    (notably on `HEAD` and `304`) is not compared with the selected cap, causes no body allocation,
+    and causes no body read;
+  - a non-`101` informational head has zero payload but is not returned. Preserve co-read bytes,
+    continue through subsequent informational heads to the final response, and apply the selected
+    cap only to that final response's payload. Count the complete wire span of all interim and final
+    heads against one cumulative `HTTP_MAX_HEADER_BLOCK` allowance even when parsed interim storage
+    is discarded;
+  - reject `101 Switching Protocols` as `Error.Invalid`, with no response handle and no pooled
+    connection. Request 4 rejects `CONNECT` before a network side effect, so tunneled bytes never
+    enter the bounded whole-body path;
 - for a payload-bearing response, reject a `Content-Length` above the selected cap without reserving
   from that untrusted declared length or performing another body read. The fixed-size read that
   discovers the header terminator may already contain body bytes; that bounded co-read is allowed;
@@ -629,7 +642,8 @@ Required semantics:
   through the existing transport teardown. The client remains usable for a later request on a new
   clean connection;
 - apply identically to HTTP and HTTPS;
-- preserve the current default behavior when no explicit smaller cap is selected;
+- preserve the current default behavior only when neither scope has a positive cap. A positive
+  `HTTP_MAX_BODY` value remains explicit and uses the limit-specific outcome on excess;
 - keep the response Move ownership and zero-copy body view unchanged for successful bounded
   responses;
 - follow the existing HTTP timeout-setter convention for zero: a request-level zero clears the
@@ -694,13 +708,16 @@ An Align client configured with a 262,144-byte cap:
    capacity—is at most 557,056 bytes, and that no allocation request or capacity is derived from the
    oversized declared length;
 9. proves an unconfigured or client-zero effective cap remains exactly `HTTP_MAX_BODY` in a
-   runtime-owner unit test, and accepts a 262,145-byte response without a smaller cap;
+   runtime-owner unit test, accepts a 262,145-byte response without a smaller cap, and returns the
+   existing `Error.Invalid` for a syntactically valid Content-Length above `HTTP_MAX_BODY`;
 10. proves request zero inherits the client, a positive request cap narrows a larger client cap, and
-   a larger positive request cap cannot widen a smaller client cap. Runtime-owner tests at the
-   validation/store boundary accept exactly `HTTP_MAX_BODY`, and prove `HTTP_MAX_BODY + 1`, a
-   negative limit, and, on a target where it exists, a positive `i64` not representable as `usize`
-   abort before a previously valid builder value can change. Process-level fixtures separately
-   prove both public setters abort and issue no network request;
+    a larger positive request cap cannot widen a smaller client cap. Runtime-owner tests at the
+    validation/store boundary accept exactly `HTTP_MAX_BODY`, and prove `HTTP_MAX_BODY + 1`, a
+    negative limit, and, on a target where it exists, a positive `i64` not representable as `usize`
+    abort before a previously valid builder value can change. Process-level fixtures separately
+    prove both public setters abort and issue no network request. Client-level and request-level
+    positive `HTTP_MAX_BODY` fixtures each return the limit-specific outcome for a syntactically
+    valid Content-Length of `HTTP_MAX_BODY + 1`, while zero/unset fixtures retain `Error.Invalid`;
 11. proves a limit failure returns no response handle, frees its accumulator, and closes rather than
    pools the partial connection. Plaintext and verified-TLS sequential fixtures send an oversized
    response and then a valid small request through the same client, and prove the second request
@@ -711,7 +728,9 @@ An Align client configured with a 262,144-byte cap:
     framing, metadata, trailers, and scratch storage do not exceed the combined 557,056-byte ceiling.
     The request that reaches `ALIGN_MERGED` second owns these cases and items 4–5 before it may advance
     to `ALIGN_LLM_VERIFIED`; its lifecycle record names both shipped commits and the combined
-    verification. The earlier request need not be reopened;
+    verification. The earlier request need not be reopened. For a joint Align delivery, Request 5's
+    bounded-response adoption owns the combined cases, names the joint commit or pull request, and
+    must pass before either request reaches `ALIGN_LLM_VERIFIED`;
 13. proves the limit outcome remains distinguishable through `provider_http` from a real HTTP 413
     and another non-2xx response. The limit fixture returns the shipped limit discriminant and no
     body; the status fixtures retain `Error.Code(413)` and their exact HTTP status codes.
