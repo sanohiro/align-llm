@@ -476,7 +476,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C1 streaming provider acceptance
 Independent work that may continue: non-streaming provider calls, token counting, common result persistence, C2 preparation
-Resume condition: a pinned Align compiler decodes a valid chunked SSE response and rejects truncated or malformed chunk framing; align-llm's provider stream smoke passes against that wire format
+Resume condition: after ALIGN_MERGED, a pinned Align compiler decodes valid chunked SSE and rejects truncated or malformed framing, and align-llm's provider stream smoke passes; if Request 5 reached ALIGN_MERGED first, the same adoption slice must also pass the combined bodyless/chunk-cap/aggregate-storage gate before this request reaches ALIGN_LLM_VERIFIED
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -496,9 +496,17 @@ same zero-copy/owned response body exposed by `resp.body()`. Preserve the existi
 and truncation error behavior, and keep response status and headers unchanged. The provider layer
 does not need a second streaming transport API; `cl.request` should remain the single HTTP boundary.
 As already assigned to this de-framing slice by Align's HTTP plan, select response-body framing from
-the request method and response status before reading a body: `HEAD`, `1xx`, `204`, and `304`
-responses expose zero body bytes even when a response such as `HEAD` or `304` legitimately carries
-`Content-Length` metadata.
+the request method and response status before reading a body. A final response to `HEAD`, and final
+`204` and `304` responses, expose zero body bytes even when a response such as `HEAD` or `304`
+legitimately carries `Content-Length` metadata.
+
+An informational response other than `101` is an interim head, not the response returned to the
+caller. Validate it, consume no payload, preserve any following bytes already read from the
+connection, and continue until the final response; the final status, headers, and body are the only
+response exposed. All interim and final heads share one cumulative `HTTP_MAX_HEADER_BLOCK` wire-byte
+allowance, so repeated informational responses cannot accumulate memory or run without a byte bound.
+`101 Switching Protocols` is different: the whole-body HTTP client has no upgraded-protocol handle,
+so it returns `Error.Invalid`, exposes no response, and closes rather than pools the connection.
 
 ### Acceptance / gate
 
@@ -506,16 +514,19 @@ An HTTP fixture sends two SSE chunks and a terminating zero chunk. `provider.str
 concatenated content for both the OpenAI-compatible and llama.cpp adapters. A missing terminator,
 invalid chunk size, or truncated chunk returns `Error.Invalid` and does not produce a partial success.
 `HEAD` and `304` fixtures with a syntactically valid nonzero `Content-Length` return an empty body
-without waiting for those bytes; the runtime-owner framing matrix also covers `1xx` and `204`.
+without waiting for those bytes; the runtime-owner framing matrix also covers `204`. Same-read and
+split-read fixtures send one or more `100`/`103` interim heads followed by a final response and prove
+that the final status/body is returned without losing co-read bytes. A cumulative interim-head span
+above `HTTP_MAX_HEADER_BLOCK`, and a `101` response, return `Error.Invalid`, no response handle, and
+close the connection.
 
 The combined de-framing/bounded-receive gate is owned by whichever of Request 4 and Request 5 reaches
 `ALIGN_MERGED` second. If Request 5 is already available when this request ships, Request 4 may not
-advance to `ALIGN_LLM_VERIFIED` until the exact-cap, cap-plus-one, many-tiny-chunks, combined
-allocation ceiling, and bodyless-response-above-cap cases in Request 5 pass against both shipped
-commits. If
-Request 4 ships first, Request 5 owns that same combined gate. The request that landed first need not
-be reopened; the second request's lifecycle record must name both Align commits and the combined
-align-llm verification.
+advance to `ALIGN_LLM_VERIFIED` until the exact-cap, cap-plus-one, many-tiny-chunks, aggregate-storage,
+interim-to-final, and bodyless-response-above-cap cases in Request 5 pass against both shipped
+commits. If Request 4 ships first, Request 5 owns that same combined gate. The request that landed
+first need not be reopened; the second request's lifecycle record must name both Align commits and
+the combined align-llm verification.
 
 ### Current align-llm evidence
 
@@ -534,7 +545,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6 provider-proposal slice and real-provider prompt-optimizer gate
 Independent work that may continue: C6 artifacts, renderer, pure scorer, activation lifecycle, and deterministic A/B evaluator
-Resume condition: after ALIGN_MERGED, a separate bounded-response adoption slice pins the shipped Align release, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and make ci; only then does the C6 provider-proposal slice resume
+Resume condition: after ALIGN_MERGED, a separate bounded-response adoption slice pins the shipped Align release, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and make ci; if Request 4 reached ALIGN_MERGED first, that slice must also pass the combined bodyless/chunk-cap/aggregate-storage gate before this request reaches ALIGN_LLM_VERIFIED; only then does the C6 provider-proposal slice resume
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -585,16 +596,23 @@ Required semantics:
   inherits that client effective value. A positive request cap has effective value
   `min(client effective cap, request cap)`, so one request can narrow but never widen its client's
   receive bound;
-- validate `Content-Length` syntax and framing conflicts first. A non-decimal value, conflicting
-  duplicate lengths, or a `Transfer-Encoding` conflict remains malformed `Error.Invalid`. For a
-  payload-bearing response with a syntactically valid decimal magnitude, an explicit selected-cap
-  excess returns the limit-specific outcome even when the magnitude also exceeds target `usize` or
-  `HTTP_MAX_BODY`; without an explicit cap, target overflow or `HTTP_MAX_BODY` excess keeps the
-  existing `Error.Invalid`;
-- after header syntax and framing conflicts are validated, select body framing from the request
-  method and response status. `HEAD`, `1xx`, `204`, and `304` responses have zero received payload;
-  a syntactically valid `Content-Length` that is permitted as metadata (notably on `HEAD` and `304`)
-  is not compared with the selected cap, causes no body allocation, and causes no body read;
+- validate every interim and final head's `Content-Length` syntax and framing conflicts first. A
+  non-decimal value, conflicting duplicate lengths, or a `Transfer-Encoding` conflict remains
+  malformed `Error.Invalid`. For a payload-bearing final response with a syntactically valid decimal
+  magnitude, an explicit selected-cap excess returns the limit-specific outcome even when the
+  magnitude also exceeds target `usize` or `HTTP_MAX_BODY`; without an explicit cap, target overflow
+  or `HTTP_MAX_BODY` excess keeps the existing `Error.Invalid`;
+- after a head's syntax and framing conflicts are validated, select body framing from the request
+  method and response status. A final response to `HEAD`, and final `204` and `304` responses, have
+  zero received payload; a syntactically valid `Content-Length` that is permitted as metadata
+  (notably on `HEAD` and `304`) is not compared with the selected cap, causes no body allocation,
+  and causes no body read;
+- a non-`101` informational head has zero payload but is not returned. Preserve co-read bytes,
+  continue through subsequent informational heads to the final response, and apply the selected cap
+  only to that final response's payload. Count the complete wire span of all interim and final heads
+  against one cumulative `HTTP_MAX_HEADER_BLOCK` allowance even when parsed interim storage is
+  discarded. Reject `101 Switching Protocols` as `Error.Invalid`, with no response handle and no
+  pooled connection, because this whole-body client exposes no upgraded transport;
 - for a payload-bearing response, reject a `Content-Length` above the selected cap without reserving
   from that untrusted declared length or performing another body read. The fixed-size read that
   discovers the header terminator may already contain body bytes; that bounded co-read is allowed;
@@ -618,25 +636,29 @@ Required semantics:
   override and inherits its client, while a client-level zero restores the existing default;
 - use checked integer conversion at every native boundary.
 
-The receive buffer must not grow from the declared `Content-Length`. Its largest requested
-response-byte accumulation allocation must be no more than:
+The receive buffer must not grow from the declared `Content-Length`. At every point in an exchange,
+the peak aggregate live response-related storage must be no more than:
 
 ```text
 selected body cap + HTTP_MAX_HEADER_BLOCK + HTTP_CLIENT_READ_CHUNK
 ```
 
 The current named constants are 262,144 and 32,768 bytes. Therefore the 262,144-byte consumer cap
-has a numeric ceiling of 557,056 bytes for that allocation request. This ceiling includes the
-worst-case fixed header span and header-discovery co-read; it does not attempt to specify allocator
-metadata or unrelated fixed client state.
+has a numeric ceiling of 557,056 bytes. Aggregate live storage is the sum of the capacities of every
+simultaneously live response-related owned buffer plus the capacity of any fixed raw-read scratch
+storage. This ceiling includes the worst-case fixed header span and header-discovery co-read; it does
+not attempt to specify allocator metadata or unrelated fixed client state. An implementation may
+reuse or combine these regions, but may not give separate accumulators independent copies of any
+allowance.
 
 When Request 4 adds chunk de-framing, the formula remains a combined receive-buffer ceiling, not
 one allowance per parser component. `selected body cap` covers only retained decoded payload;
-`HTTP_MAX_HEADER_BLOCK` is the single combined allowance for the response head and any retained
-chunk metadata or trailers; one reused `HTTP_CLIENT_READ_CHUNK` scratch buffer covers raw framing
-and payload input. Chunk-size lines, extensions, and trailers need their own syntax/length guards,
-but may not accumulate outside those terms. The one probe byte is a decoded-payload observation in
-the reused scratch buffer and does not enlarge the retained payload.
+`HTTP_MAX_HEADER_BLOCK` is the single cumulative wire-byte allowance for every interim and final
+response head and the single storage allowance shared with retained chunk metadata or trailers; one
+reused `HTTP_CLIENT_READ_CHUNK` scratch buffer covers raw framing and payload input. Chunk-size lines,
+extensions, and trailers need their own syntax/length guards, but may not accumulate outside those
+terms. The one probe byte is a decoded-payload observation in the reused scratch buffer and does not
+enlarge the retained payload.
 
 This request does not require a general async or client-streaming API. A bounded whole-body response
 is sufficient for the first real consumer and composes with Request 4's future chunk de-framing.
@@ -656,33 +678,41 @@ An Align client configured with a 262,144-byte cap:
 4. once Request 4's method/status-aware framing exists, accepts `HEAD` and `304` responses that
    advertise a syntactically valid `Content-Length` above 262,144 but transfer no body, exposes an
    empty body, and neither returns the limit outcome nor consumes bytes belonging to a following
-   response. Runtime-owner cases prove `1xx` and `204` also select zero received payload;
-5. accepts an exact-cap close-delimited response, and rejects a 262,145-byte close-delimited
+   response. A runtime-owner case proves a final `204` also selects zero received payload;
+5. once Request 4 exists, same-read and split-read fixtures send one or more `100`/`103` interim
+   heads followed by a final response. They prove only the final status/body is returned, no co-read
+   final bytes are lost, an exact-cap final body succeeds, a cap-plus-one final body returns the
+   limit outcome, and aggregate live response storage remains within 557,056 bytes. A cumulative
+   interim/final head span above `HTTP_MAX_HEADER_BLOCK`, and `101 Switching Protocols`, return
+   `Error.Invalid`, no response handle, and a closed rather than pooled connection;
+6. accepts an exact-cap close-delimited response, and rejects a 262,145-byte close-delimited
    response with the same limit-specific outcome after reading no more than one probe byte beyond
    the cap;
-6. enforces the same behavior over HTTPS;
-7. uses an instrumented regression to prove that the largest response-byte accumulation allocation
-   request is at most 557,056 bytes and that no allocation request is derived from the oversized
-   declared length;
-8. proves an unconfigured or client-zero effective cap remains exactly `HTTP_MAX_BODY` in a
+7. enforces the same behavior over HTTPS;
+8. uses runtime-owner instrumentation to prove that the peak aggregate live response-related
+   storage—the sum of every simultaneously live owned-buffer capacity plus fixed raw-read scratch
+   capacity—is at most 557,056 bytes, and that no allocation request or capacity is derived from the
+   oversized declared length;
+9. proves an unconfigured or client-zero effective cap remains exactly `HTTP_MAX_BODY` in a
    runtime-owner unit test, and accepts a 262,145-byte response without a smaller cap;
-9. proves request zero inherits the client, a positive request cap narrows a larger client cap, and
+10. proves request zero inherits the client, a positive request cap narrows a larger client cap, and
    a larger positive request cap cannot widen a smaller client cap. Runtime-owner tests at the
    validation/store boundary accept exactly `HTTP_MAX_BODY`, and prove `HTTP_MAX_BODY + 1`, a
    negative limit, and, on a target where it exists, a positive `i64` not representable as `usize`
    abort before a previously valid builder value can change. Process-level fixtures separately
    prove both public setters abort and issue no network request;
-10. proves a limit failure returns no response handle, frees its accumulator, and closes rather than
+11. proves a limit failure returns no response handle, frees its accumulator, and closes rather than
    pools the partial connection. Plaintext and verified-TLS sequential fixtures send an oversized
    response and then a valid small request through the same client, and prove the second request
    uses a new clean connection;
-11. after Request 4 ships, accepts an exact-cap de-framed chunked response, including its terminating
+12. after Request 4 ships, accepts an exact-cap de-framed chunked response, including its terminating
     chunk and trailers, and rejects a 262,145-byte decoded payload with the same limit-specific
-    outcome. A many-tiny-chunks fixture proves framing does not accumulate outside the combined
-    557,056-byte ceiling. The request that reaches `ALIGN_MERGED` second owns these cases and item 4
-    before it may advance to `ALIGN_LLM_VERIFIED`; its lifecycle record names both shipped commits
-    and the combined verification. The earlier request need not be reopened;
-12. proves the limit outcome remains distinguishable through `provider_http` from a real HTTP 413
+    outcome. A many-tiny-chunks fixture proves the aggregate capacities of decoded payload, raw
+    framing, metadata, trailers, and scratch storage do not exceed the combined 557,056-byte ceiling.
+    The request that reaches `ALIGN_MERGED` second owns these cases and items 4–5 before it may advance
+    to `ALIGN_LLM_VERIFIED`; its lifecycle record names both shipped commits and the combined
+    verification. The earlier request need not be reopened;
+13. proves the limit outcome remains distinguishable through `provider_http` from a real HTTP 413
     and another non-2xx response. The limit fixture returns the shipped limit discriminant and no
     body; the status fixtures retain `Error.Code(413)` and their exact HTTP status codes.
 
