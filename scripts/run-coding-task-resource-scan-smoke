@@ -595,6 +595,22 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
             None,
             None,
         ),
+        (
+            "post-body-capture-close-error",
+            "line",
+            body_capture_lines[0],
+            PermissionError("iterator denied before interruption"),
+            FileNotFoundError("close vanished after body interruption"),
+            None,
+        ),
+        (
+            "post-body-capture-nested-close-error",
+            "line",
+            body_capture_lines[0],
+            PermissionError("iterator denied before interruption"),
+            FileNotFoundError("close vanished after nested body interruption"),
+            ValueError("internal cleanup context after body interruption"),
+        ),
     ):
         root = owner / f"owner-scope-{name}"
         root.mkdir()

@@ -1099,9 +1099,10 @@ def validation_worktree_usage(
                 except BaseException:
                     body_error = sys.exc_info()
         except BaseException as error:
-            if not entered:
+            interrupted_error = None
+            interrupted_traceback = None
+            if body_error is None:
                 interrupted_error = error.__context__
-                interrupted_traceback = None
                 current_frame = sys._getframe()
                 seen_contexts = {id(error)}
                 while (
@@ -1109,29 +1110,31 @@ def validation_worktree_usage(
                     and id(interrupted_error) not in seen_contexts
                 ):
                     seen_contexts.add(id(interrupted_error))
-                    interrupted_traceback = interrupted_error.__traceback__
-                    while (
-                        interrupted_traceback is not None
-                        and interrupted_traceback.tb_frame is not current_frame
-                    ):
-                        interrupted_traceback = interrupted_traceback.tb_next
-                    if interrupted_traceback is not None:
-                        break
+                    if not isinstance(interrupted_error, Exception):
+                        interrupted_traceback = interrupted_error.__traceback__
+                        while (
+                            interrupted_traceback is not None
+                            and interrupted_traceback.tb_frame is not current_frame
+                        ):
+                            interrupted_traceback = interrupted_traceback.tb_next
+                        if interrupted_traceback is not None:
+                            break
                     interrupted_error = interrupted_error.__context__
-                if interrupted_error is not None and interrupted_traceback is not None:
-                    body_error = (
-                        type(interrupted_error),
-                        interrupted_error,
-                        interrupted_error.__traceback__,
-                    )
-                    close_error = error
-                else:
-                    if not isinstance(error, OSError):
-                        raise
-                    require_scan_deadline()
-                    if isinstance(error, FileNotFoundError) and current != checkout:
-                        continue
-                    raise directory_error(current, error) from error
+
+            if interrupted_error is not None and interrupted_traceback is not None:
+                body_error = (
+                    type(interrupted_error),
+                    interrupted_error,
+                    interrupted_error.__traceback__,
+                )
+                close_error = error
+            elif not entered:
+                if not isinstance(error, OSError):
+                    raise
+                require_scan_deadline()
+                if isinstance(error, FileNotFoundError) and current != checkout:
+                    continue
+                raise directory_error(current, error) from error
             else:
                 close_error = error
 
