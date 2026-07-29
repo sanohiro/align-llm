@@ -19,7 +19,10 @@ The repository has completed C0 through C5. PR #17 merged at `aad72ff`, defining
 capable, and canonical CI topology. Before implementation, its baseline closure audit found that
 changing `Makefile` necessarily invalidates the current canonical baseline artifact manifest. The
 active design correction makes the baseline refresh and merge-only ancestry part of the
-implementation contract instead of allowing a broken intermediate `main`.
+implementation contract instead of allowing a broken intermediate `main`. Its structural evidence
+also binds the named source and oracle commits to the identities persisted in the finalized
+baseline and disables replacement objects and ambient Git configuration for every provenance
+inspection.
 
 PR #16 merged at `c20e919`, adding the applicable Align
 design-convergence rules and the bounded post-merge retrospective. Its review caught and fixed

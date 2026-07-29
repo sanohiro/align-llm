@@ -174,44 +174,77 @@ The implementation pull request uses this ordered history:
      does not rewrite the baseline.
 
 The pull request must use a merge commit. Squash and rebase merging are forbidden because they would
-make the recorded implementation source or immutable oracle commit unreachable from the merged
-history. Before merge, both full commits must be ancestors of the exact reviewed head; after merge,
-both must be ancestors of the resulting `main`.
+make the recorded implementation source, immutable oracle, or finalization commit unreachable from
+the merged history. Before merge, all three full commits must be ancestors of the exact reviewed
+head; after merge, all three must be ancestors of the resulting `main`.
 
-The implementation records full `SOURCE_COMMIT`, `ORACLE_COMMIT`, and `FINALIZATION_COMMIT` values
-and runs these exact structural checks before merge:
+The implementation records full `SOURCE_COMMIT`, `ORACLE_COMMIT`, and `FINALIZATION_COMMIT` values.
+The source and oracle values must equal the identities embedded in the finalized baseline, not
+merely name another valid ancestor chain. All structural Git inspection runs in an empty
+environment with replacement objects and ambient Git configuration disabled, matching the
+baseline recorder and verifier's repository-isolation boundary. Run these exact checks before
+merge:
 
 ```text
-git merge-base --is-ancestor "$SOURCE_COMMIT" "$ORACLE_COMMIT"
-git merge-base --is-ancestor "$ORACLE_COMMIT" "$FINALIZATION_COMMIT"
-git merge-base --is-ancestor "$FINALIZATION_COMMIT" HEAD
-test "$(git diff-tree --no-commit-id --name-only -r "$ORACLE_COMMIT")" = \
+clean_git() {
+  env -i \
+    PATH=/usr/bin:/bin \
+    LC_ALL=C \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_ATTR_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    XDG_CONFIG_HOME=/dev/null \
+    git "$@"
+}
+python3 - "$SOURCE_COMMIT" "$ORACLE_COMMIT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+baseline = json.loads(
+    Path("eval/baselines/coding-v1-reference.json").read_text(encoding="utf-8")
+)
+expected = (baseline["align_llm_commit"], baseline["canonical_oracle_commit"])
+actual = (sys.argv[1], sys.argv[2])
+if actual != expected:
+    raise SystemExit(
+        "recorded provenance differs: "
+        f"expected source/oracle {expected[0]} {expected[1]}, "
+        f"received {actual[0]} {actual[1]}"
+    )
+PY
+clean_git merge-base --is-ancestor "$SOURCE_COMMIT" "$ORACLE_COMMIT"
+clean_git merge-base --is-ancestor "$ORACLE_COMMIT" "$FINALIZATION_COMMIT"
+clean_git merge-base --is-ancestor "$FINALIZATION_COMMIT" HEAD
+test "$(clean_git diff-tree --no-commit-id --name-only -r "$ORACLE_COMMIT")" = \
   "eval/expected/coding-v1-reference-oracle.json"
-test "$(git diff-tree --no-commit-id --name-only -r "$FINALIZATION_COMMIT")" = \
+test "$(clean_git diff-tree --no-commit-id --name-only -r "$FINALIZATION_COMMIT")" = \
   "$(printf '%s\n' \
     eval/baselines/coding-v1-reference.json \
     eval/expected/coding-v1-reference.sha256)"
-git show "$SOURCE_COMMIT:Makefile" | cmp - Makefile
-git show \
+clean_git show "$SOURCE_COMMIT:Makefile" | cmp - Makefile
+clean_git show \
   "$ORACLE_COMMIT:eval/expected/coding-v1-reference-oracle.json" | \
   cmp - eval/expected/coding-v1-reference-oracle.json
-git show \
+clean_git show \
   "$FINALIZATION_COMMIT:eval/baselines/coding-v1-reference.json" | \
   cmp - eval/baselines/coding-v1-reference.json
-git show \
+clean_git show \
   "$FINALIZATION_COMMIT:eval/expected/coding-v1-reference.sha256" | \
   cmp - eval/expected/coding-v1-reference.sha256
-test -z "$(git log --format=%H "$SOURCE_COMMIT"..HEAD -- Makefile)"
-test -z "$(git log --format=%H "$ORACLE_COMMIT"..HEAD -- \
+test -z "$(clean_git log --format=%H "$SOURCE_COMMIT"..HEAD -- Makefile)"
+test -z "$(clean_git log --format=%H "$ORACLE_COMMIT"..HEAD -- \
   eval/expected/coding-v1-reference-oracle.json)"
-test -z "$(git log --format=%H "$FINALIZATION_COMMIT"..HEAD -- \
+test -z "$(clean_git log --format=%H "$FINALIZATION_COMMIT"..HEAD -- \
   eval/baselines/coding-v1-reference.json \
   eval/expected/coding-v1-reference.sha256)"
 ```
 
 After merge, the source, oracle, and finalization commits must each be ancestors of refreshed
-`main`, and the four final-tree byte comparisons and three no-later-change checks above must still
-pass with `HEAD` replaced by refreshed `main`.
+`main`, and the persisted-identity comparison, four final-tree byte comparisons, and three
+no-later-change checks above must still pass with `HEAD` replaced by refreshed `main` in the same
+isolated Git environment.
 
 ### 2.5 Measurement interpretation
 
@@ -335,7 +368,7 @@ self-test: PASS` plus LF and nothing else.
 | Baseline source identity | implementation source commit | final identity-bound `Makefile` is clean and committed before recording | Pending record `align_llm_commit` equals the source commit and its Makefile digest equals `git show <source>:Makefile`. |
 | Immutable oracle | oracle commit | exact canonical projection of the pending record | Oracle commit contains only the ordered projection; the existing direct timing-mutation regression proves whole-projection equality is enforced, and final-tree bytes equal the oracle commit. |
 | Canonical finalization | finalization commit | finalizer binds full oracle commit and writes digest | `make baseline-check` passes; pending file is absent; canonical digest matches. |
-| Baseline commit chain | source, oracle, finalization, final reviewed head, and merge result | strict source → oracle → finalization → head/main ancestry; merge method is `merge` | Exact ancestry checks pass; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
+| Baseline commit chain | finalized baseline, source, oracle, finalization, final reviewed head, and merge result | persisted source/oracle fields equal the named commits; strict source → oracle → finalization → head/main ancestry in an isolated Git environment; merge method is `merge` | Exact identity and ancestry checks pass without replacement objects or ambient Git configuration; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
 | Post-record input change | author/reviewer | re-record from a new clean source commit | Matrix-to-diff audit compares changed paths with the recorded input manifest; any overlap invalidates the complete prior sequence. |
 | Post-record output change | author/reviewer | regenerate through the owning projection/finalizer before finalization; restart the full sequence afterward | Final-tree oracle, baseline, and digest bytes equal their named owner commits; no later commit changes those paths. |
 | Measurement interpretation | pull request evidence | two deterministic-reference samples on the recorded environment | Both samples PASS; prior and refreshed timings are reported without a performance claim. |
@@ -375,8 +408,9 @@ self-test: PASS` plus LF and nothing else.
   parallel Make flags.
 - Record, project, commit, and finalize the canonical C0 baseline from the final clean implementation
   source commit using section 2.4. Verify the strict source → oracle → finalization → head chain,
-  exact per-commit path sets, final-tree byte equality, pending-file absence, digest, and the existing
-  immutable-oracle timing-mutation regression.
+  equality with both commit identities persisted in the finalized baseline, exact per-commit path
+  sets, final-tree byte equality, pending-file absence, digest, replacement-object isolation, and
+  the existing immutable-oracle timing-mutation regression.
 - Obtain a passing hosted required check using `make hosted-checks`.
 - Review the full implementation against `docs/review-checklist.md`, including aggregate-name
   accuracy and any shared-target execution or cleanup regression.
