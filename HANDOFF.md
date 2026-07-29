@@ -21,7 +21,7 @@ oracle → finalization replacement is source `883f3f7`, oracle `d05e9f4`, and f
 the helper's failure injection occurred after successful ordinary loads rather than inside the
 ordinary-loader normalization scope. The helper now performs a real missing-source ordinary load
 inside that scope and asserts exact restoration. The active replacement is source `924fc58`, oracle
-`c291cdb`, and finalization `a795284`; full verification and fresh preflight remain.
+`c291cdb`, and finalization `a795284`; full verification passes and fresh preflight remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -126,8 +126,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Rerun complete focused, CI, and positive and negative provenance verification against source
-   `924fc58`, oracle `c291cdb`, and finalization `a795284`, then run a fresh full-diff preflight.
+1. Run a fresh full-diff preflight against source `924fc58`, oracle `c291cdb`, and finalization
+   `a795284`.
 2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
    host-native and independent-adversarial post-open reviews, and merge only with a merge commit
    that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
@@ -193,8 +193,9 @@ stale until this runner correction and baseline refresh merge. The active `883f3
 superseded by the ordinary-loader failure regression. The active replacement baseline records
 source `924fc585a27b301e936eadd2b9a686aa598c9083`, immutable oracle
 `c291cdb8a27d68633f76ef7e296692aa6923027c`, and finalization
-`a795284191925d50578ab997355c8f12bda451c3`; both samples pass. Full replacement verification is in
-progress.
+`a795284191925d50578ab997355c8f12bda451c3`; both samples pass. Focused helper verification passes
+under default and explicit bytecode-disabled redirected-cache process settings, `make ci` passes
+with the pinned Align checkout, and the complete positive and negative provenance harness passes.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
