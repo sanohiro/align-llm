@@ -6,9 +6,9 @@ Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-29. Check-gate topology implementation is active on
 `agent/check-gate-topology-implementation`, based on merged design-correction commit `e0c37a7`.
-The first source/oracle/finalization attempt exposed and is correcting a pre-existing validation
-resource-scan unlink race; its baseline identities are superseded and must be re-recorded after the
-fix. C6 product implementation has also not started. In the primary worktree, modified
+The final baseline chain is source `8ae42c0`, oracle `1ebb0fe`, and finalization `0b74370`;
+implementation verification is complete and exact-SHA review is next. C6 product implementation
+has also not started. In the primary worktree, modified
 `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
 not be discarded._
@@ -26,6 +26,13 @@ baseline, requires every recorded identity to name a raw commit object rather th
 peeled tag, rejects post-source history for every path derived from the recorded artifact manifest,
 uses full merge history for every input and output no-later-change check, and disables replacement
 objects and ambient Git configuration for every provenance inspection.
+
+The first implementation baseline attempt exposed an existing validation-resource scan race:
+validation could unlink a file after `scandir` returned it but before `stat`. The runner now retries
+through the next bounded scan only for `FileNotFoundError`; other inspection failures remain
+fail-closed. The full invalid coding-task smoke passed three consecutive focused runs and then
+passed inside the canonical gate. Because the runner is a recorded artifact, the superseded
+baseline sequence was discarded and the final sequence was recorded from the corrected source.
 
 PR #16 merged at `c20e919`, adding the applicable Align
 design-convergence rules and the bounded post-merge retrospective. Its review caught and fixed
@@ -81,10 +88,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Finish the check-topology implementation, commit the clean source state, then record, project,
-   and finalize the canonical baseline in the exact source → oracle → finalization sequence.
-   Run the structural negative harness, `make -j8 ci`, hosted Actions, and full exact-SHA review;
-   merge this PR with a merge commit.
+1. Run full-diff preflight review for the check-topology implementation, open its pull request,
+   obtain hosted Actions plus exact-SHA host-native and independent reviews, and merge only with a
+   merge commit so source `8ae42c0`, oracle `1ebb0fe`, and finalization `0b74370` remain reachable.
 2. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
@@ -96,20 +102,36 @@ Do not rerun a failing external service request indefinitely. The Codex “high 
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
 
-## Current check-topology correction verification
+## Current check-topology implementation verification
 
 Verified on 2026-07-29:
 
 ```text
-git diff --check                         PASS
-make format-check                        PASS
-make baseline-check                      PASS
-test "$(readlink AGENTS.md)" = CLAUDE.md PASS
+make gate-topology-check                                      PASS
+python3 scripts/check-gate-topology --self-test               PASS
+make hosted-checks                                             PASS
+scripts/run-coding-task-invalid-smoke (three consecutive runs) PASS
+SOURCE_COMMIT=8ae42c0... ORACLE_COMMIT=1ebb0fe... \
+  FINALIZATION_COMMIT=0b74370... <section 2.4 exact block>      PASS
+ALIGN_REPO=<clean detached Align #672 checkout> make -j8 ci     PASS
+isolated structural negative harness (all named cases)         PASS
+git diff --check                                               PASS
+test "$(readlink AGENTS.md)" = CLAUDE.md                       PASS
 ```
 
-The correction records its align-llm base as `aad72ff` and the compiler/runtime dependency as pinned
-Align `d9fb5da`. It changes no Make target, workflow, or baseline until the correction merges and a
-separate implementation slice begins.
+The final baseline samples were recorded from clean source commit
+`8ae42c0e061a6b3557b3708f5eb9e2decc2fa0aa` with clean detached Align checkout
+`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`. The immutable oracle is
+`1ebb0fe3fbdc6adf65ea294101d352d15ca76c1e`; canonical finalization is
+`0b74370d1415fce6f38504aa8f5077c1b053dd40`.
+
+The isolated harness rejected persisted-identity mismatch, non-passing outcome, one and three
+samples, reordered oracle fields, missing final LF, 40-character symbolic source and oracle refs,
+linear recorded-input modify/restore, abbreviated and uppercase finalization IDs, all three
+annotated-tag object IDs with exact raw-commit diagnostics, TREESAME merge-hidden changes for a
+recorded input/oracle/baseline/digest, and an injected late Git-log failure. Its positive current
+chain retained pre-owner side history without a false rejection. Temporary clones were removed and
+the source worktree remained clean.
 
 The rule port was checked against the `../align` `CLAUDE.md` changes between the former Align pin
 `db942d2` and current pin `d9fb5da`. Align-specific Rust, release, and repository-script commands
