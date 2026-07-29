@@ -112,7 +112,12 @@ reproduction passes 20/20 corpus runs with no false deadline; process-tree disco
 of 90,371,411 nanoseconds across 120 scans. `make eval-coding` passes. The first exact-pinned
 `make ci` run passed every build and integration phase through `loop-smoke`, then stopped only at
 the expected stale `baseline-check` because the runner bytes have changed. A replacement clean
-source → oracle → finalization chain and the final exact-state evidence remain.
+source → oracle → finalization chain is now `e9e7e5a` → `ebac35a` → `85ae434`. Its two passing
+samples are 2,784,815,258 and 2,728,966,015 nanoseconds (median 2,756,890,636 nanoseconds), with no
+performance claim. Focused default and nondefault-ambient helper runs, `baseline-check`, the full
+exact-pinned `make ci`, the positive topology block, all 15 scalar/linear provenance negatives, all
+four merge-hidden path classes, and the pre-owner side-history control pass. Fresh exact-state
+full-diff preflight remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -217,10 +222,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the implemented deadline correction as the replacement clean source owner, create its
-   oracle and finalization commits, then rerun the complete exact-state verification and fresh
-   full-diff host-native and independent-adversarial preflight.
-2. Push the new source/oracle/finalization chain to PR #23, complete separate host-native
+1. Run fresh full-diff host-native and independent-adversarial preflight for the exact
+   `e9e7e5a` → `ebac35a` → `85ae434` chain and current verification checkpoint.
+2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
