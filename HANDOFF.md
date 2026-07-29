@@ -6,7 +6,8 @@ transient pull request checks, reviews, and attestations.
 ## Current state
 
 - Branch: `agent/validation-unlink-race-implementation`
-- Current pushed head: `916bc16c54ff5d608fa8918614c53594a1e02ed0`
+- Last implementation/evidence head before this handoff-only correction:
+  `916bc16c54ff5d608fa8918614c53594a1e02ed0`
 - Base and merge base: `13177c9bee69d3d06dcb2ab66464d9bcfbcffbc7`
 - Pull request: #23, `Handle validation worktree unlink races`
 - Goal: merge PR #23 with a merge commit, verify refreshed `main`, summarize the work and reusable
