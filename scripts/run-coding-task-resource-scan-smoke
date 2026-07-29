@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import dis
 import hashlib
 import importlib.util
 import os
@@ -532,20 +533,24 @@ def iterator_close_error_case(module: types.ModuleType, owner: Path) -> None:
 def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None:
     source = module.__align_exact_source__
     source_lines = source.splitlines()
-    scan_lines = [
+    context_lines = [
         line_number
         for line_number, line in enumerate(source_lines, start=1)
-        if line.strip() == b"entries = scan(current)"
+        if line.strip() == b"with scan(current) as entries:"
     ]
-    require(len(scan_lines) == 1, f"unexpected scan acquisition lines: {scan_lines}")
-    post_acquisition_lines = [
-        line_number
-        for line_number, line in enumerate(source_lines, start=1)
-        if line_number > scan_lines[0] and line == b"            require_scan_deadline()"
+    require(len(context_lines) == 1, f"unexpected scan context lines: {context_lines}")
+    entry_store_offsets = [
+        instruction.offset
+        for instruction in dis.get_instructions(module.validation_worktree_usage)
+        if (
+            instruction.opname == "STORE_FAST"
+            and instruction.argval == "entries"
+            and instruction.positions.lineno == context_lines[0]
+        )
     ]
     require(
-        len(post_acquisition_lines) == 1,
-        f"unexpected post-acquisition lines: {post_acquisition_lines}",
+        len(entry_store_offsets) == 1,
+        f"unexpected scan entry store offsets: {entry_store_offsets}",
     )
     body_capture_lines = [
         line_number
@@ -557,10 +562,11 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         f"unexpected body-error capture lines: {body_capture_lines}",
     )
 
-    for name, target_line, next_error in (
-        ("post-acquisition", post_acquisition_lines[0], None),
+    for name, target_event, target, next_error in (
+        ("context-entry-store", "opcode", entry_store_offsets[0], None),
         (
             "post-body-capture",
+            "line",
             body_capture_lines[0],
             PermissionError("iterator denied before interruption"),
         ),
@@ -583,10 +589,16 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         def interrupt_owner_boundary(frame: Any, event: str, argument: Any) -> Any:
             nonlocal interrupted
             del argument
+            if frame.f_code is module.validation_worktree_usage.__code__:
+                frame.f_trace_opcodes = True
             if (
                 frame.f_code is module.validation_worktree_usage.__code__
-                and event == "line"
-                and frame.f_lineno == target_line
+                and event == target_event
+                and (
+                    frame.f_lasti == target
+                    if target_event == "opcode"
+                    else frame.f_lineno == target
+                )
             ):
                 interrupted = True
                 raise CaseInterrupted(f"interrupt at {name}")

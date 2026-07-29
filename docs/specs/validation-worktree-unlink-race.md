@@ -34,11 +34,11 @@ leave `main` failing its own baseline artifact check.
 ### 2.1 Ownership, counting, and race semantics
 
 `validation_worktree_usage` continues to own its local pending stack, counters, deadline, and visible
-inode set. The scan callable owns construction; a successful return transfers ownership of the
-closeable iterator to `validation_worktree_usage`. An explicit `try`/`finally` owner scope attempts
-`close` after normal exhaustion, entry failure, iterator failure, deadline failure, or an unexpected
-exception. Scan-construction failure transfers no iterator. No iterator, `DirEntry`, path,
-descriptor, or temporary file escapes the call.
+inode set. The scan callable owns construction; successful entry of its returned context manager
+transfers ownership of the entered iterator to `validation_worktree_usage`. The context manager's
+exception-table cleanup attempts `close` after normal exhaustion, entry failure, iterator failure,
+deadline failure, or an unexpected exception. Scan-construction or context-entry failure transfers
+no iterator. No iterator, `DirEntry`, path, descriptor, or temporary file escapes the call.
 
 The scan has snapshot-like but not atomic semantics. A closed, unlinked file or fully removed
 directory consumes no current worktree storage and may be absent from one poll. A renamed or
@@ -203,13 +203,13 @@ prefix, so a later deadline read cannot stand in for the required post-operation
     are inspected and counted, and the file contributes its exact bytes and inode, proving the
     exclusion is not name-global.
 17. **Owner-scope asynchronous interruption** — two trace hooks bound to the exact executed runner
-    bytes raise a helper-owned `BaseException` at the owner boundaries. The first interrupts the
-    first ordinary line after a real root scan returns, before body processing. The second has a
-    wrapper raise a body `PermissionError`, then interrupts its body-error capture before ordinary
-    post-body control can begin cleanup. The helper observes the exact exception and records
-    iterator close in both subcases, proving the `finally` owner scope starts before acquisition and
-    has neither a post-acquisition/pre-body nor post-capture/pre-cleanup gap. The prior trace
-    function is restored in a `finally` after each subcase.
+    bytes raise a helper-owned `BaseException` at the owner boundaries. The first enables opcode
+    tracing and interrupts `STORE_FAST entries` immediately after the scan context successfully
+    enters but before the entered iterator is bound for body processing. The second has a wrapper
+    raise a body `PermissionError`, then interrupts its body-error capture before ordinary post-body
+    control can begin cleanup. The helper observes the exact exception and records iterator close
+    in both subcases, proving context-manager cleanup covers both the entry-to-binding and
+    post-capture boundaries. The prior trace function is restored in a `finally` after each subcase.
 
 Every case has a fresh subtree and an exact result or diagnostic assertion. Before loading the
 runner, the helper snapshots existing `__pycache__` directory paths and the relative path plus
@@ -299,7 +299,7 @@ directory-inspection failure.
 | File-count and byte ceilings | runner | unchanged post-stat count and regular-file size checks inside the explicit iterator owner scope | Real sparse-file exact-limit/plus-one calls prove the visible byte boundary. Real 8,192-entry/8,193-entry calls prove the visible count boundary without test-only limit substitution. Wrapper records prove normal and ceiling exits close; per-ceiling close-error subcases preserve the body diagnostic within budget, and close-expiry subcases select the time-limit diagnostic. Existing deleted-open-file smoke remains passing. |
 | Deleted-open file | runner `/proc` accounting | unchanged inode de-duplication and descriptor scan | Existing 65-MiB deleted-open-file regression remains passing. |
 | Production seam | runner caller | default captured real `os.scandir`; no production override | Source review and full coding-v1 run confirm no test callable enters production dispatch. |
-| Iterator cleanup | runner plus helper | enter an explicit `finally` owner scope with an unowned sentinel before calling the scan seam; a successful return replaces the sentinel and transfers iterator ownership to `validation_worktree_usage`; close only an owned iterator | Stable success, entry disappearance, iterator/stat errors, count/byte ceiling exits, close errors, dual errors, and deadline exits assert close. Exact-source trace interruptions immediately after acquisition and during body-error capture both assert close; helper exits with no leaked path. |
+| Iterator cleanup | runner plus helper | enter the context manager returned by the scan seam directly; successful context entry transfers iterator ownership to `validation_worktree_usage`, and the `with` exception table owns close before binding or body processing | Stable success, entry disappearance, iterator/stat errors, count/byte ceiling exits, close errors, dual errors, and deadline exits assert close. Exact-source trace interruptions at the entered-iterator store opcode and during body-error capture both assert close; helper exits with no leaked path. |
 | Runner source identity and import state | helper | read/compile/exec exact runner source bytes in a fresh non-`__main__` module namespace without importlib cache lookup; snapshot runner-directory `__pycache__` paths and `*.pyc` hashes; retain pre-existing caller files; verify the snapshot in an outer `finally`; save, normalize, and finally restore `sys.dont_write_bytecode` and `sys.pycache_prefix` around only sentinel ordinary imports | Under ambient bytecode-disabled and redirected-cache settings, a helper-owned timestamp cache exists before same-length/same-mtime source replacement, a fresh ordinary loader exposes cached `OLD`, and the source-only loader exposes current-source `NEW`, while the old `.pyc` remains byte-identical and no cache path appears. Success and injected sentinel failure restore both interpreter settings before any production-runner load. Focused helper success and failure leave the runner-directory cache snapshot unchanged; the later clean source commit and baseline recorder precondition remain clean. |
 | Regression deadline and temporary cleanup | helper | acquire temporary owner first; arm one fresh five-second alarm per numbered case; cancel in each case `finally`; helper-owned alarm raises in the main thread; an enclosing `finally` cancels again and restores the handler before temporary cleanup | Source review maps acquisition, setup, success, assertion/OSError, alarm, per-case cancellation, final cancellation, handler restoration, and unarmed recursive cleanup; every ordinary success/error case asserts wrapper closure and no leaked subtree. Abrupt external `SIGKILL` cleanup is N/A because no external-kill contract is claimed. |
 | Post-validation mutation | existing runner checks | unchanged | Existing invalid-smoke mutation cases remain passing. |
