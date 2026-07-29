@@ -1102,27 +1102,30 @@ def validation_worktree_usage(
             interrupted_error = None
             interrupted_traceback = None
             cleanup_replaced_body = False
-            if body_error is None:
-                interrupted_error = error.__context__
-                current_frame = sys._getframe()
-                seen_contexts = {id(error)}
+            candidate_error: BaseException | None = error
+            current_frame = sys._getframe()
+            seen_contexts: set[int] = set()
+            outer_error = True
+            while (
+                candidate_error is not None
+                and id(candidate_error) not in seen_contexts
+            ):
+                seen_contexts.add(id(candidate_error))
+                candidate_traceback = candidate_error.__traceback__
                 while (
-                    interrupted_error is not None
-                    and id(interrupted_error) not in seen_contexts
+                    candidate_traceback is not None
+                    and candidate_traceback.tb_frame is not current_frame
                 ):
-                    seen_contexts.add(id(interrupted_error))
-                    candidate_traceback = interrupted_error.__traceback__
-                    while (
-                        candidate_traceback is not None
-                        and candidate_traceback.tb_frame is not current_frame
-                    ):
-                        candidate_traceback = candidate_traceback.tb_next
-                    if candidate_traceback is not None:
+                    candidate_traceback = candidate_traceback.tb_next
+                if candidate_traceback is not None:
+                    if not outer_error:
                         cleanup_replaced_body = True
-                        if not isinstance(interrupted_error, Exception):
-                            interrupted_traceback = candidate_traceback
-                            break
-                    interrupted_error = interrupted_error.__context__
+                    if not isinstance(candidate_error, Exception):
+                        interrupted_error = candidate_error
+                        interrupted_traceback = candidate_traceback
+                        break
+                outer_error = False
+                candidate_error = candidate_error.__context__
 
             if interrupted_error is not None and interrupted_traceback is not None:
                 body_error = (
@@ -1130,7 +1133,8 @@ def validation_worktree_usage(
                     interrupted_error,
                     interrupted_error.__traceback__,
                 )
-                close_error = error
+                if interrupted_error is not error:
+                    close_error = error
             elif not entered and not cleanup_replaced_body:
                 if not isinstance(error, OSError):
                     raise

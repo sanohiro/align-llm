@@ -568,6 +568,18 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         len(body_capture_lines) == 1,
         f"unexpected body-error capture lines: {body_capture_lines}",
     )
+    post_capture_offsets = [
+        instruction.offset
+        for instruction in dis.get_instructions(module.validation_worktree_usage)
+        if (
+            instruction.opname == "POP_EXCEPT"
+            and instruction.positions.lineno == body_capture_lines[0]
+        )
+    ]
+    require(
+        len(post_capture_offsets) == 1,
+        f"unexpected post-capture offsets: {post_capture_offsets}",
+    )
 
     for name, target_event, target, next_error, close_error, close_context_error in (
         ("context-entry-store", "opcode", entry_store_offsets[0], None, None, None),
@@ -589,24 +601,24 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         ),
         (
             "post-body-capture",
-            "line",
-            body_capture_lines[0],
+            "opcode",
+            post_capture_offsets[0],
             PermissionError("iterator denied before interruption"),
             None,
             None,
         ),
         (
             "post-body-capture-close-error",
-            "line",
-            body_capture_lines[0],
+            "opcode",
+            post_capture_offsets[0],
             PermissionError("iterator denied before interruption"),
             FileNotFoundError("close vanished after body interruption"),
             None,
         ),
         (
             "post-body-capture-nested-close-error",
-            "line",
-            body_capture_lines[0],
+            "opcode",
+            post_capture_offsets[0],
             PermissionError("iterator denied before interruption"),
             FileNotFoundError("close vanished after nested body interruption"),
             ValueError("internal cleanup context after body interruption"),
@@ -1398,11 +1410,52 @@ def git_exclusion_cases(module: types.ModuleType, owner: Path) -> None:
 
 
 def run_case(name: str, action: Callable[[], None]) -> None:
+    timed_out = False
+    action_error: tuple[type[BaseException], BaseException, Any] | None = None
+    saved_handler = signal.getsignal(signal.SIGALRM)
+
+    def handle_alarm(_signum: int, _frame: Any) -> None:
+        nonlocal timed_out
+        timed_out = True
+        raise CaseTimedOut(f"{name} exceeded five seconds")
+
+    signal.signal(signal.SIGALRM, handle_alarm)
     signal.setitimer(signal.ITIMER_REAL, 5.0)
     try:
-        action()
+        try:
+            action()
+        except BaseException:
+            action_error = sys.exc_info()
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+        finally:
+            signal.signal(signal.SIGALRM, saved_handler)
+    if timed_out:
+        raise CaseTimedOut(f"{name} exceeded five seconds")
+    if action_error is not None:
+        _, error, traceback = action_error
+        raise error.with_traceback(traceback)
+
+
+def prove_swallowed_alarm_fails() -> None:
+    def swallow_alarm() -> None:
+        handler = signal.getsignal(signal.SIGALRM)
+        require(callable(handler), "case alarm handler is not callable")
+        try:
+            signal.raise_signal(signal.SIGALRM)
+        except CaseTimedOut:
+            pass
+
+    try:
+        run_case("swallowed alarm sentinel", swallow_alarm)
+    except CaseTimedOut as error:
+        require(
+            str(error) == "swallowed alarm sentinel exceeded five seconds",
+            f"swallowed alarm proof returned a different error: {error}",
+        )
+    else:
+        raise SmokeFailure("swallowed alarm sentinel unexpectedly passed")
 
 
 def main() -> int:
@@ -1421,6 +1474,7 @@ def main() -> int:
             ))
             try:
                 module = load_runner_with_nondefault_ambient(owner, runner_path)
+                prove_swallowed_alarm_fails()
                 cases = (
                     ("stable control", lambda: stable_case(module, owner)),
                     ("entry disappearance", lambda: disappearing_entry_case(module, owner)),
@@ -1464,14 +1518,20 @@ def main() -> int:
                 for name, action in cases:
                     run_case(name, action)
             finally:
-                signal.setitimer(signal.ITIMER_REAL, 0.0)
-                signal.signal(signal.SIGALRM, saved_handler)
+                try:
+                    signal.setitimer(signal.ITIMER_REAL, 0.0)
+                finally:
+                    signal.signal(signal.SIGALRM, saved_handler)
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        signal.signal(signal.SIGALRM, saved_handler)
-        after_cache = cache_snapshot(runner_directory)
-        if after_cache != before_cache:
-            raise SmokeFailure("runner cache snapshot changed")
+        try:
+            try:
+                signal.setitimer(signal.ITIMER_REAL, 0.0)
+            finally:
+                signal.signal(signal.SIGALRM, saved_handler)
+        finally:
+            after_cache = cache_snapshot(runner_directory)
+            if after_cache != before_cache:
+                raise SmokeFailure("runner cache snapshot changed")
     print("coding task resource scan races and limits: enforced")
     return 0
 

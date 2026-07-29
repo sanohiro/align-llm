@@ -61,7 +61,12 @@ asynchronous recovery but still misclassified the cleanup FNF as scan-constructi
 The active correction separately records owner-frame context as proof that cleanup replaced body
 control, while recovering only exceptional-control-flow `BaseException`; it adds the ordinary-error
 counterexample. The active replacement is source `1d2b0a2`, oracle `8275865`, and finalization
-`ef2a034`; full verification passes and fresh exact-chain preflight remains.
+`ef2a034`; full verification passes. Fresh host-native preflight found that an interruption after
+`body_error` storage but before handler exit still restored the prior body error, and that the
+helper's per-case alarm could be swallowed through the same precedence path. The active correction
+walks the escaping error even when a body error was already captured, interrupts the exact
+post-storage opcode in all three close modes, and records alarm delivery independently from the
+raised alarm exception. Its replacement baseline chain remains to be recorded.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -166,25 +171,28 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run fresh full-diff host-native and independent-adversarial preflight against the exact
-   `1d2b0a2` → `8275865` → `ef2a034` replacement chain and its verification checkpoint.
-2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Finish the post-capture interruption and fail-safe alarm correction, run the focused helper in
+   default and redirected-cache ambient states, and record and finalize its exact replacement
+   baseline.
+2. Rerun full `make ci` and the complete positive and negative provenance harness, then run fresh
+   full-diff host-native and independent-adversarial preflight against that exact chain.
+3. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
-3. Summarize PR #23 after merge and, in a separate governance slice, add any genuinely reusable
+4. Summarize PR #23 after merge and, in a separate governance slice, add any genuinely reusable
    rule not already covered by the repository guide or review checklist.
-4. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
+5. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
    re-record its clean source, immutable oracle, and canonical finalization. Rerun the structural
    provenance harness, `make -j8 ci`, hosted
    verification on Ubuntu 24.04 with the topology self-test plus `make -j8 hosted-checks`, and full
    preflight before opening the implementation pull request.
-5. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+6. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
-6. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+7. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
    including the required closure matrix and exact implementation boundaries. Implement only
    independently valid slices whose prerequisites have shipped.
 
@@ -312,7 +320,8 @@ construction/entry incidental and cyclic contexts; failed entry without exit; an
 `TaskError` counterexample. Cleanup-path authentication is recorded independently from
 exceptional-control-flow recovery, so the ordinary body error followed by close failure remains
 fail-closed rather than entering the queued-directory disappearance skip. Fresh exact-chain
-preflight remains.
+preflight superseded this chain after finding the post-capture and swallowed-alarm gaps described
+above.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.

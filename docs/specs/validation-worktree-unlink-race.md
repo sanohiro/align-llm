@@ -38,16 +38,17 @@ inode set. The scan callable owns construction; successful entry of its returned
 transfers ownership of the entered iterator to `validation_worktree_usage`. The context manager's
 exception-table cleanup attempts `close` after normal exhaustion, iterator failure, deadline
 failure, or an unexpected exception after successful entry. Scan-construction or context-entry
-failure transfers no iterator and does not call context exit. If cleanup replaces an uncaptured
-asynchronous interruption at an owner boundary, the runner walks the cleanup exception's context
-chain with cycle detection and recovers only the first exceptional-control-flow `BaseException`
-outside the `Exception` hierarchy whose traceback contains the current `validation_worktree_usage`
-invocation frame. Independently, any context exception with that frame proves context exit replaced
-body control, so a close `FileNotFoundError` cannot be mistaken for queued scan construction even
-when the replaced body exception is an ordinary `Exception`. An unrelated exception context
-created inside scan construction, context entry, or cleanup does not satisfy the frame check and
-retains ordinary construction/entry error classification. No iterator, `DirEntry`, path,
-descriptor, or temporary file escapes the call.
+failure transfers no iterator and does not call context exit. For an error escaping the owner
+scope, the runner walks that error and its explicit context chain with cycle detection. It recovers
+the first exceptional-control-flow `BaseException` outside the `Exception` hierarchy whose
+traceback contains the current `validation_worktree_usage` invocation frame, including a new
+interruption after a prior body error has already been captured. Independently, any non-outer
+context exception with that frame proves context exit replaced body control, so a close
+`FileNotFoundError` cannot be mistaken for queued scan construction even when the replaced body
+exception is an ordinary `Exception`. An unrelated exception context created inside scan
+construction, context entry, or cleanup does not satisfy the frame check and retains ordinary
+construction/entry error classification. No iterator, `DirEntry`, path, descriptor, or temporary
+file escapes the call.
 
 The scan has snapshot-like but not atomic semantics. A closed, unlinked file or fully removed
 directory consumes no current worktree storage and may be absent from one poll. A renamed or
@@ -219,12 +220,14 @@ prefix, so a later deadline read cannot stand in for the required post-operation
     handling an internal `ValueError` before raising `FileNotFoundError`; all retain the original
     helper exception, and neither direct nor nested close error can enter the
     descendant-disappearance skip. The final interruption subcase has a wrapper raise a body
-    `PermissionError`, then interrupts its body-error capture before ordinary post-body control can
-    begin cleanup. It runs with close success, direct close `FileNotFoundError`, and close
-    `FileNotFoundError` after an internal handled `ValueError`; all preserve the interruption
-    instead of replacing it with the cleanup error. The helper observes the exact exception and
-    records iterator close in all six interruption subcases, proving context-manager cleanup and
-    body-over-close precedence cover both the entry-to-binding and post-capture boundaries. Two
+    `PermissionError`, lets `STORE_FAST body_error` complete, then interrupts the following
+    `POP_EXCEPT` opcode before ordinary post-body control can begin cleanup. It runs with close
+    success, direct close `FileNotFoundError`, and close `FileNotFoundError` after an internal
+    handled `ValueError`; all preserve the new interruption instead of restoring the already
+    captured body error or replacing it with the cleanup error. The helper observes the exact
+    exception and records iterator close in all six interruption subcases, proving context-manager
+    cleanup and exceptional-control-flow precedence cover both the entry-to-binding and
+    post-capture boundaries. Two
     negative subcases make scan construction and context entry raise `PermissionError` while
     handling an incidental `ValueError`; both retain the
     directory-inspection `TaskError`, and failed context entry does not attempt `__exit__`. A third
@@ -261,8 +264,11 @@ The helper enters one `TemporaryDirectory` owner scope before creating the loade
 numbered-case subtree. Inside it, the helper saves and replaces the `SIGALRM` handler.
 It arms a fresh five-second `signal.setitimer(signal.ITIMER_REAL, ...)` immediately before each
 numbered case and cancels that timer in the case's `finally`, so the 8,192-entry boundary case
-receives its own full bound rather than consuming a shared cumulative budget. Its handler raises a
-helper-owned exception in the main thread so iterator contexts unwind. An enclosing `finally`
+receives its own full bound rather than consuming a shared cumulative budget. Each case installs a
+handler that records alarm delivery before raising a helper-owned exception in the main thread, so
+iterator contexts unwind; after action cleanup, the case fails from the recorded state even if
+runner error precedence swallowed the raised alarm. A pre-case sentinel invokes and catches that
+handler deliberately and proves the recorded timeout still fails. An enclosing `finally`
 cancels any remaining timer and restores the prior handler before control leaves the
 temporary-directory scope, so recursive cleanup cannot be interrupted by the owned alarm. Failure
 is reported after cleanup as one bounded English line without a traceback. The process is
@@ -326,9 +332,9 @@ directory-inspection failure.
 | File-count and byte ceilings | runner | unchanged post-stat count and regular-file size checks inside the explicit iterator owner scope | Real sparse-file exact-limit/plus-one calls prove the visible byte boundary. Real 8,192-entry/8,193-entry calls prove the visible count boundary without test-only limit substitution. Wrapper records prove normal and ceiling exits close; per-ceiling close-error subcases preserve the body diagnostic within budget, and close-expiry subcases select the time-limit diagnostic. Existing deleted-open-file smoke remains passing. |
 | Deleted-open file | runner `/proc` accounting | unchanged inode de-duplication and descriptor scan | Existing 65-MiB deleted-open-file regression remains passing. |
 | Production seam | runner caller | default captured real `os.scandir`; no production override | Source review and full coding-v1 run confirm no test callable enters production dispatch. |
-| Iterator cleanup | runner plus helper | enter the context manager returned by the scan seam directly; successful context entry transfers iterator ownership to `validation_worktree_usage`, and the `with` exception table owns close before binding or body processing; walk a replacing close error's explicit exception-context chain with cycle detection, use any exception whose traceback contains the current owner frame to distinguish cleanup from construction, and recover only the first such `BaseException` outside the `Exception` hierarchy as the body error | Stable success, entry disappearance, iterator/stat errors, count/byte ceiling exits, close errors, dual errors, and deadline exits assert close. Exact-source `CaseInterrupted(BaseException)` trace interruptions at both the entered-iterator store opcode and body-error capture boundary, each with close success, direct close `FileNotFoundError`, and close `FileNotFoundError` after an internal handled exception, assert close and preserve body-error precedence. An ordinary `TaskError` at the pre-binding opcode followed by close FNF remains fail-closed rather than entering the queued-disappearance skip. Incidental `Exception` contexts from scan construction and failed context entry retain directory-inspection `TaskError`, failed entry does not attempt exit, and a cyclic construction context terminates with the same `TaskError`; helper exits with no leaked path. |
+| Iterator cleanup | runner plus helper | enter the context manager returned by the scan seam directly; successful context entry transfers iterator ownership to `validation_worktree_usage`, and the `with` exception table owns close before binding or body processing; walk the escaping error plus its explicit exception-context chain with cycle detection, use a non-outer exception whose traceback contains the current owner frame to distinguish cleanup from construction, and recover the first such `BaseException` outside the `Exception` hierarchy as the body error even when an earlier body error was already captured | Stable success, entry disappearance, iterator/stat errors, count/byte ceiling exits, close errors, dual errors, and deadline exits assert close. Exact-source `CaseInterrupted(BaseException)` trace interruptions at both the entered-iterator store opcode and the `POP_EXCEPT` immediately after body-error storage, each with close success, direct close `FileNotFoundError`, and close `FileNotFoundError` after an internal handled exception, assert close and preserve the new exceptional control flow. An ordinary `TaskError` at the pre-binding opcode followed by close FNF remains fail-closed rather than entering the queued-disappearance skip. Incidental `Exception` contexts from scan construction and failed context entry retain directory-inspection `TaskError`, failed entry does not attempt exit, and a cyclic construction context terminates with the same `TaskError`; helper exits with no leaked path. |
 | Runner source identity and import state | helper | read/compile/exec exact runner source bytes in a fresh non-`__main__` module namespace without importlib cache lookup; snapshot runner-directory `__pycache__` paths and `*.pyc` hashes; retain pre-existing caller files; verify the snapshot in an outer `finally`; save, normalize, and finally restore `sys.dont_write_bytecode` and `sys.pycache_prefix` around only sentinel ordinary imports | Under ambient bytecode-disabled and redirected-cache settings, a helper-owned timestamp cache exists before same-length/same-mtime source replacement, a fresh ordinary loader exposes cached `OLD`, and the source-only loader exposes current-source `NEW`, while the old `.pyc` remains byte-identical and no cache path appears. Success and injected sentinel failure restore both interpreter settings before any production-runner load. Focused helper success and failure leave the runner-directory cache snapshot unchanged; the later clean source commit and baseline recorder precondition remain clean. |
-| Regression deadline and temporary cleanup | helper | acquire temporary owner first; arm one fresh five-second alarm per numbered case; cancel in each case `finally`; helper-owned alarm raises in the main thread; an enclosing `finally` cancels again and restores the handler before temporary cleanup | Source review maps acquisition, setup, success, assertion/OSError, alarm, per-case cancellation, final cancellation, handler restoration, and unarmed recursive cleanup; every ordinary success/error case asserts wrapper closure and no leaked subtree. Abrupt external `SIGKILL` cleanup is N/A because no external-kill contract is claimed. |
+| Regression deadline and temporary cleanup | helper | acquire temporary owner first; arm one fresh five-second alarm per numbered case; record delivery before raising in the main thread; capture action completion separately; cancel and restore the prior handler in each case `finally`; fail after cleanup whenever delivery was recorded; an enclosing `finally` cancels again and restores the outer handler before temporary cleanup | A pre-case sentinel deliberately catches the handler's raised `CaseTimedOut`, while `run_case` still fails from its delivery record. Source review maps acquisition, setup, success, assertion/OSError, alarm, swallowed alarm, per-case cancellation, per-case handler restoration, final cancellation, outer-handler restoration, and unarmed recursive cleanup; every ordinary success/error case asserts wrapper closure and no leaked subtree. Abrupt external `SIGKILL` cleanup is N/A because no external-kill contract is claimed. |
 | Post-validation mutation | existing runner checks | unchanged | Existing invalid-smoke mutation cases remain passing. |
 | CLI/schema/environment | N/A | no public input or output change | Existing arity/schema/environment negative cases remain passing. |
 | Align ownership/language | N/A | Python runner-only slice | Pinned Align build and `make ci` pass; no Align request is needed. |
