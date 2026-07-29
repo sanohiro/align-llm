@@ -4,18 +4,17 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-28. The repository-governance slice on
-`agent/autonomous-execution-policy` is prepared from merged main commit `5311bac`. Its substantive
-checkpoints are the initial design/autonomy policy at `d919cec` and the final SHA-bound review
-terminal-state policy, checklist, and pull request template introduced at `cd529a1` and corrected
-for refreshable final-state evidence at `ee68fdf` and tested-integration identity at `265ea57`; the
-worktree is expected to be clean. After this slice merges, C0 through C5 remain complete and C6
-design is the next roadmap work._
+_Last updated: 2026-07-29. The Align #672 adoption slice is active on `agent/align-pin-672`, based
+on merged governance commit `65e19b7`. The branch pins
+`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline and oracle, and
+keeps the full baseline gate runnable from a Git worktree. C6 product implementation has not
+started._
 
 ## Current position
 
-The repository has completed C0 through C5. The current enabling slice updates the shared agent
-policy only; no C6 product implementation has started.
+The repository has completed C0 through C5. The current enabling slice adopts the Align ownership
+and nested tagged-payload surface required by the reviewed C6 schema direction; it does not add a
+C6 product command.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -27,20 +26,19 @@ policy only; no C6 product implementation has started.
   after the result file is written.
 - `scripts/run-verification-loop-smoke` now proves persistence, same-task reuse, and the existing
   invalid-repair `REPAIR_FAILED` path. `failure-memory-smoke` is the named C5 make target.
-- Hosted Actions ran the supported C5 smoke successfully; no new external retry loop is
-  warranted. The unavailable nested user-namespace `coding-v1` sandbox and stale C0 baseline check
-  remain local/capable-runner gates only.
+- Hosted Actions ran the supported C5 smoke successfully; no new external retry loop is warranted.
+  The unavailable nested user-namespace `coding-v1` sandbox remains a local/capable-runner gate.
 
 ## Next steps
 
-1. If `origin/main:CLAUDE.md` does not contain the `Review attestations and terminal merge state`
-   contract, resolve the GitHub pull request for `agent/autonomous-execution-policy` and complete its
-   SHA-bound reviews, checks, and merge without branch commits that merely mirror pull request
-   metadata.
-2. Once the policy is on `main`, refresh `main`, create a fresh C6 design branch, write the C6
-   public contract and acceptance matrix, and merge it only after independent design review.
-3. Implement C6 in the smallest reviewed vertical slices. Do not rerun an unchanged full CI or
-   external-service request after a documented capacity failure.
+1. Complete final verification and independent review for `agent/align-pin-672`, open its pull
+   request, record current SHA-bound post-open reviews, and merge only after required checks pass.
+2. From refreshed `main`, apply generally reusable autonomous-design rules from `../align` plus the
+   post-merge retrospective rule in one governance-only pull request.
+3. Record C6's bounded HTTP response dependency as Align Request 5 in its own request-register pull
+   request.
+4. Rebase and finish the C6 design plan, including its closure matrix, then implement the reviewed
+   C6 slices in order.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
@@ -56,6 +54,43 @@ git diff --check    PASS
 
 Pull request review and check state is intentionally external GitHub metadata bound to exact SHAs,
 not a branch commit recorded here.
+
+## Align #672 adoption verification
+
+The canonical baseline was recorded on 2026-07-29 from clean commit `a5de972` with the clean
+detached Align checkout at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`. The oracle is committed
+at `bb9c636`, the finalized baseline at `03e6b15`, and the Git-worktree baseline regression fix at
+`d3905d0`.
+
+```text
+ALIGN_REPO=/home/hiro/prj/align-clean-672 \
+  python3 eval/runners/record-baseline.py \
+    --corpus eval/tasks/coding-v1.json \
+    --provider deterministic-reference \
+    --model checked-in-patch \
+    --prompt-version none \
+    --samples 2 \
+    --output eval/baselines/coding-v1-pin672-pending.json
+# PASS — 2 deterministic samples; temporary pending file removed after finalization
+
+python3 eval/runners/verify-baseline.py
+# PASS
+
+bash -n scripts/run-baseline-invalid-smoke
+make baseline-check
+# PASS — canonical, malformed-input, immutable-oracle, replacement-object, and failure retention
+```
+
+The first full `make ci` attempt reached the baseline replacement-object regression after all
+compile, coding-corpus, timeout, and loop checks passed, then exposed that the smoke assumed
+`.git` was a directory. `d3905d0` now resolves the absolute common Git directory, preserving the
+same replacement-ref isolation in ordinary clones and linked worktrees.
+
+```text
+ALIGN_REPO=/home/hiro/prj/align-clean-672 make ci
+# PASS — 15 units check per-unit; build; smoke-v1; coding-v1 and containment/timeout regressions;
+# loop paths; canonical baseline, invalid-baseline, replacement-object, and failure retention
+```
 
 ## Completed bootstrap
 
@@ -307,8 +342,9 @@ rerun; repeated CI is intentionally out of scope for this feature implementation
 - PR #3 must use a merge commit rather than squash so the recorded source commit remains reachable.
 - A captured process's stdout and stderr are region-bound views. Clone them before returning owned
   diagnostics, as `src/verify.align` does.
-- A Move struct with owned `string` fields cannot currently be a `Result` Ok payload. The current
-  `Captured` value therefore stores its run outcome as data and returns as a bare Move struct.
+- Align #672 supports recursive Move `Option`/`Result` and tagged payloads. Existing bare Move
+  result forms remain valid; change them only when a reviewed consumer contract benefits from the
+  newer surface.
 - Bind an owned `string` to an explicit `str` view before passing it through an indirect function
   value.
 - Reusable command arguments cross loop iterations as `slice<str>` and are materialized for
