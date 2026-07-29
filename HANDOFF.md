@@ -31,7 +31,8 @@ now cover that reusable lesson, so no additional governance slice is queued.
 
 PR #15 merged with a merge commit at `65f7766`, pins
 Align #672 at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline, and keeps
-its recorded source and oracle commits reachable. Its retrospective found three reusable lessons:
+its recorded source, oracle, and finalization commits reachable. Its retrospective found three
+reusable lessons:
 Git-internal automation must use the common directory in linked worktrees, historical provenance
 must constrain the merge method, and aggregate check names must not be treated as proof that every
 focused gate ran. The merged governance slice turned those lessons into policy and checklist
@@ -120,7 +121,7 @@ detached Align checkout at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`. The oracl
 at `bb9c636`, the finalized baseline at `03e6b15`, and the Git-worktree baseline regression fix at
 `d3905d0`. Follow-up `cdd90fd` makes abnormal cleanup use the same resolved common Git directory.
 The branch merged Request 5 registration commit `f79fb68` at `5dc6c59`, preserving the recorded
-baseline source and oracle commits as ancestors.
+baseline source, oracle, and finalization commits as ancestors.
 
 ```text
 ALIGN_REPO=<clean detached Align #672 checkout> \
