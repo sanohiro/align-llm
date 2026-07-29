@@ -530,53 +530,83 @@ def iterator_close_error_case(module: types.ModuleType, owner: Path) -> None:
 
 
 def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None:
-    root = owner / "owner-scope-interruption"
-    root.mkdir()
-    (root / "stable").write_bytes(b"x")
-    wrappers: list[IteratorWrapper] = []
-
-    def scan(path: Path) -> IteratorWrapper:
-        wrapper = IteratorWrapper(
-            os.scandir(path),
-            next_error=PermissionError("iterator denied before interruption"),
-        )
-        wrappers.append(wrapper)
-        return wrapper
-
     source = module.__align_exact_source__
-    target_lines = [
+    source_lines = source.splitlines()
+    scan_lines = [
         line_number
-        for line_number, line in enumerate(source.splitlines(), start=1)
+        for line_number, line in enumerate(source_lines, start=1)
+        if line.strip() == b"entries = scan(current)"
+    ]
+    require(len(scan_lines) == 1, f"unexpected scan acquisition lines: {scan_lines}")
+    post_acquisition_lines = [
+        line_number
+        for line_number, line in enumerate(source_lines, start=1)
+        if line_number > scan_lines[0] and line == b"            require_scan_deadline()"
+    ]
+    require(
+        len(post_acquisition_lines) == 1,
+        f"unexpected post-acquisition lines: {post_acquisition_lines}",
+    )
+    body_capture_lines = [
+        line_number
+        for line_number, line in enumerate(source_lines, start=1)
         if line.strip() == b"body_error = sys.exc_info()"
     ]
-    require(len(target_lines) == 1, f"unexpected body-error capture lines: {target_lines}")
-    target_line = target_lines[0]
-    interrupted = False
+    require(
+        len(body_capture_lines) == 1,
+        f"unexpected body-error capture lines: {body_capture_lines}",
+    )
 
-    def interrupt_after_body_error(frame: Any, event: str, argument: Any) -> Any:
-        nonlocal interrupted
-        del argument
-        if (
-            frame.f_code is module.validation_worktree_usage.__code__
-            and event == "line"
-            and frame.f_lineno == target_line
-        ):
-            interrupted = True
-            raise CaseInterrupted("interrupt before cleanup")
-        return interrupt_after_body_error
+    for name, target_line, next_error in (
+        ("post-acquisition", post_acquisition_lines[0], None),
+        (
+            "post-body-capture",
+            body_capture_lines[0],
+            PermissionError("iterator denied before interruption"),
+        ),
+    ):
+        root = owner / f"owner-scope-{name}"
+        root.mkdir()
+        (root / "stable").write_bytes(b"x")
+        wrappers: list[IteratorWrapper] = []
 
-    saved_trace = sys.gettrace()
-    sys.settrace(interrupt_after_body_error)
-    try:
-        module.validation_worktree_usage(root, scan=scan, monotonic=lambda: 100.0)
-    except CaseInterrupted:
-        pass
-    else:
-        raise SmokeFailure("owner-scope interruption unexpectedly returned")
-    finally:
-        sys.settrace(saved_trace)
-    require(interrupted, "owner-scope interruption point was not reached")
-    require(wrappers[0].close_attempted, "owner-scope interruption did not close iterator")
+        def scan(
+            path: Path,
+            injected: BaseException | None = next_error,
+        ) -> IteratorWrapper:
+            wrapper = IteratorWrapper(os.scandir(path), next_error=injected)
+            wrappers.append(wrapper)
+            return wrapper
+
+        interrupted = False
+
+        def interrupt_owner_boundary(frame: Any, event: str, argument: Any) -> Any:
+            nonlocal interrupted
+            del argument
+            if (
+                frame.f_code is module.validation_worktree_usage.__code__
+                and event == "line"
+                and frame.f_lineno == target_line
+            ):
+                interrupted = True
+                raise CaseInterrupted(f"interrupt at {name}")
+            return interrupt_owner_boundary
+
+        saved_trace = sys.gettrace()
+        sys.settrace(interrupt_owner_boundary)
+        try:
+            module.validation_worktree_usage(root, scan=scan, monotonic=lambda: 100.0)
+        except CaseInterrupted:
+            pass
+        else:
+            raise SmokeFailure(f"{name} owner-scope interruption unexpectedly returned")
+        finally:
+            sys.settrace(saved_trace)
+        require(interrupted, f"{name} owner-scope interruption point was not reached")
+        require(
+            wrappers[0].close_attempted,
+            f"{name} owner-scope interruption did not close iterator",
+        )
 
 
 def deadline_disappearance_case(module: types.ModuleType, owner: Path) -> None:

@@ -1044,70 +1044,72 @@ def validation_worktree_usage(
     while pending:
         current = pending.pop()
         require_scan_deadline()
-        try:
-            entries = scan(current)
-        except OSError as error:
-            require_scan_deadline()
-            if isinstance(error, FileNotFoundError) and current != checkout:
-                continue
-            raise directory_error(current, error) from error
-
+        entries: Any | None = None
         body_error: tuple[type[BaseException], BaseException, Any] | None = None
         close_error: BaseException | None = None
         try:
-                try:
-                    require_scan_deadline()
-                    while True:
-                        try:
-                            entry = next(entries)
-                        except StopIteration:
-                            require_scan_deadline()
-                            break
-                        except OSError as error:
-                            require_scan_deadline()
-                            raise directory_error(current, error) from error
-
-                        require_scan_deadline()
-                        if current == checkout and entry.name == ".git":
-                            continue
-                        path = Path(entry.path)
-                        try:
-                            metadata = entry.stat(follow_symlinks=False)
-                        except FileNotFoundError:
-                            require_scan_deadline()
-                            continue
-                        except OSError as error:
-                            require_scan_deadline()
-                            raise TaskError(
-                                "cannot inspect validation worktree path "
-                                f"{path.relative_to(checkout)}: {error}"
-                            ) from error
-                        require_scan_deadline()
-                        file_count += 1
-                        if file_count > MAX_VALIDATION_WORKTREE_FILES:
-                            raise TaskError(
-                                "validation exceeded the writable worktree file limit "
-                                f"({MAX_VALIDATION_WORKTREE_FILES} files)"
-                            )
-                        if stat.S_ISDIR(metadata.st_mode):
-                            pending.append(path)
-                            continue
-                        if not stat.S_ISREG(metadata.st_mode):
-                            continue
-                        total_bytes += metadata.st_size
-                        visible_inodes.add((metadata.st_dev, metadata.st_ino))
-                        if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
-                            raise TaskError(
-                                "validation exceeded the writable worktree size limit "
-                                f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
-                            )
-                except BaseException:
-                    body_error = sys.exc_info()
-        finally:
             try:
-                entries.close()
-            except BaseException as error:
-                close_error = error
+                entries = scan(current)
+            except OSError as error:
+                require_scan_deadline()
+                if isinstance(error, FileNotFoundError) and current != checkout:
+                    continue
+                raise directory_error(current, error) from error
+
+            require_scan_deadline()
+            try:
+                while True:
+                    try:
+                        entry = next(entries)
+                    except StopIteration:
+                        require_scan_deadline()
+                        break
+                    except OSError as error:
+                        require_scan_deadline()
+                        raise directory_error(current, error) from error
+
+                    require_scan_deadline()
+                    if current == checkout and entry.name == ".git":
+                        continue
+                    path = Path(entry.path)
+                    try:
+                        metadata = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        require_scan_deadline()
+                        continue
+                    except OSError as error:
+                        require_scan_deadline()
+                        raise TaskError(
+                            "cannot inspect validation worktree path "
+                            f"{path.relative_to(checkout)}: {error}"
+                        ) from error
+                    require_scan_deadline()
+                    file_count += 1
+                    if file_count > MAX_VALIDATION_WORKTREE_FILES:
+                        raise TaskError(
+                            "validation exceeded the writable worktree file limit "
+                            f"({MAX_VALIDATION_WORKTREE_FILES} files)"
+                        )
+                    if stat.S_ISDIR(metadata.st_mode):
+                        pending.append(path)
+                        continue
+                    if not stat.S_ISREG(metadata.st_mode):
+                        continue
+                    total_bytes += metadata.st_size
+                    visible_inodes.add((metadata.st_dev, metadata.st_ino))
+                    if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
+                        raise TaskError(
+                            "validation exceeded the writable worktree size limit "
+                            f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
+                        )
+            except BaseException:
+                body_error = sys.exc_info()
+        finally:
+            if entries is not None:
+                try:
+                    entries.close()
+                except BaseException as error:
+                    close_error = error
 
         require_scan_deadline()
         if body_error is not None:
