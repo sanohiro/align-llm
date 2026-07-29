@@ -3,17 +3,25 @@
 ## 1. Scope
 
 This enabling design makes the repository's aggregate verification targets state their actual
-coverage. It does not change an evaluation oracle, compiler pin, product behavior, or the
-environment requirements of an existing focused check.
+coverage. It does not change scoring semantics, the compiler pin, product behavior, or the
+environment requirements of an existing focused check. The implementation necessarily refreshes
+the canonical C0 baseline measurement and immutable oracle because `Makefile` is an identity-bound
+baseline artifact; retaining the old record after changing that file would make `baseline-check`
+fail and would falsely bind the measurement to bytes it did not use.
 
 The implementation slice will update the `Makefile`, add `scripts/check-gate-topology`, and update
 the hosted GitHub Actions workflow, contributor documentation, pull request template, and durable
-handoff state. It will not add a third-party runner, weaken a failure, or make an unsupported check
-optional inside a gate that claims to run it.
+handoff state. It will also use the existing pending-record, immutable-oracle, and finalizer flow to
+refresh `eval/baselines/coding-v1-reference.json`,
+`eval/expected/coding-v1-reference-oracle.json`, and
+`eval/expected/coding-v1-reference.sha256`. It will not add a third-party runner, weaken a failure,
+change the evaluation contract, or make an unsupported check optional inside a gate that claims to
+run it.
 
-The design was authored against align-llm merge commit
-`c20e919f4cbaa493e57ef79a9b638086d181cae0` and pinned Align commit
-`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
+The original topology design was authored against align-llm merge commit
+`c20e919f4cbaa493e57ef79a9b638086d181cae0`. Its baseline-identity correction was audited against
+merged topology design commit `aad72ff8cf4b944bdd48cdf7052a1faff136d33b`. Both use pinned Align
+commit `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 
 ## 2. Public-contract ledger
 
@@ -25,6 +33,7 @@ The design was authored against align-llm merge commit
 | `make ci` | Verify `.align-revision`, release-build the pinned sibling Align compiler, require that compiler to be executable, and invoke `capable-checks` with `ALIGNC` set to that exact release compiler. This remains the canonical complete local or capable-runner gate. |
 | GitHub Actions pull-request gate | Check out `.align-revision`, run `make align-build`, require the resulting release compiler, and invoke `make hosted-checks` with `ALIGNC` set to it. |
 | Focused targets | Keep their existing commands and semantics. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. |
+| Canonical C0 baseline | Record two deterministic-reference samples from a clean implementation source commit containing the final `Makefile`; commit the derived immutable oracle; finalize the canonical baseline with that full oracle commit; and keep both source and oracle commits as ancestors of the final reviewed head and merge result. |
 
 ### 2.1 Inputs and defaults
 
@@ -65,6 +74,9 @@ The design was authored against align-llm merge commit
 
 - The checked compiler identity remains `.align-revision`; no new schema version or cache identity
   applies.
+- The coding-v1 baseline artifact manifest already includes `Makefile`. Therefore any implementation
+  commit that changes the check graph is a new baseline source identity even when task verdicts and
+  scoring semantics remain unchanged.
 - The `Makefile` is the authoritative check graph.
 - Its named `HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and
   `SERIAL_CHECK_AGGREGATES` variables feed both aggregate prerequisites or `.NOTPARALLEL` and the
@@ -77,6 +89,139 @@ The design was authored against align-llm merge commit
   second normative target list.
 - `CLAUDE.md` remains authoritative for when `make ci` is required, especially Align request
   adoption and full semantic verification.
+- `eval/runners/README.md`, `eval/baselines/README.md`,
+  `eval/runners/record-baseline.py`, `scripts/finalize-canonical-baseline.py`, and
+  `eval/runners/verify-baseline.py` remain authoritative for the general baseline flow,
+  finalization, and verification. Section 2.4 fixes the exact oracle projection and commit topology
+  for this identity-coupled implementation.
+
+### 2.4 Baseline commit and merge topology
+
+The implementation pull request uses this ordered history:
+
+1. **Implementation source commit** — contains the final state of every recorded baseline artifact,
+   including the new `Makefile` topology, plus the current checker, workflow, contributor
+   documentation, and durable handoff update. The worktree is clean. Later review changes outside
+   the recorded artifact set do not alter the baseline identity.
+2. **Pending measurement** — from that clean source commit, run:
+
+   ```text
+   python3 eval/runners/record-baseline.py \
+     --corpus eval/tasks/coding-v1.json \
+     --provider deterministic-reference \
+     --model checked-in-patch \
+     --prompt-version none \
+     --samples 2 \
+     --output eval/baselines/.coding-v1-reference.pending.json
+   ```
+
+3. **Immutable oracle commit** — project the pending record into
+   `eval/expected/coding-v1-reference-oracle.json` using exactly these ordered fields:
+   `schema_version`, `baseline_id`, `align_llm_commit`, `align_revision`, `corpus`, `artifacts`,
+   `provider`, `environment`, `sample_count`, `runs`, and `aggregate`; write indented UTF-8 JSON
+   with one final LF by running:
+
+   ```text
+   python3 - \
+     eval/baselines/.coding-v1-reference.pending.json \
+     eval/expected/coding-v1-reference-oracle.json <<'PY'
+   import json
+   import sys
+   from pathlib import Path
+
+   fields = (
+       "schema_version",
+       "baseline_id",
+       "align_llm_commit",
+       "align_revision",
+       "corpus",
+       "artifacts",
+       "provider",
+       "environment",
+       "sample_count",
+       "runs",
+       "aggregate",
+   )
+   pending = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+   oracle = {field: pending[field] for field in fields}
+   Path(sys.argv[2]).write_text(
+       json.dumps(oracle, indent=2) + "\n",
+       encoding="utf-8",
+   )
+   PY
+   ```
+
+   Commit only the oracle.
+4. **Canonical finalization commit** — run:
+
+   ```text
+   python3 scripts/finalize-canonical-baseline.py \
+     --input eval/baselines/.coding-v1-reference.pending.json \
+     --oracle-commit <full-immutable-oracle-commit>
+   ```
+
+   Remove the pending file after finalization, then commit the canonical baseline and digest.
+5. **Review follow-ups and invalidation** —
+   - a change to `Makefile` or any other recorded input artifact invalidates the measurement and
+     requires a new clean source commit, pending measurement, oracle commit, and finalization;
+   - a change to the oracle before finalization requires regenerating the exact projection from the
+     same pending measurement, committing only the oracle, and finalizing against the new commit;
+   - the canonical baseline and digest are finalizer-owned and may not be edited manually; rerun the
+     finalizer before committing them; and
+   - after the pending file has been removed and finalization committed, any change to the oracle,
+     canonical baseline, or digest restarts the full sequence. A path outside both the recorded input
+     manifest and these three owned outputs still requires normal exact-head checks and reviews but
+     does not rewrite the baseline.
+
+The pull request must use a merge commit. Squash and rebase merging are forbidden because they would
+make the recorded implementation source or immutable oracle commit unreachable from the merged
+history. Before merge, both full commits must be ancestors of the exact reviewed head; after merge,
+both must be ancestors of the resulting `main`.
+
+The implementation records full `SOURCE_COMMIT`, `ORACLE_COMMIT`, and `FINALIZATION_COMMIT` values
+and runs these exact structural checks before merge:
+
+```text
+git merge-base --is-ancestor "$SOURCE_COMMIT" "$ORACLE_COMMIT"
+git merge-base --is-ancestor "$ORACLE_COMMIT" "$FINALIZATION_COMMIT"
+git merge-base --is-ancestor "$FINALIZATION_COMMIT" HEAD
+test "$(git diff-tree --no-commit-id --name-only -r "$ORACLE_COMMIT")" = \
+  "eval/expected/coding-v1-reference-oracle.json"
+test "$(git diff-tree --no-commit-id --name-only -r "$FINALIZATION_COMMIT")" = \
+  "$(printf '%s\n' \
+    eval/baselines/coding-v1-reference.json \
+    eval/expected/coding-v1-reference.sha256)"
+git show "$SOURCE_COMMIT:Makefile" | cmp - Makefile
+git show \
+  "$ORACLE_COMMIT:eval/expected/coding-v1-reference-oracle.json" | \
+  cmp - eval/expected/coding-v1-reference-oracle.json
+git show \
+  "$FINALIZATION_COMMIT:eval/baselines/coding-v1-reference.json" | \
+  cmp - eval/baselines/coding-v1-reference.json
+git show \
+  "$FINALIZATION_COMMIT:eval/expected/coding-v1-reference.sha256" | \
+  cmp - eval/expected/coding-v1-reference.sha256
+test -z "$(git log --format=%H "$SOURCE_COMMIT"..HEAD -- Makefile)"
+test -z "$(git log --format=%H "$ORACLE_COMMIT"..HEAD -- \
+  eval/expected/coding-v1-reference-oracle.json)"
+test -z "$(git log --format=%H "$FINALIZATION_COMMIT"..HEAD -- \
+  eval/baselines/coding-v1-reference.json \
+  eval/expected/coding-v1-reference.sha256)"
+```
+
+After merge, the source, oracle, and finalization commits must each be ancestors of refreshed
+`main`, and the four final-tree byte comparisons and three no-later-change checks above must still
+pass with `HEAD` replaced by refreshed `main`.
+
+### 2.5 Measurement interpretation
+
+The refreshed record uses the same `coding-v1` corpus, deterministic-reference provider,
+checked-in-patch model, `none` prompt version, two samples, and pinned Align commit. Both task
+verdicts and both run summaries must remain passing and structurally equal to the fixed corpus
+expectation. The pull request reports the prior and refreshed time-to-passing-patch samples,
+aggregate, and recorded environment, but makes no performance claim: this is an artifact-identity
+refresh, not an optimization experiment. Any improvement or regression claim requires a separate
+reproducible comparison with controlled hardware and sample count.
 
 ## 3. Coverage and exclusions
 
@@ -85,9 +230,9 @@ The hosted gate excludes only:
 - `eval-coding`, because its containment contract requires Linux child-subreaper support, a working
   bubblewrap user namespace, and `prlimit`, and GitHub-hosted runners do not provide the required
   nested user namespace; and
-- `baseline-check`, because the immutable C0 artifact is refreshed in a workflow separate from
-  feature slices, while its routine verification belongs to the capable gate rather than ordinary
-  hosted feature checks.
+- `baseline-check`, because routine verification and any required identity-coupled refresh belong
+  to a capable runner rather than ordinary hosted feature checks. This implementation performs the
+  exceptional refresh only because it changes the identity-bound `Makefile`.
 
 The capable gate adds exactly those two targets. It also includes every C1-C5 focused target through
 the hosted graph. New focused roadmap gates must be assigned deliberately to the hosted graph, the
@@ -187,7 +332,18 @@ self-test: PASS` plus LF and nothing else.
 | Complete graph membership | `Makefile` | named aggregate prerequisites | `make gate-topology-check` proves the exact hosted list, capable-only additions, and serialized aggregates. |
 | Existing focused cleanup | focused scripts | unchanged | Existing ordinary, timeout, and abnormal cleanup regressions continue to own these paths. |
 | Parallel invocation | GNU Make `.NOTPARALLEL` | serialize both aggregate prerequisite lists | `make -j8 ci` passes with the declared aggregate order; the topology oracle proves both targets remain in the serialized set. |
-| Persisted format | N/A | the oracle is embedded in the script; no file is created | N/A. |
+| Baseline source identity | implementation source commit | final identity-bound `Makefile` is clean and committed before recording | Pending record `align_llm_commit` equals the source commit and its Makefile digest equals `git show <source>:Makefile`. |
+| Immutable oracle | oracle commit | exact canonical projection of the pending record | Oracle commit contains only the ordered projection; the existing direct timing-mutation regression proves whole-projection equality is enforced, and final-tree bytes equal the oracle commit. |
+| Canonical finalization | finalization commit | finalizer binds full oracle commit and writes digest | `make baseline-check` passes; pending file is absent; canonical digest matches. |
+| Baseline commit chain | source, oracle, finalization, final reviewed head, and merge result | strict source → oracle → finalization → head/main ancestry; merge method is `merge` | Exact ancestry checks pass; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
+| Post-record input change | author/reviewer | re-record from a new clean source commit | Matrix-to-diff audit compares changed paths with the recorded input manifest; any overlap invalidates the complete prior sequence. |
+| Post-record output change | author/reviewer | regenerate through the owning projection/finalizer before finalization; restart the full sequence afterward | Final-tree oracle, baseline, and digest bytes equal their named owner commits; no later commit changes those paths. |
+| Measurement interpretation | pull request evidence | two deterministic-reference samples on the recorded environment | Both samples PASS; prior and refreshed timings are reported without a performance claim. |
+| Topology-checker persisted format | N/A | its byte oracle is embedded in the script; no topology file is created | N/A. |
+| Canonical baseline JSON | existing schema version 1 | recorder emits indented UTF-8 JSON plus final LF; finalizer changes only `canonical_oracle_commit` | `make baseline-check` validates exact fields, identities, aggregates, malformed input, immutable oracle, and digest. |
+| Immutable baseline oracle JSON | section 2.4 ordered projection | indented UTF-8 JSON plus final LF, committed before finalization | Projection command is reproducible; final-tree bytes equal `git show <oracle-commit>:<oracle-path>`; timing mutation is rejected. |
+| Canonical digest text | finalizer | lowercase SHA-256, two ASCII spaces, canonical baseline path, final LF | `make baseline-check` recomputes and compares the exact line; final-tree bytes equal the finalization commit. |
+| Partial baseline output | unchanged finalizer | a failed or interrupted run must not be committed; rerun finalizer and require exact baseline/digest owner paths | DEFERRED fault injection: finalizer behavior is unchanged. Clean-worktree, exact path-set, digest, byte-equality, and `make baseline-check` gates prevent partial output from merging. |
 | Internal text boundary | `Makefile` plus `scripts/check-gate-topology` | three shell-uninterpreted environment values become exact labeled LF-terminated bytes | Script self-test covers exact success, arity, missing values, encoding, whitespace, membership, order, and dangerous override text. |
 | Argument/result ownership lifecycle | N/A | Make target names and scalar variables are not Align values | N/A. |
 | Implementation-only ownership types | N/A | no ownership type is added | N/A. |
@@ -217,10 +373,16 @@ self-test: PASS` plus LF and nothing else.
 - Run `make hosted-checks` with the pinned release compiler.
 - Run `make -j8 ci` on a capable host to prove the aggregate serialization contract under inherited
   parallel Make flags.
+- Record, project, commit, and finalize the canonical C0 baseline from the final clean implementation
+  source commit using section 2.4. Verify the strict source → oracle → finalization → head chain,
+  exact per-commit path sets, final-tree byte equality, pending-file absence, digest, and the existing
+  immutable-oracle timing-mutation regression.
 - Obtain a passing hosted required check using `make hosted-checks`.
 - Review the full implementation against `docs/review-checklist.md`, including aggregate-name
   accuracy and any shared-target execution or cleanup regression.
 
-The design and implementation are separate pull requests. The implementation remains a single
-automation enabling slice because the Makefile graph, workflow call site, and contributor-facing
-names must change together to avoid an interval with misleading verification claims.
+The design and implementation are separate pull requests. The implementation and baseline refresh
+remain one automation enabling slice because the baseline identity includes `Makefile`: separating
+them would leave an intermediate `main` whose canonical baseline fails its own artifact check. The
+pull request keeps implementation, oracle, and finalization in separately reviewable commits and
+records why this identity-coupled exception cannot be split safely.
