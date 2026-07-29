@@ -4,23 +4,37 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The check-gate-topology design slice is active on
-`agent/check-gate-topology-design`, based on merged governance commit `c20e919`. Its plan of record
-is `docs/specs/check-gate-topology.md`; implementation has not started. C6 product implementation
-has also not started. In the primary worktree, modified `HANDOFF.md` and untracked
+_Last updated: 2026-07-29. The check-gate baseline-identity design correction is active on
+`agent/check-gate-topology-baseline-design`, based on merged topology design commit `aad72ff`. Its
+plan of record is `docs/specs/check-gate-topology.md`; implementation has not started because the
+author-side matrix-to-diff pass found that `Makefile` is an identity-bound canonical C0 baseline
+artifact. C6 product implementation has also not started. In the primary worktree, modified
+`HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
 not be discarded._
 
 ## Current position
 
-The repository has completed C0 through C5. PR #16 merged at `c20e919`, adding the applicable Align
+The repository has completed C0 through C5. PR #17 merged at `aad72ff`, defining the explicit hosted,
+capable, and canonical CI topology. Before implementation, its baseline closure audit found that
+changing `Makefile` necessarily invalidates the current canonical baseline artifact manifest. The
+active design correction makes the baseline refresh and merge-only ancestry part of the
+implementation contract instead of allowing a broken intermediate `main`. Its structural evidence
+also binds the named source and oracle commits to the identities persisted in the finalized
+baseline, requires every recorded identity to name a raw commit object rather than an implicitly
+peeled tag, rejects post-source history for every path derived from the recorded artifact manifest,
+uses full merge history for every input and output no-later-change check, and disables replacement
+objects and ambient Git configuration for every provenance inspection.
+
+PR #16 merged at `c20e919`, adding the applicable Align
 design-convergence rules and the bounded post-merge retrospective. Its review caught and fixed
 transient PR mechanics in `HANDOFF.md`; the existing durable-state rule and the new checklist item
 now cover that reusable lesson, so no additional governance slice is queued.
 
 PR #15 merged with a merge commit at `65f7766`, pins
 Align #672 at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline, and keeps
-its recorded source and oracle commits reachable. Its retrospective found three reusable lessons:
+its recorded source, oracle, and finalization commits reachable. Its retrospective found three
+reusable lessons:
 Git-internal automation must use the common directory in linked worktrees, historical provenance
 must constrain the merge method, and aggregate check names must not be treated as proof that every
 focused gate ran. The merged governance slice turned those lessons into policy and checklist
@@ -66,8 +80,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. After the check-topology design slice merges, refresh `main` and implement its `hosted-checks`,
-   `capable-checks`, and `ci` graph on a separate branch. `make ci` currently omits the C1-C5
+1. After the baseline-identity correction merges, refresh `main` and implement `hosted-checks`,
+   `capable-checks`, and `ci` with the required clean-source baseline recording, immutable oracle,
+   finalization, ancestry checks, and merge-only integration. `make ci` currently omits the C1-C5
    focused smokes that PR #15 ran separately, while the hosted gate intentionally omits `coding-v1`
    and the canonical baseline gate.
 2. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
@@ -81,19 +96,20 @@ Do not rerun a failing external service request indefinitely. The Codex “high 
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
 
-## Current check-topology design verification
+## Current check-topology correction verification
 
 Verified on 2026-07-29:
 
 ```text
 git diff --check                         PASS
 make format-check                        PASS
+make baseline-check                      PASS
 test "$(readlink AGENTS.md)" = CLAUDE.md PASS
 ```
 
-The design records its align-llm base as `c20e919` and the compiler/runtime dependency as pinned
-Align `d9fb5da`. It changes no Make target or workflow until the design merges and a separate
-implementation slice begins.
+The correction records its align-llm base as `aad72ff` and the compiler/runtime dependency as pinned
+Align `d9fb5da`. It changes no Make target, workflow, or baseline until the correction merges and a
+separate implementation slice begins.
 
 The rule port was checked against the `../align` `CLAUDE.md` changes between the former Align pin
 `db942d2` and current pin `d9fb5da`. Align-specific Rust, release, and repository-script commands
@@ -107,7 +123,7 @@ detached Align checkout at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`. The oracl
 at `bb9c636`, the finalized baseline at `03e6b15`, and the Git-worktree baseline regression fix at
 `d3905d0`. Follow-up `cdd90fd` makes abnormal cleanup use the same resolved common Git directory.
 The branch merged Request 5 registration commit `f79fb68` at `5dc6c59`, preserving the recorded
-baseline source and oracle commits as ancestors.
+baseline source, oracle, and finalization commits as ancestors.
 
 ```text
 ALIGN_REPO=<clean detached Align #672 checkout> \
