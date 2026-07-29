@@ -126,7 +126,11 @@ Python 3.13 and 3.14. Its replacement source → oracle → finalization chain i
 (median 2,785,520,937 nanoseconds), with no performance claim. Focused default and redirected-cache
 helper runs, `baseline-check`, full exact-pinned `make ci`, positive topology, all 15 scalar/linear
 provenance negatives, all four merge-hidden path classes, and the pre-owner side-history control
-pass. Fresh exact-state preflight remains.
+pass. Fresh host preflight then found that the required helper still used Python 3.11-only
+`Instruction.positions` while claiming Python 3.10 compatibility. The current uncommitted
+correction derives per-instruction lines from Python 3.10-compatible `dis.findlinestarts` entries
+and adds a synthetic inherited-line mapping control. A replacement source/oracle/finalization
+chain and all exact-state evidence remain.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -231,8 +235,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run fresh exact-state host-native and independent-adversarial preflight for the
-   `93aed1a` → `1b32539` → `3448d5a` chain and current verification checkpoint.
+1. Verify and commit the Python 3.10 helper compatibility correction as a new source owner, create
+   its replacement oracle/finalization chain, and rerun complete exact-state evidence and preflight.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,

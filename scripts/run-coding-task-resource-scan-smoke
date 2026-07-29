@@ -197,6 +197,21 @@ def source_section(source: str, start: str, end: str) -> str:
     return source[start_offset:end_offset]
 
 
+def instruction_line_numbers(
+    instructions: tuple[Any, ...],
+    line_starts: tuple[tuple[int, int | None], ...],
+) -> dict[int, int]:
+    current_line: int | None = None
+    line_numbers = {}
+    starts = dict(line_starts)
+    for instruction in instructions:
+        if instruction.offset in starts:
+            current_line = starts[instruction.offset]
+        if current_line is not None:
+            line_numbers[instruction.offset] = current_line
+    return line_numbers
+
+
 def prove_deadline_source_contract(module: types.ModuleType) -> None:
     source = module.__align_exact_source__.decode("utf-8")
     require(
@@ -314,6 +329,18 @@ def prove_deadline_source_contract(module: types.ModuleType) -> None:
         )
         == frozenset(),
         "non-call instruction was accepted as a scan call",
+    )
+    require(
+        instruction_line_numbers(
+            (
+                types.SimpleNamespace(offset=2),
+                types.SimpleNamespace(offset=4),
+                types.SimpleNamespace(offset=6),
+            ),
+            ((2, 10), (6, 11)),
+        )
+        == {2: 10, 4: 10, 6: 11},
+        "Python 3.10 instruction-line mapping differs",
     )
 
 
@@ -869,13 +896,18 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         if line.strip() == b"with scan(current) as entries:"
     ]
     require(len(context_lines) == 1, f"unexpected scan context lines: {context_lines}")
+    instructions = tuple(dis.get_instructions(module.validation_worktree_usage))
+    line_numbers = instruction_line_numbers(
+        instructions,
+        tuple(dis.findlinestarts(module.validation_worktree_usage.__code__)),
+    )
     entry_store_offsets = [
         instruction.offset
-        for instruction in dis.get_instructions(module.validation_worktree_usage)
+        for instruction in instructions
         if (
             instruction.opname == "STORE_FAST"
             and instruction.argval == "entries"
-            and instruction.positions.lineno == context_lines[0]
+            and line_numbers.get(instruction.offset) == context_lines[0]
         )
     ]
     require(
@@ -893,10 +925,10 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
     )
     post_capture_offsets = [
         instruction.offset
-        for instruction in dis.get_instructions(module.validation_worktree_usage)
+        for instruction in instructions
         if (
             instruction.opname == "POP_EXCEPT"
-            and instruction.positions.lineno == body_capture_lines[0]
+            and line_numbers.get(instruction.offset) == body_capture_lines[0]
         )
     ]
     require(
