@@ -4,27 +4,42 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The check-gate baseline-identity design correction is active on
-`agent/check-gate-topology-baseline-design`, based on merged topology design commit `aad72ff`. Its
-plan of record is `docs/specs/check-gate-topology.md`; implementation has not started because the
-author-side matrix-to-diff pass found that `Makefile` is an identity-bound canonical C0 baseline
-artifact. C6 product implementation has also not started. In the primary worktree, modified
+_Last updated: 2026-07-29. The check-gate aggregate-serialization portability correction is active
+on `agent/check-gate-topology-portability-design`, based on merged baseline-identity design commit
+`e0c37a7`. Its plan of record is `docs/specs/check-gate-topology.md`. The preserved implementation
+branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
+baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
+the declared Ubuntu 24.04 hosted runner supplies GNU Make 4.3. The same review found checker
+validation-precedence and bounded-capture gaps, plus a separate validation-directory unlink race.
+Do not update that implementation until this correction and the separately scoped runner fix,
+including its own identity-coupled baseline refresh, merge. C6 product implementation has also not
+started. In the primary worktree, modified
 `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
 not be discarded._
 
 ## Current position
 
-The repository has completed C0 through C5. PR #17 merged at `aad72ff`, defining the explicit hosted,
-capable, and canonical CI topology. Before implementation, its baseline closure audit found that
-changing `Makefile` necessarily invalidates the current canonical baseline artifact manifest. The
-active design correction makes the baseline refresh and merge-only ancestry part of the
-implementation contract instead of allowing a broken intermediate `main`. Its structural evidence
-also binds the named source and oracle commits to the identities persisted in the finalized
-baseline, requires every recorded identity to name a raw commit object rather than an implicitly
-peeled tag, rejects post-source history for every path derived from the recorded artifact manifest,
-uses full merge history for every input and output no-later-change check, and disables replacement
-objects and ambient Git configuration for every provenance inspection.
+The repository has completed C0 through C5. PR #18 merged at `e0c37a7`, closing the baseline
+identity and merge-history contract for the explicit hosted, capable, and canonical CI topology.
+The implementation branch has the complete topology, the required source → oracle → finalization
+history, and a passing `make -j8 ci`. Preflight review then found one portability defect in the
+design: target-scoped `.NOTPARALLEL` is a GNU Make 4.4 feature, but the declared Ubuntu 24.04 hosted
+runner supplies GNU Make 4.3. The same review found that the checker interleaves the specified
+missing/non-ASCII validation phases and buffers self-test child output without the specified bound.
+The active correction preserves the serialized first-failure contract with one explicit `-j1`
+recursive Make per aggregate, clears inherited Make option variables at that child boundary, and
+closes the checker acceptance coverage. It also requires `hosted-checks`, `capable-checks`, or `ci`
+to be the sole goal in a top-level Make invocation and rejects any additional goal before side
+effects, because otherwise parent work or separate `-j1` children can still overlap; concurrent
+independent Make processes remain unsupported verification evidence. The review also reproduced a
+queued validation directory
+disappearing before `scandir`; that runner fix is a separate semantic slice whose implementation
+must carry its own source → oracle → finalization refresh.
+After both corrections merge, the topology implementation must integrate refreshed `main` and
+re-record the canonical baseline again because `Makefile` is an identity-bound artifact. The
+checker correction remains in that same topology source commit but is not itself in the recorded
+artifact manifest.
 
 PR #16 merged at `c20e919`, adding the applicable Align
 design-convergence rules and the bounded post-merge retrospective. Its review caught and fixed
@@ -80,15 +95,22 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. After the baseline-identity correction merges, refresh `main` and implement `hosted-checks`,
-   `capable-checks`, and `ci` with the required clean-source baseline recording, immutable oracle,
-   finalization, ancestry checks, and merge-only integration. `make ci` currently omits the C1-C5
-   focused smokes that PR #15 ran separately, while the hosted gate intentionally omits `coding-v1`
-   and the canonical baseline gate.
-2. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+1. Merge the aggregate-serialization and checker-acceptance correction after exact-head checks and
+   reviews. Then create and merge a separately designed validation-directory unlink-race fix with
+   deterministic file-entry and queued-directory regressions plus its own identity-coupled baseline
+   refresh; do not retain the unplanned runner edit inside the topology implementation or leave an
+   invalid intermediate `main`.
+2. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
+   `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
+   checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
+   re-record its clean source, immutable oracle, and canonical finalization. Rerun the structural
+   provenance harness, `make -j8 ci`, hosted
+   verification on Ubuntu 24.04 with the topology self-test plus `make -j8 hosted-checks`, and full
+   preflight before opening the implementation pull request.
+3. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
-3. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+4. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
    including the required closure matrix and exact implementation boundaries. Implement only
    independently valid slices whose prerequisites have shipped.
 
@@ -96,7 +118,7 @@ Do not rerun a failing external service request indefinitely. The Codex “high 
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
 
-## Current check-topology correction verification
+## Current check-topology portability correction
 
 Verified on 2026-07-29:
 
@@ -107,9 +129,10 @@ make baseline-check                      PASS
 test "$(readlink AGENTS.md)" = CLAUDE.md PASS
 ```
 
-The correction records its align-llm base as `aad72ff` and the compiler/runtime dependency as pinned
-Align `d9fb5da`. It changes no Make target, workflow, or baseline until the correction merges and a
-separate implementation slice begins.
+The correction records its align-llm base as `e0c37a7` and the compiler/runtime dependency as pinned
+Align `d9fb5da`. It changes no Make target, workflow, or baseline. The preserved implementation head
+is `7290e37`; its source/oracle/finalization chain is intentionally stale for final delivery because
+the required Makefile portability edit will change a recorded artifact.
 
 The rule port was checked against the `../align` `CLAUDE.md` changes between the former Align pin
 `db942d2` and current pin `d9fb5da`. Align-specific Rust, release, and repository-script commands
