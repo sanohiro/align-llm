@@ -43,6 +43,13 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
   SHA, merge-base SHA, reviewer, review kind and scope, verdict, and finding dispositions outside
   the branch. A head or base-tip change after opening requires a full-diff preflight-equivalent
   refresh that replaces the stale pre-open envelope without replacing either post-open review.
+  Pass the envelope's full immutable base-tip commit ID as the review command's base argument when
+  the command accepts it. If the command requires a symbolic ref, verify after completion that the
+  review actually used the envelope's base-tip SHA; resolving the ref only before invocation does
+  not close the race and is not review evidence. Modes that cannot select a base, such as
+  `--commit` or `--uncommitted`, may support a scoped commit or delta review but cannot satisfy a
+  full-diff preflight, refreshed-preflight, or post-open envelope; pair them with a separate
+  immutable-base full-diff review.
   Check evidence separately records the head, tested base-tip, merge-base, and tested integration
   commit or tree and cannot substitute for review evidence. The head is a valid tested integration
   only when its merge base equals the tested base tip; otherwise evidence names the synthetic merge
@@ -81,6 +88,13 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
 ## Verification and regression risk
 
 - `make ci` passes with the exact pinned Align revision.
+- A regression helper executes repository source under review from its exact bytes; import settings
+  alone are not exact-source evidence. When cache behavior is itself the regression subject, the
+  helper may additionally exercise a named helper-owned cache only after validating its path,
+  ownership, expected cached-versus-source identities, and outcomes. On every exit, caller-owned
+  repository cache paths and bytes match their complete pre-run snapshot, including the absence of
+  newly created paths; named helper-owned cache fixtures are removed; and modified process-global
+  interpreter values are restored to their exact prior values.
 - Tests or corpus tasks exercise failure and timeout paths affected by the change.
 - Diagnostics needed to reproduce a failure remain available.
 - The pull request records valid review findings and explains rejected findings.
