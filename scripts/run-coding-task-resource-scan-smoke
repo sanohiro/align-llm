@@ -1409,7 +1409,12 @@ def git_exclusion_cases(module: types.ModuleType, owner: Path) -> None:
     )
 
 
-def run_case(name: str, action: Callable[[], None]) -> None:
+def run_case(
+    name: str,
+    action: Callable[[], None],
+    *,
+    set_timer: Callable[[int, float], Any] = signal.setitimer,
+) -> None:
     timed_out = False
     action_error: tuple[type[BaseException], BaseException, Any] | None = None
     saved_handler = signal.getsignal(signal.SIGALRM)
@@ -1420,15 +1425,15 @@ def run_case(name: str, action: Callable[[], None]) -> None:
         raise CaseTimedOut(f"{name} exceeded five seconds")
 
     signal.signal(signal.SIGALRM, handle_alarm)
-    signal.setitimer(signal.ITIMER_REAL, 5.0)
     try:
+        set_timer(signal.ITIMER_REAL, 5.0)
         try:
             action()
         except BaseException:
             action_error = sys.exc_info()
     finally:
         try:
-            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            set_timer(signal.ITIMER_REAL, 0.0)
         finally:
             signal.signal(signal.SIGALRM, saved_handler)
     if timed_out:
@@ -1458,6 +1463,48 @@ def prove_swallowed_alarm_fails() -> None:
         raise SmokeFailure("swallowed alarm sentinel unexpectedly passed")
 
 
+def prove_timer_arm_failure_restores() -> None:
+    timer_calls: list[tuple[int, float]] = []
+    action_called = False
+    saved_handler = signal.getsignal(signal.SIGALRM)
+
+    def fail_arm(timer: int, seconds: float) -> None:
+        timer_calls.append((timer, seconds))
+        if seconds == 5.0:
+            raise OSError("injected timer arm failure")
+
+    def forbidden_action() -> None:
+        nonlocal action_called
+        action_called = True
+
+    try:
+        run_case(
+            "timer arm failure sentinel",
+            forbidden_action,
+            set_timer=fail_arm,
+        )
+    except OSError as error:
+        require(
+            str(error) == "injected timer arm failure",
+            f"timer arm proof returned a different error: {error}",
+        )
+    else:
+        raise SmokeFailure("timer arm failure sentinel unexpectedly passed")
+    require(not action_called, "timer arm failure sentinel ran its action")
+    require(
+        timer_calls
+        == [
+            (signal.ITIMER_REAL, 5.0),
+            (signal.ITIMER_REAL, 0.0),
+        ],
+        f"timer arm failure calls differ: {timer_calls}",
+    )
+    require(
+        signal.getsignal(signal.SIGALRM) is saved_handler,
+        "timer arm failure did not restore the prior signal handler",
+    )
+
+
 def main() -> int:
     if not sys.platform.startswith("linux"):
         raise SmokeFailure("coding task resource scan smoke requires Linux")
@@ -1474,6 +1521,7 @@ def main() -> int:
             ))
             try:
                 module = load_runner_with_nondefault_ambient(owner, runner_path)
+                prove_timer_arm_failure_restores()
                 prove_swallowed_alarm_fails()
                 cases = (
                     ("stable control", lambda: stable_case(module, owner)),
