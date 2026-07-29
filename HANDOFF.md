@@ -57,10 +57,8 @@ pre-owner side-history control                        PASS
 
 The prior post-open P2 finding is resolved: both successful and failing close paths now cross the
 local scan deadline while preserving the exact `BaseException` identity and proving cleanup was
-attempted. A fresh independent-adversarial post-open review of the current pushed state is clean.
-The final host-native review found only that this handoff had accumulated stale transcript content;
-this replacement removes it without changing the runner, helper, specification, baseline, or
-identity chain.
+attempted. This handoff was condensed without changing the runner, helper, specification,
+baseline, or identity chain.
 
 ## Exact next steps
 
