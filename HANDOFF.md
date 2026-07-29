@@ -76,7 +76,8 @@ passes. Fresh independent preflight found that a cancellation error could still 
 recorded timeout or prior action error was re-raised. The active correction captures cancellation
 failure separately and applies timeout-delivery, arm/action-error, then cancellation-error
 precedence after exact handler restoration; deterministic sentinels cover both competing-error
-cases. Its replacement baseline chain remains to be recorded.
+cases. Its replacement is source `d265500`, oracle `0198362`, and finalization `962b188`; full
+verification passes and fresh exact-chain preflight remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -181,15 +182,13 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the timer-cancellation precedence correction, run the focused helper in default and
-   redirected-cache ambient states, and record and finalize its exact replacement baseline.
-2. Rerun full `make ci` and the complete positive and negative provenance harness, then run fresh
-   full-diff host-native and independent-adversarial preflight against that exact chain.
-3. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Run fresh full-diff host-native and independent-adversarial preflight against the exact
+   `d265500` → `0198362` → `962b188` replacement chain and its verification checkpoint.
+2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
-4. After merge, summarize PR #23 and the reusable-rule candidates, then stop as requested. Do not
+3. After merge, summarize PR #23 and the reusable-rule candidates, then stop as requested. Do not
    start a governance follow-up or resume the preserved topology or C6 branches in this run.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
@@ -345,6 +344,18 @@ passes; the isolated negative harness rejects all 15 scalar/linear categories an
 TREESAME merge-hidden path classes with simplified/full counts `0 / 2`, while pre-owner side
 history remains accepted. Fresh exact-chain preflight superseded this chain after finding the
 timer-cancellation precedence gap described above.
+The active replacement baseline records source
+`d265500c8f6f7c8bf35c772cbf33e1831bf556e7`, immutable oracle
+`0198362b23c3d7d5ca7a8ce1e2eaeb0e17bcd722`, and finalization
+`962b1888bd9e7795766fbcda1c26f5678a127fd1`; both samples pass with min/median/max
+`2,341,263,102 / 2,368,139,670 / 2,395,016,238 ns` and no performance claim. Focused helper
+verification passes under default and explicit bytecode-disabled redirected-cache process settings.
+Timer sentinels prove arm-failure restoration, swallowed-alarm detection, timeout-over-cancellation
+precedence, and action-over-cancellation precedence; all 17 fresh per-case timers remain passing.
+`make baseline-check` and pinned-Align `make ci` pass. The complete positive provenance block
+passes; the isolated negative harness rejects all 15 scalar/linear categories and all four
+TREESAME merge-hidden path classes with simplified/full counts `0 / 2`, while pre-owner side
+history remains accepted. Fresh exact-chain preflight remains.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
