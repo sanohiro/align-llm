@@ -243,6 +243,15 @@ For applicable surfaces, the contract ledger and closure matrix must also cover:
 - explicit CLI and build inputs without unnamed ambient configuration;
 - overlap exclusion for process-global or connection-global state, failed-second-operation
   behavior, exhaustion, error, and cleanup restoration order;
+- every combination of individually supported public entrypoints that can share state in one
+  process tree, including aggregate-plus-aggregate and aggregate-plus-focused operations; classify
+  and test each combination as serialized, rejected before side effects, or explicitly unsupported,
+  and separately state the policy for concurrent independent processes;
+- compatibility at the minimum declared tool or platform version, exercised by a required acceptance
+  environment at that version; newer environments are supplementary evidence, not a substitute;
+- every option or environment-isolation boundary in both directions: rejected or cleared state must
+  not cross it, while each documented input that must survive it retains its exact value and
+  documented source or precedence semantics;
 - the Cartesian product of detail levels, discriminators, verification states, and option states,
   including exact field presence, row order, ordinal, and unavailable-value rules;
 - nominal versus structural identity for every fingerprint, with the complete reachable definition
