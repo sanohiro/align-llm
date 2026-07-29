@@ -191,6 +191,101 @@ def load_runner_with_nondefault_ambient(
     return module
 
 
+def source_section(source: str, start: str, end: str) -> str:
+    start_offset = source.index(start)
+    end_offset = source.index(end, start_offset)
+    return source[start_offset:end_offset]
+
+
+def prove_deadline_source_contract(module: types.ModuleType) -> None:
+    source = module.__align_exact_source__.decode("utf-8")
+    require(
+        module.MAX_PROCESS_TREE_SCAN_SECONDS == 0.5,
+        "process-tree scan budget differs",
+    )
+    require(
+        module.MAX_RESOURCE_SCAN_SECONDS == 0.1,
+        "shared resource scan budget differs",
+    )
+    require(
+        source.count("MAX_PROCESS_TREE_SCAN_SECONDS") == 2,
+        "process-tree scan budget has an unexpected use",
+    )
+    require(
+        source.count("MAX_RESOURCE_SCAN_SECONDS") == 5,
+        "shared resource scan budget has an unexpected use",
+    )
+    process_usage = source_section(
+        source,
+        "def validation_process_usage(",
+        "\ndef deleted_open_file_usage(",
+    )
+    require(
+        process_usage.count("MAX_PROCESS_TREE_SCAN_SECONDS") == 1
+        and process_usage.count("MAX_RESOURCE_SCAN_SECONDS") == 1,
+        "process resource phases do not own separate budgets",
+    )
+    require(
+        "descendant_process_ids(roots, deadline)" in process_usage,
+        "process-tree deadline does not feed descendant discovery",
+    )
+    worktree_usage = source_section(
+        source,
+        "def validation_worktree_usage(",
+        "\ndef loaded_name_call_offsets(",
+    )
+    deleted_usage = source_section(
+        source,
+        "def deleted_open_file_usage(",
+        "\ndef check_validation_resources(",
+    )
+    directory_modes = source_section(
+        source,
+        "def directory_modes(",
+        "\ndef check_directory_modes(",
+    )
+    require(
+        all(
+            section.count("MAX_RESOURCE_SCAN_SECONDS") == 1
+            for section in (worktree_usage, deleted_usage, directory_modes)
+        ),
+        "shared scan budget moved from an existing phase",
+    )
+    check_resources = source_section(
+        source,
+        "def check_validation_resources(",
+        "\ndef validate_candidate(",
+    )
+    require(
+        check_resources.count("command_deadline") >= 7,
+        "resource phases do not share the command deadline",
+    )
+    output_reader = source_section(
+        source,
+        "def wait_for_process(",
+        "\ndef close_process_streams(",
+    )
+    require(
+        output_reader.count("invoke_resource_check(") == 2,
+        "resource callback boundary has an unexpected owner",
+    )
+    require(
+        output_reader.count("check_resources()") == 4,
+        "output reader does not route all callback sites through its boundary",
+    )
+    invoke = source_section(
+        source,
+        "def invoke_resource_check(",
+        "\ndef wait_for_process(",
+    )
+    require(
+        "except TaskError as error:" in invoke
+        and "except Exception" not in invoke
+        and "except BaseException" not in invoke,
+        "callback adjudication catches the wrong exception class",
+    )
+
+
 class Clock:
     def __init__(self, events: list[str] | None = None) -> None:
         self.expired = False
@@ -209,6 +304,14 @@ class InitialExpiryClock:
     def __call__(self) -> float:
         self.calls += 1
         return 100.0 if self.calls == 1 else 101.0
+
+
+class MutableClock:
+    def __init__(self, now: float = 100.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
 
 
 class EntryProxy:
@@ -385,6 +488,195 @@ def stable_case(module: types.ModuleType, owner: Path) -> None:
     result = module.validation_worktree_usage(root, scan=scan)
     require(result == expected_usage(root, stable), f"stable result mismatch: {result}")
     require(all(wrapper.close_attempted for wrapper in wrappers), "stable iterator was not closed")
+
+
+def command_deadline_case(module: types.ModuleType, owner: Path) -> None:
+    fake_process = types.SimpleNamespace(args=["deadline-control"])
+    deadline = 101.0
+    callback_called = False
+
+    def late_callback(process: Any, command_deadline: float) -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    try:
+        module.invoke_resource_check(
+            fake_process,
+            deadline,
+            late_callback,
+            monotonic=MutableClock(deadline),
+        )
+    except module.subprocess.TimeoutExpired:
+        pass
+    else:
+        raise SmokeFailure("expired command started a resource callback")
+    require(not callback_called, "expired command invoked its resource callback")
+
+    slow_success_clock = MutableClock()
+
+    def slow_success(process: Any, command_deadline: float) -> None:
+        require(command_deadline == deadline, "success callback deadline differs")
+        slow_success_clock.now = deadline
+
+    try:
+        module.invoke_resource_check(
+            fake_process,
+            deadline,
+            slow_success,
+            monotonic=slow_success_clock,
+        )
+    except module.subprocess.TimeoutExpired:
+        pass
+    else:
+        raise SmokeFailure("slow successful callback escaped command timeout")
+
+    for slow in (False, True):
+        clock = MutableClock()
+        resource_error = module.TaskError(f"resource-{'slow' if slow else 'fast'}")
+
+        def resource_failure(
+            process: Any,
+            command_deadline: float,
+            *,
+            clock: MutableClock = clock,
+            error: BaseException = resource_error,
+            slow: bool = slow,
+        ) -> None:
+            require(command_deadline == deadline, "resource callback deadline differs")
+            if slow:
+                clock.now = deadline
+            raise error
+
+        try:
+            module.invoke_resource_check(
+                fake_process,
+                deadline,
+                resource_failure,
+                monotonic=clock,
+            )
+        except module.subprocess.TimeoutExpired as error:
+            require(slow, "fast resource error became command timeout")
+            require(
+                error.__cause__ is resource_error,
+                "slow resource error is not the timeout cause",
+            )
+        except module.TaskError as error:
+            require(not slow, "slow resource error escaped timeout adjudication")
+            require(error is resource_error, "fast resource error identity changed")
+        else:
+            raise SmokeFailure("resource callback error unexpectedly passed")
+
+    for error_type in (RuntimeError, CaseInterrupted):
+        for slow in (False, True):
+            clock = MutableClock()
+            callback_error = error_type(
+                f"{error_type.__name__}-{'slow' if slow else 'fast'}"
+            )
+
+            def unexpected_failure(
+                process: Any,
+                command_deadline: float,
+                *,
+                clock: MutableClock = clock,
+                error: BaseException = callback_error,
+                slow: bool = slow,
+            ) -> None:
+                require(
+                    command_deadline == deadline,
+                    "unexpected callback deadline differs",
+                )
+                if slow:
+                    clock.now = deadline
+                raise error
+
+            try:
+                module.invoke_resource_check(
+                    fake_process,
+                    deadline,
+                    unexpected_failure,
+                    monotonic=clock,
+                )
+            except BaseException as error:
+                require(
+                    error is callback_error,
+                    f"{error_type.__name__} callback identity changed",
+                )
+                traceback_names = []
+                traceback = error.__traceback__
+                while traceback is not None:
+                    traceback_names.append(traceback.tb_frame.f_code.co_name)
+                    traceback = traceback.tb_next
+                require(
+                    "unexpected_failure" in traceback_names,
+                    f"{error_type.__name__} callback traceback was lost",
+                )
+            else:
+                raise SmokeFailure(f"{error_type.__name__} callback unexpectedly passed")
+
+    def run_silent_child(
+        label: str,
+        callback: Callable[[Any, float], None],
+        starts: list[float],
+        deadlines: list[float],
+    ) -> None:
+        try:
+            module.run(
+                [sys.executable, "-c", "import time; time.sleep(5)"],
+                owner,
+                1,
+                command_name=label,
+                resource_check=callback,
+            )
+        except module.CommandTimedOut as error:
+            require(
+                f"command timed out after 1 seconds: {label}" in str(error),
+                f"{label} lost command-timeout diagnostic: {error}",
+            )
+        else:
+            raise SmokeFailure(f"{label} unexpectedly completed")
+        require(starts, f"{label} did not invoke its resource callback")
+        require(
+            len(set(deadlines)) == 1,
+            f"{label} changed its absolute command deadline",
+        )
+        require(
+            all(
+                start < command_deadline
+                for start, command_deadline in zip(starts, deadlines)
+            ),
+            f"{label} started a resource callback after command expiry",
+        )
+
+    return_starts: list[float] = []
+    return_deadlines: list[float] = []
+
+    def slow_return(process: Any, command_deadline: float) -> None:
+        return_starts.append(module.time.monotonic())
+        return_deadlines.append(command_deadline)
+        module.time.sleep(0.38)
+
+    run_silent_child(
+        "slow-return-monitor",
+        slow_return,
+        return_starts,
+        return_deadlines,
+    )
+
+    error_starts: list[float] = []
+    error_deadlines: list[float] = []
+
+    def slow_resource_error(process: Any, command_deadline: float) -> None:
+        error_starts.append(module.time.monotonic())
+        error_deadlines.append(command_deadline)
+        module.time.sleep(1.05)
+        raise module.TaskError("late resource error")
+
+    run_silent_child(
+        "slow-error-monitor",
+        slow_resource_error,
+        error_starts,
+        error_deadlines,
+    )
 
 
 def disappearing_entry_case(module: types.ModuleType, owner: Path) -> None:
@@ -1681,11 +1973,16 @@ def main() -> int:
             ))
             try:
                 module = load_runner_with_nondefault_ambient(owner, runner_path)
+                prove_deadline_source_contract(module)
                 prove_timer_arm_failure_restores()
                 prove_swallowed_alarm_fails()
                 prove_timer_cancellation_precedence()
                 cases = (
                     ("stable control", lambda: stable_case(module, owner)),
+                    (
+                        "validation command deadline",
+                        lambda: command_deadline_case(module, owner),
+                    ),
                     ("entry disappearance", lambda: disappearing_entry_case(module, owner)),
                     (
                         "queued directory disappearance",

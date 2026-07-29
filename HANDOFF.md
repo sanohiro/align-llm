@@ -106,7 +106,13 @@ after expiry. Callback-boundary adjudication covers success and error so a final
 that overruns and then fails cannot replace the command-timeout diagnostic. Review, implementation,
 a replacement baseline chain, and all exact-state evidence remain. This replacement is limited to
 expected resource `TaskError`; unexpected errors and exceptional control flow outside `Exception`
-remain exact.
+remain exact. The runner and exact-source helper now implement that reviewed contract. Focused
+default and nondefault-ambient helper runs pass. The required phase-labelled capable-host
+reproduction passes 20/20 corpus runs with no false deadline; process-tree discovery had a maximum
+of 90,371,411 nanoseconds across 120 scans. `make eval-coding` passes. The first exact-pinned
+`make ci` run passed every build and integration phase through `loop-smoke`, then stopped only at
+the expected stale `baseline-check` because the runner bytes have changed. A replacement clean
+source → oracle → finalization chain and the final exact-state evidence remain.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -211,9 +217,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Review the dedicated half-second process-tree discovery budget, implement it, create a
-   replacement clean source → oracle → finalization chain, then rerun the complete exact-state
-   verification and fresh full-diff host-native and independent-adversarial preflight.
+1. Commit the implemented deadline correction as the replacement clean source owner, create its
+   oracle and finalization commits, then rerun the complete exact-state verification and fresh
+   full-diff host-native and independent-adversarial preflight.
 2. Push the new source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
