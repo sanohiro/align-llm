@@ -62,10 +62,10 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Complete author verification and independent preflight for
-   `agent/autonomous-design-retrospective`, commit and push the coherent governance diff, and open
-   its pull request. Record separate current-SHA host-native and independent-adversarial post-open
-   review envelopes, wait for required checks, then merge only if all evidence remains current.
+1. Complete final head-bound independent preflight, push the clean
+   `agent/autonomous-design-retrospective` branch, and open its pull request. Record separate
+   current-SHA host-native and independent-adversarial post-open review envelopes, wait for required
+   checks, then merge only if all evidence remains current.
 2. In a separate automation slice, make the local capable-runner gate and hosted supported gate
    topology explicit. `make ci` currently omits the C1-C5 focused smokes that PR #15 ran separately,
    while the hosted gate intentionally omits `coding-v1` and the canonical baseline gate.
