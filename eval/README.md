@@ -21,7 +21,11 @@ make ci
 ```
 
 The gate pins and release-builds the sibling Align compiler through `.align-revision`, checks and
-builds all project units, runs the fixed corpus, compares its machine-readable summary with the
-checked-in expectation, and exercises the provider-independent loop spike. Building the pinned
-compiler inside the gate prevents a stale local `target/release/alignc` from surviving an Align
-checkout update.
+builds all project units, runs every focused C1-C5 smoke, executes the sandboxed coding corpus,
+and verifies the canonical baseline. Building the pinned compiler inside the gate prevents a stale
+local `target/release/alignc` from surviving an Align checkout update.
+
+Use `make hosted-checks` when the host cannot provide the nested user namespace required by
+`coding-v1`. It runs all hosted-compatible focused checks but deliberately excludes `eval-coding`
+and `baseline-check`. Use an individual focused target only for diagnosis, and name it explicitly
+in review evidence rather than calling it the complete gate.

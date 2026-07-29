@@ -62,10 +62,7 @@ jobs:
         run: |
           # coding-v1 requires nested user namespaces, which GitHub-hosted runners deny.
           # Keep that gate in make ci for local or capable self-hosted runners.
-          # baseline-check is tied to the immutable C0 artifact snapshot and is refreshed
-          # separately from feature slices; keep it in make ci rather than this PR gate.
+          # baseline-check remains in the capable gate with coding-v1.
           make align-build
           test -x "$ALIGN_REPO/target/release/alignc"
-          make ALIGNC="$ALIGN_REPO/target/release/alignc" \
-            format-check check build eval-smoke loop-smoke provider-smoke \
-            index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke
+          make ALIGNC="$ALIGN_REPO/target/release/alignc" hosted-checks

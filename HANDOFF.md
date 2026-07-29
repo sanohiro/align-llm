@@ -4,21 +4,21 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The check-gate baseline-identity design correction is active on
-`agent/check-gate-topology-baseline-design`, based on merged topology design commit `aad72ff`. Its
-plan of record is `docs/specs/check-gate-topology.md`; implementation has not started because the
-author-side matrix-to-diff pass found that `Makefile` is an identity-bound canonical C0 baseline
-artifact. C6 product implementation has also not started. In the primary worktree, modified
+_Last updated: 2026-07-29. Check-gate topology implementation is active on
+`agent/check-gate-topology-implementation`, based on merged design-correction commit `e0c37a7`.
+The implementation source commit, baseline measurement, oracle, and finalization are not yet
+recorded. C6 product implementation has also not started. In the primary worktree, modified
 `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
 not be discarded._
 
 ## Current position
 
-The repository has completed C0 through C5. PR #17 merged at `aad72ff`, defining the explicit hosted,
-capable, and canonical CI topology. Before implementation, its baseline closure audit found that
+The repository has completed C0 through C5. PR #18 merged at `e0c37a7`, closing the baseline
+identity and merge-history contract for the explicit hosted, capable, and canonical CI topology
+designed by PR #17. Before implementation, its baseline closure audit found that
 changing `Makefile` necessarily invalidates the current canonical baseline artifact manifest. The
-active design correction makes the baseline refresh and merge-only ancestry part of the
+merged design makes the baseline refresh and merge-only ancestry part of the
 implementation contract instead of allowing a broken intermediate `main`. Its structural evidence
 also binds the named source and oracle commits to the identities persisted in the finalized
 baseline, requires every recorded identity to name a raw commit object rather than an implicitly
@@ -80,11 +80,10 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. After the baseline-identity correction merges, refresh `main` and implement `hosted-checks`,
-   `capable-checks`, and `ci` with the required clean-source baseline recording, immutable oracle,
-   finalization, ancestry checks, and merge-only integration. `make ci` currently omits the C1-C5
-   focused smokes that PR #15 ran separately, while the hosted gate intentionally omits `coding-v1`
-   and the canonical baseline gate.
+1. Finish the check-topology implementation, commit the clean source state, then record, project,
+   and finalize the canonical baseline in the exact source → oracle → finalization sequence.
+   Run the structural negative harness, `make -j8 ci`, hosted Actions, and full exact-SHA review;
+   merge this PR with a merge commit.
 2. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.

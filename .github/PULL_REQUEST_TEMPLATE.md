@@ -11,6 +11,8 @@ make ci
 ```
 
 - Result:
+- Applicable aggregate (`make ci`, `make hosted-checks`, or N/A with reason):
+- Additional focused checks (do not substitute these for an aggregate):
 - Align revision (`.align-revision`):
 - Additional evaluation or benchmark:
 

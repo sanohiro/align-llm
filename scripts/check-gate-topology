@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Mapping, Sequence
+
+
+FIELDS = (
+    ("hosted", "ALIGN_LLM_HOSTED_CHECK_TARGETS"),
+    ("capable-only", "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS"),
+    ("serialized", "ALIGN_LLM_SERIAL_CHECK_AGGREGATES"),
+)
+EXPECTED = (
+    b"hosted=gate-topology-check format-check check build eval-smoke loop-smoke "
+    b"provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
+    b"verify-loop-smoke failure-memory-smoke\n"
+    b"capable-only=eval-coding baseline-check\n"
+    b"serialized=hosted-checks capable-checks\n"
+)
+DIAGNOSTIC_LIMIT = 4096
+TRUNCATION_MARKER = b"...[truncated]"
+
+
+def bounded_repr(value: bytes) -> str:
+    if len(value) > DIAGNOSTIC_LIMIT:
+        value = value[: DIAGNOSTIC_LIMIT - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+    return ascii(value)
+
+
+def evaluate(
+    argv: Sequence[str], environment: Mapping[str, str]
+) -> tuple[int, str, str]:
+    if argv:
+        return 1, "", "check gate topology accepts no arguments\n"
+
+    rows = []
+    for field, variable in FIELDS:
+        if variable not in environment:
+            return 1, "", f"check gate topology missing {field} input\n"
+        value = environment[variable]
+        try:
+            encoded = value.encode("ascii")
+        except UnicodeEncodeError:
+            return 1, "", f"check gate topology {field} input is not ASCII\n"
+        rows.append(field.encode("ascii") + b"=" + encoded + b"\n")
+
+    actual = b"".join(rows)
+    if actual != EXPECTED:
+        return (
+            1,
+            "",
+            "check gate topology mismatch: "
+            f"expected {bounded_repr(EXPECTED)}, actual {bounded_repr(actual)}\n",
+        )
+    return 0, "check gate topology: PASS\n", ""
+
+
+def require_case(
+    name: str,
+    argv: Sequence[str],
+    environment: Mapping[str, str],
+    diagnostic: str,
+) -> None:
+    status, stdout, stderr = evaluate(argv, environment)
+    if status == 0 or stdout or diagnostic not in stderr:
+        raise RuntimeError(f"self-test case {name} did not reach {diagnostic}")
+
+
+def exact_environment() -> dict[str, str]:
+    return {
+        "ALIGN_LLM_HOSTED_CHECK_TARGETS": (
+            "gate-topology-check format-check check build eval-smoke loop-smoke "
+            "provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
+            "verify-loop-smoke failure-memory-smoke"
+        ),
+        "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": "eval-coding baseline-check",
+        "ALIGN_LLM_SERIAL_CHECK_AGGREGATES": "hosted-checks capable-checks",
+    }
+
+
+def run_self_test() -> int:
+    exact = exact_environment()
+    status, stdout, stderr = evaluate((), exact)
+    if (status, stdout, stderr) != (0, "check gate topology: PASS\n", ""):
+        raise RuntimeError("self-test exact case failed")
+
+    require_case("arity", ("extra",), exact, "accepts no arguments")
+    for _, variable in FIELDS:
+        missing = dict(exact)
+        del missing[variable]
+        require_case(f"missing-{variable}", (), missing, "missing")
+        non_ascii = dict(exact)
+        non_ascii[variable] = "non-ascii-\N{SNOWMAN}"
+        require_case(f"encoding-{variable}", (), non_ascii, "not ASCII")
+
+    mutations = {
+        "added": (
+            "ALIGN_LLM_HOSTED_CHECK_TARGETS",
+            exact["ALIGN_LLM_HOSTED_CHECK_TARGETS"] + " extra",
+        ),
+        "removed": (
+            "ALIGN_LLM_HOSTED_CHECK_TARGETS",
+            exact["ALIGN_LLM_HOSTED_CHECK_TARGETS"].replace(" format-check", "", 1),
+        ),
+        "duplicated": (
+            "ALIGN_LLM_HOSTED_CHECK_TARGETS",
+            exact["ALIGN_LLM_HOSTED_CHECK_TARGETS"] + " format-check",
+        ),
+        "reordered": (
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
+            "baseline-check eval-coding",
+        ),
+        "serialized-removed": (
+            "ALIGN_LLM_SERIAL_CHECK_AGGREGATES",
+            "hosted-checks",
+        ),
+        "empty": ("ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS", ""),
+        "leading-space": (
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
+            " eval-coding baseline-check",
+        ),
+        "trailing-space": (
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
+            "eval-coding baseline-check ",
+        ),
+        "repeated-space": (
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
+            "eval-coding  baseline-check",
+        ),
+    }
+    for name, (variable, value) in mutations.items():
+        mutated = dict(exact)
+        mutated[variable] = value
+        require_case(name, (), mutated, "mismatch")
+
+    project_root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix="align-llm-topology-") as temporary:
+        marker = Path(temporary) / "expanded"
+        dangerous = (
+            f"ignored `quoted` \"double\" 'single' \\\\ "
+            f"$(shell printf marker > {marker})"
+        )
+        child_environment = os.environ.copy()
+        child_environment.update(
+            {
+                "ALIGN_LLM_HOSTED_CHECK_TARGETS": dangerous,
+                "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": dangerous,
+                "ALIGN_LLM_SERIAL_CHECK_AGGREGATES": dangerous,
+            }
+        )
+        result = subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "gate-topology-check",
+                f"HOSTED_CHECK_TARGETS={dangerous}",
+                f"CAPABLE_ONLY_CHECK_TARGETS={dangerous}",
+                f"SERIAL_CHECK_AGGREGATES={dangerous}",
+            ],
+            cwd=project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=child_environment,
+        )
+        if (
+            result.returncode != 0
+            or result.stdout != "check gate topology: PASS\n"
+            or result.stderr
+            or marker.exists()
+        ):
+            raise RuntimeError("self-test Make override isolation failed")
+
+    print("check gate topology self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        try:
+            return run_self_test()
+        except (OSError, RuntimeError) as error:
+            print(f"check gate topology self-test failed: {error}", file=sys.stderr)
+            return 1
+
+    status, stdout, stderr = evaluate(sys.argv[1:], os.environ)
+    if stdout:
+        print(stdout, end="")
+    if stderr:
+        print(stderr, end="", file=sys.stderr)
+    return status
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
