@@ -64,13 +64,12 @@ identity chain.
 
 ## Exact next steps
 
-1. Commit this handoff-only correction, push it, and obtain scoped final-state reviews. No baseline
-   regeneration is required because `HANDOFF.md` is not a recorded baseline artifact.
-2. Require the hosted check to pass for the exact pushed head and confirm `main` has not changed.
-3. Merge PR #23 with a merge commit and exact expected head.
-4. In a temporary detached worktree at refreshed `origin/main`, verify the focused helper,
+1. Confirm the current-head scoped review envelopes and hosted check are clean, and confirm `main`
+   has not changed.
+2. Merge PR #23 with a merge commit and exact expected head.
+3. In a temporary detached worktree at refreshed `origin/main`, verify the focused helper,
    baseline, source/oracle/finalization ancestry, pending-file absence, and merge topology.
-5. Publish the bounded retrospective and stop. Do not start a governance follow-up, resume the
+4. Publish the bounded retrospective and stop. Do not start a governance follow-up, resume the
    topology implementation, or start C6 in this run.
 
 After this requested stop, the next eligible roadmap work is to integrate refreshed `main` into
