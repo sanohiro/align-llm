@@ -1633,6 +1633,45 @@ def error_deadline_cases(module: types.ModuleType, owner: Path) -> None:
             require("body" not in diagnostic, "body error replaced close deadline")
             require(wrappers[0].close_attempted, "deadline dual-error close not attempted")
 
+    for close_kind in ("success", "error"):
+        root = owner / f"deadline-interruption-close-{close_kind}"
+        root.mkdir()
+        (root / "target").write_bytes(b"x")
+        clock = Clock()
+        wrappers = []
+        interruption = CaseInterrupted(f"deadline interruption with {close_kind}")
+
+        def close_hook() -> None:
+            clock.expired = True
+
+        def scan(path: Path, close_kind: str = close_kind) -> IteratorWrapper:
+            wrapper = IteratorWrapper(
+                os.scandir(path),
+                next_error=interruption,
+                close_hook=close_hook,
+                close_error=(
+                    PermissionError("close denied") if close_kind == "error" else None
+                ),
+            )
+            wrappers.append(wrapper)
+            return wrapper
+
+        try:
+            module.validation_worktree_usage(root, scan=scan, monotonic=clock)
+        except CaseInterrupted as error:
+            require(
+                error is interruption,
+                f"{close_kind} close replaced the exact interruption",
+            )
+        else:
+            raise SmokeFailure(
+                f"{close_kind} deadline close unexpectedly replaced the interruption"
+            )
+        require(
+            wrappers[0].close_attempted,
+            f"{close_kind} deadline interruption did not close",
+        )
+
 
 def size_ceiling_case(module: types.ModuleType, owner: Path) -> None:
     size_root = owner / "size-ceiling"

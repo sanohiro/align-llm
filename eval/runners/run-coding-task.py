@@ -1195,6 +1195,10 @@ def validation_worktree_usage(
             else:
                 close_error = error
 
+        if body_error is not None:
+            _, error, traceback = body_error
+            if not isinstance(error, Exception):
+                raise error.with_traceback(traceback)
         require_scan_deadline()
         if body_error is not None:
             _, error, traceback = body_error

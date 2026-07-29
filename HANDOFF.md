@@ -4,9 +4,13 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-**Current checkpoint (authoritative, 2026-07-29):** PR #23 is ready for its final exact-state
-preflight on `agent/validation-unlink-race-implementation`. The active source → oracle →
-finalization chain is `a90e0c63c22523b981339d783dd5bba912748605` →
+**Current checkpoint (authoritative, 2026-07-29):** PR #23 post-open review found that a recovered
+exceptional-control `BaseException` could be replaced when context cleanup crossed the local
+resource deadline. The correction rethrows recovered exceptional control after cleanup and before
+ordinary resource-deadline classification; focused close-success and close-error regressions cover
+the crossed-deadline combination. A replacement source → oracle → finalization chain and complete
+exact-state verification are pending. The superseded chain is
+`a90e0c63c22523b981339d783dd5bba912748605` →
 `dd1e702f2b79b5151c8581a1c644c03f98c08880` →
 `dea7a54a4321693b883ee1a73e0bc75edd254f1e`. The baseline's two passing samples are
 2,798,535,133 and 2,816,202,592 nanoseconds (median 2,807,368,862 nanoseconds), with no performance
