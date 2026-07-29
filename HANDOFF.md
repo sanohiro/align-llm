@@ -20,7 +20,8 @@ oracle → finalization replacement is source `883f3f7`, oracle `d05e9f4`, and f
 `2d05d47`. Full verification passes. Independent preflight was clean, but host preflight found that
 the helper's failure injection occurred after successful ordinary loads rather than inside the
 ordinary-loader normalization scope. The helper now performs a real missing-source ordinary load
-inside that scope and asserts exact restoration; the identity chain must be re-recorded.
+inside that scope and asserts exact restoration. The active replacement is source `924fc58`, oracle
+`c291cdb`, and finalization `a795284`; full verification and fresh preflight remain.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -125,9 +126,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the ordinary-loader failure regression as a new clean source, re-record its oracle and
-   finalization through exclusive owner commits, update the identities here, and rerun complete
-   focused, CI, provenance, and preflight verification.
+1. Rerun complete focused, CI, and positive and negative provenance verification against source
+   `924fc58`, oracle `c291cdb`, and finalization `a795284`, then run a fresh full-diff preflight.
 2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
    host-native and independent-adversarial post-open reviews, and merge only with a merge commit
    that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
@@ -190,7 +190,11 @@ under default and explicit bytecode-disabled redirected-cache process settings, 
 with the pinned Align checkout, and the complete positive and negative provenance harness passes.
 The preserved topology implementation head remains `7290e37`; its recorded chain is intentionally
 stale until this runner correction and baseline refresh merge. The active `883f3f7` chain is
-superseded by the ordinary-loader failure regression and must be re-recorded.
+superseded by the ordinary-loader failure regression. The active replacement baseline records
+source `924fc585a27b301e936eadd2b9a686aa598c9083`, immutable oracle
+`c291cdb8a27d68633f76ef7e296692aa6923027c`, and finalization
+`a795284191925d50578ab997355c8f12bda451c3`; both samples pass. Full replacement verification is in
+progress.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
