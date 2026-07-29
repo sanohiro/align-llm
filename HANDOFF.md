@@ -71,7 +71,8 @@ finalization `48ef063`; full verification passes. Fresh independent preflight fo
 arming still occurred before the per-case cleanup scope, so an arm failure leaked the installed
 handler. The active correction protects the arm operation and adds a sentinel that proves arm
 failure skips the action, attempts cancellation, and restores the exact prior handler. Its
-replacement baseline chain remains to be recorded.
+replacement is source `0fc80f9`, oracle `f7fba1e`, and finalization `110889a`; full verification
+passes and fresh exact-chain preflight remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -176,29 +177,14 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the timer-arm cleanup correction, run the focused helper in default and redirected-cache
-   ambient states, and record and finalize its exact replacement baseline.
-2. Rerun full `make ci` and the complete positive and negative provenance harness, then run fresh
-   full-diff host-native and independent-adversarial preflight against that exact chain.
-3. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Run fresh full-diff host-native and independent-adversarial preflight against the exact
+   `0fc80f9` → `f7fba1e` → `110889a` replacement chain and its verification checkpoint.
+2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
-4. Summarize PR #23 after merge and, in a separate governance slice, add any genuinely reusable
-   rule not already covered by the repository guide or review checklist.
-5. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
-   `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
-   checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
-   re-record its clean source, immutable oracle, and canonical finalization. Rerun the structural
-   provenance harness, `make -j8 ci`, hosted
-   verification on Ubuntu 24.04 with the topology self-test plus `make -j8 hosted-checks`, and full
-   preflight before opening the implementation pull request.
-6. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
-   owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
-   creation. Do not hide them behind manual parsing or application-local compatibility layers.
-7. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
-   including the required closure matrix and exact implementation boundaries. Implement only
-   independently valid slices whose prerequisites have shipped.
+3. After merge, summarize PR #23 and the reusable-rule candidates, then stop as requested. Do not
+   start a governance follow-up or resume the preserved topology or C6 branches in this run.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
@@ -340,6 +326,18 @@ harness rejects all 15 scalar/linear categories and all four TREESAME merge-hidd
 with simplified/full counts `0 / 2`, while pre-owner side history remains accepted. Fresh
 exact-chain preflight superseded this chain after finding the timer-arm cleanup gap described
 above.
+The active replacement baseline records source
+`0fc80f9a3569339cade22527ecd9aae5a06c6fda`, immutable oracle
+`f7fba1e0ce2a6e4744dae443262b3757343deb2b`, and finalization
+`110889a3869d6b211e90eeb78a44d62c4d0fec0a`; both samples pass with min/median/max
+`2,168,944,401 / 2,187,272,249 / 2,205,600,097 ns` and no performance claim. Focused helper
+verification passes under default and explicit bytecode-disabled redirected-cache process settings.
+The timer-arm sentinel proves failure skips the action, attempts cancellation, and restores the
+exact prior handler; the swallowed-alarm sentinel and all 17 fresh per-case timers remain passing.
+`make baseline-check` and pinned-Align `make ci` pass. The complete positive provenance block
+passes; the isolated negative harness rejects all 15 scalar/linear categories and all four
+TREESAME merge-hidden path classes with simplified/full counts `0 / 2`, while pre-owner side
+history remains accepted. Fresh exact-chain preflight remains.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
