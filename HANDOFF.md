@@ -8,8 +8,12 @@ _Last updated: 2026-07-29. The validation-worktree unlink-race implementation is
 `agent/validation-unlink-race-implementation`, based on merged exact-source governance commit
 `13177c9`. Its plan of record is `docs/specs/validation-worktree-unlink-race.md`; the runner,
 deterministic exact-source regression helper, invalid-smoke integration, documentation, and
-identity-coupled baseline refresh are complete at source commit `712b313`, oracle commit `3bc1ee2`,
-and finalization commit `e23dd9e`. The preserved implementation
+identity-coupled baseline refresh were complete at source commit `712b313`, oracle commit
+`3bc1ee2`, and finalization commit `e23dd9e`. Preflight found that the integrated helper did not
+establish the required bytecode-disabled redirected-cache ambient state and gave five numbered
+cases shared rather than independent five-second timer scopes. Both helper defects are corrected;
+the exact source → oracle → finalization chain must now be re-recorded before a fresh preflight.
+The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
 the declared Ubuntu 24.04 hosted runner supplies GNU Make 4.3. The same review found checker
@@ -113,22 +117,25 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run a fresh full-diff preflight review of the validation-worktree implementation, push the exact
-   source/oracle/finalization chain, open its pull request, complete separate host-native and
-   independent-adversarial post-open reviews, and merge only with a merge commit that preserves all
-   three recorded identities. Recheck the focused helper, baseline, provenance block, and pending
-   absence on refreshed `main`.
-2. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
+1. Commit the corrected validation-worktree helper as a new clean source, re-record the pending
+   measurement from that exact commit, project and commit only its oracle, finalize and commit only
+   the canonical baseline and digest, and record the resulting identities here. Rerun the complete
+   focused, CI, and provenance verification before a fresh full-diff preflight.
+2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
+   host-native and independent-adversarial post-open reviews, and merge only with a merge commit
+   that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
+   block, and pending absence on refreshed `main`.
+3. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
    re-record its clean source, immutable oracle, and canonical finalization. Rerun the structural
    provenance harness, `make -j8 ci`, hosted
    verification on Ubuntu 24.04 with the topology self-test plus `make -j8 hosted-checks`, and full
    preflight before opening the implementation pull request.
-3. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+4. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
-4. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+5. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
    including the required closure matrix and exact implementation boundaries. Implement only
    independently valid slices whose prerequisites have shipped.
 
@@ -153,14 +160,15 @@ section-2.4 positive and negative provenance harness PASS
 
 The active slice is based on merged PR #22 commit `13177c9`. The focused helper passes against exact
 runner source bytes and covers the reviewed disappearance, fail-closed, deadline,
-iterator-cleanup, ceiling, and root-only `.git` contract. The canonical baseline records source
-`712b3138f646592e57944da01e3049d844fc4d6c`, immutable oracle
+iterator-cleanup, ceiling, and root-only `.git` contract. It now also establishes and restores
+bytecode-disabled redirected-cache ambient state before loading the production runner and gives
+each of the 16 numbered cases a fresh five-second timer. The superseded canonical baseline records
+source `712b3138f646592e57944da01e3049d844fc4d6c`, immutable oracle
 `3bc1ee222b1d40f21c09fa93f3d2d92f4be0ca06`, and finalization
-`e23dd9e33169c89c46c6a120e7368fbcc75f9bda`; both recorded samples pass. The complete structural
-block passes after the isolated negative harness rejected source/sample/oracle/ID/log failures,
-linear modify/restore, annotated tags, and four merge-hidden history classes. The preserved
-topology implementation head remains `7290e37`; its recorded chain is intentionally stale until
-this runner correction and baseline refresh merge.
+`e23dd9e33169c89c46c6a120e7368fbcc75f9bda`; both samples and the complete positive and negative
+structural harness passed before the helper follow-up. The replacement chain and full verification
+are in progress. The preserved topology implementation head remains `7290e37`; its recorded chain
+is intentionally stale until this runner correction and baseline refresh merge.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.

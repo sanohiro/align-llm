@@ -128,6 +128,39 @@ def prove_source_only_loader(owner: Path) -> None:
     )
 
 
+def prove_nondefault_ambient_restoration(owner: Path) -> None:
+    redirected_cache = owner / "redirected-cache"
+    saved_dont_write = sys.dont_write_bytecode
+    saved_prefix = sys.pycache_prefix
+    try:
+        sys.dont_write_bytecode = True
+        sys.pycache_prefix = str(redirected_cache)
+        prove_source_only_loader(owner)
+        require(
+            sys.dont_write_bytecode is True,
+            "source-loader proof did not restore bytecode-disabled ambient state",
+        )
+        require(
+            sys.pycache_prefix == str(redirected_cache),
+            "source-loader proof did not restore redirected-cache ambient state",
+        )
+    finally:
+        sys.dont_write_bytecode = saved_dont_write
+        sys.pycache_prefix = saved_prefix
+    require(
+        sys.dont_write_bytecode is saved_dont_write,
+        "ambient proof did not restore outer dont_write_bytecode",
+    )
+    require(
+        sys.pycache_prefix == saved_prefix,
+        "ambient proof did not restore outer pycache_prefix",
+    )
+    require(
+        not redirected_cache.exists(),
+        "ambient proof created the redirected cache path",
+    )
+
+
 class Clock:
     def __init__(self, events: list[str] | None = None) -> None:
         self.expired = False
@@ -368,7 +401,7 @@ def disappearing_directory_case(module: types.ModuleType, owner: Path) -> None:
     require(all(wrapper.close_attempted for wrapper in wrappers), "queued-race iterator not closed")
 
 
-def missing_and_permission_cases(module: types.ModuleType, owner: Path) -> None:
+def missing_root_case(module: types.ModuleType, owner: Path) -> None:
     missing = owner / "missing-root"
     expect_task_error(
         module,
@@ -376,6 +409,8 @@ def missing_and_permission_cases(module: types.ModuleType, owner: Path) -> None:
         "cannot inspect validation directory",
     )
 
+
+def entry_permission_case(module: types.ModuleType, owner: Path) -> None:
     stat_root = owner / "stat-permission"
     stat_root.mkdir()
     target = stat_root / "target"
@@ -400,6 +435,8 @@ def missing_and_permission_cases(module: types.ModuleType, owner: Path) -> None:
     )
     require(stat_wrappers[0].close_attempted, "stat-error iterator was not closed")
 
+
+def queued_permission_case(module: types.ModuleType, owner: Path) -> None:
     queued_root = owner / "queued-permission"
     queued_root.mkdir()
     child = queued_root / "child"
@@ -417,7 +454,7 @@ def missing_and_permission_cases(module: types.ModuleType, owner: Path) -> None:
     )
 
 
-def iterator_error_cases(module: types.ModuleType, owner: Path) -> None:
+def iterator_advance_error_case(module: types.ModuleType, owner: Path) -> None:
     for name, error in (
         ("permission", PermissionError("iterator denied")),
         ("missing", FileNotFoundError("iterator vanished")),
@@ -439,6 +476,8 @@ def iterator_error_cases(module: types.ModuleType, owner: Path) -> None:
         )
         require(wrappers[0].close_attempted, f"{name} iterator was not closed")
 
+
+def iterator_close_error_case(module: types.ModuleType, owner: Path) -> None:
     for name, error in (
         ("permission", PermissionError("close denied")),
         ("missing", FileNotFoundError("close vanished")),
@@ -1076,7 +1115,7 @@ def main() -> int:
                 CaseTimedOut("resource scan case exceeded five seconds")
             ))
             try:
-                prove_source_only_loader(owner)
+                prove_nondefault_ambient_restoration(owner)
                 module = load_exact_source(runner_path, "align_llm_resource_scan_runner")
                 cases = (
                     ("stable control", lambda: stable_case(module, owner)),
@@ -1085,11 +1124,17 @@ def main() -> int:
                         "queued directory disappearance",
                         lambda: disappearing_directory_case(module, owner),
                     ),
+                    ("missing root", lambda: missing_root_case(module, owner)),
+                    ("entry permission error", lambda: entry_permission_case(module, owner)),
+                    ("queued permission error", lambda: queued_permission_case(module, owner)),
                     (
-                        "missing and permission errors",
-                        lambda: missing_and_permission_cases(module, owner),
+                        "iterator advance errors",
+                        lambda: iterator_advance_error_case(module, owner),
                     ),
-                    ("iterator and close errors", lambda: iterator_error_cases(module, owner)),
+                    (
+                        "iterator close errors",
+                        lambda: iterator_close_error_case(module, owner),
+                    ),
                     (
                         "deadline before disappearance skip",
                         lambda: deadline_disappearance_case(module, owner),
