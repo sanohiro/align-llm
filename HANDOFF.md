@@ -166,9 +166,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Record the verified cleanup-versus-construction classification chain and evidence in this
-   handoff, then run fresh full-diff host-native and independent-adversarial preflight against that
-   exact chain.
+1. Run fresh full-diff host-native and independent-adversarial preflight against the exact
+   `1d2b0a2` → `8275865` → `ef2a034` replacement chain and its verification checkpoint.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
