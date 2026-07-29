@@ -90,7 +90,9 @@ not a branch commit recorded here.
 The canonical baseline was recorded on 2026-07-29 from clean commit `a5de972` with the clean
 detached Align checkout at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`. The oracle is committed
 at `bb9c636`, the finalized baseline at `03e6b15`, and the Git-worktree baseline regression fix at
-`d3905d0`.
+`d3905d0`. Follow-up `cdd90fd` makes abnormal cleanup use the same resolved common Git directory.
+The branch merged Request 5 registration commit `f79fb68` at `5dc6c59`, preserving the recorded
+baseline source and oracle commits as ancestors.
 
 ```text
 ALIGN_REPO=<clean detached Align #672 checkout> \
@@ -120,6 +122,14 @@ same replacement-ref isolation in ordinary clones and linked worktrees.
 ALIGN_REPO=<clean detached Align #672 checkout> make ci
 # PASS — 15 units check per-unit; build; smoke-v1; coding-v1 and containment/timeout regressions;
 # loop paths; canonical baseline, invalid-baseline, replacement-object, and failure retention
+
+ALIGNC=<clean detached Align #672 release alignc> \
+  make provider-smoke index-smoke test-selection-smoke patch-eval-smoke failure-memory-smoke
+# PASS — C1 provider, C2 index and test selection, C3 patch evaluation, C4 verification loop, and
+# C5 failure-memory regression coverage
+
+git diff --check
+# PASS
 ```
 
 ## Completed bootstrap
