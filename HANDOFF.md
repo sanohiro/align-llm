@@ -29,7 +29,8 @@ attempted. The active replacement is source `a488262`, oracle `0807ce6`, and fin
 `17d6886`; full verification passed. Fresh preflight found a remaining gap between scan acquisition
 and entry into that owner scope. The owner scope now starts with an unowned sentinel before
 acquisition, and the seventeenth case covers both the post-acquisition and post-capture boundaries.
-The identity chain must be re-recorded before review resumes.
+The active replacement is source `80735f1`, oracle `c3fa251`, and finalization `bea4e8c`; full
+verification passes and fresh review remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -134,8 +135,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the acquisition-safe iterator-owner correction as a new clean source, re-record the
-   immutable oracle and canonical baseline, and rerun full verification and preflight.
+1. Run fresh full-diff host-native and independent-adversarial preflight against source `80735f1`,
+   oracle `c3fa251`, and finalization `bea4e8c`.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
@@ -214,6 +215,14 @@ min/median/max `1,729,770,721 / 1,736,149,041 / 1,742,527,361 ns` and no perform
 Focused helper verification passes under default and explicit bytecode-disabled redirected-cache
 process settings, `make ci` passes with the pinned Align checkout, and the complete positive,
 scalar/linear negative, merge-hidden, and pre-owner provenance harness passes.
+That chain is superseded by the acquisition-boundary owner-scope correction. The active replacement
+baseline records source `80735f1a1d8157fc7973fcd783171358a917835c`, immutable oracle
+`c3fa251c5b7875e3ac42bd13f426151953d1639d`, and finalization
+`bea4e8c4f9231bb8a67a405f4aca971ff6889473`; both samples pass with min/median/max
+`1,742,536,793 / 1,746,891,402 / 1,751,246,012 ns` and no performance claim. Focused helper
+verification passes under default and explicit bytecode-disabled redirected-cache process settings,
+`make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
+merge-hidden, and pre-owner provenance harness passes.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
