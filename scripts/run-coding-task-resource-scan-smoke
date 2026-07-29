@@ -581,8 +581,13 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
     ):
         root = owner / f"owner-scope-{name}"
         root.mkdir()
-        (root / "stable").write_bytes(b"x")
-        wrappers: list[IteratorWrapper] = []
+        if name == "context-entry-store-close-error":
+            target_path = root / "child"
+            target_path.mkdir()
+        else:
+            target_path = root
+            (root / "stable").write_bytes(b"x")
+        wrappers: list[tuple[Path, IteratorWrapper]] = []
 
         def scan(
             path: Path,
@@ -591,10 +596,10 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         ) -> IteratorWrapper:
             wrapper = IteratorWrapper(
                 os.scandir(path),
-                next_error=injected,
-                close_error=injected_close,
+                next_error=injected if path == target_path else None,
+                close_error=injected_close if path == target_path else None,
             )
-            wrappers.append(wrapper)
+            wrappers.append((path, wrapper))
             return wrapper
 
         interrupted = False
@@ -612,6 +617,7 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
                     if target_event == "opcode"
                     else frame.f_lineno == target
                 )
+                and frame.f_locals.get("current") == target_path
             ):
                 interrupted = True
                 raise CaseInterrupted(f"interrupt at {name}")
@@ -628,10 +634,61 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         finally:
             sys.settrace(saved_trace)
         require(interrupted, f"{name} owner-scope interruption point was not reached")
+        target_wrapper = next(wrapper for path, wrapper in wrappers if path == target_path)
         require(
-            wrappers[0].close_attempted,
+            target_wrapper.close_attempted,
             f"{name} owner-scope interruption did not close iterator",
         )
+
+    construction_root = owner / "contextual-construction-error"
+    construction_root.mkdir()
+
+    def contextual_construction_scan(_path: Path) -> Any:
+        try:
+            raise ValueError("construction context")
+        except ValueError:
+            raise PermissionError("construction denied")
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            construction_root,
+            scan=contextual_construction_scan,
+            monotonic=lambda: 100.0,
+        ),
+        "cannot inspect validation directory",
+    )
+
+    entry_root = owner / "contextual-entry-error"
+    entry_root.mkdir()
+
+    class ContextualEntryError:
+        def __init__(self) -> None:
+            self.exit_attempted = False
+
+        def __enter__(self) -> Any:
+            try:
+                raise ValueError("entry context")
+            except ValueError:
+                raise PermissionError("entry denied")
+
+        def __exit__(self, *_arguments: Any) -> None:
+            self.exit_attempted = True
+
+    contextual_entry = ContextualEntryError()
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            entry_root,
+            scan=lambda _path: contextual_entry,
+            monotonic=lambda: 100.0,
+        ),
+        "cannot inspect validation directory",
+    )
+    require(
+        not contextual_entry.exit_attempted,
+        "failed context entry unexpectedly attempted exit",
+    )
 
 
 def deadline_disappearance_case(module: types.ModuleType, owner: Path) -> None:

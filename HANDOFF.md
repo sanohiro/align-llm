@@ -36,10 +36,15 @@ cleanup before the entered iterator is stored. The seventeenth case interrupts t
 opcode and the later body-error capture boundary. The active replacement is source `03d5651`,
 oracle `f63d4c7`, and finalization `e2ce22b`; full verification passed. Fresh preflight found that a
 close-time `FileNotFoundError` at the same pre-binding boundary could be mistaken for a queued-scan
-disappearance because `entered` was still false. The runner now recovers the replaced interruption
-from the close exception's context and applies ordinary body-over-close precedence. The opcode case
-also covers close failure. The active replacement is source `1bf428e`, oracle `1a0763f`, and
-finalization `ffbbe87`; full verification passes and fresh review remains.
+disappearance because `entered` was still false. The runner recovered the replaced interruption
+from the close exception's context and applied ordinary body-over-close precedence. The opcode case
+also covers close failure. That replacement was source `1bf428e`, oracle `1a0763f`, and
+finalization `ffbbe87`; full verification passed. Fresh preflight then found that an incidental
+exception context created inside scan construction or context entry could be mistaken for the
+owner-frame interruption. The active correction authenticates the recovered context by requiring
+its traceback to contain the current `validation_worktree_usage` frame and adds construction and
+entry counterexamples. The replacement source → oracle → finalization chain must now be recorded
+and verified.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -144,23 +149,25 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run fresh full-diff host-native and independent-adversarial preflight against source `1bf428e`,
-   oracle `1a0763f`, and finalization `ffbbe87`.
-2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Commit the owner-frame authentication correction, then record and finalize its exact
+   source → oracle → finalization baseline chain. Rerun the focused helper in default and redirected
+   cache ambient states, full `make ci`, and the complete positive and negative provenance harness.
+2. Run fresh full-diff host-native and independent-adversarial preflight against that exact chain.
+3. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
-3. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
+4. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
    re-record its clean source, immutable oracle, and canonical finalization. Rerun the structural
    provenance harness, `make -j8 ci`, hosted
    verification on Ubuntu 24.04 with the topology self-test plus `make -j8 hosted-checks`, and full
    preflight before opening the implementation pull request.
-4. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+5. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
-5. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+6. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
    including the required closure matrix and exact implementation boundaries. Implement only
    independently valid slices whose prerequisites have shipped.
 
@@ -232,14 +239,6 @@ baseline records source `80735f1a1d8157fc7973fcd783171358a917835c`, immutable or
 verification passes under default and explicit bytecode-disabled redirected-cache process settings,
 `make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
 merge-hidden, and pre-owner provenance harness passes.
-That chain is superseded by the pre-binding cleanup-classification correction. The active
-replacement baseline records source `1bf428e45ef0a60d863010334e773b723dde4603`, immutable oracle
-`1a0763f3d292132bc1c4004b3195f6942832b93e`, and finalization
-`ffbbe87b899e8aadd88001d3e4481bb372a9b1f0`; both samples pass with min/median/max
-`1,855,509,925 / 1,857,476,640 / 1,859,443,356 ns` and no performance claim. Focused helper
-verification passes under default and explicit bytecode-disabled redirected-cache process settings,
-`make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
-merge-hidden, and pre-owner provenance harness passes.
 That chain is superseded by the context-entry ownership correction. The active replacement baseline
 records source `03d56513248146a8daf7ddcf5374990de3835289`, immutable oracle
 `f63d4c72b2e4ff295a8ab3cfc71b18c4422537b1`, and finalization
@@ -248,6 +247,16 @@ records source `03d56513248146a8daf7ddcf5374990de3835289`, immutable oracle
 verification passes under default and explicit bytecode-disabled redirected-cache process settings,
 `make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
 merge-hidden, and pre-owner provenance harness passes.
+That chain is superseded by the pre-binding cleanup-classification correction. The replacement
+baseline records source `1bf428e45ef0a60d863010334e773b723dde4603`, immutable oracle
+`1a0763f3d292132bc1c4004b3195f6942832b93e`, and finalization
+`ffbbe87b899e8aadd88001d3e4481bb372a9b1f0`; both samples pass with min/median/max
+`1,855,509,925 / 1,857,476,640 / 1,859,443,356 ns` and no performance claim. Focused helper
+verification passes under default and explicit bytecode-disabled redirected-cache process settings,
+`make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
+merge-hidden, and pre-owner provenance harness passes. Fresh preflight superseded this chain after
+finding that incidental construction/entry exception contexts were not distinguished from an
+owner-frame interruption; the authenticated-context replacement chain remains to be recorded.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
