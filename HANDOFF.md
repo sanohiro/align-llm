@@ -23,7 +23,8 @@ implementation contract instead of allowing a broken intermediate `main`. Its st
 also binds the named source and oracle commits to the identities persisted in the finalized
 baseline, requires every recorded identity to name a raw commit object rather than an implicitly
 peeled tag, rejects post-source history for every path derived from the recorded artifact manifest,
-and disables replacement objects and ambient Git configuration for every provenance inspection.
+uses full merge history for every input and output no-later-change check, and disables replacement
+objects and ambient Git configuration for every provenance inspection.
 
 PR #16 merged at `c20e919`, adding the applicable Align
 design-convergence rules and the bounded post-merge retrospective. Its review caught and fixed

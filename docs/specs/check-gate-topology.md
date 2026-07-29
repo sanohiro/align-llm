@@ -335,14 +335,16 @@ clean_git show \
   "$FINALIZATION_COMMIT:eval/expected/coding-v1-reference.sha256" | \
   cmp - eval/expected/coding-v1-reference.sha256
 if ! recorded_input_changes="$(
-  clean_git log --format=%H "$SOURCE_COMMIT"..HEAD -- "${artifact_paths[@]}"
+  clean_git log --full-history --ancestry-path --format=%H \
+    "$SOURCE_COMMIT"..HEAD -- "${artifact_paths[@]}"
 )"; then
   printf '%s\n' "cannot inspect post-source recorded-input history" >&2
   exit 1
 fi
 test -z "$recorded_input_changes"
 if ! oracle_changes="$(
-  clean_git log --format=%H "$ORACLE_COMMIT"..HEAD -- \
+  clean_git log --full-history --ancestry-path --format=%H \
+    "$ORACLE_COMMIT"..HEAD -- \
     eval/expected/coding-v1-reference-oracle.json
 )"; then
   printf '%s\n' "cannot inspect post-oracle history" >&2
@@ -350,7 +352,8 @@ if ! oracle_changes="$(
 fi
 test -z "$oracle_changes"
 if ! finalization_changes="$(
-  clean_git log --format=%H "$FINALIZATION_COMMIT"..HEAD -- \
+  clean_git log --full-history --ancestry-path --format=%H \
+    "$FINALIZATION_COMMIT"..HEAD -- \
     eval/baselines/coding-v1-reference.json \
     eval/expected/coding-v1-reference.sha256
 )"; then
@@ -367,8 +370,18 @@ fail-fast block once for each of these injected negative cases and require a non
 persisted source mismatch; one non-passing task; one sample instead of two; three samples instead of
 two; reordered oracle fields; missing oracle final LF; a 40-character symbolic source ref; a
 40-character symbolic oracle ref; a recorded input other than `Makefile` changed and then restored
-in two post-source commits; abbreviated finalization ID; uppercase finalization ID; and a
+in two linear post-source commits; abbreviated finalization ID; uppercase finalization ID; and a
 `clean_git log` failure injected after the preceding Git operations succeed.
+
+The history harness must additionally construct a TREESAME merge-hidden mutation independently for
+four path classes: a recorded input other than `Makefile`, the immutable oracle, the canonical
+baseline, and the canonical digest. In each isolated case, a second-parent commit changes the path
+after its owning source, oracle, or finalization commit, while the first parent and merge result
+retain the owning commit's bytes. The same complete block must return nonzero, proving that all
+three `--full-history --ancestry-path` queries inspect second-parent history descended from the
+owning commit even though ordinary simplified path history would omit it. The ancestry restriction
+must also be covered by the positive case: history merged from a commit that is not a descendant of
+the owning commit does not represent a post-owner mutation and must not create a false rejection.
 
 The harness must also supply annotated-tag object IDs independently as the source, oracle, and
 finalization values. For the source and oracle cases, it first replaces the corresponding persisted
@@ -511,10 +524,10 @@ self-test: PASS` plus LF and nothing else.
 | Immutable oracle | oracle commit | exact canonical projection of the pending record | Independently regenerate the ordered, indented UTF-8 projection with its final LF from the finalized baseline and compare exact bytes; the oracle commit contains only that projection; the existing direct timing-mutation regression proves whole-projection equality is enforced; final-tree bytes equal the oracle commit. |
 | Canonical finalization | finalization commit and final reviewed/merged worktree | finalizer binds full oracle commit and writes digest; the pending record is removed before the finalization commit and remains absent | `make baseline-check` passes; an explicit path check rejects a pending file at the reviewed head and refreshed `main`; canonical digest matches. |
 | Baseline commit chain | finalized baseline, source, oracle, finalization, final reviewed head, and merge result | one fail-fast Bash process validates persisted source/oracle fields, full lowercase 40-hex raw commit objects for all three identities, and strict source → oracle → finalization → head/main ancestry in an isolated Git environment; merge method is `merge` | Exact identity, width, raw-object type, ancestry, and Git-command status checks pass without replacement objects or ambient Git configuration; the three annotated-tag regressions reach the type guard and require their exact diagnostics; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
-| Post-record input change | author/reviewer | re-record from a new clean source commit | The fail-fast block derives the complete path list from the finalized baseline artifact manifest and rejects any post-source history for those paths, including a named modify-then-restore regression for a recorded artifact other than `Makefile`. |
-| Post-record output change | author/reviewer | regenerate through the owning projection/finalizer before finalization; restart the full sequence afterward | Final-tree oracle, baseline, and digest bytes equal their named owner commits; no later commit changes those paths. |
+| Post-record input change | author/reviewer | re-record from a new clean source commit | The fail-fast block derives the complete path list from the finalized baseline artifact manifest and uses full ancestry-path history to reject any post-source change, including both linear modify-then-restore and TREESAME merge-hidden regressions for a recorded artifact other than `Makefile`; pre-owner side history does not create a false rejection. |
+| Post-record output change | author/reviewer | regenerate through the owning projection/finalizer before finalization; restart the full sequence afterward | Final-tree oracle, baseline, and digest bytes equal their named owner commits; full ancestry-path history shows no later change. Separate TREESAME merge-hidden regressions cover the oracle, canonical baseline, and digest. |
 | Measurement interpretation | pull request evidence | fixed deterministic-reference provider identity and exactly two samples on the recorded environment; each contains the single fixed task and passing summary | An explicit structural assertion requires the provider/model/prompt and both `python-inclusive-range` results and summaries to match and PASS; prior and refreshed timings are reported without a performance claim. |
-| Baseline structural negative paths | isolated temporary-clone harness | execute the same complete fail-fast block against identity, raw-object type, outcome, count, oracle-byte, post-source recorded-input history, finalization-width/case, and Git-log-failure injections | Every named negative case returns nonzero overall; the tag cases require their exact type-guard diagnostics, all other cases emit their bounded rejection line, and temporary state is removed. |
+| Baseline structural negative paths | isolated temporary-clone harness | execute the same complete fail-fast block against identity, raw-object type, outcome, count, oracle-byte, linear and merge-hidden full-history changes, finalization-width/case, and Git-log-failure injections | Every named negative case returns nonzero overall; the tag cases require their exact type-guard diagnostics, all other cases emit their bounded rejection line, and temporary state is removed. |
 | Topology-checker persisted format | N/A | its byte oracle is embedded in the script; no topology file is created | N/A. |
 | Canonical baseline JSON | existing schema version 1 | recorder emits indented UTF-8 JSON plus final LF; finalizer changes only `canonical_oracle_commit` | `make baseline-check` validates exact fields, identities, aggregates, malformed input, immutable oracle, and digest. |
 | Immutable baseline oracle JSON | section 2.4 ordered projection | indented UTF-8 JSON plus final LF, committed before finalization | Projection command is reproducible; final-tree bytes equal the isolated section-2.4 `clean_git show <oracle-commit>:<oracle-path>` result; timing mutation is rejected. |
