@@ -13,7 +13,7 @@ identity-coupled baseline refresh were complete at source commit `712b313`, orac
 establish the required bytecode-disabled redirected-cache ambient state and gave five numbered
 cases shared rather than independent five-second timer scopes. Both helper defects are corrected;
 the replacement chain is source commit `03ce5ba`, oracle commit `976af31`, and finalization commit
-`89fe54c`. Full verification and a fresh preflight remain before opening the pull request.
+`89fe54c`. Full verification passes; a fresh preflight remains before opening the pull request.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -118,8 +118,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Rerun the complete focused, CI, and positive and negative provenance verification against source
-   `03ce5ba`, oracle `976af31`, and finalization `89fe54c`, then run a fresh full-diff preflight.
+1. Run a fresh full-diff preflight against source `03ce5ba`, oracle `976af31`, and finalization
+   `89fe54c`.
 2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
    host-native and independent-adversarial post-open reviews, and merge only with a merge commit
    that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
@@ -168,9 +168,14 @@ source `712b3138f646592e57944da01e3049d844fc4d6c`, immutable oracle
 structural harness passed before the helper follow-up. The replacement baseline records source
 `03ce5ba56b5c81be268d63f9f75d49f2fb61ed8c`, immutable oracle
 `976af313a2a2d9a4e90b27ad500a5e30d1d7a024`, and finalization
-`89fe54ca84794116a2c6c0942810db0884d6ef75`; both recorded samples pass. Full post-replacement
-verification is in progress. The preserved topology implementation head remains `7290e37`; its
-recorded chain is intentionally stale until this runner correction and baseline refresh merge.
+`89fe54ca84794116a2c6c0942810db0884d6ef75`; both recorded samples pass. Focused helper verification
+passes under default and explicit bytecode-disabled redirected-cache ambient settings, and
+`make ci` passes with the pinned Align checkout. The complete positive structural block passes.
+The isolated negative harness rejects persisted-source, sample, oracle-order/final-LF, symbolic and
+annotated-object identity, linear restore, injected log failure, and all four TREESAME merge-hidden
+path classes; pre-owner side history remains accepted. The preserved topology implementation head
+remains `7290e37`; its recorded chain is intentionally stale until this runner correction and
+baseline refresh merge.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
