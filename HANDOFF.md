@@ -80,7 +80,14 @@ cases. Its replacement is source `d265500`, oracle `0198362`, and finalization `
 verification passes. Before fresh preflight, the cancellation matrix was completed proactively
 with cancellation-only and arm-error-plus-cancellation sentinels, covering every primary-error
 state against cancellation failure. Its replacement is source `59913a6`, oracle `8a3303a`, and
-finalization `073fd26`; full verification passes and fresh exact-chain preflight remains.
+finalization `073fd26`; full verification passed. Fresh host-native preflight found that queued
+scan-construction `FileNotFoundError` and queued context-entry `FileNotFoundError` were still
+classified by the same `entered == false` branch, allowing a failed `__enter__` to be accepted as a
+disappeared directory. An initial acquisition-helper correction was rejected because it reopened
+the asynchronous call-return ownership gap. The current uncommitted correction preserves direct
+`with scan(...)` ownership and binds the scan call's exact code-object offset to distinguish it
+from context entry; the queued-entry counterexample passes under Python 3.13 and 3.14. A new clean
+source → oracle → finalization chain and all exact-state evidence remain.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -185,9 +192,10 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run fresh full-diff host-native and independent-adversarial preflight against the exact
-   `59913a6` → `8a3303a` → `073fd26` replacement chain and its verification checkpoint.
-2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Commit the context-entry classification correction as a new source owner, record and finalize
+   its identity-coupled baseline, then rerun the complete exact-state verification and fresh
+   full-diff host-native and independent-adversarial preflight.
+2. Push the new source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.

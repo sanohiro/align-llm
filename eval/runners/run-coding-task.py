@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import ctypes
+import dis
 import hashlib
 import json
 import os
@@ -1106,6 +1107,7 @@ def validation_worktree_usage(
             current_frame = sys._getframe()
             seen_contexts: set[int] = set()
             outer_error = True
+            scan_construction_error = False
             while (
                 candidate_error is not None
                 and id(candidate_error) not in seen_contexts
@@ -1118,6 +1120,12 @@ def validation_worktree_usage(
                 ):
                     candidate_traceback = candidate_traceback.tb_next
                 if candidate_traceback is not None:
+                    if (
+                        outer_error
+                        and candidate_traceback.tb_lasti
+                        in VALIDATION_WORKTREE_SCAN_CALL_OFFSETS
+                    ):
+                        scan_construction_error = True
                     if not outer_error:
                         cleanup_replaced_body = True
                     if not isinstance(candidate_error, Exception):
@@ -1139,7 +1147,11 @@ def validation_worktree_usage(
                 if not isinstance(error, OSError):
                     raise
                 require_scan_deadline()
-                if isinstance(error, FileNotFoundError) and current != checkout:
+                if (
+                    isinstance(error, FileNotFoundError)
+                    and current != checkout
+                    and scan_construction_error
+                ):
                     continue
                 raise directory_error(current, error) from error
             else:
@@ -1154,6 +1166,26 @@ def validation_worktree_usage(
                 raise directory_error(current, close_error) from close_error
             raise close_error
     return total_bytes, file_count, visible_inodes
+
+
+def loaded_name_call_offsets(function: Callable[..., Any], name: str) -> frozenset[int]:
+    instructions = tuple(dis.get_instructions(function))
+    offsets = []
+    for index, instruction in enumerate(instructions):
+        if not instruction.opname.startswith("LOAD_") or instruction.argval != name:
+            continue
+        for candidate in instructions[index + 1 :]:
+            if candidate.opname == "CALL":
+                offsets.append(candidate.offset)
+                break
+    return frozenset(offsets)
+
+
+VALIDATION_WORKTREE_SCAN_CALL_OFFSETS = loaded_name_call_offsets(
+    validation_worktree_usage, "scan"
+)
+if len(VALIDATION_WORKTREE_SCAN_CALL_OFFSETS) != 1:
+    raise RuntimeError("cannot identify the validation worktree scan call")
 
 
 def validation_process_usage(process: subprocess.Popen[bytes]) -> set[int]:

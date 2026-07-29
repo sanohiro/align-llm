@@ -800,6 +800,39 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         "failed context entry unexpectedly attempted exit",
     )
 
+    queued_entry_root = owner / "missing-queued-context-entry"
+    queued_entry_root.mkdir()
+    queued_entry_child = queued_entry_root / "child"
+    queued_entry_child.mkdir()
+
+    class MissingQueuedEntry:
+        def __init__(self) -> None:
+            self.exit_attempted = False
+
+        def __enter__(self) -> Any:
+            raise FileNotFoundError("queued context entry vanished")
+
+        def __exit__(self, *_arguments: Any) -> None:
+            self.exit_attempted = True
+
+    missing_queued_entry = MissingQueuedEntry()
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            queued_entry_root,
+            scan=lambda path: (
+                missing_queued_entry if path == queued_entry_child else os.scandir(path)
+            ),
+            monotonic=lambda: 100.0,
+        ),
+        "cannot inspect validation directory child: queued context entry vanished",
+    )
+    require(
+        not missing_queued_entry.exit_attempted,
+        "failed queued context entry unexpectedly attempted exit",
+    )
+
     cycle_root = owner / "cyclic-context-construction-error"
     cycle_root.mkdir()
     cycle_error = PermissionError("cyclic construction denied")
@@ -1062,6 +1095,39 @@ def error_deadline_cases(module: types.ModuleType, owner: Path) -> None:
             "validation resource scan exceeded its time limit",
         )
         require_adjacent(events, "operation:error", "clock:expired")
+
+    root = owner / "deadline-error-context-entry-missing"
+    root.mkdir()
+    events = []
+    clock = Clock(events)
+
+    class ExpiringMissingEntry:
+        def __init__(self) -> None:
+            self.exit_attempted = False
+
+        def __enter__(self) -> Any:
+            events.append("operation:error")
+            clock.expired = True
+            raise FileNotFoundError("context entry vanished")
+
+        def __exit__(self, *_arguments: Any) -> None:
+            self.exit_attempted = True
+
+    expiring_missing_entry = ExpiringMissingEntry()
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            root,
+            scan=lambda _path: expiring_missing_entry,
+            monotonic=clock,
+        ),
+        "validation resource scan exceeded its time limit",
+    )
+    require_adjacent(events, "operation:error", "clock:expired")
+    require(
+        not expiring_missing_entry.exit_attempted,
+        "failed expiring context entry unexpectedly attempted exit",
+    )
 
     for target, error in (
         ("iterator-missing", FileNotFoundError("iterator vanished")),
