@@ -12,7 +12,8 @@ identity-coupled baseline refresh were complete at source commit `712b313`, orac
 `3bc1ee2`, and finalization commit `e23dd9e`. Preflight found that the integrated helper did not
 establish the required bytecode-disabled redirected-cache ambient state and gave five numbered
 cases shared rather than independent five-second timer scopes. Both helper defects are corrected;
-the exact source → oracle → finalization chain must now be re-recorded before a fresh preflight.
+the replacement chain is source commit `03ce5ba`, oracle commit `976af31`, and finalization commit
+`89fe54c`. Full verification and a fresh preflight remain before opening the pull request.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -117,10 +118,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the corrected validation-worktree helper as a new clean source, re-record the pending
-   measurement from that exact commit, project and commit only its oracle, finalize and commit only
-   the canonical baseline and digest, and record the resulting identities here. Rerun the complete
-   focused, CI, and provenance verification before a fresh full-diff preflight.
+1. Rerun the complete focused, CI, and positive and negative provenance verification against source
+   `03ce5ba`, oracle `976af31`, and finalization `89fe54c`, then run a fresh full-diff preflight.
 2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
    host-native and independent-adversarial post-open reviews, and merge only with a merge commit
    that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
@@ -166,9 +165,12 @@ each of the 16 numbered cases a fresh five-second timer. The superseded canonica
 source `712b3138f646592e57944da01e3049d844fc4d6c`, immutable oracle
 `3bc1ee222b1d40f21c09fa93f3d2d92f4be0ca06`, and finalization
 `e23dd9e33169c89c46c6a120e7368fbcc75f9bda`; both samples and the complete positive and negative
-structural harness passed before the helper follow-up. The replacement chain and full verification
-are in progress. The preserved topology implementation head remains `7290e37`; its recorded chain
-is intentionally stale until this runner correction and baseline refresh merge.
+structural harness passed before the helper follow-up. The replacement baseline records source
+`03ce5ba56b5c81be268d63f9f75d49f2fb61ed8c`, immutable oracle
+`976af313a2a2d9a4e90b27ad500a5e30d1d7a024`, and finalization
+`89fe54ca84794116a2c6c0942810db0884d6ef75`; both recorded samples pass. Full post-replacement
+verification is in progress. The preserved topology implementation head remains `7290e37`; its
+recorded chain is intentionally stale until this runner correction and baseline refresh merge.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
