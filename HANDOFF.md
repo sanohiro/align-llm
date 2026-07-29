@@ -33,8 +33,8 @@ The active replacement is source `80735f1`, oracle `c3fa251`, and finalization `
 verification passed. Fresh preflight then found the remaining call-return-to-variable-store opcode
 window. Ownership now transfers through direct context-manager entry, whose exception table owns
 cleanup before the entered iterator is stored. The seventeenth case interrupts that exact store
-opcode and the later body-error capture boundary. The identity chain must be re-recorded before
-review resumes.
+opcode and the later body-error capture boundary. The active replacement is source `03d5651`,
+oracle `f63d4c7`, and finalization `e2ce22b`; full verification passes and fresh review remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -139,8 +139,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the context-entry iterator-owner correction as a new clean source, re-record the immutable
-   oracle and canonical baseline, and rerun full verification and preflight.
+1. Run fresh full-diff host-native and independent-adversarial preflight against source `03d5651`,
+   oracle `f63d4c7`, and finalization `e2ce22b`.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
@@ -224,6 +224,14 @@ baseline records source `80735f1a1d8157fc7973fcd783171358a917835c`, immutable or
 `c3fa251c5b7875e3ac42bd13f426151953d1639d`, and finalization
 `bea4e8c4f9231bb8a67a405f4aca971ff6889473`; both samples pass with min/median/max
 `1,742,536,793 / 1,746,891,402 / 1,751,246,012 ns` and no performance claim. Focused helper
+verification passes under default and explicit bytecode-disabled redirected-cache process settings,
+`make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
+merge-hidden, and pre-owner provenance harness passes.
+That chain is superseded by the context-entry ownership correction. The active replacement baseline
+records source `03d56513248146a8daf7ddcf5374990de3835289`, immutable oracle
+`f63d4c72b2e4ff295a8ab3cfc71b18c4422537b1`, and finalization
+`e2ce22b4e00547561c0955f9d621e796b5fc4779`; both samples pass with min/median/max
+`1,800,065,211 / 1,829,085,046 / 1,858,104,881 ns` and no performance claim. Focused helper
 verification passes under default and explicit bytecode-disabled redirected-cache process settings,
 `make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
 merge-hidden, and pre-owner provenance harness passes.
