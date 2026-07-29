@@ -4,7 +4,20 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The validation-worktree unlink-race implementation is active on
+**Current checkpoint (authoritative, 2026-07-29):** PR #23 is ready for its final exact-state
+preflight on `agent/validation-unlink-race-implementation`. The active source → oracle →
+finalization chain is `a90e0c63c22523b981339d783dd5bba912748605` →
+`dd1e702f2b79b5151c8581a1c644c03f98c08880` →
+`dea7a54a4321693b883ee1a73e0bc75edd254f1e`. The baseline's two passing samples are
+2,798,535,133 and 2,816,202,592 nanoseconds (median 2,807,368,862 nanoseconds), with no performance
+claim. The focused helper passes under Python 3.13 and 3.14; `git diff --check`,
+`make baseline-check`, the exact-pinned `ALIGN_REPO=/home/hiro/prj/align-clean-672 make ci`, the
+positive topology check, all 15 scalar/linear provenance negatives, all four merge-hidden path
+classes, and the pre-owner side-history control pass. The helper's Python 3.10 compatibility seam
+uses version-neutral `dis.findlinestarts` data and synthetic legacy call-opcode coverage. No
+intentional uncommitted files remain in this worktree.
+
+_Historical implementation work log: the validation-worktree unlink-race implementation is active on
 `agent/validation-unlink-race-implementation`, based on merged exact-source governance commit
 `13177c9`. Its plan of record is `docs/specs/validation-worktree-unlink-race.md`; the runner,
 deterministic exact-source regression helper, invalid-smoke integration, documentation, and
@@ -235,9 +248,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Verify and commit the Python 3.10 helper compatibility correction as a new source owner, create
-   its replacement oracle/finalization chain, and rerun complete exact-state evidence and preflight.
-2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Run fresh host-native and independent-adversarial preflight reviews for the exact current SHA
+   set. Resolve only valid findings, and regenerate the identity chain if content changes.
+2. Push the current source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
@@ -253,17 +266,20 @@ a passing patch.
 Verified on 2026-07-29:
 
 ```text
+source → oracle → finalization             a90e0c6 → dd1e702 → dea7a54
 git diff --check                         PASS
-make format-check                        PASS
-python3 scripts/run-coding-task-resource-scan-smoke PASS
-scripts/run-coding-task-invalid-smoke    PASS
-make eval-coding                         PASS
+Python 3.13 resource-scan helper         PASS
+Python 3.14 resource-scan helper         PASS
 make baseline-check                      PASS
 ALIGN_REPO=<clean Align d9fb5da> make ci PASS
-section-2.4 positive and negative provenance harness PASS
+positive topology block                  PASS
+15 scalar/linear provenance negatives    PASS
+4 merge-hidden path classes              PASS
+pre-owner side-history control           PASS
 ```
 
-The active slice is based on merged PR #22 commit `13177c9`. The focused helper passes against exact
+The current chain and evidence above supersede every earlier chain described below. The active
+slice is based on merged PR #22 commit `13177c9`. The focused helper passes against exact
 runner source bytes and covers the reviewed disappearance, fail-closed, deadline,
 iterator-cleanup, ceiling, and root-only `.git` contract. It now also establishes and restores
 bytecode-disabled redirected-cache ambient state before loading the production runner and gives
