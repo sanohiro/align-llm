@@ -1101,17 +1101,23 @@ def validation_worktree_usage(
         except BaseException as error:
             if not entered:
                 interrupted_error = error.__context__
-                interrupted_traceback = (
-                    interrupted_error.__traceback__
-                    if interrupted_error is not None
-                    else None
-                )
+                interrupted_traceback = None
                 current_frame = sys._getframe()
+                seen_contexts = {id(error)}
                 while (
-                    interrupted_traceback is not None
-                    and interrupted_traceback.tb_frame is not current_frame
+                    interrupted_error is not None
+                    and id(interrupted_error) not in seen_contexts
                 ):
-                    interrupted_traceback = interrupted_traceback.tb_next
+                    seen_contexts.add(id(interrupted_error))
+                    interrupted_traceback = interrupted_error.__traceback__
+                    while (
+                        interrupted_traceback is not None
+                        and interrupted_traceback.tb_frame is not current_frame
+                    ):
+                        interrupted_traceback = interrupted_traceback.tb_next
+                    if interrupted_traceback is not None:
+                        break
+                    interrupted_error = interrupted_error.__context__
                 if interrupted_error is not None and interrupted_traceback is not None:
                     body_error = (
                         type(interrupted_error),

@@ -272,6 +272,7 @@ class IteratorWrapper:
         on_stop: Callable[[], Any] | None = None,
         next_error: BaseException | None = None,
         close_error: BaseException | None = None,
+        close_context_error: BaseException | None = None,
         close_hook: Callable[[], Any] | None = None,
         entry_map: Callable[[Any], Any] | None = None,
     ) -> None:
@@ -282,6 +283,7 @@ class IteratorWrapper:
         self.on_stop = on_stop
         self.next_error = next_error
         self.close_error = close_error
+        self.close_context_error = close_context_error
         self.close_hook = close_hook
         self.entry_map = entry_map
         self.close_attempted = False
@@ -326,6 +328,11 @@ class IteratorWrapper:
         if self.close_error is not None:
             if self.events is not None:
                 self.events.append("iterator:close-error")
+            if self.close_context_error is not None:
+                try:
+                    raise self.close_context_error
+                except BaseException:
+                    raise self.close_error
             raise self.close_error
 
     def __enter__(self) -> "IteratorWrapper":
@@ -562,14 +569,23 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         f"unexpected body-error capture lines: {body_capture_lines}",
     )
 
-    for name, target_event, target, next_error, close_error in (
-        ("context-entry-store", "opcode", entry_store_offsets[0], None, None),
+    for name, target_event, target, next_error, close_error, close_context_error in (
+        ("context-entry-store", "opcode", entry_store_offsets[0], None, None, None),
         (
             "context-entry-store-close-error",
             "opcode",
             entry_store_offsets[0],
             None,
             FileNotFoundError("close vanished during interruption"),
+            None,
+        ),
+        (
+            "context-entry-store-nested-close-error",
+            "opcode",
+            entry_store_offsets[0],
+            None,
+            FileNotFoundError("close vanished after internal cleanup error"),
+            ValueError("internal cleanup context"),
         ),
         (
             "post-body-capture",
@@ -577,11 +593,12 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
             body_capture_lines[0],
             PermissionError("iterator denied before interruption"),
             None,
+            None,
         ),
     ):
         root = owner / f"owner-scope-{name}"
         root.mkdir()
-        if name == "context-entry-store-close-error":
+        if close_error is not None:
             target_path = root / "child"
             target_path.mkdir()
         else:
@@ -593,11 +610,15 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
             path: Path,
             injected: BaseException | None = next_error,
             injected_close: BaseException | None = close_error,
+            injected_close_context: BaseException | None = close_context_error,
         ) -> IteratorWrapper:
             wrapper = IteratorWrapper(
                 os.scandir(path),
                 next_error=injected if path == target_path else None,
                 close_error=injected_close if path == target_path else None,
+                close_context_error=(
+                    injected_close_context if path == target_path else None
+                ),
             )
             wrappers.append((path, wrapper))
             return wrapper
@@ -627,8 +648,11 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         sys.settrace(interrupt_owner_boundary)
         try:
             module.validation_worktree_usage(root, scan=scan, monotonic=lambda: 100.0)
-        except CaseInterrupted:
-            pass
+        except CaseInterrupted as error:
+            require(
+                str(error) == f"interrupt at {name}",
+                f"{name} recovered a different interruption: {error}",
+            )
         else:
             raise SmokeFailure(f"{name} owner-scope interruption unexpectedly returned")
         finally:
@@ -688,6 +712,22 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
     require(
         not contextual_entry.exit_attempted,
         "failed context entry unexpectedly attempted exit",
+    )
+
+    cycle_root = owner / "cyclic-context-construction-error"
+    cycle_root.mkdir()
+    cycle_error = PermissionError("cyclic construction denied")
+    cycle_context = ValueError("cyclic construction context")
+    cycle_error.__context__ = cycle_context
+    cycle_context.__context__ = cycle_error
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            cycle_root,
+            scan=lambda _path: (_ for _ in ()).throw(cycle_error),
+            monotonic=lambda: 100.0,
+        ),
+        "cannot inspect validation directory",
     )
 
 

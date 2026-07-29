@@ -44,7 +44,12 @@ exception context created inside scan construction or context entry could be mis
 owner-frame interruption. The active correction authenticates the recovered context by requiring
 its traceback to contain the current `validation_worktree_usage` frame and adds construction and
 entry counterexamples. The active replacement is source `d840256`, oracle `ea28044`, and
-finalization `bef2153`; full verification passes and fresh preflight remains.
+finalization `bef2153`; full verification passed. Fresh preflight found that close could handle an
+internal exception before raising `FileNotFoundError`, placing the owner-frame interruption more
+than one link deep in the context chain and allowing the close error to enter the queued-directory
+skip. The active correction walks that chain with cycle detection, authenticates only the exception
+whose traceback contains the current owner frame, and adds nested-cleanup and cyclic-context
+regressions. Its replacement source → oracle → finalization chain remains to be recorded.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -149,23 +154,25 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run fresh full-diff host-native and independent-adversarial preflight against source `d840256`,
-   oracle `ea28044`, and finalization `bef2153`.
-2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Commit the cycle-safe context-chain correction, then record and finalize its exact
+   source → oracle → finalization baseline chain. Rerun the focused helper in default and redirected
+   cache ambient states, full `make ci`, and the complete positive and negative provenance harness.
+2. Run fresh full-diff host-native and independent-adversarial preflight against that exact chain.
+3. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
-3. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
+4. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
    re-record its clean source, immutable oracle, and canonical finalization. Rerun the structural
    provenance harness, `make -j8 ci`, hosted
    verification on Ubuntu 24.04 with the topology self-test plus `make -j8 hosted-checks`, and full
    preflight before opening the implementation pull request.
-4. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+5. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
-5. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+6. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
    including the required closure matrix and exact implementation boundaries. Implement only
    independently valid slices whose prerequisites have shipped.
 
@@ -262,6 +269,7 @@ owner-frame interruption. The active authenticated-context baseline records sour
 verification passes under default and explicit bytecode-disabled redirected-cache process settings,
 `make baseline-check` and pinned-Align `make ci` pass, and the complete positive, scalar/linear
 negative, merge-hidden, and pre-owner provenance harness passes. Fresh preflight remains.
+That chain is superseded by the nested-cleanup context-chain correction described above.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
