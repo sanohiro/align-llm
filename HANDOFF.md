@@ -13,8 +13,8 @@ started._
 ## Current position
 
 The repository has completed C0 through C5. The current enabling slice adopts the Align ownership
-and nested tagged-payload surface required by the reviewed C6 schema direction; it does not add a
-C6 product command.
+and nested tagged-payload surface required by the drafted C6 schema direction; it does not add a C6
+product command.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -63,7 +63,7 @@ at `bb9c636`, the finalized baseline at `03e6b15`, and the Git-worktree baseline
 `d3905d0`.
 
 ```text
-ALIGN_REPO=/home/hiro/prj/align-clean-672 \
+ALIGN_REPO=<clean detached Align #672 checkout> \
   python3 eval/runners/record-baseline.py \
     --corpus eval/tasks/coding-v1.json \
     --provider deterministic-reference \
@@ -87,7 +87,7 @@ compile, coding-corpus, timeout, and loop checks passed, then exposed that the s
 same replacement-ref isolation in ordinary clones and linked worktrees.
 
 ```text
-ALIGN_REPO=/home/hiro/prj/align-clean-672 make ci
+ALIGN_REPO=<clean detached Align #672 checkout> make ci
 # PASS — 15 units check per-unit; build; smoke-v1; coding-v1 and containment/timeout regressions;
 # loop paths; canonical baseline, invalid-baseline, replacement-object, and failure retention
 ```
