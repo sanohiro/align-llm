@@ -110,25 +110,31 @@ def prove_source_only_loader(owner: Path) -> None:
     require(before_exact_paths == after_exact_paths, "source-only loader created a cache path")
     require(cache_path.read_bytes() == cache_bytes, "source-only loader changed stale cache")
 
+    failure_source = fixture / "missing-sentinel.py"
+    saved_dont_write = sys.dont_write_bytecode
+    saved_prefix = sys.pycache_prefix
     try:
-        saved_dont_write = sys.dont_write_bytecode
-        saved_prefix = sys.pycache_prefix
         try:
-            sys.dont_write_bytecode = not saved_dont_write
-            sys.pycache_prefix = str(owner / "unused-cache")
-            raise SmokeFailure("injected loader-state failure")
+            sys.dont_write_bytecode = False
+            sys.pycache_prefix = None
+            load_ordinary_source(failure_source, "align_llm_loader_failure")
         finally:
             sys.dont_write_bytecode = saved_dont_write
             sys.pycache_prefix = saved_prefix
-    except SmokeFailure as error:
-        require(str(error) == "injected loader-state failure", "unexpected injected failure")
+    except FileNotFoundError as error:
+        require(
+            Path(error.filename or "") == failure_source,
+            "ordinary-loader failure named an unexpected source",
+        )
+    else:
+        raise SmokeFailure("missing ordinary-loader source unexpectedly loaded")
     require(
         sys.dont_write_bytecode is saved_dont_write,
-        "failure path did not restore dont_write_bytecode",
+        "ordinary-loader failure did not restore dont_write_bytecode",
     )
     require(
         sys.pycache_prefix == saved_prefix,
-        "failure path did not restore pycache_prefix",
+        "ordinary-loader failure did not restore pycache_prefix",
     )
 
 

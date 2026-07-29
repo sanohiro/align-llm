@@ -17,7 +17,10 @@ the replacement chain is source commit `03ce5ba`, oracle commit `976af31`, and f
 ran inside ordinary-import normalization and that the production load ran after the synthetic
 nondefault ambient state was removed. The loader scopes are now corrected; the exact source →
 oracle → finalization replacement is source `883f3f7`, oracle `d05e9f4`, and finalization
-`2d05d47`. Full verification passes; a fresh preflight remains.
+`2d05d47`. Full verification passes. Independent preflight was clean, but host preflight found that
+the helper's failure injection occurred after successful ordinary loads rather than inside the
+ordinary-loader normalization scope. The helper now performs a real missing-source ordinary load
+inside that scope and asserts exact restoration; the identity chain must be re-recorded.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -122,8 +125,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run a fresh full-diff preflight against source `883f3f7`, oracle `d05e9f4`, and finalization
-   `2d05d47`.
+1. Commit the ordinary-loader failure regression as a new clean source, re-record its oracle and
+   finalization through exclusive owner commits, update the identities here, and rerun complete
+   focused, CI, provenance, and preflight verification.
 2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
    host-native and independent-adversarial post-open reviews, and merge only with a merge commit
    that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
@@ -185,7 +189,8 @@ the loader-scope correction. The active replacement baseline records source
 under default and explicit bytecode-disabled redirected-cache process settings, `make ci` passes
 with the pinned Align checkout, and the complete positive and negative provenance harness passes.
 The preserved topology implementation head remains `7290e37`; its recorded chain is intentionally
-stale until this runner correction and baseline refresh merge.
+stale until this runner correction and baseline refresh merge. The active `883f3f7` chain is
+superseded by the ordinary-loader failure regression and must be re-recorded.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
