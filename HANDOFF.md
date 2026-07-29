@@ -5,16 +5,43 @@ Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifi
 Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-29. The Align #672 adoption slice is active on `agent/align-pin-672`, based
-on merged governance commit `65e19b7`. The branch pins
+on merged Request 5 commit `f79fb68`. The branch pins
 `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline and oracle, and
-keeps the full baseline gate runnable from a Git worktree. C6 product implementation has not
-started._
+keeps the full baseline gate runnable and cleanable from a linked Git worktree. The pin branch
+preserves the recorded baseline commits as ancestors and must be merged, not squashed. C6 product
+implementation has not started. In the primary worktree, modified `HANDOFF.md` and untracked
+`docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
+not be discarded._
 
 ## Current position
 
 The repository has completed C0 through C5. The current enabling slice adopts the Align ownership
 and nested tagged-payload surface required by the drafted C6 schema direction; it does not add a C6
-product command.
+product command. Merged PR #14 records Align Request 5: C6 design review demonstrated that the
+current `std.http` provider boundary buffers up to one GiB before an application-level size check
+can run.
+Request 5 asks Align for a caller-selected receive-time response-body cap. Only the provider
+proposal and real-provider gate are blocked; artifact, renderer, scorer, activation, and
+deterministic evaluator work remain independent.
+
+The bounded-receive contract applies its cap only after method/status-aware body framing. Final
+`HEAD`/`204`/`304` responses have zero payload; non-`101` informational heads consume no payload and
+continue to the final response without losing co-read bytes, while unsupported `101` upgrades fail
+and close. Method tokens are case-sensitive, and Content-Length magnitude comparison normalizes
+leading zeroes without target-size conversion. Request 4 and Request 5 share a combined
+de-framing/bounded-receive gate; whichever reaches
+`ALIGN_MERGED` second owns bodyless, interim-to-final, exact-cap, cap-plus-one, many-tiny-chunks,
+trailer-guard, and aggregate-storage integration verification before `ALIGN_LLM_VERIFIED`. If they
+ship together, Request 5's bounded-response adoption owns that gate and neither request reaches
+`ALIGN_LLM_VERIFIED` until it passes. The numeric ceiling applies to Align HTTP-runtime-owned
+response-byte storage; opaque TLS/kernel transport buffers are excluded, while final-header offset
+tables and decoder records have separate fixed structural caps. Bounded discovery co-read stays in
+one scratch allowance and stops after an excess is recognizable. A named fixed trailer-block wire
+guard prevents a continuously arriving unterminated trailer from evading the storage ceiling or
+timeout policy; trailer fields are validated incrementally but not retained or exposed. Successful
+self-delimited responses remain pool-eligible, read-to-close responses do not, and
+`get`/`post`/`request`/`get_many` all preserve the configured cap semantics. `get_many` workers share
+one client-cap snapshot and deterministic lowest-index error selection.
 
 - PR #9 (C3) merged at `5f883f8`; PR #10 (hosted Actions capability fix) merged at `a95c530`.
 - PR #11 (C4) merged at `17da92c`. C4 adds `src/verification_loop.align` and
@@ -32,13 +59,16 @@ product command.
 ## Next steps
 
 1. Complete final verification and independent review for `agent/align-pin-672`, open its pull
-   request, record current SHA-bound post-open reviews, and merge only after required checks pass.
+   request, record current SHA-bound post-open reviews, and merge with a merge commit only after
+   required checks pass. Squashing would make the commits embedded in the baseline unreachable.
 2. From refreshed `main`, apply generally reusable autonomous-design rules from `../align` plus the
    post-merge retrospective rule in one governance-only pull request.
-3. Record C6's bounded HTTP response dependency as Align Request 5 in its own request-register pull
-   request.
-4. Rebase and finish the C6 design plan, including its closure matrix, then implement the reviewed
-   C6 slices in order.
+3. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+   owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
+   creation. Do not hide them behind manual parsing or application-local compatibility layers.
+4. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+   including the required closure matrix and exact implementation boundaries. Implement only
+   independently valid slices whose prerequisites have shipped.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
