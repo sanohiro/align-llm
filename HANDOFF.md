@@ -13,7 +13,10 @@ identity-coupled baseline refresh were complete at source commit `712b313`, orac
 establish the required bytecode-disabled redirected-cache ambient state and gave five numbered
 cases shared rather than independent five-second timer scopes. Both helper defects are corrected;
 the replacement chain is source commit `03ce5ba`, oracle commit `976af31`, and finalization commit
-`89fe54c`. Full verification passes; a fresh preflight remains before opening the pull request.
+`89fe54c`. A fresh preflight closed the timer finding but found that the exact sentinel load still
+ran inside ordinary-import normalization and that the production load ran after the synthetic
+nondefault ambient state was removed. The loader scopes are now corrected; the exact source →
+oracle → finalization chain must be re-recorded and verified again.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -118,8 +121,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run a fresh full-diff preflight against source `03ce5ba`, oracle `976af31`, and finalization
-   `89fe54c`.
+1. Commit the corrected loader scope as a new clean source, re-record the pending measurement,
+   oracle, and finalization through their exclusive owner commits, update the identities here, and
+   rerun complete focused, CI, provenance, and preflight verification.
 2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
    host-native and independent-adversarial post-open reviews, and merge only with a merge commit
    that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
@@ -173,7 +177,8 @@ passes under default and explicit bytecode-disabled redirected-cache ambient set
 `make ci` passes with the pinned Align checkout. The complete positive structural block passes.
 The isolated negative harness rejects persisted-source, sample, oracle-order/final-LF, symbolic and
 annotated-object identity, linear restore, injected log failure, and all four TREESAME merge-hidden
-path classes; pre-owner side history remains accepted. The preserved topology implementation head
+path classes; pre-owner side history remains accepted. That chain and evidence are superseded by
+the loader-scope correction and must be re-recorded. The preserved topology implementation head
 remains `7290e37`; its recorded chain is intentionally stale until this runner correction and
 baseline refresh merge.
 

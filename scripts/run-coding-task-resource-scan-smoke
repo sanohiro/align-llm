@@ -88,12 +88,6 @@ def prove_source_only_loader(owner: Path) -> None:
         ordinary = load_ordinary_source(source, "align_llm_loader_stale")
         require(ordinary.VALUE == "OLD", "timestamp cache sentinel was not stale")
         require(cache_path.read_bytes() == cache_bytes, "ordinary loader changed stale cache")
-        before_exact_paths = tuple(sorted(str(path.relative_to(fixture)) for path in fixture.rglob("*")))
-        exact = load_exact_source(source, "align_llm_loader_exact")
-        after_exact_paths = tuple(sorted(str(path.relative_to(fixture)) for path in fixture.rglob("*")))
-        require(exact.VALUE == "NEW", "source-only loader did not execute NEW source")
-        require(before_exact_paths == after_exact_paths, "source-only loader created a cache path")
-        require(cache_path.read_bytes() == cache_bytes, "source-only loader changed stale cache")
     finally:
         sys.dont_write_bytecode = saved_dont_write
         sys.pycache_prefix = saved_prefix
@@ -105,6 +99,16 @@ def prove_source_only_loader(owner: Path) -> None:
         sys.pycache_prefix == saved_prefix,
         "source-loader sentinel did not restore pycache_prefix",
     )
+    before_exact_paths = tuple(
+        sorted(str(path.relative_to(fixture)) for path in fixture.rglob("*"))
+    )
+    exact = load_exact_source(source, "align_llm_loader_exact")
+    after_exact_paths = tuple(
+        sorted(str(path.relative_to(fixture)) for path in fixture.rglob("*"))
+    )
+    require(exact.VALUE == "NEW", "source-only loader did not execute NEW source")
+    require(before_exact_paths == after_exact_paths, "source-only loader created a cache path")
+    require(cache_path.read_bytes() == cache_bytes, "source-only loader changed stale cache")
 
     try:
         saved_dont_write = sys.dont_write_bytecode
@@ -128,10 +132,14 @@ def prove_source_only_loader(owner: Path) -> None:
     )
 
 
-def prove_nondefault_ambient_restoration(owner: Path) -> None:
+def load_runner_with_nondefault_ambient(
+    owner: Path,
+    runner_path: Path,
+) -> types.ModuleType:
     redirected_cache = owner / "redirected-cache"
     saved_dont_write = sys.dont_write_bytecode
     saved_prefix = sys.pycache_prefix
+    module: types.ModuleType
     try:
         sys.dont_write_bytecode = True
         sys.pycache_prefix = str(redirected_cache)
@@ -143,6 +151,15 @@ def prove_nondefault_ambient_restoration(owner: Path) -> None:
         require(
             sys.pycache_prefix == str(redirected_cache),
             "source-loader proof did not restore redirected-cache ambient state",
+        )
+        module = load_exact_source(runner_path, "align_llm_resource_scan_runner")
+        require(
+            sys.dont_write_bytecode is True,
+            "production runner load changed bytecode-disabled ambient state",
+        )
+        require(
+            sys.pycache_prefix == str(redirected_cache),
+            "production runner load changed redirected-cache ambient state",
         )
     finally:
         sys.dont_write_bytecode = saved_dont_write
@@ -159,6 +176,7 @@ def prove_nondefault_ambient_restoration(owner: Path) -> None:
         not redirected_cache.exists(),
         "ambient proof created the redirected cache path",
     )
+    return module
 
 
 class Clock:
@@ -1115,8 +1133,7 @@ def main() -> int:
                 CaseTimedOut("resource scan case exceeded five seconds")
             ))
             try:
-                prove_nondefault_ambient_restoration(owner)
-                module = load_exact_source(runner_path, "align_llm_resource_scan_runner")
+                module = load_runner_with_nondefault_ambient(owner, runner_path)
                 cases = (
                     ("stable control", lambda: stable_case(module, owner)),
                     ("entry disappearance", lambda: disappearing_entry_case(module, owner)),
