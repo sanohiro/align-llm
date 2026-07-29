@@ -87,7 +87,26 @@ disappeared directory. An initial acquisition-helper correction was rejected bec
 the asynchronous call-return ownership gap. The current uncommitted correction preserves direct
 `with scan(...)` ownership and binds the scan call's exact code-object offset to distinguish it
 from context entry; the queued-entry counterexample passes under Python 3.13 and 3.14. A new clean
-source → oracle → finalization chain and all exact-state evidence remain.
+source → oracle → finalization chain was created as `d79f174` → `b6bb4dc` → `806a9e4`.
+Exact focused, baseline, and positive/negative provenance checks passed, but repeated capable-host
+integration runs exposed the inherited 100-millisecond wall-clock scan budget as nondeterministic:
+different small valid fixtures crossed it after host scheduling pauses even though 500 direct
+fixture scans had a maximum of 0.16 milliseconds and no Linux pressure was present. An in-memory
+phase-labelled runner then reproduced 20 corpus runs and identified all five false deadlines in
+`descendant_process_ids`, not worktree, resident-memory, deleted-open-file, or directory-mode
+scanning. A reviewed one-second shared-budget proposal was rejected because it overpromised
+post-operation checks, stacked beyond the minimum task timeout, and changed post-validation mode
+scans. The plan now narrows the correction to a dedicated half-second process-tree discovery
+budget; configured concurrent-monitor budgets sum to 0.8 seconds and every other deadline remains
+unchanged. A subsequent review found that the output loop can start repeated monitor polls, so the
+sum alone does not bound a one-second validation. The corrected plan passes the validation
+command's absolute deadline through every concurrent resource phase, checks it before and after
+each callback, gives command timeout precedence, and prevents a later poll or phase from starting
+after expiry. Callback-boundary adjudication covers success and error so a final resource operation
+that overruns and then fails cannot replace the command-timeout diagnostic. Review, implementation,
+a replacement baseline chain, and all exact-state evidence remain. This replacement is limited to
+expected resource `TaskError`; unexpected errors and exceptional control flow outside `Exception`
+remain exact.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -192,9 +211,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the context-entry classification correction as a new source owner, record and finalize
-   its identity-coupled baseline, then rerun the complete exact-state verification and fresh
-   full-diff host-native and independent-adversarial preflight.
+1. Review the dedicated half-second process-tree discovery budget, implement it, create a
+   replacement clean source → oracle → finalization chain, then rerun the complete exact-state
+   verification and fresh full-diff host-native and independent-adversarial preflight.
 2. Push the new source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,

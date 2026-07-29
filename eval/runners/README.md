@@ -21,11 +21,14 @@ execution fails closed unless Linux child-subreaper support and a probe of the r
 resident memory, process count, and open files; `/tmp` and `/dev/shm` are size-limited tmpfs
 mounts, and the runner monitors the writable checkout for bounded file-count and aggregate-size
 usage. The monitor also
-accounts for deleted-but-open regular files and descendant resident memory, and aborts a resource
-scan if it cannot finish within its small polling budget. A scan skips only entries that disappear
-between enumeration and metadata inspection and already-observed descendant directories that
-disappear before their queued scan; a missing checkout root and iterator, metadata, or cleanup
-errors still fail closed. `scripts/run-coding-task-resource-scan-smoke` exercises those races,
+accounts for deleted-but-open regular files and descendant resident memory. Process-tree discovery
+has an independent half-second budget; the existing worktree, resident-memory, deleted-open-file,
+and post-validation mode-scan budgets remain unchanged. Concurrent resource phases are also
+clamped to the validation command's absolute deadline, so a later monitor poll cannot stack fresh
+phase budgets past the command timeout. A worktree scan skips only entries that
+disappear between enumeration and metadata inspection and already-observed descendant directories
+that disappear before their queued scan; a missing checkout root and iterator, metadata, or
+cleanup errors still fail closed. `scripts/run-coding-task-resource-scan-smoke` exercises those races,
 deadline precedence, iterator cleanup, exact file and byte ceilings, and root-only `.git` exclusion
 against the runner's exact source bytes. Directory modes are snapshotted before validation and
 rejected if a candidate or validator changes them, including the checkout root.
