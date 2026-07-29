@@ -22,8 +22,13 @@ resident memory, process count, and open files; `/tmp` and `/dev/shm` are size-l
 mounts, and the runner monitors the writable checkout for bounded file-count and aggregate-size
 usage. The monitor also
 accounts for deleted-but-open regular files and descendant resident memory, and aborts a resource
-scan if it cannot finish within its small polling budget. Directory modes are snapshotted before
-validation and rejected if a candidate or validator changes them, including the checkout root.
+scan if it cannot finish within its small polling budget. A scan skips only entries that disappear
+between enumeration and metadata inspection and already-observed descendant directories that
+disappear before their queued scan; a missing checkout root and iterator, metadata, or cleanup
+errors still fail closed. `scripts/run-coding-task-resource-scan-smoke` exercises those races,
+deadline precedence, iterator cleanup, exact file and byte ceilings, and root-only `.git` exclusion
+against the runner's exact source bytes. Directory modes are snapshotted before validation and
+rejected if a candidate or validator changes them, including the checkout root.
 Temporary checkout cleanup is automatic. The CI gate
 also supplies a patch that changes a forbidden test file
 and a passing patch that writes and stages a forbidden file during validation; both must be rejected

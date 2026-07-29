@@ -26,6 +26,8 @@ rm -f "${host_marker}"
 trap 'rm -f "${output_file}" "${host_marker}" "${sandbox_task}" "${ignored_task}" "${ignored_side_effect_task}" "${unsafe_id_task}" "${whitespace_task}"; rm -r "${ignored_source}" "${ignored_side_effect_source}" "${whitespace_source}"' EXIT
 
 cd "${project_root}"
+python3 ./scripts/run-coding-task-resource-scan-smoke
+
 if python3 "${runner}" "${task}" "${patch}" >"${output_file}" 2>&1; then
   printf '%s\n' "coding task unexpectedly accepted a disallowed edit" >&2
   cat "${output_file}" >&2

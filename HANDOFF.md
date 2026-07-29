@@ -4,12 +4,11 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The exact-source regression-harness governance follow-up is active on
-`agent/exact-source-harness-governance`, based on merged validation-worktree design commit
-`93bab2f`. It strengthens `docs/review-checklist.md` from PR #21's bounded retrospective and
-binds review commands to the envelope's immutable base tip, including post-review verification when
-a command requires a symbolic ref. The preserved
-implementation
+_Last updated: 2026-07-29. The validation-worktree unlink-race implementation is active on
+`agent/validation-unlink-race-implementation`, based on merged exact-source governance commit
+`13177c9`. Its plan of record is `docs/specs/validation-worktree-unlink-race.md`; the runner,
+deterministic exact-source regression helper, invalid-smoke integration, documentation, and
+identity-coupled baseline refresh form this slice. The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
 the declared Ubuntu 24.04 hosted runner supplies GNU Make 4.3. The same review found checker
@@ -47,7 +46,10 @@ which execute repository source must bind execution to the exact reviewed bytes 
 import configuration defeats valid stale caches, and must restore cache and interpreter-global
 state on success and failure. The active governance follow-up adds that reusable review rule before
 the runner implementation begins. The ledger-order finding needs no additional rule because the
-existing authoritative-ledger and consistency-pass requirements detected and closed it.
+existing authoritative-ledger and consistency-pass requirements detected and closed it. PR #22
+merged the resulting exact-source, complete cache/interpreter restoration, and immutable-base
+full-diff review rules at `13177c9`. Its retrospective found no further reusable policy beyond the
+rules already merged.
 After the runner correction merges, the topology implementation must integrate refreshed `main`
 and re-record the canonical baseline again because `Makefile` is an identity-bound artifact. The
 checker correction remains in that same topology source commit but is not itself in the recorded
@@ -110,11 +112,10 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Merge the exact-source regression-harness governance follow-up after exact-head checks and
-   reviews. Then implement the merged validation-worktree design's deterministic file-entry and
-   queued-directory regressions plus its own
-   identity-coupled baseline refresh; do not retain the unplanned runner edit inside the topology
-   implementation or leave an invalid intermediate `main`.
+1. Finish the validation-worktree implementation, run its focused helper and `eval-coding`, commit
+   the clean source state, record two deterministic-reference samples, then commit the immutable
+   oracle and canonical finalization separately. Run the complete section-2.4 provenance harness
+   and `make ci`, and preserve the source, oracle, and finalization commits with a merge commit.
 2. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
@@ -133,24 +134,24 @@ Do not rerun a failing external service request indefinitely. The Codex “high 
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
 
-## Current exact-source governance verification
+## Current validation-worktree implementation verification
 
 Verified on 2026-07-29:
 
 ```text
 git diff --check                         PASS
 make format-check                        PASS
-make baseline-check                      PASS
-test "$(readlink AGENTS.md)" = CLAUDE.md PASS
+python3 scripts/run-coding-task-resource-scan-smoke PASS
+scripts/run-coding-task-invalid-smoke    PASS
+make eval-coding                         PASS
 ```
 
-This governance slice is based on merged PR #21 commit `93bab2f` and changes only the reusable
-review checklist plus this durable handoff. It changes no runner, Make target, workflow, compiler
-pin, baseline, or authoritative product design. The preserved implementation head is `7290e37`;
-its source/oracle/finalization chain is intentionally stale for final delivery because the required
-Makefile portability edit will change a recorded artifact. The known current-runner unlink race
-remains the expected `make ci` failure until the separately scoped implementation and
-identity-coupled baseline refresh land.
+The active source slice is based on merged PR #22 commit `13177c9`. The focused helper currently
+passes against exact runner source bytes and covers the reviewed disappearance, fail-closed,
+deadline, iterator-cleanup, ceiling, and root-only `.git` contract. The source, oracle, and
+finalization commits and the full `eval-coding`, baseline, provenance, and `make ci` evidence are
+not yet complete. The preserved topology implementation head remains `7290e37`; its recorded chain
+is intentionally stale until this runner correction and baseline refresh merge.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.

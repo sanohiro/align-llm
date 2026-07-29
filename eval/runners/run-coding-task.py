@@ -1021,35 +1021,66 @@ def check_pristine_checkout(
 
 def validation_worktree_usage(
     checkout: Path,
+    *,
+    scan: Callable[[Path], Any] = os.scandir,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[int, int, set[tuple[int, int]]]:
     total_bytes = 0
     file_count = 0
     visible_inodes: set[tuple[int, int]] = set()
-    deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
+    deadline = monotonic() + MAX_RESOURCE_SCAN_SECONDS
     pending = [checkout]
+
+    def require_scan_deadline() -> None:
+        if monotonic() >= deadline:
+            raise TaskError("validation resource scan exceeded its time limit")
+
+    def directory_error(current: Path, error: BaseException) -> TaskError:
+        return TaskError(
+            f"cannot inspect validation directory {current.relative_to(checkout)}: "
+            f"{error}"
+        )
+
     while pending:
         current = pending.pop()
+        require_scan_deadline()
         try:
-            entries = os.scandir(current)
+            entries = scan(current)
         except OSError as error:
-            raise TaskError(
-                f"cannot inspect validation directory {current.relative_to(checkout)}: "
-                f"{error}"
-            ) from error
-        with entries:
-            for entry in entries:
+            require_scan_deadline()
+            if isinstance(error, FileNotFoundError) and current != checkout:
+                continue
+            raise directory_error(current, error) from error
+
+        body_error: tuple[type[BaseException], BaseException, Any] | None = None
+        try:
+            require_scan_deadline()
+            while True:
+                try:
+                    entry = next(entries)
+                except StopIteration:
+                    require_scan_deadline()
+                    break
+                except OSError as error:
+                    require_scan_deadline()
+                    raise directory_error(current, error) from error
+
+                require_scan_deadline()
                 if current == checkout and entry.name == ".git":
                     continue
-                if time.monotonic() >= deadline:
-                    raise TaskError("validation resource scan exceeded its time limit")
                 path = Path(entry.path)
                 try:
                     metadata = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    require_scan_deadline()
+                    continue
                 except OSError as error:
+                    require_scan_deadline()
                     raise TaskError(
                         f"cannot inspect validation worktree path {path.relative_to(checkout)}: "
                         f"{error}"
                     ) from error
+                require_scan_deadline()
                 file_count += 1
                 if file_count > MAX_VALIDATION_WORKTREE_FILES:
                     raise TaskError(
@@ -1068,6 +1099,23 @@ def validation_worktree_usage(
                         "validation exceeded the writable worktree size limit "
                         f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
                     )
+        except BaseException:
+            body_error = sys.exc_info()
+
+        close_error: BaseException | None = None
+        try:
+            entries.close()
+        except BaseException as error:
+            close_error = error
+
+        require_scan_deadline()
+        if body_error is not None:
+            _, error, traceback = body_error
+            raise error.with_traceback(traceback)
+        if close_error is not None:
+            if isinstance(close_error, OSError):
+                raise directory_error(current, close_error) from close_error
+            raise close_error
     return total_bytes, file_count, visible_inodes
 
 
