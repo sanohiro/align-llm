@@ -4,22 +4,26 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The governance-only retrospective slice is active on
-`agent/autonomous-design-retrospective`, based on merged Align #672 adoption commit `65f7766`.
-Its substantive rule checkpoint is `617a9f7`; it applies generally reusable design-convergence
-rules from `../align` and lessons from PR #15. C6 product implementation has not started. In the
-primary worktree, modified `HANDOFF.md` and untracked
+_Last updated: 2026-07-29. The check-gate-topology design slice is active on
+`agent/check-gate-topology-design`, based on merged governance commit `c20e919`. Its plan of record
+is `docs/specs/check-gate-topology.md`; implementation has not started. C6 product implementation
+has also not started. In the primary worktree, modified `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
 not be discarded._
 
 ## Current position
 
-The repository has completed C0 through C5. PR #15 merged with a merge commit at `65f7766`, pins
+The repository has completed C0 through C5. PR #16 merged at `c20e919`, adding the applicable Align
+design-convergence rules and the bounded post-merge retrospective. Its review caught and fixed
+transient PR mechanics in `HANDOFF.md`; the existing durable-state rule and the new checklist item
+now cover that reusable lesson, so no additional governance slice is queued.
+
+PR #15 merged with a merge commit at `65f7766`, pins
 Align #672 at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline, and keeps
 its recorded source and oracle commits reachable. Its retrospective found three reusable lessons:
 Git-internal automation must use the common directory in linked worktrees, historical provenance
 must constrain the merge method, and aggregate check names must not be treated as proof that every
-focused gate ran. The current governance slice turns those lessons into policy and checklist
+focused gate ran. The merged governance slice turned those lessons into policy and checklist
 coverage without mixing product or request-register changes.
 
 Merged PR #14 records Align Request 5: C6 design review demonstrated that the current `std.http`
@@ -62,10 +66,10 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. After the current governance slice merges, refresh `main` and use a separate automation slice to
-   make the local capable-runner gate and hosted supported gate topology explicit. `make ci`
-   currently omits the C1-C5 focused smokes that PR #15 ran separately, while the hosted gate
-   intentionally omits `coding-v1` and the canonical baseline gate.
+1. After the check-topology design slice merges, refresh `main` and implement its `hosted-checks`,
+   `capable-checks`, and `ci` graph on a separate branch. `make ci` currently omits the C1-C5
+   focused smokes that PR #15 ran separately, while the hosted gate intentionally omits `coding-v1`
+   and the canonical baseline gate.
 2. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
@@ -77,7 +81,7 @@ Do not rerun a failing external service request indefinitely. The Codex “high 
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
 
-## Current governance verification
+## Current check-topology design verification
 
 Verified on 2026-07-29:
 
@@ -86,6 +90,10 @@ git diff --check                         PASS
 make format-check                        PASS
 test "$(readlink AGENTS.md)" = CLAUDE.md PASS
 ```
+
+The design records its align-llm base as `c20e919` and the compiler/runtime dependency as pinned
+Align `d9fb5da`. It changes no Make target or workflow until the design merges and a separate
+implementation slice begins.
 
 The rule port was checked against the `../align` `CLAUDE.md` changes between the former Align pin
 `db942d2` and current pin `d9fb5da`. Align-specific Rust, release, and repository-script commands
