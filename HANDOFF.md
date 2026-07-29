@@ -8,7 +8,8 @@ _Last updated: 2026-07-29. The validation-worktree unlink-race implementation is
 `agent/validation-unlink-race-implementation`, based on merged exact-source governance commit
 `13177c9`. Its plan of record is `docs/specs/validation-worktree-unlink-race.md`; the runner,
 deterministic exact-source regression helper, invalid-smoke integration, documentation, and
-identity-coupled baseline refresh form this slice. The preserved implementation
+identity-coupled baseline refresh are complete at source commit `712b313`, oracle commit `3bc1ee2`,
+and finalization commit `e23dd9e`. The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
 the declared Ubuntu 24.04 hosted runner supplies GNU Make 4.3. The same review found checker
@@ -112,10 +113,11 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Finish the validation-worktree implementation, run its focused helper and `eval-coding`, commit
-   the clean source state, record two deterministic-reference samples, then commit the immutable
-   oracle and canonical finalization separately. Run the complete section-2.4 provenance harness
-   and `make ci`, and preserve the source, oracle, and finalization commits with a merge commit.
+1. Run a fresh full-diff preflight review of the validation-worktree implementation, push the exact
+   source/oracle/finalization chain, open its pull request, complete separate host-native and
+   independent-adversarial post-open reviews, and merge only with a merge commit that preserves all
+   three recorded identities. Recheck the focused helper, baseline, provenance block, and pending
+   absence on refreshed `main`.
 2. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
@@ -144,14 +146,21 @@ make format-check                        PASS
 python3 scripts/run-coding-task-resource-scan-smoke PASS
 scripts/run-coding-task-invalid-smoke    PASS
 make eval-coding                         PASS
+make baseline-check                      PASS
+ALIGN_REPO=<clean Align d9fb5da> make ci PASS
+section-2.4 positive and negative provenance harness PASS
 ```
 
-The active source slice is based on merged PR #22 commit `13177c9`. The focused helper currently
-passes against exact runner source bytes and covers the reviewed disappearance, fail-closed,
-deadline, iterator-cleanup, ceiling, and root-only `.git` contract. The source, oracle, and
-finalization commits and the full `eval-coding`, baseline, provenance, and `make ci` evidence are
-not yet complete. The preserved topology implementation head remains `7290e37`; its recorded chain
-is intentionally stale until this runner correction and baseline refresh merge.
+The active slice is based on merged PR #22 commit `13177c9`. The focused helper passes against exact
+runner source bytes and covers the reviewed disappearance, fail-closed, deadline,
+iterator-cleanup, ceiling, and root-only `.git` contract. The canonical baseline records source
+`712b3138f646592e57944da01e3049d844fc4d6c`, immutable oracle
+`3bc1ee222b1d40f21c09fa93f3d2d92f4be0ca06`, and finalization
+`e23dd9e33169c89c46c6a120e7368fbcc75f9bda`; both recorded samples pass. The complete structural
+block passes after the isolated negative harness rejected source/sample/oracle/ID/log failures,
+linear modify/restore, annotated tags, and four merge-hidden history classes. The preserved
+topology implementation head remains `7290e37`; its recorded chain is intentionally stale until
+this runner correction and baseline refresh merge.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
