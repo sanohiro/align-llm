@@ -33,7 +33,7 @@ commit `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 | `make ci` | Verify `.align-revision`, release-build the pinned sibling Align compiler, require that compiler to be executable, and invoke `capable-checks` with `ALIGNC` set to that exact release compiler. This remains the canonical complete local or capable-runner gate. |
 | GitHub Actions pull-request gate | Check out `.align-revision`, run `make align-build`, require the resulting release compiler, and invoke `make hosted-checks` with `ALIGNC` set to it. |
 | Focused targets | Keep their existing commands and semantics. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. |
-| Canonical C0 baseline | Record two deterministic-reference samples from a clean implementation source commit containing the final `Makefile`; commit the derived immutable oracle; finalize the canonical baseline with that full oracle commit; and keep both source and oracle commits as ancestors of the final reviewed head and merge result. |
+| Canonical C0 baseline | Record two deterministic-reference samples from a clean implementation source commit containing the final `Makefile`; commit the derived immutable oracle; finalize the canonical baseline with that full oracle commit; require the finalized record's source and oracle identities to equal those named commits; and keep the source, oracle, and finalization commits as ancestors of the final reviewed head and merge result. |
 
 ### 2.1 Inputs and defaults
 
@@ -239,12 +239,14 @@ test -z "$(clean_git log --format=%H "$ORACLE_COMMIT"..HEAD -- \
 test -z "$(clean_git log --format=%H "$FINALIZATION_COMMIT"..HEAD -- \
   eval/baselines/coding-v1-reference.json \
   eval/expected/coding-v1-reference.sha256)"
+test ! -e eval/baselines/.coding-v1-reference.pending.json
 ```
 
 After merge, the source, oracle, and finalization commits must each be ancestors of refreshed
 `main`, and the persisted-identity comparison, four final-tree byte comparisons, and three
 no-later-change checks above must still pass with `HEAD` replaced by refreshed `main` in the same
-isolated Git environment.
+isolated Git environment. The pending-record absence check must also pass in the refreshed `main`
+worktree.
 
 ### 2.5 Measurement interpretation
 
@@ -365,16 +367,16 @@ self-test: PASS` plus LF and nothing else.
 | Complete graph membership | `Makefile` | named aggregate prerequisites | `make gate-topology-check` proves the exact hosted list, capable-only additions, and serialized aggregates. |
 | Existing focused cleanup | focused scripts | unchanged | Existing ordinary, timeout, and abnormal cleanup regressions continue to own these paths. |
 | Parallel invocation | GNU Make `.NOTPARALLEL` | serialize both aggregate prerequisite lists | `make -j8 ci` passes with the declared aggregate order; the topology oracle proves both targets remain in the serialized set. |
-| Baseline source identity | implementation source commit | final identity-bound `Makefile` is clean and committed before recording | Pending record `align_llm_commit` equals the source commit and its Makefile digest equals `git show <source>:Makefile`. |
+| Baseline source identity | implementation source commit | final identity-bound `Makefile` is clean and committed before recording | Pending record `align_llm_commit` equals the source commit and its Makefile digest equals the isolated section-2.4 `clean_git show <source>:Makefile` result. |
 | Immutable oracle | oracle commit | exact canonical projection of the pending record | Oracle commit contains only the ordered projection; the existing direct timing-mutation regression proves whole-projection equality is enforced, and final-tree bytes equal the oracle commit. |
-| Canonical finalization | finalization commit | finalizer binds full oracle commit and writes digest | `make baseline-check` passes; pending file is absent; canonical digest matches. |
+| Canonical finalization | finalization commit and final reviewed/merged worktree | finalizer binds full oracle commit and writes digest; the pending record is removed before the finalization commit and remains absent | `make baseline-check` passes; an explicit path check rejects a pending file at the reviewed head and refreshed `main`; canonical digest matches. |
 | Baseline commit chain | finalized baseline, source, oracle, finalization, final reviewed head, and merge result | persisted source/oracle fields equal the named commits; strict source → oracle → finalization → head/main ancestry in an isolated Git environment; merge method is `merge` | Exact identity and ancestry checks pass without replacement objects or ambient Git configuration; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
 | Post-record input change | author/reviewer | re-record from a new clean source commit | Matrix-to-diff audit compares changed paths with the recorded input manifest; any overlap invalidates the complete prior sequence. |
 | Post-record output change | author/reviewer | regenerate through the owning projection/finalizer before finalization; restart the full sequence afterward | Final-tree oracle, baseline, and digest bytes equal their named owner commits; no later commit changes those paths. |
 | Measurement interpretation | pull request evidence | two deterministic-reference samples on the recorded environment | Both samples PASS; prior and refreshed timings are reported without a performance claim. |
 | Topology-checker persisted format | N/A | its byte oracle is embedded in the script; no topology file is created | N/A. |
 | Canonical baseline JSON | existing schema version 1 | recorder emits indented UTF-8 JSON plus final LF; finalizer changes only `canonical_oracle_commit` | `make baseline-check` validates exact fields, identities, aggregates, malformed input, immutable oracle, and digest. |
-| Immutable baseline oracle JSON | section 2.4 ordered projection | indented UTF-8 JSON plus final LF, committed before finalization | Projection command is reproducible; final-tree bytes equal `git show <oracle-commit>:<oracle-path>`; timing mutation is rejected. |
+| Immutable baseline oracle JSON | section 2.4 ordered projection | indented UTF-8 JSON plus final LF, committed before finalization | Projection command is reproducible; final-tree bytes equal the isolated section-2.4 `clean_git show <oracle-commit>:<oracle-path>` result; timing mutation is rejected. |
 | Canonical digest text | finalizer | lowercase SHA-256, two ASCII spaces, canonical baseline path, final LF | `make baseline-check` recomputes and compares the exact line; final-tree bytes equal the finalization commit. |
 | Partial baseline output | unchanged finalizer | a failed or interrupted run must not be committed; rerun finalizer and require exact baseline/digest owner paths | DEFERRED fault injection: finalizer behavior is unchanged. Clean-worktree, exact path-set, digest, byte-equality, and `make baseline-check` gates prevent partial output from merging. |
 | Internal text boundary | `Makefile` plus `scripts/check-gate-topology` | three shell-uninterpreted environment values become exact labeled LF-terminated bytes | Script self-test covers exact success, arity, missing values, encoding, whitespace, membership, order, and dangerous override text. |
@@ -404,13 +406,13 @@ self-test: PASS` plus LF and nothing else.
 - Run `python3 scripts/check-gate-topology --self-test`; all specified negative cases pass by being
   rejected.
 - Run `make hosted-checks` with the pinned release compiler.
-- Run `make -j8 ci` on a capable host to prove the aggregate serialization contract under inherited
-  parallel Make flags.
 - Record, project, commit, and finalize the canonical C0 baseline from the final clean implementation
   source commit using section 2.4. Verify the strict source → oracle → finalization → head chain,
   equality with both commit identities persisted in the finalized baseline, exact per-commit path
   sets, final-tree byte equality, pending-file absence, digest, replacement-object isolation, and
   the existing immutable-oracle timing-mutation regression.
+- Run `make -j8 ci` on a capable host after finalization to prove the refreshed baseline and
+  aggregate serialization contract under inherited parallel Make flags.
 - Obtain a passing hosted required check using `make hosted-checks`.
 - Review the full implementation against `docs/review-checklist.md`, including aggregate-name
   accuracy and any shared-target execution or cleanup regression.
