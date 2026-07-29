@@ -21,7 +21,8 @@ changing `Makefile` necessarily invalidates the current canonical baseline artif
 active design correction makes the baseline refresh and merge-only ancestry part of the
 implementation contract instead of allowing a broken intermediate `main`. Its structural evidence
 also binds the named source and oracle commits to the identities persisted in the finalized
-baseline and disables replacement objects and ambient Git configuration for every provenance
+baseline, requires every recorded identity to name a raw commit object rather than an implicitly
+peeled tag, and disables replacement objects and ambient Git configuration for every provenance
 inspection.
 
 PR #16 merged at `c20e919`, adding the applicable Align

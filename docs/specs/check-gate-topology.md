@@ -179,11 +179,12 @@ the merged history. Before merge, all three full commits must be ancestors of th
 head; after merge, all three must be ancestors of the resulting `main`.
 
 The implementation records full `SOURCE_COMMIT`, `ORACLE_COMMIT`, and `FINALIZATION_COMMIT` values.
-The source and oracle values must equal the identities embedded in the finalized baseline, not
-merely name another valid ancestor chain. All structural Git inspection runs in an empty
-environment with replacement objects and ambient Git configuration disabled, matching the
-baseline recorder and verifier's repository-isolation boundary. Run these exact checks before
-merge:
+Each value must name a raw commit object, not a symbolic ref or an annotated-tag object that Git
+would implicitly peel to a commit. The source and oracle values must equal the identities embedded
+in the finalized baseline, not merely name another valid ancestor chain. All structural Git
+inspection runs in an empty environment with replacement objects and ambient Git configuration
+disabled, matching the baseline recorder and verifier's repository-isolation boundary. Run these
+exact checks before merge:
 
 ```bash
 set -euo pipefail
@@ -256,6 +257,17 @@ for sample, run in enumerate(runs, start=1):
     ):
         raise SystemExit(f"sample {sample} does not contain the fixed passing task")
 PY
+for label in SOURCE_COMMIT ORACLE_COMMIT FINALIZATION_COMMIT; do
+  value="${!label}"
+  if ! object_type="$(clean_git cat-file -t "$value")"; then
+    printf '%s\n' "cannot inspect $label object type" >&2
+    exit 1
+  fi
+  if test "$object_type" != commit; then
+    printf '%s\n' "$label must name a raw commit object" >&2
+    exit 1
+  fi
+done
 python3 - <<'PY' | cmp - eval/expected/coding-v1-reference-oracle.json
 import json
 import sys
@@ -331,7 +343,8 @@ evidence. Before the positive run, an isolated temporary-clone harness must exec
 fail-fast block once for each of these injected negative cases and require a nonzero overall status:
 persisted source mismatch; one non-passing task; one sample instead of two; three samples instead of
 two; reordered oracle fields; missing oracle final LF; a 40-character symbolic source ref; a
-40-character symbolic oracle ref; abbreviated finalization ID; uppercase finalization ID; and a
+40-character symbolic oracle ref; annotated-tag object IDs supplied independently as the source,
+oracle, and finalization values; abbreviated finalization ID; uppercase finalization ID; and a
 `clean_git log` failure injected after the preceding Git operations succeed. The harness must not
 modify the source worktree, must remove its temporary clone on success or failure, and must report
 one bounded English rejection line per case. The implementation pull request records the command
