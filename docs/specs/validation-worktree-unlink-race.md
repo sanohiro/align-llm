@@ -202,6 +202,12 @@ prefix, so a later deadline read cannot stand in for the required post-operation
     checkout contains a nested `.git` directory and one regular file inside it; both nested entries
     are inspected and counted, and the file contributes its exact bytes and inode, proving the
     exclusion is not name-global.
+17. **Owner-scope asynchronous interruption** — a real root scan wrapper first raises a body
+    `PermissionError`. A trace hook bound to the exact executed runner bytes then raises a
+    helper-owned `BaseException` on the body-error capture line, before ordinary post-body control
+    can begin cleanup. The helper observes that exact exception and records iterator close,
+    proving the `finally` owner scope starts when iterator ownership transfers and has no
+    post-capture/pre-cleanup gap. The prior trace function is restored in a `finally`.
 
 Every case has a fresh subtree and an exact result or diagnostic assertion. Before loading the
 runner, the helper snapshots existing `__pycache__` directory paths and the relative path plus

@@ -22,6 +22,10 @@ the helper's failure injection occurred after successful ordinary loads rather t
 ordinary-loader normalization scope. The helper now performs a real missing-source ordinary load
 inside that scope and asserts exact restoration. The active replacement is source `924fc58`, oracle
 `c291cdb`, and finalization `a795284`; full verification passes and fresh preflight remains.
+Post-open host-native review then found a cleanup gap between body-error capture and the manual
+iterator-close block. The iterator owner scope now uses a real `finally`, and a seventeenth
+exact-source case injects an asynchronous `BaseException` at that boundary and proves close is
+attempted. The identity chain must be re-recorded before review resumes.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -126,12 +130,12 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run a fresh full-diff preflight against source `924fc58`, oracle `c291cdb`, and finalization
-   `a795284`.
-2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
-   host-native and independent-adversarial post-open reviews, and merge only with a merge commit
-   that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
-   block, and pending absence on refreshed `main`.
+1. Commit the iterator-owner correction as a new clean source, re-record the immutable oracle and
+   canonical baseline, and rerun full verification and preflight.
+2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+   and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
+   merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
+   provenance block, and pending absence on refreshed `main`.
 3. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
@@ -169,7 +173,7 @@ The active slice is based on merged PR #22 commit `13177c9`. The focused helper 
 runner source bytes and covers the reviewed disappearance, fail-closed, deadline,
 iterator-cleanup, ceiling, and root-only `.git` contract. It now also establishes and restores
 bytecode-disabled redirected-cache ambient state before loading the production runner and gives
-each of the 16 numbered cases a fresh five-second timer. The superseded canonical baseline records
+each numbered case a fresh five-second timer. The superseded canonical baseline records
 source `712b3138f646592e57944da01e3049d844fc4d6c`, immutable oracle
 `3bc1ee222b1d40f21c09fa93f3d2d92f4be0ca06`, and finalization
 `e23dd9e33169c89c46c6a120e7368fbcc75f9bda`; both samples and the complete positive and negative
@@ -196,6 +200,8 @@ source `924fc585a27b301e936eadd2b9a686aa598c9083`, immutable oracle
 `a795284191925d50578ab997355c8f12bda451c3`; both samples pass. Focused helper verification passes
 under default and explicit bytecode-disabled redirected-cache process settings, `make ci` passes
 with the pinned Align checkout, and the complete positive and negative provenance harness passes.
+This chain is superseded by the post-open iterator-owner cleanup correction; the focused helper now
+has 17 cases and proves close is attempted when a `BaseException` interrupts body-error capture.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.

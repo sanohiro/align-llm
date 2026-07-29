@@ -21,6 +21,10 @@ class CaseTimedOut(Exception):
     pass
 
 
+class CaseInterrupted(BaseException):
+    pass
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SmokeFailure(message)
@@ -46,6 +50,7 @@ def load_exact_source(path: Path, name: str) -> types.ModuleType:
     module = types.ModuleType(name)
     module.__file__ = str(path)
     module.__package__ = None
+    module.__align_exact_source__ = source
     exec(compile(source, str(path), "exec"), module.__dict__)
     return module
 
@@ -522,6 +527,56 @@ def iterator_close_error_case(module: types.ModuleType, owner: Path) -> None:
             "cannot inspect validation directory",
         )
         require(wrappers[0].close_attempted, f"{name} close was not attempted")
+
+
+def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None:
+    root = owner / "owner-scope-interruption"
+    root.mkdir()
+    (root / "stable").write_bytes(b"x")
+    wrappers: list[IteratorWrapper] = []
+
+    def scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(
+            os.scandir(path),
+            next_error=PermissionError("iterator denied before interruption"),
+        )
+        wrappers.append(wrapper)
+        return wrapper
+
+    source = module.__align_exact_source__
+    target_lines = [
+        line_number
+        for line_number, line in enumerate(source.splitlines(), start=1)
+        if line.strip() == b"body_error = sys.exc_info()"
+    ]
+    require(len(target_lines) == 1, f"unexpected body-error capture lines: {target_lines}")
+    target_line = target_lines[0]
+    interrupted = False
+
+    def interrupt_after_body_error(frame: Any, event: str, argument: Any) -> Any:
+        nonlocal interrupted
+        del argument
+        if (
+            frame.f_code is module.validation_worktree_usage.__code__
+            and event == "line"
+            and frame.f_lineno == target_line
+        ):
+            interrupted = True
+            raise CaseInterrupted("interrupt before cleanup")
+        return interrupt_after_body_error
+
+    saved_trace = sys.gettrace()
+    sys.settrace(interrupt_after_body_error)
+    try:
+        module.validation_worktree_usage(root, scan=scan, monotonic=lambda: 100.0)
+    except CaseInterrupted:
+        pass
+    else:
+        raise SmokeFailure("owner-scope interruption unexpectedly returned")
+    finally:
+        sys.settrace(saved_trace)
+    require(interrupted, "owner-scope interruption point was not reached")
+    require(wrappers[0].close_attempted, "owner-scope interruption did not close iterator")
 
 
 def deadline_disappearance_case(module: types.ModuleType, owner: Path) -> None:
@@ -1157,6 +1212,10 @@ def main() -> int:
                     (
                         "iterator close errors",
                         lambda: iterator_close_error_case(module, owner),
+                    ),
+                    (
+                        "owner-scope interruption",
+                        lambda: owner_scope_interruption_case(module, owner),
                     ),
                     (
                         "deadline before disappearance skip",
