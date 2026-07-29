@@ -680,6 +680,64 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
             f"{name} owner-scope interruption did not close iterator",
         )
 
+    ordinary_root = owner / "owner-scope-ordinary-store-close-error"
+    ordinary_root.mkdir()
+    ordinary_target = ordinary_root / "child"
+    ordinary_target.mkdir()
+    ordinary_wrappers: list[tuple[Path, IteratorWrapper]] = []
+
+    def ordinary_scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(
+            os.scandir(path),
+            close_error=(
+                FileNotFoundError("close vanished after ordinary store error")
+                if path == ordinary_target
+                else None
+            ),
+        )
+        ordinary_wrappers.append((path, wrapper))
+        return wrapper
+
+    ordinary_interrupted = False
+
+    def interrupt_with_ordinary_error(frame: Any, event: str, argument: Any) -> Any:
+        nonlocal ordinary_interrupted
+        del argument
+        if frame.f_code is module.validation_worktree_usage.__code__:
+            frame.f_trace_opcodes = True
+        if (
+            frame.f_code is module.validation_worktree_usage.__code__
+            and event == "opcode"
+            and frame.f_lasti == entry_store_offsets[0]
+            and frame.f_locals.get("current") == ordinary_target
+        ):
+            ordinary_interrupted = True
+            raise module.TaskError("ordinary store interruption")
+        return interrupt_with_ordinary_error
+
+    saved_trace = sys.gettrace()
+    sys.settrace(interrupt_with_ordinary_error)
+    try:
+        expect_task_error(
+            module,
+            lambda: module.validation_worktree_usage(
+                ordinary_root,
+                scan=ordinary_scan,
+                monotonic=lambda: 100.0,
+            ),
+            "close vanished after ordinary store error",
+        )
+    finally:
+        sys.settrace(saved_trace)
+    require(ordinary_interrupted, "ordinary store interruption point was not reached")
+    ordinary_wrapper = next(
+        wrapper for path, wrapper in ordinary_wrappers if path == ordinary_target
+    )
+    require(
+        ordinary_wrapper.close_attempted,
+        "ordinary store interruption did not attempt close",
+    )
+
     construction_root = owner / "contextual-construction-error"
     construction_root.mkdir()
 
