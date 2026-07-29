@@ -4,22 +4,26 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The Align #672 adoption slice is active on `agent/align-pin-672`, based
-on merged Request 5 commit `f79fb68`. The branch pins
-`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline and oracle, and
-keeps the full baseline gate runnable and cleanable from a linked Git worktree. The pin branch
-preserves the recorded baseline commits as ancestors and must be merged, not squashed. C6 product
-implementation has not started. In the primary worktree, modified `HANDOFF.md` and untracked
+_Last updated: 2026-07-29. The governance-only retrospective slice is active on
+`agent/autonomous-design-retrospective`, based on merged Align #672 adoption commit `65f7766`.
+Its substantive rule checkpoint is `617a9f7`; it applies generally reusable design-convergence
+rules from `../align` and lessons from PR #15. C6 product implementation has not started. In the
+primary worktree, modified `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
 not be discarded._
 
 ## Current position
 
-The repository has completed C0 through C5. The current enabling slice adopts the Align ownership
-and nested tagged-payload surface required by the drafted C6 schema direction; it does not add a C6
-product command. Merged PR #14 records Align Request 5: C6 design review demonstrated that the
-current `std.http` provider boundary buffers up to one GiB before an application-level size check
-can run.
+The repository has completed C0 through C5. PR #15 merged with a merge commit at `65f7766`, pins
+Align #672 at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline, and keeps
+its recorded source and oracle commits reachable. Its retrospective found three reusable lessons:
+Git-internal automation must use the common directory in linked worktrees, historical provenance
+must constrain the merge method, and aggregate check names must not be treated as proof that every
+focused gate ran. The current governance slice turns those lessons into policy and checklist
+coverage without mixing product or request-register changes.
+
+Merged PR #14 records Align Request 5: C6 design review demonstrated that the current `std.http`
+provider boundary buffers up to one GiB before an application-level size check can run.
 Request 5 asks Align for a caller-selected receive-time response-body cap. Only the provider
 proposal and real-provider gate are blocked; artifact, renderer, scorer, activation, and
 deterministic evaluator work remain independent.
@@ -58,15 +62,14 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Complete final verification and independent review for `agent/align-pin-672`, open its pull
-   request, record current SHA-bound post-open reviews, and merge with a merge commit only after
-   required checks pass. Squashing would make the commits embedded in the baseline unreachable.
-2. From refreshed `main`, apply generally reusable autonomous-design rules from `../align` plus the
-   post-merge retrospective rule in one governance-only pull request.
-3. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+1. After the current governance slice merges, refresh `main` and use a separate automation slice to
+   make the local capable-runner gate and hosted supported gate topology explicit. `make ci`
+   currently omits the C1-C5 focused smokes that PR #15 ran separately, while the hosted gate
+   intentionally omits `coding-v1` and the canonical baseline gate.
+2. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
-4. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+3. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
    including the required closure matrix and exact implementation boundaries. Implement only
    independently valid slices whose prerequisites have shipped.
 
@@ -76,14 +79,18 @@ a passing patch.
 
 ## Current governance verification
 
-Verified on 2026-07-28:
+Verified on 2026-07-29:
 
 ```text
-git diff --check    PASS
+git diff --check                         PASS
+make format-check                        PASS
+test "$(readlink AGENTS.md)" = CLAUDE.md PASS
 ```
 
-Pull request review and check state is intentionally external GitHub metadata bound to exact SHAs,
-not a branch commit recorded here.
+The rule port was checked against the `../align` `CLAUDE.md` changes between the former Align pin
+`db942d2` and current pin `d9fb5da`. Align-specific Rust, release, and repository-script commands
+were intentionally not copied. Pull request review and check state remains external GitHub metadata
+bound to exact SHAs, not a branch commit recorded here.
 
 ## Align #672 adoption verification
 
