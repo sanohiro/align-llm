@@ -27,6 +27,7 @@ leave `main` failing its own baseline artifact check.
 | Entry disappearance | If a real `os.DirEntry` disappears after its parent `scandir` yielded it but before `DirEntry.stat(follow_symlinks=False)`, skip that entry for the current scan. It no longer occupies visible worktree storage; a later polling scan accounts for any path that exists then. |
 | Queued-directory disappearance | If a non-root directory was successfully observed and queued, then `os.scandir` raises `FileNotFoundError` when that queued path is popped, skip that directory for the current scan. |
 | Fail-closed errors | A missing checkout root, any `OSError` other than the two descendant/entry `FileNotFoundError` cases, deadline exhaustion, or a ceiling violation retains `TaskError` behavior and a bounded English diagnostic class. This includes scan construction, iterator advancement, metadata, and iterator close errors. Iterator-time `FileNotFoundError` is not a skip case. |
+| Process-tree discovery deadline | Process-tree discovery receives an independent half-second monotonic budget. Existing 100-millisecond worktree, resident-memory, deleted-open-file, and post-validation directory-mode budgets remain unchanged. Their configured concurrent-monitor budgets sum to 0.8 seconds, but the runner does not rely on that sum: every concurrent phase is also clamped to the validation command's absolute deadline. If both deadlines have expired, the command timeout wins, including when a final operating-system operation overruns both deadlines and then raises a resource error. |
 | Post-validation mutation checks | Unchanged. `directory_modes`, Git/index checks, and worktree snapshots still reject validator side effects after the process has completed. This slice changes only the concurrent resource scan. |
 | Deterministic test seam | `validation_worktree_usage` accepts implementation-only keyword scan and monotonic-clock callables whose defaults are the real `os.scandir` and `time.monotonic` captured at function definition. Production passes neither override. The scan seam changes only directory enumeration; race cases use real temporary filesystem entries and real `DirEntry.stat`, while fail-closed operation cases use narrow delegating wrappers that inject the named `OSError`. The clock seam changes only deadline observation and uses a test flag rather than sleeping. |
 | Regression command | `python3 scripts/run-coding-task-resource-scan-smoke` starts a fresh Linux process, snapshots existing runner-directory `__pycache__` paths and `*.pyc` bytes, enters one helper-owned temporary-directory scope, proves the stale-cache sentinel below while restoring normalized interpreter state, reads and executes the production runner's exact source bytes through a `compile`/`exec` source-only loader with non-`__main__` module identity, and runs all numbered cases below without a global monkeypatch. Each case has its own five-second `ITIMER_REAL`; every case timer is canceled, the prior signal handler is restored, and helper-owned temporary state is removed on success or failure before the outer runner-cache snapshot is verified byte-for-byte unchanged. The command prints one English PASS line. `scripts/run-coding-task-invalid-smoke` invokes it so `eval-coding` owns the regression. |
@@ -34,11 +35,28 @@ leave `main` failing its own baseline artifact check.
 ### 2.1 Ownership, counting, and race semantics
 
 `validation_worktree_usage` continues to own its local pending stack, counters, deadline, and visible
-inode set. The scan callable owns construction; a successful return transfers ownership of the
-closeable iterator to `validation_worktree_usage`. An explicit `try`/`finally` owner scope attempts
-`close` after normal exhaustion, entry failure, iterator failure, deadline failure, or an unexpected
-exception. Scan-construction failure transfers no iterator. No iterator, `DirEntry`, path,
-descriptor, or temporary file escapes the call.
+inode set. The scan callable owns construction; successful entry of its returned context manager
+transfers ownership of the entered iterator to `validation_worktree_usage`. The context manager's
+exception-table cleanup attempts `close` after normal exhaustion, iterator failure, deadline
+failure, or an unexpected exception after successful entry. Scan-construction or context-entry
+failure transfers no iterator and does not call context exit. For an error escaping the owner
+scope, the runner walks that error and its explicit context chain with cycle detection. It recovers
+the first exceptional-control-flow `BaseException` outside the `Exception` hierarchy whose
+traceback contains the current `validation_worktree_usage` invocation frame, including a new
+interruption after a prior body error has already been captured. Independently, any non-outer
+context exception with that frame proves context exit replaced body control, so a close
+`FileNotFoundError` cannot be mistaken for queued scan construction even when the replaced body
+exception is an ordinary `Exception`. An unrelated exception context created inside scan
+construction, context entry, or cleanup does not satisfy the frame check and retains ordinary
+construction/entry error classification. The runner binds the scan callable's exact call
+instruction from its own code object and compares that instruction with the escaping error's
+current-frame traceback position. It recognizes Python 3.10's `CALL_FUNCTION`/`CALL_METHOD` and
+Python 3.11+'s `CALL` opcode without broadening the matched callable or phase. Only a
+`FileNotFoundError` at that call while constructing a queued descendant context is accepted as
+disappearance; the same error from the following context-entry call fails closed as a
+directory-inspection error. This phase check does not move the scan result outside the direct
+`with` expression or add a call-return ownership gap. No iterator, `DirEntry`, path, descriptor,
+or temporary file escapes the call.
 
 The scan has snapshot-like but not atomic semantics. A closed, unlinked file or fully removed
 directory consumes no current worktree storage and may be absent from one poll. A renamed or
@@ -59,7 +77,9 @@ The monitor checks its captured monotonic deadline before every pending scan and
 potentially blocking scan construction, iterator advance (including the advance that reports normal
 exhaustion), metadata call, and iterator close. It also checks before accepting either disappearance
 skip. If an operation crosses the deadline, the time-limit diagnostic wins over that operation's
-success, exhaustion, disappearance, or other `OSError`. Otherwise, an iteration or entry error
+success, exhaustion, disappearance, or other `OSError`. Exceptional control flow outside
+`Exception` is rethrown after cleanup before resource-deadline classification, even when cleanup
+crosses the resource deadline. Otherwise, an iteration or entry error
 remains primary if iterator close also fails; a close error becomes the primary `TaskError` only
 when scan-body processing had no error.
 
@@ -158,9 +178,10 @@ prefix, so a later deadline read cannot stand in for the required post-operation
 13. **Error-result deadline dominance** — table-driven wrappers cover every remaining
     error-classification boundary while flipping the injected clock to an expired value:
     root scan construction produces real `FileNotFoundError`; scan construction raises
-    `PermissionError`; iterator `__next__` raises `FileNotFoundError` or `PermissionError`; a real
-    entry is unlinked before its delegated `stat` raises `FileNotFoundError`; a delegating
-    real-entry `stat` raises `PermissionError`; or iterator `close` raises `PermissionError`.
+    `PermissionError`; context entry raises `FileNotFoundError`; iterator `__next__` raises
+    `FileNotFoundError` or `PermissionError`; a real entry is unlinked before its delegated `stat`
+    raises `FileNotFoundError`; a delegating real-entry `stat` raises `PermissionError`; or iterator
+    `close` raises `PermissionError`.
     Each subcase produces the exact time-limit diagnostic rather than its root/descendant,
     disappearance, exhaustion, or operation-error classification, and records close whenever
     ownership transferred. Case 9 separately covers queued-scan-construction `FileNotFoundError`
@@ -202,6 +223,36 @@ prefix, so a later deadline read cannot stand in for the required post-operation
     checkout contains a nested `.git` directory and one regular file inside it; both nested entries
     are inspected and counted, and the file contributes its exact bytes and inode, proving the
     exclusion is not name-global.
+17. **Owner-scope asynchronous interruption** — two trace hooks bound to the exact executed runner
+    bytes raise a helper-owned `BaseException` at the owner boundaries. The first enables opcode
+    tracing and interrupts `STORE_FAST entries` immediately after the scan context successfully
+    enters but before the entered iterator is bound for body processing. It runs once with
+    successful close, once with close directly raising `FileNotFoundError`, and once with close
+    handling an internal `ValueError` before raising `FileNotFoundError`; all retain the original
+    helper exception, and neither direct nor nested close error can enter the
+    descendant-disappearance skip. The final interruption subcase has a wrapper raise a body
+    `PermissionError`, lets `STORE_FAST body_error` complete, then interrupts the following
+    `POP_EXCEPT` opcode before ordinary post-body control can begin cleanup. It runs with close
+    success, direct close `FileNotFoundError`, and close `FileNotFoundError` after an internal
+    handled `ValueError`; all preserve the new interruption instead of restoring the already
+    captured body error or replacing it with the cleanup error. The helper observes the exact
+    exception and records iterator close in all six interruption subcases, proving context-manager
+    cleanup and exceptional-control-flow precedence cover both the entry-to-binding and
+    post-capture boundaries. Two
+    negative subcases make scan construction and context entry raise `PermissionError` while
+    handling an incidental `ValueError`; both retain the directory-inspection `TaskError`, and
+    failed context entry does not attempt `__exit__`. A queued-descendant context whose
+    `__enter__` raises `FileNotFoundError` likewise fails closed and does not attempt `__exit__`,
+    while case 3 continues to accept a real queued scan-construction disappearance. A third
+    construction subcase supplies a cyclic incidental context chain and retains the same
+    `TaskError`, proving recovery terminates without mistaking a cycle for the owner interruption.
+    A final queued-child store subcase raises an ordinary `TaskError` at the opcode and then raises
+    `FileNotFoundError` from close. It does not recover the ordinary exception as asynchronous
+    control flow, but it authenticates that exit replaced body control and therefore reports the
+    close error as a fail-closed directory `TaskError` instead of accepting a disappearance skip.
+    These distinguish ordinary exception chaining from an interruption whose traceback includes
+    the current owner frame. The prior trace function is restored in a `finally` after each
+    interruption subcase.
 
 Every case has a fresh subtree and an exact result or diagnostic assertion. Before loading the
 runner, the helper snapshots existing `__pycache__` directory paths and the relative path plus
@@ -226,8 +277,19 @@ The helper enters one `TemporaryDirectory` owner scope before creating the loade
 numbered-case subtree. Inside it, the helper saves and replaces the `SIGALRM` handler.
 It arms a fresh five-second `signal.setitimer(signal.ITIMER_REAL, ...)` immediately before each
 numbered case and cancels that timer in the case's `finally`, so the 8,192-entry boundary case
-receives its own full bound rather than consuming a shared cumulative budget. Its handler raises a
-helper-owned exception in the main thread so iterator contexts unwind. An enclosing `finally`
+receives its own full bound rather than consuming a shared cumulative budget. Each case installs a
+handler that records alarm delivery before raising a helper-owned exception in the main thread, so
+iterator contexts unwind; after action cleanup, the case fails from the recorded state even if
+runner error precedence swallowed the raised alarm. Timer arming is inside that protected scope, so
+an arm failure still attempts cancellation and restores the prior handler before propagating. One
+pre-case sentinel injects an arm failure and proves the action is not run, cancellation is
+attempted, and the prior handler is restored. A second sentinel invokes and catches the alarm
+handler deliberately and proves the recorded timeout still fails. Two cancellation-failure
+sentinels combine that failure with recorded timeout and action error. Two more cover arm error and
+cancellation failure alone. Together they prove that recorded timeout wins first, a prior
+arm/action error wins second, and a cancellation error is propagated only when neither exists; all
+restore the prior handler. An
+enclosing `finally`
 cancels any remaining timer and restores the prior handler before control leaves the
 temporary-directory scope, so recursive cleanup cannot be interrupted by the owned alarm. Failure
 is reported after cleanup as one bounded English line without a traceback. The process is
@@ -259,7 +321,20 @@ performance claim.
 
 Within one resource poll, existing process-count and resident-memory validation runs before
 worktree usage, followed by deleted-open-file accounting and the aggregate file/byte checks. This
-slice does not reorder those stages.
+slice does not reorder those stages. The output reader owns one absolute validation-command
+deadline and passes it to every resource-monitor callback. It checks that deadline before starting
+each callback and adjudicates it after callback success or an expected resource `TaskError`. A
+resource error remains exact only while the command deadline has not expired; otherwise the
+existing command-timeout category replaces it. Exceptional control flow outside `Exception` and
+unexpected implementation errors remain exact rather than being converted by deadline
+adjudication. Process-tree discovery checks both its half-second budget and the command deadline
+before each `/proc/<pid>/status` read; the following
+resident-memory phase starts a fresh existing 100-millisecond budget clamped to the same command
+deadline. Worktree and deleted-open-file accounting then each start their own existing
+100-millisecond budget with the same clamp. The configured budgets sum to 0.8 seconds, but a second
+poll cannot start another 0.8-second sequence after the command deadline. Command timeout takes
+precedence when both deadlines are expired. A final operating-system operation may still overrun
+before the callback boundary adjudicates its result or error.
 
 Within `validation_worktree_usage`, the monitor checks before every pending directory scan and after
 every potentially blocking scan construction, iterator advance, metadata call, and close. It does
@@ -286,14 +361,16 @@ directory-inspection failure.
 | Existing unreadable entry | runner | every entry-stat `OSError` except `FileNotFoundError` remains fatal | Delegating real-entry proxy raises `PermissionError` from `stat`; exact worktree-path `TaskError` and close record pass. |
 | Existing unreadable descendant | runner | every non-`FileNotFoundError` `OSError` remains fatal | Injected `PermissionError` on an existing queued directory reaches existing `TaskError` class. |
 | Iterator advancement | runner | translate iterator `OSError`, including `FileNotFoundError`, to directory-inspection `TaskError` inside an explicit closing owner scope | Separate wrappers raise `PermissionError` and `FileNotFoundError` from `__next__`; both exact error classes and close records pass. |
-| Iterator close | runner | attempt close in `finally`; close-only `OSError`, including `FileNotFoundError`, becomes directory-inspection `TaskError`, while an existing body error remains primary within budget | Separate close-only `PermissionError`/`FileNotFoundError` cases plus iterator-body/close-error and stat-body/close-error wrappers assert exact fatal classification, in-budget precedence, and close-attempt records. |
-| Deadline | runner | injected monotonic callable defaults to captured real clock; check before each pending scan and after construction, every advance including normal exhaustion or error, stat, and close, before root/descendant, exhaustion, disappearance, or operation-error classification; a separate no-start guarantee for advance/stat/close is N/A because scheduler suspension can follow any pre-operation read and their post-operation adjudication owns that delay | The construction matrix covers success, root FNF, descendant FNF, and generic `OSError`; the iterator matrix covers yielded success, normal exhaustion, FNF, and generic `OSError`; the stat matrix covers success, FNF, and generic `OSError`; the close matrix covers success and generic `OSError`. Prior iterator/stat, count-ceiling, and byte-ceiling body errors are each combined with both close success and close error crossing the deadline. A yielded-advance post-operation timeout is also followed by a close `PermissionError` and must retain the already established time-limit diagnostic. Every crossed subcase requires the exact time-limit diagnostic without sleep and an event trace proving the target operation/error's clock read occurs before any later operation or classification; separate initial-root and queued-item pending-boundary subcases prove rejection before either scan callable is invoked. Existing coding-task resource-limit coverage remains passing. |
+| Iterator close | runner | enter the scan result directly as a context manager so its exception table attempts close; close-only `OSError`, including `FileNotFoundError`, becomes directory-inspection `TaskError`, while an existing body error remains primary within budget | Separate close-only `PermissionError`/`FileNotFoundError` cases plus iterator-body/close-error and stat-body/close-error wrappers assert exact fatal classification, in-budget precedence, and close-attempt records. |
+| Validation-command deadline | output reader and resource monitor | calculate one absolute command deadline; check it before every monitor callback and adjudicate it after callback success or an expected resource `TaskError`; pass it through process-tree, resident-memory, worktree, and deleted-open-file phases; check command expiry before phase expiry so command timeout wins; preserve unexpected implementation errors and exceptional control flow outside `Exception`; do not start a later phase or poll after command expiry; apply the same callback boundary at every output-loop and process-wait call site | A silent one-second child has separate deliberately slow returning and slow resource-error monitor subcases. Both prove every callback receives the same absolute deadline, no callback starts after that deadline, and the existing command-timeout diagnostic wins; the error subcase proves an overrun resource error cannot escape first. A fast resource-error control proves its exact diagnostic is preserved before command expiry. Fast and slow unexpected `RuntimeError` controls plus fast and slow `BaseException` controls prove exact exception identity and traceback are preserved for implementation errors and exceptional control flow. Exact-source assertions cover the callback signature, all four callback-boundary call sites, and the command-deadline clamp at every concurrent phase. |
+| Process-tree discovery deadline | runner | use a dedicated half-second budget only for the `/proc` parent-map traversal; retain its existing pre-read deadline placement, clamp it to the command deadline, and start a separate unchanged 100-millisecond resident-memory budget afterward | The exact-source helper asserts the new constant equals `0.5`, occurs only in its definition and the `validation_process_usage` section, and feeds the `descendant_process_ids` deadline there. It also asserts the shared constant remains `0.1` and its only uses remain directory modes, worktree usage, resident-memory scanning, and deleted-open-file scanning. Twenty instrumented capable-host corpus runs identified all five prior false deadlines in process-tree discovery. After implementation, the same 20-run phase-labelled reproduction must have zero false deadlines and record the maximum process-tree discovery duration. The final `make ci` run must then pass the full repeated real-scan integration sequence without a false deadline. |
+| Worktree deadline | runner | retain the existing 100-millisecond budget; the injected monotonic callable defaults to the captured real clock; check before each pending scan and after construction or context-entry failure, every advance including normal exhaustion or error, stat, and close, before root/descendant, exhaustion, disappearance, or ordinary operation-error classification; rethrow recovered exceptional control outside `Exception` after cleanup and before resource-deadline classification; a separate no-start guarantee for advance/stat/close is N/A because scheduler suspension can follow any pre-operation read and their post-operation adjudication owns that delay | The construction matrix covers success, root FNF, descendant FNF, and generic `OSError`; context-entry FNF is separately covered; the iterator matrix covers yielded success, normal exhaustion, FNF, and generic `OSError`; the stat matrix covers success, FNF, and generic `OSError`; the close matrix covers success and generic `OSError`. Prior iterator/stat, count-ceiling, and byte-ceiling body errors are each combined with both close success and close error crossing the deadline. A yielded-advance post-operation timeout is also followed by a close `PermissionError` and must retain the already established time-limit diagnostic. Recovered `BaseException` interruption is combined with both successful and failing close that cross the resource deadline; both preserve the exact interruption after proving close was attempted. Every ordinary crossed subcase requires the exact time-limit diagnostic without sleep and an event trace proving the target operation/error's clock read occurs before any later operation or classification; separate initial-root and queued-item pending-boundary subcases prove rejection before either scan callable is invoked. |
 | File-count and byte ceilings | runner | unchanged post-stat count and regular-file size checks inside the explicit iterator owner scope | Real sparse-file exact-limit/plus-one calls prove the visible byte boundary. Real 8,192-entry/8,193-entry calls prove the visible count boundary without test-only limit substitution. Wrapper records prove normal and ceiling exits close; per-ceiling close-error subcases preserve the body diagnostic within budget, and close-expiry subcases select the time-limit diagnostic. Existing deleted-open-file smoke remains passing. |
 | Deleted-open file | runner `/proc` accounting | unchanged inode de-duplication and descriptor scan | Existing 65-MiB deleted-open-file regression remains passing. |
 | Production seam | runner caller | default captured real `os.scandir`; no production override | Source review and full coding-v1 run confirm no test callable enters production dispatch. |
-| Iterator cleanup | runner plus helper | transfer returned iterator ownership to `validation_worktree_usage` and close it in an explicit `finally` owner scope | Stable success, entry disappearance, iterator/stat errors, count/byte ceiling exits, close errors, dual errors, and deadline exits assert close; helper exits with no leaked path. |
+| Iterator cleanup | runner plus helper | enter the context manager returned by the scan seam directly; bind the scan callable's exact call-instruction offset from the function code object, recognizing Python 3.10 `CALL_FUNCTION`/`CALL_METHOD` and Python 3.11+ `CALL`, so queued construction and context-entry errors remain distinct without moving the result outside the direct `with`; successful context entry transfers ownership of the entered iterator to `validation_worktree_usage`, and the `with` exception table owns close before binding or body processing; walk the escaping error plus its explicit exception-context chain with cycle detection, use a non-outer exception whose traceback contains the current owner frame to distinguish cleanup from construction, and recover the first such `BaseException` outside the `Exception` hierarchy as the body error even when an earlier body error was already captured | Stable success, entry disappearance, iterator/stat errors, count/byte ceiling exits, close errors, dual errors, and deadline exits assert close. A synthetic instruction-stream regression proves the three supported call opcodes select the same exact scan offset and unrelated opcodes do not. The helper derives instruction lines by carrying forward Python 3.10-compatible `dis.findlinestarts` entries rather than using Python 3.11's `positions`, and a synthetic mapping control covers inherited and changed lines. Exact-source `CaseInterrupted(BaseException)` trace interruptions at both the entered-iterator store opcode and the `POP_EXCEPT` immediately after body-error storage, each with close success, direct close `FileNotFoundError`, and close `FileNotFoundError` after an internal handled exception, assert close and preserve the new exceptional control flow. An ordinary `TaskError` at the pre-binding opcode followed by close FNF remains fail-closed rather than entering the queued-disappearance skip. Incidental `Exception` contexts from scan construction and failed context entry retain directory-inspection `TaskError`; queued context-entry `FileNotFoundError` also fails closed, failed entry does not attempt exit, and a cyclic construction context terminates with the same `TaskError`; helper exits with no leaked path. |
 | Runner source identity and import state | helper | read/compile/exec exact runner source bytes in a fresh non-`__main__` module namespace without importlib cache lookup; snapshot runner-directory `__pycache__` paths and `*.pyc` hashes; retain pre-existing caller files; verify the snapshot in an outer `finally`; save, normalize, and finally restore `sys.dont_write_bytecode` and `sys.pycache_prefix` around only sentinel ordinary imports | Under ambient bytecode-disabled and redirected-cache settings, a helper-owned timestamp cache exists before same-length/same-mtime source replacement, a fresh ordinary loader exposes cached `OLD`, and the source-only loader exposes current-source `NEW`, while the old `.pyc` remains byte-identical and no cache path appears. Success and injected sentinel failure restore both interpreter settings before any production-runner load. Focused helper success and failure leave the runner-directory cache snapshot unchanged; the later clean source commit and baseline recorder precondition remain clean. |
-| Regression deadline and temporary cleanup | helper | acquire temporary owner first; arm one fresh five-second alarm per numbered case; cancel in each case `finally`; helper-owned alarm raises in the main thread; an enclosing `finally` cancels again and restores the handler before temporary cleanup | Source review maps acquisition, setup, success, assertion/OSError, alarm, per-case cancellation, final cancellation, handler restoration, and unarmed recursive cleanup; every ordinary success/error case asserts wrapper closure and no leaked subtree. Abrupt external `SIGKILL` cleanup is N/A because no external-kill contract is claimed. |
+| Regression deadline and temporary cleanup | helper | acquire temporary owner first; install a per-case handler, arm one fresh five-second alarm inside its protected scope, record delivery before raising in the main thread, capture arm/action and cancellation errors separately, restore the prior handler in the case `finally`, then apply timeout-delivery → arm/action error → cancellation-error precedence; use an enclosing `finally` to cancel again and restore the outer handler before temporary cleanup | One pre-case sentinel injects arm failure and asserts no action, cancellation attempt, and exact prior-handler restoration. A second deliberately catches the handler's raised `CaseTimedOut`, while `run_case` still fails from its delivery record. Four cancellation-failure subcases combine it with no prior error, swallowed alarm, arm error, and action error; the cancellation error, recorded timeout, arm error, and action error respectively remain primary, arm failure skips the action, and every subcase restores the exact prior handler. Source review maps acquisition, handler installation, arm success/failure, success, assertion/OSError, alarm, swallowed alarm, cancellation success/failure, error precedence, per-case handler restoration, final cancellation, outer-handler restoration, and unarmed recursive cleanup; every ordinary success/error case asserts wrapper closure and no leaked subtree. Abrupt external `SIGKILL` cleanup is N/A because no external-kill contract is claimed. |
 | Post-validation mutation | existing runner checks | unchanged | Existing invalid-smoke mutation cases remain passing. |
 | CLI/schema/environment | N/A | no public input or output change | Existing arity/schema/environment negative cases remain passing. |
 | Align ownership/language | N/A | Python runner-only slice | Pinned Align build and `make ci` pass; no Align request is needed. |

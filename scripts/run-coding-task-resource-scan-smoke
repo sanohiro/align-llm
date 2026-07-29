@@ -1,0 +1,2152 @@
+#!/usr/bin/env python3
+
+import dis
+import hashlib
+import importlib.util
+import os
+import shutil
+import signal
+import stat
+import sys
+import tempfile
+import types
+from pathlib import Path
+from typing import Any, Callable
+
+
+class SmokeFailure(Exception):
+    pass
+
+
+class CaseTimedOut(Exception):
+    pass
+
+
+class CaseInterrupted(BaseException):
+    pass
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SmokeFailure(message)
+
+
+def cache_snapshot(runner_directory: Path) -> tuple[tuple[str, ...], dict[str, bytes]]:
+    cache_directories = tuple(
+        sorted(
+            str(path.relative_to(runner_directory))
+            for path in runner_directory.rglob("__pycache__")
+            if path.is_dir()
+        )
+    )
+    bytecode = {
+        str(path.relative_to(runner_directory)): path.read_bytes()
+        for path in sorted(runner_directory.rglob("*.pyc"))
+    }
+    return cache_directories, bytecode
+
+
+def load_exact_source(path: Path, name: str) -> types.ModuleType:
+    source = path.read_bytes()
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    module.__package__ = None
+    module.__align_exact_source__ = source
+    exec(compile(source, str(path), "exec"), module.__dict__)
+    return module
+
+
+def load_ordinary_source(path: Path, name: str) -> types.ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SmokeFailure(f"cannot construct ordinary loader for {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def prove_source_only_loader(owner: Path) -> None:
+    fixture = owner / "loader"
+    fixture.mkdir()
+    source = fixture / "sentinel.py"
+    old_source = b'VALUE = "OLD"\n'
+    new_source = b'VALUE = "NEW"\n'
+    require(len(old_source) == len(new_source), "loader sentinel lengths differ")
+    source.write_bytes(old_source)
+
+    saved_dont_write = sys.dont_write_bytecode
+    saved_prefix = sys.pycache_prefix
+    try:
+        sys.dont_write_bytecode = False
+        sys.pycache_prefix = None
+        old_module = load_ordinary_source(source, "align_llm_loader_old")
+        require(old_module.VALUE == "OLD", "ordinary loader did not execute OLD source")
+        cache_files = sorted(fixture.rglob("*.pyc"))
+        require(len(cache_files) == 1, "ordinary loader did not create one cache file")
+        cache_path = cache_files[0]
+        cache_bytes = cache_path.read_bytes()
+        source_stat = source.stat()
+        source.write_bytes(new_source)
+        os.utime(
+            source,
+            ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
+        )
+        ordinary = load_ordinary_source(source, "align_llm_loader_stale")
+        require(ordinary.VALUE == "OLD", "timestamp cache sentinel was not stale")
+        require(cache_path.read_bytes() == cache_bytes, "ordinary loader changed stale cache")
+    finally:
+        sys.dont_write_bytecode = saved_dont_write
+        sys.pycache_prefix = saved_prefix
+    require(
+        sys.dont_write_bytecode is saved_dont_write,
+        "source-loader sentinel did not restore dont_write_bytecode",
+    )
+    require(
+        sys.pycache_prefix == saved_prefix,
+        "source-loader sentinel did not restore pycache_prefix",
+    )
+    before_exact_paths = tuple(
+        sorted(str(path.relative_to(fixture)) for path in fixture.rglob("*"))
+    )
+    exact = load_exact_source(source, "align_llm_loader_exact")
+    after_exact_paths = tuple(
+        sorted(str(path.relative_to(fixture)) for path in fixture.rglob("*"))
+    )
+    require(exact.VALUE == "NEW", "source-only loader did not execute NEW source")
+    require(before_exact_paths == after_exact_paths, "source-only loader created a cache path")
+    require(cache_path.read_bytes() == cache_bytes, "source-only loader changed stale cache")
+
+    failure_source = fixture / "missing-sentinel.py"
+    saved_dont_write = sys.dont_write_bytecode
+    saved_prefix = sys.pycache_prefix
+    try:
+        try:
+            sys.dont_write_bytecode = False
+            sys.pycache_prefix = None
+            load_ordinary_source(failure_source, "align_llm_loader_failure")
+        finally:
+            sys.dont_write_bytecode = saved_dont_write
+            sys.pycache_prefix = saved_prefix
+    except FileNotFoundError as error:
+        require(
+            Path(error.filename or "") == failure_source,
+            "ordinary-loader failure named an unexpected source",
+        )
+    else:
+        raise SmokeFailure("missing ordinary-loader source unexpectedly loaded")
+    require(
+        sys.dont_write_bytecode is saved_dont_write,
+        "ordinary-loader failure did not restore dont_write_bytecode",
+    )
+    require(
+        sys.pycache_prefix == saved_prefix,
+        "ordinary-loader failure did not restore pycache_prefix",
+    )
+
+
+def load_runner_with_nondefault_ambient(
+    owner: Path,
+    runner_path: Path,
+) -> types.ModuleType:
+    redirected_cache = owner / "redirected-cache"
+    saved_dont_write = sys.dont_write_bytecode
+    saved_prefix = sys.pycache_prefix
+    module: types.ModuleType
+    try:
+        sys.dont_write_bytecode = True
+        sys.pycache_prefix = str(redirected_cache)
+        prove_source_only_loader(owner)
+        require(
+            sys.dont_write_bytecode is True,
+            "source-loader proof did not restore bytecode-disabled ambient state",
+        )
+        require(
+            sys.pycache_prefix == str(redirected_cache),
+            "source-loader proof did not restore redirected-cache ambient state",
+        )
+        module = load_exact_source(runner_path, "align_llm_resource_scan_runner")
+        require(
+            sys.dont_write_bytecode is True,
+            "production runner load changed bytecode-disabled ambient state",
+        )
+        require(
+            sys.pycache_prefix == str(redirected_cache),
+            "production runner load changed redirected-cache ambient state",
+        )
+    finally:
+        sys.dont_write_bytecode = saved_dont_write
+        sys.pycache_prefix = saved_prefix
+    require(
+        sys.dont_write_bytecode is saved_dont_write,
+        "ambient proof did not restore outer dont_write_bytecode",
+    )
+    require(
+        sys.pycache_prefix == saved_prefix,
+        "ambient proof did not restore outer pycache_prefix",
+    )
+    require(
+        not redirected_cache.exists(),
+        "ambient proof created the redirected cache path",
+    )
+    return module
+
+
+def source_section(source: str, start: str, end: str) -> str:
+    start_offset = source.index(start)
+    end_offset = source.index(end, start_offset)
+    return source[start_offset:end_offset]
+
+
+def instruction_line_numbers(
+    instructions: tuple[Any, ...],
+    line_starts: tuple[tuple[int, int | None], ...],
+) -> dict[int, int]:
+    current_line: int | None = None
+    line_numbers = {}
+    starts = dict(line_starts)
+    for instruction in instructions:
+        if instruction.offset in starts:
+            current_line = starts[instruction.offset]
+        if current_line is not None:
+            line_numbers[instruction.offset] = current_line
+    return line_numbers
+
+
+def prove_deadline_source_contract(module: types.ModuleType) -> None:
+    source = module.__align_exact_source__.decode("utf-8")
+    require(
+        module.MAX_PROCESS_TREE_SCAN_SECONDS == 0.5,
+        "process-tree scan budget differs",
+    )
+    require(
+        module.MAX_RESOURCE_SCAN_SECONDS == 0.1,
+        "shared resource scan budget differs",
+    )
+    require(
+        source.count("MAX_PROCESS_TREE_SCAN_SECONDS") == 2,
+        "process-tree scan budget has an unexpected use",
+    )
+    require(
+        source.count("MAX_RESOURCE_SCAN_SECONDS") == 5,
+        "shared resource scan budget has an unexpected use",
+    )
+    process_usage = source_section(
+        source,
+        "def validation_process_usage(",
+        "\ndef deleted_open_file_usage(",
+    )
+    require(
+        process_usage.count("MAX_PROCESS_TREE_SCAN_SECONDS") == 1
+        and process_usage.count("MAX_RESOURCE_SCAN_SECONDS") == 1,
+        "process resource phases do not own separate budgets",
+    )
+    require(
+        "descendant_process_ids(roots, deadline)" in process_usage,
+        "process-tree deadline does not feed descendant discovery",
+    )
+    worktree_usage = source_section(
+        source,
+        "def validation_worktree_usage(",
+        "\ndef loaded_name_call_offsets(",
+    )
+    deleted_usage = source_section(
+        source,
+        "def deleted_open_file_usage(",
+        "\ndef check_validation_resources(",
+    )
+    directory_modes = source_section(
+        source,
+        "def directory_modes(",
+        "\ndef check_directory_modes(",
+    )
+    require(
+        all(
+            section.count("MAX_RESOURCE_SCAN_SECONDS") == 1
+            for section in (worktree_usage, deleted_usage, directory_modes)
+        ),
+        "shared scan budget moved from an existing phase",
+    )
+    check_resources = source_section(
+        source,
+        "def check_validation_resources(",
+        "\ndef validate_candidate(",
+    )
+    require(
+        check_resources.count("command_deadline") >= 7,
+        "resource phases do not share the command deadline",
+    )
+    output_reader = source_section(
+        source,
+        "def wait_for_process(",
+        "\ndef close_process_streams(",
+    )
+    require(
+        output_reader.count("invoke_resource_check(") == 2,
+        "resource callback boundary has an unexpected owner",
+    )
+    require(
+        output_reader.count("check_resources()") == 4,
+        "output reader does not route all callback sites through its boundary",
+    )
+    invoke = source_section(
+        source,
+        "def invoke_resource_check(",
+        "\ndef wait_for_process(",
+    )
+    require(
+        "except TaskError as error:" in invoke
+        and "except Exception" not in invoke
+        and "except BaseException" not in invoke,
+        "callback adjudication catches the wrong exception class",
+    )
+    require(
+        module.CALL_OPNAMES
+        == frozenset(("CALL", "CALL_FUNCTION", "CALL_METHOD")),
+        "supported call opcode set differs",
+    )
+    for call_opname in module.CALL_OPNAMES:
+        instructions = (
+            types.SimpleNamespace(opname="LOAD_FAST", argval="scan", offset=2),
+            types.SimpleNamespace(opname="PRECALL", argval=None, offset=4),
+            types.SimpleNamespace(opname=call_opname, argval=None, offset=6),
+            types.SimpleNamespace(opname="CALL", argval=None, offset=8),
+        )
+        require(
+            module.loaded_name_call_offsets_from_instructions(
+                instructions,
+                "scan",
+            )
+            == frozenset((6,)),
+            f"{call_opname} did not select the exact scan call offset",
+        )
+    require(
+        module.loaded_name_call_offsets_from_instructions(
+            (
+                types.SimpleNamespace(opname="LOAD_FAST", argval="scan", offset=2),
+                types.SimpleNamespace(opname="RETURN_VALUE", argval=None, offset=4),
+            ),
+            "scan",
+        )
+        == frozenset(),
+        "non-call instruction was accepted as a scan call",
+    )
+    require(
+        instruction_line_numbers(
+            (
+                types.SimpleNamespace(offset=2),
+                types.SimpleNamespace(offset=4),
+                types.SimpleNamespace(offset=6),
+            ),
+            ((2, 10), (6, 11)),
+        )
+        == {2: 10, 4: 10, 6: 11},
+        "Python 3.10 instruction-line mapping differs",
+    )
+
+
+class Clock:
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.expired = False
+        self.events = events
+
+    def __call__(self) -> float:
+        if self.events is not None:
+            self.events.append("clock:expired" if self.expired else "clock:in")
+        return 101.0 if self.expired else 100.0
+
+
+class InitialExpiryClock:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> float:
+        self.calls += 1
+        return 100.0 if self.calls == 1 else 101.0
+
+
+class MutableClock:
+    def __init__(self, now: float = 100.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class EntryProxy:
+    def __init__(
+        self,
+        entry: os.DirEntry[str],
+        *,
+        events: list[str] | None = None,
+        stat_error: BaseException | None = None,
+        stat_hook: Callable[[os.stat_result], Any] | None = None,
+        forbid_path: bool = False,
+        forbid_name: bool = False,
+    ) -> None:
+        self.entry = entry
+        self.events = events
+        self.stat_error = stat_error
+        self.stat_hook = stat_hook
+        self.forbid_path = forbid_path
+        self.forbid_name = forbid_name
+
+    @property
+    def name(self) -> str:
+        if self.events is not None:
+            self.events.append("entry:name")
+        if self.forbid_name:
+            raise PermissionError("name access forbidden")
+        return self.entry.name
+
+    @property
+    def path(self) -> str:
+        if self.events is not None:
+            self.events.append("entry:path")
+        if self.forbid_path:
+            raise PermissionError("path access forbidden")
+        return self.entry.path
+
+    def stat(self, *, follow_symlinks: bool) -> Any:
+        if self.events is not None:
+            self.events.append("entry:stat")
+        if self.stat_error is not None:
+            raise self.stat_error
+        metadata = self.entry.stat(follow_symlinks=follow_symlinks)
+        if self.stat_hook is not None:
+            return self.stat_hook(metadata)
+        return metadata
+
+
+class MetadataProxy:
+    def __getattr__(self, name: str) -> Any:
+        raise SmokeFailure(f"metadata accessed after expired stat: {name}")
+
+
+class IteratorWrapper:
+    def __init__(
+        self,
+        iterator: Any,
+        *,
+        events: list[str] | None = None,
+        before_yield: Callable[[Any], Any] | None = None,
+        after_yield: Callable[[Any], Any] | None = None,
+        on_stop: Callable[[], Any] | None = None,
+        next_error: BaseException | None = None,
+        close_error: BaseException | None = None,
+        close_context_error: BaseException | None = None,
+        close_hook: Callable[[], Any] | None = None,
+        entry_map: Callable[[Any], Any] | None = None,
+    ) -> None:
+        self.iterator = iterator
+        self.events = events
+        self.before_yield = before_yield
+        self.after_yield = after_yield
+        self.on_stop = on_stop
+        self.next_error = next_error
+        self.close_error = close_error
+        self.close_context_error = close_context_error
+        self.close_hook = close_hook
+        self.entry_map = entry_map
+        self.close_attempted = False
+
+    def __iter__(self) -> "IteratorWrapper":
+        return self
+
+    def __next__(self) -> Any:
+        if self.events is not None:
+            self.events.append("iterator:next")
+        if self.next_error is not None:
+            error = self.next_error
+            self.next_error = None
+            if self.events is not None:
+                self.events.append("iterator:error")
+            raise error
+        try:
+            entry = next(self.iterator)
+        except StopIteration:
+            if self.events is not None:
+                self.events.append("iterator:stop")
+            if self.on_stop is not None:
+                self.on_stop()
+            raise
+        if self.before_yield is not None:
+            self.before_yield(entry)
+        if self.entry_map is not None:
+            entry = self.entry_map(entry)
+        if self.events is not None:
+            self.events.append("iterator:yield")
+        if self.after_yield is not None:
+            self.after_yield(entry)
+        return entry
+
+    def close(self) -> None:
+        self.close_attempted = True
+        if self.events is not None:
+            self.events.append("iterator:close")
+        self.iterator.close()
+        if self.close_hook is not None:
+            self.close_hook()
+        if self.close_error is not None:
+            if self.events is not None:
+                self.events.append("iterator:close-error")
+            if self.close_context_error is not None:
+                try:
+                    raise self.close_context_error
+                except BaseException:
+                    raise self.close_error
+            raise self.close_error
+
+    def __enter__(self) -> "IteratorWrapper":
+        return self
+
+    def __exit__(self, *_arguments: Any) -> None:
+        self.close()
+
+
+def expected_usage(root: Path, *paths: Path) -> tuple[int, int, set[tuple[int, int]]]:
+    total = 0
+    inodes: set[tuple[int, int]] = set()
+    for path in paths:
+        metadata = path.stat(follow_symlinks=False)
+        if stat.S_ISREG(metadata.st_mode):
+            total += metadata.st_size
+            inodes.add((metadata.st_dev, metadata.st_ino))
+    return total, len(paths), inodes
+
+
+def expect_task_error(module: types.ModuleType, action: Callable[[], Any], text: str) -> str:
+    try:
+        action()
+    except module.TaskError as error:
+        diagnostic = str(error)
+        require(text in diagnostic, f"missing diagnostic {text!r}: {diagnostic}")
+        return diagnostic
+    raise SmokeFailure(f"expected TaskError containing {text!r}")
+
+
+def require_adjacent(events: list[str], first: str, second: str) -> None:
+    for index, event in enumerate(events[:-1]):
+        if event == first and events[index + 1] == second:
+            return
+    raise SmokeFailure(f"missing adjacent events {first!r}, {second!r}: {events}")
+
+
+def stable_case(module: types.ModuleType, owner: Path) -> None:
+    root = owner / "stable"
+    root.mkdir()
+    stable = root / "stable.txt"
+    stable.write_bytes(b"stable")
+    wrappers: list[IteratorWrapper] = []
+
+    def scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(os.scandir(path))
+        wrappers.append(wrapper)
+        return wrapper
+
+    result = module.validation_worktree_usage(root, scan=scan)
+    require(result == expected_usage(root, stable), f"stable result mismatch: {result}")
+    require(all(wrapper.close_attempted for wrapper in wrappers), "stable iterator was not closed")
+
+
+def command_deadline_case(module: types.ModuleType, owner: Path) -> None:
+    fake_process = types.SimpleNamespace(args=["deadline-control"])
+    deadline = 101.0
+    callback_called = False
+
+    def late_callback(process: Any, command_deadline: float) -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    try:
+        module.invoke_resource_check(
+            fake_process,
+            deadline,
+            late_callback,
+            monotonic=MutableClock(deadline),
+        )
+    except module.subprocess.TimeoutExpired:
+        pass
+    else:
+        raise SmokeFailure("expired command started a resource callback")
+    require(not callback_called, "expired command invoked its resource callback")
+
+    slow_success_clock = MutableClock()
+
+    def slow_success(process: Any, command_deadline: float) -> None:
+        require(command_deadline == deadline, "success callback deadline differs")
+        slow_success_clock.now = deadline
+
+    try:
+        module.invoke_resource_check(
+            fake_process,
+            deadline,
+            slow_success,
+            monotonic=slow_success_clock,
+        )
+    except module.subprocess.TimeoutExpired:
+        pass
+    else:
+        raise SmokeFailure("slow successful callback escaped command timeout")
+
+    for slow in (False, True):
+        clock = MutableClock()
+        resource_error = module.TaskError(f"resource-{'slow' if slow else 'fast'}")
+
+        def resource_failure(
+            process: Any,
+            command_deadline: float,
+            *,
+            clock: MutableClock = clock,
+            error: BaseException = resource_error,
+            slow: bool = slow,
+        ) -> None:
+            require(command_deadline == deadline, "resource callback deadline differs")
+            if slow:
+                clock.now = deadline
+            raise error
+
+        try:
+            module.invoke_resource_check(
+                fake_process,
+                deadline,
+                resource_failure,
+                monotonic=clock,
+            )
+        except module.subprocess.TimeoutExpired as error:
+            require(slow, "fast resource error became command timeout")
+            require(
+                error.__cause__ is resource_error,
+                "slow resource error is not the timeout cause",
+            )
+        except module.TaskError as error:
+            require(not slow, "slow resource error escaped timeout adjudication")
+            require(error is resource_error, "fast resource error identity changed")
+        else:
+            raise SmokeFailure("resource callback error unexpectedly passed")
+
+    for error_type in (RuntimeError, CaseInterrupted):
+        for slow in (False, True):
+            clock = MutableClock()
+            callback_error = error_type(
+                f"{error_type.__name__}-{'slow' if slow else 'fast'}"
+            )
+
+            def unexpected_failure(
+                process: Any,
+                command_deadline: float,
+                *,
+                clock: MutableClock = clock,
+                error: BaseException = callback_error,
+                slow: bool = slow,
+            ) -> None:
+                require(
+                    command_deadline == deadline,
+                    "unexpected callback deadline differs",
+                )
+                if slow:
+                    clock.now = deadline
+                raise error
+
+            try:
+                module.invoke_resource_check(
+                    fake_process,
+                    deadline,
+                    unexpected_failure,
+                    monotonic=clock,
+                )
+            except BaseException as error:
+                require(
+                    error is callback_error,
+                    f"{error_type.__name__} callback identity changed",
+                )
+                traceback_names = []
+                traceback = error.__traceback__
+                while traceback is not None:
+                    traceback_names.append(traceback.tb_frame.f_code.co_name)
+                    traceback = traceback.tb_next
+                require(
+                    "unexpected_failure" in traceback_names,
+                    f"{error_type.__name__} callback traceback was lost",
+                )
+            else:
+                raise SmokeFailure(f"{error_type.__name__} callback unexpectedly passed")
+
+    def run_silent_child(
+        label: str,
+        callback: Callable[[Any, float], None],
+        starts: list[float],
+        deadlines: list[float],
+    ) -> None:
+        try:
+            module.run(
+                [sys.executable, "-c", "import time; time.sleep(5)"],
+                owner,
+                1,
+                command_name=label,
+                resource_check=callback,
+            )
+        except module.CommandTimedOut as error:
+            require(
+                f"command timed out after 1 seconds: {label}" in str(error),
+                f"{label} lost command-timeout diagnostic: {error}",
+            )
+        else:
+            raise SmokeFailure(f"{label} unexpectedly completed")
+        require(starts, f"{label} did not invoke its resource callback")
+        require(
+            len(set(deadlines)) == 1,
+            f"{label} changed its absolute command deadline",
+        )
+        require(
+            all(
+                start < command_deadline
+                for start, command_deadline in zip(starts, deadlines)
+            ),
+            f"{label} started a resource callback after command expiry",
+        )
+
+    return_starts: list[float] = []
+    return_deadlines: list[float] = []
+
+    def slow_return(process: Any, command_deadline: float) -> None:
+        return_starts.append(module.time.monotonic())
+        return_deadlines.append(command_deadline)
+        module.time.sleep(0.38)
+
+    run_silent_child(
+        "slow-return-monitor",
+        slow_return,
+        return_starts,
+        return_deadlines,
+    )
+
+    error_starts: list[float] = []
+    error_deadlines: list[float] = []
+
+    def slow_resource_error(process: Any, command_deadline: float) -> None:
+        error_starts.append(module.time.monotonic())
+        error_deadlines.append(command_deadline)
+        module.time.sleep(1.05)
+        raise module.TaskError("late resource error")
+
+    run_silent_child(
+        "slow-error-monitor",
+        slow_resource_error,
+        error_starts,
+        error_deadlines,
+    )
+
+
+def disappearing_entry_case(module: types.ModuleType, owner: Path) -> None:
+    root = owner / "entry-disappears"
+    root.mkdir()
+    transient = root / "transient.txt"
+    stable = root / "stable.txt"
+    transient.write_bytes(b"gone")
+    stable.write_bytes(b"stable")
+    wrappers: list[IteratorWrapper] = []
+
+    def scan(path: Path) -> IteratorWrapper:
+        def before_yield(entry: os.DirEntry[str]) -> None:
+            if entry.name == transient.name:
+                transient.unlink()
+
+        wrapper = IteratorWrapper(os.scandir(path), before_yield=before_yield)
+        wrappers.append(wrapper)
+        return wrapper
+
+    result = module.validation_worktree_usage(root, scan=scan)
+    require(result == expected_usage(root, stable), f"disappearing entry mismatch: {result}")
+    require(not transient.exists(), "transient entry still exists")
+    require(all(wrapper.close_attempted for wrapper in wrappers), "entry-race iterator not closed")
+
+
+def disappearing_directory_case(module: types.ModuleType, owner: Path) -> None:
+    root = owner / "directory-disappears"
+    root.mkdir()
+    child = root / "child"
+    child.mkdir()
+    (child / "never-seen.txt").write_bytes(b"hidden")
+    stable = root / "stable.txt"
+    stable.write_bytes(b"stable")
+    stable_usage = expected_usage(root, stable)
+    wrappers: list[IteratorWrapper] = []
+
+    def scan(path: Path) -> IteratorWrapper:
+        if path == child:
+            shutil.rmtree(child)
+        wrapper = IteratorWrapper(os.scandir(path))
+        wrappers.append(wrapper)
+        return wrapper
+
+    result = module.validation_worktree_usage(root, scan=scan)
+    require(
+        result == (stable_usage[0], stable_usage[1] + 1, stable_usage[2]),
+        f"queued disappearance mismatch: {result}",
+    )
+    require(not child.exists(), "queued directory still exists")
+    require(all(wrapper.close_attempted for wrapper in wrappers), "queued-race iterator not closed")
+
+
+def missing_root_case(module: types.ModuleType, owner: Path) -> None:
+    missing = owner / "missing-root"
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(missing),
+        "cannot inspect validation directory",
+    )
+
+
+def entry_permission_case(module: types.ModuleType, owner: Path) -> None:
+    stat_root = owner / "stat-permission"
+    stat_root.mkdir()
+    target = stat_root / "target"
+    target.write_bytes(b"x")
+    stat_wrappers: list[IteratorWrapper] = []
+
+    def stat_scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(
+            os.scandir(path),
+            entry_map=lambda entry: EntryProxy(
+                entry,
+                stat_error=PermissionError("stat denied"),
+            ),
+        )
+        stat_wrappers.append(wrapper)
+        return wrapper
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(stat_root, scan=stat_scan),
+        "cannot inspect validation worktree path target",
+    )
+    require(stat_wrappers[0].close_attempted, "stat-error iterator was not closed")
+
+
+def queued_permission_case(module: types.ModuleType, owner: Path) -> None:
+    queued_root = owner / "queued-permission"
+    queued_root.mkdir()
+    child = queued_root / "child"
+    child.mkdir()
+
+    def queued_scan(path: Path) -> Any:
+        if path == child:
+            raise PermissionError("queued denied")
+        return os.scandir(path)
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(queued_root, scan=queued_scan),
+        "cannot inspect validation directory child",
+    )
+
+
+def iterator_advance_error_case(module: types.ModuleType, owner: Path) -> None:
+    for name, error in (
+        ("permission", PermissionError("iterator denied")),
+        ("missing", FileNotFoundError("iterator vanished")),
+    ):
+        root = owner / f"iterator-{name}"
+        root.mkdir()
+        (root / "stable").write_bytes(b"x")
+        wrappers: list[IteratorWrapper] = []
+
+        def scan(path: Path, injected: BaseException = error) -> IteratorWrapper:
+            wrapper = IteratorWrapper(os.scandir(path), next_error=injected)
+            wrappers.append(wrapper)
+            return wrapper
+
+        expect_task_error(
+            module,
+            lambda scan=scan, root=root: module.validation_worktree_usage(root, scan=scan),
+            "cannot inspect validation directory",
+        )
+        require(wrappers[0].close_attempted, f"{name} iterator was not closed")
+
+
+def iterator_close_error_case(module: types.ModuleType, owner: Path) -> None:
+    for name, error in (
+        ("permission", PermissionError("close denied")),
+        ("missing", FileNotFoundError("close vanished")),
+    ):
+        root = owner / f"close-{name}"
+        root.mkdir()
+        (root / "stable").write_bytes(b"x")
+        wrappers = []
+
+        def scan(path: Path, injected: BaseException = error) -> IteratorWrapper:
+            wrapper = IteratorWrapper(os.scandir(path), close_error=injected)
+            wrappers.append(wrapper)
+            return wrapper
+
+        expect_task_error(
+            module,
+            lambda scan=scan, root=root: module.validation_worktree_usage(root, scan=scan),
+            "cannot inspect validation directory",
+        )
+        require(wrappers[0].close_attempted, f"{name} close was not attempted")
+
+
+def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None:
+    source = module.__align_exact_source__
+    source_lines = source.splitlines()
+    context_lines = [
+        line_number
+        for line_number, line in enumerate(source_lines, start=1)
+        if line.strip() == b"with scan(current) as entries:"
+    ]
+    require(len(context_lines) == 1, f"unexpected scan context lines: {context_lines}")
+    instructions = tuple(dis.get_instructions(module.validation_worktree_usage))
+    line_numbers = instruction_line_numbers(
+        instructions,
+        tuple(dis.findlinestarts(module.validation_worktree_usage.__code__)),
+    )
+    entry_store_offsets = [
+        instruction.offset
+        for instruction in instructions
+        if (
+            instruction.opname == "STORE_FAST"
+            and instruction.argval == "entries"
+            and line_numbers.get(instruction.offset) == context_lines[0]
+        )
+    ]
+    require(
+        len(entry_store_offsets) == 1,
+        f"unexpected scan entry store offsets: {entry_store_offsets}",
+    )
+    body_capture_lines = [
+        line_number
+        for line_number, line in enumerate(source_lines, start=1)
+        if line.strip() == b"body_error = sys.exc_info()"
+    ]
+    require(
+        len(body_capture_lines) == 1,
+        f"unexpected body-error capture lines: {body_capture_lines}",
+    )
+    post_capture_offsets = [
+        instruction.offset
+        for instruction in instructions
+        if (
+            instruction.opname == "POP_EXCEPT"
+            and line_numbers.get(instruction.offset) == body_capture_lines[0]
+        )
+    ]
+    require(
+        len(post_capture_offsets) == 1,
+        f"unexpected post-capture offsets: {post_capture_offsets}",
+    )
+
+    for name, target_event, target, next_error, close_error, close_context_error in (
+        ("context-entry-store", "opcode", entry_store_offsets[0], None, None, None),
+        (
+            "context-entry-store-close-error",
+            "opcode",
+            entry_store_offsets[0],
+            None,
+            FileNotFoundError("close vanished during interruption"),
+            None,
+        ),
+        (
+            "context-entry-store-nested-close-error",
+            "opcode",
+            entry_store_offsets[0],
+            None,
+            FileNotFoundError("close vanished after internal cleanup error"),
+            ValueError("internal cleanup context"),
+        ),
+        (
+            "post-body-capture",
+            "opcode",
+            post_capture_offsets[0],
+            PermissionError("iterator denied before interruption"),
+            None,
+            None,
+        ),
+        (
+            "post-body-capture-close-error",
+            "opcode",
+            post_capture_offsets[0],
+            PermissionError("iterator denied before interruption"),
+            FileNotFoundError("close vanished after body interruption"),
+            None,
+        ),
+        (
+            "post-body-capture-nested-close-error",
+            "opcode",
+            post_capture_offsets[0],
+            PermissionError("iterator denied before interruption"),
+            FileNotFoundError("close vanished after nested body interruption"),
+            ValueError("internal cleanup context after body interruption"),
+        ),
+    ):
+        root = owner / f"owner-scope-{name}"
+        root.mkdir()
+        if close_error is not None:
+            target_path = root / "child"
+            target_path.mkdir()
+        else:
+            target_path = root
+            (root / "stable").write_bytes(b"x")
+        wrappers: list[tuple[Path, IteratorWrapper]] = []
+
+        def scan(
+            path: Path,
+            injected: BaseException | None = next_error,
+            injected_close: BaseException | None = close_error,
+            injected_close_context: BaseException | None = close_context_error,
+        ) -> IteratorWrapper:
+            wrapper = IteratorWrapper(
+                os.scandir(path),
+                next_error=injected if path == target_path else None,
+                close_error=injected_close if path == target_path else None,
+                close_context_error=(
+                    injected_close_context if path == target_path else None
+                ),
+            )
+            wrappers.append((path, wrapper))
+            return wrapper
+
+        interrupted = False
+
+        def interrupt_owner_boundary(frame: Any, event: str, argument: Any) -> Any:
+            nonlocal interrupted
+            del argument
+            if frame.f_code is module.validation_worktree_usage.__code__:
+                frame.f_trace_opcodes = True
+            if (
+                frame.f_code is module.validation_worktree_usage.__code__
+                and event == target_event
+                and (
+                    frame.f_lasti == target
+                    if target_event == "opcode"
+                    else frame.f_lineno == target
+                )
+                and frame.f_locals.get("current") == target_path
+            ):
+                interrupted = True
+                raise CaseInterrupted(f"interrupt at {name}")
+            return interrupt_owner_boundary
+
+        saved_trace = sys.gettrace()
+        sys.settrace(interrupt_owner_boundary)
+        try:
+            module.validation_worktree_usage(root, scan=scan, monotonic=lambda: 100.0)
+        except CaseInterrupted as error:
+            require(
+                str(error) == f"interrupt at {name}",
+                f"{name} recovered a different interruption: {error}",
+            )
+        else:
+            raise SmokeFailure(f"{name} owner-scope interruption unexpectedly returned")
+        finally:
+            sys.settrace(saved_trace)
+        require(interrupted, f"{name} owner-scope interruption point was not reached")
+        target_wrapper = next(wrapper for path, wrapper in wrappers if path == target_path)
+        require(
+            target_wrapper.close_attempted,
+            f"{name} owner-scope interruption did not close iterator",
+        )
+
+    ordinary_root = owner / "owner-scope-ordinary-store-close-error"
+    ordinary_root.mkdir()
+    ordinary_target = ordinary_root / "child"
+    ordinary_target.mkdir()
+    ordinary_wrappers: list[tuple[Path, IteratorWrapper]] = []
+
+    def ordinary_scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(
+            os.scandir(path),
+            close_error=(
+                FileNotFoundError("close vanished after ordinary store error")
+                if path == ordinary_target
+                else None
+            ),
+        )
+        ordinary_wrappers.append((path, wrapper))
+        return wrapper
+
+    ordinary_interrupted = False
+
+    def interrupt_with_ordinary_error(frame: Any, event: str, argument: Any) -> Any:
+        nonlocal ordinary_interrupted
+        del argument
+        if frame.f_code is module.validation_worktree_usage.__code__:
+            frame.f_trace_opcodes = True
+        if (
+            frame.f_code is module.validation_worktree_usage.__code__
+            and event == "opcode"
+            and frame.f_lasti == entry_store_offsets[0]
+            and frame.f_locals.get("current") == ordinary_target
+        ):
+            ordinary_interrupted = True
+            raise module.TaskError("ordinary store interruption")
+        return interrupt_with_ordinary_error
+
+    saved_trace = sys.gettrace()
+    sys.settrace(interrupt_with_ordinary_error)
+    try:
+        expect_task_error(
+            module,
+            lambda: module.validation_worktree_usage(
+                ordinary_root,
+                scan=ordinary_scan,
+                monotonic=lambda: 100.0,
+            ),
+            "close vanished after ordinary store error",
+        )
+    finally:
+        sys.settrace(saved_trace)
+    require(ordinary_interrupted, "ordinary store interruption point was not reached")
+    ordinary_wrapper = next(
+        wrapper for path, wrapper in ordinary_wrappers if path == ordinary_target
+    )
+    require(
+        ordinary_wrapper.close_attempted,
+        "ordinary store interruption did not attempt close",
+    )
+
+    construction_root = owner / "contextual-construction-error"
+    construction_root.mkdir()
+
+    def contextual_construction_scan(_path: Path) -> Any:
+        try:
+            raise ValueError("construction context")
+        except ValueError:
+            raise PermissionError("construction denied")
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            construction_root,
+            scan=contextual_construction_scan,
+            monotonic=lambda: 100.0,
+        ),
+        "cannot inspect validation directory",
+    )
+
+    entry_root = owner / "contextual-entry-error"
+    entry_root.mkdir()
+
+    class ContextualEntryError:
+        def __init__(self) -> None:
+            self.exit_attempted = False
+
+        def __enter__(self) -> Any:
+            try:
+                raise ValueError("entry context")
+            except ValueError:
+                raise PermissionError("entry denied")
+
+        def __exit__(self, *_arguments: Any) -> None:
+            self.exit_attempted = True
+
+    contextual_entry = ContextualEntryError()
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            entry_root,
+            scan=lambda _path: contextual_entry,
+            monotonic=lambda: 100.0,
+        ),
+        "cannot inspect validation directory",
+    )
+    require(
+        not contextual_entry.exit_attempted,
+        "failed context entry unexpectedly attempted exit",
+    )
+
+    queued_entry_root = owner / "missing-queued-context-entry"
+    queued_entry_root.mkdir()
+    queued_entry_child = queued_entry_root / "child"
+    queued_entry_child.mkdir()
+
+    class MissingQueuedEntry:
+        def __init__(self) -> None:
+            self.exit_attempted = False
+
+        def __enter__(self) -> Any:
+            raise FileNotFoundError("queued context entry vanished")
+
+        def __exit__(self, *_arguments: Any) -> None:
+            self.exit_attempted = True
+
+    missing_queued_entry = MissingQueuedEntry()
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            queued_entry_root,
+            scan=lambda path: (
+                missing_queued_entry if path == queued_entry_child else os.scandir(path)
+            ),
+            monotonic=lambda: 100.0,
+        ),
+        "cannot inspect validation directory child: queued context entry vanished",
+    )
+    require(
+        not missing_queued_entry.exit_attempted,
+        "failed queued context entry unexpectedly attempted exit",
+    )
+
+    cycle_root = owner / "cyclic-context-construction-error"
+    cycle_root.mkdir()
+    cycle_error = PermissionError("cyclic construction denied")
+    cycle_context = ValueError("cyclic construction context")
+    cycle_error.__context__ = cycle_context
+    cycle_context.__context__ = cycle_error
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            cycle_root,
+            scan=lambda _path: (_ for _ in ()).throw(cycle_error),
+            monotonic=lambda: 100.0,
+        ),
+        "cannot inspect validation directory",
+    )
+
+
+def deadline_disappearance_case(module: types.ModuleType, owner: Path) -> None:
+    root = owner / "deadline-disappearance"
+    root.mkdir()
+    child = root / "child"
+    child.mkdir()
+    clock = Clock([])
+
+    def scan(path: Path) -> Any:
+        if path == child:
+            shutil.rmtree(child)
+            clock.events.append("construct:error")
+            clock.expired = True
+        return os.scandir(path)
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+        "validation resource scan exceeded its time limit",
+    )
+    require_adjacent(clock.events, "construct:error", "clock:expired")
+
+
+def pending_deadline_cases(module: types.ModuleType, owner: Path) -> None:
+    root = owner / "initial-pending-deadline"
+    root.mkdir()
+    invoked = False
+
+    def forbidden_scan(_path: Path) -> Any:
+        nonlocal invoked
+        invoked = True
+        return os.scandir(_path)
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            root,
+            scan=forbidden_scan,
+            monotonic=InitialExpiryClock(),
+        ),
+        "validation resource scan exceeded its time limit",
+    )
+    require(not invoked, "initial pending deadline invoked scanner")
+
+    root = owner / "queued-pending-deadline"
+    root.mkdir()
+    (root / "child-a").mkdir()
+    (root / "child-b").mkdir()
+    clock = Clock()
+    skipped = False
+    queued_calls = 0
+
+    class ArmAfterReadClock(Clock):
+        def __init__(self) -> None:
+            super().__init__()
+            self.arm = False
+
+        def __call__(self) -> float:
+            value = super().__call__()
+            if self.arm:
+                self.arm = False
+                self.expired = True
+            return value
+
+    queued_clock = ArmAfterReadClock()
+
+    def scan(path: Path) -> Any:
+        nonlocal skipped, queued_calls
+        if path != root:
+            queued_calls += 1
+            if not skipped:
+                skipped = True
+                shutil.rmtree(path)
+                queued_clock.arm = True
+        return os.scandir(path)
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(root, scan=scan, monotonic=queued_clock),
+        "validation resource scan exceeded its time limit",
+    )
+    require(queued_calls == 1, f"next queued scanner ran after expiry: {queued_calls}")
+
+
+def body_close_precedence_cases(module: types.ModuleType, owner: Path) -> None:
+    for kind in ("iterator", "stat"):
+        root = owner / f"body-close-{kind}"
+        root.mkdir()
+        (root / "target").write_bytes(b"x")
+        wrappers: list[IteratorWrapper] = []
+
+        def scan(path: Path, kind: str = kind) -> IteratorWrapper:
+            wrapper = IteratorWrapper(
+                os.scandir(path),
+                next_error=PermissionError("body iterator denied") if kind == "iterator" else None,
+                close_error=PermissionError("close denied"),
+                entry_map=(
+                    (lambda entry: EntryProxy(entry, stat_error=PermissionError("body stat denied")))
+                    if kind == "stat"
+                    else None
+                ),
+            )
+            wrappers.append(wrapper)
+            return wrapper
+
+        expected = (
+            "cannot inspect validation directory"
+            if kind == "iterator"
+            else "cannot inspect validation worktree path target"
+        )
+        diagnostic = expect_task_error(
+            module,
+            lambda: module.validation_worktree_usage(root, scan=scan, monotonic=lambda: 100.0),
+            expected,
+        )
+        require("close denied" not in diagnostic, f"close error replaced {kind} error")
+        require(wrappers[0].close_attempted, f"{kind} dual-error close not attempted")
+
+
+def successful_deadline_cases(module: types.ModuleType, owner: Path) -> None:
+    targets = ("construction", "yield", "exhaustion", "stat", "close")
+    for target in targets:
+        root = owner / f"deadline-success-{target}"
+        root.mkdir()
+        stable = root / "stable"
+        stable.write_bytes(b"x")
+        events: list[str] = []
+        clock = Clock(events)
+        wrappers: list[IteratorWrapper] = []
+
+        def scan(path: Path, target: str = target) -> IteratorWrapper:
+            events.append("scan:construct")
+            iterator = os.scandir(path)
+            wrapper = IteratorWrapper(
+                iterator,
+                events=events,
+                after_yield=(
+                    (lambda _entry: setattr(clock, "expired", True))
+                    if target == "yield"
+                    else None
+                ),
+                on_stop=(
+                    (lambda: setattr(clock, "expired", True))
+                    if target == "exhaustion"
+                    else None
+                ),
+                entry_map=(
+                    (
+                        lambda entry: EntryProxy(
+                            entry,
+                            events=events,
+                            stat_hook=lambda _metadata: (
+                                setattr(clock, "expired", True),
+                                MetadataProxy(),
+                            )[1],
+                        )
+                    )
+                    if target == "stat"
+                    else None
+                ),
+                close_hook=(
+                    (lambda: setattr(clock, "expired", True))
+                    if target == "close"
+                    else None
+                ),
+            )
+            wrappers.append(wrapper)
+            if target == "construction":
+                clock.expired = True
+            return wrapper
+
+        expect_task_error(
+            module,
+            lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+            "validation resource scan exceeded its time limit",
+        )
+        require(wrappers and wrappers[0].close_attempted, f"{target} deadline did not close")
+        target_event = {
+            "construction": "scan:construct",
+            "yield": "iterator:yield",
+            "exhaustion": "iterator:stop",
+            "stat": "entry:stat",
+            "close": "iterator:close",
+        }[target]
+        require_adjacent(events, target_event, "clock:expired")
+        if target == "construction":
+            require("iterator:next" not in events, "construction deadline advanced iterator")
+        if target == "yield":
+            require("entry:name" not in events, "yield deadline accessed entry")
+
+    root = owner / "deadline-yield-close-error"
+    root.mkdir()
+    (root / "stable").write_bytes(b"x")
+    events = []
+    clock = Clock(events)
+    wrappers = []
+
+    def scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(
+            os.scandir(path),
+            events=events,
+            after_yield=lambda _entry: setattr(clock, "expired", True),
+            close_error=PermissionError("close denied"),
+        )
+        wrappers.append(wrapper)
+        return wrapper
+
+    diagnostic = expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+        "validation resource scan exceeded its time limit",
+    )
+    require("close denied" not in diagnostic, "close error replaced yielded deadline")
+    require(wrappers[0].close_attempted, "yield deadline close error was not attempted")
+
+
+def error_deadline_cases(module: types.ModuleType, owner: Path) -> None:
+    for target, error in (
+        ("root-missing", FileNotFoundError("root vanished")),
+        ("construction", PermissionError("scan denied")),
+    ):
+        root = owner / f"deadline-error-{target}"
+        if target != "root-missing":
+            root.mkdir()
+        events: list[str] = []
+        clock = Clock(events)
+
+        def scan(_path: Path, injected: BaseException = error) -> Any:
+            if isinstance(injected, FileNotFoundError):
+                try:
+                    os.scandir(_path)
+                except FileNotFoundError:
+                    events.append("operation:error")
+                    clock.expired = True
+                    raise
+                raise SmokeFailure("missing root scan unexpectedly succeeded")
+            events.append("operation:error")
+            clock.expired = True
+            raise injected
+
+        expect_task_error(
+            module,
+            lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+            "validation resource scan exceeded its time limit",
+        )
+        require_adjacent(events, "operation:error", "clock:expired")
+
+    root = owner / "deadline-error-context-entry-missing"
+    root.mkdir()
+    events = []
+    clock = Clock(events)
+
+    class ExpiringMissingEntry:
+        def __init__(self) -> None:
+            self.exit_attempted = False
+
+        def __enter__(self) -> Any:
+            events.append("operation:error")
+            clock.expired = True
+            raise FileNotFoundError("context entry vanished")
+
+        def __exit__(self, *_arguments: Any) -> None:
+            self.exit_attempted = True
+
+    expiring_missing_entry = ExpiringMissingEntry()
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            root,
+            scan=lambda _path: expiring_missing_entry,
+            monotonic=clock,
+        ),
+        "validation resource scan exceeded its time limit",
+    )
+    require_adjacent(events, "operation:error", "clock:expired")
+    require(
+        not expiring_missing_entry.exit_attempted,
+        "failed expiring context entry unexpectedly attempted exit",
+    )
+
+    for target, error in (
+        ("iterator-missing", FileNotFoundError("iterator vanished")),
+        ("iterator-permission", PermissionError("iterator denied")),
+    ):
+        root = owner / f"deadline-error-{target}"
+        root.mkdir()
+        (root / "stable").write_bytes(b"x")
+        events = []
+        clock = Clock(events)
+        wrappers: list[IteratorWrapper] = []
+
+        class ExpiringErrorIterator(IteratorWrapper):
+            def __next__(self) -> Any:
+                events.append("operation:error")
+                clock.expired = True
+                raise error
+
+        def scan(path: Path) -> IteratorWrapper:
+            wrapper = ExpiringErrorIterator(os.scandir(path), events=events)
+            wrappers.append(wrapper)
+            return wrapper
+
+        expect_task_error(
+            module,
+            lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+            "validation resource scan exceeded its time limit",
+        )
+        require_adjacent(events, "operation:error", "clock:expired")
+        require(wrappers[0].close_attempted, f"{target} did not close")
+
+    for target, error in (
+        ("stat-missing", FileNotFoundError("entry vanished")),
+        ("stat-permission", PermissionError("stat denied")),
+    ):
+        root = owner / f"deadline-error-{target}"
+        root.mkdir()
+        (root / "stable").write_bytes(b"x")
+        events = []
+        clock = Clock(events)
+        wrappers = []
+
+        def expiring_stat(entry: os.DirEntry[str], injected: BaseException = error) -> EntryProxy:
+            class ExpiringEntry(EntryProxy):
+                def stat(self, *, follow_symlinks: bool) -> Any:
+                    if isinstance(injected, FileNotFoundError):
+                        Path(self.entry.path).unlink()
+                        try:
+                            self.entry.stat(follow_symlinks=follow_symlinks)
+                        except FileNotFoundError:
+                            events.append("operation:error")
+                            clock.expired = True
+                            raise
+                        raise SmokeFailure("unlinked real entry stat unexpectedly succeeded")
+                    events.append("operation:error")
+                    clock.expired = True
+                    raise injected
+
+            return ExpiringEntry(entry)
+
+        def scan(path: Path) -> IteratorWrapper:
+            wrapper = IteratorWrapper(os.scandir(path), events=events, entry_map=expiring_stat)
+            wrappers.append(wrapper)
+            return wrapper
+
+        expect_task_error(
+            module,
+            lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+            "validation resource scan exceeded its time limit",
+        )
+        require_adjacent(events, "operation:error", "clock:expired")
+        require(wrappers[0].close_attempted, f"{target} did not close")
+
+    root = owner / "deadline-error-close"
+    root.mkdir()
+    (root / "stable").write_bytes(b"x")
+    events = []
+    clock = Clock(events)
+    wrappers = []
+
+    def scan(path: Path) -> IteratorWrapper:
+        class ExpiringCloseIterator(IteratorWrapper):
+            def close(self) -> None:
+                self.close_attempted = True
+                events.append("iterator:close")
+                self.iterator.close()
+                clock.expired = True
+                events.append("operation:error")
+                raise PermissionError("close denied")
+
+        wrapper = ExpiringCloseIterator(os.scandir(path), events=events)
+        wrappers.append(wrapper)
+        return wrapper
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+        "validation resource scan exceeded its time limit",
+    )
+    require_adjacent(events, "operation:error", "clock:expired")
+
+    for body_kind in ("iterator", "stat"):
+        for close_kind in ("success", "error"):
+            root = owner / f"deadline-body-{body_kind}-close-{close_kind}"
+            root.mkdir()
+            (root / "target").write_bytes(b"x")
+            clock = Clock()
+            wrappers = []
+
+            def close_hook() -> None:
+                clock.expired = True
+
+            def scan(
+                path: Path,
+                body_kind: str = body_kind,
+                close_kind: str = close_kind,
+            ) -> IteratorWrapper:
+                wrapper = IteratorWrapper(
+                    os.scandir(path),
+                    next_error=(
+                        PermissionError("body iterator denied")
+                        if body_kind == "iterator"
+                        else None
+                    ),
+                    entry_map=(
+                        (
+                            lambda entry: EntryProxy(
+                                entry,
+                                stat_error=PermissionError("body stat denied"),
+                            )
+                        )
+                        if body_kind == "stat"
+                        else None
+                    ),
+                    close_hook=close_hook,
+                    close_error=(
+                        PermissionError("close denied") if close_kind == "error" else None
+                    ),
+                )
+                wrappers.append(wrapper)
+                return wrapper
+
+            diagnostic = expect_task_error(
+                module,
+                lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+                "validation resource scan exceeded its time limit",
+            )
+            require("body" not in diagnostic, "body error replaced close deadline")
+            require(wrappers[0].close_attempted, "deadline dual-error close not attempted")
+
+    for close_kind in ("success", "error"):
+        root = owner / f"deadline-interruption-close-{close_kind}"
+        root.mkdir()
+        (root / "target").write_bytes(b"x")
+        clock = Clock()
+        wrappers = []
+        interruption = CaseInterrupted(f"deadline interruption with {close_kind}")
+
+        def close_hook() -> None:
+            clock.expired = True
+
+        def scan(path: Path, close_kind: str = close_kind) -> IteratorWrapper:
+            wrapper = IteratorWrapper(
+                os.scandir(path),
+                next_error=interruption,
+                close_hook=close_hook,
+                close_error=(
+                    PermissionError("close denied") if close_kind == "error" else None
+                ),
+            )
+            wrappers.append(wrapper)
+            return wrapper
+
+        try:
+            module.validation_worktree_usage(root, scan=scan, monotonic=clock)
+        except CaseInterrupted as error:
+            require(
+                error is interruption,
+                f"{close_kind} close replaced the exact interruption",
+            )
+        else:
+            raise SmokeFailure(
+                f"{close_kind} deadline close unexpectedly replaced the interruption"
+            )
+        require(
+            wrappers[0].close_attempted,
+            f"{close_kind} deadline interruption did not close",
+        )
+
+
+def size_ceiling_case(module: types.ModuleType, owner: Path) -> None:
+    size_root = owner / "size-ceiling"
+    size_root.mkdir()
+    large = size_root / "large"
+    with large.open("wb") as stream:
+        stream.truncate(module.MAX_VALIDATION_WORKTREE_BYTES)
+    constant_clock = lambda: 100.0
+    wrappers: list[IteratorWrapper] = []
+
+    def tracked_scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(os.scandir(path))
+        wrappers.append(wrapper)
+        return wrapper
+
+    result = module.validation_worktree_usage(
+        size_root,
+        scan=tracked_scan,
+        monotonic=constant_clock,
+    )
+    require(
+        result == expected_usage(size_root, large),
+        f"exact size ceiling mismatch: {result}",
+    )
+    require(wrappers[-1].close_attempted, "exact size ceiling iterator was not closed")
+    with large.open("r+b") as stream:
+        stream.truncate(module.MAX_VALIDATION_WORKTREE_BYTES + 1)
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            size_root,
+            scan=tracked_scan,
+            monotonic=constant_clock,
+        ),
+        "validation exceeded the writable worktree size limit",
+    )
+    require(wrappers[-1].close_attempted, "plus-one size iterator was not closed")
+    ceiling_close_precedence(module, size_root, "size")
+
+
+def count_ceiling_case(module: types.ModuleType, owner: Path) -> None:
+    count_root = owner / "count-ceiling"
+    count_root.mkdir()
+    constant_clock = lambda: 100.0
+    for index in range(module.MAX_VALIDATION_WORKTREE_FILES):
+        (count_root / f"entry-{index:05d}").touch()
+    wrappers: list[IteratorWrapper] = []
+
+    def tracked_scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(os.scandir(path))
+        wrappers.append(wrapper)
+        return wrapper
+
+    result = module.validation_worktree_usage(
+        count_root,
+        scan=tracked_scan,
+        monotonic=constant_clock,
+    )
+    require(result[0] == 0, f"exact count ceiling has bytes: {result}")
+    require(result[1] == module.MAX_VALIDATION_WORKTREE_FILES, "exact count ceiling mismatch")
+    require(
+        len(result[2]) == module.MAX_VALIDATION_WORKTREE_FILES,
+        "exact count ceiling inode set mismatch",
+    )
+    require(wrappers[-1].close_attempted, "exact count iterator was not closed")
+    (count_root / "entry-plus-one").touch()
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            count_root,
+            scan=tracked_scan,
+            monotonic=constant_clock,
+        ),
+        "validation exceeded the writable worktree file limit",
+    )
+    require(wrappers[-1].close_attempted, "plus-one count iterator was not closed")
+    ceiling_close_precedence(module, count_root, "file")
+
+
+def ceiling_close_precedence(module: types.ModuleType, root: Path, kind: str) -> None:
+    expected = (
+        "validation exceeded the writable worktree size limit"
+        if kind == "size"
+        else "validation exceeded the writable worktree file limit"
+    )
+    for close_mode in ("error", "deadline-success", "deadline-error"):
+        clock = Clock()
+        wrappers: list[IteratorWrapper] = []
+
+        def close_hook(close_mode: str = close_mode) -> None:
+            if close_mode.startswith("deadline"):
+                clock.expired = True
+
+        def scan(path: Path, close_mode: str = close_mode) -> IteratorWrapper:
+            wrapper = IteratorWrapper(
+                os.scandir(path),
+                close_hook=close_hook,
+                close_error=(
+                    PermissionError("ceiling close denied")
+                    if close_mode in ("error", "deadline-error")
+                    else None
+                ),
+            )
+            wrappers.append(wrapper)
+            return wrapper
+
+        diagnostic = expect_task_error(
+            module,
+            lambda: module.validation_worktree_usage(root, scan=scan, monotonic=clock),
+            (
+                "validation resource scan exceeded its time limit"
+                if close_mode.startswith("deadline")
+                else expected
+            ),
+        )
+        if close_mode == "error":
+            require("close denied" not in diagnostic, "close error replaced ceiling error")
+        require(wrappers[0].close_attempted, f"{kind} {close_mode} did not close")
+
+
+def git_exclusion_cases(module: types.ModuleType, owner: Path) -> None:
+    root = owner / "git-exclusion"
+    root.mkdir()
+    git_directory = root / ".git"
+    git_directory.mkdir()
+    stable = root / "stable"
+    stable.write_bytes(b"stable")
+    events: list[str] = []
+
+    def map_entry(entry: os.DirEntry[str]) -> Any:
+        if entry.name == ".git":
+            return EntryProxy(entry, events=events, forbid_path=True)
+        return entry
+
+    result = module.validation_worktree_usage(
+        root,
+        scan=lambda path: IteratorWrapper(os.scandir(path), entry_map=map_entry),
+        monotonic=lambda: 100.0,
+    )
+    require(result == expected_usage(root, stable), f"root .git exclusion mismatch: {result}")
+    require("entry:path" not in events and "entry:stat" not in events, "root .git was inspected")
+
+    deadline_root = owner / "git-exclusion-deadline"
+    deadline_root.mkdir()
+    (deadline_root / ".git").mkdir()
+    deadline_events: list[str] = []
+    clock = Clock(deadline_events)
+    wrappers: list[IteratorWrapper] = []
+
+    def deadline_map(entry: os.DirEntry[str]) -> Any:
+        return EntryProxy(
+            entry,
+            events=deadline_events,
+            forbid_name=True,
+            forbid_path=True,
+        )
+
+    def deadline_scan(path: Path) -> IteratorWrapper:
+        wrapper = IteratorWrapper(
+            os.scandir(path),
+            events=deadline_events,
+            entry_map=deadline_map,
+            after_yield=lambda _entry: setattr(clock, "expired", True),
+        )
+        wrappers.append(wrapper)
+        return wrapper
+
+    expect_task_error(
+        module,
+        lambda: module.validation_worktree_usage(
+            deadline_root,
+            scan=deadline_scan,
+            monotonic=clock,
+        ),
+        "validation resource scan exceeded its time limit",
+    )
+    require(
+        not any(event.startswith("entry:") for event in deadline_events),
+        f"expired root .git accessed entry: {deadline_events}",
+    )
+    require(wrappers[0].close_attempted, "expired root .git iterator was not closed")
+
+    nested_root = owner / "nested-git"
+    nested_root.mkdir()
+    parent = nested_root / "parent"
+    parent.mkdir()
+    nested_git = parent / ".git"
+    nested_git.mkdir()
+    nested_file = nested_git / "value"
+    nested_file.write_bytes(b"nested")
+    result = module.validation_worktree_usage(nested_root, monotonic=lambda: 100.0)
+    require(
+        result == expected_usage(nested_root, parent, nested_git, nested_file),
+        f"nested .git accounting mismatch: {result}",
+    )
+
+
+def run_case(
+    name: str,
+    action: Callable[[], None],
+    *,
+    set_timer: Callable[[int, float], Any] = signal.setitimer,
+) -> None:
+    timed_out = False
+    action_error: tuple[type[BaseException], BaseException, Any] | None = None
+    cancellation_error: tuple[type[BaseException], BaseException, Any] | None = None
+    saved_handler = signal.getsignal(signal.SIGALRM)
+
+    def handle_alarm(_signum: int, _frame: Any) -> None:
+        nonlocal timed_out
+        timed_out = True
+        raise CaseTimedOut(f"{name} exceeded five seconds")
+
+    signal.signal(signal.SIGALRM, handle_alarm)
+    try:
+        try:
+            set_timer(signal.ITIMER_REAL, 5.0)
+        except BaseException:
+            action_error = sys.exc_info()
+        else:
+            try:
+                action()
+            except BaseException:
+                action_error = sys.exc_info()
+    finally:
+        try:
+            try:
+                set_timer(signal.ITIMER_REAL, 0.0)
+            except BaseException:
+                cancellation_error = sys.exc_info()
+        finally:
+            signal.signal(signal.SIGALRM, saved_handler)
+    if timed_out:
+        raise CaseTimedOut(f"{name} exceeded five seconds")
+    if action_error is not None:
+        _, error, traceback = action_error
+        raise error.with_traceback(traceback)
+    if cancellation_error is not None:
+        _, error, traceback = cancellation_error
+        raise error.with_traceback(traceback)
+
+
+def prove_swallowed_alarm_fails() -> None:
+    def swallow_alarm() -> None:
+        handler = signal.getsignal(signal.SIGALRM)
+        require(callable(handler), "case alarm handler is not callable")
+        try:
+            signal.raise_signal(signal.SIGALRM)
+        except CaseTimedOut:
+            pass
+
+    try:
+        run_case("swallowed alarm sentinel", swallow_alarm)
+    except CaseTimedOut as error:
+        require(
+            str(error) == "swallowed alarm sentinel exceeded five seconds",
+            f"swallowed alarm proof returned a different error: {error}",
+        )
+    else:
+        raise SmokeFailure("swallowed alarm sentinel unexpectedly passed")
+
+
+def prove_timer_arm_failure_restores() -> None:
+    timer_calls: list[tuple[int, float]] = []
+    action_called = False
+    saved_handler = signal.getsignal(signal.SIGALRM)
+
+    def fail_arm(timer: int, seconds: float) -> None:
+        timer_calls.append((timer, seconds))
+        if seconds == 5.0:
+            raise OSError("injected timer arm failure")
+
+    def forbidden_action() -> None:
+        nonlocal action_called
+        action_called = True
+
+    try:
+        run_case(
+            "timer arm failure sentinel",
+            forbidden_action,
+            set_timer=fail_arm,
+        )
+    except OSError as error:
+        require(
+            str(error) == "injected timer arm failure",
+            f"timer arm proof returned a different error: {error}",
+        )
+    else:
+        raise SmokeFailure("timer arm failure sentinel unexpectedly passed")
+    require(not action_called, "timer arm failure sentinel ran its action")
+    require(
+        timer_calls
+        == [
+            (signal.ITIMER_REAL, 5.0),
+            (signal.ITIMER_REAL, 0.0),
+        ],
+        f"timer arm failure calls differ: {timer_calls}",
+    )
+    require(
+        signal.getsignal(signal.SIGALRM) is saved_handler,
+        "timer arm failure did not restore the prior signal handler",
+    )
+
+
+def prove_timer_cancellation_precedence() -> None:
+    for case_kind in (
+        "cancellation-only",
+        "swallowed-alarm",
+        "arm-error",
+        "action-error",
+    ):
+        timer_calls: list[tuple[int, float]] = []
+        action_called = False
+        saved_handler = signal.getsignal(signal.SIGALRM)
+
+        def fail_cancel(timer: int, seconds: float) -> None:
+            timer_calls.append((timer, seconds))
+            if seconds == 5.0 and case_kind == "arm-error":
+                raise ValueError("injected arm failure")
+            if seconds == 0.0:
+                raise OSError(f"injected {case_kind} cancellation failure")
+
+        def action() -> None:
+            nonlocal action_called
+            action_called = True
+            if case_kind == "cancellation-only":
+                return
+            if case_kind == "action-error":
+                raise ValueError("injected action failure")
+            handler = signal.getsignal(signal.SIGALRM)
+            require(callable(handler), "cancellation proof alarm handler is not callable")
+            try:
+                signal.raise_signal(signal.SIGALRM)
+            except CaseTimedOut:
+                pass
+
+        try:
+            run_case(
+                f"{case_kind} cancellation sentinel",
+                action,
+                set_timer=fail_cancel,
+            )
+        except CaseTimedOut as error:
+            require(
+                case_kind == "swallowed-alarm"
+                and str(error)
+                == "swallowed-alarm cancellation sentinel exceeded five seconds",
+                f"{case_kind} cancellation proof returned timeout: {error}",
+            )
+        except ValueError as error:
+            require(
+                (
+                    case_kind == "arm-error"
+                    and str(error) == "injected arm failure"
+                )
+                or (
+                    case_kind == "action-error"
+                    and str(error) == "injected action failure"
+                ),
+                f"{case_kind} cancellation proof returned action error: {error}",
+            )
+        except OSError as error:
+            require(
+                case_kind == "cancellation-only"
+                and str(error) == "injected cancellation-only cancellation failure",
+                f"{case_kind} cancellation proof returned cancellation error: {error}",
+            )
+        else:
+            raise SmokeFailure(f"{case_kind} cancellation sentinel unexpectedly passed")
+        require(
+            action_called is (case_kind != "arm-error"),
+            f"{case_kind} cancellation action state differs: {action_called}",
+        )
+        require(
+            timer_calls
+            == [
+                (signal.ITIMER_REAL, 5.0),
+                (signal.ITIMER_REAL, 0.0),
+            ],
+            f"{case_kind} cancellation calls differ: {timer_calls}",
+        )
+        require(
+            signal.getsignal(signal.SIGALRM) is saved_handler,
+            f"{case_kind} cancellation did not restore the prior signal handler",
+        )
+
+
+def main() -> int:
+    if not sys.platform.startswith("linux"):
+        raise SmokeFailure("coding task resource scan smoke requires Linux")
+    project_root = Path(__file__).resolve().parents[1]
+    runner_path = project_root / "eval/runners/run-coding-task.py"
+    runner_directory = runner_path.parent
+    before_cache = cache_snapshot(runner_directory)
+    saved_handler = signal.getsignal(signal.SIGALRM)
+    try:
+        with tempfile.TemporaryDirectory(prefix="align-llm-resource-scan-smoke-") as temporary:
+            owner = Path(temporary)
+            signal.signal(signal.SIGALRM, lambda signum, frame: (_ for _ in ()).throw(
+                CaseTimedOut("resource scan case exceeded five seconds")
+            ))
+            try:
+                module = load_runner_with_nondefault_ambient(owner, runner_path)
+                prove_deadline_source_contract(module)
+                prove_timer_arm_failure_restores()
+                prove_swallowed_alarm_fails()
+                prove_timer_cancellation_precedence()
+                cases = (
+                    ("stable control", lambda: stable_case(module, owner)),
+                    (
+                        "validation command deadline",
+                        lambda: command_deadline_case(module, owner),
+                    ),
+                    ("entry disappearance", lambda: disappearing_entry_case(module, owner)),
+                    (
+                        "queued directory disappearance",
+                        lambda: disappearing_directory_case(module, owner),
+                    ),
+                    ("missing root", lambda: missing_root_case(module, owner)),
+                    ("entry permission error", lambda: entry_permission_case(module, owner)),
+                    ("queued permission error", lambda: queued_permission_case(module, owner)),
+                    (
+                        "iterator advance errors",
+                        lambda: iterator_advance_error_case(module, owner),
+                    ),
+                    (
+                        "iterator close errors",
+                        lambda: iterator_close_error_case(module, owner),
+                    ),
+                    (
+                        "owner-scope interruption",
+                        lambda: owner_scope_interruption_case(module, owner),
+                    ),
+                    (
+                        "deadline before disappearance skip",
+                        lambda: deadline_disappearance_case(module, owner),
+                    ),
+                    ("pending deadlines", lambda: pending_deadline_cases(module, owner)),
+                    (
+                        "body and close precedence",
+                        lambda: body_close_precedence_cases(module, owner),
+                    ),
+                    (
+                        "successful operation deadlines",
+                        lambda: successful_deadline_cases(module, owner),
+                    ),
+                    ("error deadlines", lambda: error_deadline_cases(module, owner)),
+                    ("visible byte ceiling", lambda: size_ceiling_case(module, owner)),
+                    ("visible count ceiling", lambda: count_ceiling_case(module, owner)),
+                    (".git exclusion", lambda: git_exclusion_cases(module, owner)),
+                )
+                for name, action in cases:
+                    run_case(name, action)
+            finally:
+                try:
+                    signal.setitimer(signal.ITIMER_REAL, 0.0)
+                finally:
+                    signal.signal(signal.SIGALRM, saved_handler)
+    finally:
+        try:
+            try:
+                signal.setitimer(signal.ITIMER_REAL, 0.0)
+            finally:
+                signal.signal(signal.SIGALRM, saved_handler)
+        finally:
+            after_cache = cache_snapshot(runner_directory)
+            if after_cache != before_cache:
+                raise SmokeFailure("runner cache snapshot changed")
+    print("coding task resource scan races and limits: enforced")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        print(f"coding task resource scan smoke failed: {error}", file=sys.stderr)
+        raise SystemExit(1)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import ctypes
+import dis
 import hashlib
 import json
 import os
@@ -40,6 +41,7 @@ MAX_VALIDATION_OPEN_FILES = 512
 RESOURCE_POLL_INTERVAL_SECONDS = 0.25
 BWRAP_PROBE_TIMEOUT_SECONDS = 2
 MAX_RESOURCE_SCAN_SECONDS = 0.1
+MAX_PROCESS_TREE_SCAN_SECONDS = 0.5
 
 
 def enable_child_subreaper() -> bool:
@@ -192,14 +194,36 @@ def decode_output(output: bytes | None) -> str:
     return (output or b"").decode("utf-8", errors="replace")
 
 
+ResourceCheck = Callable[[subprocess.Popen[bytes], float], None]
+
+
+def invoke_resource_check(
+    process: subprocess.Popen[bytes],
+    deadline: float,
+    resource_check: ResourceCheck,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> None:
+    if monotonic() >= deadline:
+        raise subprocess.TimeoutExpired(process.args, 0)
+    try:
+        resource_check(process, deadline)
+    except TaskError as error:
+        if monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(process.args, 0) from error
+        raise
+    if monotonic() >= deadline:
+        raise subprocess.TimeoutExpired(process.args, 0)
+
+
 def wait_for_process(
     process: subprocess.Popen[bytes],
     deadline: float,
-    resource_check: Callable[[subprocess.Popen[bytes]], None] | None,
+    resource_check: ResourceCheck | None,
 ) -> None:
     while process.poll() is None:
         if resource_check is not None:
-            resource_check(process)
+            invoke_resource_check(process, deadline, resource_check)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(process.args, 0)
@@ -213,7 +237,7 @@ def read_process_output(
     process: subprocess.Popen[bytes],
     captures: dict[str, BoundedOutput],
     timeout_seconds: float,
-    resource_check: Callable[[subprocess.Popen[bytes]], None] | None = None,
+    resource_check: ResourceCheck | None = None,
 ) -> None:
     streams = {
         "stdout": process.stdout,
@@ -228,9 +252,21 @@ def read_process_output(
             selector.register(stream, selectors.EVENT_READ, name)
 
         deadline = time.monotonic() + timeout_seconds
+
+        def check_resources() -> None:
+            if resource_check is None:
+                return
+            try:
+                invoke_resource_check(process, deadline, resource_check)
+            except subprocess.TimeoutExpired as error:
+                raise OutputTimeout(
+                    process.args,
+                    int(timeout_seconds),
+                    captures,
+                ) from error
+
         while selector.get_map():
-            if resource_check is not None:
-                resource_check(process)
+            check_resources()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise OutputTimeout(process.args, int(timeout_seconds), captures)
@@ -241,7 +277,7 @@ def read_process_output(
             )
             if not events:
                 if resource_check is not None:
-                    resource_check(process)
+                    check_resources()
                     continue
                 raise OutputTimeout(process.args, int(timeout_seconds), captures)
             for key, _ in events:
@@ -262,7 +298,7 @@ def read_process_output(
         try:
             wait_for_process(process, deadline, resource_check)
             if resource_check is not None:
-                resource_check(process)
+                check_resources()
         except subprocess.TimeoutExpired as error:
             raise OutputTimeout(process.args, int(timeout_seconds), captures) from error
     finally:
@@ -375,7 +411,7 @@ def run(
     *,
     env: dict[str, str] | None = None,
     command_name: str | None = None,
-    resource_check: Callable[[subprocess.Popen[bytes]], None] | None = None,
+    resource_check: ResourceCheck | None = None,
 ) -> subprocess.CompletedProcess[str]:
     display_name = command_name or argv[0]
     require_process_containment()
@@ -1021,62 +1057,203 @@ def check_pristine_checkout(
 
 def validation_worktree_usage(
     checkout: Path,
+    *,
+    scan: Callable[[Path], Any] = os.scandir,
+    monotonic: Callable[[], float] = time.monotonic,
+    command_deadline: float | None = None,
 ) -> tuple[int, int, set[tuple[int, int]]]:
     total_bytes = 0
     file_count = 0
     visible_inodes: set[tuple[int, int]] = set()
-    deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
+    deadline = monotonic() + MAX_RESOURCE_SCAN_SECONDS
+    if command_deadline is not None:
+        deadline = min(deadline, command_deadline)
     pending = [checkout]
+
+    def require_scan_deadline() -> None:
+        if monotonic() >= deadline:
+            raise TaskError("validation resource scan exceeded its time limit")
+
+    def directory_error(current: Path, error: BaseException) -> TaskError:
+        return TaskError(
+            f"cannot inspect validation directory {current.relative_to(checkout)}: "
+            f"{error}"
+        )
+
     while pending:
         current = pending.pop()
+        require_scan_deadline()
+        entered = False
+        body_error: tuple[type[BaseException], BaseException, Any] | None = None
+        close_error: BaseException | None = None
         try:
-            entries = os.scandir(current)
-        except OSError as error:
-            raise TaskError(
-                f"cannot inspect validation directory {current.relative_to(checkout)}: "
-                f"{error}"
-            ) from error
-        with entries:
-            for entry in entries:
-                if current == checkout and entry.name == ".git":
-                    continue
-                if time.monotonic() >= deadline:
-                    raise TaskError("validation resource scan exceeded its time limit")
-                path = Path(entry.path)
+            with scan(current) as entries:
+                entered = True
                 try:
-                    metadata = entry.stat(follow_symlinks=False)
-                except OSError as error:
-                    raise TaskError(
-                        f"cannot inspect validation worktree path {path.relative_to(checkout)}: "
-                        f"{error}"
-                    ) from error
-                file_count += 1
-                if file_count > MAX_VALIDATION_WORKTREE_FILES:
-                    raise TaskError(
-                        "validation exceeded the writable worktree file limit "
-                        f"({MAX_VALIDATION_WORKTREE_FILES} files)"
-                    )
-                if stat.S_ISDIR(metadata.st_mode):
-                    pending.append(path)
+                    require_scan_deadline()
+                    while True:
+                        try:
+                            entry = next(entries)
+                        except StopIteration:
+                            require_scan_deadline()
+                            break
+                        except OSError as error:
+                            require_scan_deadline()
+                            raise directory_error(current, error) from error
+
+                        require_scan_deadline()
+                        if current == checkout and entry.name == ".git":
+                            continue
+                        path = Path(entry.path)
+                        try:
+                            metadata = entry.stat(follow_symlinks=False)
+                        except FileNotFoundError:
+                            require_scan_deadline()
+                            continue
+                        except OSError as error:
+                            require_scan_deadline()
+                            raise TaskError(
+                                "cannot inspect validation worktree path "
+                                f"{path.relative_to(checkout)}: {error}"
+                            ) from error
+                        require_scan_deadline()
+                        file_count += 1
+                        if file_count > MAX_VALIDATION_WORKTREE_FILES:
+                            raise TaskError(
+                                "validation exceeded the writable worktree file limit "
+                                f"({MAX_VALIDATION_WORKTREE_FILES} files)"
+                            )
+                        if stat.S_ISDIR(metadata.st_mode):
+                            pending.append(path)
+                            continue
+                        if not stat.S_ISREG(metadata.st_mode):
+                            continue
+                        total_bytes += metadata.st_size
+                        visible_inodes.add((metadata.st_dev, metadata.st_ino))
+                        if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
+                            raise TaskError(
+                                "validation exceeded the writable worktree size limit "
+                                f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
+                            )
+                except BaseException:
+                    body_error = sys.exc_info()
+        except BaseException as error:
+            interrupted_error = None
+            interrupted_traceback = None
+            cleanup_replaced_body = False
+            candidate_error: BaseException | None = error
+            current_frame = sys._getframe()
+            seen_contexts: set[int] = set()
+            outer_error = True
+            scan_construction_error = False
+            while (
+                candidate_error is not None
+                and id(candidate_error) not in seen_contexts
+            ):
+                seen_contexts.add(id(candidate_error))
+                candidate_traceback = candidate_error.__traceback__
+                while (
+                    candidate_traceback is not None
+                    and candidate_traceback.tb_frame is not current_frame
+                ):
+                    candidate_traceback = candidate_traceback.tb_next
+                if candidate_traceback is not None:
+                    if (
+                        outer_error
+                        and candidate_traceback.tb_lasti
+                        in VALIDATION_WORKTREE_SCAN_CALL_OFFSETS
+                    ):
+                        scan_construction_error = True
+                    if not outer_error:
+                        cleanup_replaced_body = True
+                    if not isinstance(candidate_error, Exception):
+                        interrupted_error = candidate_error
+                        interrupted_traceback = candidate_traceback
+                        break
+                outer_error = False
+                candidate_error = candidate_error.__context__
+
+            if interrupted_error is not None and interrupted_traceback is not None:
+                body_error = (
+                    type(interrupted_error),
+                    interrupted_error,
+                    interrupted_error.__traceback__,
+                )
+                if interrupted_error is not error:
+                    close_error = error
+            elif not entered and not cleanup_replaced_body:
+                if not isinstance(error, OSError):
+                    raise
+                require_scan_deadline()
+                if (
+                    isinstance(error, FileNotFoundError)
+                    and current != checkout
+                    and scan_construction_error
+                ):
                     continue
-                if not stat.S_ISREG(metadata.st_mode):
-                    continue
-                total_bytes += metadata.st_size
-                visible_inodes.add((metadata.st_dev, metadata.st_ino))
-                if total_bytes > MAX_VALIDATION_WORKTREE_BYTES:
-                    raise TaskError(
-                        "validation exceeded the writable worktree size limit "
-                        f"({MAX_VALIDATION_WORKTREE_BYTES} bytes)"
-                    )
+                raise directory_error(current, error) from error
+            else:
+                close_error = error
+
+        if body_error is not None:
+            _, error, traceback = body_error
+            if not isinstance(error, Exception):
+                raise error.with_traceback(traceback)
+        require_scan_deadline()
+        if body_error is not None:
+            _, error, traceback = body_error
+            raise error.with_traceback(traceback)
+        if close_error is not None:
+            if isinstance(close_error, OSError):
+                raise directory_error(current, close_error) from close_error
+            raise close_error
     return total_bytes, file_count, visible_inodes
 
 
-def validation_process_usage(process: subprocess.Popen[bytes]) -> set[int]:
+CALL_OPNAMES = frozenset(("CALL", "CALL_FUNCTION", "CALL_METHOD"))
+
+
+def loaded_name_call_offsets_from_instructions(
+    instructions: tuple[Any, ...], name: str
+) -> frozenset[int]:
+    offsets = []
+    for index, instruction in enumerate(instructions):
+        if not instruction.opname.startswith("LOAD_") or instruction.argval != name:
+            continue
+        for candidate in instructions[index + 1 :]:
+            if candidate.opname in CALL_OPNAMES:
+                offsets.append(candidate.offset)
+                break
+    return frozenset(offsets)
+
+
+def loaded_name_call_offsets(function: Callable[..., Any], name: str) -> frozenset[int]:
+    return loaded_name_call_offsets_from_instructions(
+        tuple(dis.get_instructions(function)),
+        name,
+    )
+
+
+VALIDATION_WORKTREE_SCAN_CALL_OFFSETS = loaded_name_call_offsets(
+    validation_worktree_usage, "scan"
+)
+if len(VALIDATION_WORKTREE_SCAN_CALL_OFFSETS) != 1:
+    raise RuntimeError("cannot identify the validation worktree scan call")
+
+
+def validation_process_usage(
+    process: subprocess.Popen[bytes], command_deadline: float
+) -> set[int]:
     roots = {process.pid}
     if CHILD_SUBREAPER_ENABLED:
         roots.add(os.getpid())
-    deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
+    deadline = min(
+        time.monotonic() + MAX_PROCESS_TREE_SCAN_SECONDS,
+        command_deadline,
+    )
     process_ids = {process.pid} | descendant_process_ids(roots, deadline)
+    if time.monotonic() >= command_deadline:
+        raise subprocess.TimeoutExpired(process.args, 0)
     process_ids.discard(os.getpid())
     if len(process_ids) > MAX_VALIDATION_PROCESSES:
         raise TaskError(
@@ -1084,7 +1261,10 @@ def validation_process_usage(process: subprocess.Popen[bytes]) -> set[int]:
             f"({MAX_VALIDATION_PROCESSES} processes)"
         )
     resident_bytes = 0
-    deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
+    deadline = min(
+        time.monotonic() + MAX_RESOURCE_SCAN_SECONDS,
+        command_deadline,
+    )
     for pid in process_ids:
         if time.monotonic() >= deadline:
             raise TaskError("validation resource scan exceeded its time limit")
@@ -1110,12 +1290,16 @@ def validation_process_usage(process: subprocess.Popen[bytes]) -> set[int]:
 
 
 def deleted_open_file_usage(
-    process_ids: set[int], visible_inodes: set[tuple[int, int]]
+    process_ids: set[int],
+    visible_inodes: set[tuple[int, int]],
+    command_deadline: float | None = None,
 ) -> tuple[int, int]:
     total_bytes = 0
     file_count = 0
     seen_inodes = set(visible_inodes)
     deadline = time.monotonic() + MAX_RESOURCE_SCAN_SECONDS
+    if command_deadline is not None:
+        deadline = min(deadline, command_deadline)
     for pid in process_ids:
         if time.monotonic() >= deadline:
             raise TaskError("validation resource scan exceeded its time limit")
@@ -1158,13 +1342,26 @@ def deleted_open_file_usage(
 
 
 def check_validation_resources(
-    checkout: Path, process: subprocess.Popen[bytes]
+    checkout: Path,
+    process: subprocess.Popen[bytes],
+    command_deadline: float,
 ) -> None:
-    process_ids = validation_process_usage(process)
-    total_bytes, file_count, visible_inodes = validation_worktree_usage(checkout)
-    deleted_bytes, deleted_file_count = deleted_open_file_usage(
-        process_ids, visible_inodes
+    process_ids = validation_process_usage(process, command_deadline)
+    if time.monotonic() >= command_deadline:
+        raise subprocess.TimeoutExpired(process.args, 0)
+    total_bytes, file_count, visible_inodes = validation_worktree_usage(
+        checkout,
+        command_deadline=command_deadline,
     )
+    if time.monotonic() >= command_deadline:
+        raise subprocess.TimeoutExpired(process.args, 0)
+    deleted_bytes, deleted_file_count = deleted_open_file_usage(
+        process_ids,
+        visible_inodes,
+        command_deadline,
+    )
+    if time.monotonic() >= command_deadline:
+        raise subprocess.TimeoutExpired(process.args, 0)
     if file_count + deleted_file_count > MAX_VALIDATION_WORKTREE_FILES:
         raise TaskError(
             "validation exceeded the writable worktree file limit "
@@ -1190,7 +1387,11 @@ def validate_candidate(
         validation_argv, checkout, validation_timeout_seconds
     )
     validation_env = validation_environment()
-    resource_check = lambda process: check_validation_resources(checkout, process)
+    resource_check = lambda process, deadline: check_validation_resources(
+        checkout,
+        process,
+        deadline,
+    )
     expected_directory_modes = directory_modes(checkout)
     before = run(
         resolved_validation_argv,
