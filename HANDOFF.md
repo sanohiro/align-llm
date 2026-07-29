@@ -38,7 +38,8 @@ oracle `f63d4c7`, and finalization `e2ce22b`; full verification passed. Fresh pr
 close-time `FileNotFoundError` at the same pre-binding boundary could be mistaken for a queued-scan
 disappearance because `entered` was still false. The runner now recovers the replaced interruption
 from the close exception's context and applies ordinary body-over-close precedence. The opcode case
-also covers close failure. The identity chain must be re-recorded before review resumes.
+also covers close failure. The active replacement is source `1bf428e`, oracle `1a0763f`, and
+finalization `ffbbe87`; full verification passes and fresh review remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -143,8 +144,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the pre-binding close-classification correction as a new clean source, re-record the
-   immutable oracle and canonical baseline, and rerun full verification and preflight.
+1. Run fresh full-diff host-native and independent-adversarial preflight against source `1bf428e`,
+   oracle `1a0763f`, and finalization `ffbbe87`.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
@@ -228,6 +229,14 @@ baseline records source `80735f1a1d8157fc7973fcd783171358a917835c`, immutable or
 `c3fa251c5b7875e3ac42bd13f426151953d1639d`, and finalization
 `bea4e8c4f9231bb8a67a405f4aca971ff6889473`; both samples pass with min/median/max
 `1,742,536,793 / 1,746,891,402 / 1,751,246,012 ns` and no performance claim. Focused helper
+verification passes under default and explicit bytecode-disabled redirected-cache process settings,
+`make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
+merge-hidden, and pre-owner provenance harness passes.
+That chain is superseded by the pre-binding cleanup-classification correction. The active
+replacement baseline records source `1bf428e45ef0a60d863010334e773b723dde4603`, immutable oracle
+`1a0763f3d292132bc1c4004b3195f6942832b93e`, and finalization
+`ffbbe87b899e8aadd88001d3e4481bb372a9b1f0`; both samples pass with min/median/max
+`1,855,509,925 / 1,857,476,640 / 1,859,443,356 ns` and no performance claim. Focused helper
 verification passes under default and explicit bytecode-disabled redirected-cache process settings,
 `make ci` passes with the pinned Align checkout, and the complete positive, scalar/linear negative,
 merge-hidden, and pre-owner provenance harness passes.
