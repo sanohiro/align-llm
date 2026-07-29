@@ -1100,13 +1100,23 @@ def validation_worktree_usage(
                     body_error = sys.exc_info()
         except BaseException as error:
             if not entered:
-                if not isinstance(error, OSError):
-                    raise
-                require_scan_deadline()
-                if isinstance(error, FileNotFoundError) and current != checkout:
-                    continue
-                raise directory_error(current, error) from error
-            close_error = error
+                interrupted_error = error.__context__
+                if interrupted_error is not None:
+                    body_error = (
+                        type(interrupted_error),
+                        interrupted_error,
+                        interrupted_error.__traceback__,
+                    )
+                    close_error = error
+                else:
+                    if not isinstance(error, OSError):
+                        raise
+                    require_scan_deadline()
+                    if isinstance(error, FileNotFoundError) and current != checkout:
+                        continue
+                    raise directory_error(current, error) from error
+            else:
+                close_error = error
 
         require_scan_deadline()
         if body_error is not None:

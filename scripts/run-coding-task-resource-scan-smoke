@@ -562,13 +562,21 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         f"unexpected body-error capture lines: {body_capture_lines}",
     )
 
-    for name, target_event, target, next_error in (
-        ("context-entry-store", "opcode", entry_store_offsets[0], None),
+    for name, target_event, target, next_error, close_error in (
+        ("context-entry-store", "opcode", entry_store_offsets[0], None, None),
+        (
+            "context-entry-store-close-error",
+            "opcode",
+            entry_store_offsets[0],
+            None,
+            FileNotFoundError("close vanished during interruption"),
+        ),
         (
             "post-body-capture",
             "line",
             body_capture_lines[0],
             PermissionError("iterator denied before interruption"),
+            None,
         ),
     ):
         root = owner / f"owner-scope-{name}"
@@ -579,8 +587,13 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         def scan(
             path: Path,
             injected: BaseException | None = next_error,
+            injected_close: BaseException | None = close_error,
         ) -> IteratorWrapper:
-            wrapper = IteratorWrapper(os.scandir(path), next_error=injected)
+            wrapper = IteratorWrapper(
+                os.scandir(path),
+                next_error=injected,
+                close_error=injected_close,
+            )
             wrappers.append(wrapper)
             return wrapper
 

@@ -34,7 +34,11 @@ verification passed. Fresh preflight then found the remaining call-return-to-var
 window. Ownership now transfers through direct context-manager entry, whose exception table owns
 cleanup before the entered iterator is stored. The seventeenth case interrupts that exact store
 opcode and the later body-error capture boundary. The active replacement is source `03d5651`,
-oracle `f63d4c7`, and finalization `e2ce22b`; full verification passes and fresh review remains.
+oracle `f63d4c7`, and finalization `e2ce22b`; full verification passed. Fresh preflight found that a
+close-time `FileNotFoundError` at the same pre-binding boundary could be mistaken for a queued-scan
+disappearance because `entered` was still false. The runner now recovers the replaced interruption
+from the close exception's context and applies ordinary body-over-close precedence. The opcode case
+also covers close failure. The identity chain must be re-recorded before review resumes.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -139,8 +143,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run fresh full-diff host-native and independent-adversarial preflight against source `03d5651`,
-   oracle `f63d4c7`, and finalization `e2ce22b`.
+1. Commit the pre-binding close-classification correction as a new clean source, re-record the
+   immutable oracle and canonical baseline, and rerun full verification and preflight.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
