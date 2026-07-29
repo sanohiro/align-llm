@@ -6,10 +6,11 @@ Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-29. The governance-only retrospective slice is active on
 `agent/autonomous-design-retrospective`, based on merged Align #672 adoption commit `65f7766`.
-It applies generally reusable design-convergence rules from `../align` and lessons from PR #15.
-C6 product implementation has not started. In the primary worktree, modified `HANDOFF.md` and
-untracked `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft
-and must not be discarded._
+Its substantive rule checkpoint is `617a9f7`; it applies generally reusable design-convergence
+rules from `../align` and lessons from PR #15. C6 product implementation has not started. In the
+primary worktree, modified `HANDOFF.md` and untracked
+`docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
+not be discarded._
 
 ## Current position
 
