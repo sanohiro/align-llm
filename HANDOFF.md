@@ -4,16 +4,15 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-**Current checkpoint (authoritative, 2026-07-29):** PR #23 post-open review found that a recovered
-exceptional-control `BaseException` could be replaced when context cleanup crossed the local
-resource deadline. The correction rethrows recovered exceptional control after cleanup and before
-ordinary resource-deadline classification; focused close-success and close-error regressions cover
-the crossed-deadline combination. A replacement source → oracle → finalization chain and complete
-exact-state verification are pending. The superseded chain is
-`a90e0c63c22523b981339d783dd5bba912748605` →
-`dd1e702f2b79b5151c8581a1c644c03f98c08880` →
-`dea7a54a4321693b883ee1a73e0bc75edd254f1e`. The baseline's two passing samples are
-2,798,535,133 and 2,816,202,592 nanoseconds (median 2,807,368,862 nanoseconds), with no performance
+**Current checkpoint (authoritative, 2026-07-29):** PR #23 is ready for refreshed exact-state
+review after resolving the post-open exceptional-control finding. The correction rethrows a
+recovered `BaseException` after cleanup and before ordinary resource-deadline classification;
+focused close-success and close-error regressions cover the crossed-deadline combination. The
+active source → oracle → finalization chain is
+`b8c2ee612334028adff196427f44061f212d0757` →
+`b5aea87fdda4db5f66ee0f773f9a7922a9cb883e` →
+`cb969c1b1134e585e05747025c3da9dde7aa1145`. The baseline's two passing samples are
+3,049,536,430 and 2,948,182,908 nanoseconds (median 2,998,859,669 nanoseconds), with no performance
 claim. The focused helper passes under Python 3.10.20, 3.13, and 3.14; `git diff --check`,
 `make baseline-check`, the exact-pinned `ALIGN_REPO=/home/hiro/prj/align-clean-672 make ci`, the
 positive topology check, all 15 scalar/linear provenance negatives, all four merge-hidden path
@@ -270,7 +269,7 @@ a passing patch.
 Verified on 2026-07-29:
 
 ```text
-source → oracle → finalization             a90e0c6 → dd1e702 → dea7a54
+source → oracle → finalization             b8c2ee6 → b5aea87 → cb969c1
 git diff --check                         PASS
 Python 3.10.20 resource-scan helper      PASS
 Python 3.13 resource-scan helper         PASS
