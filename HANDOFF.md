@@ -62,17 +62,14 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Complete final head-bound independent preflight, push the clean
-   `agent/autonomous-design-retrospective` branch, and open its pull request. Record separate
-   current-SHA host-native and independent-adversarial post-open review envelopes, wait for required
-   checks, then merge only if all evidence remains current.
-2. In a separate automation slice, make the local capable-runner gate and hosted supported gate
-   topology explicit. `make ci` currently omits the C1-C5 focused smokes that PR #15 ran separately,
-   while the hosted gate intentionally omits `coding-v1` and the canonical baseline gate.
-3. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+1. After the current governance slice merges, refresh `main` and use a separate automation slice to
+   make the local capable-runner gate and hosted supported gate topology explicit. `make ci`
+   currently omits the C1-C5 focused smokes that PR #15 ran separately, while the hosted gate
+   intentionally omits `coding-v1` and the canonical baseline gate.
+2. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
-4. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+3. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
    including the required closure matrix and exact implementation boundaries. Implement only
    independently valid slices whose prerequisites have shipped.
 
