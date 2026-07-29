@@ -4,19 +4,22 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-28. The active enabling slice is
-`agent/align-bounded-http-response-request`, based on merged governance commit `65e19b7`. It
-registers Align Request 5 at initial commits `a12b7d5`, `e46ac58`, and `5d8965b`, with the complete
-request contract at `c0768f8`. It was discovered during C6 design review; no C6 implementation has
-started. On `agent/c6-prompt-context-design`,
-the primary worktree intentionally has modified `HANDOFF.md` and untracked
-`docs/specs/c6-prompt-context-optimizer.md`; both belong to the C6 design draft and must not be
-discarded._
+_Last updated: 2026-07-29. The Align #672 adoption slice is active on `agent/align-pin-672`, based
+on merged Request 5 commit `f79fb68`. The branch pins
+`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline and oracle, and
+keeps the full baseline gate runnable and cleanable from a linked Git worktree. The pin branch
+preserves the recorded baseline commits as ancestors and must be merged, not squashed. C6 product
+implementation has not started. In the primary worktree, modified `HANDOFF.md` and untracked
+`docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
+not be discarded._
 
 ## Current position
 
-The repository has completed C0 through C5. C6 design review demonstrated that the current
-`std.http` provider boundary buffers up to one GiB before an application-level size check can run.
+The repository has completed C0 through C5. The current enabling slice adopts the Align ownership
+and nested tagged-payload surface required by the drafted C6 schema direction; it does not add a C6
+product command. Merged PR #14 records Align Request 5: C6 design review demonstrated that the
+current `std.http` provider boundary buffers up to one GiB before an application-level size check
+can run.
 Request 5 asks Align for a caller-selected receive-time response-body cap. Only the provider
 proposal and real-provider gate are blocked; artifact, renderer, scorer, activation, and
 deterministic evaluator work remain independent.
@@ -50,20 +53,22 @@ one client-cap snapshot and deterministic lowest-index error selection.
   after the result file is written.
 - `scripts/run-verification-loop-smoke` now proves persistence, same-task reuse, and the existing
   invalid-repair `REPAIR_FAILED` path. `failure-memory-smoke` is the named C5 make target.
-- Hosted Actions ran the supported C5 smoke successfully; no new external retry loop is
-  warranted. The unavailable nested user-namespace `coding-v1` sandbox and stale C0 baseline check
-  remain local/capable-runner gates only.
+- Hosted Actions ran the supported C5 smoke successfully; no new external retry loop is warranted.
+  The unavailable nested user-namespace `coding-v1` sandbox remains a local/capable-runner gate.
 
 ## Next steps
 
-1. Review and merge the Request 5 registration as its own enabling pull request.
-2. In the primary worktree, commit its modified `HANDOFF.md` and untracked
-   `docs/specs/c6-prompt-context-optimizer.md` together as an initial C6 design checkpoint before
-   integrating merged main. Then merge `origin/main`, resolve `HANDOFF.md` by preserving both the
-   merged Request 5 lifecycle and the C6 design state, and finish the frozen-design review loop.
-   Merge the design only after current SHA-bound preflight and post-open reviews.
-3. Implement independent C6 slices in reviewed order. Do not implement the provider-proposal slice
-   against a hypothetical Align API; resume it only through the request lifecycle.
+1. Complete final verification and independent review for `agent/align-pin-672`, open its pull
+   request, record current SHA-bound post-open reviews, and merge with a merge commit only after
+   required checks pass. Squashing would make the commits embedded in the baseline unreachable.
+2. From refreshed `main`, apply generally reusable autonomous-design rules from `../align` plus the
+   post-merge retrospective rule in one governance-only pull request.
+3. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+   owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
+   creation. Do not hide them behind manual parsing or application-local compatibility layers.
+4. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+   including the required closure matrix and exact implementation boundaries. Implement only
+   independently valid slices whose prerequisites have shipped.
 
 Do not rerun a failing external service request indefinitely. The Codex “high demand” message is a
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
@@ -79,6 +84,53 @@ git diff --check    PASS
 
 Pull request review and check state is intentionally external GitHub metadata bound to exact SHAs,
 not a branch commit recorded here.
+
+## Align #672 adoption verification
+
+The canonical baseline was recorded on 2026-07-29 from clean commit `a5de972` with the clean
+detached Align checkout at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`. The oracle is committed
+at `bb9c636`, the finalized baseline at `03e6b15`, and the Git-worktree baseline regression fix at
+`d3905d0`. Follow-up `cdd90fd` makes abnormal cleanup use the same resolved common Git directory.
+The branch merged Request 5 registration commit `f79fb68` at `5dc6c59`, preserving the recorded
+baseline source and oracle commits as ancestors.
+
+```text
+ALIGN_REPO=<clean detached Align #672 checkout> \
+  python3 eval/runners/record-baseline.py \
+    --corpus eval/tasks/coding-v1.json \
+    --provider deterministic-reference \
+    --model checked-in-patch \
+    --prompt-version none \
+    --samples 2 \
+    --output eval/baselines/coding-v1-pin672-pending.json
+# PASS — 2 deterministic samples; temporary pending file removed after finalization
+
+python3 eval/runners/verify-baseline.py
+# PASS
+
+bash -n scripts/run-baseline-invalid-smoke
+make baseline-check
+# PASS — canonical, malformed-input, immutable-oracle, replacement-object, and failure retention
+```
+
+The first full `make ci` attempt reached the baseline replacement-object regression after all
+compile, coding-corpus, timeout, and loop checks passed, then exposed that the smoke assumed
+`.git` was a directory. `d3905d0` now resolves the absolute common Git directory, preserving the
+same replacement-ref isolation in ordinary clones and linked worktrees.
+
+```text
+ALIGN_REPO=<clean detached Align #672 checkout> make ci
+# PASS — 15 units check per-unit; build; smoke-v1; coding-v1 and containment/timeout regressions;
+# loop paths; canonical baseline, invalid-baseline, replacement-object, and failure retention
+
+ALIGNC=<clean detached Align #672 release alignc> \
+  make provider-smoke index-smoke test-selection-smoke patch-eval-smoke failure-memory-smoke
+# PASS — C1 provider, C2 index and test selection, C3 patch evaluation, C4 verification loop, and
+# C5 failure-memory regression coverage
+
+git diff --check
+# PASS
+```
 
 ## Completed bootstrap
 
@@ -330,8 +382,9 @@ rerun; repeated CI is intentionally out of scope for this feature implementation
 - PR #3 must use a merge commit rather than squash so the recorded source commit remains reachable.
 - A captured process's stdout and stderr are region-bound views. Clone them before returning owned
   diagnostics, as `src/verify.align` does.
-- A Move struct with owned `string` fields cannot currently be a `Result` Ok payload. The current
-  `Captured` value therefore stores its run outcome as data and returns as a bare Move struct.
+- Align #672 supports recursive Move `Option`/`Result` and tagged payloads. Existing bare Move
+  result forms remain valid; change them only when a reviewed consumer contract benefits from the
+  newer surface.
 - Bind an owned `string` to an explicit `str` view before passing it through an indirect function
   value.
 - Reusable command arguments cross loop iterations as `slice<str>` and are materialized for

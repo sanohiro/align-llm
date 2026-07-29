@@ -8,13 +8,14 @@ invalid_baseline="$(mktemp "${project_root}/eval/baselines/.invalid.XXXXXX.json"
 output_file="$(mktemp)"
 replacement_namespace="refs/align-llm-smoke/replace-${BASHPID}"
 replacement_ref=""
+git_common_dir="$(git -C "${project_root}" rev-parse --path-format=absolute --git-common-dir)"
 cleanup() {
   status=$?
   rm -f "${invalid_baseline}" "${output_file}"
   if [[ -n "${replacement_ref}" ]]; then
     git -C "${project_root}" update-ref -d "${replacement_ref}" || true
   fi
-  rmdir "${project_root}/.git/${replacement_namespace}" 2>/dev/null || true
+  rmdir "${git_common_dir}/${replacement_namespace}" 2>/dev/null || true
   # Keep the shared parent: another concurrent smoke invocation may be using it.
   exit "${status}"
 }
@@ -350,7 +351,7 @@ replacement_target="HEAD"
 if [[ "$(git rev-parse HEAD)" == "${source_commit}" ]]; then
   replacement_target="HEAD^"
 fi
-mkdir -p "${project_root}/.git/${replacement_namespace}"
+mkdir -p "${git_common_dir}/${replacement_namespace}"
 git update-ref "${replacement_ref}" "${replacement_target}"
 ordinary_tree="$(
   GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
