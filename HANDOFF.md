@@ -25,7 +25,8 @@ inside that scope and asserts exact restoration. The active replacement is sourc
 Post-open host-native review then found a cleanup gap between body-error capture and the manual
 iterator-close block. The iterator owner scope now uses a real `finally`, and a seventeenth
 exact-source case injects an asynchronous `BaseException` at that boundary and proves close is
-attempted. The identity chain must be re-recorded before review resumes.
+attempted. The active replacement is source `a488262`, oracle `0807ce6`, and finalization
+`17d6886`; full verification passes and fresh review remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -130,8 +131,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the iterator-owner correction as a new clean source, re-record the immutable oracle and
-   canonical baseline, and rerun full verification and preflight.
+1. Run fresh full-diff host-native and independent-adversarial preflight against source `a488262`,
+   oracle `0807ce6`, and finalization `17d6886`.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
@@ -202,6 +203,14 @@ under default and explicit bytecode-disabled redirected-cache process settings, 
 with the pinned Align checkout, and the complete positive and negative provenance harness passes.
 This chain is superseded by the post-open iterator-owner cleanup correction; the focused helper now
 has 17 cases and proves close is attempted when a `BaseException` interrupts body-error capture.
+The active replacement baseline records source
+`a4882627b44b43d73bbbf5220bfa041d99fcdd0e`, immutable oracle
+`0807ce677c12ddf3390f4a10feab5ded27ea69e9`, and finalization
+`17d68864dd7242be040eadb0c057476a7eb0e967`; both samples pass with
+min/median/max `1,729,770,721 / 1,736,149,041 / 1,742,527,361 ns` and no performance claim.
+Focused helper verification passes under default and explicit bytecode-disabled redirected-cache
+process settings, `make ci` passes with the pinned Align checkout, and the complete positive,
+scalar/linear negative, merge-hidden, and pre-owner provenance harness passes.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
