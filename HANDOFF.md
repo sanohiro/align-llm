@@ -4,16 +4,16 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The post-PR #19 compatibility and concurrency governance slice is active
-on `agent/tool-version-concurrency-governance`, based on merged portability-design commit
-`29d2315`. The preserved implementation
+_Last updated: 2026-07-29. The validation-worktree unlink-race design is active on
+`agent/validation-unlink-race-design`, based on merged governance commit `34eac17`. Its plan of
+record is `docs/specs/validation-worktree-unlink-race.md`. The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
 the declared Ubuntu 24.04 hosted runner supplies GNU Make 4.3. The same review found checker
 validation-precedence and bounded-capture gaps, plus a separate validation-directory unlink race.
-Do not update that implementation until this governance slice and the separately scoped runner fix,
-including its own identity-coupled baseline refresh, merge. C6 product implementation has also not
-started. In the primary worktree, modified
+Do not update that implementation until the separately scoped runner fix, including its own
+identity-coupled baseline refresh, merges. C6 product implementation has also not started. In the
+primary worktree, modified
 `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
 not be discarded._
@@ -35,11 +35,10 @@ to be the sole goal in a top-level Make invocation and rejects any additional go
 effects, because otherwise parent work or separate `-j1` children can still overlap; concurrent
 independent Make processes remain unsupported verification evidence. PR #19's retrospective found
 two generally reusable rules: test compatibility at the minimum declared version, and close every
-state-sharing public-entrypoint combination plus both sides of an option-isolation boundary. The
-active governance slice adds those rules without mixing implementation. The review also reproduced
-a queued validation directory
-disappearing before `scandir`; that runner fix is a separate semantic slice whose implementation
-must carry its own source → oracle → finalization refresh.
+state-sharing public-entrypoint combination plus both sides of an option-isolation boundary. PR #20
+merged those rules at `34eac17`. The active design addresses the separately reproduced file-entry
+and queued-directory disappearance races in the validation resource scan. Its implementation must
+carry its own source → oracle → finalization refresh.
 After that runner correction merges, the topology implementation must integrate refreshed `main`
 and re-record the canonical baseline again because `Makefile` is an identity-bound artifact. The
 checker correction remains in that same topology source commit but is not itself in the recorded
@@ -99,12 +98,10 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Merge the minimum-version, isolation-boundary, and composite-entrypoint governance rules after
-   exact-head checks and reviews. Then create and merge a separately designed validation-directory
-   unlink-race fix with
-   deterministic file-entry and queued-directory regressions plus its own identity-coupled baseline
-   refresh; do not retain the unplanned runner edit inside the topology implementation or leave an
-   invalid intermediate `main`.
+1. Merge the validation-worktree unlink-race design after exact-head checks and reviews. Then
+   implement its deterministic file-entry and queued-directory regressions plus its own
+   identity-coupled baseline refresh; do not retain the unplanned runner edit inside the topology
+   implementation or leave an invalid intermediate `main`.
 2. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
@@ -123,7 +120,7 @@ Do not rerun a failing external service request indefinitely. The Codex “high 
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
 
-## Current compatibility and concurrency governance verification
+## Current validation-worktree unlink-race design verification
 
 Verified on 2026-07-29:
 
@@ -132,13 +129,19 @@ git diff --check                         PASS
 make format-check                        PASS
 make baseline-check                      PASS
 test "$(readlink AGENTS.md)" = CLAUDE.md PASS
+make ci                                  FAIL (known unlink race reproduced)
 ```
 
-The governance slice is based on merged portability-design commit `29d2315` and changes only
-`CLAUDE.md`, `docs/review-checklist.md`, and this durable handoff. It changes no Make target,
-workflow, compiler pin, or baseline. The preserved implementation head is `7290e37`; its
+The design slice is based on merged governance commit `34eac17` and changes only
+`docs/specs/validation-worktree-unlink-race.md` and this durable handoff. It changes no runner,
+Make target, workflow, compiler pin, or baseline. The preserved implementation head is `7290e37`; its
 source/oracle/finalization chain is intentionally stale for final delivery because the required
-Makefile portability edit will change a recorded artifact.
+Makefile portability edit will change a recorded artifact. The final design-head `make ci` reached
+`scripts/run-coding-task-invalid-smoke` and reproduced the active defect: the current runner failed
+on `resource-27.bin` disappearing before `DirEntry.stat`, reporting
+`cannot inspect validation worktree path ... [Errno 2] No such file or directory`. This is the
+runner behavior this design gates; the design-only pull request does not claim a passing `make ci`
+until the separately scoped implementation and identity-coupled baseline refresh land.
 
 The rule port was checked against the `../align` `CLAUDE.md` changes between the former Align pin
 `db942d2` and current pin `d9fb5da`. Align-specific Rust, release, and repository-script commands
