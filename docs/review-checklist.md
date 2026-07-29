@@ -12,16 +12,23 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
 - If the one-time initial-bootstrap exception in `CLAUDE.md` applies, its coupled surfaces and
   scoped commits are identified explicitly in the pull request.
 - Completion claims cite an observable gate and its evidence.
+- Aggregate gate names are checked against their actual command graph. The pull request names any
+  relevant focused gate that the aggregate does not invoke instead of inferring coverage from the
+  aggregate's name.
 
 ## Policy and design integrity
 
 - Instructions are internally executable, non-contradictory, and explicit about terminal
   conditions, required evidence, and applicable or `N/A` contract dimensions.
-- A non-trivial public contract maps every normative promise and field to a reproducible acceptance
-  test or measurement before implementation starts.
+- A non-trivial public contract has one authoritative ledger, and an author-side consistency pass
+  maps every normative promise, field, state combination, ownership/allocation rule, canonical
+  encoding rule, identity rule, and prerequisite to a reproducible acceptance test or measurement
+  before implementation starts.
 - Cross-cutting plans name intended owner modules, failure and cleanup paths, and exact regression
-  tests before coding, then map them to the final implementation before code review, or record an
-  explicit deferral with its rationale in the plan of record.
+  tests before coding. Their closure matrices cover formation, construction, move and return,
+  cleanup, malformed input, affected control-flow joins, interface/per-unit paths, provenance, and
+  allocation parity, then map those cells to the final implementation before code review or record
+  an explicit deferral with its rationale in the plan of record.
 - Review requirements cover the final pushed state and require another review after material
   behavior, design, specification, or governance follow-ups.
 - Each preflight and post-open review envelope independently records the exact head SHA, base-tip
@@ -37,6 +44,10 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
 - `HANDOFF.md` identifies the active branch and relevant commit, completed and unfinished work,
   exact next actions, durable verification evidence, blockers, intentional uncommitted files, and
   expected post-merge work without mirroring transient pull request status.
+- If an artifact requires commits from the current repository to remain reachable, the contract
+  names permitted integration methods; the exact reviewed head contains those commits as ancestors,
+  and the selected merge method preserves them. External revisions are checked against their named
+  repository and reachability rule instead.
 
 ## Align correctness
 
@@ -55,6 +66,9 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
 - Empty input, skipped tasks, missing fixtures, and default values cannot silently pass.
 - Performance claims include the baseline, hardware, sample count, and reproducible command.
 - Provider-specific behavior does not leak into provider-independent scoring.
+- Repository-internal test refs and namespaces resolve the Git common directory rather than assuming
+  `.git` is a directory, and ordinary-clone, linked-worktree, normal-cleanup, and abnormal-exit
+  cleanup paths are exercised when that behavior changes.
 
 ## Verification and regression risk
 
@@ -62,3 +76,6 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
 - Tests or corpus tasks exercise failure and timeout paths affected by the change.
 - Diagnostics needed to reproduce a failure remain available.
 - The pull request records valid review findings and explains rejected findings.
+- The prior merged pull request received a bounded retrospective. Reusable review, CI, merge, or
+  worktree lessons are either represented by this scoped governance/automation change or queued
+  explicitly in `HANDOFF.md`; one-off conditions are not promoted into policy.

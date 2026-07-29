@@ -195,6 +195,15 @@ align-llm must verify the capability as the real client.
 - Do not commit model weights, generated binaries, credentials, local profiles, or machine-specific
   paths.
 - Keep provider-specific behavior behind explicit data and dispatch boundaries.
+- Do not assume `.git` is a directory. Automation that intentionally creates repository-internal
+  refs or namespaces must resolve the absolute Git common directory once, use that same resolved
+  location for setup and cleanup, and verify ordinary-clone, linked-worktree, and abnormal-exit
+  cleanup behavior.
+- When a persisted artifact records a commit from the current repository or otherwise requires
+  in-repository ancestry, define the permitted integration methods as part of the artifact contract.
+  Before merging, verify every commit whose contract requires that reachability is an ancestor of
+  the exact head and that the selected merge method preserves it. External repository revisions
+  require their own repository and reachability rule.
 
 ## Design before implementation
 
@@ -202,14 +211,16 @@ Do not use implementation or repeated full-diff review to discover the contract 
 roadmap gate. Before coding a change that adds a public CLI, persisted format, ownership boundary,
 external process or network boundary, or coordinated behavior across three or more modules:
 
-1. Write or update the plan of record under `docs/specs/`. Record the exact public commands and
-   types, inputs and defaults, statuses and errors, ownership and allocation, persisted identity and
-   schema version, deterministic validation order, prerequisite gate, acceptance tests, metrics,
-   and every source of truth that must agree. Mark fields that do not apply as `N/A` with a concrete
-   reason instead of inventing a contract.
-2. Perform an author-side consistency pass. Every normative promise must appear in the public
-   contract, every field must have defined semantics, and every acceptance claim must map to a
-   reproducible test or measurement.
+1. Write or update the plan of record under `docs/specs/` and keep one public-contract ledger
+   authoritative while drafting. For every public surface, record the exact command, type, or
+   signature; inputs and defaults; statuses and errors; ownership, lifetime, and allocation;
+   implementation owner; persisted and cache identity; schema version; deterministic validation
+   order; prerequisite gate; acceptance test; metric or benchmark; and every source of truth that
+   must agree. Mark fields that do not apply as `N/A` with a concrete reason instead of inventing a
+   contract.
+2. Perform an author-side ledger-to-prose consistency pass before independent review. Every
+   normative promise must appear in the public contract, every field must have defined semantics,
+   and every acceptance claim must map to a reproducible test or measurement.
 3. For cross-cutting implementation, add a closure matrix covering construction, success, failure,
    cleanup, early exit, malformed input, and every affected module. Before coding, each applicable
    cell must name its intended owner module and exact regression test or benchmark, or be explicitly
@@ -223,22 +234,43 @@ external process or network boundary, or coordinated behavior across three or mo
 
 For applicable surfaces, the contract ledger and closure matrix must also cover:
 
-- argument and result ownership, lifetime, allocation, validation, construction, move-in,
+- public argument and result ownership, lifetime, allocation, validation, construction, move-in,
   move-out, source nulling, replacement, return, and cleanup or `Drop`;
 - text and wire encoding, embedded NUL handling, deterministic error precedence, and validation
   before side effects;
 - canonical persisted or exchanged scalar widths, tags, field and sequence order, malformed-input
   rejection, and independently checked semantic-to-byte and byte-to-semantic golden vectors;
-- explicit CLI and build inputs without unnamed ambient configuration; and
+- explicit CLI and build inputs without unnamed ambient configuration;
 - overlap exclusion for process-global or connection-global state, failed-second-operation
-  behavior, exhaustion, error, and cleanup restoration order.
+  behavior, exhaustion, error, and cleanup restoration order;
+- the Cartesian product of detail levels, discriminators, verification states, and option states,
+  including exact field presence, row order, ordinal, and unavailable-value rules;
+- nominal versus structural identity for every fingerprint, with the complete reachable definition
+  graph included when identity is structural;
+- a producer-owned table or thunk for every promised runtime-inspection field, without hidden
+  reflection or artifact/source reads;
+- syntax checks for normative examples, with declarations shown separately from positional call
+  expressions; and
+- milestone ordering that prevents any slice from consuming a decision or capability assigned to a
+  later slice.
 
 Mark an inapplicable dimension as `N/A` with its reason; omission is not a decision.
 
 Keep the plan authoritative during implementation. When a finding changes the public surface,
 update the plan first and propagate that decision through code, tests, and documentation in one
-pass. Before code review, perform a matrix-to-diff pass: every applicable cell must point to the
-actual implementation and a passing regression test or to an explicit deferral in the plan.
+pass. Independent review is a validation gate, not the primary design-completion loop. Before code
+review, perform a matrix-to-diff pass: every applicable cell must point to the actual implementation
+and a passing regression test or to an explicit deferral in the plan.
+
+For ownership or other cross-cutting implementation, the closure matrix must additionally
+enumerate:
+
+- type formation and validation, construction, move-in, move-out, source nulling, `Drop`,
+  replacement, and return for every affected implementation-only ownership type;
+- every affected control path, including `if`, `match`, `else`, `?`, `map_err`, branch joins, loop
+  joins, early exits, and malformed input; and
+- generic monomorphization, interface serialization, whole-program and per-unit compilation,
+  runtime ownership provenance, and allocation parity.
 
 ## Autonomous execution and convergence
 
@@ -266,8 +298,22 @@ Elapsed time is not a stopping criterion for a useful command, review, test, or 
   checkpoint, excluding a single required command that is still making progress, re-scope to
   the next smaller independently correct slice and record why in `HANDOFF.md`.
 - When a reviewer finds a bug, audit the complete diff for the same root-cause class and fix that
-  class in one pass. If the second review of a revised diff finds a new critical correctness issue,
-  stop the local patch loop and revisit the design, invariants, and pull request boundary.
+  class in one pass. If the second review of a revised diff finds a new P1 or equivalent soundness
+  or correctness issue, stop the local patch loop, reopen the closure matrix, identify the missed
+  invariant, and redesign or re-split the pull request before continuing.
+
+After each merge, perform one bounded retrospective before starting the next branch:
+
+- inspect the final review findings and dispositions, CI and local-check failures, merge or
+  worktree friction, scope surprises, and commands whose names overstated or understated their
+  actual coverage;
+- distinguish reusable repository knowledge from one-off execution conditions and preferences;
+- for each reusable lesson, add or strengthen the smallest rule, checklist item, regression test,
+  or automation guard in a separate governance or automation slice, or record the exact queued
+  improvement and trigger in `HANDOFF.md` when it cannot be taken immediately; and
+- keep the evidence in the merged pull request and checks. Do not rewrite the merged branch, create
+  a retrospective-only handoff pull request, or mix the improvement into an unrelated product
+  slice.
 
 ## Pull request review and merge workflow
 
