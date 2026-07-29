@@ -4,14 +4,14 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The check-gate aggregate-serialization portability correction is active
-on `agent/check-gate-topology-portability-design`, based on merged baseline-identity design commit
-`e0c37a7`. Its plan of record is `docs/specs/check-gate-topology.md`. The preserved implementation
+_Last updated: 2026-07-29. The post-PR #19 compatibility and concurrency governance slice is active
+on `agent/tool-version-concurrency-governance`, based on merged portability-design commit
+`29d2315`. The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
 the declared Ubuntu 24.04 hosted runner supplies GNU Make 4.3. The same review found checker
 validation-precedence and bounded-capture gaps, plus a separate validation-directory unlink race.
-Do not update that implementation until this correction and the separately scoped runner fix,
+Do not update that implementation until this governance slice and the separately scoped runner fix,
 including its own identity-coupled baseline refresh, merge. C6 product implementation has also not
 started. In the primary worktree, modified
 `HANDOFF.md` and untracked
@@ -20,24 +20,28 @@ not be discarded._
 
 ## Current position
 
-The repository has completed C0 through C5. PR #18 merged at `e0c37a7`, closing the baseline
-identity and merge-history contract for the explicit hosted, capable, and canonical CI topology.
+The repository has completed C0 through C5. PR #19 merged at `29d2315`, correcting the explicit
+hosted, capable, and canonical CI topology design for GNU Make 4.3 portability, supported-input
+propagation, aggregate coexistence, checker validation precedence, and bounded child capture.
 The implementation branch has the complete topology, the required source → oracle → finalization
 history, and a passing `make -j8 ci`. Preflight review then found one portability defect in the
 design: target-scoped `.NOTPARALLEL` is a GNU Make 4.4 feature, but the declared Ubuntu 24.04 hosted
 runner supplies GNU Make 4.3. The same review found that the checker interleaves the specified
 missing/non-ASCII validation phases and buffers self-test child output without the specified bound.
-The active correction preserves the serialized first-failure contract with one explicit `-j1`
+The merged correction preserves the serialized first-failure contract with one explicit `-j1`
 recursive Make per aggregate, clears inherited Make option variables at that child boundary, and
 closes the checker acceptance coverage. It also requires `hosted-checks`, `capable-checks`, or `ci`
 to be the sole goal in a top-level Make invocation and rejects any additional goal before side
 effects, because otherwise parent work or separate `-j1` children can still overlap; concurrent
-independent Make processes remain unsupported verification evidence. The review also reproduced a
-queued validation directory
+independent Make processes remain unsupported verification evidence. PR #19's retrospective found
+two generally reusable rules: test compatibility at the minimum declared version, and close every
+state-sharing public-entrypoint combination plus both sides of an option-isolation boundary. The
+active governance slice adds those rules without mixing implementation. The review also reproduced
+a queued validation directory
 disappearing before `scandir`; that runner fix is a separate semantic slice whose implementation
 must carry its own source → oracle → finalization refresh.
-After both corrections merge, the topology implementation must integrate refreshed `main` and
-re-record the canonical baseline again because `Makefile` is an identity-bound artifact. The
+After that runner correction merges, the topology implementation must integrate refreshed `main`
+and re-record the canonical baseline again because `Makefile` is an identity-bound artifact. The
 checker correction remains in that same topology source commit but is not itself in the recorded
 artifact manifest.
 
@@ -95,8 +99,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Merge the aggregate-serialization and checker-acceptance correction after exact-head checks and
-   reviews. Then create and merge a separately designed validation-directory unlink-race fix with
+1. Merge the minimum-version, isolation-boundary, and composite-entrypoint governance rules after
+   exact-head checks and reviews. Then create and merge a separately designed validation-directory
+   unlink-race fix with
    deterministic file-entry and queued-directory regressions plus its own identity-coupled baseline
    refresh; do not retain the unplanned runner edit inside the topology implementation or leave an
    invalid intermediate `main`.
@@ -118,7 +123,7 @@ Do not rerun a failing external service request indefinitely. The Codex “high 
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
 
-## Current check-topology portability correction
+## Current compatibility and concurrency governance verification
 
 Verified on 2026-07-29:
 
@@ -129,10 +134,11 @@ make baseline-check                      PASS
 test "$(readlink AGENTS.md)" = CLAUDE.md PASS
 ```
 
-The correction records its align-llm base as `e0c37a7` and the compiler/runtime dependency as pinned
-Align `d9fb5da`. It changes no Make target, workflow, or baseline. The preserved implementation head
-is `7290e37`; its source/oracle/finalization chain is intentionally stale for final delivery because
-the required Makefile portability edit will change a recorded artifact.
+The governance slice is based on merged portability-design commit `29d2315` and changes only
+`CLAUDE.md`, `docs/review-checklist.md`, and this durable handoff. It changes no Make target,
+workflow, compiler pin, or baseline. The preserved implementation head is `7290e37`; its
+source/oracle/finalization chain is intentionally stale for final delivery because the required
+Makefile portability edit will change a recorded artifact.
 
 The rule port was checked against the `../align` `CLAUDE.md` changes between the former Align pin
 `db942d2` and current pin `d9fb5da`. Align-specific Rust, release, and repository-script commands

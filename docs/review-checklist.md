@@ -29,6 +29,14 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
   cleanup, malformed input, affected control-flow joins, interface/per-unit paths, provenance, and
   allocation parity, then map those cells to the final implementation before code review or record
   an explicit deferral with its rationale in the plan of record.
+- Compatibility claims are exercised on the minimum declared tool or platform version. Option or
+  environment isolation tests prove both that excluded state does not cross the boundary and that
+  every documented surviving input retains its exact value and documented source or precedence
+  semantics.
+- Concurrency closure classifies every combination of individually supported public entrypoints that
+  can share state in one process tree, including aggregate-plus-aggregate and
+  aggregate-plus-focused operations, and separately defines the policy for concurrent independent
+  processes.
 - Review requirements cover the final pushed state and require another review after material
   behavior, design, specification, or governance follow-ups.
 - Each preflight and post-open review envelope independently records the exact head SHA, base-tip
