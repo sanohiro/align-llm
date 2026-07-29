@@ -10,7 +10,7 @@ finalization chain is `a90e0c63c22523b981339d783dd5bba912748605` →
 `dd1e702f2b79b5151c8581a1c644c03f98c08880` →
 `dea7a54a4321693b883ee1a73e0bc75edd254f1e`. The baseline's two passing samples are
 2,798,535,133 and 2,816,202,592 nanoseconds (median 2,807,368,862 nanoseconds), with no performance
-claim. The focused helper passes under Python 3.13 and 3.14; `git diff --check`,
+claim. The focused helper passes under Python 3.10.20, 3.13, and 3.14; `git diff --check`,
 `make baseline-check`, the exact-pinned `ALIGN_REPO=/home/hiro/prj/align-clean-672 make ci`, the
 positive topology check, all 15 scalar/linear provenance negatives, all four merge-hidden path
 classes, and the pre-owner side-history control pass. The helper's Python 3.10 compatibility seam
@@ -268,6 +268,7 @@ Verified on 2026-07-29:
 ```text
 source → oracle → finalization             a90e0c6 → dd1e702 → dea7a54
 git diff --check                         PASS
+Python 3.10.20 resource-scan helper      PASS
 Python 3.13 resource-scan helper         PASS
 Python 3.14 resource-scan helper         PASS
 make baseline-check                      PASS
