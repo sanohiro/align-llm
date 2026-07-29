@@ -1517,16 +1517,28 @@ def prove_timer_arm_failure_restores() -> None:
 
 
 def prove_timer_cancellation_precedence() -> None:
-    for case_kind in ("swallowed-alarm", "action-error"):
+    for case_kind in (
+        "cancellation-only",
+        "swallowed-alarm",
+        "arm-error",
+        "action-error",
+    ):
         timer_calls: list[tuple[int, float]] = []
+        action_called = False
         saved_handler = signal.getsignal(signal.SIGALRM)
 
         def fail_cancel(timer: int, seconds: float) -> None:
             timer_calls.append((timer, seconds))
+            if seconds == 5.0 and case_kind == "arm-error":
+                raise ValueError("injected arm failure")
             if seconds == 0.0:
                 raise OSError(f"injected {case_kind} cancellation failure")
 
         def action() -> None:
+            nonlocal action_called
+            action_called = True
+            if case_kind == "cancellation-only":
+                return
             if case_kind == "action-error":
                 raise ValueError("injected action failure")
             handler = signal.getsignal(signal.SIGALRM)
@@ -1551,12 +1563,28 @@ def prove_timer_cancellation_precedence() -> None:
             )
         except ValueError as error:
             require(
-                case_kind == "action-error"
-                and str(error) == "injected action failure",
+                (
+                    case_kind == "arm-error"
+                    and str(error) == "injected arm failure"
+                )
+                or (
+                    case_kind == "action-error"
+                    and str(error) == "injected action failure"
+                ),
                 f"{case_kind} cancellation proof returned action error: {error}",
+            )
+        except OSError as error:
+            require(
+                case_kind == "cancellation-only"
+                and str(error) == "injected cancellation-only cancellation failure",
+                f"{case_kind} cancellation proof returned cancellation error: {error}",
             )
         else:
             raise SmokeFailure(f"{case_kind} cancellation sentinel unexpectedly passed")
+        require(
+            action_called is (case_kind != "arm-error"),
+            f"{case_kind} cancellation action state differs: {action_called}",
+        )
         require(
             timer_calls
             == [
