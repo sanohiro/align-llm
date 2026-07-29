@@ -117,7 +117,11 @@ samples are 2,784,815,258 and 2,728,966,015 nanoseconds (median 2,756,890,636 na
 performance claim. Focused default and nondefault-ambient helper runs, `baseline-check`, the full
 exact-pinned `make ci`, the positive topology block, all 15 scalar/linear provenance negatives, all
 four merge-hidden path classes, and the pre-owner side-history control pass. Fresh exact-state
-full-diff preflight remains.
+full-diff host preflight then found that the scan call-site locator recognized only Python 3.11+'s
+`CALL` opcode, causing an import-time failure on Python 3.10. The current uncommitted correction
+recognizes the Python 3.10 `CALL_FUNCTION`/`CALL_METHOD` opcodes and adds a synthetic exact-offset
+regression without broadening the accepted callable or phase. A replacement source → oracle →
+finalization chain and all exact-state evidence remain.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -222,8 +226,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Run fresh full-diff host-native and independent-adversarial preflight for the exact
-   `e9e7e5a` → `ebac35a` → `85ae434` chain and current verification checkpoint.
+1. Verify and commit the Python 3.10 call-opcode compatibility correction as a new source owner,
+   create its replacement oracle/finalization chain, and rerun the complete exact-state evidence
+   and fresh preflight.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,

@@ -1206,17 +1206,28 @@ def validation_worktree_usage(
     return total_bytes, file_count, visible_inodes
 
 
-def loaded_name_call_offsets(function: Callable[..., Any], name: str) -> frozenset[int]:
-    instructions = tuple(dis.get_instructions(function))
+CALL_OPNAMES = frozenset(("CALL", "CALL_FUNCTION", "CALL_METHOD"))
+
+
+def loaded_name_call_offsets_from_instructions(
+    instructions: tuple[Any, ...], name: str
+) -> frozenset[int]:
     offsets = []
     for index, instruction in enumerate(instructions):
         if not instruction.opname.startswith("LOAD_") or instruction.argval != name:
             continue
         for candidate in instructions[index + 1 :]:
-            if candidate.opname == "CALL":
+            if candidate.opname in CALL_OPNAMES:
                 offsets.append(candidate.offset)
                 break
     return frozenset(offsets)
+
+
+def loaded_name_call_offsets(function: Callable[..., Any], name: str) -> frozenset[int]:
+    return loaded_name_call_offsets_from_instructions(
+        tuple(dis.get_instructions(function)),
+        name,
+    )
 
 
 VALIDATION_WORKTREE_SCAN_CALL_OFFSETS = loaded_name_call_offsets(
