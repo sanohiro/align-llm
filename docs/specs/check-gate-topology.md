@@ -197,8 +197,9 @@ clean_git() {
     XDG_CONFIG_HOME=/dev/null \
     git "$@"
 }
-python3 - "$SOURCE_COMMIT" "$ORACLE_COMMIT" <<'PY'
+python3 - "$SOURCE_COMMIT" "$ORACLE_COMMIT" "$FINALIZATION_COMMIT" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -213,6 +214,51 @@ if actual != expected:
         f"expected source/oracle {expected[0]} {expected[1]}, "
         f"received {actual[0]} {actual[1]}"
     )
+if re.fullmatch(r"[0-9a-f]{40}", sys.argv[3]) is None:
+    raise SystemExit("finalization commit must be a full lowercase 40-hex commit ID")
+runs = baseline["runs"]
+if baseline["sample_count"] != 2 or len(runs) != 2:
+    raise SystemExit("refreshed baseline must contain exactly two samples")
+for sample, run in enumerate(runs, start=1):
+    expected_summary = {"task_count": 1, "pass_count": 1, "fail_count": 0}
+    if run["sample"] != sample or run["summary"] != expected_summary:
+        raise SystemExit(f"sample {sample} does not have the fixed passing summary")
+    tasks = run["task_results"]
+    if len(tasks) != 1:
+        raise SystemExit(f"sample {sample} does not contain exactly one fixed task")
+    task = tasks[0]
+    if (
+        task["task_id"] != "python-inclusive-range"
+        or task["verdict"] != "PASS"
+        or task["expected_code"] != 0
+        or task["actual_code"] != 0
+        or task["time_to_passing_patch_ns"] != task["duration_ns"]
+    ):
+        raise SystemExit(f"sample {sample} does not contain the fixed passing task")
+PY
+python3 - <<'PY' | cmp - eval/expected/coding-v1-reference-oracle.json
+import json
+import sys
+from pathlib import Path
+
+fields = (
+    "schema_version",
+    "baseline_id",
+    "align_llm_commit",
+    "align_revision",
+    "corpus",
+    "artifacts",
+    "provider",
+    "environment",
+    "sample_count",
+    "runs",
+    "aggregate",
+)
+baseline = json.loads(
+    Path("eval/baselines/coding-v1-reference.json").read_text(encoding="utf-8")
+)
+projection = {field: baseline[field] for field in fields}
+sys.stdout.buffer.write((json.dumps(projection, indent=2) + "\n").encode("utf-8"))
 PY
 clean_git merge-base --is-ancestor "$SOURCE_COMMIT" "$ORACLE_COMMIT"
 clean_git merge-base --is-ancestor "$ORACLE_COMMIT" "$FINALIZATION_COMMIT"
@@ -368,12 +414,12 @@ self-test: PASS` plus LF and nothing else.
 | Existing focused cleanup | focused scripts | unchanged | Existing ordinary, timeout, and abnormal cleanup regressions continue to own these paths. |
 | Parallel invocation | GNU Make `.NOTPARALLEL` | serialize both aggregate prerequisite lists | `make -j8 ci` passes with the declared aggregate order; the topology oracle proves both targets remain in the serialized set. |
 | Baseline source identity | implementation source commit | final identity-bound `Makefile` is clean and committed before recording | Pending record `align_llm_commit` equals the source commit and its Makefile digest equals the isolated section-2.4 `clean_git show <source>:Makefile` result. |
-| Immutable oracle | oracle commit | exact canonical projection of the pending record | Oracle commit contains only the ordered projection; the existing direct timing-mutation regression proves whole-projection equality is enforced, and final-tree bytes equal the oracle commit. |
+| Immutable oracle | oracle commit | exact canonical projection of the pending record | Independently regenerate the ordered, indented UTF-8 projection with its final LF from the finalized baseline and compare exact bytes; the oracle commit contains only that projection; the existing direct timing-mutation regression proves whole-projection equality is enforced; final-tree bytes equal the oracle commit. |
 | Canonical finalization | finalization commit and final reviewed/merged worktree | finalizer binds full oracle commit and writes digest; the pending record is removed before the finalization commit and remains absent | `make baseline-check` passes; an explicit path check rejects a pending file at the reviewed head and refreshed `main`; canonical digest matches. |
-| Baseline commit chain | finalized baseline, source, oracle, finalization, final reviewed head, and merge result | persisted source/oracle fields equal the named commits; strict source → oracle → finalization → head/main ancestry in an isolated Git environment; merge method is `merge` | Exact identity and ancestry checks pass without replacement objects or ambient Git configuration; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
+| Baseline commit chain | finalized baseline, source, oracle, finalization, final reviewed head, and merge result | persisted source/oracle fields equal the named commits; finalization is a full lowercase 40-hex commit ID; strict source → oracle → finalization → head/main ancestry in an isolated Git environment; merge method is `merge` | Exact identity, width, and ancestry checks pass without replacement objects or ambient Git configuration; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
 | Post-record input change | author/reviewer | re-record from a new clean source commit | Matrix-to-diff audit compares changed paths with the recorded input manifest; any overlap invalidates the complete prior sequence. |
 | Post-record output change | author/reviewer | regenerate through the owning projection/finalizer before finalization; restart the full sequence afterward | Final-tree oracle, baseline, and digest bytes equal their named owner commits; no later commit changes those paths. |
-| Measurement interpretation | pull request evidence | two deterministic-reference samples on the recorded environment | Both samples PASS; prior and refreshed timings are reported without a performance claim. |
+| Measurement interpretation | pull request evidence | exactly two deterministic-reference samples on the recorded environment; each contains the single fixed task and passing summary | An explicit structural assertion requires both `python-inclusive-range` results and summaries to PASS; prior and refreshed timings are reported without a performance claim. |
 | Topology-checker persisted format | N/A | its byte oracle is embedded in the script; no topology file is created | N/A. |
 | Canonical baseline JSON | existing schema version 1 | recorder emits indented UTF-8 JSON plus final LF; finalizer changes only `canonical_oracle_commit` | `make baseline-check` validates exact fields, identities, aggregates, malformed input, immutable oracle, and digest. |
 | Immutable baseline oracle JSON | section 2.4 ordered projection | indented UTF-8 JSON plus final LF, committed before finalization | Projection command is reproducible; final-tree bytes equal the isolated section-2.4 `clean_git show <oracle-commit>:<oracle-path>` result; timing mutation is rejected. |
@@ -409,8 +455,9 @@ self-test: PASS` plus LF and nothing else.
 - Record, project, commit, and finalize the canonical C0 baseline from the final clean implementation
   source commit using section 2.4. Verify the strict source → oracle → finalization → head chain,
   equality with both commit identities persisted in the finalized baseline, exact per-commit path
-  sets, final-tree byte equality, pending-file absence, digest, replacement-object isolation, and
-  the existing immutable-oracle timing-mutation regression.
+  sets, full finalization ID, independently regenerated oracle serialization, two fixed passing
+  samples, final-tree byte equality, pending-file absence, digest, replacement-object isolation,
+  and the existing immutable-oracle timing-mutation regression.
 - Run `make -j8 ci` on a capable host after finalization to prove the refreshed baseline and
   aggregate serialization contract under inherited parallel Make flags.
 - Obtain a passing hosted required check using `make hosted-checks`.
