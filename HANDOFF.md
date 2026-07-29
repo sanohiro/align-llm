@@ -66,7 +66,8 @@ counterexample. The active replacement is source `1d2b0a2`, oracle `8275865`, an
 helper's per-case alarm could be swallowed through the same precedence path. The active correction
 walks the escaping error even when a body error was already captured, interrupts the exact
 post-storage opcode in all three close modes, and records alarm delivery independently from the
-raised alarm exception. Its replacement baseline chain remains to be recorded.
+raised alarm exception. The active replacement is source `de27964`, oracle `9d278d3`, and
+finalization `48ef063`; full verification passes and fresh exact-chain preflight remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -171,28 +172,25 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Finish the post-capture interruption and fail-safe alarm correction, run the focused helper in
-   default and redirected-cache ambient states, and record and finalize its exact replacement
-   baseline.
-2. Rerun full `make ci` and the complete positive and negative provenance harness, then run fresh
-   full-diff host-native and independent-adversarial preflight against that exact chain.
-3. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Run fresh full-diff host-native and independent-adversarial preflight against the exact
+   `de27964` → `9d278d3` → `48ef063` replacement chain and its verification checkpoint.
+2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
-4. Summarize PR #23 after merge and, in a separate governance slice, add any genuinely reusable
+3. Summarize PR #23 after merge and, in a separate governance slice, add any genuinely reusable
    rule not already covered by the repository guide or review checklist.
-5. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
+4. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
    re-record its clean source, immutable oracle, and canonical finalization. Rerun the structural
    provenance harness, `make -j8 ci`, hosted
    verification on Ubuntu 24.04 with the topology self-test plus `make -j8 hosted-checks`, and full
    preflight before opening the implementation pull request.
-6. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
+5. In separate request-register slices, resolve the C6 design review's implemented-surface gaps:
    owned/unescaped typed-JSON strings, optional owned-record JSON payloads, and exclusive file
    creation. Do not hide them behind manual parsing or application-local compatibility layers.
-7. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
+6. Integrate refreshed `main` into the C6 design branch and close its full adversarial review,
    including the required closure matrix and exact implementation boundaries. Implement only
    independently valid slices whose prerequisites have shipped.
 
@@ -322,6 +320,19 @@ exceptional-control-flow recovery, so the ordinary body error followed by close 
 fail-closed rather than entering the queued-directory disappearance skip. Fresh exact-chain
 preflight superseded this chain after finding the post-capture and swallowed-alarm gaps described
 above.
+The active replacement baseline records source
+`de27964c0ba69b1e3c1f796fa17f53b2cb68bf5b`, immutable oracle
+`9d278d3c557c33768c3059dcdb0fa7cd600e555f`, and finalization
+`48ef0635b376551ea1eb52a1594bc63691dd234c`; both samples pass with min/median/max
+`2,065,180,529 / 2,087,770,044 / 2,110,359,559 ns` and no performance claim. Focused helper
+verification passes under default and explicit bytecode-disabled redirected-cache process settings,
+including all six owner-boundary/close-mode combinations at the queued-child store and the
+`POP_EXCEPT` immediately after body-error storage. The pre-case swallowed-alarm sentinel proves
+alarm delivery remains fatal after the raised `CaseTimedOut` is caught. `make baseline-check` and
+pinned-Align `make ci` pass. The complete positive provenance block passes; the isolated negative
+harness rejects all 15 scalar/linear categories and all four TREESAME merge-hidden path classes
+with simplified/full counts `0 / 2`, while pre-owner side history remains accepted. Fresh
+exact-chain preflight remains.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
