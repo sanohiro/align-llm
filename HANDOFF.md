@@ -60,7 +60,8 @@ an ordinary `TaskError` at the queued-child store followed by close FNF was corr
 asynchronous recovery but still misclassified the cleanup FNF as scan-construction disappearance.
 The active correction separately records owner-frame context as proof that cleanup replaced body
 control, while recovering only exceptional-control-flow `BaseException`; it adds the ordinary-error
-counterexample. Its replacement source → oracle → finalization chain remains to be recorded.
+counterexample. The active replacement is source `1d2b0a2`, oracle `8275865`, and finalization
+`ef2a034`; full verification passes and fresh exact-chain preflight remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -165,15 +166,15 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the cleanup-versus-construction classification correction, then record and finalize its
-   exact source → oracle → finalization baseline chain. Rerun the focused helper in default and
-   redirected-cache ambient states, full `make ci`, and the complete positive and negative
-   provenance harness.
-2. Run fresh full-diff host-native and independent-adversarial preflight against that exact chain.
-3. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
+1. Record the verified cleanup-versus-construction classification chain and evidence in this
+   handoff, then run fresh full-diff host-native and independent-adversarial preflight against that
+   exact chain.
+2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
    provenance block, and pending absence on refreshed `main`.
+3. Summarize PR #23 after merge and, in a separate governance slice, add any genuinely reusable
+   rule not already covered by the repository guide or review checklist.
 4. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
    `.NOTPARALLEL` with the specified option-cleared single-child `-j1` mechanism, implement the
    checker precedence, bounded-capture cases, and parse-time aggregate-coexistence guard, and
@@ -298,6 +299,21 @@ verification passes under default and explicit bytecode-disabled redirected-cach
 `make baseline-check` and pinned-Align `make ci` pass, and the complete positive, scalar/linear
 negative, merge-hidden, and pre-owner provenance harness passes. Fresh preflight superseded this
 chain with the cleanup-versus-construction classification finding described above.
+The active replacement baseline records source
+`1d2b0a2cd2eb75766816424b3a748788be700408`, immutable oracle
+`8275865c1ad80b364c9090f3eb75908d63eb60dc`, and finalization
+`ef2a03413eb6a134aeb547aa654659cba703074a`; both samples pass with min/median/max
+`2,000,225,848 / 2,016,281,944 / 2,032,338,040 ns` and no performance claim. Focused helper
+verification passes under default and explicit bytecode-disabled redirected-cache process settings.
+`make baseline-check` and pinned-Align `make ci` pass. The complete positive, scalar/linear
+negative, merge-hidden, and pre-owner provenance harness passes. The helper covers all six
+combinations of the queued-child store and post-body-capture ownership boundaries with close
+success, direct `FileNotFoundError`, or nested internal error followed by `FileNotFoundError`;
+construction/entry incidental and cyclic contexts; failed entry without exit; and the ordinary
+`TaskError` counterexample. Cleanup-path authentication is recorded independently from
+exceptional-control-flow recovery, so the ordinary body error followed by close failure remains
+fail-closed rather than entering the queued-directory disappearance skip. Fresh exact-chain
+preflight remains.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
