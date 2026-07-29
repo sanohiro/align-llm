@@ -16,7 +16,8 @@ the replacement chain is source commit `03ce5ba`, oracle commit `976af31`, and f
 `89fe54c`. A fresh preflight closed the timer finding but found that the exact sentinel load still
 ran inside ordinary-import normalization and that the production load ran after the synthetic
 nondefault ambient state was removed. The loader scopes are now corrected; the exact source →
-oracle → finalization chain must be re-recorded and verified again.
+oracle → finalization replacement is source `883f3f7`, oracle `d05e9f4`, and finalization
+`2d05d47`. Full verification and a fresh preflight remain.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -121,9 +122,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Commit the corrected loader scope as a new clean source, re-record the pending measurement,
-   oracle, and finalization through their exclusive owner commits, update the identities here, and
-   rerun complete focused, CI, provenance, and preflight verification.
+1. Rerun complete focused, CI, and positive and negative provenance verification against source
+   `883f3f7`, oracle `d05e9f4`, and finalization `2d05d47`, then run a fresh full-diff preflight.
 2. Push the exact source/oracle/finalization chain, open its pull request, complete separate
    host-native and independent-adversarial post-open reviews, and merge only with a merge commit
    that preserves all three recorded identities. Recheck the focused helper, baseline, provenance
@@ -178,9 +178,12 @@ passes under default and explicit bytecode-disabled redirected-cache ambient set
 The isolated negative harness rejects persisted-source, sample, oracle-order/final-LF, symbolic and
 annotated-object identity, linear restore, injected log failure, and all four TREESAME merge-hidden
 path classes; pre-owner side history remains accepted. That chain and evidence are superseded by
-the loader-scope correction and must be re-recorded. The preserved topology implementation head
-remains `7290e37`; its recorded chain is intentionally stale until this runner correction and
-baseline refresh merge.
+the loader-scope correction. The active replacement baseline records source
+`883f3f7b0b7f90e030c3e424fe5259a1e9f85af4`, immutable oracle
+`d05e9f4a45589f5993676f39e68f54f7f34eaf35`, and finalization
+`2d05d47ead8abc1257ba16970f11def981bd3b44`; both samples pass. Full replacement verification is in
+progress. The preserved topology implementation head remains `7290e37`; its recorded chain is
+intentionally stale until this runner correction and baseline refresh merge.
 
 Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
 branch commit recorded here.
