@@ -1045,6 +1045,10 @@ def validation_worktree_usage(
                 path = Path(entry.path)
                 try:
                     metadata = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    # Validation may unlink a path after scandir returned it. The next
+                    # bounded scan accounts for any path that still exists.
+                    continue
                 except OSError as error:
                     raise TaskError(
                         f"cannot inspect validation worktree path {path.relative_to(checkout)}: "

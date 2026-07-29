@@ -6,8 +6,9 @@ Conversation history and per-machine memory are not project state.
 
 _Last updated: 2026-07-29. Check-gate topology implementation is active on
 `agent/check-gate-topology-implementation`, based on merged design-correction commit `e0c37a7`.
-The implementation source commit, baseline measurement, oracle, and finalization are not yet
-recorded. C6 product implementation has also not started. In the primary worktree, modified
+The first source/oracle/finalization attempt exposed and is correcting a pre-existing validation
+resource-scan unlink race; its baseline identities are superseded and must be re-recorded after the
+fix. C6 product implementation has also not started. In the primary worktree, modified
 `HANDOFF.md` and untracked
 `docs/specs/c6-prompt-context-optimizer.md` intentionally belong to the C6 design draft and must
 not be discarded._
