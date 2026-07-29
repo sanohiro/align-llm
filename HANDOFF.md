@@ -4,9 +4,12 @@ A living continuity note for resuming align-llm on another machine or in a fresh
 Codex session. Read `CLAUDE.md` first, then this file, then the relevant specifications named below.
 Conversation history and per-machine memory are not project state.
 
-_Last updated: 2026-07-29. The validation-worktree unlink-race design is active on
-`agent/validation-unlink-race-design`, based on merged governance commit `34eac17`. Its plan of
-record is `docs/specs/validation-worktree-unlink-race.md`. The preserved implementation
+_Last updated: 2026-07-29. The exact-source regression-harness governance follow-up is active on
+`agent/exact-source-harness-governance`, based on merged validation-worktree design commit
+`93bab2f`. It strengthens `docs/review-checklist.md` from PR #21's bounded retrospective and
+binds review commands to the envelope's immutable base tip, including post-review verification when
+a command requires a symbolic ref. The preserved
+implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
 the declared Ubuntu 24.04 hosted runner supplies GNU Make 4.3. The same review found checker
@@ -36,10 +39,16 @@ effects, because otherwise parent work or separate `-j1` children can still over
 independent Make processes remain unsupported verification evidence. PR #19's retrospective found
 two generally reusable rules: test compatibility at the minimum declared version, and close every
 state-sharing public-entrypoint combination plus both sides of an option-isolation boundary. PR #20
-merged those rules at `34eac17`. The active design addresses the separately reproduced file-entry
-and queued-directory disappearance races in the validation resource scan. Its implementation must
-carry its own source → oracle → finalization refresh.
-After that runner correction merges, the topology implementation must integrate refreshed `main`
+merged those rules at `34eac17`.
+
+PR #21 merged at `93bab2f`, establishing the reviewed validation-worktree unlink-race contract and
+its identity-coupled implementation boundary. Its retrospective found that regression helpers
+which execute repository source must bind execution to the exact reviewed bytes rather than assume
+import configuration defeats valid stale caches, and must restore cache and interpreter-global
+state on success and failure. The active governance follow-up adds that reusable review rule before
+the runner implementation begins. The ledger-order finding needs no additional rule because the
+existing authoritative-ledger and consistency-pass requirements detected and closed it.
+After the runner correction merges, the topology implementation must integrate refreshed `main`
 and re-record the canonical baseline again because `Makefile` is an identity-bound artifact. The
 checker correction remains in that same topology source commit but is not itself in the recorded
 artifact manifest.
@@ -47,7 +56,10 @@ artifact manifest.
 PR #16 merged at `c20e919`, adding the applicable Align
 design-convergence rules and the bounded post-merge retrospective. Its review caught and fixed
 transient PR mechanics in `HANDOFF.md`; the existing durable-state rule and the new checklist item
-now cover that reusable lesson, so no additional governance slice is queued.
+now cover that reusable lesson, so no additional governance slice is queued. That rule port was
+checked against the `../align` `CLAUDE.md` changes between the former Align pin `db942d2` and
+current pin `d9fb5da`; Align-specific Rust, release, and repository-script commands were
+intentionally not copied.
 
 PR #15 merged with a merge commit at `65f7766`, pins
 Align #672 at `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, refreshes the immutable C0 baseline, and keeps
@@ -98,8 +110,9 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Merge the validation-worktree unlink-race design after exact-head checks and reviews. Then
-   implement its deterministic file-entry and queued-directory regressions plus its own
+1. Merge the exact-source regression-harness governance follow-up after exact-head checks and
+   reviews. Then implement the merged validation-worktree design's deterministic file-entry and
+   queued-directory regressions plus its own
    identity-coupled baseline refresh; do not retain the unplanned runner edit inside the topology
    implementation or leave an invalid intermediate `main`.
 2. Integrate refreshed `main` into `agent/check-gate-topology-implementation`, replace target-scoped
@@ -120,7 +133,7 @@ Do not rerun a failing external service request indefinitely. The Codex “high 
 service-capacity condition, not a repository or Actions failure. The central metric remains time to
 a passing patch.
 
-## Current validation-worktree unlink-race design verification
+## Current exact-source governance verification
 
 Verified on 2026-07-29:
 
@@ -129,24 +142,18 @@ git diff --check                         PASS
 make format-check                        PASS
 make baseline-check                      PASS
 test "$(readlink AGENTS.md)" = CLAUDE.md PASS
-make ci                                  FAIL (known unlink race reproduced)
 ```
 
-The design slice is based on merged governance commit `34eac17` and changes only
-`docs/specs/validation-worktree-unlink-race.md` and this durable handoff. It changes no runner,
-Make target, workflow, compiler pin, or baseline. The preserved implementation head is `7290e37`; its
-source/oracle/finalization chain is intentionally stale for final delivery because the required
-Makefile portability edit will change a recorded artifact. The final design-head `make ci` reached
-`scripts/run-coding-task-invalid-smoke` and reproduced the active defect: the current runner failed
-on `resource-27.bin` disappearing before `DirEntry.stat`, reporting
-`cannot inspect validation worktree path ... [Errno 2] No such file or directory`. This is the
-runner behavior this design gates; the design-only pull request does not claim a passing `make ci`
-until the separately scoped implementation and identity-coupled baseline refresh land.
+This governance slice is based on merged PR #21 commit `93bab2f` and changes only the reusable
+review checklist plus this durable handoff. It changes no runner, Make target, workflow, compiler
+pin, baseline, or authoritative product design. The preserved implementation head is `7290e37`;
+its source/oracle/finalization chain is intentionally stale for final delivery because the required
+Makefile portability edit will change a recorded artifact. The known current-runner unlink race
+remains the expected `make ci` failure until the separately scoped implementation and
+identity-coupled baseline refresh land.
 
-The rule port was checked against the `../align` `CLAUDE.md` changes between the former Align pin
-`db942d2` and current pin `d9fb5da`. Align-specific Rust, release, and repository-script commands
-were intentionally not copied. Pull request review and check state remains external GitHub metadata
-bound to exact SHAs, not a branch commit recorded here.
+Pull request review and check state remains external GitHub metadata bound to exact SHAs, not a
+branch commit recorded here.
 
 ## Align #672 adoption verification
 
