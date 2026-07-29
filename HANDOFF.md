@@ -118,10 +118,15 @@ performance claim. Focused default and nondefault-ambient helper runs, `baseline
 exact-pinned `make ci`, the positive topology block, all 15 scalar/linear provenance negatives, all
 four merge-hidden path classes, and the pre-owner side-history control pass. Fresh exact-state
 full-diff host preflight then found that the scan call-site locator recognized only Python 3.11+'s
-`CALL` opcode, causing an import-time failure on Python 3.10. The current uncommitted correction
+`CALL` opcode, causing an import-time failure on Python 3.10. The correction
 recognizes the Python 3.10 `CALL_FUNCTION`/`CALL_METHOD` opcodes and adds a synthetic exact-offset
-regression without broadening the accepted callable or phase. A replacement source → oracle →
-finalization chain and all exact-state evidence remain.
+regression without broadening the accepted callable or phase. The focused helper passes under
+Python 3.13 and 3.14. Its replacement source → oracle → finalization chain is `93aed1a` →
+`1b32539` → `3448d5a`; two passing samples are 2,723,911,419 and 2,847,130,456 nanoseconds
+(median 2,785,520,937 nanoseconds), with no performance claim. Focused default and redirected-cache
+helper runs, `baseline-check`, full exact-pinned `make ci`, positive topology, all 15 scalar/linear
+provenance negatives, all four merge-hidden path classes, and the pre-owner side-history control
+pass. Fresh exact-state preflight remains.
 The preserved implementation
 branch `agent/check-gate-topology-implementation` has a passing complete gate and finalized
 baseline, but preflight review found that target-scoped `.NOTPARALLEL` requires GNU Make 4.4 while
@@ -226,9 +231,8 @@ one client-cap snapshot and deterministic lowest-index error selection.
 
 ## Next steps
 
-1. Verify and commit the Python 3.10 call-opcode compatibility correction as a new source owner,
-   create its replacement oracle/finalization chain, and rerun the complete exact-state evidence
-   and fresh preflight.
+1. Run fresh exact-state host-native and independent-adversarial preflight for the
+   `93aed1a` → `1b32539` → `3448d5a` chain and current verification checkpoint.
 2. Push the replacement source/oracle/finalization chain to PR #23, complete separate host-native
    and independent-adversarial post-open reviews for the new exact SHA set, and merge only with a
    merge commit that preserves all three recorded identities. Recheck the focused helper, baseline,
