@@ -1376,9 +1376,10 @@ Request 7 may be registered and reviewed independently, but it must not advance 
 `ALIGN_MERGED` at a named Align commit. Strict rejection of a malformed ignored string and
 outside-arena rejection of an escaped retained view both add failure edges after an earlier field
 may have made an owner live. The prerequisite must close those edges for every affected
-`parse_object` caller and indexed AoS staging path. If Align delivers both capabilities jointly,
-the shared pull request must satisfy the cleanup request first and both lifecycle entries must name
-the same shipped commit; Request 7 still cannot claim independent implementation readiness.
+`parse_object` caller and indexed AoS staging path. Joint delivery is forbidden: the Request 7
+implementation branch may be created only from an Align base that already contains the named
+merged cleanup commit. Merge, rebase, or squash integration is permitted only when the final
+Request 7 commit retains that cleanup commit as an ancestor.
 
 ### Motivation
 
@@ -1681,9 +1682,25 @@ Align compiler/runtime tests must:
 ### align-llm adoption gate
 
 After Request 7 reaches `ALIGN_MERGED` on top of its named shipped cleanup prerequisite, align-llm
-owns a separate adoption slice with one immutable observable gate. It release-builds and pins the
-shipped revisions, records both lifecycle dependencies, adds `c6-json-escape-adoption` to the
-`Makefile`, and includes that target in `make ci`. The target runs
+owns a separate adoption slice with one immutable observable gate. It release-builds and writes
+only the final Request 7 Align commit to the single `.align-revision`; the cleanup lifecycle entry
+retains its distinct commit. The adoption slice also checks in
+`eval/fixtures/c6-json-escape-adoption/cleanup-align-revision`, containing exactly that lowercase
+40-hex cleanup commit plus one newline. It adds `c6-json-escape-adoption` to the `Makefile`, includes
+that target in `make ci`, and requires the cleanup lifecycle entry to equal the fixture file while
+Request 7's lifecycle entry equals `.align-revision`. The target validates the cleanup fixture's
+exact encoding, first runs the existing exact-checkout revision check, then proves
+external-repository reachability with:
+
+```text
+git -C "$ALIGN_REPO" merge-base --is-ancestor \
+  "$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cleanup-align-revision)" \
+  "$(tr -d '\n' < .align-revision)"
+```
+
+The command must return zero before any adoption fixture executes. A cherry-pick or joint commit
+that merely reproduces cleanup content without preserving the named cleanup commit's ancestry is
+rejected. The target then runs
 `scripts/run-c6-json-escape-adoption-smoke` against checked-in
 `eval/fixtures/c6-json-escape-adoption/`.
 That directory owns `main.align`, `escape-heavy.input.json`, and
