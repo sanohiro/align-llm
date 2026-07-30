@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `64a468fdd90e9c6c889e0054a6a8027f044be76e`
+  `8e32d5a856b53f12ba4a2a1973d1e5fe4ff0582e`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -41,6 +41,13 @@ precedence cases, a fixed 4,096-case SplitMix64 grammar corpus, and a caller-own
 `cfg(test)`-only probe for failure byte offsets and logical arena allocations. The probe is not a
 production ABI or process-global counter.
 
+A second adversarial review found that a proposed joint-delivery exception contradicted the
+cleanup-first lifecycle and that align-llm can pin only one Align commit. The final contract removes
+joint delivery. A Request 7 implementation branch may start only after the named cleanup commit is
+merged, and the final Request 7 commit must retain that cleanup commit as an ancestor. Adoption pins
+only the final Request 7 commit in `.align-revision`, records the cleanup commit in a checked-in
+fixture, and runs an Align-repository `merge-base --is-ancestor` check before any client fixture.
+
 The bounded retrospective after PR #24 established three reusable decisions:
 
 1. describe ownership defects by owner-live transitions rather than a container-type label;
@@ -51,7 +58,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`64a468fdd90e9c6c889e0054a6a8027f044be76e` against the exact pinned sibling checkout:
+`8e32d5a856b53f12ba4a2a1973d1e5fe4ff0582e` against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
