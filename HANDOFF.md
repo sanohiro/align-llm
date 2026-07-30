@@ -1,59 +1,47 @@
 # Session handoff
 
-Read `CLAUDE.md` first. This file records only the current durable execution state; GitHub owns
-transient pull request checks, reviews, and attestations.
+Read `CLAUDE.md` first. This file records only durable execution state; GitHub owns transient pull
+request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/json-scan-row-ownership-request`
-- Base: `2c3518210cecab3eaada895d57742b088a4976d4` (`origin/main`)
-- Relevant content head before this handoff-only finalization:
-  `c4adea69b35b37f07cdb2daa10ec61a400986958`
-- Active goal: register and merge the independently demonstrated non-blocking `json.scan` owned-row
-  safety request before returning to the C6 escaped-string request.
+- Branch: `agent/c6-json-escape-request-v2`
+- Base and relevant main commit:
+  `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
+- Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
+  JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
 - Pinned Align commit: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`
-- C6 escaped-string request branch: preserved as `agent/c6-json-escape-request`.
 - C6 design draft: preserved separately on `agent/c6-prompt-context-design`.
+- Original escaped-string work and its completed review follow-up remain preserved on
+  `agent/c6-json-escape-request` at `1ef0d37c752eb94ad5457209946a5c587e14322e`.
 
-Review of the escaped-string request demonstrated a separate existing correctness gap. The pinned
-compiler admits `json.scan` row schemas with owned array fields, while its one reusable row slot is
-zeroed before each decode and is never dropped after a successful row. An owned field can therefore
-be allocated and then overwritten without cleanup even when the pipeline projects a different
-field.
+PR #24 merged the scanner-safety request into the align-llm request register as Request 6. That
+request exclusively owns the proposed recursively Copy `json.scan` row boundary. Request 7 now
+owns escaped-string materialization for arena-backed declared record, AoS, and SoA decoding plus
+shared strict string grammar. Scanner ownership and Move-row diagnostics are N/A here; Request 7
+only specifies strict grammar for rows admitted by Request 6 and rejects escaped retained views
+because the scanner has no arena.
 
-Request 6 chooses the smallest idiom-consistent repair: give `json.scan` a scanner-specific semantic
-gate using Align's canonical recursive Move classification and reject a Move row. Recursively Copy
-rows preserve the documented no-arena, borrowed-input model and require no new runtime branch or
-ABI. The general `json.decode` surface is unchanged. No current C6 artifact consumes `json.scan`,
-so the request is non-blocking. Its first concrete consumer is the post-`ALIGN_MERGED` adoption
-target, which includes a Copy-row aggregate and fail-closed Move-row negatives; no product consumer
-is currently planned. A consumer that needs owned rows belongs to a separate per-row ownership
-request. This branch changes only `docs/align-requests.md` and this durable handoff.
+Ordinary decode, encode, and owner drop for eligible `Option<Move record>` success are already
+shipped. The next cleanup request must instead audit every transition after any decoded owner
+becomes live: construction, speculative write, replacement and source nulling, fallback success
+and failure, staging, return, and cleanup. Demonstrated classes include optional owners followed by
+later enclosing-object failure, indexed top-level AoS speculation overwritten by fallback,
+top-level `array<MoveStruct>` partial staging, and required or optional top-level record owners
+followed by trailing-garbage rejection. Request 7 does not claim to repair those classes and must
+not add a new owner-live transition.
 
-The contract covers Copy options in their `Some`, missing, and `null` states; local, imported, and
-generic public type spellings; Copy/Move classification after monomorphization; deterministic
-validation; allocation-counter isolation; pre-codegen rejection; cache behavior; and unchanged
-accepted MIR, LLVM, and runtime ABI. Imported generics receive whole-program and per-unit coverage:
-`scan_schema.Wrap<array<i64>>` must retain that exact public spelling without an internal `$` name.
+The bounded retrospective after PR #24 established three reusable decisions:
 
-Ordinary decode/encode/drop for `Option<Inner>` where `Inner` owns an array is already shipped.
-Known decoded-owner gaps remain in the pinned runtime: optional descriptors are skipped on later
-object failure; indexed top-level AoS speculation can write an owner that fallback overwrites on
-success or failure; top-level `array<MoveStruct>` decode does not clean current or completed staged
-rows after malformed later elements or trailing garbage; and top-level single-record trailing
-garbage leaves required or optional owners live. A follow-up design must audit every transition
-after an owner becomes live, including construction, speculative write, replacement/source
-nulling, fallback, staging, return, and cleanup, and explicitly own or assign every affected public
-path. SoA decoded-owner cleanup is N/A because sema rejects owned SoA columns. This does not change
-Request 6's scanner-only boundary: semantic rejection prevents any Move row from reaching scanner
-MIR or runtime construction, so the scanner repair does not depend on a general decode cleanup
-repair.
+1. describe ownership defects by owner-live transitions rather than a container-type label;
+2. split an independently sound safety boundary before resuming a broader consumer request; and
+3. keep attestations in GitHub while recording reproducible verification commands and durable
+   branch decisions here.
 
 ## Verification
 
-Verified on 2026-07-30 at relevant content head
-`c4adea69b35b37f07cdb2daa10ec61a400986958` against the pinned sibling Align checkout:
+Verified on 2026-07-30 on the final pre-commit diff against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
@@ -62,31 +50,24 @@ ALIGN_REPO=/home/hiro/prj/align make ci  PASS
 
 ## Exact next steps
 
-1. Rerun exact verification on the final handoff head, push the follow-up, and complete the required
-   current-SHA checks and reviews in GitHub. Merge only when all required evidence is clean and
-   `origin/main` remains the reviewed base.
-2. Refresh `main` and perform the required bounded retrospective for this merged pull request.
-3. Rebase the preserved escaped-string branch, renumber that request to Request 7, make
-   `json.scan` explicitly N/A under Request 6's boundary, and resume its review.
-4. Register decoded-owner transition cleanup, strict numeric grammar if retained, and
-   record-array construction as separate reviewed slices before returning to the C6 design branch.
-   The cleanup design must audit every transition after an owner becomes live and include
-   allocation-count regressions for optional outer failure, successful and failed top-level AoS
-   fallback after a speculative owner write, top-level `array<MoveStruct>` partial staging, and
-   trailing-garbage rejection. Do not reopen a blanket `Option<Move record>` descriptor request:
-   its ordinary success path is shipped.
+1. Commit the completed contract and closure-ledger pass, then rerun exact verification on the
+   resulting head.
+2. Run a fresh independent adversarial preflight against the complete diff and pinned Align
+   implementation. Resolve valid findings before opening the pull request.
+3. Open a focused draft pull request, publish SHA-bound preflight, host-native,
+   independent-adversarial, and check evidence, and merge only when all current-SHA evidence is
+   clean against an unchanged base tip.
+4. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup,
+   strict numeric grammar if retained, and record-array construction as separate reviewed slices.
+5. Return to the C6 design branch only after its complete prerequisite set is registered; do not
+   implement against a proposed Align surface.
 
 ## Constraints and intentional state
 
-- The Request 6 design and all contract corrections are committed. The worktree is expected to be
-  clean after this handoff-only finalization; do not discard or rewrite the scoped commits.
-- The worktree checked out on `agent/c6-json-escape-request` contains the committed escaped-string
-  Request 6 plus intentional uncommitted changes to `HANDOFF.md` and
-  `docs/align-requests.md`. Preserve those files until this request merges, then renumber/rebase
-  the branch and correct its inherited blanket `Option<Move record>` claim to the decoded-owner
-  transition classes above.
+- This branch changes only `docs/align-requests.md` and this durable handoff.
+- The old escaped-string branch is a preserved source checkpoint, not a merge source.
 - `agent/c6-prompt-context-design` preserves the C6 design draft.
-- Existing governance, pin-adoption, topology, and Request 5 worktrees belong to earlier scoped
-  work; do not modify or remove them.
+- Existing governance, pin-adoption, topology, Request 5, and scanner-request worktrees belong to
+  earlier scoped work; do not modify or remove them.
 - Use the repository wrappers with the exact pinned Align checkout. Do not implement C6 against a
   proposed Align surface or introduce an application workaround.
