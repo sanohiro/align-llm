@@ -1685,13 +1685,20 @@ Align compiler/runtime tests must:
     `schema_version`, `ordinal`, `validity_class`, `wrapper_shape`, `nesting_depth`,
     `boundary_class`, `anchor_token_offset`, `raw_token_hex`, `grammar_valid`, and
     `semantic_bytes_hex`; the last field is lowercase hex for a valid token and `null` for an
-    invalid token. Files use UTF-8, LF endings, no blank lines, and ordinals `0..4095`.
+    invalid token. `schema_version` is the JSON integer `1`; `ordinal`, `nesting_depth`, and
+    `anchor_token_offset` are nonnegative JSON integers; the three enumerated class/shape fields are
+    JSON strings; `raw_token_hex` and every non-null `semantic_bytes_hex` are even-length lowercase
+    hex strings; and `grammar_valid` is a JSON boolean. Files use UTF-8, LF endings, no blank lines,
+    and ordinals `0..4095`.
     Coverage is the complete Cartesian product of eight validity classes (`clean_ascii`,
     `clean_utf8`, `short_escape`, `unicode_escape`, `surrogate_pair`, `malformed_escape`,
     `malformed_surrogate`, and `raw_c0`), four document-wrapper shapes (`minimal`, `prefix_pad`,
     `suffix_pad`, and `both_pad`), unknown-value nesting depths `0..3`, four boundary classes
     (`interior`, `end_16`, `end_32`, and `end_64`), and variants `0..7`, ordered lexicographically
     by those dimensions. The variant is encoded by `ordinal % 8`; it is not a separate field.
+    `grammar_valid` is `true` exactly for the first five named validity classes and `false` for
+    `malformed_escape`, `malformed_surrogate`, and `raw_c0`; a true row's
+    `semantic_bytes_hex` is exactly the semantic UTF-8 byte sequence obtained from `T`.
     `raw_token_hex` is lowercase hex for the complete source token from its opening double quote
     through its closing double quote. Even an invalid token is quote-terminated; truncated
     whole-token structure is outside this grammar corpus. `anchor_token_offset` is the zero-based
@@ -1739,7 +1746,9 @@ Align compiler/runtime tests must:
     `(a + 1) % 16 == 0`, `% 32 == 0`, or `% 64 == 0`. `interior` requires
     `4 <= a % N <= N - 5` for every `N` in `{16, 32, 64}`. The adapter test reconstructs the exact
     bytes, proves its chosen `p` satisfies the equation, proves every smaller nonnegative `p` fails
-    it, and asserts the parser's internal failure offset against that adapter-specific `a`.
+    it, and locates the class anchor at that adapter-specific `a`. An invalid row additionally
+    asserts the parser's internal failure offset equals `a`; a valid row asserts successful ignore
+    and has no failure offset.
 
     The authoritative Align design must check in this exact fixture and record its lowercase
     SHA-256 before Request 7 may advance to `ACCEPTED`; the test first verifies the byte hash, line
