@@ -1901,7 +1901,7 @@ align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cle
 align_request7_revision="$(tr -d '\n' < .align-revision)"
 
 partial_clone_status=0
-clean_git -C "$ALIGN_REPO" config --local --name-only --get-regexp \
+clean_git -C "$ALIGN_REPO" config --includes --local --name-only --get-regexp \
   '^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$' \
   >/dev/null 2>&1 || partial_clone_status=$?
 test "$partial_clone_status" = 1
@@ -1951,9 +1951,11 @@ local access marker as its promisor remote, snapshots the object database and in
 reject the actual `remote.<name>.promisor` / `remote.<name>.partialclonefilter` configuration before
 `cat-file` or `merge-base`, without contacting the remote, creating an object, or changing the
 index. Separate negatives cover the legacy extension key and mixed-case remote subsections. A
-separate clean-checkout regression makes the index stat cache eligible for refresh and proves the
-exact revision check plus every ancestry command leaves its index bytes and metadata unchanged
-under `GIT_OPTIONAL_LOCKS=0`. The common-dir capture
+repository-local `include.path` negative places the promisor keys only in the included file and
+proves that effective local configuration is still rejected. A separate clean-checkout regression
+makes the index stat cache eligible for refresh and proves the exact revision check plus every
+ancestry command leaves its index bytes and metadata unchanged under `GIT_OPTIONAL_LOCKS=0`. The
+common-dir capture
 appends a fixed non-newline sentinel before shell command
 substitution can discard Git's output terminator, requires exactly one LF immediately before that
 sentinel, removes only that exact suffix with shell parameter expansion, and then requires a
