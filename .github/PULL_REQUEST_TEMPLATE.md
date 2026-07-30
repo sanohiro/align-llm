@@ -43,7 +43,14 @@ Use `N/A` with a reason when the change makes no performance claim.
 
 - Trigger (`N/A`, substantial scope expansion, approach change, or material behavior/design/specification/governance change):
 - Record or link:
+- Reviewed head SHA:
+- Base-tip SHA:
+- Merge-base SHA:
+- Reviewer:
+- Review kind and scope:
 - Verdict:
+- Complete findings:
+- Finding dispositions:
 
 ### Check evidence
 

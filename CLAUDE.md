@@ -307,8 +307,8 @@ Elapsed time is not a stopping criterion for a useful command, review, test, or 
   checkpoint, excluding a single required command that is still making progress, re-scope to
   the next smaller independently correct slice and record why in `HANDOFF.md`.
 - When a reviewer finds a bug, audit the complete diff for the same root-cause class and fix that
-  class in one pass. If the second review of a revised diff finds a new P1 or equivalent soundness
-  or correctness issue, stop the local patch loop, reopen the closure matrix, identify the missed
+  class in one pass. If the conditionally required final review finds any issue requiring another
+  non-trivial change, stop the local patch loop, reopen the closure matrix, identify the missed
   invariant, and redesign or re-split the pull request before continuing.
 
 After each merge, perform one bounded retrospective before starting the next branch:
@@ -370,13 +370,15 @@ head and base-tip SHAs.
 - Record the comprehensive review envelope in a native GitHub review or dedicated pull request
   comment. GitHub checks and statuses are check evidence only and never satisfy the review
   requirement.
+- When the conditional final review is required, its external record contains the same complete
+  SHA-bound envelope, finding list, and dispositions as the initial comprehensive review.
 - Pull request descriptions, reviews, comments, checks, and statuses are non-content metadata.
   Recording them must not modify the branch or trigger another review cycle.
 - A repair push does not invalidate the comprehensive review merely because its head SHA changes.
   Bind the recorded findings to their dispositions and repair commit, inspect the final delta for
   unrelated changes, and rerun affected checks. Require the one final review only under step 7.
 - A base-tip change requires fresh integration check evidence. It requires another review only
-  when it materially changes the effective diff or invalidates a reviewed assumption.
+  when its effect meets one of step 7's substantial or material change triggers.
 
 A pull request is merge-ready when it has the comprehensive review envelope, every finding has a
 recorded disposition, any required one-time final review is clean, required checks pass for the

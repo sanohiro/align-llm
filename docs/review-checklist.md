@@ -47,8 +47,9 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
   entering another review loop.
 - The comprehensive review envelope records the reviewed head SHA, base-tip SHA, merge-base SHA,
   reviewer, review kind and scope, verdict, and complete finding list. The pull request records each
-  disposition and the consolidated repair commit. Check evidence separately records the final
-  head, tested base-tip, merge-base, and tested integration commit or tree.
+  disposition and the consolidated repair commit. A conditionally required final review records the
+  same complete SHA-bound envelope, findings, and dispositions. Check evidence separately records
+  the final head, tested base-tip, merge-base, and tested integration commit or tree.
 - Merge readiness requires the comprehensive review, any conditionally required one-time final
   review, passing final checks, and no unresolved valid finding. Multiple independent review
   envelopes are not required for the same unchanged diff.
