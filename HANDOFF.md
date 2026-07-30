@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `73ec8e7715dbf397f8e61b3267faba7f0090399d`
+  `ab833d0d229f43fcc63c844882387bac655e5cd8`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -42,7 +42,9 @@ precedence cases, an exact checked-in 4,096-line grammar manifest whose byte has
 coverage become authoritative before acceptance, and a caller-owned `cfg(test)`-only probe for
 failure byte offsets and logical arena allocations. The probe is not a production ABI or
 process-global counter. Tests that also read existing process-global heap counters must acquire
-`ALLOC_COUNT_LOCK` before setup and hold it through cleanup and assertions.
+`ALLOC_COUNT_LOCK` before setup and hold it through cleanup and assertions. Every corpus validity
+class now has a unique class anchor, and its recorded document offset obeys an exact block-boundary
+equation, so boundary coverage cannot be satisfied by choosing an irrelevant byte.
 
 A second adversarial review found that a proposed joint-delivery exception contradicted the
 cleanup-first lifecycle and that align-llm can pin only one Align commit. The final contract removes
@@ -52,7 +54,8 @@ pins only the final Request 7 commit in `.align-revision`, records both prerequi
 checked-in fixtures, rejects equal, non-raw-commit, replacement-forged, shallow, and unrelated
 revision states, and then runs isolated Align-repository `merge-base --is-ancestor` checks before
 any client fixture. Hosted adoption CI must expand history without changing the exact detached
-Request 7 checkout or worktree.
+Request 7 checkout or worktree, and its fixed target list must invoke the same
+`c6-json-escape-adoption` target that local `make ci` runs.
 
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
@@ -69,7 +72,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`73ec8e7715dbf397f8e61b3267faba7f0090399d` against the exact pinned sibling checkout:
+`ab833d0d229f43fcc63c844882387bac655e5cd8` against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
