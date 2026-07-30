@@ -333,66 +333,62 @@ must not open and immediately merge it.
 1. Finish a coherent, independently mergeable implementation; do not use a draft pull request as a
    scratchpad for basic correctness work.
 2. Run the checks, evaluations, or benchmarks appropriate to the change.
-3. For a non-trivial change, inspect the full base diff and run a fresh independent adversarial
-   preflight review before opening the pull request. Resolve valid findings locally.
-4. Open the pull request with an English title and description. Include the exact verification
+3. Open the pull request with an English title and description. Include the exact verification
    results and any relevant baseline or measurement.
-5. Review the final pushed diff after the pull request is open. Use high review effort for any
-   non-trivial change.
-   Apply `docs/review-checklist.md` to the changed surface.
-   When the tooling supports subagents, also use an independent adversarial reviewer for
-   non-trivial changes to look for correctness, ownership, error-handling, test-coverage, and
-   regression risks.
-6. Scrutinize every finding against the code. Apply valid findings; do not apply suggestions
-   blindly. Record a concrete reason for rejecting any finding. Batch related fixes into one
-   coherent follow-up commit when possible.
-7. Push the review follow-up and re-run affected verification. Every post-review push receives at
-   least a scoped review of its delta and the final pushed state. Repeat the full high-effort,
-   adversarial review when the follow-up materially changes behavior, design, an authoritative
-   specification, or repository governance.
-8. Merge only after required checks pass and no valid review finding remains unresolved.
+4. Run one comprehensive review of the complete pull request diff. Apply
+   `docs/review-checklist.md` to the changed surface and use high review effort plus a fresh
+   independent adversarial reviewer for a non-trivial change. The reviewer must finish the whole
+   review and report all findings before content editing resumes.
+5. Scrutinize every finding against the code. Apply valid findings; do not apply suggestions
+   blindly. Record a concrete reason for rejecting any finding. Audit each accepted root-cause
+   class across the complete diff, then apply all accepted findings in one consolidated follow-up
+   commit when practical.
+6. Push that follow-up and rerun affected verification. An ordinary repair that implements only
+   findings already recorded by the comprehensive review does not require another review. Verify
+   directly that the repair contains no unrelated behavior or scope.
+7. Run one final comprehensive review only when the repair substantially expands the reviewed
+   scope, changes the implementation approach, or materially changes behavior, design, an
+   authoritative specification, or repository governance. Typographical corrections, narrow
+   fixes implementing an existing finding, test-only corrections, and review-record metadata do
+   not trigger it. This is the last review round: if it finds another issue requiring a non-trivial
+   change, stop and re-scope or redesign instead of starting a repair/re-review loop.
+8. Merge only after required checks pass, every finding has a disposition, and no valid finding
+   remains unresolved.
 
 ### Review attestations and terminal merge state
 
-Review evidence is external, immutable with respect to the reviewed branch, and bound to the exact
-diff. Every review envelope records its own head SHA, base-branch tip SHA, merge-base SHA, reviewer,
-review kind and scope, verdict, and finding dispositions. Use `none` explicitly when there are no
-findings. Check evidence separately records the head SHA, tested base-tip SHA, merge-base SHA,
-tested integration commit or tree identity, check name, status, and external record. The tested
-integration may be the head commit only when its merge base equals the tested base tip; otherwise
-it must identify a synthetic merge or equivalent tree that combines those exact head and base-tip
-SHAs.
+Review evidence is external and immutable with respect to the reviewed branch. The comprehensive
+review envelope records the reviewed head SHA, base-branch tip SHA, merge-base SHA, reviewer, review
+kind and scope, verdict, and the complete finding list. Use `none` explicitly when there are no
+findings. The pull request records every finding disposition and identifies the single consolidated
+repair commit, if any. Check evidence separately records the final head SHA, tested base-tip SHA,
+merge-base SHA, tested integration commit or tree identity, check name, status, and external
+record. The tested integration may be the head commit only when its merge base equals the tested
+base tip; otherwise it must identify a synthetic merge or equivalent tree that combines those exact
+head and base-tip SHAs.
 
-- Record the clean preflight and verification in the pull request description when opening it.
-- Record post-open host-native and independent-adversarial reviews separately. A native GitHub
-  review is sufficient only when its body contains the complete review envelope. Otherwise use a
-  dedicated pull request description or comment record containing the envelope. GitHub checks and
-  statuses are check evidence only and never satisfy a review-envelope requirement.
+- Record the comprehensive review envelope in a native GitHub review or dedicated pull request
+  comment. GitHub checks and statuses are check evidence only and never satisfy the review
+  requirement.
 - Pull request descriptions, reviews, comments, checks, and statuses are non-content metadata.
   Recording them must not modify the branch or trigger another review cycle.
-- Any content push invalidates prior final-state evidence. Rerun affected verification, review the
-  delta and final state, and publish fresh attestations for the new SHA set. Repeat the full
-  high-effort adversarial review when behavior, design, an authoritative specification, or
-  repository governance changes materially.
-- If the head SHA or base-tip SHA changes after the pull request opens, perform a
-  preflight-equivalent refresh against the full final diff and record it as the refreshed preflight
-  envelope. This refresh replaces the stale pre-open envelope for merge readiness; it does not
-  replace either required post-open review envelope.
+- A repair push does not invalidate the comprehensive review merely because its head SHA changes.
+  Bind the recorded findings to their dispositions and repair commit, inspect the final delta for
+  unrelated changes, and rerun affected checks. Require the one final review only under step 7.
+- A base-tip change requires fresh integration check evidence. It requires another review only
+  when it materially changes the effective diff or invalidates a reviewed assumption.
 
-A pull request is merge-ready only when its current head SHA, base-tip SHA, and merge-base SHA match
-the original preflight envelope or, when required, its latest preflight-equivalent refresh, plus
-every required post-open review envelope. For a non-trivial pull request, one host-native envelope
-and one separate independent-adversarial envelope must each be `CLEAN` for that SHA set. Every
-finding from every review has a recorded disposition; every applied finding that changes content
-creates a new SHA set and therefore requires new envelopes. All required checks separately pass for
-the current head and base-tip integration, no valid finding remains, and no later content push
-exists. A base-tip change makes both review and check evidence stale.
+A pull request is merge-ready when it has the comprehensive review envelope, every finding has a
+recorded disposition, any required one-time final review is clean, required checks pass for the
+final integration, and no valid finding remains unresolved. Do not require multiple independent
+review envelopes for the same unchanged diff.
 
 ### Claude Code review adapter
 
 - A human starts the dedicated review with `/code-review`.
 - When Claude drives the pull request flow autonomously, use an available model-invocable review
-  command such as `/review` and an independent adversarial subagent.
+  command such as `/review` or an independent adversarial subagent for the one comprehensive
+  review.
 - Do not silently skip review when a particular command is unavailable.
 
 ### Codex review adapter
@@ -400,6 +396,6 @@ exists. A base-tip change makes both review and check evidence stale.
 - A human starts the dedicated reviewer with `/review`.
 - Non-interactive automation may use `codex review --base <branch>`,
   `codex review --uncommitted`, or `codex review --commit <sha>`.
-- When Codex drives the pull request flow autonomously, inspect the pull request or base diff and
-  use a fresh independent adversarial subagent. Do not pretend to invoke a user-only composer
-  command from inside an agent turn.
+- When Codex drives the pull request flow autonomously, use a fresh independent adversarial
+  subagent for the one comprehensive review. Do not pretend to invoke a user-only composer command
+  from inside an agent turn.
