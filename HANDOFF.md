@@ -7,8 +7,8 @@ transient pull request checks, reviews, and attestations.
 
 - Branch: `agent/json-scan-row-ownership-request`
 - Base: `2c3518210cecab3eaada895d57742b088a4976d4` (`origin/main`)
-- Relevant committed head before preflight follow-up:
-  `3c3bf614cd142d6be4763be66db9b36b6c31dc49`
+- Relevant content head before this handoff-only finalization:
+  `2061801cc9ecad223f69839db4976c4f28a42dba`
 - Active goal: register and merge the independently demonstrated non-blocking `json.scan` owned-row
   safety request before returning to the C6 escaped-string request.
 - Product implementation: not started.
@@ -33,8 +33,8 @@ durable handoff.
 
 ## Verification
 
-Verified on 2026-07-30 at committed head
-`3c3bf614cd142d6be4763be66db9b36b6c31dc49` against the pinned sibling Align checkout:
+Verified on 2026-07-30 at relevant content head
+`2061801cc9ecad223f69839db4976c4f28a42dba` against the pinned sibling Align checkout:
 
 ```text
 git diff --check                         PASS
@@ -43,23 +43,21 @@ ALIGN_REPO=../align make ci               PASS
 
 ## Exact next steps
 
-1. Commit the preflight follow-up in `HANDOFF.md` and `docs/align-requests.md`, then finalize this
-   handoff with the resulting relevant content head and a clean-worktree statement.
-2. Rerun exact verification on the final committed head and run a fresh independent adversarial
+1. Rerun exact verification on the final handoff head and complete a fresh independent adversarial
    preflight against the full immutable base diff.
-3. Resolve every valid refreshed-preflight finding before opening a focused draft pull request.
-4. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence; merge
+2. Resolve every valid refreshed-preflight finding before opening a focused draft pull request.
+3. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence; merge
    only after every envelope is clean and `origin/main` remains the reviewed base.
-5. Refresh `main`, rebase the preserved escaped-string branch, renumber that request to Request 7,
+4. Refresh `main`, rebase the preserved escaped-string branch, renumber that request to Request 7,
    make `json.scan` explicitly N/A under Request 6's boundary, and resume its review.
-6. Register the remaining C6 blockers (`Option<Move record>` JSON, strict numeric grammar if
+5. Register the remaining C6 blockers (`Option<Move record>` JSON, strict numeric grammar if
    retained, and record-array construction) as separate reviewed slices before returning to the
    C6 design branch.
 
 ## Constraints and intentional state
 
-- The current branch intentionally has uncommitted preflight follow-up changes in `HANDOFF.md` and
-  `docs/align-requests.md`; do not discard them.
+- The Request 6 design and preflight follow-up are committed. The worktree is expected to be clean
+  after this handoff-only finalization; do not discard or rewrite either scoped commit.
 - The worktree checked out on `agent/c6-json-escape-request` contains the committed escaped-string
   Request 6 plus intentional uncommitted changes to `HANDOFF.md` and
   `docs/align-requests.md`. Preserve those files until this request merges, then renumber/rebase
