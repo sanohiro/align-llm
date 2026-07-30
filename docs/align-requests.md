@@ -1489,11 +1489,14 @@ Required semantics:
 - typed key lookup compares semantic unescaped bytes: a valid escaped spelling of a declared key
   matches that field, a valid escaped unknown key remains ignored, and two raw spellings that
   decode to the same declared key are a duplicate-key error. `json.doc.key(i)` returns the same
-  semantic key bytes. Typed key validation/comparison and skipped-value validation share one
-  reusable scratch buffer per decode invocation; its logical length is at most the current raw
-  string-token length and its capacity is at most the largest raw string token seen, hence no more
-  than the already bounded input length. They retain no decoded view, so valid escapes in those
-  positions do not require an arena;
+  semantic key bytes. Outside an arena, typed key validation and lookup use one incremental
+  decoder with fixed-size local state: it validates each escape and UTF-8 sequence, compares
+  decoded bytes directly with the declared ASCII identifiers, and discards an unknown key without
+  constructing its semantic text. The existing declared-field seen state detects a duplicate only
+  after that streaming comparison identifies the field. Ignored string values use the same
+  fixed-state grammar validation and discard their decoded bytes. These paths allocate no heap or
+  arena scratch proportional to the token or input. Only `json.doc.key(i)`, whose document already
+  owns an explicit arena, materializes a returned semantic key;
 - duplicate declared keys, missing required fields, unknown-field ignore, field-order freedom,
   number/type validation, and valid unknown-value skipping retain their current behavior;
 - slow and speculative typed-decode paths produce identical semantic values, canonical encodings,
@@ -1501,9 +1504,9 @@ Required semantics:
   speculative path validates every projected key and value span that can cause fallback before it
   materializes an escaped string. Consequently fallback abandons zero materialized-string arena
   allocations, and every successful path makes exactly one retained arena allocation per escaped
-  returned value or escaped `json.doc` key accessor result; temporary scratch growth is not a
-  retained allocation. Existing decoded-owner transition gaps remain outside this equivalence
-  claim, and Request 7 must not add a new owner-live transition;
+  returned value or escaped `json.doc` key accessor result. Request 7 adds no runtime-owned
+  variable-size scratch allocation. Existing decoded-owner transition gaps remain outside this
+  equivalence claim, and Request 7 must not add a new owner-live transition;
 - `json.encode` of the decoded record emits the existing canonical escape spelling and declaration
   field order. Decode/encode symmetry does not require retaining the input's alternate escape
   spelling;
@@ -1596,19 +1599,21 @@ The implementation closure ledger for the future Align design is:
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
-explicit arena; array spines retain their existing heap or arena owner; and per-invocation key,
-skip, and unescape scratch is temporary runtime-owned storage freed on return. A slow-path failure
-after materialization may leave unreachable bytes in the caller's arena until that arena's normal
-bulk cleanup, but returns no view and may retain at most one allocation per escaped returned field
-encountered before the error. No scratch or decoded view becomes process-global.
+explicit arena; array spines retain their existing heap or arena owner; key and skipped-string
+validation retain only fixed-size local decoder state; and unescaped returned bytes are written
+directly to their explicit arena destination. A slow-path failure after materialization may leave
+unreachable bytes in the caller's arena until that arena's normal bulk cleanup, but returns no view
+and may retain at most one allocation per escaped returned field encountered before the error. No
+parser state or decoded view becomes process-global.
 
 Exact logical allocation and precedence observation use a caller-owned, `cfg(test)`-only
 `JsonDecodeTestProbe` threaded through internal parser helpers. Production `extern "C"` entrypoints
 pass no probe, so this adds no production ABI or ambient state. The probe records the first
 validation failure kind and input byte offset, retained-string materialization count and bytes,
-peak temporary scratch capacity, speculation attempts, and fallbacks. The arena helper increments
-the logical materialization fields exactly where it reserves bytes for one returned escaped
-string; fallback tests require those fields to remain zero until fallback validation succeeds.
+temporary string heap-allocation count and peak bytes, speculation attempts, and fallbacks. The
+arena helper increments the logical materialization fields exactly where it reserves bytes for one
+returned escaped string; fallback tests require those fields to remain zero until fallback
+validation succeeds, and key/skip tests require both temporary-allocation fields to remain zero.
 Each runtime unit test creates its own probe, so concurrent tests have no shared counter, reset
 order, lock, or cross-test contamination. Existing heap-allocation instrumentation remains
 separate and continues to observe array-spine ownership. Every regression that reads those
@@ -1625,9 +1630,10 @@ design must name every changed MIR operand and runtime signature for record, AoS
 materialization, or explicitly prove why an entrypoint needs no change. A hidden ambient arena is
 forbidden. CLI inputs, environment variables, process-global state, connection-global state, and
 overlap exclusion are N/A because this parser capability adds none; concurrent invocations retain
-only distinct per-call scratch and follow the existing caller-owned arena rules. Persisted scalar
-widths, field order, schema version, and tags are unchanged; the existing encoder and the exact
-adoption vector below remain the semantic-to-byte and byte-to-semantic sources of truth.
+only distinct fixed-size per-call parser state and follow the existing caller-owned arena rules.
+Persisted scalar widths, field order, schema version, and tags are unchanged; the existing encoder
+and the exact adoption vector below remain the semantic-to-byte and byte-to-semantic sources of
+truth.
 
 ### Acceptance / gate
 
@@ -1646,7 +1652,9 @@ Align compiler/runtime tests must:
    `Error.Code(1)`; with the decoded-owner prerequisite in place, prove no earlier required or
    optional owner leaks and no partially live record is returned. Separately accept escaped
    declared keys and valid escaped ignored values outside an arena because neither retains a
-   decoded view;
+   decoded view. With the whole-body allocation-counter lock, compare clean, escaped-declared-key,
+   escaped-unknown-key, and escaped-ignored-value cases and prove that key/skip validation adds no
+   heap or arena allocation;
 6. decode `Root { rows: array<Row> }` where clean and escaped fields appear in Copy and Move element
    records, nested record arrays, options, and scalar-string arrays; on this already-correct nested
    field-array path, inject a malformed escape after initialized Move elements and prove exact deep
@@ -1772,8 +1780,17 @@ Align compiler/runtime tests must:
     exact parent of the first Request 7 implementation commit and already contains both named
     prerequisites; the candidate is the proposed final Request 7 commit. Each worktree uses its own
     default `target/` directory, and the harness rejects a SHA or worktree-state mismatch before
-    measurement. It records the hostname, `uname -a`, CPU model, baseline and candidate SHAs, and
-    exact `rustc -Vv`, `cargo -V`, and `git --version` outputs. For each of
+    measurement. Before either warm-up, isolated Git inspection compares raw tree-entry
+    mode/type/object records and requires byte- and mode-identical tracked entries between the two
+    commits for `.cargo/`, root `Cargo.toml`,
+    `Cargo.lock`, optional root `rust-toolchain` and `rust-toolchain.toml`, and the complete
+    `bench/json_decode/` and `bench/json_soa/` trees. Missing-versus-present is a mismatch. Any
+    required benchmark workload, data generator, timing loop, dependency lock, Cargo configuration,
+    or toolchain-input change must merge before the named baseline so both measured revisions
+    contain the same bytes. The candidate-owned harness is orchestration, not a measured workload
+    input. Its regression changes one file in each protected path class and proves rejection before
+    either benchmark command. The harness records the hostname, `uname -a`, CPU model, baseline and
+    candidate SHAs, and exact `rustc -Vv`, `cargo -V`, and `git --version` outputs. For each of
     `bench/json_decode/run.sh native` and
     `bench/json_soa/run.sh native`, it first runs one discarded baseline warm-up and one discarded
     candidate warm-up, then runs ten measured pairs sequentially with no overlap: odd-numbered pairs
@@ -1825,13 +1842,40 @@ detached Request 7 checkout. Its adoption-slice workflow records `HEAD` and the 
 status immediately after the existing pinned checkout, expands a shallow repository with
 `git fetch --no-tags --unshallow origin`, and proves that both observations are byte-identical
 afterward. If the repository is already complete, it performs no history-changing fetch. The gate
-itself runs the existing exact-checkout revision check with
-`GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1`, and then fails closed when
+itself runs the existing exact-checkout revision script in an empty environment that preserves only
+the validated absolute `ALIGN_REPO`, fixed `PATH` and `LC_ALL`, disables system/global/XDG Git
+configuration, replacement objects, lazy fetch, and optional locks, and supplies command-scope
+`core.fsmonitor=false` and `status.showUntrackedFiles=all` overrides so hostile local configuration
+cannot execute a helper or hide dirt:
+
+```sh
+env -i \
+  PATH=/usr/bin:/bin \
+  LC_ALL=C \
+  ALIGN_REPO="$ALIGN_REPO" \
+  GIT_CONFIG_NOSYSTEM=1 \
+  GIT_ATTR_NOSYSTEM=1 \
+  GIT_CONFIG_GLOBAL=/dev/null \
+  GIT_NO_REPLACE_OBJECTS=1 \
+  GIT_NO_LAZY_FETCH=1 \
+  GIT_OPTIONAL_LOCKS=0 \
+  GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_KEY_0=core.fsmonitor \
+  GIT_CONFIG_VALUE_0=false \
+  GIT_CONFIG_KEY_1=status.showUntrackedFiles \
+  GIT_CONFIG_VALUE_1=all \
+  XDG_CONFIG_HOME=/dev/null \
+  scripts/check-align-revision
+```
+
+It then fails closed when
 `git rev-parse --is-shallow-repository` is not exactly `false`; it never fetches or changes the
 external repository. A regression creates a depth-one detached checkout of the final commit,
 proves that the gate fails before history expansion, expands its history, then proves the same
-detached `HEAD` and clean worktree pass. This replaces the current hosted workflow's depth-one-only
-behavior only in the future adoption slice.
+detached `HEAD` and clean worktree pass. Another regression supplies hostile system, global, XDG,
+and local status/fsmonitor configuration plus an untracked file; the check must reject the dirty
+checkout without invoking the helper or changing index/object bytes or metadata. This replaces the
+current hosted workflow's depth-one-only behavior only in the future adoption slice.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
 ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves
@@ -1857,7 +1901,8 @@ align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cle
 align_request7_revision="$(tr -d '\n' < .align-revision)"
 
 partial_clone_status=0
-clean_git -C "$ALIGN_REPO" config --local --get extensions.partialClone \
+clean_git -C "$ALIGN_REPO" config --local --name-only --get-regexp \
+  '^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$' \
   >/dev/null 2>&1 || partial_clone_status=$?
 test "$partial_clone_status" = 1
 test "$(clean_git -C "$ALIGN_REPO" rev-parse --is-shallow-repository)" = false
@@ -1903,10 +1948,12 @@ object that would forge ancestry, a Git-common-dir `info/grafts` entry that woul
 standard partial clone with a missing prerequisite object, equal prerequisite/final revisions,
 equal prerequisite revisions, and valid but unrelated commit objects. The partial-clone case sets a
 local access marker as its promisor remote, snapshots the object database and index bytes, and must
-reject on `extensions.partialClone` before `cat-file` or `merge-base`, without contacting the remote,
-creating an object, or changing the index. A separate clean-checkout regression makes the index
-stat cache eligible for refresh and proves the exact revision check plus every ancestry command
-leaves its index bytes and metadata unchanged under `GIT_OPTIONAL_LOCKS=0`. The common-dir capture
+reject the actual `remote.<name>.promisor` / `remote.<name>.partialclonefilter` configuration before
+`cat-file` or `merge-base`, without contacting the remote, creating an object, or changing the
+index. Separate negatives cover the legacy extension key and mixed-case remote subsections. A
+separate clean-checkout regression makes the index stat cache eligible for refresh and proves the
+exact revision check plus every ancestry command leaves its index bytes and metadata unchanged
+under `GIT_OPTIONAL_LOCKS=0`. The common-dir capture
 appends a fixed non-newline sentinel before shell command
 substitution can discard Git's output terminator, requires exactly one LF immediately before that
 sentinel, removes only that exact suffix with shell parameter expansion, and then requires a

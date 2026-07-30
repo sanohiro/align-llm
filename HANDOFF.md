@@ -75,11 +75,13 @@ The final host-native review also required the future adoption to follow the aut
 check-topology design instead of adding a workflow-only command. A reviewed topology-ledger update
 must merge first; implementation then adds the target to `HOSTED_CHECK_TARGETS`, its embedded
 oracle/self-test, and the workflow's canonical `hosted-checks` aggregate. All inspection uses
-`GIT_OPTIONAL_LOCKS=0` and `GIT_NO_LAZY_FETCH=1`; standard partial clones reject before object
-lookup, and negative fixtures prove no index/object mutation or promisor access. The performance
-gate now owns a checked-in harness, two isolated clean revisions, native CPU mode, five named
-one-million-row fields, ten order-balanced sample pairs, an exact median calculation, and a
-per-field 1.05 ratio threshold.
+an empty, override-isolated Git environment with optional locks and lazy fetch disabled; standard
+promisor-remote partial clones reject before object lookup, and negative fixtures prove no
+index/object mutation, hidden dirt, fsmonitor execution, or promisor access. The performance gate
+now owns a checked-in harness, two isolated clean revisions, byte-identical benchmark/configuration
+inputs, native CPU mode, five named one-million-row fields, ten order-balanced sample pairs, an
+exact median calculation, and a per-field 1.05 ratio threshold. Outside-arena key and skipped-value
+validation is fixed-state and allocation-free rather than hidden input-sized scratch.
 
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
@@ -105,9 +107,9 @@ ALIGN_REPO=/home/hiro/prj/align make ci  PASS
 
 ## Exact next steps
 
-1. Push the path-specific corpus-construction review follow-up, rerun a preflight-equivalent
-   independent adversarial review against the complete final diff, and repeat both required
-   post-open reviews on the resulting exact SHA.
+1. Push the Git-isolation, benchmark-identity, partial-clone, and allocation-bound review follow-up;
+   rerun a preflight-equivalent independent adversarial review against the complete final diff and
+   repeat both required post-open reviews on the resulting exact SHA.
 2. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence, and
    merge only when every envelope is clean against an unchanged base tip.
 3. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup
