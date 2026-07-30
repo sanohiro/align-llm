@@ -1616,9 +1616,9 @@ The implementation closure ledger for the future Align design is:
 | Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
-| Root plus detached benchmark dependency resolution, persistent Cargo/Rust identity, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | all-command lock/offline self-tests plus executable-mutation barriers, environment/config isolation, exact three-workspace metadata graphs, protected-tree, and malformed-output regressions |
+| Root plus detached benchmark dependency resolution, persistent Cargo/Rust identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | all-command lock/offline self-tests plus executable-mutation, clean/smudge/process-filter, alternate-object race, environment/config isolation, exact three-workspace metadata graph, protected-tree, and malformed-output regressions |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
-| Canonical revision-file bytes and non-hidden tracked/ignored checkout state before lookup or release build | binary-safe shared revision reader, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, assume-unchanged, skip-worktree, ignored build-input, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
+| Canonical revision-file bytes and exact filter-independent tracked/ignored checkout state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored build-input, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -1825,8 +1825,17 @@ Align compiler/runtime tests must:
     worktrees. The baseline commit is the exact parent of the first Request 7
     implementation commit, is descended from the merged benchmark-input slice, and already
     contains both named prerequisites; the candidate is the proposed final Request 7 commit. Each
-    worktree uses its own default `target/` directory, and the harness rejects a SHA or
-    worktree-state mismatch before measurement. Before either warm-up, isolated Git inspection
+    worktree is created with `git worktree add --detach --no-checkout`; checkout is forbidden.
+    The harness loads the selected tree into that worktree's index without `-u`, then a checked-in
+    materializer validates every NUL-delimited tree path and writes raw blob bytes, symlink targets,
+    and executable-bit classes directly into an otherwise-empty worktree. Gitlinks and unsupported
+    modes reject. Thus repository-local clean, smudge, process, text-conversion, and EOL attributes
+    cannot transform bytes or execute during creation. Each worktree uses its own default `target/`
+    directory, and the harness rejects a SHA or worktree-state mismatch before measurement. That
+    check compares raw tree/index records and hashes raw filesystem bytes and symlink targets
+    without `git status`, `git diff`, checkout, or content filters; local clean, smudge, and process
+    filter markers must remain absent while different bytes are rejected. Before either warm-up,
+    isolated Git inspection
     compares raw tree-entry
     mode/type/object records and requires byte- and mode-identical tracked entries between the two
     commits for `.cargo/`, root `Cargo.toml`,
@@ -1838,8 +1847,31 @@ Align compiler/runtime tests must:
     contain the same bytes. The candidate-owned harness is orchestration, not a measured workload
     input. Its regression changes one file in each protected path class and proves rejection before
     either benchmark command. The harness rejects any inherited variable whose name begins with
-    `CARGO_`, `RUST`, `RUSTC_`, or `RUSTDOC`, plus `CC`, `CXX`, `AR`, `LD`, `CFLAGS`, `CXXFLAGS`,
-    `LDFLAGS`, `MAKEFLAGS`, and `GNUMAKEFLAGS`, before it creates a worktree or build output. It
+    `CARGO_`, `RUST`, `RUSTC_`, `RUSTDOC`, or `GIT_`, plus `CC`, `CXX`, `AR`, `LD`, `CFLAGS`,
+    `CXXFLAGS`, `LDFLAGS`, `MAKEFLAGS`, and `GNUMAKEFLAGS`, before it creates a worktree or build
+    output. Every Git operation, including commit validation, protected-tree inspection, worktree
+    creation and cleanup, runs the fixed `/usr/bin/git` through `env -i` with only
+    `PATH=/usr/bin:/bin`, `LC_ALL=C`, an empty harness-owned `HOME`,
+    `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+    `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE=/dev/null`, `GIT_NO_LAZY_FETCH=1`,
+    `GIT_OPTIONAL_LOCKS=0`, `XDG_CONFIG_HOME=/dev/null`, and command-scope
+    `core.fsmonitor=false`, `core.hooksPath=/dev/null`, and `core.commitGraph=false`. No caller
+    environment or system/global configuration may select a repository, worktree, object
+    directory, alternate object store, replacement, graft, hook, fsmonitor, or commit graph.
+    Before the first object command and again before accepting each object command's output or
+    status, the harness resolves the common object directory without reading an object and rejects
+    any existing or symlinked `objects/info/alternates` or `objects/info/http-alternates`. A
+    deterministic barrier persistently creates each file after the precheck but before raw tree,
+    blob, and ancestry reads; the postcheck must suppress worktree materialization, measurement, and
+    the accepted report. Object output is first captured in a harness-owned temporary file outside
+    either worktree and is not consumed or copied into a worktree until the postcheck passes.
+    Concurrent create-and-remove mutation is outside the otherwise-idle
+    exclusive-host contract. A
+    hostile fixture injects each rejected Git repository/worktree/object/config variable and
+    system, global, XDG, hook, fsmonitor, replacement, graft, alternate-object, and commit-graph
+    source; separately configured clean, smudge, and long-running process filters cover worktree
+    creation and later comparison. Every marker remains absent and the exact intended commits and
+    worktree roots are recorded. It
     invokes each benchmark through `env -i` with only `PATH=/usr/bin:/bin`, `LC_ALL=C`, the
     validated absolute `CARGO` and `RUSTC` files, an empty temporary `HOME`, and one harness-owned
     absolute `CARGO_HOME` copied from the named pre-populated offline registry/git cache but
@@ -1955,10 +1987,23 @@ while Request 7's lifecycle entry equals `.align-revision`.
 The hosted CI checkout must make the prerequisite history available without moving the exact
 detached Request 7 checkout. Before its first scripted inspection of that checkout, the
 adoption-slice workflow runs the checked-in `scripts/check-git-lazy-fetch-version` preflight
-described below. It then records `HEAD` and the porcelain worktree status, expands a shallow
-repository with `git fetch --no-tags --unshallow origin`, and proves that both observations are
-byte-identical afterward. If the repository is already complete, it performs no history-changing
-fetch.
+described below. The workflow's initial `git init`, remote configuration, exact validated-revision
+fetch and detach, later unshallow fetch, and every HEAD/comparator operation all use one checked-in
+wrapper around fixed `/usr/bin/git` under `env -i`, an empty `HOME`, the same system/global/XDG,
+replacement, graft, lazy-fetch, optional-lock, hook, fsmonitor, and commit-graph exclusions as the
+target, and `GIT_TERMINAL_PROMPT=0`. It rejects common-object-directory alternate files before and
+after each object operation. No inline ambient `git` command is permitted.
+
+After the version preflight, the workflow invokes the comparator in an explicit
+shallow-checkout mode that does not inspect parents. The comparator first performs the effective
+promisor query, then resolves and includes `HEAD` in its canonical path, mode, type, object-ID, and
+raw-worktree digest report. Only after that report succeeds does the wrapper run
+`git fetch --no-tags --unshallow origin`. The workflow reruns the comparator and requires its
+complete report, including `HEAD`, to be byte-identical. Neither observation uses porcelain status
+or a Git content filter, and no HEAD object is resolved before the promisor and alternate-store
+guards. If the repository is already complete, it performs no history-changing fetch. A
+reference-transaction hook, repository-local alternate, and promisor fixture cover the initial
+fetch, both comparator calls, and unshallow fetch; every helper marker remains absent.
 
 Before any target-side repository inspection, the adoption target runs the same version preflight.
 That script's only ordinary-mode Git command is
@@ -2021,10 +2066,12 @@ canonical `.align-revision` path and the adoption fixture revisions. The reader 
 explicit file path, reads the complete file as bytes without shell command substitution or text
 decoding, requires exactly `[0-9a-f]{40}\n`, and only after that complete match writes the validated
 40-byte lowercase ASCII revision. It never writes input-derived stdout on failure.
+The hosted workflow also invokes the reader before its initial Align `git init` or fetch and uses
+only that validated result; it no longer reads `.align-revision` with `tr`.
 `scripts/check-align-revision`, which is already the first prerequisite of `align-build`, invokes
-that reader for `.align-revision`; a successful capture is then safe because the helper can emit
+the reader again for `.align-revision`; a successful capture is safe because the helper can emit
 only the already validated 40 ASCII bytes. Before resolving `ALIGN_REPO` or executing any Git or
-Cargo command, the script also independently requires the captured result to match
+Cargo command, the script independently requires the captured result to match
 `[0-9a-f]{40}` and uses it as the expected revision. It no longer uses `tr -d '[:space:]'` or a
 shell sentinel to validate persisted bytes. The helper's checked-in self-test supplies exact valid
 bytes plus a NUL at every byte position, the especially dangerous
@@ -2036,12 +2083,12 @@ before the release target directory changes. The scanner and cleanup fixture rev
 target-owned and do not select the compiler build, but the adoption target reads them through the
 same helper before its first Git command.
 
-After that version gate, the adoption target runs the existing exact-checkout revision script in an
+After that version gate, the adoption target runs the exact-checkout revision script in an
 empty environment that preserves only the validated absolute `ALIGN_REPO`, fixed `PATH` and
 `LC_ALL`, disables system/global/XDG Git configuration, replacement objects, lazy fetch, and
 optional locks, and supplies command-scope `core.fsmonitor=false` and
-`status.showUntrackedFiles=all` overrides so hostile local configuration cannot execute a helper or
-hide dirt:
+`core.hooksPath=/dev/null` and `core.commitGraph=false` overrides so hostile local configuration
+cannot execute a helper or substitute derived ancestry:
 
 ```sh
 env -i \
@@ -2052,28 +2099,60 @@ env -i \
   GIT_ATTR_NOSYSTEM=1 \
   GIT_CONFIG_GLOBAL=/dev/null \
   GIT_NO_REPLACE_OBJECTS=1 \
+  GIT_GRAFT_FILE=/dev/null \
   GIT_NO_LAZY_FETCH=1 \
   GIT_OPTIONAL_LOCKS=0 \
-  GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_COUNT=3 \
   GIT_CONFIG_KEY_0=core.fsmonitor \
   GIT_CONFIG_VALUE_0=false \
-  GIT_CONFIG_KEY_1=status.showUntrackedFiles \
-  GIT_CONFIG_VALUE_1=all \
+  GIT_CONFIG_KEY_1=core.hooksPath \
+  GIT_CONFIG_VALUE_1=/dev/null \
+  GIT_CONFIG_KEY_2=core.commitGraph \
+  GIT_CONFIG_VALUE_2=false \
   XDG_CONFIG_HOME=/dev/null \
   scripts/check-align-revision
 ```
 
-It then fails closed when
+Within that boundary, after locating the Git directory but before `rev-parse HEAD`, `cat-file`,
+status, tree, index-to-tree comparison, or any other object inspection,
+`scripts/check-align-revision` first runs the effective `git config --includes` promisor query
+shown below and requires its no-match status. It includes repository and worktree configuration,
+but its isolated environment excludes system, global, XDG, replacement, alternate-object, and
+caller-selected Git state. It resolves the common object directory without reading a commit and
+rejects existing or symlinked `objects/info/alternates` and `objects/info/http-alternates` before
+and after every subsequent object operation; command output or status is consumed only after the
+postcheck. The script then fails closed when
 `git rev-parse --is-shallow-repository` is not exactly `false`; it never fetches or changes the
-external repository. Before reading porcelain status, `scripts/check-align-revision` parses
+external repository.
+
+The script does not use `git status`, `git diff`, checkout conversion, or any other operation that
+may invoke clean/smudge/text-conversion filters. A checked-in binary-safe comparator first parses
+the exact NUL-delimited outputs of `git ls-tree -r -z --full-tree HEAD` and
+`git ls-files --stage -z`. It requires an exact path, mode, and object-ID match with only
+stage-zero index entries. Tree mode `100644` or `100755` must name a `blob` and maps to a regular
+index/worktree entry, `120000` must name a `blob` and maps to a symlink, and `160000` must name a
+`commit` but is rejected because the pinned Align repository has no gitlinks; every other
+mode/type pairing rejects.
+Its ordinary and workflow shallow-checkout entry points both run the effective promisor query
+before `ls-tree` or any other object read.
+For every index entry it then uses byte-path filesystem operations: `lstat`, raw regular-file
+reads, and raw symlink-target reads. It requires the indexed filesystem type and executable-bit
+class, computes the repository's declared SHA-1 or SHA-256 Git blob ID directly over the raw bytes
+without invoking Git filters, and matches that ID to the index object. Missing, additional,
+unsupported, type-mismatched, mode-mismatched, or byte-mismatched tracked entries fail. The
+comparator never executes repository content or Git-configured helpers.
+
+Before the raw comparison, `scripts/check-align-revision` also parses
 `git ls-files -v -z` bytewise and rejects every lowercase tag (an `assume-unchanged` entry) and
 every uppercase `S` tag (a `skip-worktree` entry); it does not clear either flag or refresh the
-index. It then parses `git ls-files --others -i --exclude-standard -z` and rejects every ignored
+index. It parses `git ls-files --others -i --exclude-standard -z` and rejects every ignored
 untracked path except a record strictly below the root `target/`; that one allowed output root must
-be absent or an ordinary non-symlinked directory. Thus repository `.gitignore`,
-`.git/info/exclude`, and repository-local `core.excludesFile` cannot hide a Cargo configuration,
-default `build.rs`, module source, or other build input. Only after both guards pass may the script
-use NUL-delimited porcelain status with all non-ignored untracked files shown. A regression creates
+be absent or an ordinary non-symlinked directory. It separately parses
+`git ls-files --others --exclude-standard -z` and rejects every non-ignored untracked path. Thus
+repository `.gitignore`, `.git/info/exclude`, and repository-local `core.excludesFile` cannot hide
+a Cargo configuration, default `build.rs`, module source, or other build input, while
+`.gitattributes`, `.git/info/attributes`, and local `filter.*` configuration cannot normalize a
+tracked-byte comparison or execute a filter helper. A regression creates
 a depth-one detached checkout of the final commit,
 proves that the gate fails before history expansion, expands its history, then proves the same
 detached `HEAD` and clean worktree pass. Another regression supplies hostile system, global, XDG,
@@ -2082,7 +2161,12 @@ file `assume-unchanged` and `skip-worktree` and then change its bytes. Every cas
 build without invoking the helper, normalizing an index flag, or changing index/object bytes or
 metadata. Additional cases hide an executable default `build.rs` and `.cargo/config.toml` through
 `info/exclude` and a repository-local excludes file, reject a symlinked root `target`, and accept
-only an ordinary `target/` output sentinel; the rejected files must never execute. This replaces
+only an ordinary `target/` output sentinel. Separate cases use tracked `.gitattributes` and
+untracked `.git/info/attributes` plus local clean filters that would make `git status` hide
+different working bytes; the raw comparator must reject both without executing either filter
+marker. Index/tree mode, path, object-ID, stage, regular-file, symlink, executable-bit, raw-byte,
+unsupported-gitlink, SHA-1, and SHA-256 cases exercise every comparator decision. The rejected
+files and helpers must never execute. This replaces
 the current hosted workflow's depth-one-only behavior only in the future adoption slice.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
@@ -2102,7 +2186,11 @@ clean_git() {
     GIT_NO_LAZY_FETCH=1 \
     GIT_OPTIONAL_LOCKS=0 \
     XDG_CONFIG_HOME=/dev/null \
-    git "$@"
+    git \
+      -c core.fsmonitor=false \
+      -c core.hooksPath=/dev/null \
+      -c core.commitGraph=false \
+      "$@"
 }
 
 align_scanner_revision="$(
@@ -2144,16 +2232,41 @@ case "$align_common_dir" in
 esac
 test ! -e "$align_common_dir/info/grafts"
 test ! -L "$align_common_dir/info/grafts"
-test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_scanner_revision")" = commit
-test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_cleanup_revision")" = commit
-test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_request7_revision")" = commit
+
+reject_alternates() {
+  test ! -e "$align_common_dir/objects/info/alternates"
+  test ! -L "$align_common_dir/objects/info/alternates"
+  test ! -e "$align_common_dir/objects/info/http-alternates"
+  test ! -L "$align_common_dir/objects/info/http-alternates"
+}
+
+clean_object_git() {
+  reject_alternates || return 1
+  object_status=0
+  clean_git "$@" || object_status=$?
+  reject_alternates || return 1
+  return "$object_status"
+}
+
+scanner_type="$(
+  clean_object_git -C "$ALIGN_REPO" cat-file -t "$align_scanner_revision"
+)" || exit 1
+cleanup_type="$(
+  clean_object_git -C "$ALIGN_REPO" cat-file -t "$align_cleanup_revision"
+)" || exit 1
+request7_type="$(
+  clean_object_git -C "$ALIGN_REPO" cat-file -t "$align_request7_revision"
+)" || exit 1
+test "$scanner_type" = commit
+test "$cleanup_type" = commit
+test "$request7_type" = commit
 test "$align_scanner_revision" != "$align_cleanup_revision"
 test "$align_scanner_revision" != "$align_request7_revision"
 test "$align_cleanup_revision" != "$align_request7_revision"
-clean_git -C "$ALIGN_REPO" merge-base --is-ancestor \
+clean_object_git -C "$ALIGN_REPO" merge-base --is-ancestor \
   "$align_scanner_revision" \
   "$align_request7_revision"
-clean_git -C "$ALIGN_REPO" merge-base --is-ancestor \
+clean_object_git -C "$ALIGN_REPO" merge-base --is-ancestor \
   "$align_cleanup_revision" \
   "$align_request7_revision"
 ```
@@ -2161,16 +2274,25 @@ clean_git -C "$ALIGN_REPO" merge-base --is-ancestor \
 Before these commands, `scripts/read-exact-revision` performs the same complete binary-safe match
 for each file and emits only a validated revision; shell capture is extraction after validation,
 not persisted-byte validation. Its embedded-NUL matrix is exercised for all three call sites.
+The earlier exact-checkout script performs the displayed effective config-only promisor query
+before its own first object inspection. The adoption target repeats it here immediately before
+the ancestry object's shallow, type, and parent reads, so a configuration change between the
+checkout check and ancestry gate still fails closed. Both query placements are object-free.
 Every command must return zero before any adoption fixture executes. The adoption smoke includes
 isolated negative copies of this gate
 proving rejection of a shallow repository, a symbolic or annotated-tag object, a replacement
 object that would forge ancestry, a Git-common-dir `info/grafts` entry that would forge ancestry, a
 graft-race case that creates or replaces that file after the path-absence checks but before the
-ancestry calls, a standard partial clone with a missing prerequisite object, equal
-prerequisite/final revisions, equal prerequisite revisions, and valid but unrelated commit
-objects. The graft-race case proves every `clean_git` command uses the empty `/dev/null` graft
+ancestry calls, ordinary and symlinked `objects/info/alternates` and `http-alternates`, a persistent
+alternate-file race between each precheck and object command, a standard partial clone with a
+missing prerequisite object, equal prerequisite/final revisions, equal prerequisite revisions,
+and valid but unrelated commit objects. The graft-race case proves every `clean_git` command uses
+the empty `/dev/null` graft
 source and therefore ignores the raced repository file; the forged ancestry must still fail
-without a fetch, object write, or index change. The partial-clone case sets a
+without a fetch, object write, or index change. Each alternate race may make the isolated object
+command run, but the postcheck must reject before consuming its result, executing a fixture, or
+claiming success. Concurrent create-and-remove mutation is outside the otherwise-idle external
+checkout contract. The partial-clone case sets a
 local access marker as its promisor remote, snapshots the object database and index bytes, and must
 reject the actual `remote.<name>.promisor` / `remote.<name>.partialclonefilter` configuration before
 `cat-file` or `merge-base`, without contacting the remote, creating an object, or changing the
