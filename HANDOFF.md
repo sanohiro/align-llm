@@ -7,8 +7,8 @@ transient pull request checks, reviews, and attestations.
 
 - Branch: `agent/json-scan-row-ownership-request`
 - Base: `2c3518210cecab3eaada895d57742b088a4976d4` (`origin/main`)
-- Relevant content head before the post-open review follow-up:
-  `40be69a1b43d5b5fdf4ce74dfd2ac3789ec96eed`
+- Relevant content head before this handoff-only finalization:
+  `46398db5ca55acfdc0d5dacabdcee4508f803442`
 - Active goal: register and merge the independently demonstrated non-blocking `json.scan` owned-row
   safety request before returning to the C6 escaped-string request.
 - Product implementation: not started.
@@ -60,8 +60,8 @@ does not add a runtime repair or broaden this pull request beyond the scanner-sa
 
 ## Verification
 
-Verified on 2026-07-30 at the pre-follow-up head
-`40be69a1b43d5b5fdf4ce74dfd2ac3789ec96eed` against the pinned sibling Align checkout:
+Verified on 2026-07-30 at relevant content head
+`46398db5ca55acfdc0d5dacabdcee4508f803442` against the pinned sibling Align checkout:
 
 ```text
 git diff --check                         PASS
@@ -70,25 +70,23 @@ ALIGN_REPO=../align make ci               PASS
 
 ## Exact next steps
 
-1. Commit this coherent post-open contract correction, finalize this handoff with its content head,
-   and rerun exact verification on the final head.
-2. Push the follow-up and refresh the pull request's preflight and check evidence for the new SHA.
-3. Run fresh host-native and independent-adversarial post-open reviews on the full final diff,
+1. Rerun exact verification on the final handoff head, push the follow-up, and refresh the pull
+   request's preflight and check evidence for the new SHA.
+2. Run fresh host-native and independent-adversarial post-open reviews on the full final diff,
    publish their current-SHA envelopes, and merge only when both are clean and `origin/main`
    remains the reviewed base.
-4. Refresh `main` and perform the required bounded retrospective for this merged pull request.
-5. Rebase the preserved escaped-string branch, renumber that request to Request 7, make
+3. Refresh `main` and perform the required bounded retrospective for this merged pull request.
+4. Rebase the preserved escaped-string branch, renumber that request to Request 7, make
    `json.scan` explicitly N/A under Request 6's boundary, and resume its review.
-6. Register the narrowly evidenced optional-Move partial-decode error cleanup, strict numeric
+5. Register the narrowly evidenced optional-Move partial-decode error cleanup, strict numeric
    grammar if retained, and record-array construction as separate reviewed slices before returning
    to the C6 design branch. Do not reopen a blanket `Option<Move record>` JSON descriptor request:
    its ordinary success path is shipped.
 
 ## Constraints and intentional state
 
-- The Request 6 design and preflight follow-ups are committed. This post-open correction
-  intentionally modifies `docs/align-requests.md` and `HANDOFF.md`; do not discard either file
-  before the coherent follow-up is committed.
+- The Request 6 design and all review follow-ups are committed. The worktree is expected to be
+  clean after this handoff-only finalization; do not discard or rewrite the scoped commits.
 - The worktree checked out on `agent/c6-json-escape-request` contains the committed escaped-string
   Request 6 plus intentional uncommitted changes to `HANDOFF.md` and
   `docs/align-requests.md`. Preserve those files until this request merges, then renumber/rebase
