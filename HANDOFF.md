@@ -109,8 +109,7 @@ ALIGN_REPO=<clean detached pinned Align worktree> \
 
 ## Exact next steps
 
-1. Push the Git-isolation, benchmark-identity, partial-clone, and allocation-bound review follow-up;
-   rerun a preflight-equivalent independent adversarial review against the complete final diff and
+1. Rerun a preflight-equivalent independent adversarial review against the complete final diff and
    repeat both required post-open reviews on the resulting exact SHA.
 2. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence, and
    merge only when every envelope is clean against an unchanged base tip.
