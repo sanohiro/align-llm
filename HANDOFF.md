@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `ebe777111ae9484ad68b7818c7c0d83b90e51952`
+  `8a568cd77d0faa7c081e2c76222da9a200118f69`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -84,7 +84,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`ebe777111ae9484ad68b7818c7c0d83b90e51952` against the exact pinned sibling checkout:
+`8a568cd77d0faa7c081e2c76222da9a200118f69` against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
@@ -93,9 +93,9 @@ ALIGN_REPO=/home/hiro/prj/align make ci  PASS
 
 ## Exact next steps
 
-1. Commit and push the path-specific corpus-construction review follow-up, rerun a
-   preflight-equivalent independent adversarial review against the complete final diff, and repeat
-   both required post-open reviews on the resulting exact SHA.
+1. Push the path-specific corpus-construction review follow-up, rerun a preflight-equivalent
+   independent adversarial review against the complete final diff, and repeat both required
+   post-open reviews on the resulting exact SHA.
 2. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence, and
    merge only when every envelope is clean against an unchanged base tip.
 3. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup
