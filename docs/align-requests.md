@@ -1830,7 +1830,8 @@ first. The adoption implementation then updates the `Makefile` list, the
 `scripts/check-gate-topology` embedded oracle and self-test, and the hosted workflow through its
 canonical `make -j8 hosted-checks` aggregate. It must not append an out-of-band workflow command.
 Because `capable-checks` consumes the complete hosted list, `make ci` runs the same target. The
-adoption slice also checks in
+adoption slice also checks in `scripts/check-git-lazy-fetch-version` as the single version-parser
+owner used by the hosted history preparation and the focused target, plus
 `eval/fixtures/c6-json-escape-adoption/scanner-align-revision` and
 `eval/fixtures/c6-json-escape-adoption/cleanup-align-revision`, each containing exactly its
 lowercase 40-hex prerequisite commit plus one newline. Both local and hosted aggregates execute the
@@ -1838,15 +1839,48 @@ same adoption script. The gate requires each prerequisite lifecycle entry to equ
 while Request 7's lifecycle entry equals `.align-revision`.
 
 The hosted CI checkout must make the prerequisite history available without moving the exact
-detached Request 7 checkout. Its adoption-slice workflow records `HEAD` and the porcelain worktree
-status immediately after the existing pinned checkout, expands a shallow repository with
-`git fetch --no-tags --unshallow origin`, and proves that both observations are byte-identical
-afterward. If the repository is already complete, it performs no history-changing fetch. The gate
-itself runs the existing exact-checkout revision script in an empty environment that preserves only
-the validated absolute `ALIGN_REPO`, fixed `PATH` and `LC_ALL`, disables system/global/XDG Git
-configuration, replacement objects, lazy fetch, and optional locks, and supplies command-scope
-`core.fsmonitor=false` and `status.showUntrackedFiles=all` overrides so hostile local configuration
-cannot execute a helper or hide dirt:
+detached Request 7 checkout. Before its first scripted inspection of that checkout, the
+adoption-slice workflow runs the checked-in `scripts/check-git-lazy-fetch-version` preflight
+described below. It then records `HEAD` and the porcelain worktree status, expands a shallow
+repository with `git fetch --no-tags --unshallow origin`, and proves that both observations are
+byte-identical afterward. If the repository is already complete, it performs no history-changing
+fetch.
+
+Before any target-side repository inspection, the adoption target runs the same version preflight.
+That script's only ordinary-mode Git command is
+`env -i PATH=/usr/bin:/bin LC_ALL=C git --version`. It requires exactly one output line matching
+`git version MAJOR.MINOR.PATCH` with an optional dot-or-hyphen-prefixed ASCII alphanumeric vendor
+suffix, parses all three decimal components without lexical comparison, and requires
+`MAJOR > 2` or `MAJOR == 2 && MINOR >= 45`. Git 2.45 is the minimum because it introduced
+`GIT_NO_LAZY_FETCH`; an older binary must fail before any `git -C`, worktree-status, config, or
+object command. The hosted job prints the accepted version record before the history preparation.
+Parser self-tests reject Git `2.44.4`, missing or non-decimal components, an extra line, and
+unexpected text; they accept `2.45.0`, a permitted vendor suffix, and `3.0.0`. Its `--self-test`
+mode also substitutes a `2.44.4` fixture executor with a repository-access marker and proves that
+the marker remains absent. Neither production call accepts a caller-selected Git binary or version
+text.
+
+```sh
+git_version_record="$(
+  env -i PATH=/usr/bin:/bin LC_ALL=C git --version
+)" || exit 1
+if [[ "$git_version_record" =~ ^git\ version\ ([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(((\.)|-)[[:alnum:].-]{1,64})?$ ]]; then
+  git_major=$((10#${BASH_REMATCH[1]}))
+  git_minor=$((10#${BASH_REMATCH[2]}))
+  git_patch=$((10#${BASH_REMATCH[3]}))
+else
+  exit 1
+fi
+(( git_major > 2 || (git_major == 2 && git_minor >= 45) )) || exit 1
+printf '%s\n' "$git_version_record"
+```
+
+After that version gate, the adoption target runs the existing exact-checkout revision script in an
+empty environment that preserves only the validated absolute `ALIGN_REPO`, fixed `PATH` and
+`LC_ALL`, disables system/global/XDG Git configuration, replacement objects, lazy fetch, and
+optional locks, and supplies command-scope `core.fsmonitor=false` and
+`status.showUntrackedFiles=all` overrides so hostile local configuration cannot execute a helper or
+hide dirt:
 
 ```sh
 env -i \
