@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `97903fea444a338babaafe4d2f72bda252117bf7`
+  `a769939284c41cc07fdf456e4d63c5fa5384a66c`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -25,19 +25,32 @@ shared strict string grammar. Scanner ownership and Move-row diagnostics are N/A
 only specifies strict grammar for rows admitted by Request 6 and rejects escaped retained views
 because the scanner has no arena.
 
-Ordinary decode, encode, and owner drop for eligible `Option<Move record>` success are already
-shipped. A first adversarial preflight proved that strict ignored-string rejection and
-outside-arena escaped-view rejection add failure edges after earlier fields may make owners live.
-Request 7 may therefore be registered independently but cannot advance to `IMPLEMENTING` until both
-Request 6 and the next decoded-owner transition cleanup request are `ALIGN_MERGED` at distinct
+The pinned implementation currently admits `Option<Move record>`: direct decode/encode succeeds,
+and ordinary scope `Drop` frees the nested owner. That behavior contradicts the authoritative JSON
+design and its stale rejection regression, while decode-error cleanup skips optional descriptors.
+The decoded-owner prerequisite must therefore decide whether to restore rejection or specify and
+repair the admitted surface. A first adversarial preflight also proved that strict ignored-string
+rejection and outside-arena escaped-view rejection add failure edges after earlier fields may make
+owners live. Request 7 may be registered independently but cannot advance to `IMPLEMENTING` until
+both Request 6 and the next decoded-owner transition cleanup request are `ALIGN_MERGED` at distinct
 named commits. Request 6 is a prerequisite because Request 7's scanner grammar coverage assumes
 its recursively Copy row boundary; Request 6 is therefore now reclassified as blocking for the
 Request 7 implementation slice even though no align-llm product path directly consumes
-`json.scan`. The cleanup prerequisite must audit construction, speculative
-write, replacement and source nulling, fallback success and failure, staging, return, and cleanup.
-Demonstrated classes include optional owners followed by later enclosing-object failure, indexed
-top-level AoS speculation overwritten by fallback, top-level `array<MoveStruct>` partial staging,
-and required or optional top-level record owners followed by trailing-garbage rejection.
+`json.scan`. The cleanup prerequisite must audit construction, speculative write, replacement and
+source nulling, fallback success and failure, staging, return, and cleanup. Demonstrated classes
+include optional owners followed by later enclosing-object failure on the currently admitted path,
+indexed top-level AoS speculation overwritten by fallback, top-level `array<MoveStruct>` partial
+staging, and required or currently admitted optional top-level record owners followed by
+trailing-garbage rejection.
+
+The persistent Request 6 adoption target must select its optional-owner fixtures from the active
+pinned compiler, not the immutable Request 6 commit. Its first adoption records that compiler's
+outcome. If decoded-owner cleanup later changes the schema decision, the align-llm adoption slice
+that first advances `.align-revision` to the changed behavior must update both optional fixtures and
+their exact expected diagnostic or success path in the same pull request. When Request 6 has
+already merged, the later cleanup Align change must likewise update Request 6's checked-in optional
+scanner, no-MIR, and ordinary-decode regressions before it merges. If cleanup merges first,
+Request 6 records the already-shipped outcome in its initial tests.
 
 The review follow-up also adds an exact per-path result oracle, hand-authored multi-invalid
 precedence cases, an exact checked-in 4,096-line grammar manifest whose byte hash and Cartesian
@@ -139,13 +152,23 @@ Effective promisor configuration and common-object-directory alternates are reje
 object reads, with alternate postchecks before output or status consumption and persistent-race
 regressions.
 
-The final follow-up made those boundaries executable under hostile raw trees and cached build
-state. Materialization and comparison prevalidate all paths and symlink chains, then use
-dirfd-relative no-follow access; initial fetch/detach and every later object operation run only
-after promisor/alternate guards. The benchmark requires Git 2.45 or newer. Adoption builds the
-pinned compiler in a newly created empty target rather than trusting fingerprint-fresh
-`ALIGN_REPO/target` output, carries its exact identity through the aggregate, and uses an
-identity-bound signal-safe cleanup that cannot delete a renamed replacement directory.
+The final follow-up made the repository-input boundaries executable under hostile raw trees and
+cached build state. Materialization and comparison prevalidate all paths and symlink chains, then
+use dirfd-relative no-follow access; initial fetch/detach and every later object operation run only
+after promisor/alternate guards. The benchmark requires Git 2.45 or newer. Adoption must build the
+pinned compiler in a new empty target rather than trust fingerprint-fresh `ALIGN_REPO/target`
+output, but the exact identity, process, and cleanup mechanism now belongs to the prerequisite
+topology design described next.
+
+Two successive controller-design reviews found new critical correctness classes, so the local
+patch loop is closed and that boundary is split out. Before Request 7 adoption implementation, a
+separate reviewed `docs/specs/check-gate-topology.md` enabling slice must define and merge the
+fresh-compiler bootstrap, trusted tool and cache inputs, compiler-exec identity enforcement,
+process ownership, deadlines, and fail-closed cleanup. It must explicitly resolve self-validation
+before bootstrap execution, ownership of any additional bootstrap/tool version probes beyond the
+already required Git preflight, nested Cargo-cache symlink/rename escape, and interposition below
+Make. Request 7 records the required safety outcomes and remains blocked rather than naming a
+hypothetical controller or API.
 
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
@@ -162,7 +185,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`97903fea444a338babaafe4d2f72bda252117bf7` against a clean detached checkout of the exact pinned
+`a769939284c41cc07fdf456e4d63c5fa5384a66c` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
@@ -180,7 +203,9 @@ ALIGN_REPO=<clean detached pinned Align worktree> \
 3. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup
    first, then strict numeric grammar if retained and record-array construction as separate reviewed
    slices. Request 7 implementation remains blocked until the cleanup request reaches
-   `ALIGN_MERGED`; it also requires Request 6 to reach `ALIGN_MERGED`.
+   `ALIGN_MERGED`; it also requires Request 6 to reach `ALIGN_MERGED` and the separately reviewed
+   benchmark-input enabling slice to merge. Its later align-llm adoption remains blocked until the
+   separate reviewed check-topology enabling design merges.
 4. Return to the C6 design branch only after its complete prerequisite set is registered; do not
    implement against a proposed Align surface.
 
