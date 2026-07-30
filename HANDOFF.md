@@ -38,12 +38,16 @@ accepted MIR, LLVM, and runtime ABI. Imported generics receive whole-program and
 `scan_schema.Wrap<array<i64>>` must retain that exact public spelling without an internal `$` name.
 
 Ordinary decode/encode/drop for `Option<Inner>` where `Inner` owns an array is already shipped.
-Two separate post-construction cleanup gaps remain in the pinned runtime:
-`drop_decoded_owned` skips a live optional descriptor when the enclosing object later fails, and
-top-level trailing-garbage rejection does not clean decoded required or optional owners. A
-follow-up design must audit every error exit after an owner becomes live and explicitly own or
-assign both cleanup classes. This does not change Request 6's scanner-only boundary: a reusable
-scan row must be recursively Copy regardless of ordinary decode success.
+Known decoded-owner gaps remain in the pinned runtime: optional descriptors are skipped on later
+object failure; indexed AoS or SoA speculation can write an owner that fallback overwrites on
+success or failure; top-level `array<MoveStruct>` decode does not clean current or completed staged
+rows after malformed later elements or trailing garbage; and top-level single-record trailing
+garbage leaves required or optional owners live. A follow-up design must audit every transition
+after an owner becomes live, including construction, speculative write, replacement/source
+nulling, fallback, staging, return, and cleanup, and explicitly own or assign every affected public
+path. This does not change Request 6's scanner-only boundary: semantic rejection prevents any Move
+row from reaching scanner MIR or runtime construction, so the scanner repair does not depend on a
+general decode cleanup repair.
 
 ## Verification
 
@@ -52,22 +56,24 @@ Verified on 2026-07-30 at relevant content head
 
 ```text
 git diff --check                         PASS
-ALIGN_REPO=../align make ci               PASS
+ALIGN_REPO=/home/hiro/prj/align make ci  PASS
 ```
 
 ## Exact next steps
 
 1. Rerun exact verification on the final handoff head, push the follow-up, and complete the required
-   current-SHA checks and reviews in GitHub. Merge
-   only when all required evidence is clean and `origin/main` remains the reviewed base.
+   current-SHA checks and reviews in GitHub. Merge only when all required evidence is clean and
+   `origin/main` remains the reviewed base.
 2. Refresh `main` and perform the required bounded retrospective for this merged pull request.
 3. Rebase the preserved escaped-string branch, renumber that request to Request 7, make
    `json.scan` explicitly N/A under Request 6's boundary, and resume its review.
-4. Register post-construction JSON decode error cleanup, strict numeric grammar if retained, and
+4. Register decoded-owner transition cleanup, strict numeric grammar if retained, and
    record-array construction as separate reviewed slices before returning to the C6 design branch.
-   The cleanup design must audit every error exit after an owner becomes live and assign both the
-   optional-descriptor outer-failure class and top-level trailing-garbage class. Do not reopen a
-   blanket `Option<Move record>` descriptor request: its ordinary success path is shipped.
+   The cleanup design must audit every transition after an owner becomes live and include
+   allocation-count regressions for optional outer failure, successful and failed AoS/SoA fallback
+   after a speculative owner write, top-level `array<MoveStruct>` partial staging, and
+   trailing-garbage rejection. Do not reopen a blanket `Option<Move record>` descriptor request:
+   its ordinary success path is shipped.
 
 ## Constraints and intentional state
 
@@ -76,8 +82,8 @@ ALIGN_REPO=../align make ci               PASS
 - The worktree checked out on `agent/c6-json-escape-request` contains the committed escaped-string
   Request 6 plus intentional uncommitted changes to `HANDOFF.md` and
   `docs/align-requests.md`. Preserve those files until this request merges, then renumber/rebase
-  the branch and correct its inherited blanket `Option<Move record>` claim to the two
-  post-construction cleanup classes above.
+  the branch and correct its inherited blanket `Option<Move record>` claim to the decoded-owner
+  transition classes above.
 - `agent/c6-prompt-context-design` preserves the C6 design draft.
 - Existing governance, pin-adoption, topology, and Request 5 worktrees belong to earlier scoped
   work; do not modify or remove them.

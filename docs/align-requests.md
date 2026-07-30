@@ -1050,14 +1050,20 @@ drop. One demonstrated error-path defect remains: after decoding a `Some(MoveStr
 subsequent enclosing-object decode failure leaves the optional payload unfreed because
 `drop_decoded_owned` skips optional descriptors. Missing or type-invalid siblings, duplicate
 declared keys, and malformed later object content are all instances of that root-cause class.
-Top-level trailing-garbage rejection has a separate decoded-owner cleanup gap that affects required
-and optional owning fields. These defects are outside this scanner-only request. Their follow-up
-design must audit every error exit after any decoded owner becomes live and either own both cleanup
-classes or assign each to an explicitly named separate request. The current recursive scanner
-schema walk admits the optional shape, so the scanner-specific ownership gate must still reject its
-reachable owner: each successful scan row would otherwise be overwritten without Drop. The exact
-diagnostic template substitutes a public source-level spelling for
-`<row-type-source-spelling>`:
+Additional decoded-owner gaps exist outside error exits. Indexed top-level AoS or SoA speculation
+can write an owner, then fall back and overwrite it on either a successful or failed fallback.
+Top-level `array<MoveStruct>` decode also fails to clean the current or completed staged rows after
+malformed later elements or trailing garbage, unlike the nested field-array path's explicit partial
+cleanup.
+Top-level single-record trailing-garbage rejection separately leaves required or optional decoded
+owners live. These are known examples, not an exhaustive cleanup inventory, and are outside this
+scanner-only request. Their follow-up design must audit every transition after any decoded owner
+becomes live: construction, speculative write, replacement/source nulling, fallback success and
+failure, staging, return, and cleanup. It must either own every affected public path or assign each
+class to an explicitly named separate request. The current recursive scanner schema walk admits the
+optional shape, so the scanner-specific ownership gate must still reject its reachable owner: each
+successful scan row would otherwise be overwritten without Drop. The exact diagnostic template
+substitutes a public source-level spelling for `<row-type-source-spelling>`:
 
 ```text
 `json.scan` row type '<row-type-source-spelling>' must be Copy; Move rows need per-row Drop before the scanner can reuse its row slot
@@ -1233,9 +1239,11 @@ Align compiler/runtime tests must:
    `Row { inner: Option<Inner>, score: i64 }`; decoding
    `{"inner":{"items":[1,2]},"score":3}` and immediately encoding the owner must produce those
    exact bytes before the value leaves scope successfully. This success case is shipped behavior,
-   not the subject of a new descriptor request. The distinct post-construction decode-error cleanup
-   gaps described above remain deferred; their follow-up must audit and assign every error exit
-   after an owner becomes live;
+   not the subject of a new descriptor request. The distinct decoded-owner transition gaps
+   described above remain deferred. Their follow-up must audit every transition after an owner
+   becomes live and include allocation-count regressions for successful and failed AoS/SoA fallback
+   after a speculative owner write, plus malformed-later-element and trailing-garbage cleanup for
+   top-level `array<MoveStruct>`;
 10. prove whole-program and per-unit checking produce the same acceptance and exact diagnostic
     when `Row` is local and when its complete definition is imported. The imported fixture's module
     is exactly `scan_schema`; it declares `pub ImportedRow` and
@@ -1340,7 +1348,8 @@ exit. Only this target plus `make ci` may advance Request 6 to `ALIGN_LLM_VERIFI
   pipeline Move-argument restrictions.
 - `../align/crates/align_mir/src/lib.rs` — reusable row slot and fused-terminal loop.
 - `../align/crates/align_runtime/src/lib.rs` — row zeroing, typed owned-array construction, and the
-  separately scoped `drop_decoded_owned` optional-descriptor cleanup defect.
+  separately scoped decoded-owner transition gaps in optional cleanup, indexed
+  speculation/fallback, top-level struct-array staging, and trailing-garbage rejection.
 - `../align/crates/align_driver/tests/m5.rs` — current scanner terminal and framing coverage.
 - `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — align-llm consumer sequencing.
 
@@ -1355,11 +1364,13 @@ or are already implemented:
   (missing key / `null` → `None`), enums (shape-directed unions), and ignores unknown fields —
   verified against `examples/json_nested.align`, which decodes an OpenAI chat-completions shape.
   `Option<enum>` remains an existing decode rejection. Eligible `Option<Move record>` success is
-  shipped. Subsequent enclosing-object failure can leak a live optional owner, and top-level
-  trailing-garbage rejection has a separate cleanup gap for required and optional owners. A
-  follow-up design must audit and assign every post-construction error exit. `align-llm` should
-  declare provider response structs, not ask Align for a dynamic value type. (Caveat handled
-  app-side: decoded
+  shipped. Known cleanup gaps include optional owners on later object failure, owners overwritten
+  across indexed AoS/SoA speculation-to-fallback transitions even when fallback succeeds, staged
+  top-level `array<MoveStruct>` rows on later failure, and required or optional owners on
+  trailing-garbage rejection. A follow-up design must audit and assign every transition after a
+  decoded owner becomes
+  live. `align-llm` should declare provider response structs, not ask Align for a dynamic value
+  type. (Caveat handled app-side: decoded
   `str` fields are zero-copy views into the input; use `.clone()` to persist them past the input's
   lifetime.)
 - **Working directory via app-side shell.** A `sh -c "cd <dir> && ..."` workaround exists, but it is
