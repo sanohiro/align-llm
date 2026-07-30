@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `52a8b97d04e11d93bc05fd1e898f9e8bf7d15f36`
+  `6e17c7e35693c9ded2a20c9f6c35896bc0f8c938`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -31,7 +31,9 @@ outside-arena escaped-view rejection add failure edges after earlier fields may 
 Request 7 may therefore be registered independently but cannot advance to `IMPLEMENTING` until both
 Request 6 and the next decoded-owner transition cleanup request are `ALIGN_MERGED` at distinct
 named commits. Request 6 is a prerequisite because Request 7's scanner grammar coverage assumes
-its recursively Copy row boundary. The cleanup prerequisite must audit construction, speculative
+its recursively Copy row boundary; Request 6 is therefore now reclassified as blocking for the
+Request 7 implementation slice even though no align-llm product path directly consumes
+`json.scan`. The cleanup prerequisite must audit construction, speculative
 write, replacement and source nulling, fallback success and failure, staging, return, and cleanup.
 Demonstrated classes include optional owners followed by later enclosing-object failure, indexed
 top-level AoS speculation overwritten by fallback, top-level `array<MoveStruct>` partial staging,
@@ -95,6 +97,14 @@ concurrent graft-file write; every isolated Git command now sets `GIT_GRAFT_FILE
 negative fixture races the repository file between the absence check and ancestry calls. The path
 check remains fail-fast defense-in-depth.
 
+A later host-native review closed four more acceptance-input gaps. Request 6's lifecycle now
+reflects the concrete Request 7 dependency. The performance harness has required explicit
+toolchain/cache inputs, an empty environment, isolated Cargo home/config discovery, protected
+dependency metadata, and per-worktree default targets. The future topology design must name an
+immutable actual-Git-2.45.0 execution image and run the complete adoption gate there, not merely
+feed synthetic version text to the parser. It must also move exact `.align-revision` byte
+validation into `scripts/check-align-revision` before any checkout lookup or release build.
+
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
 delimiters, ambiguous EOF, and other framing behavior remain shipped behavior; a future concrete
@@ -110,7 +120,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`52a8b97d04e11d93bc05fd1e898f9e8bf7d15f36` against a clean detached checkout of the exact pinned
+`6e17c7e35693c9ded2a20c9f6c35896bc0f8c938` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
