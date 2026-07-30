@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `d27c71bc160e8cf3e72992b455071dd01619faf0`
+  `52a8b97d04e11d93bc05fd1e898f9e8bf7d15f36`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -87,6 +87,14 @@ inputs, native CPU mode, five named one-million-row fields, ten order-balanced s
 exact median calculation, and a per-field 1.05 ratio threshold. Outside-arena key and skipped-value
 validation is fixed-state and allocation-free rather than hidden input-sized scratch.
 
+The final exact-SHA host-native review found two additional evidence gaps. The detached JSON
+benchmark workspaces ignored their own lockfiles, so Request 7 now requires a separately reviewed
+benchmark-input enabling slice to check in both lockfiles and use `cargo --locked --offline` before
+the implementation baseline exists. The ancestry gate's graft absence test could also race a
+concurrent graft-file write; every isolated Git command now sets `GIT_GRAFT_FILE=/dev/null`, and a
+negative fixture races the repository file between the absence check and ancestry calls. The path
+check remains fail-fast defense-in-depth.
+
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
 delimiters, ambiguous EOF, and other framing behavior remain shipped behavior; a future concrete
@@ -102,7 +110,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`d27c71bc160e8cf3e72992b455071dd01619faf0` against a clean detached checkout of the exact pinned
+`52a8b97d04e11d93bc05fd1e898f9e8bf7d15f36` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
