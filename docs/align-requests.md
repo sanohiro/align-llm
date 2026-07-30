@@ -1767,10 +1767,30 @@ Align compiler/runtime tests must:
     claims that arbitrary UTF-8 or surrogate-pair semantic bytes can name an Align field; declared
     field names remain ASCII identifiers. The test asserts this grammar-specific oracle rather
     than unconditional cross-path agreement.
-12. run the existing `bench/json_decode` and `bench/json_soa` escape-free fixtures on the same named
-    host with at least 10 alternating baseline/candidate samples, report both medians, and treat a
-    candidate slowdown greater than 5% as a failed gate until the design or implementation removes
-    it;
+12. add an Align-owned checked-in `scripts/run-json-escape-bench-gate` harness and run it on one
+    otherwise-idle named host over two clean detached Align worktrees. The baseline commit is the
+    exact parent of the first Request 7 implementation commit and already contains both named
+    prerequisites; the candidate is the proposed final Request 7 commit. Each worktree uses its own
+    default `target/` directory, and the harness rejects a SHA or worktree-state mismatch before
+    measurement. It records the hostname, `uname -a`, CPU model, baseline and candidate SHAs, and
+    exact `rustc -Vv`, `cargo -V`, and `git --version` outputs. For each of
+    `bench/json_decode/run.sh native` and
+    `bench/json_soa/run.sh native`, it first runs one discarded baseline warm-up and one discarded
+    candidate warm-up, then runs ten measured pairs sequentially with no overlap: odd-numbered pairs
+    run baseline then candidate and even-numbered pairs run candidate then baseline. One sample is
+    the numeric millisecond value already reported by that script for the named field in the row
+    whose first column is the decimal integer `1000000`; the scripts' internal round minima remain
+    part of that sample definition.
+    `json_decode` measures `A-full` and `A-proj`; `json_soa` measures `soa ms`, `aos ms`, and
+    `proj ms`. The scripts format those values to three decimal places; for each of the five fields
+    and each revision, sort the ten parsed values without further rounding and define the median as
+    the arithmetic mean of samples five and six. The harness prints every parsed sample, both
+    medians, and the ratio `candidate_median / baseline_median`, and fails if any of the five ratios
+    is greater than `1.05`. It also prints the matching Rust comparison fields so host drift is
+    reviewable, but they do not determine the threshold. Missing, duplicate, non-finite, wrong-row,
+    or otherwise unparsable output fails the harness. The pull request records the exact harness
+    command and complete report; a failure remains blocking until the design or implementation
+    removes it;
 13. after the cleanup prerequisite ships, place a required and optional owner before a malformed
     ignored string and before an outside-arena escaped returned field in record and union-payload
     fixtures; place owners in the current and completed rows before the same failures on slow,
@@ -1786,21 +1806,27 @@ Align compiler/runtime tests must:
 After Request 7 reaches `ALIGN_MERGED` on top of its two named shipped prerequisites, align-llm owns
 a separate adoption slice with one immutable observable gate. It release-builds and writes only the
 final Request 7 Align commit to the single `.align-revision`; the Request 6 and cleanup lifecycle
-entries retain their distinct commits. The adoption slice also checks in
+entries retain their distinct commits. Before implementation, a separate reviewed update to
+`docs/specs/check-gate-topology.md` adds `c6-json-escape-adoption` as the final
+`HOSTED_CHECK_TARGETS` entry and names its external-history preparation; that design update merges
+first. The adoption implementation then updates the `Makefile` list, the
+`scripts/check-gate-topology` embedded oracle and self-test, and the hosted workflow through its
+canonical `make -j8 hosted-checks` aggregate. It must not append an out-of-band workflow command.
+Because `capable-checks` consumes the complete hosted list, `make ci` runs the same target. The
+adoption slice also checks in
 `eval/fixtures/c6-json-escape-adoption/scanner-align-revision` and
 `eval/fixtures/c6-json-escape-adoption/cleanup-align-revision`, each containing exactly its
-lowercase 40-hex prerequisite commit plus one newline. It adds `c6-json-escape-adoption` to the
-`Makefile`, includes that target in `make ci`, and adds it explicitly to the hosted workflow's
-fixed supported-target invocation, which does not call `make ci`. Both local and hosted gates must
-execute the same adoption script. The gate requires each prerequisite lifecycle entry to equal its
-fixture file while Request 7's lifecycle entry equals `.align-revision`.
+lowercase 40-hex prerequisite commit plus one newline. Both local and hosted aggregates execute the
+same adoption script. The gate requires each prerequisite lifecycle entry to equal its fixture file
+while Request 7's lifecycle entry equals `.align-revision`.
 
 The hosted CI checkout must make the prerequisite history available without moving the exact
 detached Request 7 checkout. Its adoption-slice workflow records `HEAD` and the porcelain worktree
 status immediately after the existing pinned checkout, expands a shallow repository with
 `git fetch --no-tags --unshallow origin`, and proves that both observations are byte-identical
 afterward. If the repository is already complete, it performs no history-changing fetch. The gate
-itself runs the existing exact-checkout revision check and then fails closed when
+itself runs the existing exact-checkout revision check with
+`GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1`, and then fails closed when
 `git rev-parse --is-shallow-repository` is not exactly `false`; it never fetches or changes the
 external repository. A regression creates a depth-one detached checkout of the final commit,
 proves that the gate fails before history expansion, expands its history, then proves the same
@@ -1820,6 +1846,8 @@ clean_git() {
     GIT_ATTR_NOSYSTEM=1 \
     GIT_CONFIG_GLOBAL=/dev/null \
     GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_NO_LAZY_FETCH=1 \
+    GIT_OPTIONAL_LOCKS=0 \
     XDG_CONFIG_HOME=/dev/null \
     git "$@"
 }
@@ -1828,6 +1856,10 @@ align_scanner_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/sca
 align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cleanup-align-revision)"
 align_request7_revision="$(tr -d '\n' < .align-revision)"
 
+partial_clone_status=0
+clean_git -C "$ALIGN_REPO" config --local --get extensions.partialClone \
+  >/dev/null 2>&1 || partial_clone_status=$?
+test "$partial_clone_status" = 1
 test "$(clean_git -C "$ALIGN_REPO" rev-parse --is-shallow-repository)" = false
 align_common_record="$(
   clean_git -C "$ALIGN_REPO" rev-parse --path-format=absolute --git-common-dir &&
@@ -1867,9 +1899,15 @@ Before these commands, a bytewise validator requires each file to match
 `[0-9a-f]{40}\n` exactly; `tr` is extraction, not validation. Every command must return zero before
 any adoption fixture executes. The adoption smoke includes isolated negative copies of this gate
 proving rejection of a shallow repository, a symbolic or annotated-tag object, a replacement
-object that would forge ancestry, a Git-common-dir `info/grafts` entry that would forge ancestry,
-equal prerequisite/final revisions, equal prerequisite revisions, and valid but unrelated commit
-objects. The common-dir capture appends a fixed non-newline sentinel before shell command
+object that would forge ancestry, a Git-common-dir `info/grafts` entry that would forge ancestry, a
+standard partial clone with a missing prerequisite object, equal prerequisite/final revisions,
+equal prerequisite revisions, and valid but unrelated commit objects. The partial-clone case sets a
+local access marker as its promisor remote, snapshots the object database and index bytes, and must
+reject on `extensions.partialClone` before `cat-file` or `merge-base`, without contacting the remote,
+creating an object, or changing the index. A separate clean-checkout regression makes the index
+stat cache eligible for refresh and proves the exact revision check plus every ancestry command
+leaves its index bytes and metadata unchanged under `GIT_OPTIONAL_LOCKS=0`. The common-dir capture
+appends a fixed non-newline sentinel before shell command
 substitution can discard Git's output terminator, requires exactly one LF immediately before that
 sentinel, removes only that exact suffix with shell parameter expansion, and then requires a
 non-root absolute path containing no control byte. The negative matrix includes a valid separate

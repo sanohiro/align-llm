@@ -71,6 +71,16 @@ symlinked `info/grafts` path before ancestry inspection. The negative matrix inc
 directory whose basename ends in LF and whose graft would otherwise forge ancestry.
 `GIT_NO_REPLACE_OBJECTS` alone does not disable graft parents.
 
+The final host-native review also required the future adoption to follow the authoritative
+check-topology design instead of adding a workflow-only command. A reviewed topology-ledger update
+must merge first; implementation then adds the target to `HOSTED_CHECK_TARGETS`, its embedded
+oracle/self-test, and the workflow's canonical `hosted-checks` aggregate. All inspection uses
+`GIT_OPTIONAL_LOCKS=0` and `GIT_NO_LAZY_FETCH=1`; standard partial clones reject before object
+lookup, and negative fixtures prove no index/object mutation or promisor access. The performance
+gate now owns a checked-in harness, two isolated clean revisions, native CPU mode, five named
+one-million-row fields, ten order-balanced sample pairs, an exact median calculation, and a
+per-field 1.05 ratio threshold.
+
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
 delimiters, ambiguous EOF, and other framing behavior remain shipped behavior; a future concrete
