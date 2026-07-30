@@ -7,6 +7,10 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/convergence-guardrails`
 - Base: `d3c30e9e83edd06a7e000f8903465c29f6687220` (`origin/main`)
+- Relevant governance content commit: `1e7b0918adb87643c470a70114d93cb8f2845bd7`
+  (`Enforce pull request convergence budgets`). The current branch tip is the single permitted
+  consolidated review-repair commit that updates this checkpoint; its SHA is intentionally not
+  self-recorded in the commit it identifies.
 - Active goal: make pull-request convergence limits externally reviewable so a long sequence of
   small finding-by-finding commits cannot be merged.
 - Product implementation: stopped at the user's request.
@@ -56,16 +60,28 @@ Hosted verification:
 ```
 
 No exception or identity-coupled commit topology applies. The initial commit contains the complete
-governance change and this handoff. At most one consolidated review repair may follow.
+governance change and this handoff. The one permitted consolidated review-repair round updates this
+checkpoint only; no further content repair round is available.
+
+## Latest verification
+
+- `git diff --check`: PASS
+- `test "$(readlink AGENTS.md)" = CLAUDE.md`: PASS
+- Changed paths: exactly `CLAUDE.md`, `HANDOFF.md`, and `docs/review-checklist.md`
+- Hand-written added-plus-deleted lines before this checkpoint repair: 337 of 600
+- Non-merge commits before this checkpoint repair: 1 of 2
+- Review-repair rounds before this checkpoint repair: 0 of 1
+- Independent preflight on `1e7b091`: `NOT CLEAN` only because this checkpoint still described
+  pre-commit work; all budget checks passed. This consolidated repair resolves that finding.
 
 ## Exact next steps
 
-1. Run the recorded narrow verification and commit the complete three-file change once.
-2. Obtain one fresh independent adversarial preflight that explicitly reports the convergence
-   budget and actual counts.
-3. Open the governance pull request, obtain the final-head required check plus host-native and
+1. Re-run the recorded narrow verification on the final two-commit branch and obtain a fresh
+   independent adversarial preflight that explicitly reports the convergence budget and actual
+   counts.
+2. Open the governance pull request, obtain the final-head required check plus host-native and
    independent-adversarial reviews, and merge only if each envelope is clean.
-4. Stop after this governance merge because the user stopped product work. When product work is
+3. Stop after this governance merge because the user stopped product work. When product work is
    resumed, refresh `main` and first reconcile the already implemented but unmerged
    `agent/check-gate-topology-implementation` branch before adding the fresh-compiler topology
    design required by Request 7.
