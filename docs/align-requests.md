@@ -1381,7 +1381,9 @@ close those edges for every affected `parse_object` caller and indexed AoS stagi
 delivery is forbidden: the Request 7 implementation branch may be created only from an Align base
 that already contains both named merged prerequisite commits. Merge, rebase, or squash integration
 is permitted only when the final Request 7 commit retains both prerequisite commits as strict
-ancestors.
+ancestors. The separately reviewed benchmark-input enabling slice defined below must also merge
+before that implementation branch starts; it is an acceptance-infrastructure prerequisite rather
+than an additional Align language request.
 
 ### Motivation
 
@@ -1597,6 +1599,7 @@ The implementation closure ledger for the future Align design is:
 | Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
+| Detached benchmark dependency resolution, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | benchmark-input lock/offline self-tests and the harness's protected-tree and malformed-output regressions |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key and skipped-string
@@ -1775,12 +1778,21 @@ Align compiler/runtime tests must:
     claims that arbitrary UTF-8 or surrogate-pair semantic bytes can name an Align field; declared
     field names remain ASCII identifiers. The test asserts this grammar-specific oracle rather
     than unconditional cross-path agreement.
-12. add an Align-owned checked-in `scripts/run-json-escape-bench-gate` harness and run it on one
-    otherwise-idle named host over two clean detached Align worktrees. The baseline commit is the
-    exact parent of the first Request 7 implementation commit and already contains both named
-    prerequisites; the candidate is the proposed final Request 7 commit. Each worktree uses its own
-    default `target/` directory, and the harness rejects a SHA or worktree-state mismatch before
-    measurement. Before either warm-up, isolated Git inspection compares raw tree-entry
+12. first merge a separately reviewed benchmark-input enabling slice that removes the detached
+    `bench/json_decode/Cargo.lock` and `bench/json_soa/Cargo.lock` ignores, checks in both generated
+    lockfiles, and makes both benchmark `cargo run` commands use `--locked --offline`. The enabling
+    slice's tests prove that each detached workspace rejects a missing or manifest-inconsistent
+    lockfile and cannot update the registry or resolved graph during the gate; the harness's raw
+    protected-tree comparison separately rejects any lockfile byte difference between baseline
+    and candidate. No Request 7 implementation may start before this slice merges. Then add an
+    Align-owned checked-in
+    `scripts/run-json-escape-bench-gate` harness and run it on one otherwise-idle named host over two
+    clean detached Align worktrees. The baseline commit is the exact parent of the first Request 7
+    implementation commit, is descended from the merged benchmark-input slice, and already
+    contains both named prerequisites; the candidate is the proposed final Request 7 commit. Each
+    worktree uses its own default `target/` directory, and the harness rejects a SHA or
+    worktree-state mismatch before measurement. Before either warm-up, isolated Git inspection
+    compares raw tree-entry
     mode/type/object records and requires byte- and mode-identical tracked entries between the two
     commits for `.cargo/`, root `Cargo.toml`,
     `Cargo.lock`, optional root `rust-toolchain` and `rust-toolchain.toml`, and the complete
@@ -1938,6 +1950,7 @@ clean_git() {
     GIT_ATTR_NOSYSTEM=1 \
     GIT_CONFIG_GLOBAL=/dev/null \
     GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_GRAFT_FILE=/dev/null \
     GIT_NO_LAZY_FETCH=1 \
     GIT_OPTIONAL_LOCKS=0 \
     XDG_CONFIG_HOME=/dev/null \
@@ -1993,8 +2006,12 @@ Before these commands, a bytewise validator requires each file to match
 any adoption fixture executes. The adoption smoke includes isolated negative copies of this gate
 proving rejection of a shallow repository, a symbolic or annotated-tag object, a replacement
 object that would forge ancestry, a Git-common-dir `info/grafts` entry that would forge ancestry, a
-standard partial clone with a missing prerequisite object, equal prerequisite/final revisions,
-equal prerequisite revisions, and valid but unrelated commit objects. The partial-clone case sets a
+graft-race case that creates or replaces that file after the path-absence checks but before the
+ancestry calls, a standard partial clone with a missing prerequisite object, equal
+prerequisite/final revisions, equal prerequisite revisions, and valid but unrelated commit
+objects. The graft-race case proves every `clean_git` command uses the empty `/dev/null` graft
+source and therefore ignores the raced repository file; the forged ancestry must still fail
+without a fetch, object write, or index change. The partial-clone case sets a
 local access marker as its promisor remote, snapshots the object database and index bytes, and must
 reject the actual `remote.<name>.promisor` / `remote.<name>.partialclonefilter` configuration before
 `cat-file` or `merge-base`, without contacting the remote, creating an object, or changing the
@@ -2014,8 +2031,10 @@ non-root absolute path containing no control byte. The negative matrix includes 
 Git common directory whose basename ends in LF and whose `info/grafts` would forge the requested
 ancestry; it must be rejected before either ancestry command. Thus command substitution cannot
 normalize a malicious path into a different graft-check location. Any existing or symlinked graft
-path is also rejected before either ancestry command. The negative repositories and Git
-configuration must not affect the caller's repository. A cherry-pick, squash, or joint commit that
+path is also rejected before either ancestry command. Those path checks are fail-fast
+defense-in-depth; `GIT_GRAFT_FILE=/dev/null` is the race-free ancestry boundary and remains set for
+every `cat-file` and `merge-base` invocation. The negative repositories and Git configuration must
+not affect the caller's repository. A cherry-pick, squash, or joint commit that
 merely reproduces either prerequisite's content without preserving both named commits as strict
 ancestors is rejected. The target then runs
 `scripts/run-c6-json-escape-adoption-smoke` against checked-in
