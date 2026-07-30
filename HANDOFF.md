@@ -8,6 +8,8 @@ request checks, reviews, and attestations.
 - Branch: `agent/c6-json-escape-request-v2`
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
+- Relevant Request 7 content head:
+  `64a468fdd90e9c6c889e0054a6a8027f044be76e`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -24,13 +26,20 @@ only specifies strict grammar for rows admitted by Request 6 and rejects escaped
 because the scanner has no arena.
 
 Ordinary decode, encode, and owner drop for eligible `Option<Move record>` success are already
-shipped. The next cleanup request must instead audit every transition after any decoded owner
-becomes live: construction, speculative write, replacement and source nulling, fallback success
-and failure, staging, return, and cleanup. Demonstrated classes include optional owners followed by
+shipped. A first adversarial preflight proved that strict ignored-string rejection and
+outside-arena escaped-view rejection add failure edges after earlier fields may make owners live.
+Request 7 may therefore be registered independently but cannot advance to `IMPLEMENTING` until the
+next decoded-owner transition cleanup request is `ALIGN_MERGED` at a named commit. That prerequisite
+must audit construction, speculative write, replacement and source nulling, fallback success and
+failure, staging, return, and cleanup. Demonstrated classes include optional owners followed by
 later enclosing-object failure, indexed top-level AoS speculation overwritten by fallback,
 top-level `array<MoveStruct>` partial staging, and required or optional top-level record owners
-followed by trailing-garbage rejection. Request 7 does not claim to repair those classes and must
-not add a new owner-live transition.
+followed by trailing-garbage rejection.
+
+The review follow-up also adds an exact per-path result oracle, hand-authored multi-invalid
+precedence cases, a fixed 4,096-case SplitMix64 grammar corpus, and a caller-owned
+`cfg(test)`-only probe for failure byte offsets and logical arena allocations. The probe is not a
+production ABI or process-global counter.
 
 The bounded retrospective after PR #24 established three reusable decisions:
 
@@ -41,7 +50,8 @@ The bounded retrospective after PR #24 established three reusable decisions:
 
 ## Verification
 
-Verified on 2026-07-30 on the final pre-commit diff against the exact pinned sibling checkout:
+Verified on 2026-07-30 at Request 7 content head
+`64a468fdd90e9c6c889e0054a6a8027f044be76e` against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
@@ -50,21 +60,22 @@ ALIGN_REPO=/home/hiro/prj/align make ci  PASS
 
 ## Exact next steps
 
-1. Commit the completed contract and closure-ledger pass, then rerun exact verification on the
-   resulting head.
-2. Run a fresh independent adversarial preflight against the complete diff and pinned Align
+1. Run a fresh independent adversarial preflight against the complete final diff and pinned Align
    implementation. Resolve valid findings before opening the pull request.
-3. Open a focused draft pull request, publish SHA-bound preflight, host-native,
+2. Open a focused draft pull request, publish SHA-bound preflight, host-native,
    independent-adversarial, and check evidence, and merge only when all current-SHA evidence is
    clean against an unchanged base tip.
-4. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup,
-   strict numeric grammar if retained, and record-array construction as separate reviewed slices.
-5. Return to the C6 design branch only after its complete prerequisite set is registered; do not
+3. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup
+   first, then strict numeric grammar if retained and record-array construction as separate reviewed
+   slices. Request 7 implementation remains blocked until the cleanup request reaches
+   `ALIGN_MERGED`.
+4. Return to the C6 design branch only after its complete prerequisite set is registered; do not
    implement against a proposed Align surface.
 
 ## Constraints and intentional state
 
-- This branch changes only `docs/align-requests.md` and this durable handoff.
+- This branch changes only `docs/align-requests.md` and this durable handoff. The worktree is
+  expected to be clean after this handoff commit.
 - The old escaped-string branch is a preserved source checkpoint, not a merge source.
 - `agent/c6-prompt-context-design` preserves the C6 design draft.
 - Existing governance, pin-adoption, topology, Request 5, and scanner-request worktrees belong to
