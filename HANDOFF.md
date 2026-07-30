@@ -39,15 +39,16 @@ accepted MIR, LLVM, and runtime ABI. Imported generics receive whole-program and
 
 Ordinary decode/encode/drop for `Option<Inner>` where `Inner` owns an array is already shipped.
 Known decoded-owner gaps remain in the pinned runtime: optional descriptors are skipped on later
-object failure; indexed AoS or SoA speculation can write an owner that fallback overwrites on
+object failure; indexed top-level AoS speculation can write an owner that fallback overwrites on
 success or failure; top-level `array<MoveStruct>` decode does not clean current or completed staged
 rows after malformed later elements or trailing garbage; and top-level single-record trailing
 garbage leaves required or optional owners live. A follow-up design must audit every transition
 after an owner becomes live, including construction, speculative write, replacement/source
 nulling, fallback, staging, return, and cleanup, and explicitly own or assign every affected public
-path. This does not change Request 6's scanner-only boundary: semantic rejection prevents any Move
-row from reaching scanner MIR or runtime construction, so the scanner repair does not depend on a
-general decode cleanup repair.
+path. SoA decoded-owner cleanup is N/A because sema rejects owned SoA columns. This does not change
+Request 6's scanner-only boundary: semantic rejection prevents any Move row from reaching scanner
+MIR or runtime construction, so the scanner repair does not depend on a general decode cleanup
+repair.
 
 ## Verification
 
@@ -70,8 +71,8 @@ ALIGN_REPO=/home/hiro/prj/align make ci  PASS
 4. Register decoded-owner transition cleanup, strict numeric grammar if retained, and
    record-array construction as separate reviewed slices before returning to the C6 design branch.
    The cleanup design must audit every transition after an owner becomes live and include
-   allocation-count regressions for optional outer failure, successful and failed AoS/SoA fallback
-   after a speculative owner write, top-level `array<MoveStruct>` partial staging, and
+   allocation-count regressions for optional outer failure, successful and failed top-level AoS
+   fallback after a speculative owner write, top-level `array<MoveStruct>` partial staging, and
    trailing-garbage rejection. Do not reopen a blanket `Option<Move record>` descriptor request:
    its ordinary success path is shipped.
 
