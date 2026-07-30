@@ -26,39 +26,31 @@ Use `N/A` with a reason when the change makes no performance claim.
 
 - Ownership, error-handling, or compatibility risks:
 
-### Preflight or refreshed preflight review envelope
+### Comprehensive review envelope
 
 - Record or link:
-- Kind (`pre-open` or `preflight-equivalent refresh`):
-- Head SHA:
+- Reviewed head SHA:
 - Base-tip SHA:
 - Merge-base SHA:
 - Reviewer:
 - Review kind and scope:
 - Verdict:
-- Finding dispositions (`none` when there were no findings):
+- Complete findings (`none` when there were no findings):
+- Finding dispositions:
+- Consolidated repair commit (`N/A` when no repair was needed):
 
-### Post-open host-native review envelope
+### Conditional final review
 
+- Trigger (`N/A`, substantial scope expansion, approach change, or material behavior/design/specification/governance change):
 - Record or link:
-- Head SHA:
+- Reviewed head SHA:
 - Base-tip SHA:
 - Merge-base SHA:
 - Reviewer:
 - Review kind and scope:
 - Verdict:
-- Finding dispositions (`none` when there were no findings):
-
-### Post-open independent-adversarial review envelope
-
-- Record or link:
-- Head SHA:
-- Base-tip SHA:
-- Merge-base SHA:
-- Reviewer:
-- Review kind and scope:
-- Verdict:
-- Finding dispositions (`none` when there were no findings):
+- Complete findings:
+- Finding dispositions:
 
 ### Check evidence
 
@@ -69,7 +61,8 @@ Use `N/A` with a reason when the change makes no performance claim.
   synthetic merge or equivalent):
 - Required check names, statuses, and links:
 
-- [ ] Independent adversarial review completed for a non-trivial change
+- [ ] One comprehensive review completed
+- [ ] A final review was run only if its material-change trigger applied
 - [ ] Required checks pass
 - [ ] No valid review finding remains unresolved
 - [ ] `HANDOFF.md` is updated when current state or next steps changed

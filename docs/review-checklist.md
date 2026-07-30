@@ -37,25 +37,22 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
   can share state in one process tree, including aggregate-plus-aggregate and
   aggregate-plus-focused operations, and separately defines the policy for concurrent independent
   processes.
-- Review requirements cover the final pushed state and require another review after material
-  behavior, design, specification, or governance follow-ups.
-- Each preflight and post-open review envelope independently records the exact head SHA, base-tip
-  SHA, merge-base SHA, reviewer, review kind and scope, verdict, and finding dispositions outside
-  the branch. A head or base-tip change after opening requires a full-diff preflight-equivalent
-  refresh that replaces the stale pre-open envelope without replacing either post-open review.
-  Pass the envelope's full immutable base-tip commit ID as the review command's base argument when
-  the command accepts it. If the command requires a symbolic ref, verify after completion that the
-  review actually used the envelope's base-tip SHA; resolving the ref only before invocation does
-  not close the race and is not review evidence. Modes that cannot select a base, such as
-  `--commit` or `--uncommitted`, may support a scoped commit or delta review but cannot satisfy a
-  full-diff preflight, refreshed-preflight, or post-open envelope; pair them with a separate
-  immutable-base full-diff review.
-  Check evidence separately records the head, tested base-tip, merge-base, and tested integration
-  commit or tree and cannot substitute for review evidence. The head is a valid tested integration
-  only when its merge base equals the tested base tip; otherwise evidence names the synthetic merge
-  or equivalent tree for those exact inputs.
-- Merge readiness requires current SHA-bound evidence, passing required checks, clean required
-  reviews, no unresolved valid finding, and no later content push.
+- One comprehensive full-diff review reports all findings before repair starts. Findings are
+  scrutinized, grouped by root-cause class, and resolved in one consolidated follow-up when
+  practical; the history does not contain a review after each individual fix.
+- An ordinary repair that implements only recorded findings does not trigger another review. One
+  final comprehensive review is required only after a substantial scope expansion, implementation
+  approach change, or material behavior, design, specification, or governance change. If that
+  final review requires another non-trivial change, the work is re-scoped or redesigned instead of
+  entering another review loop.
+- The comprehensive review envelope records the reviewed head SHA, base-tip SHA, merge-base SHA,
+  reviewer, review kind and scope, verdict, and complete finding list. The pull request records each
+  disposition and the consolidated repair commit. A conditionally required final review records the
+  same complete SHA-bound envelope, findings, and dispositions. Check evidence separately records
+  the final head, tested base-tip, merge-base, and tested integration commit or tree.
+- Merge readiness requires the comprehensive review, any conditionally required one-time final
+  review, passing final checks, and no unresolved valid finding. Multiple independent review
+  envelopes are not required for the same unchanged diff.
 - `HANDOFF.md` identifies the active branch and relevant commit, completed and unfinished work,
   exact next actions, durable verification evidence, blockers, intentional uncommitted files, and
   expected post-merge work without mirroring transient pull request status.
