@@ -1861,9 +1861,18 @@ the marker remains absent. Neither production call accepts a caller-selected Git
 text.
 
 ```sh
-git_version_record="$(
-  env -i PATH=/usr/bin:/bin LC_ALL=C git --version
+export LC_ALL=C
+git_version_capture="$(
+  env -i PATH=/usr/bin:/bin LC_ALL=C git --version &&
+    printf '%s' '__GIT_VERSION_END__'
 )" || exit 1
+case "$git_version_capture" in
+  *'
+__GIT_VERSION_END__') ;;
+  *) exit 1 ;;
+esac
+git_version_record="${git_version_capture%
+__GIT_VERSION_END__}"
 if [[ "$git_version_record" =~ ^git\ version\ ([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(((\.)|-)[[:alnum:].-]{1,64})?$ ]]; then
   git_major=$((10#${BASH_REMATCH[1]}))
   git_minor=$((10#${BASH_REMATCH[2]}))
@@ -1874,6 +1883,11 @@ fi
 (( git_major > 2 || (git_major == 2 && git_minor >= 45) )) || exit 1
 printf '%s\n' "$git_version_record"
 ```
+
+The fixed non-newline sentinel preserves the command's output terminator before command
+substitution can remove it. The suffix removal requires exactly one LF immediately before the
+sentinel; the anchored C-locale regex then rejects any earlier or remaining LF, so missing,
+additional, or blank output lines cannot normalize to an accepted record.
 
 After that version gate, the adoption target runs the existing exact-checkout revision script in an
 empty environment that preserves only the validated absolute `ALIGN_REPO`, fixed `PATH` and
