@@ -2127,17 +2127,26 @@ env -i \
   scripts/check-align-revision
 ```
 
-Within that boundary, after locating the Git directory but before `rev-parse HEAD`, `cat-file`,
-status, tree, index-to-tree comparison, or any other object inspection,
-`scripts/check-align-revision` first runs the effective `git config --includes` promisor query
-shown below and requires its no-match status. It includes repository and worktree configuration,
-but its isolated environment excludes system, global, XDG, replacement, alternate-object, and
-caller-selected Git state. It resolves the common object directory without reading a commit and
-rejects existing or symlinked `objects/info/alternates` and `objects/info/http-alternates` before
-and after every subsequent object operation; command output or status is consumed only after the
-postcheck. The script then fails closed when
-`git rev-parse --is-shallow-repository` is not exactly `false`; it never fetches or changes the
-external repository.
+Within that boundary, the script treats the validated absolute `ALIGN_REPO` argument as the only
+worktree root: it opens that exact directory with no-follow semantics before Git inspection and
+never substitutes `rev-parse --show-toplevel`, `core.worktree`, or another Git-derived worktree
+path for its retained root descriptor. After locating the exact root `.git` administrative entry
+but before `rev-parse HEAD`, `cat-file`, status, tree, index-to-tree comparison, or any other object
+inspection, `scripts/check-align-revision` first runs effective `git config --includes` queries
+over repository and worktree configuration. It requires no promisor match and no `core.worktree`
+value; a match rejects rather than being overridden. Its isolated environment excludes system,
+global, XDG, replacement, alternate-object, and caller-selected Git state. Under the same boundary
+it then requires `git rev-parse --is-inside-work-tree` to be exactly `true` and binary-safely
+captures `git rev-parse --path-format=absolute --show-toplevel`; the complete path bytes must equal
+the already validated absolute `ALIGN_REPO`. Missing, additional, or malformed output rejects.
+Thus an explicit bare setting, linked-worktree-local redirect, included `core.worktree`, or other
+Git/config disagreement cannot select a different filesystem root.
+
+The script resolves the common object directory without reading a commit and rejects existing or
+symlinked `objects/info/alternates` and `objects/info/http-alternates` before and after every
+subsequent object operation; command output or status is consumed only after the postcheck. It then
+fails closed when `git rev-parse --is-shallow-repository` is not exactly `false`; it never fetches
+or changes the external repository.
 
 The script does not use `git status`, `git diff`, checkout conversion, or any other operation that
 may invoke clean/smudge/text-conversion filters. A checked-in binary-safe comparator first parses
@@ -2158,8 +2167,10 @@ Git which paths are untracked or ignored. Every filesystem directory other than 
 of the trie, and every other enumerated entry must map one-to-one to the corresponding tracked trie
 leaf. The exact `.git` entry is excluded only after the script has resolved and validated the Git
 and common directories; any other spelling whose ASCII fold is `.git`, any extra empty directory,
-and any filesystem path absent from the trie rejects. The root `target/` entry must be absent or an
-ordinary non-symlinked directory and is not traversed by this source comparator.
+and any filesystem path absent from the trie rejects. The tree/index trie must contain no root
+`target` component; otherwise the gate rejects rather than applying the output exception. Only
+after that proof may the filesystem's root `target/` entry be absent or an ordinary non-symlinked
+directory that this source comparator does not traverse.
 
 Enumeration, descent, `lstat`, regular-file reads, and symlink-target reads all stay relative to
 the already opened parent descriptors and use no-follow semantics. A disappearing entry, a type
@@ -2179,6 +2190,20 @@ without invoking Git filters, and matches that ID to the index object. Missing, 
 unsupported, type-mismatched, mode-mismatched, or byte-mismatched entries fail. The comparator
 never executes repository content or Git-configured helpers.
 
+This comparator establishes one raw-filesystem observation; its retained root descriptor alone
+does not bind separate `git -C "$ALIGN_REPO"` processes or a later Cargo build to that observation.
+The adoption implementation must therefore use only the already installed common fresh-compiler
+topology path. That prerequisite design and implementation must put every repository
+config/object/index operation, raw enumeration, source materialization, and compiler build inside
+one non-conflicting source-identity and mutation boundary. It must bind the exact root, Git
+directory, common directory, and source bytes across their complete use; an ordinary pathname
+re-resolution or matching pre/post `stat` observation is insufficient because ancestor, root, or
+administrative paths can be replaced and restored between observations. Request 7 fixes the safety
+outcome, not the mechanism. The common topology closure matrix must include an ancestor/root
+rename-and-replace ABA fixture in which another repository has the same HEAD, tree, and index but
+an additional recursively consumed Rust input; neither its Git state nor its source may be
+accepted or built. A standalone successful comparator invocation cannot satisfy the adoption gate.
+
 Before the raw comparison, `scripts/check-align-revision` also parses
 `git ls-files -v -z` bytewise and rejects every lowercase tag (an `assume-unchanged` entry) and
 every uppercase `S` tag (a `skip-worktree` entry); it does not clear either flag or refresh the
@@ -2195,6 +2220,10 @@ detached `HEAD` and clean worktree pass. Another regression supplies hostile sys
 and local status/fsmonitor configuration plus an untracked file; a dedicated hostile local
 `core.ignoreCase=true` case adds `crates/align_runtime/src/LIB.rs` beside tracked `lib.rs` and proves
 that the raw enumeration rejects it even though both Git untracked queries omit it. Separate cases
+set `core.worktree` directly and through linked-worktree configuration to an outside directory
+containing a build-input marker, and set `core.bare=true`; each must reject before object lookup,
+external-root enumeration, or marker execution. A raw-tree fixture with a tracked root `target`
+component must reject rather than hiding that subtree behind the output exception. Separate cases
 mark a tracked file `assume-unchanged` and `skip-worktree` and then change its bytes. Every case
 must reject before build without invoking the helper, normalizing an index flag, or changing
 index/object bytes or metadata. Additional cases hide an executable default `build.rs` and
@@ -2227,11 +2256,12 @@ fully no-follow cache and output containment; offline dependency use; identity e
 actual granularity of every compiler execution, including invocations below Make; ownership,
 termination, escalation, and reap of probe, build, aggregate, and escaped descendant processes;
 PID and process-group reuse; signal arrival during every construction and active-process window;
-bounded monotonic shutdown; rename-and-replace races; deterministic error precedence; and
-fail-closed cleanup that cannot delete an unowned path or race a surviving writer. Its closure
-matrix must cover success, every phase failure, timeout, exhaustion, and cleanup failure under both
-local `make ci` and the hosted serialized aggregate, and must name exact negative and integration
-tests for each cell.
+bounded monotonic shutdown; one source-identity boundary spanning Git, raw enumeration,
+materialization, and build despite ancestor/root/Git-directory/common-directory
+rename-and-replace or ABA races; deterministic error precedence; and fail-closed cleanup that
+cannot delete an unowned path or race a surviving writer. Its closure matrix must cover success,
+every phase failure, timeout, exhaustion, and cleanup failure under both local `make ci` and the
+hosted serialized aggregate, and must name exact negative and integration tests for each cell.
 
 Four design choices are intentionally unresolved here and block that enabling slice: how a
 bootstrap is trusted before it can validate itself; whether additional bootstrap or tool-identity
