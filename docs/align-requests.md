@@ -482,6 +482,15 @@ Align commit or pull request: pending
 align-llm verification: pending
 ```
 
+Request 7 may be registered and reviewed independently, but it must not advance from `PROPOSED` to
+`IMPLEMENTING` until a separately registered decoded-owner transition cleanup request reaches
+`ALIGN_MERGED` at a named Align commit. Strict rejection of a malformed ignored string and
+outside-arena rejection of an escaped retained view both add failure edges after an earlier field
+may have made an owner live. The prerequisite must close those edges for every affected
+`parse_object` caller and indexed AoS staging path. If Align delivers both capabilities jointly,
+the shared pull request must satisfy the cleanup request first and both lifecycle entries must name
+the same shipped commit; Request 7 still cannot claim independent implementation readiness.
+
 ### Motivation
 
 OpenAI-compatible streaming APIs normally return server-sent events with HTTP/1.1
@@ -1453,8 +1462,9 @@ values and is unchanged.
 Required semantics:
 
 - outside an arena, the current zero-copy clean-string path remains valid; a declared returned
-  `str` value that needs retained unescaping returns `Error.Code(1)` without leaking or partially
-  initialized fields;
+  `str` value that needs retained unescaping returns `Error.Code(1)`. The decoded-owner cleanup
+  prerequisite must already guarantee that any owner made live by an earlier field is released and
+  no partially initialized value is returned;
 - on the materializing record/AoS/SoA paths inside an arena, clean strings remain zero-copy input
   views and escaped strings materialize only their decoded UTF-8 bytes in the arena. The matrix's
   union and scanner paths remain `Error.Code(1)` for a recursively reachable escaped declared view
@@ -1471,7 +1481,8 @@ Required semantics:
   `Error.Code(1)`, and malformed escapes in declared values, undeclared values, declared keys, or
   undeclared keys cannot be accepted merely because a field is ignored or a speculative path does
   not project it. Apply the same string grammar to `json.doc` so the two public parsers do not
-  disagree;
+  disagree. This requirement creates no unsound owner-live failure edge because Request 7 cannot
+  enter implementation until its decoded-owner cleanup prerequisite is shipped;
 - typed key lookup compares semantic unescaped bytes: a valid escaped spelling of a declared key
   matches that field, a valid escaped unknown key remains ignored, and two raw spellings that
   decode to the same declared key are a duplicate-key error. `json.doc.key(i)` returns the same
@@ -1495,9 +1506,9 @@ Required semantics:
   spelling;
 - on already-correct nested field-array cleanup paths, partial decode failure still drops every
   owned array spine and nested owned field already constructed; arena allocations follow normal
-  arena cleanup and are not individually freed. Request 7 does not claim that behavior for the
+  arena cleanup and are not individually freed. The prerequisite must extend exact cleanup to the
   separately demonstrated optional-owner, indexed top-level AoS fallback, top-level
-  `array<MoveStruct>` staging, or trailing-garbage gaps;
+  `array<MoveStruct>` staging, and trailing-garbage gaps before Request 7 is implemented;
 - JSON number-grammar strictness is N/A to this request because it does not share string
   materialization or storage ownership; C6 records any required numeric strictness separately;
 - the feature does not add a dynamic JSON value type. Ordinary decode, encode, and owner drop for
@@ -1509,7 +1520,8 @@ Required semantics:
   optional owners live when a top-level record rejects trailing garbage. Their follow-up design
   must audit construction, speculative write, replacement and source nulling, fallback, staging,
   return, and cleanup, and must assign every owner-live transition to an explicit owner module and
-  allocation-count regression.
+  allocation-count regression. That follow-up is an implementation prerequisite, not merely an
+  excluded future improvement.
 
 Validation order is deterministic and preserves the existing parser's observable precedence:
 
@@ -1526,13 +1538,47 @@ Speculation may return to fallback before choosing an outcome, but it must not m
 escaped returned string first; fallback remains the source of truth for the same earliest
 observable error.
 
+The differential result oracle separates string grammar from each path's materialization and
+semantic policy. Each row below is a complete otherwise-valid fixture for that path:
+
+| Input class | Arena-backed record / AoS / SoA | No-arena record / AoS | Union / Request 6-admitted scanner row | `json.doc` |
+| --- | --- | --- | --- | --- |
+| Clean selected declared string | success, borrowed semantic bytes | success, borrowed semantic bytes | success, borrowed semantic bytes | success, borrowed semantic bytes |
+| Valid escaped selected declared string | success, arena-backed semantic bytes | `Error.Code(1)` | `Error.Code(1)` | success, arena-backed semantic bytes |
+| Valid escaped declared key with a clean selected value | success and semantic key match | success and semantic key match | success and semantic key match | success and semantic key bytes |
+| Valid escaped ignored key or value with clean selected values | success | success | success | success |
+| Malformed escape or raw C0 in any declared or ignored key/value | `Error.Code(1)` | `Error.Code(1)` | `Error.Code(1)` | parse `Err` |
+| Literal and escaped spellings of the same declared key | `Error.Code(1)` duplicate | `Error.Code(1)` duplicate | `Error.Code(1)` duplicate | success under the shipped document duplicate policy; lookup remains first-match |
+| Missing required declared field or declared type mismatch | `Error.Code(1)` | `Error.Code(1)` | `Error.Code(1)` | success as a schema-unknown document |
+| Non-whitespace trailing bytes or invalid scanner framing | `Error.Code(1)` | `Error.Code(1)` | `Error.Code(1)` for the applicable union, top-level-array, or NDJSON fixture | parse `Err` |
+
+The hand-authored multi-invalid precedence corpus fixes the following typed-decode outcomes on slow,
+speculative-success, and fallback rails; the same applicable outcome is required for AoS, SoA,
+union payload records, and scanner rows:
+
+| Ordered faults in one fixture | Required first failure |
+| --- | --- |
+| Any semantic fault plus invalid UTF-8 anywhere | whole-input UTF-8 validation |
+| Earlier malformed ignored string, later duplicate/type/missing/trailing fault | string grammar at the malformed token |
+| Earlier duplicate declared key, later malformed ignored string | duplicate at the second semantic key |
+| Earlier declared type/range error, later malformed ignored string | type/range error at the declared value |
+| Earlier valid fields, malformed ignored string, then missing required field at `}` | string grammar at the malformed token |
+| Missing required field at `}`, then trailing non-whitespace | missing-field failure |
+| Complete valid top-level value, then trailing non-whitespace | trailing-input failure |
+
+For `json.doc`, duplicate, missing, and declared-type conditions are intentionally not semantic
+errors; its applicable precedence cases are UTF-8, malformed string grammar, and trailing input.
+The scanner runs both top-level-array and NDJSON variants. Every precedence regression asserts the
+internal failure kind and byte offset described below in addition to the public `Error.Code(1)` or
+parse `Err`, so identical public error discriminants cannot hide rail drift.
+
 The implementation closure ledger for the future Align design is:
 
 | Transition | Required owner module / entrypoint | Exact regression owned by the Align design |
 | --- | --- | --- |
 | Type inference, arena availability, region meet, and construction | `align_sema::check_json_decode`, region/storage-root analysis, and the corresponding `align_mir` JSON decode lowering | `m5::json_escape_typed_region_matrix` |
-| Record and nested-record success, outside-arena failure, later sibling failure, return, and cleanup | `align_rt_json_decode`, `parse_object`, shared value writing, and existing decoded-owner cleanup for paths that are already correct | `json_escape_record_lifecycle` |
-| Top-level and field AoS success plus slow/speculative/fallback string equivalence | `align_rt_json_decode_struct_array`, `json_speculate`, `json_fallback`, and `write_field_indexed`; decoded-owner transitions already assigned to the follow-up cleanup request remain excluded | `json_escape_aos_path_equivalence` |
+| Record and nested-record success, outside-arena failure, later sibling failure, return, and cleanup | `align_rt_json_decode`, `parse_object`, shared value writing, and the shipped decoded-owner cleanup prerequisite | `json_escape_record_lifecycle` and `json_escape_record_owner_transition_integration` |
+| Top-level and field AoS success plus slow/speculative/fallback string equivalence | `align_rt_json_decode_struct_array`, `json_speculate`, `json_fallback`, `write_field_indexed`, and the shipped decoded-owner cleanup prerequisite | `json_escape_aos_path_equivalence` and `json_escape_aos_owner_transition_integration` |
 | SoA count, allocation, fill success/failure, and arena cleanup | `align_rt_json_decode_soa` and the shared indexed writers | `json_escape_soa_path_equivalence` |
 | Union and scanner non-materialization, including ignored and malformed input | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
@@ -1544,6 +1590,17 @@ skip, and unescape scratch is temporary runtime-owned storage freed on return. A
 after materialization may leave unreachable bytes in the caller's arena until that arena's normal
 bulk cleanup, but returns no view and may retain at most one allocation per escaped returned field
 encountered before the error. No scratch or decoded view becomes process-global.
+
+Exact logical allocation and precedence observation use a caller-owned, `cfg(test)`-only
+`JsonDecodeTestProbe` threaded through internal parser helpers. Production `extern "C"` entrypoints
+pass no probe, so this adds no production ABI or ambient state. The probe records the first
+validation failure kind and input byte offset, retained-string materialization count and bytes,
+peak temporary scratch capacity, speculation attempts, and fallbacks. The arena helper increments
+the logical materialization fields exactly where it reserves bytes for one returned escaped
+string; fallback tests require those fields to remain zero until fallback validation succeeds.
+Each runtime unit test creates its own probe, so concurrent tests have no shared counter, reset
+order, lock, or cross-test contamination. Existing heap-allocation instrumentation remains
+separate and continues to observe array-spine ownership.
 
 An exact internal arena-passing ABI is N/A while this request is `PROPOSED`: align-llm must not code
 against a hypothetical lowering. Before the request can become `ACCEPTED`, Align's authoritative
@@ -1569,8 +1626,10 @@ Align compiler/runtime tests must:
 4. prove the clean path still points into the input while escaped values point into the explicit
    arena, and prove neither view can escape its owner;
 5. reject a typed decode whose returned declared `str` field needs unescaping outside an arena with
-   `Error.Code(1)`, with no leak or partially live record; separately accept escaped declared keys
-   and valid escaped ignored values outside an arena because neither retains a decoded view;
+   `Error.Code(1)`; with the decoded-owner prerequisite in place, prove no earlier required or
+   optional owner leaks and no partially live record is returned. Separately accept escaped
+   declared keys and valid escaped ignored values outside an arena because neither retains a
+   decoded view;
 6. decode `Root { rows: array<Row> }` where clean and escaped fields appear in Copy and Move element
    records, nested record arrays, options, and scalar-string arrays; on this already-correct nested
    field-array path, inject a malformed escape after initialized Move elements and prove exact deep
@@ -1578,12 +1637,13 @@ Align compiler/runtime tests must:
 7. run slow, speculative-success, and speculative-fallback paths over the same corpus and require
    identical semantic records, encoded bytes, errors, exact retained materialized-string arena
    allocation counts, string-view ownership, and arena cleanup; force fallback after an escaped
-   projected value and prove that it abandoned zero arena allocations. Separately demonstrated
-   decoded-owner transitions remain assigned to their follow-up request;
+   projected value and prove that it abandoned zero arena allocations. Run the owner-live
+   integration regressions only against the named shipped cleanup prerequisite;
 8. reject raw C0 bytes and malformed escapes in declared and ignored string values and keys through
    both typed decode and `json.doc`; accept an escaped spelling of a declared key, ignore a valid
    escaped unknown key, and reject duplicate semantic declared keys spelled once literally and once
-   with escapes, while retaining missing-field rejection and field-order independence;
+   with escapes on typed paths, while `json.doc` retains its shipped duplicate-member and
+   first-match lookup policy. Retain typed missing-field rejection and field-order independence;
 9. cover the public-path matrix directly: a top-level `array<Struct>` distinct from a field array;
    `soa<Struct>` with clean and escaped column elements; direct and nested/object/array union
    payloads plus a union field in an arena-backed record, all of which accept clean text but reject
@@ -1599,20 +1659,31 @@ Align compiler/runtime tests must:
     executions produce identical values/errors. If lowering adds an arena parameter to a runtime
     entrypoint, the Align plan must name that internal ABI signature and keep compiler/runtime
     identity lockstep; unrelated public JSON source syntax and runtime entrypoints remain unchanged.
-11. rerun the shared scalar/SIMD and slow/speculative differential corpus with deterministic
-    pseudo-random escaped, malformed, duplicate-key, ignored-value, nested-record, and block-boundary
-    inputs, requiring record/AoS/SoA/union typed decode, `json.doc`, and Request 6-admitted Copy
-    `json.scan` rows to agree on syntax validity.
+11. run exactly 4,096 SplitMix64-generated string-token cases from seed
+    `0xA11C_0000_0000_0007`. The generator records each case's raw token bytes, expected RFC 8259
+    grammar validity, semantic bytes when valid, declared/ignored key/value position,
+    nested-record depth, and SIMD block-boundary placement. Instantiate each case in otherwise-valid
+    fixtures for record/AoS/SoA/union typed decode, `json.doc`, and Request 6-admitted Copy
+    `json.scan`, then assert the exact differential result-oracle row rather than unconditional
+    agreement. Duplicate, missing, type, and framing semantics are excluded from this random corpus
+    and remain in the hand-authored result and precedence matrices above.
 12. run the existing `bench/json_decode` and `bench/json_soa` escape-free fixtures on the same named
     host with at least 10 alternating baseline/candidate samples, report both medians, and treat a
     candidate slowdown greater than 5% as a failed gate until the design or implementation removes
-    it.
+    it;
+13. after the cleanup prerequisite ships, place a required and optional owner before a malformed
+    ignored string and before an outside-arena escaped returned field in record and union-payload
+    fixtures; place owners in the current and completed rows before the same failures on slow,
+    speculative, and fallback top-level AoS rails. The request's caller-owned probes and existing
+    heap-allocation instrumentation must prove deterministic failure position, zero leaked owners,
+    no returned partial value, and full cleanup on every ordering.
 
 ### align-llm adoption gate
 
-After `ALIGN_MERGED`, align-llm owns a separate adoption slice with one immutable observable gate.
-It release-builds and pins the shipped revision, adds `c6-json-escape-adoption` to the `Makefile`,
-and includes that target in `make ci`. The target runs
+After Request 7 reaches `ALIGN_MERGED` on top of its named shipped cleanup prerequisite, align-llm
+owns a separate adoption slice with one immutable observable gate. It release-builds and pins the
+shipped revisions, records both lifecycle dependencies, adds `c6-json-escape-adoption` to the
+`Makefile`, and includes that target in `make ci`. The target runs
 `scripts/run-c6-json-escape-adoption-smoke` against checked-in
 `eval/fixtures/c6-json-escape-adoption/`.
 That directory owns `main.align`, `escape-heavy.input.json`, and
