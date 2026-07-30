@@ -965,6 +965,323 @@ persisted proposal error label, and resumes only after this adoption gate.
   architecture. The detailed C6 design remains an intentional uncommitted draft on its separate
   design branch until this enabling request is registered.
 
+---
+
+## Request 6 — `core.json`: require recursively Copy `json.scan` rows
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: N/A; current align-llm product code and planned C6 artifacts do not consume json.scan
+Independent work that may continue: all current C6 design, prerequisite, and implementation work that explicitly excludes json.scan
+Resume condition: N/A for current work; if the named future Move-row consumer is reached before ALIGN_MERGED, reclassify this request as blocking; after ALIGN_MERGED, the adoption slice below pins the release and closes the request
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+The first expected consumer is a future streaming evaluator or log processor whose declared row
+contains nested collections. That consumer must wait for a separately reviewed per-row ownership
+design rather than weakening this request.
+
+### Motivation
+
+`json.scan` promises bounded streaming: its `json.scanner<Row>` handle only borrows the input, and
+each fused terminal decodes one row into a reusable stack slot. The pinned compiler nevertheless
+accepts row schemas containing owned scalar arrays and record arrays. A successful row can
+therefore allocate a Move field that is neither transferred to an owner nor dropped before the
+runtime zeroes the same slot for the next row.
+
+This is an ownership gap, not an escaped-string feature. It was demonstrated while closing the C6
+JSON public-path matrix and must have its own Align design and delivery boundary. C6 does not need
+owned scanner rows, so the smallest safe surface is to reject them at compile time and preserve
+the scanner's shipped no-arena, borrowed-row model.
+
+### Current-state evidence
+
+Verified at the pinned Align commit `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` on
+2026-07-30:
+
+- `../align/docs/impl/core-design/json.md` defines `json.scanner<Row>` as a Copy `{ptr,len}` input
+  view, says one row decodes into a per-step stack slot without an arena, and describes `str`
+  fields as borrowed input views.
+- `check_json_scan` in `../align/crates/align_sema/src/lib.rs` reuses
+  `json_struct_fields_ok(..., JsonDir::Decode)`. That general decode predicate admits
+  `array<int>`, `array<float>`, `array<bool>`, `array<str>`, and `array<Struct>` fields, including
+  arrays reachable through nested structs and shape-directed union payloads.
+- `lower_json_scan_reduce` in `../align/crates/align_mir/src/lib.rs` allocates one
+  `Ty::StructArray(Row, 1)` slot. Its loop calls `JsonScanNext` repeatedly and contains no
+  successful-row `DropValue` before the back edge, exhaustion, malformed-input exit, or terminal
+  return.
+- `align_rt_json_scan_next` in `../align/crates/align_runtime/src/lib.rs` zeroes the complete row
+  slot before each `parse_object`. Typed array decoding allocates an owned spine. Zeroing a
+  successfully decoded prior row therefore loses the only pointer to that allocation.
+- The fused pipeline checker prevents Move values from being passed to `map` or `where`, and
+  scanner terminals return scalar accumulators, but those rules do not help: the runtime decodes
+  every declared field before projection or filtering, so an unprojected owned field is still
+  allocated and overwritten.
+
+### Requested capability
+
+Give `json.scan` a scanner-specific row eligibility check using Align's canonical recursive
+ownership classification (`struct_is_move` / the complete `DropPlan`), not an ad hoc array list.
+`Row` must be recursively non-owning: its complete reachable definition graph must be Copy and
+must require no `Drop`.
+The following remain supported:
+
+- integers, floats, booleans, and borrowed `str` views;
+- nested structs whose complete reachable field graphs meet the same rule;
+- `Option<T>` where the payload graph meets the same rule; and
+- shape-directed unions where every variant payload graph meets the same rule.
+
+Reject any direct or transitively reachable owned field, including every `array<T>` and
+`array<Struct>`, an array inside a nested or optional struct, and an owned array or owning struct
+reachable through any union variant. The separately demonstrated general
+`Option<Move record>` JSON descriptor gap remains open, but `check_json_scan`'s current recursive
+schema walk admits an `Option<Struct>` whose payload is Move; the scanner-specific ownership gate
+must reject that reachable owner too. This request does not claim to make the same shape fully
+usable through ordinary decode/encode. The exact diagnostic template substitutes the declared
+row type's source name for `<declared-row-name>`:
+
+```text
+`json.scan` row type '<declared-row-name>' must be Copy; Move rows need per-row Drop before the scanner can reuse its row slot
+```
+
+A rejected `json.scan` expression must fail during semantic checking before MIR or runtime
+descriptor construction. The row declarations remain valid Align types and are not rejected
+outside this scanner use. Validation order is deterministic:
+
+1. argument arity;
+2. expected `json.scanner<Row>` annotation and row inference;
+3. existing JSON Decode schema eligibility;
+4. the canonical recursive Copy/Move classification; and
+5. input `str` typing and region checks.
+
+This preserves the existing unsupported-JSON-field diagnostic when a declaration is not a valid
+typed-decode schema at all, and makes the scanner ownership error precede an invalid input
+expression once the row is otherwise JSON-decodable.
+
+This request deliberately chooses rejection over per-row cleanup:
+
+- it matches the already documented no-arena, borrowed-row contract;
+- the scanner decodes all fields before pipeline projection, so lazy construction cannot make an
+  unused owner harmless;
+- whole-row `map`, `where`, `any`, `all`, and `reduce` calls introduce move-in/move-out and
+  source-nulling questions that do not exist for a recursively Copy row; and
+- retaining Move rows would require a separate public ownership contract for replacement,
+  filtered rows, reducer calls, early exits, malformed partial rows, exhaustion, and unwind. No
+  current align-llm consumer justifies that expansion.
+
+The general `json.decode` eligibility surface is unchanged. This request changes no source syntax,
+scanner handle representation, runtime ABI, row framing, terminal result type, error discriminant,
+or top-level-array/NDJSON behavior. Existing programs that use an owning row at a `json.scan`
+expression cease to compile; the row declaration and ordinary non-scanner uses remain valid. That
+scanner-specific compatibility break is intentional because the current scan execution can leak.
+
+Persisted identity, schema version, byte order, numeric widths, string encoding, embedded-NUL
+handling, JSON validation/error precedence, CLI/build inputs, process-global state, and concurrent
+scanner execution are N/A to the change because sema rejects the program before construction and
+accepted programs retain their existing HIR, MIR, wire parser, runtime call, and cache identity
+rules. The cache-specific compiler-build and schema edit behavior is still gated explicitly below.
+
+### Ownership closure
+
+For an accepted recursively Copy row:
+
+- construction: `json.scan(view)` still produces only the input-borrowing Copy scanner handle;
+- success: `align_rt_json_scan_next` may overwrite the reusable row slot because the preceding row
+  contains no owner and requires no `Drop`;
+- projection and filtering: every declared field is decoded, but ignored and rejected rows retain
+  no allocation;
+- whole-row calls: passing a Copy row to `map`, `where`, `any`, `all`, or `reduce` cannot transfer
+  or duplicate ownership;
+- malformed input, exhaustion, and terminal return: the row slot has no cleanup obligation, while
+  the existing scalar accumulator and scanner-input lifetime rules remain authoritative;
+- early exit: current `any` and `all` are full folds, so N/A for short-circuit cleanup. If Align
+  later adds a short-circuiting scanner terminal, the recursively Copy row rule keeps the row slot
+  cleanup-free; the new terminal still owns its accumulator cleanup;
+- replacement/source nulling: N/A because accepted rows are Copy and no field is moved out; and
+- `Drop`: N/A for the row by construction. The borrowed input owner remains live for the scanner's
+  existing region and is dropped by its existing owner after the fused terminal.
+
+For a rejected owning row, no scanner, descriptor, row slot, allocation, or side effect is
+constructed.
+
+The implementation closure matrix is:
+
+| Case | Intended owner | Exact regression |
+| --- | --- | --- |
+| Type formation and scanner construction with a recursively Copy schema | `align_sema::check_json_scan` retains the existing concrete `json.scanner<Row>` type and input region | `m5::json_scan_copy_row_terminal_matrix` |
+| Direct or transitive owning schema | `align_sema::check_json_scan` using canonical `struct_is_move`; rejection precedes HIR/MIR | `m5::json_scan_rejects_owned_row_fields` and `m5::json_scan_rejects_transitive_owned_row_fields` |
+| Successful row replacement and filtered row | N/A for cleanup because sema proves the complete row Copy; existing MIR/runtime loop remains owner | `align_runtime::tests::json_scan_copy_row_no_owned_alloc` plus the filtered case in `m5::json_scan_copy_row_terminal_matrix` |
+| Whole-row stage or reducer call | existing pipeline Move-argument checks plus the scanner schema predicate | `m5::json_scan_copy_row_terminal_matrix` |
+| Malformed first/later row | existing runtime partial-decode cleanup; no successful Copy row needs Drop | `m5::json_scan_copy_row_error_matrix` |
+| Exhaustion, empty input, `Result` return/`?`, and future early exit | existing fused-terminal MIR; row cleanup and source nulling are N/A by the Copy invariant | `m5::json_scan_copy_row_terminal_matrix` |
+| Input ownership and scanner return/escape | existing scanner region follows the borrowed input; the request adds no owner or returnable row | existing `m5::json_scan_cannot_escape_its_input` |
+| Whole-program check and run | `align_sema` plus existing driver pipeline | the named `m5` positive/negative matrix |
+| Per-unit and imported-interface check | the scanner consumer applies the same canonical Move predicate to the imported concrete row definition and its complete interface hash | `modules::json_scan_imported_row_ownership` |
+| Generic construction | N/A: the shipped scanner requires a concrete declared `Row` supplied by its binding annotation; this request adds no generic scanner surface | existing scanner annotation diagnostic |
+| Cache cold/hit/edit/revert | structural program fingerprint, imported interface hash, and sema-before-codegen boundary in `align_driver` | `cache_codegen::json_scan_row_schema_rejection` |
+| Runtime ABI and hot loop | N/A: no production runtime/codegen or ABI change is permitted; the feature-gated owner regression may add only test code in the runtime source file | existing `m5` scanner corpus, `align_runtime::tests::json_scan_copy_row_no_owned_alloc`, and an accepted-schema MIR/LLVM comparison |
+| Concurrent scanners and process-global state | N/A: the check is compile-time and accepted scanners retain their independent Copy handles, row slots, immutable descriptors, and existing runtime state | two accepted scanner terminals in one program plus the existing nested-scanner rejection |
+
+### Acceptance / gate
+
+Align compiler/runtime tests must:
+
+1. reject direct fields of `array<i64>`, `array<f64>`, `array<bool>`, `array<str>`, and
+   `array<Item>`, each with the exact `json.scan` Copy-row diagnostic above. Fixtures named `Row`
+   and `BatchRecord` must respectively report `'Row'` and `'BatchRecord'`, proving the source-name
+   substitution is not a literal placeholder;
+2. reject an owned array reached through a nested struct, `Option<nested struct>`, a direct object
+   union payload, a nested object union payload, and an `array<Struct>` union payload; prove that
+   the diagnostic traverses every variant rather than accepting a union because the selected input
+   happens to use a Copy variant;
+3. accept recursively Copy rows containing every scalar width supported by JSON decode, borrowed
+   `str`, nested structs, scalar/`str` options in `Some`, missing, and `null` states, and
+   shape-directed unions whose complete payload graph is Copy;
+4. run the exact terminal matrix below once over the top-level-array bytes
+   `[{"active":true,"score":2},{"active":false,"score":3},{"active":true,"score":4}]` and once
+   over the same three objects separated by single LF bytes with no array delimiters. Each case
+   uses a fresh scanner. Required results are:
+
+   | Pipeline | Result |
+   | --- | --- |
+   | `.score.sum()` | `9` |
+   | `.count()` | `3` |
+   | `.score.reduce(1, mul)` | `24` |
+   | `.score.any(gt_three)` | `true` |
+   | `.score.all(positive)` | `true` |
+   | `.score.min()` / `.score.max()` | `2` / `4` |
+   | `.where(.active).score.sum()` | `6` |
+   | `.where(is_active).score.count()` | `2` |
+   | `.map(double_score).sum()` | `18` |
+   | `.reduce(0, add_row_score)` | `9` |
+   | `.any(row_gt_three)` / `.all(row_positive)` | `true` / `true` |
+
+   `mul`, `gt_three`, and `positive` consume projected `i64`; `is_active`, `double_score`,
+   `add_row_score`, `row_gt_three`, and `row_positive` consume the complete Copy `Row`. A second
+   exact schema fixture declares
+   `Leaf { name: str, note: Option<str> }`,
+   `Choice { Text(str), Number(i64), Object(Leaf) }`, and
+   `RichRow { id: u64, leaf: Leaf, choice: Choice }`. For both framings, three rows select the
+   string, number, and object variants respectively, exercise `note` as present, missing, and
+   `null`, and `.count()` must return `3`. Separate compile-only cases cover the remaining integer
+   and float widths and `Option` scalar types without multiplying them across every terminal;
+5. prove all-clean rows, a filtered-out row, malformed input before the first row, malformed input
+   after at least one successful row, exhaustion, and empty input retain their existing values,
+   `Error.Code(1)` classification, and no row allocation;
+6. add the feature-gated runtime owner test
+   `align_runtime::tests::json_scan_copy_row_no_owned_alloc`. It snapshots
+   `align_rt_alloc_count()` and `align_rt_free_count()` around direct
+   `align_rt_json_scan_next` calls for clean, malformed, and exhausted Copy rows and requires zero
+   delta. Run it with
+   `cargo test -p align_runtime --features alloc-count json_scan_copy_row_no_owned_alloc`.
+   Allocation by the Rust duplicate-field `SeenSet`, unrelated test harness, or input setup is
+   outside the Align-owned counters;
+7. prove deterministic validation order: an unsupported typed-decode field retains its existing
+   schema diagnostic; a valid Move row plus an invalid non-string input reports the Copy-row
+   diagnostic; and an otherwise identical valid Copy row reports the input-type diagnostic;
+8. prove semantic rejection occurs before MIR/codegen: `alignc check` and `alignc emit-mir` must
+   both report the scanner-specific semantic diagnostic for each negative fixture, and
+   `emit-mir` must produce no MIR on stdout. No descriptor table, object file, executable, or
+   runtime call may be produced;
+9. prove the scanner-only boundary by retaining the row declarations as valid types and by
+   decoding/dropping through `json.decode` each currently supported direct, nested, and union Move
+   schema that `json.scan` rejects. The optional-Move case proves scanner rejection only and
+   remains assigned to its separate general JSON descriptor request;
+10. prove whole-program and per-unit checking produce the same acceptance and exact diagnostic
+    when `Row` is local and when its complete definition is imported. A reachable imported schema
+    edit must change its interface hash and make the unchanged consumer reject on its next
+    `check-per-unit`;
+11. use an isolated cold cache for a three-codegen-unit fixture: a scanner consumer, its
+    row-schema/helper module, and an unrelated control, each with at least one emitted function.
+    The first accepted build misses all three and an identical second build must hit all three.
+    Editing the reachable schema from `score: i64` to
+    `scores: array<i64>` must reject before codegen and leave the complete cache path set and every
+    cache file's bytes unchanged. Restoring the original schema bytes must hit all three original
+    entries. A compiler build-identity change makes all prior entries ineligible;
+12. update `draft.md`, `docs/language-spec.md`, `docs/design-notes.md`,
+    `docs/open-questions.md`, and the English authoritative JSON design first, then synchronize
+    the design's maintained Japanese translation. The design, condensed language specification,
+    semantic diagnostic, and compiler tests must all describe the same recursively Copy row
+    boundary; and
+13. run the existing `json.scan` test corpus. From the Align repository root, run the baseline and
+    candidate release compilers over the same checked-in
+    `tests/fixtures/json-scan-copy-row.align` path. `ALIGN_SCAN_BASELINEC` is the release compiler
+    built from `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`;
+    `ALIGN_SCAN_CANDIDATEC` is the release compiler built from the proposed Align head; and
+    `ALIGN_SCAN_COMPARE_DIR` is a newly created, validated empty temporary directory. Run:
+
+    ```text
+    "$ALIGN_SCAN_BASELINEC" emit-mir tests/fixtures/json-scan-copy-row.align >"$ALIGN_SCAN_COMPARE_DIR/base.mir" 2>"$ALIGN_SCAN_COMPARE_DIR/base.mir.err"
+    "$ALIGN_SCAN_CANDIDATEC" emit-mir tests/fixtures/json-scan-copy-row.align >"$ALIGN_SCAN_COMPARE_DIR/candidate.mir" 2>"$ALIGN_SCAN_COMPARE_DIR/candidate.mir.err"
+    "$ALIGN_SCAN_BASELINEC" emit-llvm tests/fixtures/json-scan-copy-row.align --stage raw >"$ALIGN_SCAN_COMPARE_DIR/base.ll" 2>"$ALIGN_SCAN_COMPARE_DIR/base.ll.err"
+    "$ALIGN_SCAN_CANDIDATEC" emit-llvm tests/fixtures/json-scan-copy-row.align --stage raw >"$ALIGN_SCAN_COMPARE_DIR/candidate.ll" 2>"$ALIGN_SCAN_COMPARE_DIR/candidate.ll.err"
+    ```
+
+    Each command must exit zero and every `.err` file must be empty. `cmp -s` must report equality
+    for `base.mir`/`candidate.mir` and `base.ll`/`candidate.ll`, without normalization. The
+    implementation diff must contain no production MIR, codegen, or runtime
+    source change; the feature-gated runtime owner test required by item 6 is the only runtime-file
+    exception. The identical raw LLVM must retain the exact `align_rt_json_scan_next` declaration
+    and call signature. Runtime performance measurement is N/A because accepted HIR/MIR/codegen
+    and the runtime entrypoint are unchanged; this request makes no performance claim.
+
+No new runtime entrypoint is expected. If implementation instead changes
+`align_rt_json_scan_next` or the compiler/runtime ABI, Align must update its design first, name the
+exact signature and identity coupling, and reopen this request's ABI, cleanup, and performance
+closure before implementation.
+
+### align-llm adoption gate
+
+After `ALIGN_MERGED`, align-llm owns a separate adoption slice. It release-builds and pins the
+shipped Align revision, adds `json-scan-row-ownership-adoption` to the `Makefile`, and includes that
+target in `make ci`. The target runs
+`scripts/run-json-scan-row-ownership-adoption-smoke` over
+`eval/fixtures/json-scan-row-ownership-adoption/`.
+
+The fixture directory contains:
+
+- `copy-row.align`, which scans exactly
+  `[{"score":1,"name":"a"},{"score":2,"name":"b"}]`, runs `.score.sum()?`, and must exit zero with
+  stdout exactly `3\n` and empty stderr; and
+- `owned-direct.align`, `owned-nested.align`, `owned-option.align`, and `owned-union.align`, whose
+  top-level scanner type is named `OwnedRow` and which respectively expose
+  `items: array<i64>`, a nested `items: array<str>`, an optional nested struct that owns
+  `items: array<i64>`, and an owning `Parts(array<Item>)` union variant to `json.scan`; and
+- `decode-owned.align`, which decodes the `owned-direct.align` schema through `json.decode`, sums
+  the exact input `{"items":[1,2]}`, evaluates
+  `print(decoded.items[0] + decoded.items[1])`, and must exit zero with stdout exactly `3\n` and
+  empty stderr.
+
+For each negative file, the script invokes
+`ALIGNC_CACHE=<fresh-cache> <pinned-alignc> check <file>` in that fixed filename order, requires a
+nonzero status, requires empty stdout, and matches exactly once:
+
+```text
+`json.scan` row type 'OwnedRow' must be Copy; Move rows need per-row Drop before the scanner can reuse its row slot
+```
+
+It rejects a panic, backtrace, or any unexpected file under the fresh cache. It then invokes
+`<pinned-alignc> run copy-row.align` followed by `<pinned-alignc> run decode-owned.align` with the
+same fresh cache and requires both positive results above. The script removes the validated
+temporary directory on every exit. Only this target plus `make ci` may advance Request 6 to
+`ALIGN_LLM_VERIFIED`.
+
+### References
+
+- `../align/docs/impl/core-design/json.md` — authoritative shipped scanner ownership model.
+- `../align/draft.md`, `../align/docs/language-spec.md`, `../align/docs/design-notes.md`, and
+  `../align/docs/open-questions.md` — public and shipped-surface records that must agree with the
+  authoritative design.
+- `../align/crates/align_sema/src/lib.rs` — `check_json_scan`, general decode eligibility, and
+  pipeline Move-argument restrictions.
+- `../align/crates/align_mir/src/lib.rs` — reusable row slot and fused-terminal loop.
+- `../align/crates/align_runtime/src/lib.rs` — row zeroing and typed owned-array construction.
+- `../align/crates/align_driver/tests/m5.rs` — current scanner terminal and framing coverage.
+- `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — align-llm consumer sequencing.
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design

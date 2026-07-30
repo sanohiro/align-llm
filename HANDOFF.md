@@ -5,81 +5,60 @@ transient pull request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/validation-unlink-race-implementation`
-- Last implementation/evidence head before this handoff-only correction:
-  `916bc16c54ff5d608fa8918614c53594a1e02ed0`
-- Base and merge base: `13177c9bee69d3d06dcb2ab66464d9bcfbcffbc7`
-- Pull request: #23, `Handle validation worktree unlink races`
-- Goal: merge PR #23 with a merge commit, verify refreshed `main`, summarize the work and reusable
-  lessons, then stop as requested.
+- Branch: `agent/json-scan-row-ownership-request`
+- Base: `2c3518210cecab3eaada895d57742b088a4976d4` (`origin/main`)
+- Active goal: register and merge the independently demonstrated non-blocking `json.scan` owned-row
+  safety request before returning to the C6 escaped-string request.
+- Product implementation: not started.
 - Pinned Align commit: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`
-- Clean Align checkout used for verification: `/home/hiro/prj/align-clean-672`
+- C6 escaped-string request branch: preserved as `agent/c6-json-escape-request`.
+- C6 design draft: preserved separately on `agent/c6-prompt-context-design`.
 
-The implementation is complete. It accepts only real entry-stat disappearance and already-queued
-descendant-directory disappearance, preserves fail-closed behavior for other scan failures, gives
-process-tree discovery its own 0.5-second budget, and clamps every concurrent resource phase to the
-validation command's absolute deadline. Recovered exceptional control outside `Exception` is
-re-thrown after context cleanup and before ordinary resource-deadline classification.
+Review of the escaped-string request demonstrated a separate existing correctness gap. The pinned
+compiler admits `json.scan` row schemas with owned array fields, while its one reusable row slot is
+zeroed before each decode and is never dropped after a successful row. An owned field can therefore
+be allocated and then overwritten without cleanup even when the pipeline projects a different
+field.
 
-The exact-source regression helper covers scan races, cleanup ownership, error and deadline
-precedence, timer setup and cancellation, cache/interpreter restoration, file and byte ceilings,
-root-only `.git` exclusion, and Python 3.10+ bytecode compatibility.
-
-## Identity chain
-
-- Source: `b8c2ee612334028adff196427f44061f212d0757`
-- Immutable oracle: `b5aea87fdda4db5f66ee0f773f9a7922a9cb883e`
-- Finalization: `cb969c1b1134e585e05747025c3da9dde7aa1145`
-- Final checkpoint: `916bc16c54ff5d608fa8918614c53594a1e02ed0`
-
-PR #23 must use a merge commit. Squash or rebase would make the recorded source, oracle, or
-finalization identity unreachable.
-
-The baseline's passing samples are 3,049,536,430 and 2,948,182,908 nanoseconds, with median
-2,998,859,669 nanoseconds. No performance claim is made.
+Request 6 chooses the smallest idiom-consistent repair: give `json.scan` a scanner-specific semantic
+gate using Align's canonical recursive Move classification and reject a Move row. Recursively Copy
+rows preserve the documented no-arena, borrowed-input model and require no new runtime branch or
+ABI. The general `json.decode` surface is unchanged. No current C6 artifact consumes `json.scan`,
+so the request is non-blocking and names a future streaming evaluator/log consumer. This branch
+changes only `docs/align-requests.md` and this durable handoff.
 
 ## Verification
 
-Verified on 2026-07-29:
+Verified on 2026-07-30 against the final reviewed design diff and pinned sibling Align checkout:
 
 ```text
-git diff --check                                      PASS
-Python 3.10.20 resource-scan helper                   PASS
-Python 3.13 resource-scan helper                      PASS
-Python 3.14 resource-scan helper                      PASS
-make baseline-check                                   PASS
-ALIGN_REPO=/home/hiro/prj/align-clean-672 make ci     PASS
-positive source/oracle/finalization topology          PASS
-15 scalar/linear provenance negative categories      PASS
-4 merge-hidden provenance path classes               PASS
-pre-owner side-history control                        PASS
+git diff --check                         PASS
+ALIGN_REPO=../align make ci               PASS
 ```
-
-The prior post-open P2 finding is resolved: both successful and failing close paths now cross the
-local scan deadline while preserving the exact `BaseException` identity and proving cleanup was
-attempted. This handoff was condensed without changing the runner, helper, specification,
-baseline, or identity chain.
 
 ## Exact next steps
 
-1. Confirm the current-head scoped review envelopes and hosted check are clean, and confirm `main`
-   has not changed.
-2. Merge PR #23 with a merge commit and exact expected head.
-3. In a temporary detached worktree at refreshed `origin/main`, verify the focused helper,
-   baseline, source/oracle/finalization ancestry, pending-file absence, and merge topology.
-4. Publish the bounded retrospective and stop. Do not start a governance follow-up, resume the
-   topology implementation, or start C6 in this run.
-
-After this requested stop, the next eligible roadmap work is to integrate refreshed `main` into
-the preserved `agent/check-gate-topology-implementation` branch, re-record its identity-coupled
-baseline, and complete its own review and hosted verification.
+1. Commit the reviewed design diff, rerun verification on the committed head, and run fresh
+   independent adversarial preflight against the full immutable base diff.
+2. Resolve every valid preflight finding before opening a focused draft pull request.
+3. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence; merge
+   only after every envelope is clean and `origin/main` remains the reviewed base.
+4. Refresh `main`, rebase the preserved escaped-string branch, renumber that request to Request 7,
+   make `json.scan` explicitly N/A under Request 6's boundary, and resume its review.
+5. Register the remaining C6 blockers (`Option<Move record>` JSON, strict numeric grammar if
+   retained, and record-array construction) as separate reviewed slices before returning to the
+   C6 design branch.
 
 ## Constraints and intentional state
 
-- The primary worktree `/home/hiro/prj/align-llm` contains intentional C6 design-draft changes in
-  `HANDOFF.md` and `docs/specs/c6-prompt-context-optimizer.md`; do not discard or modify them.
-- The preserved worktree `/home/hiro/prj/align-llm-governance` belongs to
-  `agent/check-gate-topology-implementation`; do not modify it in this run.
-- Use the repository wrapper commands and the pinned sibling Align checkout. Do not invent missing
-  Align language, package, manifest, or test-runner behavior.
-- Source, comments, diagnostics, commits, pull requests, reviews, and releases remain in English.
+- The current branch intentionally modifies `HANDOFF.md` and `docs/align-requests.md`; do not
+  discard them.
+- The worktree checked out on `agent/c6-json-escape-request` contains the committed escaped-string
+  Request 6 plus intentional uncommitted changes to `HANDOFF.md` and
+  `docs/align-requests.md`. Preserve those files until this request merges, then renumber/rebase
+  the branch.
+- `agent/c6-prompt-context-design` preserves the C6 design draft.
+- Existing governance, pin-adoption, topology, and Request 5 worktrees belong to earlier scoped
+  work; do not modify or remove them.
+- Use the repository wrappers with the exact pinned Align checkout. Do not implement C6 against a
+  proposed Align surface or introduce an application workaround.
