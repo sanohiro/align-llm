@@ -1683,7 +1683,7 @@ Align compiler/runtime tests must:
     generator or seed, are the test source of truth. Each compact-JSON line uses this canonical key
     order:
     `schema_version`, `ordinal`, `validity_class`, `wrapper_shape`, `nesting_depth`,
-    `boundary_class`, `decisive_byte_offset`, `raw_token_hex`, `grammar_valid`, and
+    `boundary_class`, `anchor_token_offset`, `raw_token_hex`, `grammar_valid`, and
     `semantic_bytes_hex`; the last field is lowercase hex for a valid token and `null` for an
     invalid token. Files use UTF-8, LF endings, no blank lines, and ordinals `0..4095`.
     Coverage is the complete Cartesian product of eight validity classes (`clean_ascii`,
@@ -1692,33 +1692,64 @@ Align compiler/runtime tests must:
     `suffix_pad`, and `both_pad`), unknown-value nesting depths `0..3`, four boundary classes
     (`interior`, `end_16`, `end_32`, and `end_64`), and variants `0..7`, ordered lexicographically
     by those dimensions. The variant is encoded by `ordinal % 8`; it is not a separate field.
-    `minimal` adds no discretionary bytes around the member; `prefix_pad` and `suffix_pad` add
-    exactly one ASCII space outside the string token on the named side; `both_pad` adds both.
-    These bytes never change `raw_token_hex` or the class anchor. Independently, every wrapper
-    begins with an undeclared `"__pad"` string member whose ASCII value length is the smallest
-    nonnegative length that satisfies the selected boundary equation; this member is not part of
-    `wrapper_shape`.
+    `raw_token_hex` is lowercase hex for the complete source token from its opening double quote
+    through its closing double quote. Even an invalid token is quote-terminated; truncated
+    whole-token structure is outside this grammar corpus. `anchor_token_offset` is the zero-based
+    byte offset of the class anchor within those decoded `raw_token_hex` bytes, not an offset in any
+    containing document.
     Every token has exactly one class anchor: the first content byte for non-empty `clean_ascii`;
     the first byte of the first multibyte scalar for `clean_utf8`; the backslash beginning the
     class-defining escape for `short_escape`, `unicode_escape`, or `surrogate_pair`; the backslash
     beginning the first malformed escape or ill-formed surrogate sequence for
     `malformed_escape` or `malformed_surrogate`; and the first raw C0 byte for `raw_c0`. A variant
-    may contain other bytes of the same class, but none before its anchor. `decisive_byte_offset`
-    is the zero-based containing-document offset of that anchor. The containing-document padding
-    sets placement without changing the anchor: `end_16`, `end_32`, and `end_64` respectively
-    require
-    `(decisive_byte_offset + 1) % 16 == 0`, `% 32 == 0`, or `% 64 == 0`; `interior` requires the
-    anchor's offset within each 16-, 32-, and 64-byte block to be at least four bytes from either
-    block edge. The authoritative Align design must check in this exact fixture and record its
-    lowercase SHA-256 before Request 7 may advance to `ACCEPTED`; the test first verifies the byte
-    hash, line count, ordinal sequence, field schema, wrapper-shape bytes, class-anchor rule and
-    offset, boundary equation, and Cartesian coverage. This large corpus owns string grammar only:
-    each token is the value of an undeclared `probe` member in an otherwise-valid object with all
-    required declared fields present. `nesting_depth=0` places the token directly at `probe`;
-    depths `1..3` wrap it in exactly that many single-member `{"next":...}` objects. Each row is
-    instantiated for record/AoS/flat SoA/object-union typed decode, `json.doc`, and a
-    Request 6-admitted Copy `json.scan` inside a valid frame; a valid row succeeds with the
-    undeclared value ignored, and an invalid row produces that path's malformed-string result.
+    may contain other bytes of the same class, but none before its anchor.
+
+    Every public-path instance is reconstructed byte-for-byte from the manifest. Let `T` be the
+    bytes decoded from `raw_token_hex`; let `V0 = T`; and let
+    `Vd = {"next":Vd-1}` for nesting depths `d = 1..3`, with exactly those ASCII bytes and no
+    whitespace. For `wrapper_shape`, let `(L,R)` be `("","")` for `minimal`, `(" ","")` for
+    `prefix_pad`, `(""," ")` for `suffix_pad`, and `(" "," ")` for `both_pad`, where each nonempty
+    value is one ASCII space immediately before or after the complete `Vd`. For a nonnegative
+    integer `p`, let `P` be exactly `p` lowercase ASCII `a` bytes and construct the inner object:
+
+    ```text
+    O(p) = {"__pad":"P","required":1,"probe":L Vd R}
+    ```
+
+    The notation separates substitutions only: the constructed bytes contain no spaces other than
+    `L` and `R`, use exactly the shown member order and punctuation, and encode `P` inside the
+    `__pad` string. The path adapters are exactly:
+
+    ```text
+    object  = O(p)
+    array   = [O(p)]
+    ndjson  = O(p)\n
+    ```
+
+    The `object` adapter is consumed by record, object-union, and `json.doc`; `array` is consumed by
+    top-level AoS, flat SoA, and top-level-array `json.scan`; and `ndjson` is consumed only by
+    NDJSON `json.scan`. The typed schemas declare `required: i64`; `__pad`, `probe`, and every
+    nested `next` member are undeclared and ignored. Thus every typed input contains all required
+    fields. The array delimiters and NDJSON line ending therefore remain valid framing bytes even
+    when `T` deliberately makes the contained JSON value invalid.
+
+    Each adapter independently chooses the smallest `p >= 0` whose final-document absolute anchor
+    offset `a`—computed from that adapter's first byte through `anchor_token_offset` within `T`—
+    satisfies the selected boundary class. `end_16`, `end_32`, and `end_64` respectively require
+    `(a + 1) % 16 == 0`, `% 32 == 0`, or `% 64 == 0`. `interior` requires
+    `4 <= a % N <= N - 5` for every `N` in `{16, 32, 64}`. The adapter test reconstructs the exact
+    bytes, proves its chosen `p` satisfies the equation, proves every smaller nonnegative `p` fails
+    it, and asserts the parser's internal failure offset against that adapter-specific `a`.
+
+    The authoritative Align design must check in this exact fixture and record its lowercase
+    SHA-256 before Request 7 may advance to `ACCEPTED`; the test first verifies the byte hash, line
+    count, ordinal sequence, field schema, raw-token quoting and lowercase hex, wrapper-shape
+    mapping, class-anchor rule and `anchor_token_offset`, Cartesian coverage, and then every
+    adapter's exact template, minimal padding, absolute anchor, and boundary equation. This large
+    corpus owns string grammar only. Each row is instantiated for record/AoS/flat
+    SoA/object-union typed decode, `json.doc`, and both valid-frame forms of a Request 6-admitted
+    Copy `json.scan`; a valid row succeeds with the undeclared value ignored, and an invalid row
+    produces that path's malformed-string result at the computed adapter-specific anchor.
     This is executable for flat SoA because the nested token is always in an undeclared value, not
     a column. Declared-key semantic matching, declared returned-value materialization,
     `json.doc.key`, duplicate, missing, declared-type, trailing-input, and scanner-framing behavior

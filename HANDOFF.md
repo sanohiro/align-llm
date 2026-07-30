@@ -43,8 +43,7 @@ coverage become authoritative before acceptance, and a caller-owned `cfg(test)`-
 failure byte offsets and logical arena allocations. The probe is not a production ABI or
 process-global counter. Tests that also read existing process-global heap counters must acquire
 `ALLOC_COUNT_LOCK` before setup and hold it through cleanup and assertions. Every corpus validity
-class now has a unique class anchor, and its recorded document offset obeys an exact block-boundary
-equation, so boundary coverage cannot be satisfied by choosing an irrelevant byte. A later
+class now has a unique token-relative class anchor. A later
 host-native review demonstrated that crossing all token classes with declared-key positions and
 nested flat-SoA paths was not executable under Align's ASCII identifier and flat-column rules. The
 corpus design was therefore reopened: the 4,096-row Cartesian artifact now owns grammar only,
@@ -61,7 +60,12 @@ checked-in fixtures, rejects equal, non-raw-commit, replacement-forged, shallow,
 revision states, and then runs isolated Align-repository `merge-base --is-ancestor` checks before
 any client fixture. Hosted adoption CI must expand history without changing the exact detached
 Request 7 checkout or worktree, and its fixed target list must invoke the same
-`c6-json-escape-adoption` target that local `make ci` runs. The ancestry gate also resolves the
+`c6-json-escape-adoption` target that local `make ci` runs. A final preflight found that one
+absolute corpus offset could not describe record, array, and NDJSON inputs with different outer
+bytes. The corrected contract stores a token-relative anchor and defines byte-exact object, array,
+and NDJSON adapters; each adapter independently derives the smallest ASCII padding, verifies its
+absolute anchor and boundary equation, and asserts that path's parser offset. The ancestry gate
+also resolves the
 Git common directory and rejects any existing or symlinked `info/grafts` path before ancestry
 inspection; `GIT_NO_REPLACE_OBJECTS` alone does not disable graft parents.
 
@@ -89,8 +93,9 @@ ALIGN_REPO=/home/hiro/prj/align make ci  PASS
 
 ## Exact next steps
 
-1. Push the review follow-up, rerun a preflight-equivalent independent adversarial review against
-   the complete final diff, and repeat both required post-open reviews on the resulting exact SHA.
+1. Commit and push the path-specific corpus-construction review follow-up, rerun a
+   preflight-equivalent independent adversarial review against the complete final diff, and repeat
+   both required post-open reviews on the resulting exact SHA.
 2. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence, and
    merge only when every envelope is clean against an unchanged base tip.
 3. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup
