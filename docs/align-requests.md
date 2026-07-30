@@ -1619,6 +1619,7 @@ The implementation closure ledger for the future Align design is:
 | Root plus detached benchmark dependency resolution, persistent Cargo/Rust identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | all-command lock/offline self-tests plus executable-mutation, clean/smudge/process-filter, alternate-object race, environment/config isolation, exact three-workspace metadata graph, protected-tree, and malformed-output regressions |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/ignored checkout state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored build-input, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
+| Fresh compiler construction, identity, use, and cleanup | topology-ledger-owned `ALIGN_BUILD_TARGET_DIR`, `align-build`, serialized aggregate, and hosted workflow boundary | tampered fingerprint-fresh default compiler, target-path kind/emptiness, compiler identity mutation, exact path propagation, and success/failure cleanup regressions |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -1827,10 +1828,37 @@ Align compiler/runtime tests must:
     contains both named prerequisites; the candidate is the proposed final Request 7 commit. Each
     worktree is created with `git worktree add --detach --no-checkout`; checkout is forbidden.
     The harness loads the selected tree into that worktree's index without `-u`, then a checked-in
-    materializer validates every NUL-delimited tree path and writes raw blob bytes, symlink targets,
-    and executable-bit classes directly into an otherwise-empty worktree. Gitlinks and unsupported
-    modes reject. Thus repository-local clean, smudge, process, text-conversion, and EOL attributes
-    cannot transform bytes or execute during creation. Each worktree uses its own default `target/`
+    materializer validates the complete NUL-delimited tree and index before its first filesystem
+    write. It requires the worktree root to contain only the ordinary non-symlinked `.git` control
+    file created by `git worktree add`. Every raw path must be relative and nonempty; every
+    slash-separated byte component must be nonempty and must not equal `.`, `..`, or `.git` under
+    ASCII case folding. Full paths must be unique, and no regular-file or symlink path may be a
+    prefix of another entry. Duplicate entries, file/tree prefix collisions, gitlinks, unsupported
+    modes, and any tree/index disagreement reject the whole tree before writing. Before accepting a
+    symlink, a tree-only resolver interprets its raw target relative to the link's parent, rejects
+    empty or absolute targets and every `..` step that would leave the root, follows chained
+    tracked symlinks with cycle detection, and requires the final canonical target to be either a
+    tracked materialized entry or a directory trie node with tracked descendants. Dangling,
+    cyclic, root-escaping, or untracked targets reject the whole tree. This admits Align's tracked
+    `AGENTS.md -> CLAUDE.md` and `.agents/skills/align-self-review ->
+    ../../.claude/skills/align-self-review` links while excluding ambient inputs.
+
+    After prevalidation, the materializer holds an open directory descriptor for the worktree root
+    and creates each directory with `mkdirat`, reopens every ancestor with
+    `openat(O_DIRECTORY|O_NOFOLLOW)`, and creates each regular file with
+    `openat(O_CREAT|O_EXCL|O_NOFOLLOW)` or each symlink with `symlinkat`; it never joins a raw path
+    to an absolute pathname and never follows a previously materialized entry. It writes raw blob
+    bytes or symlink-target bytes, applies only the indexed executable-bit class, and fsyncs/closes
+    each regular file before moving on; symlink creation must return successfully before traversal
+    continues. The post-write comparator uses the same whole-tree parser and
+    dirfd-relative `fstatat(..., AT_SYMLINK_NOFOLLOW)`/`openat(..., O_NOFOLLOW)` traversal. Thus
+    repository-local clean, smudge, process, text-conversion, and EOL attributes cannot transform
+    bytes or execute during creation. Adversarial raw-object fixtures cover absolute and empty
+    paths, `.`, `..`, every ASCII case of `.git`, duplicates, file/tree collisions, a symlink
+    ancestor followed by a child path, absolute/empty/dangling/root-escaping symlink targets,
+    multi-link cycles and escapes, valid regular-file and directory targets, preexisting destination
+    entries, and path replacement between validation and creation; all invalid cases reject without
+    an outside-root write or control-file change. Each worktree uses its own default `target/`
     directory, and the harness rejects a SHA or worktree-state mismatch before measurement. That
     check compares raw tree/index records and hashes raw filesystem bytes and symlink targets
     without `git status`, `git diff`, checkout, or content filters; local clean, smudge, and process
@@ -1858,9 +1886,16 @@ Align compiler/runtime tests must:
     `core.fsmonitor=false`, `core.hooksPath=/dev/null`, and `core.commitGraph=false`. No caller
     environment or system/global configuration may select a repository, worktree, object
     directory, alternate object store, replacement, graft, hook, fsmonitor, or commit graph.
+    The harness's first Git invocation is `/usr/bin/git --version` under that environment; it uses
+    the same exact one-line numeric parser specified for adoption below and requires Git 2.45 or
+    newer before locating a repository, creating output, or running any object command. A 2.44
+    fixture with repository and output markers proves the unsupported version fails before both.
     Before the first object command and again before accepting each object command's output or
-    status, the harness resolves the common object directory without reading an object and rejects
-    any existing or symlinked `objects/info/alternates` or `objects/info/http-alternates`. A
+    status, the harness performs the effective config-with-includes promisor query and requires no
+    match, resolves the common object directory without reading an object, and rejects any existing
+    or symlinked `objects/info/alternates` or `objects/info/http-alternates`. Standard,
+    included-config, and linked-worktree promisor fixtures must reject without remote access,
+    object/index mutation, worktree creation, or output. A
     deterministic barrier persistently creates each file after the precheck but before raw tree,
     blob, and ancestry reads; the postcheck must suppress worktree materialization, measurement, and
     the accepted report. Object output is first captured in a harness-owned temporary file outside
@@ -1992,9 +2027,18 @@ fetch and detach, later unshallow fetch, and every HEAD/comparator operation all
 wrapper around fixed `/usr/bin/git` under `env -i`, an empty `HOME`, the same system/global/XDG,
 replacement, graft, lazy-fetch, optional-lock, hook, fsmonitor, and commit-graph exclusions as the
 target, and `GIT_TERMINAL_PROMPT=0`. It rejects common-object-directory alternate files before and
-after each object operation. No inline ambient `git` command is permitted.
+after each object operation. No inline ambient `git` command is permitted. After `git init` and
+remote configuration but before the initial fetch, the wrapper performs the effective
+config-with-includes promisor query and requires no match. Every later object-capable wrapper call,
+including the initial fetch, detach, HEAD resolution, comparator, and unshallow fetch, repeats both
+the promisor and alternate-store guards before the command and after it; command output, status,
+or side effects are not accepted after a failed postcheck. A persistent configuration race
+therefore fails before the next object result is consumed. Concurrent set-and-remove mutation is
+outside the controlled hosted-checkout contract.
 
-After the version preflight, the workflow invokes the comparator in an explicit
+Only after the initial fetch succeeds under those guards may the wrapper detach the validated
+revision, again with a fresh precheck. After the version preflight, the workflow invokes the
+comparator in an explicit
 shallow-checkout mode that does not inspect parents. The comparator first performs the effective
 promisor query, then resolves and includes `HEAD` in its canonical path, mode, type, object-ID, and
 raw-worktree digest report. Only after that report succeeds does the wrapper run
@@ -2003,7 +2047,9 @@ complete report, including `HEAD`, to be byte-identical. Neither observation use
 or a Git content filter, and no HEAD object is resolved before the promisor and alternate-store
 guards. If the repository is already complete, it performs no history-changing fetch. A
 reference-transaction hook, repository-local alternate, and promisor fixture cover the initial
-fetch, both comparator calls, and unshallow fetch; every helper marker remains absent.
+fetch, detach, both comparator calls, and unshallow fetch. The promisor fixture is installed after
+remote configuration and must prove that no fetch, detach, HEAD, comparator-object, or remote
+marker ran; every helper marker remains absent.
 
 Before any target-side repository inspection, the adoption target runs the same version preflight.
 That script's only ordinary-mode Git command is
@@ -2135,6 +2181,16 @@ index/worktree entry, `120000` must name a `blob` and maps to a symlink, and `16
 mode/type pairing rejects.
 Its ordinary and workflow shallow-checkout entry points both run the effective promisor query
 before `ls-tree` or any other object read.
+Before filesystem access it builds the same complete path trie required of the benchmark
+materializer: relative nonempty paths, no empty, `.`, `..`, or ASCII-case-folded `.git`
+components, unique entries, and no file/symlink prefix collision. It opens the worktree root once
+and performs every lookup dirfd-relatively with no-follow semantics, so a raw malicious tree or
+concurrent ancestor replacement cannot redirect a read outside the checkout. The same absolute,
+dot/dotdot/dotgit, duplicate, prefix-collision, and symlink-ancestor raw-object fixtures run through
+the comparator and must reject without an outside-root read. It also runs the same tree-only
+symlink-chain resolver as the benchmark materializer and rejects absolute, dangling, cyclic,
+root-escaping, or untracked targets before any later Cargo or compiler command can follow them;
+fixtures cover both current valid Align symlinks and every rejected class.
 For every index entry it then uses byte-path filesystem operations: `lstat`, raw regular-file
 reads, and raw symlink-target reads. It requires the indexed filesystem type and executable-bit
 class, computes the repository's declared SHA-1 or SHA-256 Git blob ID directly over the raw bytes
@@ -2168,6 +2224,49 @@ marker. Index/tree mode, path, object-ID, stage, regular-file, symlink, executab
 unsupported-gitlink, SHA-1, and SHA-256 cases exercise every comparator decision. The rejected
 files and helpers must never execute. This replaces
 the current hosted workflow's depth-one-only behavior only in the future adoption slice.
+
+An allowed ordinary root `target/` is treated only as unrelated prior output; no acceptance command
+may execute or link an artifact from it. The prerequisite topology-ledger update must change the
+compiler-build boundary before adoption implementation: `align-build` receives one explicit
+`ALIGN_BUILD_TARGET_DIR` that is an absolute, newly created, private, non-symlinked empty directory
+outside `ALIGN_REPO`, rejects `CARGO_TARGET_DIR` and a missing, relative, nonempty, or wrong-kind
+directory, and invokes Cargo with
+`--target-dir "$ALIGN_BUILD_TARGET_DIR" --locked --release -p align_runtime -p align_driver`.
+`make ci` and each hosted job create that directory with `mktemp -d`, retain its exact absolute
+path through the serialized aggregate, use only its regular non-symlinked
+`release/alignc`, and remove the directory on success or failure. Immediately after `mktemp -d`
+returns, the owner stores the exact path, installs one idempotent cleanup handler for `EXIT`,
+`HUP`, `INT`, and `TERM` before validation or any other side effect, and then validates that the
+target is the newly created private directory and is not the filesystem root, a home directory,
+the project root, or `ALIGN_REPO`. The successful fixed-template `mktemp` creation establishes
+ownership; cleanup operates only on that exact stored path, never on a recomputed variable, and
+holds the parent and target directory descriptors plus the target device/inode recorded immediately
+after creation. Before recursive deletion and before unlinking the stored basename, it requires
+`fstatat(..., AT_SYMLINK_NOFOLLOW)` to match that identity and uses no-follow dirfd-relative
+traversal. A missing, symlinked, or different ordinary directory at the pathname is left untouched
+and reported as cleanup failure; a rename-and-replace cannot redirect deletion.
+Signal handling preserves a nonzero signal-appropriate exit after
+cleanup. A cleanup failure is appended to the primary diagnostic and converts an otherwise
+successful run to failure; it never hides an earlier failure. The workflow no longer tests or
+passes `ALIGN_REPO/target/release/alignc`.
+
+After the fresh build, the owner records the compiler's file type, mode, device, inode, size,
+nanosecond mtime, and SHA-256, revalidates the complete tuple before every aggregate compiler
+invocation and after the final check, and suppresses success on persistent mutation. Concurrent
+mutate-and-restore is outside the otherwise-idle build/check contract. A regression first performs
+a valid build in `ALIGN_REPO/target`, replaces its `release/alignc` while leaving Cargo fingerprints
+fresh, and places an execution marker in that binary; both `make ci` and the hosted build must
+create a distinct empty target, compile and execute only its compiler, leave the marker absent, and
+pass. Missing/relative/nonempty/symlink target directories, inherited `CARGO_TARGET_DIR`, a
+symlinked or non-executable fresh compiler, and persistent compiler replacement before and after
+the aggregate all fail without an accepted adoption result. Success, build failure, aggregate
+failure, every pre-build validation exit, `HUP`, `INT`, `TERM`, and injected cleanup failure
+regressions prove handler installation order, exactly-once cleanup, primary-diagnostic retention,
+and no deletion outside the owned target. A directory-swap regression renames the owned target,
+places an ordinary marker directory at the original basename, and proves the replacement and marker
+remain while cleanup reports failure. The topology design, Makefile,
+workflow, `scripts/check-gate-topology` oracle, and their self-tests must agree on this ownership,
+path propagation, and cleanup sequence before the adoption implementation starts.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
 ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves
@@ -2234,10 +2333,13 @@ test ! -e "$align_common_dir/info/grafts"
 test ! -L "$align_common_dir/info/grafts"
 
 reject_alternates() {
-  test ! -e "$align_common_dir/objects/info/alternates"
-  test ! -L "$align_common_dir/objects/info/alternates"
-  test ! -e "$align_common_dir/objects/info/http-alternates"
-  test ! -L "$align_common_dir/objects/info/http-alternates"
+  if [[ -e "$align_common_dir/objects/info/alternates" ||
+        -L "$align_common_dir/objects/info/alternates" ||
+        -e "$align_common_dir/objects/info/http-alternates" ||
+        -L "$align_common_dir/objects/info/http-alternates" ]]; then
+    return 1
+  fi
+  return 0
 }
 
 clean_object_git() {
