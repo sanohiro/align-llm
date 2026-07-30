@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `6e17c7e35693c9ded2a20c9f6c35896bc0f8c938`
+  `02398ce23d017be8af9dd41031e424b91359523b`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -105,6 +105,14 @@ immutable actual-Git-2.45.0 execution image and run the complete adoption gate t
 feed synthetic version text to the parser. It must also move exact `.align-revision` byte
 validation into `scripts/check-align-revision` before any checkout lookup or release build.
 
+The next exact-SHA reviews found that the benchmark still trusted PATH composition, covered only
+the detached Cargo graphs, and left the scripts' root Cargo builds network-capable. The final
+contract supplies absolute non-symlinked `cargo`/`rustc` files directly, uses a fixed system PATH,
+requires `--locked --offline` for every Cargo command, and defines exact canonical metadata reports
+for baseline/candidate across the root, json-decode, and json-SoA workspaces. It also rejects
+assume-unchanged and skip-worktree index flags before accepting the pinned Align checkout, because
+porcelain status alone can hide modified tracked bytes.
+
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
 delimiters, ambiguous EOF, and other framing behavior remain shipped behavior; a future concrete
@@ -120,7 +128,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`6e17c7e35693c9ded2a20c9f6c35896bc0f8c938` against a clean detached checkout of the exact pinned
+`02398ce23d017be8af9dd41031e424b91359523b` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
