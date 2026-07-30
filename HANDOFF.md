@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `63cf151f7207e532a46a3f1da9d93cc7af5a8b77`
+  `d27c71bc160e8cf3e72992b455071dd01619faf0`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -80,7 +80,8 @@ promisor-remote partial clones, including promisor keys reached through reposito
 or linked-worktree configuration, reject before object lookup; negative fixtures prove no
 index/object mutation, hidden dirt, fsmonitor execution, or promisor access. A shared preflight
 requires Git 2.45 or newer before hosted history preparation or target-side repository inspection,
-so `GIT_NO_LAZY_FETCH` is enforced rather than silently ignored. The performance gate
+so `GIT_NO_LAZY_FETCH` is enforced rather than silently ignored; sentinel capture and a C-locale
+anchored parser preserve and validate the exact one-line version record. The performance gate
 now owns a checked-in harness, two isolated clean revisions, byte-identical benchmark/configuration
 inputs, native CPU mode, five named one-million-row fields, ten order-balanced sample pairs, an
 exact median calculation, and a per-field 1.05 ratio threshold. Outside-arena key and skipped-value
@@ -101,7 +102,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`63cf151f7207e532a46a3f1da9d93cc7af5a8b77` against a clean detached checkout of the exact pinned
+`d27c71bc160e8cf3e72992b455071dd01619faf0` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
