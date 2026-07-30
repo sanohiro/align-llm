@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `2cdf18340fe0456f01f5a7bfe7b50c952d23f5fb`
+  `fef8c0daf482b1bb4d26704b944a5a91f4f57cf7`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -130,6 +130,15 @@ reader for `.align-revision` and both prerequisite fixtures before shell extract
 its matrix includes a NUL at every position and the command-substitution-sensitive
 `<40-hex><NUL><LF>` case.
 
+The next host-native review demonstrated that repository-local attributes and clean filters can
+make porcelain status hide different tracked bytes, and found two related Git-isolation order
+gaps. Exact checkout and benchmark worktrees now use raw tree/index/filesystem comparison and
+filter-free raw materialization; clean, smudge, and process helpers must remain unexecuted. All
+benchmark and hosted-history Git operations use explicit empty environments and disabled hooks.
+Effective promisor configuration and common-object-directory alternates are rejected before
+object reads, with alternate postchecks before output or status consumption and persistent-race
+regressions.
+
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
 delimiters, ambiguous EOF, and other framing behavior remain shipped behavior; a future concrete
@@ -145,7 +154,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`2cdf18340fe0456f01f5a7bfe7b50c952d23f5fb` against a clean detached checkout of the exact pinned
+`fef8c0daf482b1bb4d26704b944a5a91f4f57cf7` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
