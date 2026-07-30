@@ -8,7 +8,7 @@ transient pull request checks, reviews, and attestations.
 - Branch: `agent/json-scan-row-ownership-request`
 - Base: `2c3518210cecab3eaada895d57742b088a4976d4` (`origin/main`)
 - Relevant content head before this handoff-only finalization:
-  `95cd3a519989cd36023bb0836445c305215f510f`
+  `c4adea69b35b37f07cdb2daa10ec61a400986958`
 - Active goal: register and merge the independently demonstrated non-blocking `json.scan` owned-row
   safety request before returning to the C6 escaped-string request.
 - Product implementation: not started.
@@ -53,7 +53,7 @@ repair.
 ## Verification
 
 Verified on 2026-07-30 at relevant content head
-`95cd3a519989cd36023bb0836445c305215f510f` against the pinned sibling Align checkout:
+`c4adea69b35b37f07cdb2daa10ec61a400986958` against the pinned sibling Align checkout:
 
 ```text
 git diff --check                         PASS
