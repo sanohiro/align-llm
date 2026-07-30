@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `a769939284c41cc07fdf456e4d63c5fa5384a66c`
+  `dee7db95118b2ffc25e01e981711fda2f555f5bd`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -64,7 +64,9 @@ nested flat-SoA paths was not executable under Align's ASCII identifier and flat
 corpus design was therefore reopened: the 4,096-row Cartesian artifact now owns grammar only,
 places every token in a nested undeclared `probe` value that every named path can parse or skip,
 and leaves declared-key, returned-value materialization, `json.doc.key`, and duplicate semantics to
-the exact hand-authored public matrices.
+the exact hand-authored public matrices. The latest host review also fixed every class's eight
+variants to an exact token-body and semantic-byte table; the verifier derives the row's variant
+from its ordinal and rejects any byte, meaning, order, or duplicate drift.
 
 A second adversarial review found that a proposed joint-delivery exception contradicted the
 cleanup-first lifecycle and that align-llm can pin only one Align commit. The final contract removes
@@ -87,20 +89,38 @@ directory whose basename ends in LF and whose graft would otherwise forge ancest
 `GIT_NO_REPLACE_OBJECTS` alone does not disable graft parents.
 
 The final host-native review also required the future adoption to follow the authoritative
-check-topology design instead of adding a workflow-only command. A reviewed topology-ledger update
-must merge first; implementation then adds the target to `HOSTED_CHECK_TARGETS`, its embedded
-oracle/self-test, and the workflow's canonical `hosted-checks` aggregate. All inspection uses
+check-topology design instead of adding a workflow-only command. A reviewed topology-ledger design
+update must merge first; its dependent implementation must merge and install the common
+fresh-compiler path before any pin-changing adoption. Request 7 adoption then adds its target to
+`HOSTED_CHECK_TARGETS`, the embedded oracle/self-test, and the workflow's canonical
+`hosted-checks` aggregate. All inspection uses
 an empty, override-isolated Git environment with optional locks and lazy fetch disabled; standard
 promisor-remote partial clones, including promisor keys reached through repository-local includes
 or linked-worktree configuration, reject before object lookup; negative fixtures prove no
 index/object mutation, hidden dirt, fsmonitor execution, or promisor access. A shared preflight
 requires Git 2.45 or newer before hosted history preparation or target-side repository inspection,
 so `GIT_NO_LAZY_FETCH` is enforced rather than silently ignored; sentinel capture and a C-locale
-anchored parser preserve and validate the exact one-line version record. The performance gate
-now owns a checked-in harness, two isolated clean revisions, byte-identical benchmark/configuration
-inputs, native CPU mode, five named one-million-row fields, ten order-balanced sample pairs, an
-exact median calculation, and a per-field 1.05 ratio threshold. Outside-arena key and skipped-value
+anchored parser preserve and validate the exact one-line version record. Request 7 fixes only the
+benchmark workload and outcome: byte-identical protected inputs, native million-row decode/SoA
+commands, five named fields, ten order-balanced sample pairs, exact medians, and a per-field 1.05
+ratio threshold. Controller, checkout, tool, and report transport ownership remain deliberately
+unassigned until the separate benchmark-evidence design below. Outside-arena key and skipped-value
 validation is fixed-state and allocation-free rather than hidden input-sized scratch.
+
+Repeated review exposed a separate design boundary around benchmark evidence: a candidate-owned
+harness cannot safely choose or attest its own baseline, and attempts to specify an external runner
+inside Request 7 recursively introduced an unowned native controller, executable race, descriptor,
+credential, and provider-integration contract. The local patch loop is therefore closed. Request 7
+now remains `PROPOSED` until a separate Align benchmark-evidence design merges and remains below
+`IMPLEMENTING` until its dependent enabling implementation also merges. That prerequisite owns
+controller source and delivery, immutable pre-work
+baseline selection, candidate binding, trust roots, executable and descriptor identity,
+credential/provider handling if applicable, report schema, exact-SHA review/integration evidence,
+failure cleanup, and adversarial tests. Request 7 retains the fixed workload and acceptance outcome
+as inputs to that design: the baseline is the exact implementation branch point, the candidate has
+no unrelated delta, protected inputs and effective toolchain/configuration are identical, one
+otherwise-idle host runs ten order-balanced sample pairs, and all five median ratios are at or below
+1.05. No hypothetical controller API or merge mechanism remains in the request register.
 
 The final exact-SHA host-native review found two additional evidence gaps. The detached JSON
 benchmark workspaces ignored their own lockfiles, so Request 7 now requires a separately reviewed
@@ -110,65 +130,31 @@ concurrent graft-file write; every isolated Git command now sets `GIT_GRAFT_FILE
 negative fixture races the repository file between the absence check and ancestry calls. The path
 check remains fail-fast defense-in-depth.
 
-A later host-native review closed four more acceptance-input gaps. Request 6's lifecycle now
-reflects the concrete Request 7 dependency. The performance harness has required explicit
-toolchain/cache inputs, an empty environment, isolated Cargo home/config discovery, protected
-dependency metadata, and per-worktree default targets. The future topology design must name an
-immutable actual-Git-2.45.0 execution image and run the complete adoption gate there, not merely
-feed synthetic version text to the parser. It must also move exact `.align-revision` byte
-validation into `scripts/check-align-revision` before any checkout lookup or release build.
+Earlier review iterations explored concrete benchmark-controller choices such as fixed tool paths,
+empty environments, raw worktree materialization, and executable mutation barriers. Those
+orchestration choices are no longer authoritative after the boundary split and must be decided by
+the separate benchmark-evidence design rather than copied from review history. The retained
+Request 7 requirements are only the protected-input/dependency equality, fixed native workloads,
+sample order, fields, median calculation, threshold, fail-closed outcome, and observable evidence
+listed in item 12.
 
-The next exact-SHA reviews found that the benchmark still trusted PATH composition, covered only
-the detached Cargo graphs, and left the scripts' root Cargo builds network-capable. The final
-contract supplies absolute non-symlinked `cargo`/`rustc` files directly, uses a fixed system PATH,
-requires `--locked --offline` for every Cargo command, and defines exact canonical metadata reports
-for baseline/candidate across the root, json-decode, and json-SoA workspaces. It also rejects
-assume-unchanged and skip-worktree index flags before accepting the pinned Align checkout, because
-porcelain status alone can hide modified tracked bytes.
-
-The final revised-diff review also required persistent Cargo/Rust executable mutation barriers,
-coverage for the intermediate `bench/.cargo` configuration directory, ignored build-input
-rejection, and consistent failure-path allocation semantics. The benchmark now revalidates complete
-tool file identity before every Cargo command and after measurement. Every Cargo working
-directory-to-root configuration path is protected or rejected. The exact-checkout gate rejects
-ignored inputs outside an ordinary root `target/`. Typed paths perform fixed-state whole-input
-string-grammar validation before retained-string materialization, so grammar failures allocate
-zero; later semantic failures have an exact zero/one/two per-rail allocation oracle.
-
-The latest exact-SHA reviews then closed the remaining evidence-level ambiguity in those two
-boundaries. The benchmark comparator must isolate every field in the saved Cargo/Rust identity,
-while real-file barriers cross both tools, both revalidation placements, and content, mode, mtime,
-inode, size, and type mutations. Persisted revision validation now uses one shared binary-safe
-reader for `.align-revision` and both prerequisite fixtures before shell extraction or Git access;
-its matrix includes a NUL at every position and the command-substitution-sensitive
-`<40-hex><NUL><LF>` case.
-
-The next host-native review demonstrated that repository-local attributes and clean filters can
-make porcelain status hide different tracked bytes, and found two related Git-isolation order
-gaps. Exact checkout and benchmark worktrees now use raw tree/index/filesystem comparison and
-filter-free raw materialization; clean, smudge, and process helpers must remain unexecuted. All
-benchmark and hosted-history Git operations use explicit empty environments and disabled hooks.
-Effective promisor configuration and common-object-directory alternates are rejected before
-object reads, with alternate postchecks before output or status consumption and persistent-race
-regressions.
-
-The final follow-up made the repository-input boundaries executable under hostile raw trees and
-cached build state. Materialization and comparison prevalidate all paths and symlink chains, then
-use dirfd-relative no-follow access; initial fetch/detach and every later object operation run only
-after promisor/alternate guards. The benchmark requires Git 2.45 or newer. Adoption must build the
-pinned compiler in a new empty target rather than trust fingerprint-fresh `ALIGN_REPO/target`
-output, but the exact identity, process, and cleanup mechanism now belongs to the prerequisite
-topology design described next.
+Separately, the align-llm adoption gate still requires filter-independent revision and ancestry
+inspection, binary-safe revision-file validation, Git 2.45 compatibility, promisor/alternate/graft
+isolation, and a fresh compiler. The exact fresh-build identity, process, timeout, cache, and
+cleanup mechanism belongs to the common prerequisite topology design described next.
 
 Two successive controller-design reviews found new critical correctness classes, so the local
-patch loop is closed and that boundary is split out. Before Request 7 adoption implementation, a
-separate reviewed `docs/specs/check-gate-topology.md` enabling slice must define and merge the
-fresh-compiler bootstrap, trusted tool and cache inputs, compiler-exec identity enforcement,
-process ownership, deadlines, and fail-closed cleanup. It must explicitly resolve self-validation
-before bootstrap execution, ownership of any additional bootstrap/tool version probes beyond the
-already required Git preflight, nested Cargo-cache symlink/rename escape, and interposition below
-Make. Request 7 records the required safety outcomes and remains blocked rather than naming a
-hypothetical controller or API.
+patch loop is closed and that boundary is split out. Before the next `.align-revision` change or
+`ALIGN_LLM_VERIFIED` claim against a new compiler, a separate reviewed
+`docs/specs/check-gate-topology.md` design update and its dependent implementation must define,
+merge, and install the fresh-compiler bootstrap, trusted tool and cache inputs, compiler-exec
+identity enforcement, process ownership, deadlines, and fail-closed cleanup in canonical
+`make ci`. This repository-wide prerequisite applies to Request 6, decoded-owner cleanup,
+Request 7, and every later pin-changing adoption. The design must explicitly resolve
+self-validation before bootstrap execution, ownership of any additional bootstrap/tool version
+probes beyond the already required Git preflight, nested Cargo-cache symlink/rename escape, and
+interposition below Make. Request 7 records the required safety outcomes and remains blocked
+rather than naming a hypothetical controller or API.
 
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
@@ -185,7 +171,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`a769939284c41cc07fdf456e4d63c5fa5384a66c` against a clean detached checkout of the exact pinned
+`dee7db95118b2ffc25e01e981711fda2f555f5bd` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
@@ -200,12 +186,16 @@ ALIGN_REPO=<clean detached pinned Align worktree> \
    repeat both required post-open reviews on the resulting exact SHA.
 2. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence, and
    merge only when every envelope is clean against an unchanged base tip.
-3. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup
-   first, then strict numeric grammar if retained and record-array construction as separate reviewed
-   slices. Request 7 implementation remains blocked until the cleanup request reaches
-   `ALIGN_MERGED`; it also requires Request 6 to reach `ALIGN_MERGED` and the separately reviewed
-   benchmark-input enabling slice to merge. Its later align-llm adoption remains blocked until the
-   separate reviewed check-topology enabling design merges.
+3. Refresh `main`, run the bounded retrospective, then make the common fresh-compiler check-topology
+   design and dependent implementation the first align-llm enabling slices: no request may next
+   change `.align-revision` or claim `ALIGN_LLM_VERIFIED` against a new compiler before both merge.
+   Register decoded-owner transition cleanup separately, then strict numeric grammar if retained
+   and record-array construction. Request 7 implementation remains blocked until cleanup and
+   Request 6 reach `ALIGN_MERGED`, the benchmark-input slice and separate benchmark-evidence design
+   plus dependent implementation merge, and that design selects the immutable pre-work baseline;
+   its later
+   adoption also consumes the already-shipped common topology path and waits for the separate
+   Request 7 topology update that adds `c6-json-escape-adoption` to that graph.
 4. Return to the C6 design branch only after its complete prerequisite set is registered; do not
    implement against a proposed Align surface.
 
