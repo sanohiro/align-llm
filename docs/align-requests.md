@@ -1618,7 +1618,7 @@ The implementation closure ledger for the future Align design is:
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
 | Root plus detached benchmark dependency resolution, persistent Cargo/Rust identity, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | all-command lock/offline self-tests plus executable-mutation barriers, environment/config isolation, exact three-workspace metadata graphs, protected-tree, and malformed-output regressions |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
-| Canonical `.align-revision` bytes and non-hidden tracked/ignored checkout state before lookup or release build | `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus encoding, Git-marker, assume-unchanged, skip-worktree, ignored build-input, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
+| Canonical revision-file bytes and non-hidden tracked/ignored checkout state before lookup or release build | binary-safe shared revision reader, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, assume-unchanged, skip-worktree, ignored build-input, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -1885,9 +1885,19 @@ Align compiler/runtime tests must:
     command-directory, or ancestor location, including `bench/.cargo`, a symlinked config,
     colon/control-bearing tool paths, symlinked Cargo/Rust executables, a graph mismatch in each
     workspace class, and a shared target override; each fails before either warm-up. Deterministic
-    internal barriers separately persistently modify or replace the accepted Cargo executable
-    before a warm-up and the accepted Rustc executable after measurement but before final
-    verification; both cases must fail the next identity check and emit no accepted sample report.
+    comparator self-test changes exactly one saved identity field at a time—file type, mode,
+    device, inode, size, nanosecond mtime, SHA-256, Cargo version output, and Rustc version
+    output—and proves that every field independently rejects. Synthetic stat records own the
+    device-only case and any other field that cannot be isolated portably on one filesystem.
+    Real-filesystem barriers then cross each accepted tool (`cargo` and `rustc`) with both
+    revalidation placements (immediately before the next Cargo command and after measurement
+    before report acceptance). At every crossing they persistently perform, as separate cases:
+    a same-size content change with the original mode and mtime restored (SHA-256 only); a
+    mode-only change with bytes, inode, size, and mtime restored; an mtime-only change; a
+    same-content atomic replacement that preserves mode, size, and mtime (inode); a size-changing
+    content replacement; and replacement by a non-regular filesystem object (type). Each case
+    must fail at that next identity check, execute no later benchmark command, and emit no accepted
+    sample report.
     A separate hostile ambient `PATH` places marker executables for
     `cargo`, `rustc`, `bash`, `git`, the C compiler, and linker first and proves the empty-environment
     boundary executes none of them. The otherwise-idle host contract excludes concurrent mutation
@@ -2006,18 +2016,25 @@ substitution can remove it. The suffix removal requires exactly one LF immediate
 sentinel; the anchored C-locale regex then rejects any earlier or remaining LF, so missing,
 additional, or blank output lines cannot normalize to an accepted record.
 
-The topology-ledger update must also move the canonical `.align-revision` byte contract into
-`scripts/check-align-revision`, which is already the first prerequisite of `align-build`. Before
-resolving `ALIGN_REPO` or executing any Git or Cargo command, that script reads the file with a
-non-newline sentinel, requires exactly `[0-9a-f]{40}\n`, removes only that one LF, and uses the
-result as the expected revision. It no longer uses `tr -d '[:space:]'`. Its checked-in self-test
-supplies exact valid bytes plus uppercase, short, missing-LF, extra-LF, space-, tab-, CR-, and
-trailing-text variants through the production byte validator, with Git-access and build-output
-markers; every invalid case must leave both markers absent. `make align-build` with a temporary
-noncanonical revision fixture in an isolated repository copy must fail before the release target
-directory changes. The scanner
-and cleanup fixture revisions remain target-owned and are separately validated before their first
-Git command, but they do not select the compiler build.
+The topology-ledger update must also add one checked-in, binary-safe revision reader shared by the
+canonical `.align-revision` path and the adoption fixture revisions. The reader accepts exactly one
+explicit file path, reads the complete file as bytes without shell command substitution or text
+decoding, requires exactly `[0-9a-f]{40}\n`, and only after that complete match writes the validated
+40-byte lowercase ASCII revision. It never writes input-derived stdout on failure.
+`scripts/check-align-revision`, which is already the first prerequisite of `align-build`, invokes
+that reader for `.align-revision`; a successful capture is then safe because the helper can emit
+only the already validated 40 ASCII bytes. Before resolving `ALIGN_REPO` or executing any Git or
+Cargo command, the script also independently requires the captured result to match
+`[0-9a-f]{40}` and uses it as the expected revision. It no longer uses `tr -d '[:space:]'` or a
+shell sentinel to validate persisted bytes. The helper's checked-in self-test supplies exact valid
+bytes plus a NUL at every byte position, the especially dangerous
+`<40-lower-hex><NUL><LF>` record, uppercase, short, missing-LF, extra-LF, space-, tab-, CR-, and
+trailing-text variants through the production byte reader, with Git-access and build-output
+markers; every invalid case must leave stdout and both markers absent. `make align-build` with
+each class of temporary noncanonical revision fixture in an isolated repository copy must fail
+before the release target directory changes. The scanner and cleanup fixture revisions remain
+target-owned and do not select the compiler build, but the adoption target reads them through the
+same helper before its first Git command.
 
 After that version gate, the adoption target runs the existing exact-checkout revision script in an
 empty environment that preserves only the validated absolute `ALIGN_REPO`, fixed `PATH` and
@@ -2088,9 +2105,18 @@ clean_git() {
     git "$@"
 }
 
-align_scanner_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/scanner-align-revision)"
-align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cleanup-align-revision)"
-align_request7_revision="$(tr -d '\n' < .align-revision)"
+align_scanner_revision="$(
+  scripts/read-exact-revision \
+    eval/fixtures/c6-json-escape-adoption/scanner-align-revision
+)"
+align_cleanup_revision="$(
+  scripts/read-exact-revision \
+    eval/fixtures/c6-json-escape-adoption/cleanup-align-revision
+)"
+align_request7_revision="$(scripts/read-exact-revision .align-revision)"
+[[ "$align_scanner_revision" =~ ^[0-9a-f]{40}$ ]]
+[[ "$align_cleanup_revision" =~ ^[0-9a-f]{40}$ ]]
+[[ "$align_request7_revision" =~ ^[0-9a-f]{40}$ ]]
 
 partial_clone_status=0
 clean_git -C "$ALIGN_REPO" config --includes --name-only --get-regexp \
@@ -2132,9 +2158,11 @@ clean_git -C "$ALIGN_REPO" merge-base --is-ancestor \
   "$align_request7_revision"
 ```
 
-Before these commands, a bytewise validator requires each file to match
-`[0-9a-f]{40}\n` exactly; `tr` is extraction, not validation. Every command must return zero before
-any adoption fixture executes. The adoption smoke includes isolated negative copies of this gate
+Before these commands, `scripts/read-exact-revision` performs the same complete binary-safe match
+for each file and emits only a validated revision; shell capture is extraction after validation,
+not persisted-byte validation. Its embedded-NUL matrix is exercised for all three call sites.
+Every command must return zero before any adoption fixture executes. The adoption smoke includes
+isolated negative copies of this gate
 proving rejection of a shallow repository, a symbolic or annotated-tag object, a replacement
 object that would forge ancestry, a Git-common-dir `info/grafts` entry that would forge ancestry, a
 graft-race case that creates or replaces that file after the path-absence checks but before the
