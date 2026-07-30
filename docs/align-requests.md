@@ -1682,34 +1682,51 @@ Align compiler/runtime tests must:
     `crates/align_driver/tests/fixtures/json_escape_differential.jsonl`. The fixture bytes, not a
     generator or seed, are the test source of truth. Each compact-JSON line uses this canonical key
     order:
-    `schema_version`, `ordinal`, `validity_class`, `position`, `nesting_depth`,
+    `schema_version`, `ordinal`, `validity_class`, `wrapper_shape`, `nesting_depth`,
     `boundary_class`, `decisive_byte_offset`, `raw_token_hex`, `grammar_valid`, and
     `semantic_bytes_hex`; the last field is lowercase hex for a valid token and `null` for an
     invalid token. Files use UTF-8, LF endings, no blank lines, and ordinals `0..4095`.
     Coverage is the complete Cartesian product of eight validity classes (`clean_ascii`,
     `clean_utf8`, `short_escape`, `unicode_escape`, `surrogate_pair`, `malformed_escape`,
-    `malformed_surrogate`, and `raw_c0`), four positions (`declared_key`, `ignored_key`,
-    `declared_value`, and `ignored_value`), nesting depths `0..3`, four boundary classes
+    `malformed_surrogate`, and `raw_c0`), four document-wrapper shapes (`minimal`, `prefix_pad`,
+    `suffix_pad`, and `both_pad`), unknown-value nesting depths `0..3`, four boundary classes
     (`interior`, `end_16`, `end_32`, and `end_64`), and variants `0..7`, ordered lexicographically
     by those dimensions. The variant is encoded by `ordinal % 8`; it is not a separate field.
+    `minimal` adds no discretionary bytes around the member; `prefix_pad` and `suffix_pad` add
+    exactly one ASCII space outside the string token on the named side; `both_pad` adds both.
+    These bytes never change `raw_token_hex` or the class anchor. Independently, every wrapper
+    begins with an undeclared `"__pad"` string member whose ASCII value length is the smallest
+    nonnegative length that satisfies the selected boundary equation; this member is not part of
+    `wrapper_shape`.
     Every token has exactly one class anchor: the first content byte for non-empty `clean_ascii`;
     the first byte of the first multibyte scalar for `clean_utf8`; the backslash beginning the
     class-defining escape for `short_escape`, `unicode_escape`, or `surrogate_pair`; the backslash
     beginning the first malformed escape or ill-formed surrogate sequence for
     `malformed_escape` or `malformed_surrogate`; and the first raw C0 byte for `raw_c0`. A variant
     may contain other bytes of the same class, but none before its anchor. `decisive_byte_offset`
-    is the zero-based containing-document offset of that anchor. Safe ASCII prefix bytes set the
-    placement without changing the anchor: `end_16`, `end_32`, and `end_64` respectively require
+    is the zero-based containing-document offset of that anchor. The containing-document padding
+    sets placement without changing the anchor: `end_16`, `end_32`, and `end_64` respectively
+    require
     `(decisive_byte_offset + 1) % 16 == 0`, `% 32 == 0`, or `% 64 == 0`; `interior` requires the
     anchor's offset within each 16-, 32-, and 64-byte block to be at least four bytes from either
     block edge. The authoritative Align design must check in this exact fixture and record its
     lowercase SHA-256 before Request 7 may advance to `ACCEPTED`; the test first verifies the byte
-    hash, line count, ordinal sequence, field schema, class-anchor rule and offset, boundary
-    equation, and Cartesian coverage, then instantiates every row in otherwise-valid fixtures for
-    record/AoS/SoA/union typed decode, `json.doc`, and a Request 6-admitted Copy `json.scan` inside
-    a valid frame. It asserts the exact differential result-oracle row rather than unconditional
-    agreement. Duplicate, missing, declared-type, trailing-input, and scanner framing semantics
-    are excluded from this corpus and remain only in their applicable hand-authored matrices above.
+    hash, line count, ordinal sequence, field schema, wrapper-shape bytes, class-anchor rule and
+    offset, boundary equation, and Cartesian coverage. This large corpus owns string grammar only:
+    each token is the value of an undeclared `probe` member in an otherwise-valid object with all
+    required declared fields present. `nesting_depth=0` places the token directly at `probe`;
+    depths `1..3` wrap it in exactly that many single-member `{"next":...}` objects. Each row is
+    instantiated for record/AoS/flat SoA/object-union typed decode, `json.doc`, and a
+    Request 6-admitted Copy `json.scan` inside a valid frame; a valid row succeeds with the
+    undeclared value ignored, and an invalid row produces that path's malformed-string result.
+    This is executable for flat SoA because the nested token is always in an undeclared value, not
+    a column. Declared-key semantic matching, declared returned-value materialization,
+    `json.doc.key`, duplicate, missing, declared-type, trailing-input, and scanner-framing behavior
+    are deliberately excluded from the large Cartesian corpus and remain owned by the exact
+    hand-authored public-path and precedence matrices in items 1–9. In particular, the corpus never
+    claims that arbitrary UTF-8 or surrogate-pair semantic bytes can name an Align field; declared
+    field names remain ASCII identifiers. The test asserts this grammar-specific oracle rather
+    than unconditional cross-path agreement.
 12. run the existing `bench/json_decode` and `bench/json_soa` escape-free fixtures on the same named
     host with at least 10 alternating baseline/candidate samples, report both medians, and treat a
     candidate slowdown greater than 5% as a failed gate until the design or implementation removes
@@ -1772,6 +1789,13 @@ align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cle
 align_request7_revision="$(tr -d '\n' < .align-revision)"
 
 test "$(clean_git -C "$ALIGN_REPO" rev-parse --is-shallow-repository)" = false
+align_common_dir="$(
+  clean_git -C "$ALIGN_REPO" rev-parse --path-format=absolute --git-common-dir
+)"
+test "$(printf '%s\n' "$align_common_dir" | wc -l | tr -d ' ')" = 1
+printf '%s\n' "$align_common_dir" | grep -Eq '^/[^[:cntrl:]]+$'
+test ! -e "$align_common_dir/info/grafts"
+test ! -L "$align_common_dir/info/grafts"
 test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_scanner_revision")" = commit
 test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_cleanup_revision")" = commit
 test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_request7_revision")" = commit
@@ -1790,11 +1814,13 @@ Before these commands, a bytewise validator requires each file to match
 `[0-9a-f]{40}\n` exactly; `tr` is extraction, not validation. Every command must return zero before
 any adoption fixture executes. The adoption smoke includes isolated negative copies of this gate
 proving rejection of a shallow repository, a symbolic or annotated-tag object, a replacement
-object that would forge ancestry, equal prerequisite/final revisions, equal prerequisite
-revisions, and valid but unrelated commit objects. The negative repositories and Git configuration
-must not affect the caller's repository. A cherry-pick, squash, or joint commit that merely
-reproduces either prerequisite's content without preserving both named commits as strict ancestors
-is rejected. The target then runs
+object that would forge ancestry, a Git-common-dir `info/grafts` entry that would forge ancestry,
+equal prerequisite/final revisions, equal prerequisite revisions, and valid but unrelated commit
+objects. The common-dir result must be one absolute line, and any existing or symlinked graft path
+is rejected before either ancestry command. The negative repositories and Git configuration must
+not affect the caller's repository. A cherry-pick, squash, or joint commit that merely reproduces
+either prerequisite's content without preserving both named commits as strict ancestors is
+rejected. The target then runs
 `scripts/run-c6-json-escape-adoption-smoke` against checked-in
 `eval/fixtures/c6-json-escape-adoption/`.
 That directory owns `main.align`, `escape-heavy.input.json`, and
