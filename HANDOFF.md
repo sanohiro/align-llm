@@ -31,32 +31,19 @@ target, which includes a Copy-row aggregate and fail-closed Move-row negatives; 
 is currently planned. A consumer that needs owned rows belongs to a separate per-row ownership
 request. This branch changes only `docs/align-requests.md` and this durable handoff.
 
-The fresh immutable-head preflight reviews found eight acceptance and continuity gaps. Five are resolved in
-the committed follow-up: the register no longer overstates general `Option<T>` support;
-the rich Copy-row fixture observes `Option<CopyStruct>` `Some`/missing/`null` states separately;
-imported and generic row diagnostics require public source spellings instead of internal names;
-resolved generic `Wrap<T>` monomorphs receive Copy/Move coverage; and the pre-codegen diagnostic
-assertion is scoped to owning-row fixtures rather than conflicting multi-invalid fixtures.
-The committed final follow-up closes the final three: the adoption target is the concrete
-first consumer instead of an invented future product feature, unsupported Option forms have exact
-lifecycle wording, and the post-merge sequence includes the required bounded retrospective.
+The contract covers Copy options in their `Some`, missing, and `null` states; local, imported, and
+generic public type spellings; Copy/Move classification after monomorphization; deterministic
+validation; allocation-counter isolation; pre-codegen rejection; cache behavior; and unchanged
+accepted MIR, LLVM, and runtime ABI. Imported generics receive whole-program and per-unit coverage:
+`scan_schema.Wrap<array<i64>>` must retain that exact public spelling without an internal `$` name.
 
-The two required post-open reviews then found two further gaps. The host-native review found that
-the imported-interface matrix covered a non-generic row and a local generic row but not their
-composition; the contract now requires whole-program and per-unit coverage for
-`scan_schema.Wrap<array<i64>>` with that exact public spelling and no internal `$` name. The
-independent-adversarial review disproved the branch's blanket claim that `Option<Move record>` was
-an unshipped JSON descriptor shape. The pinned compiler checks and runs ordinary decode/encode for
-`Option<Inner>` where `Inner` owns an array. The actual residual defect is narrower:
-`drop_decoded_owned` skips optional descriptors during partial-error cleanup after a successful
-optional payload decode and a later required-field failure.
-
-Because that independent finding was a new critical correctness issue on the second revised-diff
-review, the contract and pull-request boundary were re-audited before further editing. Request 6's
-small scanner-only boundary remains sound: a reusable scan row must be recursively Copy regardless
-of ordinary decode success. This follow-up records successful optional-Move decode/encode/drop as
-the positive boundary and defers only the partial-decode error cleanup to a separate request. It
-does not add a runtime repair or broaden this pull request beyond the scanner-safety request.
+Ordinary decode/encode/drop for `Option<Inner>` where `Inner` owns an array is already shipped.
+Two separate post-construction cleanup gaps remain in the pinned runtime:
+`drop_decoded_owned` skips a live optional descriptor when the enclosing object later fails, and
+top-level trailing-garbage rejection does not clean decoded required or optional owners. A
+follow-up design must audit every error exit after an owner becomes live and explicitly own or
+assign both cleanup classes. This does not change Request 6's scanner-only boundary: a reusable
+scan row must be recursively Copy regardless of ordinary decode success.
 
 ## Verification
 
@@ -70,28 +57,29 @@ ALIGN_REPO=../align make ci               PASS
 
 ## Exact next steps
 
-1. Rerun exact verification on the final handoff head, push the follow-up, and refresh the pull
-   request's preflight and check evidence for the new SHA.
-2. Run fresh host-native and independent-adversarial post-open reviews on the full final diff,
-   publish their current-SHA envelopes, and merge only when both are clean and `origin/main`
-   remains the reviewed base.
+1. Commit this contract correction, finalize this handoff with its content head, and rerun exact
+   verification on the final head.
+2. Push the follow-up and complete the required current-SHA checks and reviews in GitHub. Merge
+   only when all required evidence is clean and `origin/main` remains the reviewed base.
 3. Refresh `main` and perform the required bounded retrospective for this merged pull request.
 4. Rebase the preserved escaped-string branch, renumber that request to Request 7, make
    `json.scan` explicitly N/A under Request 6's boundary, and resume its review.
-5. Register the narrowly evidenced optional-Move partial-decode error cleanup, strict numeric
-   grammar if retained, and record-array construction as separate reviewed slices before returning
-   to the C6 design branch. Do not reopen a blanket `Option<Move record>` JSON descriptor request:
-   its ordinary success path is shipped.
+5. Register post-construction JSON decode error cleanup, strict numeric grammar if retained, and
+   record-array construction as separate reviewed slices before returning to the C6 design branch.
+   The cleanup design must audit every error exit after an owner becomes live and assign both the
+   optional-descriptor outer-failure class and top-level trailing-garbage class. Do not reopen a
+   blanket `Option<Move record>` descriptor request: its ordinary success path is shipped.
 
 ## Constraints and intentional state
 
-- The Request 6 design and all review follow-ups are committed. The worktree is expected to be
-  clean after this handoff-only finalization; do not discard or rewrite the scoped commits.
+- The Request 6 design and earlier contract corrections are committed. This final correction
+  intentionally modifies `docs/align-requests.md` and `HANDOFF.md`; do not discard either file
+  before the coherent follow-up is committed.
 - The worktree checked out on `agent/c6-json-escape-request` contains the committed escaped-string
   Request 6 plus intentional uncommitted changes to `HANDOFF.md` and
   `docs/align-requests.md`. Preserve those files until this request merges, then renumber/rebase
-  the branch and correct its inherited blanket `Option<Move record>` claim to the narrow
-  partial-error cleanup defect.
+  the branch and correct its inherited blanket `Option<Move record>` claim to the two
+  post-construction cleanup classes above.
 - `agent/c6-prompt-context-design` preserves the C6 design draft.
 - Existing governance, pin-adoption, topology, and Request 5 worktrees belong to earlier scoped
   work; do not modify or remove them.

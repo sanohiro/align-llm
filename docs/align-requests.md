@@ -381,7 +381,7 @@ responses carry `data[].embedding: array<f64>` — all scalar arrays as struct f
 ### Current state in Align
 
 `json.decode`/`json.encode` recurse through int/float/bool/str, nested structs, the
-decode-eligible scalar/`str` and struct `Option` forms,
+decode-eligible scalar/`str` and Copy-struct `Option` forms,
 **`array<struct>`**, and enum-unions — but reject a struct field whose type is an **array of
 scalars**. Verified against the compiler on 2026-07-24:
 
@@ -1046,13 +1046,18 @@ reachable through any union variant. The separately demonstrated general
 `Option<enum>` remains rejected by the existing JSON Decode schema predicate before this ownership
 gate and is outside this request. An otherwise decode-eligible `Option<Move record>` is already
 supported by ordinary `json.decode`/`json.encode`, including successful construction and owner
-drop. Its narrower known defect is partial-error cleanup: after decoding a `Some(MoveStruct)`,
-failure in a later required sibling leaves the optional payload unfreed because
-`drop_decoded_owned` skips optional descriptors. That defect is outside this scanner-only request
-and must receive a separate cleanup request if C6 reaches it. The current recursive scanner schema
-walk admits the shape, so the scanner-specific ownership gate must still reject its reachable
-owner: each successful scan row would otherwise be overwritten without Drop. The exact diagnostic
-template substitutes a public source-level spelling for `<row-type-source-spelling>`:
+drop. One demonstrated error-path defect remains: after decoding a `Some(MoveStruct)`, any
+subsequent enclosing-object decode failure leaves the optional payload unfreed because
+`drop_decoded_owned` skips optional descriptors. Missing or type-invalid siblings, duplicate
+declared keys, and malformed later object content are all instances of that root-cause class.
+Top-level trailing-garbage rejection has a separate decoded-owner cleanup gap that affects required
+and optional owning fields. These defects are outside this scanner-only request. Their follow-up
+design must audit every error exit after any decoded owner becomes live and either own both cleanup
+classes or assign each to an explicitly named separate request. The current recursive scanner
+schema walk admits the optional shape, so the scanner-specific ownership gate must still reject its
+reachable owner: each successful scan row would otherwise be overwritten without Drop. The exact
+diagnostic template substitutes a public source-level spelling for
+`<row-type-source-spelling>`:
 
 ```text
 `json.scan` row type '<row-type-source-spelling>' must be Copy; Move rows need per-row Drop before the scanner can reuse its row slot
@@ -1228,8 +1233,9 @@ Align compiler/runtime tests must:
    `Row { inner: Option<Inner>, score: i64 }`; decoding
    `{"inner":{"items":[1,2]},"score":3}` and immediately encoding the owner must produce those
    exact bytes before the value leaves scope successfully. This success case is shipped behavior,
-   not the subject of a new descriptor request. The distinct optional-Move partial-decode cleanup
-   failure described above remains deferred to a narrowly scoped request;
+   not the subject of a new descriptor request. The distinct post-construction decode-error cleanup
+   gaps described above remain deferred; their follow-up must audit and assign every error exit
+   after an owner becomes live;
 10. prove whole-program and per-unit checking produce the same acceptance and exact diagnostic
     when `Row` is local and when its complete definition is imported. The imported fixture's module
     is exactly `scan_schema`; it declares `pub ImportedRow` and
@@ -1349,9 +1355,11 @@ or are already implemented:
   (missing key / `null` → `None`), enums (shape-directed unions), and ignores unknown fields —
   verified against `examples/json_nested.align`, which decodes an OpenAI chat-completions shape.
   `Option<enum>` remains an existing decode rejection. Eligible `Option<Move record>` success is
-  shipped; only its later-sibling partial-decode failure cleanup is a known defect queued for a
-  narrowly scoped request. `align-llm` should declare provider response structs, not ask Align for
-  a dynamic value type. (Caveat handled app-side: decoded
+  shipped. Subsequent enclosing-object failure can leak a live optional owner, and top-level
+  trailing-garbage rejection has a separate cleanup gap for required and optional owners. A
+  follow-up design must audit and assign every post-construction error exit. `align-llm` should
+  declare provider response structs, not ask Align for a dynamic value type. (Caveat handled
+  app-side: decoded
   `str` fields are zero-copy views into the input; use `.clone()` to persist them past the input's
   lifetime.)
 - **Working directory via app-side shell.** A `sh -c "cd <dir> && ..."` workaround exists, but it is
