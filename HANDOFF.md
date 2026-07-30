@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `ac4ac3947322e3fd5c10da7137c50b17d5da7c6f`
+  `87566c4112759738bfb8ef19ad455dd664c03a76`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -149,10 +149,23 @@ The final host-native review reproduced another Git trust-boundary failure: repo
 corrected contract no longer delegates any additional-path decision to Git. Its binary-safe raw
 comparator owns a complete dirfd-relative, no-follow filesystem enumeration and compares every
 entry against the tree/index trie, excluding only the validated root `.git` administrative entry
-and an ordinary root `target/` output subtree. The hostile matrix fixes the reproduced
-`LIB.rs`/`lib.rs` collision, extra directories, type and rename observations, and ignore/excludes
-cases. Git's ignore and case-fold configuration can therefore no longer make a compiler input
-invisible to the gate.
+and, only after proving that no tracked root `target` component exists, an ordinary root `target/`
+output subtree. The hostile matrix fixes the reproduced `LIB.rs`/`lib.rs` collision, tracked
+`target`, extra directories, type and rename observations, and ignore/excludes cases. Git's ignore
+and case-fold configuration can therefore no longer make a compiler input invisible to the gate.
+
+The fresh adversarial follow-up found two related trust-root gaps. Repository-local
+`core.worktree` can redirect Git outside `ALIGN_REPO`, so the gate now retains the exact validated
+`ALIGN_REPO` root, rejects effective direct, included, or worktree-local `core.worktree`, and
+requires both inside-worktree status and byte-exact top-level equality before object lookup. More
+fundamentally, a retained comparator descriptor alone cannot bind separate Git processes and a
+later Cargo build across an ancestor/root ABA replacement. Request 7 does not invent that
+mechanism: it requires the common topology design and implementation to install one
+non-conflicting source-identity boundary spanning Git/config/object/index inspection, raw
+enumeration, source materialization, and build, including root, Git-directory, common-directory,
+and source-byte identity. A same-HEAD/tree/index replacement with an additional recursively
+consumed Rust input is the required negative, and standalone comparator success cannot satisfy
+adoption.
 
 Two successive controller-design reviews found new critical correctness classes, so the local
 patch loop is closed and that boundary is split out. Before the next `.align-revision` change or
@@ -182,7 +195,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`ac4ac3947322e3fd5c10da7137c50b17d5da7c6f` against a clean detached checkout of the exact pinned
+`87566c4112759738bfb8ef19ad455dd664c03a76` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
