@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `fef8c0daf482b1bb4d26704b944a5a91f4f57cf7`
+  `97903fea444a338babaafe4d2f72bda252117bf7`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -139,6 +139,14 @@ Effective promisor configuration and common-object-directory alternates are reje
 object reads, with alternate postchecks before output or status consumption and persistent-race
 regressions.
 
+The final follow-up made those boundaries executable under hostile raw trees and cached build
+state. Materialization and comparison prevalidate all paths and symlink chains, then use
+dirfd-relative no-follow access; initial fetch/detach and every later object operation run only
+after promisor/alternate guards. The benchmark requires Git 2.45 or newer. Adoption builds the
+pinned compiler in a newly created empty target rather than trusting fingerprint-fresh
+`ALIGN_REPO/target` output, carries its exact identity through the aggregate, and uses an
+identity-bound signal-safe cleanup that cannot delete a renamed replacement directory.
+
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
 delimiters, ambiguous EOF, and other framing behavior remain shipped behavior; a future concrete
@@ -154,7 +162,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`fef8c0daf482b1bb4d26704b944a5a91f4f57cf7` against a clean detached checkout of the exact pinned
+`97903fea444a338babaafe4d2f72bda252117bf7` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
