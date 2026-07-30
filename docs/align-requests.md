@@ -975,14 +975,18 @@ Priority: high
 Blocking: no
 Blocked gate or slice: N/A; current align-llm product code and planned C6 artifacts do not consume json.scan
 Independent work that may continue: all current C6 design, prerequisite, and implementation work that explicitly excludes json.scan
-Resume condition: N/A for current work; if the named future Move-row consumer is reached before ALIGN_MERGED, reclassify this request as blocking; after ALIGN_MERGED, the adoption slice below pins the release and closes the request
+Resume condition: N/A for current work; if the named future Copy-row consumer reaches its fail-closed scanner-safety acceptance slice before ALIGN_MERGED, reclassify this request as blocking; after ALIGN_MERGED, the adoption slice below pins the release and closes the request
 Align commit or pull request: pending
 align-llm verification: pending
 ```
 
-The first expected consumer is a future streaming evaluator or log processor whose declared row
-contains nested collections. That consumer must wait for a separately reviewed per-row ownership
-design rather than weakening this request.
+The first expected consumer is a future streaming evaluator or log counter whose Copy row is
+`LogRow { severity: str, elapsed_ns: i64 }`. Its scanner-safety acceptance slice must run a positive
+Copy-row stream and a negative otherwise-equivalent schema with `samples: array<i64>`, proving that
+an accidental Move row fails closed before the consumer ships. If that slice is reached before
+this request is `ALIGN_MERGED`, this request becomes blocking for that consumer. A consumer that
+actually needs a Move row, including nested collections, belongs exclusively to a separate per-row
+ownership request and is not a consumer of this rejection capability.
 
 ### Motivation
 
@@ -1031,13 +1035,16 @@ The following remain supported:
 
 - integers, floats, booleans, and borrowed `str` views;
 - nested structs whose complete reachable field graphs meet the same rule;
-- `Option<T>` where the payload graph meets the same rule; and
+- existing JSON-decode-eligible Copy options: scalar or borrowed-`str` payloads and
+  `Option<CopyStruct>` whose complete reachable field graph meets the same rule; and
 - shape-directed unions where every variant payload graph meets the same rule.
 
 Reject any direct or transitively reachable owned field, including every `array<T>` and
 `array<Struct>`, an array inside a nested or optional struct, and an owned array or owning struct
 reachable through any union variant. The separately demonstrated general
-`Option<Move record>` JSON descriptor gap remains open, but `check_json_scan`'s current recursive
+`Option<enum>` remains rejected by the existing JSON Decode schema predicate before this ownership
+gate and is outside this request. The separately demonstrated general `Option<Move record>` JSON
+descriptor gap remains open, but `check_json_scan`'s current recursive
 schema walk admits an `Option<Struct>` whose payload is Move; the scanner-specific ownership gate
 must reject that reachable owner too. This request does not claim to make the same shape fully
 usable through ordinary decode/encode. The exact diagnostic template substitutes the declared
@@ -1051,11 +1058,12 @@ A rejected `json.scan` expression must fail during semantic checking before MIR 
 descriptor construction. The row declarations remain valid Align types and are not rejected
 outside this scanner use. Validation order is deterministic:
 
-1. argument arity;
-2. expected `json.scanner<Row>` annotation and row inference;
-3. existing JSON Decode schema eligibility;
-4. the canonical recursive Copy/Move classification; and
-5. input `str` typing and region checks.
+1. required `core.json` capability import;
+2. argument arity;
+3. expected `json.scanner<Row>` annotation and row inference;
+4. existing JSON Decode schema eligibility;
+5. the canonical recursive Copy/Move classification; and
+6. input `str` typing and region checks.
 
 This preserves the existing unsupported-JSON-field diagnostic when a declaration is not a valid
 typed-decode schema at all, and makes the scanner ownership error precede an invalid input
@@ -1138,8 +1146,9 @@ Align compiler/runtime tests must:
    the diagnostic traverses every variant rather than accepting a union because the selected input
    happens to use a Copy variant;
 3. accept recursively Copy rows containing every scalar width supported by JSON decode, borrowed
-   `str`, nested structs, scalar/`str` options in `Some`, missing, and `null` states, and
-   shape-directed unions whose complete payload graph is Copy;
+   `str`, nested structs, scalar/`str` options in `Some`, missing, and `null` states,
+   `Option<CopyStruct>` in `Some`, missing, and `null` states, and shape-directed unions whose
+   complete payload graph is Copy;
 4. run the exact terminal matrix below once over the top-level-array bytes
    `[{"active":true,"score":2},{"active":false,"score":3},{"active":true,"score":4}]` and once
    over the same three objects separated by single LF bytes with no array delimiters. Each case
@@ -1164,10 +1173,13 @@ Align compiler/runtime tests must:
    exact schema fixture declares
    `Leaf { name: str, note: Option<str> }`,
    `Choice { Text(str), Number(i64), Object(Leaf) }`, and
-   `RichRow { id: u64, leaf: Leaf, choice: Choice }`. For both framings, three rows select the
-   string, number, and object variants respectively, exercise `note` as present, missing, and
-   `null`, and `.count()` must return `3`. Separate compile-only cases cover the remaining integer
-   and float widths and `Option` scalar types without multiplying them across every terminal;
+   `RichRow { id: u64, leaf: Leaf, maybe_leaf: Option<Leaf>, choice: Choice }`. For both framings,
+   three rows select the string, number, and object variants respectively, exercise `note` as
+   present, missing, and `null`, exercise `maybe_leaf` as `Some`, missing, and `null`, and
+   `.count()` must return `3`. Separate compile-only cases cover the remaining integer and float
+   widths and `Option` scalar types without multiplying them across every terminal. The existing
+   JSON-schema rejection for `Option<enum>` remains covered by the general decode corpus and must
+   precede the scanner ownership predicate;
 5. prove all-clean rows, a filtered-out row, malformed input before the first row, malformed input
    after at least one successful row, exhaustion, and empty input retain their existing values,
    `Error.Code(1)` classification, and no row allocation;
@@ -1175,13 +1187,17 @@ Align compiler/runtime tests must:
    `align_runtime::tests::json_scan_copy_row_no_owned_alloc`. It snapshots
    `align_rt_alloc_count()` and `align_rt_free_count()` around direct
    `align_rt_json_scan_next` calls for clean, malformed, and exhausted Copy rows and requires zero
-   delta. Run it with
+   delta. The test must acquire the existing process-global `ALLOC_COUNT_LOCK` as its first
+   executable statement and hold the guard for the complete test body, including input/descriptor
+   setup, both counter snapshots, every scanner call, and assertions. Run it with
    `cargo test -p align_runtime --features alloc-count json_scan_copy_row_no_owned_alloc`.
    Allocation by the Rust duplicate-field `SeenSet`, unrelated test harness, or input setup is
    outside the Align-owned counters;
-7. prove deterministic validation order: an unsupported typed-decode field retains its existing
-   schema diagnostic; a valid Move row plus an invalid non-string input reports the Copy-row
-   diagnostic; and an otherwise identical valid Copy row reports the input-type diagnostic;
+7. prove deterministic validation order: a call without `import core.json` retains the existing
+   capability-import diagnostic even when its arity is also invalid; with the capability imported,
+   an unsupported typed-decode field retains its existing schema diagnostic; a valid Move row plus
+   an invalid non-string input reports the Copy-row diagnostic; and an otherwise identical valid
+   Copy row reports the input-type diagnostic;
 8. prove semantic rejection occurs before MIR/codegen: `alignc check` and `alignc emit-mir` must
    both report the scanner-specific semantic diagnostic for each negative fixture, and
    `emit-mir` must produce no MIR on stdout. No descriptor table, object file, executable, or
