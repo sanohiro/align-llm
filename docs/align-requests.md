@@ -1600,9 +1600,9 @@ The implementation closure ledger for the future Align design is:
 | Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
-| Detached benchmark dependency resolution, ambient Cargo/Rust inputs, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | benchmark-input lock/offline self-tests plus the harness's environment/config isolation, metadata-graph, protected-tree, and malformed-output regressions |
+| Root plus detached benchmark dependency resolution, absolute Cargo/Rust identity, ambient configuration, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | all-command lock/offline self-tests plus the harness's executable/environment/config isolation, exact three-workspace metadata graphs, protected-tree, and malformed-output regressions |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
-| Canonical `.align-revision` bytes before checkout lookup or release build | `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus uppercase, width, LF, whitespace, CR, trailing-text, Git-marker, and unchanged-build-output negatives |
+| Canonical `.align-revision` bytes and non-hidden checkout state before lookup or release build | `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus encoding, Git-marker, assume-unchanged, skip-worktree, dirty/untracked, and unchanged-index/build-output negatives |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key and skipped-string
@@ -1783,17 +1783,25 @@ Align compiler/runtime tests must:
     than unconditional cross-path agreement.
 12. first merge a separately reviewed benchmark-input enabling slice that removes the detached
     `bench/json_decode/Cargo.lock` and `bench/json_soa/Cargo.lock` ignores, checks in both generated
-    lockfiles, and makes both benchmark `cargo run` commands use `--locked --offline`. The enabling
-    slice's tests prove that each detached workspace rejects a missing or manifest-inconsistent
-    lockfile and cannot update the registry or resolved graph during the gate; the harness's raw
-    protected-tree comparison separately rejects any lockfile byte difference between baseline
-    and candidate. No Request 7 implementation may start before this slice merges. Then add an
+    lockfiles, and makes every Cargo command in both benchmark scripts use `--locked --offline`:
+    both root-workspace `cargo build` commands and the detached-workspace `cargo run`. The scripts
+    invoke the absolute `CARGO` executable supplied by the harness and leave compiler selection to
+    its absolute `RUSTC` environment value; neither searches `PATH` for a Rust tool. The enabling
+    slice's tests prove that the root and each detached workspace reject a missing or
+    manifest-inconsistent lockfile and that an incomplete offline cache fails without network
+    access, registry update, lockfile write, or build output; the harness's raw protected-tree
+    comparison separately rejects any lockfile byte difference between baseline and candidate. No
+    Request 7 implementation may start before this slice merges. Then add an
     Align-owned checked-in `scripts/run-json-escape-bench-gate` harness. Its only public invocation
     is `scripts/run-json-escape-bench-gate --baseline <40-lower-hex> --candidate <40-lower-hex>
-    --toolchain-bin-dir <absolute-dir> --cargo-cache <absolute-dir>`; every option is required
+    --cargo <absolute-file> --rustc <absolute-file> --cargo-cache <absolute-dir>`; every option is required
     exactly once, no environment fallback or default is permitted, and unknown, duplicate,
-    malformed, relative, missing, symlinked, or non-directory inputs fail before a worktree or
-    output is created. Run it on one otherwise-idle named host over two clean detached Align
+    malformed, relative, missing, or wrong-kind inputs fail before a worktree or output is created.
+    `cargo` and `rustc` must each be a regular, non-symlinked executable path containing no colon or
+    control byte; `cargo-cache` must be an absolute, non-symlinked directory with the same byte
+    restrictions. Their identities are the before-and-after SHA-256 of both executable files plus
+    exact `cargo -V` and `rustc -Vv` output; any mutation fails the gate. Run it on one
+    otherwise-idle named host over two clean detached Align
     worktrees. The baseline commit is the exact parent of the first Request 7
     implementation commit, is descended from the merged benchmark-input slice, and already
     contains both named prerequisites; the candidate is the proposed final Request 7 commit. Each
@@ -1811,26 +1819,55 @@ Align compiler/runtime tests must:
     either benchmark command. The harness rejects any inherited variable whose name begins with
     `CARGO_`, `RUST`, `RUSTC_`, or `RUSTDOC`, plus `CC`, `CXX`, `AR`, `LD`, `CFLAGS`, `CXXFLAGS`,
     `LDFLAGS`, `MAKEFLAGS`, and `GNUMAKEFLAGS`, before it creates a worktree or build output. It
-    requires `toolchain-bin-dir` to contain regular executable `cargo` and `rustc` files, and invokes
-    each benchmark through `env -i` with only `PATH=<toolchain-bin-dir>:/usr/bin:/bin`, `LC_ALL=C`,
-    an empty temporary `HOME`, and one harness-owned absolute `CARGO_HOME` copied from the named
-    pre-populated offline registry/git cache but containing no `config`, `config.toml`,
-    credentials, or symlink. Before every Cargo invocation, it also walks from each worktree's
+    invokes each benchmark through `env -i` with only `PATH=/usr/bin:/bin`, `LC_ALL=C`, the
+    validated absolute `CARGO` and `RUSTC` files, an empty temporary `HOME`, and one harness-owned
+    absolute `CARGO_HOME` copied from the named pre-populated offline registry/git cache but
+    containing no `config`, `config.toml`, credentials, or symlink. Before every Cargo invocation,
+    it also walks from each worktree's
     parent through the filesystem root and rejects an existing or symlinked `.cargo/config` or
     `.cargo/config.toml`; the worktree's own protected `.cargo/` tree is the only project-hierarchy
     configuration source. It leaves
     `CARGO_TARGET_DIR`, `RUSTFLAGS`, wrappers, target selectors, and linker/compiler overrides
     absent, so Cargo discovers only the protected per-worktree `.cargo` configuration and writes
-    that worktree's default `target/`. Before timing, the harness runs `cargo metadata --locked
-    --offline` in both detached workspaces under this same environment, canonicalizes the complete
-    package-id/source/feature/target graph, requires the two byte reports to match, and records
-    their SHA-256; registry checksums remain fixed by the protected lockfiles. Negative tests inject
+    that worktree's default `target/`. Before timing, the harness invokes the validated absolute
+    Cargo as `metadata --format-version 1 --locked --offline` under this same environment for all
+    six revision/workspace pairs: baseline and candidate at the Align root,
+    `bench/json_decode/Cargo.toml`, and `bench/json_soa/Cargo.toml`. It compares baseline with
+    candidate independently for each workspace and records three labeled SHA-256 digests; it never
+    compares the two distinct benchmark workspaces to one another.
+
+    A checked-in canonicalizer requires top-level metadata `version == 1` and a non-null `resolve`,
+    retains the complete JSON document, and performs only these normalizations in JSON string
+    values: replace the exact current worktree absolute path when preceded by string start or
+    `file://` (including `path+file://`) and followed by string end, `/`, `#`, or `?` with
+    `<WORKTREE>`; apply the same rule to the exact harness-owned Cargo-home path and
+    `<CARGO_HOME>`;
+    reject any remaining baseline/candidate worktree path or local `path+file` identity outside the
+    named worktree. It recursively sorts object keys; sorts `packages` by normalized `id`, package
+    dependency entries by their complete normalized JSON bytes, package targets by complete
+    normalized JSON bytes, every feature's member list lexically, `workspace_members` and
+    `workspace_default_members` lexically, `resolve.nodes` by normalized `id`, each node's
+    dependencies and `dep_kinds` by complete normalized JSON bytes, and each node's feature list
+    lexically. Other arrays retain source order. It emits UTF-8 canonical JSON with no insignificant
+    whitespace, no ASCII escaping, and exactly one trailing LF. Registry checksums remain fixed by
+    the protected lockfiles. The canonicalizer's self-test covers every retained field, both path
+    tokens and URI forms, prefix-but-not-boundary paths, path escape, each sorted set, an
+    order-sensitive retained array, missing/unsupported version, null resolve, extra fields,
+    non-UTF-8, and exact output bytes. Root member-manifest dependency/feature/target drift and
+    each detached manifest/lockfile drift must change only its labeled report and fail before
+    warm-up.
+
+    Negative tests also inject
     every rejected environment-name class, a Cargo config at each excluded home, Cargo-home, and
-    ancestor location, a symlinked config, a graph mismatch, and a shared target override; each
-    fails before either warm-up. The otherwise-idle host contract excludes concurrent mutation of
-    these inspected benchmark-input paths during the gate. The harness records the hostname,
-    `uname -a`, CPU model, baseline and candidate SHAs, the dependency-graph digest, and exact
-    `rustc -Vv`, `cargo -V`, and `git --version` outputs. For each of
+    ancestor location, a symlinked config, colon/control-bearing tool paths, symlinked Cargo/Rust
+    executables, a graph mismatch in each workspace class, and a shared target override; each fails
+    before either warm-up. A separate hostile ambient `PATH` places marker executables for
+    `cargo`, `rustc`, `bash`, `git`, the C compiler, and linker first and proves the empty-environment
+    boundary executes none of them. The otherwise-idle host contract excludes concurrent mutation
+    of these inspected benchmark-input paths during the gate. The harness records the hostname,
+    `uname -a`, CPU model, baseline and
+    candidate SHAs, the three dependency-graph digests, and exact `rustc -Vv`, `cargo -V`, and
+    `git --version` outputs. For each of
     `bench/json_decode/run.sh native` and
     `bench/json_soa/run.sh native`, it first runs one discarded baseline warm-up and one discarded
     candidate warm-up, then runs ten measured pairs sequentially with no overlap: odd-numbered pairs
@@ -1984,12 +2021,18 @@ env -i \
 
 It then fails closed when
 `git rev-parse --is-shallow-repository` is not exactly `false`; it never fetches or changes the
-external repository. A regression creates a depth-one detached checkout of the final commit,
+external repository. Before reading porcelain status, `scripts/check-align-revision` parses
+`git ls-files -v -z` bytewise and rejects every lowercase tag (an `assume-unchanged` entry) and
+every uppercase `S` tag (a `skip-worktree` entry); it does not clear either flag or refresh the
+index. Only after that guard passes may the script use NUL-delimited porcelain status with all
+untracked files shown. A regression creates a depth-one detached checkout of the final commit,
 proves that the gate fails before history expansion, expands its history, then proves the same
 detached `HEAD` and clean worktree pass. Another regression supplies hostile system, global, XDG,
-and local status/fsmonitor configuration plus an untracked file; the check must reject the dirty
-checkout without invoking the helper or changing index/object bytes or metadata. This replaces the
-current hosted workflow's depth-one-only behavior only in the future adoption slice.
+and local status/fsmonitor configuration plus an untracked file; separate cases mark a tracked
+file `assume-unchanged` and `skip-worktree` and then change its bytes. Every case must reject before
+build without invoking the helper, normalizing an index flag, or changing index/object bytes or
+metadata. This replaces the current hosted workflow's depth-one-only behavior only in the future
+adoption slice.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
 ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves
