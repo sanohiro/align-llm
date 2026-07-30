@@ -1677,7 +1677,7 @@ The implementation closure ledger for the future Align design is:
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
 | Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
-| Canonical revision-file bytes and exact filter-independent tracked/ignored checkout state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored build-input, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
+| Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
 | Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | DEFERRED to a separately reviewed and merged `docs/specs/check-gate-topology.md` design update plus a dependent implementation slice; every pin-changing adoption is blocked because the bootstrap, cache, compiler-exec interposition, process, timeout, and cleanup surfaces are not yet designed or installed | that prerequisite plan must name exact unit, fault-injection, and local/hosted integration regressions for every closure class listed in the adoption gate, and its implementation must pass them before a later adoption changes the pin |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
@@ -2149,48 +2149,63 @@ index/worktree entry, `120000` must name a `blob` and maps to a symlink, and `16
 mode/type pairing rejects.
 Its ordinary and workflow shallow-checkout entry points both run the effective promisor query
 before `ls-tree` or any other object read.
-Before filesystem access the adoption comparator builds its own complete path trie: relative
-nonempty paths, no empty, `.`, `..`, or ASCII-case-folded `.git`
-components, unique entries, and no file/symlink prefix collision. It opens the worktree root once
-and performs every lookup dirfd-relatively with no-follow semantics, so a raw malicious tree or
-concurrent ancestor replacement cannot redirect a read outside the checkout. The same absolute,
-dot/dotdot/dotgit, duplicate, prefix-collision, and symlink-ancestor raw-object fixtures run through
-the comparator and must reject without an outside-root read. Its tree-only symlink-chain resolver
-rejects absolute, dangling, cyclic,
-root-escaping, or untracked targets before any later Cargo or compiler command can follow them;
-fixtures cover both current valid Align symlinks and every rejected class.
-For every index entry it then uses byte-path filesystem operations: `lstat`, raw regular-file
-reads, and raw symlink-target reads. It requires the indexed filesystem type and executable-bit
+Before filesystem access the adoption comparator builds its own complete tree/index path trie:
+relative nonempty paths, no empty, `.`, `..`, or ASCII-case-folded `.git` components, unique
+entries, and no file/symlink prefix collision. It opens the worktree root once and enumerates the
+entire filesystem beneath it with byte-path, dirfd-relative, no-follow operations. It never asks
+Git which paths are untracked or ignored. Every filesystem directory other than the exact root
+`.git` administrative entry and the allowed root `target/` output subtree must be an interior node
+of the trie, and every other enumerated entry must map one-to-one to the corresponding tracked trie
+leaf. The exact `.git` entry is excluded only after the script has resolved and validated the Git
+and common directories; any other spelling whose ASCII fold is `.git`, any extra empty directory,
+and any filesystem path absent from the trie rejects. The root `target/` entry must be absent or an
+ordinary non-symlinked directory and is not traversed by this source comparator.
+
+Enumeration, descent, `lstat`, regular-file reads, and symlink-target reads all stay relative to
+the already opened parent descriptors and use no-follow semantics. A disappearing entry, a type
+change between enumeration and open, a rename-and-replace observation, an unsupported filesystem
+type, or any inability to prove the one-to-one mapping rejects. Thus a raw malicious tree,
+case-fold collision, or concurrent ancestor replacement cannot hide an input or redirect a read
+outside the checkout. The same absolute, dot/dotdot/dotgit, duplicate, prefix-collision,
+case-fold-collision, extra-directory, and symlink-ancestor raw-object and filesystem fixtures run
+through the comparator and must reject without an outside-root read. Its tree-only symlink-chain
+resolver rejects absolute, dangling, cyclic, root-escaping, or untracked targets before any later
+Cargo or compiler command can follow them; fixtures cover both current valid Align symlinks and
+every rejected class.
+
+For every tracked leaf the comparator requires the indexed filesystem type and executable-bit
 class, computes the repository's declared SHA-1 or SHA-256 Git blob ID directly over the raw bytes
 without invoking Git filters, and matches that ID to the index object. Missing, additional,
-unsupported, type-mismatched, mode-mismatched, or byte-mismatched tracked entries fail. The
-comparator never executes repository content or Git-configured helpers.
+unsupported, type-mismatched, mode-mismatched, or byte-mismatched entries fail. The comparator
+never executes repository content or Git-configured helpers.
 
 Before the raw comparison, `scripts/check-align-revision` also parses
 `git ls-files -v -z` bytewise and rejects every lowercase tag (an `assume-unchanged` entry) and
 every uppercase `S` tag (a `skip-worktree` entry); it does not clear either flag or refresh the
-index. It parses `git ls-files --others -i --exclude-standard -z` and rejects every ignored
-untracked path except a record strictly below the root `target/`; that one allowed output root must
-be absent or an ordinary non-symlinked directory. It separately parses
-`git ls-files --others --exclude-standard -z` and rejects every non-ignored untracked path. Thus
-repository `.gitignore`, `.git/info/exclude`, and repository-local `core.excludesFile` cannot hide
-a Cargo configuration, default `build.rs`, module source, or other build input, while
-`.gitattributes`, `.git/info/attributes`, and local `filter.*` configuration cannot normalize a
-tracked-byte comparison or execute a filter helper. A regression creates
+index. The raw filesystem enumeration above, not either form of
+`git ls-files --others`, owns additional-path rejection. Thus repository `.gitignore`,
+`.git/info/exclude`, repository-local `core.excludesFile`, and local `core.ignoreCase` cannot hide
+a Cargo configuration, default `build.rs`, module source, case-fold-colliding Rust file, empty
+directory, or other build input, while `.gitattributes`, `.git/info/attributes`, and local
+`filter.*` configuration cannot normalize a tracked-byte comparison or execute a filter helper. A
+regression creates
 a depth-one detached checkout of the final commit,
 proves that the gate fails before history expansion, expands its history, then proves the same
 detached `HEAD` and clean worktree pass. Another regression supplies hostile system, global, XDG,
-and local status/fsmonitor configuration plus an untracked file; separate cases mark a tracked
-file `assume-unchanged` and `skip-worktree` and then change its bytes. Every case must reject before
-build without invoking the helper, normalizing an index flag, or changing index/object bytes or
-metadata. Additional cases hide an executable default `build.rs` and `.cargo/config.toml` through
-`info/exclude` and a repository-local excludes file, reject a symlinked root `target`, and accept
-only an ordinary `target/` output sentinel. Separate cases use tracked `.gitattributes` and
-untracked `.git/info/attributes` plus local clean filters that would make `git status` hide
-different working bytes; the raw comparator must reject both without executing either filter
-marker. Index/tree mode, path, object-ID, stage, regular-file, symlink, executable-bit, raw-byte,
-unsupported-gitlink, SHA-1, and SHA-256 cases exercise every comparator decision. The rejected
-files and helpers must never execute. This replaces
+and local status/fsmonitor configuration plus an untracked file; a dedicated hostile local
+`core.ignoreCase=true` case adds `crates/align_runtime/src/LIB.rs` beside tracked `lib.rs` and proves
+that the raw enumeration rejects it even though both Git untracked queries omit it. Separate cases
+mark a tracked file `assume-unchanged` and `skip-worktree` and then change its bytes. Every case
+must reject before build without invoking the helper, normalizing an index flag, or changing
+index/object bytes or metadata. Additional cases hide an executable default `build.rs` and
+`.cargo/config.toml` through `info/exclude` and a repository-local excludes file, add an untracked
+empty directory, reject a symlinked root `target`, and accept only an ordinary `target/` output
+sentinel. Separate cases use tracked `.gitattributes` and untracked `.git/info/attributes` plus
+local clean filters that would make `git status` hide different working bytes; the raw comparator
+must reject both without executing either filter marker. Index/tree mode, path, object-ID, stage,
+regular-file, directory, symlink, executable-bit, raw-byte, unsupported-gitlink, SHA-1, and SHA-256
+cases exercise every comparator decision. The rejected files and helpers must never execute. This
+replaces
 the current hosted workflow's depth-one-only behavior only in the future adoption slice.
 
 An allowed ordinary root `target/` is treated only as unrelated prior output; no acceptance command
