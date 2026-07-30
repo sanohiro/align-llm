@@ -65,9 +65,11 @@ absolute corpus offset could not describe record, array, and NDJSON inputs with 
 bytes. The corrected contract stores a token-relative anchor and defines byte-exact object, array,
 and NDJSON adapters; each adapter independently derives the smallest ASCII padding, verifies its
 absolute anchor and boundary equation, and asserts that path's parser offset. The ancestry gate
-also resolves the
-Git common directory and rejects any existing or symlinked `info/grafts` path before ancestry
-inspection; `GIT_NO_REPLACE_OBJECTS` alone does not disable graft parents.
+also captures Git common-directory output with a non-newline sentinel before command substitution
+can strip its terminator, rejects a path containing any control byte, and rejects any existing or
+symlinked `info/grafts` path before ancestry inspection. The negative matrix includes a valid common
+directory whose basename ends in LF and whose graft would otherwise forge ancestry.
+`GIT_NO_REPLACE_OBJECTS` alone does not disable graft parents.
 
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing

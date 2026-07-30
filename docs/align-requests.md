@@ -1820,11 +1820,24 @@ align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cle
 align_request7_revision="$(tr -d '\n' < .align-revision)"
 
 test "$(clean_git -C "$ALIGN_REPO" rev-parse --is-shallow-repository)" = false
-align_common_dir="$(
-  clean_git -C "$ALIGN_REPO" rev-parse --path-format=absolute --git-common-dir
-)"
-test "$(printf '%s\n' "$align_common_dir" | wc -l | tr -d ' ')" = 1
-printf '%s\n' "$align_common_dir" | grep -Eq '^/[^[:cntrl:]]+$'
+align_common_record="$(
+  clean_git -C "$ALIGN_REPO" rev-parse --path-format=absolute --git-common-dir &&
+    printf '%s' '__ALIGN_COMMON_DIR_END__'
+)" || exit 1
+case "$align_common_record" in
+  *'
+__ALIGN_COMMON_DIR_END__') ;;
+  *) exit 1 ;;
+esac
+align_common_dir="${align_common_record%
+__ALIGN_COMMON_DIR_END__}"
+case "$align_common_dir" in
+  /?*) ;;
+  *) exit 1 ;;
+esac
+case "$align_common_dir" in
+  *[[:cntrl:]]*) exit 1 ;;
+esac
 test ! -e "$align_common_dir/info/grafts"
 test ! -L "$align_common_dir/info/grafts"
 test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_scanner_revision")" = commit
@@ -1847,11 +1860,17 @@ any adoption fixture executes. The adoption smoke includes isolated negative cop
 proving rejection of a shallow repository, a symbolic or annotated-tag object, a replacement
 object that would forge ancestry, a Git-common-dir `info/grafts` entry that would forge ancestry,
 equal prerequisite/final revisions, equal prerequisite revisions, and valid but unrelated commit
-objects. The common-dir result must be one absolute line, and any existing or symlinked graft path
-is rejected before either ancestry command. The negative repositories and Git configuration must
-not affect the caller's repository. A cherry-pick, squash, or joint commit that merely reproduces
-either prerequisite's content without preserving both named commits as strict ancestors is
-rejected. The target then runs
+objects. The common-dir capture appends a fixed non-newline sentinel before shell command
+substitution can discard Git's output terminator, requires exactly one LF immediately before that
+sentinel, removes only that exact suffix with shell parameter expansion, and then requires a
+non-root absolute path containing no control byte. The negative matrix includes a valid separate
+Git common directory whose basename ends in LF and whose `info/grafts` would forge the requested
+ancestry; it must be rejected before either ancestry command. Thus command substitution cannot
+normalize a malicious path into a different graft-check location. Any existing or symlinked graft
+path is also rejected before either ancestry command. The negative repositories and Git
+configuration must not affect the caller's repository. A cherry-pick, squash, or joint commit that
+merely reproduces either prerequisite's content without preserving both named commits as strict
+ancestors is rejected. The target then runs
 `scripts/run-c6-json-escape-adoption-smoke` against checked-in
 `eval/fixtures/c6-json-escape-adoption/`.
 That directory owns `main.align`, `escape-heavy.input.json`, and
