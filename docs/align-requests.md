@@ -976,18 +976,18 @@ Priority: high
 Blocking: no
 Blocked gate or slice: N/A; current align-llm product code and planned C6 artifacts do not consume json.scan
 Independent work that may continue: all current C6 design, prerequisite, and implementation work that explicitly excludes json.scan
-Resume condition: N/A for current work; if the named future Copy-row consumer reaches its fail-closed scanner-safety acceptance slice before ALIGN_MERGED, reclassify this request as blocking; after ALIGN_MERGED, the adoption slice below pins the release and closes the request
+Resume condition: N/A for current work; the named adoption consumer starts only after ALIGN_MERGED, pins the release, and closes the request; if a product consumer is scheduled before ALIGN_MERGED, reclassify this request as blocking for that consumer
 Align commit or pull request: pending
 align-llm verification: pending
 ```
 
-The first expected consumer is a future streaming evaluator or log counter whose Copy row is
-`LogRow { severity: str, elapsed_ns: i64 }`. Its scanner-safety acceptance slice must run a positive
-Copy-row stream and a negative otherwise-equivalent schema with `samples: array<i64>`, proving that
-an accidental Move row fails closed before the consumer ships. If that slice is reached before
-this request is `ALIGN_MERGED`, this request becomes blocking for that consumer. A consumer that
-actually needs a Move row, including nested collections, belongs exclusively to a separate per-row
-ownership request and is not a consumer of this rejection capability.
+The first expected consumer is the concrete align-llm adoption target specified below. It starts
+only after this request is `ALIGN_MERGED`, runs the positive Copy-row aggregate plus the exact
+fail-closed Move-row negatives, and pins the shipped compiler before closing the request. No
+align-llm product consumer is currently planned. If the roadmap later schedules one before
+`ALIGN_MERGED`, reclassify this request as blocking for that consumer; a consumer that actually
+needs a Move row belongs exclusively to a separate per-row ownership request and is not a consumer
+of this rejection capability.
 
 ### Motivation
 
@@ -1328,10 +1328,11 @@ or are already implemented:
   `array<Struct>`, existing decode-eligible scalar/`str` and Copy-struct `Option` forms
   (missing key / `null` → `None`), enums (shape-directed unions), and ignores unknown fields —
   verified against `examples/json_nested.align`, which decodes an OpenAI chat-completions shape.
-  `Option<enum>` and `Option<Move record>` remain separate registered gaps rather than shipped
-  forms. `align-llm` should declare provider response structs, not ask Align for a dynamic value
-  type. (Caveat handled app-side: decoded `str` fields are zero-copy views into the input; use
-  `.clone()` to persist them past the input's lifetime.)
+  `Option<enum>` remains an existing decode rejection, while `Option<Move record>` is a known gap
+  queued for a separate request; neither is a shipped form. `align-llm` should declare provider
+  response structs, not ask Align for a dynamic value type. (Caveat handled app-side: decoded
+  `str` fields are zero-copy views into the input; use `.clone()` to persist them past the input's
+  lifetime.)
 - **Working directory via app-side shell.** A `sh -c "cd <dir> && ..."` workaround exists, but it is
   fragile (shell quoting, no native exit/stream semantics); native `cwd` is requested in Request 1
   instead of relying on it.

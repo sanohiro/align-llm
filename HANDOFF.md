@@ -26,17 +26,20 @@ Request 6 chooses the smallest idiom-consistent repair: give `json.scan` a scann
 gate using Align's canonical recursive Move classification and reject a Move row. Recursively Copy
 rows preserve the documented no-arena, borrowed-input model and require no new runtime branch or
 ABI. The general `json.decode` surface is unchanged. No current C6 artifact consumes `json.scan`,
-so the request is non-blocking and names a future Copy-row streaming evaluator/log consumer whose
-acceptance includes a fail-closed Move-row negative. A consumer that needs owned rows belongs to a
-separate per-row ownership request. This branch changes only `docs/align-requests.md` and this
-durable handoff.
+so the request is non-blocking. Its first concrete consumer is the post-`ALIGN_MERGED` adoption
+target, which includes a Copy-row aggregate and fail-closed Move-row negatives; no product consumer
+is currently planned. A consumer that needs owned rows belongs to a separate per-row ownership
+request. This branch changes only `docs/align-requests.md` and this durable handoff.
 
-The fresh immutable-head reviews found five acceptance-contract gaps, resolved in the committed
-follow-up: the register no longer overstates general `Option<T>` support;
+The fresh immutable-head reviews found eight acceptance and continuity gaps. Five are resolved in
+the committed follow-up: the register no longer overstates general `Option<T>` support;
 the rich Copy-row fixture observes `Option<CopyStruct>` `Some`/missing/`null` states separately;
 imported and generic row diagnostics require public source spellings instead of internal names;
 resolved generic `Wrap<T>` monomorphs receive Copy/Move coverage; and the pre-codegen diagnostic
 assertion is scoped to owning-row fixtures rather than conflicting multi-invalid fixtures.
+The intentional uncommitted follow-up closes the final three: the adoption target is the concrete
+first consumer instead of an invented future product feature, unsupported Option forms have exact
+lifecycle wording, and the post-merge sequence includes the required bounded retrospective.
 
 ## Verification
 
@@ -50,21 +53,24 @@ ALIGN_REPO=../align make ci               PASS
 
 ## Exact next steps
 
-1. Rerun exact verification on the final handoff head and complete a fresh independent adversarial
-   preflight against the full final immutable base diff.
-2. Resolve every valid refreshed-preflight finding before opening a focused draft pull request.
+1. Commit the final preflight follow-up in `HANDOFF.md` and `docs/align-requests.md`, finalize this
+   handoff with that relevant content head, and rerun exact verification.
+2. Complete a fresh independent adversarial preflight against the full final immutable base diff
+   and resolve every valid finding before opening a focused draft pull request.
 3. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence; merge
    only after every envelope is clean and `origin/main` remains the reviewed base.
-4. Refresh `main`, rebase the preserved escaped-string branch, renumber that request to Request 7,
-   make `json.scan` explicitly N/A under Request 6's boundary, and resume its review.
-5. Register the remaining C6 blockers (`Option<Move record>` JSON, strict numeric grammar if
+4. Refresh `main` and perform the required bounded retrospective for this merged pull request.
+5. Rebase the preserved escaped-string branch, renumber that request to Request 7, make
+   `json.scan` explicitly N/A under Request 6's boundary, and resume its review.
+6. Register the remaining C6 blockers (`Option<Move record>` JSON, strict numeric grammar if
    retained, and record-array construction) as separate reviewed slices before returning to the
    C6 design branch.
 
 ## Constraints and intentional state
 
-- The Request 6 design and both preflight follow-ups are committed. The worktree is expected to be
-  clean after this handoff-only finalization; do not discard or rewrite the scoped commits.
+- The Request 6 design and both earlier preflight follow-ups are committed. The current worktree
+  intentionally modifies `HANDOFF.md` and `docs/align-requests.md` for the final preflight
+  follow-up; do not discard or rewrite those changes or the earlier scoped commits.
 - The worktree checked out on `agent/c6-json-escape-request` contains the committed escaped-string
   Request 6 plus intentional uncommitted changes to `HANDOFF.md` and
   `docs/align-requests.md`. Preserve those files until this request merges, then renumber/rebase
