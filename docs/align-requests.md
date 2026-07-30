@@ -1503,13 +1503,20 @@ Required semantics:
 - duplicate declared keys, missing required fields, unknown-field ignore, field-order freedom,
   number/type validation, and valid unknown-value skipping retain their current behavior;
 - slow and speculative typed-decode paths produce identical semantic values, canonical encodings,
-  errors, materialized-string allocation counts, and storage/region classifications. The
-  speculative path validates every projected key and value span that can cause fallback before it
-  materializes an escaped string. Consequently fallback abandons zero materialized-string arena
-  allocations, and every successful path makes exactly one retained arena allocation per escaped
-  returned value or escaped `json.doc` key accessor result. Request 7 adds no runtime-owned
-  variable-size scratch allocation. Existing decoded-owner transition gaps remain outside this
-  equivalence claim, and Request 7 must not add a new owner-live transition;
+  errors, successful materialized-string allocation counts, and storage/region classifications.
+  Before any typed path materializes a returned string, one fixed-state validation pass checks UTF-8
+  and the complete input's string-token grammar, including ignored keys and values. Thus invalid
+  UTF-8, a raw C0 byte, or a malformed escape anywhere fails with zero retained-string
+  materializations on slow, speculative, and fallback rails. The speculative path additionally
+  validates every projected key and value span that can cause fallback before it materializes an
+  escaped string, so abandoning speculation contributes zero materializations. Every successful
+  path makes exactly one retained arena allocation per escaped returned value or escaped
+  `json.doc` key accessor result. A later duplicate, type, range, missing-field, or trailing-input
+  semantic failure may leave already materialized typed bytes unreachable in the caller's arena;
+  the hand-authored precedence matrix records the exact per-rail count for an escaped selected
+  field before each such fault and proves fallback never double-materializes it. Request 7 adds no
+  runtime-owned variable-size scratch allocation. Existing decoded-owner transition gaps remain
+  outside this equivalence claim, and Request 7 must not add a new owner-live transition;
 - `json.encode` of the decoded record emits the existing canonical escape spelling and declaration
   field order. Decode/encode symmetry does not require retaining the input's alternate escape
   spelling;
@@ -1589,6 +1596,15 @@ or framing faults. Every precedence regression asserts the internal failure kind
 described below in addition to the public `Error.Code(1)` or parse `Err`, so identical public error
 discriminants cannot hide rail drift.
 
+The typed retained-string allocation oracle is also exact. Any UTF-8 or string-grammar failure
+anywhere is found by the fixed-state prevalidation pass and records zero materializations. For a
+later semantic fault, a fixture with zero, one, and two earlier escaped selected fields records
+respectively zero, one, and two materializations on the slow rail and on the committed fallback
+rail. The speculative prefix must record zero before it abandons to fallback, so the complete
+speculative/fallback attempt has the same total and never materializes one field twice. Reversing
+the order so the semantic fault precedes every escaped selected field records zero. All retained
+bytes remain arena-owned and unreachable after failure; no partial value is returned.
+
 The implementation closure ledger for the future Align design is:
 
 | Transition | Required owner module / entrypoint | Exact regression owned by the Align design |
@@ -1600,17 +1616,18 @@ The implementation closure ledger for the future Align design is:
 | Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
-| Root plus detached benchmark dependency resolution, absolute Cargo/Rust identity, ambient configuration, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | all-command lock/offline self-tests plus the harness's executable/environment/config isolation, exact three-workspace metadata graphs, protected-tree, and malformed-output regressions |
+| Root plus detached benchmark dependency resolution, persistent Cargo/Rust identity, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | all-command lock/offline self-tests plus executable-mutation barriers, environment/config isolation, exact three-workspace metadata graphs, protected-tree, and malformed-output regressions |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
-| Canonical `.align-revision` bytes and non-hidden checkout state before lookup or release build | `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus encoding, Git-marker, assume-unchanged, skip-worktree, dirty/untracked, and unchanged-index/build-output negatives |
+| Canonical `.align-revision` bytes and non-hidden tracked/ignored checkout state before lookup or release build | `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus encoding, Git-marker, assume-unchanged, skip-worktree, ignored build-input, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
-explicit arena; array spines retain their existing heap or arena owner; key and skipped-string
-validation retain only fixed-size local decoder state; and unescaped returned bytes are written
-directly to their explicit arena destination. A slow-path failure after materialization may leave
-unreachable bytes in the caller's arena until that arena's normal bulk cleanup, but returns no view
-and may retain at most one allocation per escaped returned field encountered before the error. No
-parser state or decoded view becomes process-global.
+explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
+whole-input grammar validation retain only fixed-size local decoder state; and unescaped returned
+bytes are written directly to their explicit arena destination. A semantic slow-path failure after
+grammar validation and materialization may leave unreachable bytes in the caller's arena until
+that arena's normal bulk cleanup, but returns no view and may retain at most one allocation per
+escaped returned field encountered before the error. A string-grammar or UTF-8 failure retains
+zero. No parser state or decoded view becomes process-global.
 
 Exact logical allocation and precedence observation use a caller-owned, `cfg(test)`-only
 `JsonDecodeTestProbe` threaded through internal parser helpers. Production `extern "C"` entrypoints
@@ -1799,8 +1816,11 @@ Align compiler/runtime tests must:
     malformed, relative, missing, or wrong-kind inputs fail before a worktree or output is created.
     `cargo` and `rustc` must each be a regular, non-symlinked executable path containing no colon or
     control byte; `cargo-cache` must be an absolute, non-symlinked directory with the same byte
-    restrictions. Their identities are the before-and-after SHA-256 of both executable files plus
-    exact `cargo -V` and `rustc -Vv` output; any mutation fails the gate. Run it on one
+    restrictions. Their identities are the file type, mode, device, inode, size, nanosecond mtime,
+    and SHA-256 plus exact `cargo -V` and `rustc -Vv` output. The harness revalidates that complete
+    tuple before every Cargo command and after the final measurement; any persistent content,
+    type, mode, or stat-identity mutation fails and suppresses the accepted report. Concurrent
+    mutate-and-restore behavior is outside the otherwise-idle exclusive-host contract. Run it on one
     otherwise-idle named host over two clean detached Align
     worktrees. The baseline commit is the exact parent of the first Request 7
     implementation commit, is descended from the merged benchmark-input slice, and already
@@ -1811,7 +1831,8 @@ Align compiler/runtime tests must:
     mode/type/object records and requires byte- and mode-identical tracked entries between the two
     commits for `.cargo/`, root `Cargo.toml`,
     `Cargo.lock`, optional root `rust-toolchain` and `rust-toolchain.toml`, and the complete
-    `bench/json_decode/` and `bench/json_soa/` trees. Missing-versus-present is a mismatch. Any
+    optional `bench/.cargo/`, `bench/json_decode/`, and `bench/json_soa/` trees.
+    Missing-versus-present is a mismatch. Any
     required benchmark workload, data generator, timing loop, dependency lock, Cargo configuration,
     or toolchain-input change must merge before the named baseline so both measured revisions
     contain the same bytes. The candidate-owned harness is orchestration, not a measured workload
@@ -1823,10 +1844,12 @@ Align compiler/runtime tests must:
     validated absolute `CARGO` and `RUSTC` files, an empty temporary `HOME`, and one harness-owned
     absolute `CARGO_HOME` copied from the named pre-populated offline registry/git cache but
     containing no `config`, `config.toml`, credentials, or symlink. Before every Cargo invocation,
-    it also walks from each worktree's
-    parent through the filesystem root and rejects an existing or symlinked `.cargo/config` or
-    `.cargo/config.toml`; the worktree's own protected `.cargo/` tree is the only project-hierarchy
-    configuration source. It leaves
+    it starts at that command's actual working directory—the Align root, `bench/json_decode`, or
+    `bench/json_soa`—and walks every directory through the filesystem root. A `.cargo/config` or
+    `.cargo/config.toml` inside the worktree must be a tracked regular file in the protected root
+    `.cargo/`, optional `bench/.cargo/`, or corresponding complete benchmark tree and must have the
+    same raw tree record at baseline and candidate; every untracked, ignored, symlinked, or
+    outside-worktree configuration path is rejected. It leaves
     `CARGO_TARGET_DIR`, `RUSTFLAGS`, wrappers, target selectors, and linker/compiler overrides
     absent, so Cargo discovers only the protected per-worktree `.cargo` configuration and writes
     that worktree's default `target/`. Before timing, the harness invokes the validated absolute
@@ -1858,10 +1881,14 @@ Align compiler/runtime tests must:
     warm-up.
 
     Negative tests also inject
-    every rejected environment-name class, a Cargo config at each excluded home, Cargo-home, and
-    ancestor location, a symlinked config, colon/control-bearing tool paths, symlinked Cargo/Rust
-    executables, a graph mismatch in each workspace class, and a shared target override; each fails
-    before either warm-up. A separate hostile ambient `PATH` places marker executables for
+    every rejected environment-name class, a Cargo config at each excluded home, Cargo-home,
+    command-directory, or ancestor location, including `bench/.cargo`, a symlinked config,
+    colon/control-bearing tool paths, symlinked Cargo/Rust executables, a graph mismatch in each
+    workspace class, and a shared target override; each fails before either warm-up. Deterministic
+    internal barriers separately persistently modify or replace the accepted Cargo executable
+    before a warm-up and the accepted Rustc executable after measurement but before final
+    verification; both cases must fail the next identity check and emit no accepted sample report.
+    A separate hostile ambient `PATH` places marker executables for
     `cargo`, `rustc`, `bash`, `git`, the C compiler, and linker first and proves the empty-environment
     boundary executes none of them. The otherwise-idle host contract excludes concurrent mutation
     of these inspected benchmark-input paths during the gate. The harness records the hostname,
@@ -2024,15 +2051,22 @@ It then fails closed when
 external repository. Before reading porcelain status, `scripts/check-align-revision` parses
 `git ls-files -v -z` bytewise and rejects every lowercase tag (an `assume-unchanged` entry) and
 every uppercase `S` tag (a `skip-worktree` entry); it does not clear either flag or refresh the
-index. Only after that guard passes may the script use NUL-delimited porcelain status with all
-untracked files shown. A regression creates a depth-one detached checkout of the final commit,
+index. It then parses `git ls-files --others -i --exclude-standard -z` and rejects every ignored
+untracked path except a record strictly below the root `target/`; that one allowed output root must
+be absent or an ordinary non-symlinked directory. Thus repository `.gitignore`,
+`.git/info/exclude`, and repository-local `core.excludesFile` cannot hide a Cargo configuration,
+default `build.rs`, module source, or other build input. Only after both guards pass may the script
+use NUL-delimited porcelain status with all non-ignored untracked files shown. A regression creates
+a depth-one detached checkout of the final commit,
 proves that the gate fails before history expansion, expands its history, then proves the same
 detached `HEAD` and clean worktree pass. Another regression supplies hostile system, global, XDG,
 and local status/fsmonitor configuration plus an untracked file; separate cases mark a tracked
 file `assume-unchanged` and `skip-worktree` and then change its bytes. Every case must reject before
 build without invoking the helper, normalizing an index flag, or changing index/object bytes or
-metadata. This replaces the current hosted workflow's depth-one-only behavior only in the future
-adoption slice.
+metadata. Additional cases hide an executable default `build.rs` and `.cargo/config.toml` through
+`info/exclude` and a repository-local excludes file, reject a symlinked root `target`, and accept
+only an ordinary `target/` output sentinel; the rejected files must never execute. This replaces
+the current hosted workflow's depth-one-only behavior only in the future adoption slice.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
 ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves
