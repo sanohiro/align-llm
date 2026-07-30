@@ -1692,18 +1692,24 @@ Align compiler/runtime tests must:
     `declared_value`, and `ignored_value`), nesting depths `0..3`, four boundary classes
     (`interior`, `end_16`, `end_32`, and `end_64`), and variants `0..7`, ordered lexicographically
     by those dimensions. The variant is encoded by `ordinal % 8`; it is not a separate field.
-    For `end_16`, `end_32`, and `end_64`, safe ASCII prefix bytes place the token's decisive
-    grammar byte immediately before the corresponding 16-, 32-, or 64-byte boundary in the
-    containing JSON document; `decisive_byte_offset` records its zero-based document offset.
-    `interior` places that byte at least four bytes from each of those boundaries. The authoritative
-    Align design must check in this exact fixture and record its lowercase SHA-256 before Request 7
-    may advance to `ACCEPTED`; the test first verifies the byte hash, line count, ordinal sequence,
-    field schema, and Cartesian coverage, then instantiates every row in otherwise-valid fixtures
-    for record/AoS/SoA/union typed decode, `json.doc`, and a Request 6-admitted Copy `json.scan`
-    inside a valid frame. It asserts the exact differential result-oracle row rather than
-    unconditional agreement. Duplicate, missing, declared-type, trailing-input, and scanner
-    framing semantics are excluded from this corpus and remain only in their applicable
-    hand-authored matrices above.
+    Every token has exactly one class anchor: the first content byte for non-empty `clean_ascii`;
+    the first byte of the first multibyte scalar for `clean_utf8`; the backslash beginning the
+    class-defining escape for `short_escape`, `unicode_escape`, or `surrogate_pair`; the backslash
+    beginning the first malformed escape or ill-formed surrogate sequence for
+    `malformed_escape` or `malformed_surrogate`; and the first raw C0 byte for `raw_c0`. A variant
+    may contain other bytes of the same class, but none before its anchor. `decisive_byte_offset`
+    is the zero-based containing-document offset of that anchor. Safe ASCII prefix bytes set the
+    placement without changing the anchor: `end_16`, `end_32`, and `end_64` respectively require
+    `(decisive_byte_offset + 1) % 16 == 0`, `% 32 == 0`, or `% 64 == 0`; `interior` requires the
+    anchor's offset within each 16-, 32-, and 64-byte block to be at least four bytes from either
+    block edge. The authoritative Align design must check in this exact fixture and record its
+    lowercase SHA-256 before Request 7 may advance to `ACCEPTED`; the test first verifies the byte
+    hash, line count, ordinal sequence, field schema, class-anchor rule and offset, boundary
+    equation, and Cartesian coverage, then instantiates every row in otherwise-valid fixtures for
+    record/AoS/SoA/union typed decode, `json.doc`, and a Request 6-admitted Copy `json.scan` inside
+    a valid frame. It asserts the exact differential result-oracle row rather than unconditional
+    agreement. Duplicate, missing, declared-type, trailing-input, and scanner framing semantics
+    are excluded from this corpus and remain only in their applicable hand-authored matrices above.
 12. run the existing `bench/json_decode` and `bench/json_soa` escape-free fixtures on the same named
     host with at least 10 alternating baseline/candidate samples, report both medians, and treat a
     candidate slowdown greater than 5% as a failed gate until the design or implementation removes
@@ -1727,8 +1733,10 @@ entries retain their distinct commits. The adoption slice also checks in
 `eval/fixtures/c6-json-escape-adoption/scanner-align-revision` and
 `eval/fixtures/c6-json-escape-adoption/cleanup-align-revision`, each containing exactly its
 lowercase 40-hex prerequisite commit plus one newline. It adds `c6-json-escape-adoption` to the
-`Makefile`, includes that target in `make ci`, and requires each prerequisite lifecycle entry to
-equal its fixture file while Request 7's lifecycle entry equals `.align-revision`.
+`Makefile`, includes that target in `make ci`, and adds it explicitly to the hosted workflow's
+fixed supported-target invocation, which does not call `make ci`. Both local and hosted gates must
+execute the same adoption script. The gate requires each prerequisite lifecycle entry to equal its
+fixture file while Request 7's lifecycle entry equals `.align-revision`.
 
 The hosted CI checkout must make the prerequisite history available without moving the exact
 detached Request 7 checkout. Its adoption-slice workflow records `HEAD` and the porcelain worktree
