@@ -381,7 +381,7 @@ responses carry `data[].embedding: array<f64>` — all scalar arrays as struct f
 ### Current state in Align
 
 `json.decode`/`json.encode` recurse through int/float/bool/str, nested structs, the
-decode-eligible scalar/`str` and Copy-struct `Option` forms,
+decode-eligible scalar/`str` and struct `Option` forms,
 **`array<struct>`**, and enum-unions — but reject a struct field whose type is an **array of
 scalars**. Verified against the compiler on 2026-07-24:
 
@@ -1044,20 +1044,24 @@ Reject any direct or transitively reachable owned field, including every `array<
 `array<Struct>`, an array inside a nested or optional struct, and an owned array or owning struct
 reachable through any union variant. The separately demonstrated general
 `Option<enum>` remains rejected by the existing JSON Decode schema predicate before this ownership
-gate and is outside this request. The separately demonstrated general `Option<Move record>` JSON
-descriptor gap remains open, but `check_json_scan`'s current recursive
-schema walk admits an `Option<Struct>` whose payload is Move; the scanner-specific ownership gate
-must reject that reachable owner too. This request does not claim to make the same shape fully
-usable through ordinary decode/encode. The exact diagnostic template substitutes a public
-source-level spelling for `<row-type-source-spelling>`:
+gate and is outside this request. An otherwise decode-eligible `Option<Move record>` is already
+supported by ordinary `json.decode`/`json.encode`, including successful construction and owner
+drop. Its narrower known defect is partial-error cleanup: after decoding a `Some(MoveStruct)`,
+failure in a later required sibling leaves the optional payload unfreed because
+`drop_decoded_owned` skips optional descriptors. That defect is outside this scanner-only request
+and must receive a separate cleanup request if C6 reaches it. The current recursive scanner schema
+walk admits the shape, so the scanner-specific ownership gate must still reject its reachable
+owner: each successful scan row would otherwise be overwritten without Drop. The exact diagnostic
+template substitutes a public source-level spelling for `<row-type-source-spelling>`:
 
 ```text
 `json.scan` row type '<row-type-source-spelling>' must be Copy; Move rows need per-row Drop before the scanner can reuse its row slot
 ```
 
 That spelling is `Row` for a local non-generic declaration, `Wrap<array<i64>>` for a concrete local
-generic monomorph, and `scan_schema.ImportedRow` for the exact imported fixture below. Diagnostics
-must never expose internal `$`-mangled or monomorph-interner names.
+generic monomorph, `scan_schema.ImportedRow` for an imported declaration, and
+`scan_schema.Wrap<array<i64>>` for an imported concrete generic monomorph in the exact fixtures
+below. Diagnostics must never expose internal `$`-mangled or monomorph-interner names.
 
 A rejected `json.scan` expression must fail during semantic checking before MIR or runtime
 descriptor construction. The row declarations remain valid Align types and are not rejected
@@ -1133,7 +1137,7 @@ The implementation closure matrix is:
 | Input ownership and scanner return/escape | existing scanner region follows the borrowed input; the request adds no owner or returnable row | existing `m5::json_scan_cannot_escape_its_input` |
 | Whole-program check and run | `align_sema` plus existing driver pipeline | the named `m5` positive/negative matrix |
 | Per-unit and imported-interface check | the scanner consumer applies the same canonical Move predicate to the imported concrete row definition and its complete interface hash | `modules::json_scan_imported_row_ownership` |
-| Concrete generic monomorph construction | `align_sema::check_json_scan` applies the canonical DropPlan to the resolved monomorph and formats its public source-level type spelling | `m5::json_scan_generic_row_ownership` accepts `Wrap<i64>` and rejects `Wrap<array<i64>>` |
+| Concrete generic monomorph construction | `align_sema::check_json_scan` applies the canonical DropPlan to each resolved local or imported monomorph and formats its public source-level type spelling | `m5::json_scan_generic_row_ownership` accepts `Wrap<i64>` and rejects `Wrap<array<i64>>`; `modules::json_scan_imported_row_ownership` does the same for `scan_schema.Wrap<T>` |
 | Cache cold/hit/edit/revert | structural program fingerprint, imported interface hash, and sema-before-codegen boundary in `align_driver` | `cache_codegen::json_scan_row_schema_rejection` |
 | Runtime ABI and hot loop | N/A: no production runtime/codegen or ABI change is permitted; the feature-gated owner regression may add only test code in the runtime source file | existing `m5` scanner corpus, `align_runtime::tests::json_scan_copy_row_no_owned_alloc`, and an accepted-schema MIR/LLVM comparison |
 | Concurrent scanners and process-global state | N/A: the check is compile-time and accepted scanners retain their independent Copy handles, row slots, immutable descriptors, and existing runtime state | two accepted scanner terminals in one program plus the existing nested-scanner rejection |
@@ -1218,16 +1222,25 @@ Align compiler/runtime tests must:
    fixtures for this assertion. No descriptor table, object file, executable, or runtime call may
    be produced for an owning-row rejection;
 9. prove the scanner-only boundary by retaining the row declarations as valid types and by
-   decoding/dropping through `json.decode` each currently supported direct, nested, and union Move
-   schema that `json.scan` rejects. The optional-Move case proves scanner rejection only and
-   remains assigned to its separate general JSON descriptor request;
+   decoding, encoding, and dropping through ordinary JSON each supported direct, nested, optional,
+   and union Move schema that `json.scan` rejects. The optional fixture is exactly
+   `Inner { items: array<i64> }` and
+   `Row { inner: Option<Inner>, score: i64 }`; decoding
+   `{"inner":{"items":[1,2]},"score":3}` and immediately encoding the owner must produce those
+   exact bytes before the value leaves scope successfully. This success case is shipped behavior,
+   not the subject of a new descriptor request. The distinct optional-Move partial-decode cleanup
+   failure described above remains deferred to a narrowly scoped request;
 10. prove whole-program and per-unit checking produce the same acceptance and exact diagnostic
     when `Row` is local and when its complete definition is imported. The imported fixture's module
-    is exactly `scan_schema`, it declares `pub ImportedRow`, and the consumer annotates
-    `json.scanner<scan_schema.ImportedRow>`. Both checking modes must report the source-level public
-    spelling `'scan_schema.ImportedRow'`; neither bare `'ImportedRow'` nor the internal canonical
-    spelling `'scan_schema$ImportedRow'` is permitted. `align_sema::check_json_scan` therefore owns
-    a user-facing declared-type display rather than inserting `StructDef.source_name` directly.
+    is exactly `scan_schema`; it declares `pub ImportedRow` and
+    `pub Wrap<T> { value: T }`. Consumers annotate
+    `json.scanner<scan_schema.ImportedRow>` and
+    `json.scanner<scan_schema.Wrap<array<i64>>>`. Both checking modes must report the source-level
+    public spellings `'scan_schema.ImportedRow'` and
+    `'scan_schema.Wrap<array<i64>>'` respectively; neither a bare declaration name nor an internal
+    spelling containing `$` is permitted. `scan_schema.Wrap<i64>` must check and run in both modes.
+    `align_sema::check_json_scan` therefore owns a user-facing declared-type display rather than
+    inserting `StructDef.source_name` directly.
     A reachable imported schema edit must change its interface hash and make the unchanged consumer
     reject on its next `check-per-unit`;
 11. use an isolated cold cache for a three-codegen-unit fixture: a scanner consumer, its
@@ -1289,7 +1302,13 @@ The fixture directory contains:
 - `decode-owned.align`, which decodes the `owned-direct.align` schema through `json.decode`, sums
   the exact input `{"items":[1,2]}`, evaluates
   `print(decoded.items[0] + decoded.items[1])`, and must exit zero with stdout exactly `3\n` and
-  empty stderr.
+  empty stderr; and
+- `decode-owned-option.align`, which uses
+  `Inner { items: array<i64> }` and
+  `Row { inner: Option<Inner>, score: i64 }`, decodes
+  `{"inner":{"items":[1,2]},"score":3}`, immediately prints `json.encode(decoded)`, then lets the
+  owner leave scope. It must exit zero with stdout exactly
+  `{"inner":{"items":[1,2]},"score":3}\n` and empty stderr.
 
 For each negative file, the script invokes
 `ALIGNC_CACHE=<fresh-cache> <pinned-alignc> check <file>` in that fixed filename order, requires a
@@ -1300,10 +1319,10 @@ nonzero status, requires empty stdout, and matches exactly once:
 ```
 
 It rejects a panic, backtrace, or any unexpected file under the fresh cache. It then invokes
-`<pinned-alignc> run copy-row.align` followed by `<pinned-alignc> run decode-owned.align` with the
-same fresh cache and requires both positive results above. The script removes the validated
-temporary directory on every exit. Only this target plus `make ci` may advance Request 6 to
-`ALIGN_LLM_VERIFIED`.
+`<pinned-alignc> run copy-row.align`, `<pinned-alignc> run decode-owned.align`, and
+`<pinned-alignc> run decode-owned-option.align` in that order with the same fresh cache and
+requires all positive results above. The script removes the validated temporary directory on every
+exit. Only this target plus `make ci` may advance Request 6 to `ALIGN_LLM_VERIFIED`.
 
 ### References
 
@@ -1314,7 +1333,8 @@ temporary directory on every exit. Only this target plus `make ci` may advance R
 - `../align/crates/align_sema/src/lib.rs` — `check_json_scan`, general decode eligibility, and
   pipeline Move-argument restrictions.
 - `../align/crates/align_mir/src/lib.rs` — reusable row slot and fused-terminal loop.
-- `../align/crates/align_runtime/src/lib.rs` — row zeroing and typed owned-array construction.
+- `../align/crates/align_runtime/src/lib.rs` — row zeroing, typed owned-array construction, and the
+  separately scoped `drop_decoded_owned` optional-descriptor cleanup defect.
 - `../align/crates/align_driver/tests/m5.rs` — current scanner terminal and framing coverage.
 - `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — align-llm consumer sequencing.
 
@@ -1325,12 +1345,13 @@ or are already implemented:
 
 - **A dynamic "JSON value" type.** Align deliberately requires declared record types and has no
   expression-position type arguments. `core.json` already decodes nested structs,
-  `array<Struct>`, existing decode-eligible scalar/`str` and Copy-struct `Option` forms
+  `array<Struct>`, existing decode-eligible scalar/`str` and struct `Option` forms
   (missing key / `null` → `None`), enums (shape-directed unions), and ignores unknown fields —
   verified against `examples/json_nested.align`, which decodes an OpenAI chat-completions shape.
-  `Option<enum>` remains an existing decode rejection, while `Option<Move record>` is a known gap
-  queued for a separate request; neither is a shipped form. `align-llm` should declare provider
-  response structs, not ask Align for a dynamic value type. (Caveat handled app-side: decoded
+  `Option<enum>` remains an existing decode rejection. Eligible `Option<Move record>` success is
+  shipped; only its later-sibling partial-decode failure cleanup is a known defect queued for a
+  narrowly scoped request. `align-llm` should declare provider response structs, not ask Align for
+  a dynamic value type. (Caveat handled app-side: decoded
   `str` fields are zero-copy views into the input; use `.clone()` to persist them past the input's
   lifetime.)
 - **Working directory via app-side shell.** A `sh -c "cd <dir> && ..."` workaround exists, but it is
