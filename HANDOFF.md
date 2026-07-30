@@ -7,8 +7,8 @@ transient pull request checks, reviews, and attestations.
 
 - Branch: `agent/json-scan-row-ownership-request`
 - Base: `2c3518210cecab3eaada895d57742b088a4976d4` (`origin/main`)
-- Relevant content head before this handoff-only finalization:
-  `2061801cc9ecad223f69839db4976c4f28a42dba`
+- Relevant committed head before the second preflight follow-up:
+  `3df8d1bbbbfd130729be4af21d12baa894563bae`
 - Active goal: register and merge the independently demonstrated non-blocking `json.scan` owned-row
   safety request before returning to the C6 escaped-string request.
 - Product implementation: not started.
@@ -31,10 +31,17 @@ acceptance includes a fail-closed Move-row negative. A consumer that needs owned
 separate per-row ownership request. This branch changes only `docs/align-requests.md` and this
 durable handoff.
 
+The fresh immutable-head reviews found five acceptance-contract gaps, now resolved in the
+intentional uncommitted follow-up: the register no longer overstates general `Option<T>` support;
+the rich Copy-row fixture observes `Option<CopyStruct>` `Some`/missing/`null` states separately;
+imported and generic row diagnostics require public source spellings instead of internal names;
+resolved generic `Wrap<T>` monomorphs receive Copy/Move coverage; and the pre-codegen diagnostic
+assertion is scoped to owning-row fixtures rather than conflicting multi-invalid fixtures.
+
 ## Verification
 
-Verified on 2026-07-30 at relevant content head
-`2061801cc9ecad223f69839db4976c4f28a42dba` against the pinned sibling Align checkout:
+Verified on 2026-07-30 at committed head
+`3df8d1bbbbfd130729be4af21d12baa894563bae` against the pinned sibling Align checkout:
 
 ```text
 git diff --check                         PASS
@@ -43,9 +50,10 @@ ALIGN_REPO=../align make ci               PASS
 
 ## Exact next steps
 
-1. Rerun exact verification on the final handoff head and complete a fresh independent adversarial
-   preflight against the full immutable base diff.
-2. Resolve every valid refreshed-preflight finding before opening a focused draft pull request.
+1. Commit the second preflight follow-up in `HANDOFF.md` and `docs/align-requests.md`, finalize this
+   handoff with that relevant content head, and rerun exact verification.
+2. Complete a fresh independent adversarial preflight against the full final immutable base diff
+   and resolve every valid finding before opening a focused draft pull request.
 3. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence; merge
    only after every envelope is clean and `origin/main` remains the reviewed base.
 4. Refresh `main`, rebase the preserved escaped-string branch, renumber that request to Request 7,
@@ -56,8 +64,9 @@ ALIGN_REPO=../align make ci               PASS
 
 ## Constraints and intentional state
 
-- The Request 6 design and preflight follow-up are committed. The worktree is expected to be clean
-  after this handoff-only finalization; do not discard or rewrite either scoped commit.
+- The Request 6 design and first preflight follow-up are committed. The current worktree
+  intentionally modifies `HANDOFF.md` and `docs/align-requests.md` for the second preflight
+  follow-up; do not discard or rewrite those changes or the earlier scoped commits.
 - The worktree checked out on `agent/c6-json-escape-request` contains the committed escaped-string
   Request 6 plus intentional uncommitted changes to `HANDOFF.md` and
   `docs/align-requests.md`. Preserve those files until this request merges, then renumber/rebase

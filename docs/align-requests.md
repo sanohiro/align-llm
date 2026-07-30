@@ -380,7 +380,8 @@ responses carry `data[].embedding: array<f64>` — all scalar arrays as struct f
 
 ### Current state in Align
 
-`json.decode`/`json.encode` recurse through int/float/bool/str, nested structs, `Option<T>`,
+`json.decode`/`json.encode` recurse through int/float/bool/str, nested structs, the
+decode-eligible scalar/`str` and Copy-struct `Option` forms,
 **`array<struct>`**, and enum-unions — but reject a struct field whose type is an **array of
 scalars**. Verified against the compiler on 2026-07-24:
 
@@ -1047,12 +1048,16 @@ gate and is outside this request. The separately demonstrated general `Option<Mo
 descriptor gap remains open, but `check_json_scan`'s current recursive
 schema walk admits an `Option<Struct>` whose payload is Move; the scanner-specific ownership gate
 must reject that reachable owner too. This request does not claim to make the same shape fully
-usable through ordinary decode/encode. The exact diagnostic template substitutes the declared
-row type's source name for `<declared-row-name>`:
+usable through ordinary decode/encode. The exact diagnostic template substitutes a public
+source-level spelling for `<row-type-source-spelling>`:
 
 ```text
-`json.scan` row type '<declared-row-name>' must be Copy; Move rows need per-row Drop before the scanner can reuse its row slot
+`json.scan` row type '<row-type-source-spelling>' must be Copy; Move rows need per-row Drop before the scanner can reuse its row slot
 ```
+
+That spelling is `Row` for a local non-generic declaration, `Wrap<array<i64>>` for a concrete local
+generic monomorph, and `scan_schema.ImportedRow` for the exact imported fixture below. Diagnostics
+must never expose internal `$`-mangled or monomorph-interner names.
 
 A rejected `json.scan` expression must fail during semantic checking before MIR or runtime
 descriptor construction. The row declarations remain valid Align types and are not rejected
@@ -1128,7 +1133,7 @@ The implementation closure matrix is:
 | Input ownership and scanner return/escape | existing scanner region follows the borrowed input; the request adds no owner or returnable row | existing `m5::json_scan_cannot_escape_its_input` |
 | Whole-program check and run | `align_sema` plus existing driver pipeline | the named `m5` positive/negative matrix |
 | Per-unit and imported-interface check | the scanner consumer applies the same canonical Move predicate to the imported concrete row definition and its complete interface hash | `modules::json_scan_imported_row_ownership` |
-| Generic construction | N/A: the shipped scanner requires a concrete declared `Row` supplied by its binding annotation; this request adds no generic scanner surface | existing scanner annotation diagnostic |
+| Concrete generic monomorph construction | `align_sema::check_json_scan` applies the canonical DropPlan to the resolved monomorph and formats its public source-level type spelling | `m5::json_scan_generic_row_ownership` accepts `Wrap<i64>` and rejects `Wrap<array<i64>>` |
 | Cache cold/hit/edit/revert | structural program fingerprint, imported interface hash, and sema-before-codegen boundary in `align_driver` | `cache_codegen::json_scan_row_schema_rejection` |
 | Runtime ABI and hot loop | N/A: no production runtime/codegen or ABI change is permitted; the feature-gated owner regression may add only test code in the runtime source file | existing `m5` scanner corpus, `align_runtime::tests::json_scan_copy_row_no_owned_alloc`, and an accepted-schema MIR/LLVM comparison |
 | Concurrent scanners and process-global state | N/A: the check is compile-time and accepted scanners retain their independent Copy handles, row slots, immutable descriptors, and existing runtime state | two accepted scanner terminals in one program plus the existing nested-scanner rejection |
@@ -1144,7 +1149,10 @@ Align compiler/runtime tests must:
 2. reject an owned array reached through a nested struct, `Option<nested struct>`, a direct object
    union payload, a nested object union payload, and an `array<Struct>` union payload; prove that
    the diagnostic traverses every variant rather than accepting a union because the selected input
-   happens to use a Copy variant;
+   happens to use a Copy variant. A generic fixture declares `Wrap<T> { value: T }`: scanning the
+   concrete `Wrap<i64>` monomorph must check and run, while `Wrap<array<i64>>` must fail with the
+   exact row spelling `'Wrap<array<i64>>'`, proving ownership is classified after
+   monomorphization;
 3. accept recursively Copy rows containing every scalar width supported by JSON decode, borrowed
    `str`, nested structs, scalar/`str` options in `Some`, missing, and `null` states,
    `Option<CopyStruct>` in `Some`, missing, and `null` states, and shape-directed unions whose
@@ -1174,12 +1182,17 @@ Align compiler/runtime tests must:
    `Leaf { name: str, note: Option<str> }`,
    `Choice { Text(str), Number(i64), Object(Leaf) }`, and
    `RichRow { id: u64, leaf: Leaf, maybe_leaf: Option<Leaf>, choice: Choice }`. For both framings,
-   three rows select the string, number, and object variants respectively, exercise `note` as
-   present, missing, and `null`, exercise `maybe_leaf` as `Some`, missing, and `null`, and
-   `.count()` must return `3`. Separate compile-only cases cover the remaining integer and float
-   widths and `Option` scalar types without multiplying them across every terminal. The existing
-   JSON-schema rejection for `Option<enum>` remains covered by the general decode corpus and must
-   precede the scanner ownership predicate;
+   three rows with IDs `1`, `2`, and `3` select the string, number, and object variants respectively,
+   exercise `note` as present, missing, and `null`, and exercise `maybe_leaf` as
+   `Some(Leaf { name: "xy", note: None })`, missing, and `null`. A fresh scan for each assertion
+   must produce `.count() == 3`; filtering by each ID and mapping a whole-row
+   `maybe_leaf_name_len` function, which returns the present leaf's name length or `-1` for `None`,
+   must produce `2`, `-1`, and `-1` respectively. These per-ID assertions observe the `Some`
+   payload and independently distinguish it from the missing and explicit-`null` `None` rows;
+   an aggregate count alone is insufficient. Separate compile-only cases cover the remaining
+   integer and float widths and `Option` scalar types without multiplying them across every
+   terminal. The existing JSON-schema rejection for `Option<enum>` remains covered by the general
+   decode corpus and must precede the scanner ownership predicate;
 5. prove all-clean rows, a filtered-out row, malformed input before the first row, malformed input
    after at least one successful row, exhaustion, and empty input retain their existing values,
    `Error.Code(1)` classification, and no row allocation;
@@ -1198,18 +1211,25 @@ Align compiler/runtime tests must:
    an unsupported typed-decode field retains its existing schema diagnostic; a valid Move row plus
    an invalid non-string input reports the Copy-row diagnostic; and an otherwise identical valid
    Copy row reports the input-type diagnostic;
-8. prove semantic rejection occurs before MIR/codegen: `alignc check` and `alignc emit-mir` must
-   both report the scanner-specific semantic diagnostic for each negative fixture, and
-   `emit-mir` must produce no MIR on stdout. No descriptor table, object file, executable, or
-   runtime call may be produced;
+8. prove semantic rejection occurs before MIR/codegen for every owning-row fixture in items 1–2:
+   `alignc check` and `alignc emit-mir` must both report the scanner-specific semantic diagnostic,
+   and `emit-mir` must produce no MIR on stdout. The distinct multi-invalid fixtures in item 7
+   retain their earlier capability, schema, or input-type diagnostics and are not ownership
+   fixtures for this assertion. No descriptor table, object file, executable, or runtime call may
+   be produced for an owning-row rejection;
 9. prove the scanner-only boundary by retaining the row declarations as valid types and by
    decoding/dropping through `json.decode` each currently supported direct, nested, and union Move
    schema that `json.scan` rejects. The optional-Move case proves scanner rejection only and
    remains assigned to its separate general JSON descriptor request;
 10. prove whole-program and per-unit checking produce the same acceptance and exact diagnostic
-    when `Row` is local and when its complete definition is imported. A reachable imported schema
-    edit must change its interface hash and make the unchanged consumer reject on its next
-    `check-per-unit`;
+    when `Row` is local and when its complete definition is imported. The imported fixture's module
+    is exactly `scan_schema`, it declares `pub ImportedRow`, and the consumer annotates
+    `json.scanner<scan_schema.ImportedRow>`. Both checking modes must report the source-level public
+    spelling `'scan_schema.ImportedRow'`; neither bare `'ImportedRow'` nor the internal canonical
+    spelling `'scan_schema$ImportedRow'` is permitted. `align_sema::check_json_scan` therefore owns
+    a user-facing declared-type display rather than inserting `StructDef.source_name` directly.
+    A reachable imported schema edit must change its interface hash and make the unchanged consumer
+    reject on its next `check-per-unit`;
 11. use an isolated cold cache for a three-codegen-unit fixture: a scanner consumer, its
     row-schema/helper module, and an unrelated control, each with at least one emitted function.
     The first accepted build misses all three and an identical second build must hit all three.
@@ -1304,10 +1324,12 @@ These were considered and deliberately **not** requested, because they conflict 
 or are already implemented:
 
 - **A dynamic "JSON value" type.** Align deliberately requires declared record types and has no
-  expression-position type arguments. `std.json` already decodes nested structs, `array<Struct>`,
-  `Option<T>` (missing key / `null` → `None`), enums (shape-directed unions), and ignores unknown
-  fields — verified against `examples/json_nested.align`, which decodes an OpenAI chat-completions
-  shape. `align-llm` should declare provider response structs, not ask Align for a dynamic value
+  expression-position type arguments. `core.json` already decodes nested structs,
+  `array<Struct>`, existing decode-eligible scalar/`str` and Copy-struct `Option` forms
+  (missing key / `null` → `None`), enums (shape-directed unions), and ignores unknown fields —
+  verified against `examples/json_nested.align`, which decodes an OpenAI chat-completions shape.
+  `Option<enum>` and `Option<Move record>` remain separate registered gaps rather than shipped
+  forms. `align-llm` should declare provider response structs, not ask Align for a dynamic value
   type. (Caveat handled app-side: decoded `str` fields are zero-copy views into the input; use
   `.clone()` to persist them past the input's lifetime.)
 - **Working directory via app-side shell.** A `sh -c "cd <dir> && ..."` workaround exists, but it is
