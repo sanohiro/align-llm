@@ -973,21 +973,22 @@ persisted proposal error label, and resumes only after this adoption gate.
 ```text
 Status: PROPOSED
 Priority: high
-Blocking: no
-Blocked gate or slice: N/A; current align-llm product code and planned C6 artifacts do not consume json.scan
-Independent work that may continue: all current C6 design, prerequisite, and implementation work that explicitly excludes json.scan
-Resume condition: N/A for current work; the named adoption consumer starts only after ALIGN_MERGED, pins the release, and closes the request; if a product consumer is scheduled before ALIGN_MERGED, reclassify this request as blocking for that consumer
+Blocking: yes
+Blocked gate or slice: Request 7 implementation, whose strict-string grammar matrix exercises Request 6-admitted Copy scanner rows; roadmap C6 remains indirectly blocked behind Request 7
+Independent work that may continue: Request 7 registration and review, its separately registered decoded-owner cleanup prerequisite, C6 design, and other work that neither implements Request 7 nor consumes json.scan
+Resume condition: Request 7 implementation may start only after Request 6 reaches ALIGN_MERGED at a named commit; the Request 6 adoption consumer then pins that release and must pass before Request 6 closes
 Align commit or pull request: pending
 align-llm verification: pending
 ```
 
-The first expected consumer is the concrete align-llm adoption target specified below. It starts
-only after this request is `ALIGN_MERGED`, runs the positive Copy-row aggregate plus the exact
-fail-closed Move-row negatives, and pins the shipped compiler before closing the request. No
-align-llm product consumer is currently planned. If the roadmap later schedules one before
-`ALIGN_MERGED`, reclassify this request as blocking for that consumer; a consumer that actually
-needs a Move row belongs exclusively to a separate per-row ownership request and is not a consumer
-of this rejection capability.
+The first scheduled dependent slice is Request 7 implementation: its strict-string grammar matrix
+uses only rows admitted by this recursively Copy boundary, so Request 6 is now blocking even though
+no align-llm product path directly consumes `json.scan`. The first align-llm real-client consumer
+remains the concrete adoption target specified below. It starts only after this request is
+`ALIGN_MERGED`, runs the positive Copy-row aggregate plus the exact fail-closed Move-row negatives,
+and pins the shipped compiler before closing the request. A consumer that actually needs a Move row
+belongs exclusively to a separate per-row ownership request and is not a consumer of this
+rejection capability.
 
 ### Motivation
 
@@ -1599,7 +1600,9 @@ The implementation closure ledger for the future Align design is:
 | Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
-| Detached benchmark dependency resolution, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | benchmark-input lock/offline self-tests and the harness's protected-tree and malformed-output regressions |
+| Detached benchmark dependency resolution, ambient Cargo/Rust inputs, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | benchmark-input lock/offline self-tests plus the harness's environment/config isolation, metadata-graph, protected-tree, and malformed-output regressions |
+| Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
+| Canonical `.align-revision` bytes before checkout lookup or release build | `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus uppercase, width, LF, whitespace, CR, trailing-text, Git-marker, and unchanged-build-output negatives |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key and skipped-string
@@ -1785,9 +1788,13 @@ Align compiler/runtime tests must:
     lockfile and cannot update the registry or resolved graph during the gate; the harness's raw
     protected-tree comparison separately rejects any lockfile byte difference between baseline
     and candidate. No Request 7 implementation may start before this slice merges. Then add an
-    Align-owned checked-in
-    `scripts/run-json-escape-bench-gate` harness and run it on one otherwise-idle named host over two
-    clean detached Align worktrees. The baseline commit is the exact parent of the first Request 7
+    Align-owned checked-in `scripts/run-json-escape-bench-gate` harness. Its only public invocation
+    is `scripts/run-json-escape-bench-gate --baseline <40-lower-hex> --candidate <40-lower-hex>
+    --toolchain-bin-dir <absolute-dir> --cargo-cache <absolute-dir>`; every option is required
+    exactly once, no environment fallback or default is permitted, and unknown, duplicate,
+    malformed, relative, missing, symlinked, or non-directory inputs fail before a worktree or
+    output is created. Run it on one otherwise-idle named host over two clean detached Align
+    worktrees. The baseline commit is the exact parent of the first Request 7
     implementation commit, is descended from the merged benchmark-input slice, and already
     contains both named prerequisites; the candidate is the proposed final Request 7 commit. Each
     worktree uses its own default `target/` directory, and the harness rejects a SHA or
@@ -1801,8 +1808,29 @@ Align compiler/runtime tests must:
     or toolchain-input change must merge before the named baseline so both measured revisions
     contain the same bytes. The candidate-owned harness is orchestration, not a measured workload
     input. Its regression changes one file in each protected path class and proves rejection before
-    either benchmark command. The harness records the hostname, `uname -a`, CPU model, baseline and
-    candidate SHAs, and exact `rustc -Vv`, `cargo -V`, and `git --version` outputs. For each of
+    either benchmark command. The harness rejects any inherited variable whose name begins with
+    `CARGO_`, `RUST`, `RUSTC_`, or `RUSTDOC`, plus `CC`, `CXX`, `AR`, `LD`, `CFLAGS`, `CXXFLAGS`,
+    `LDFLAGS`, `MAKEFLAGS`, and `GNUMAKEFLAGS`, before it creates a worktree or build output. It
+    requires `toolchain-bin-dir` to contain regular executable `cargo` and `rustc` files, and invokes
+    each benchmark through `env -i` with only `PATH=<toolchain-bin-dir>:/usr/bin:/bin`, `LC_ALL=C`,
+    an empty temporary `HOME`, and one harness-owned absolute `CARGO_HOME` copied from the named
+    pre-populated offline registry/git cache but containing no `config`, `config.toml`,
+    credentials, or symlink. Before every Cargo invocation, it also walks from each worktree's
+    parent through the filesystem root and rejects an existing or symlinked `.cargo/config` or
+    `.cargo/config.toml`; the worktree's own protected `.cargo/` tree is the only project-hierarchy
+    configuration source. It leaves
+    `CARGO_TARGET_DIR`, `RUSTFLAGS`, wrappers, target selectors, and linker/compiler overrides
+    absent, so Cargo discovers only the protected per-worktree `.cargo` configuration and writes
+    that worktree's default `target/`. Before timing, the harness runs `cargo metadata --locked
+    --offline` in both detached workspaces under this same environment, canonicalizes the complete
+    package-id/source/feature/target graph, requires the two byte reports to match, and records
+    their SHA-256; registry checksums remain fixed by the protected lockfiles. Negative tests inject
+    every rejected environment-name class, a Cargo config at each excluded home, Cargo-home, and
+    ancestor location, a symlinked config, a graph mismatch, and a shared target override; each
+    fails before either warm-up. The otherwise-idle host contract excludes concurrent mutation of
+    these inspected benchmark-input paths during the gate. The harness records the hostname,
+    `uname -a`, CPU model, baseline and candidate SHAs, the dependency-graph digest, and exact
+    `rustc -Vv`, `cargo -V`, and `git --version` outputs. For each of
     `bench/json_decode/run.sh native` and
     `bench/json_soa/run.sh native`, it first runs one discarded baseline warm-up and one discarded
     candidate warm-up, then runs ten measured pairs sequentially with no overlap: odd-numbered pairs
@@ -1872,6 +1900,19 @@ mode also substitutes a `2.44.4` fixture executor with a repository-access marke
 the marker remains absent. Neither production call accepts a caller-selected Git binary or version
 text.
 
+Synthetic version records test only the parser. Before the adoption implementation may start, the
+topology-ledger design must also name an immutable OCI image digest whose `/usr/bin/git` is exactly
+Git `2.45.0` and whose remaining build toolchain satisfies the declared hosted gate; a mutable tag
+or later `2.45.x` is not acceptance evidence. The adoption pull request adds a required
+`git-2.45-compat` job that runs in that image, first requires the production preflight to print
+exactly `git version 2.45.0`, and then executes the complete topology self-test, exact-checkout
+revision check, `c6-json-escape-adoption` target, and every shallow, included/worktree promisor,
+lazy-fetch, replacement, graft-race, raw-object, equality, and unrelated-ancestry negative through
+the production scripts. It must not substitute version text or a different Git binary. The
+ordinary Ubuntu job remains required separately. The immutable image digest and its build
+provenance are sources of truth in the topology design, and Request 7 cannot advance to `ACCEPTED`
+until that reviewed design records them.
+
 ```sh
 export LC_ALL=C
 git_version_capture="$(
@@ -1900,6 +1941,19 @@ The fixed non-newline sentinel preserves the command's output terminator before 
 substitution can remove it. The suffix removal requires exactly one LF immediately before the
 sentinel; the anchored C-locale regex then rejects any earlier or remaining LF, so missing,
 additional, or blank output lines cannot normalize to an accepted record.
+
+The topology-ledger update must also move the canonical `.align-revision` byte contract into
+`scripts/check-align-revision`, which is already the first prerequisite of `align-build`. Before
+resolving `ALIGN_REPO` or executing any Git or Cargo command, that script reads the file with a
+non-newline sentinel, requires exactly `[0-9a-f]{40}\n`, removes only that one LF, and uses the
+result as the expected revision. It no longer uses `tr -d '[:space:]'`. Its checked-in self-test
+supplies exact valid bytes plus uppercase, short, missing-LF, extra-LF, space-, tab-, CR-, and
+trailing-text variants through the production byte validator, with Git-access and build-output
+markers; every invalid case must leave both markers absent. `make align-build` with a temporary
+noncanonical revision fixture in an isolated repository copy must fail before the release target
+directory changes. The scanner
+and cleanup fixture revisions remain target-owned and are separately validated before their first
+Git command, but they do not select the compiler build.
 
 After that version gate, the adoption target runs the existing exact-checkout revision script in an
 empty environment that preserves only the validated absolute `ALIGN_REPO`, fixed `PATH` and
