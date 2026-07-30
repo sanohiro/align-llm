@@ -1372,14 +1372,16 @@ align-llm verification: pending
 ```
 
 Request 7 may be registered and reviewed independently, but it must not advance from `PROPOSED` to
-`IMPLEMENTING` until a separately registered decoded-owner transition cleanup request reaches
-`ALIGN_MERGED` at a named Align commit. Strict rejection of a malformed ignored string and
-outside-arena rejection of an escaped retained view both add failure edges after an earlier field
-may have made an owner live. The prerequisite must close those edges for every affected
-`parse_object` caller and indexed AoS staging path. Joint delivery is forbidden: the Request 7
-implementation branch may be created only from an Align base that already contains the named
-merged cleanup commit. Merge, rebase, or squash integration is permitted only when the final
-Request 7 commit retains that cleanup commit as an ancestor.
+`IMPLEMENTING` until both Request 6 and a separately registered decoded-owner transition cleanup
+request reach `ALIGN_MERGED` at distinct named Align commits. Request 6 supplies the recursively
+Copy scanner-row boundary on which this request's scanner grammar matrix depends. Strict rejection
+of a malformed ignored string and outside-arena rejection of an escaped retained view both add
+failure edges after an earlier field may have made an owner live. The cleanup prerequisite must
+close those edges for every affected `parse_object` caller and indexed AoS staging path. Joint
+delivery is forbidden: the Request 7 implementation branch may be created only from an Align base
+that already contains both named merged prerequisite commits. Merge, rebase, or squash integration
+is permitted only when the final Request 7 commit retains both prerequisite commits as strict
+ancestors.
 
 ### Motivation
 
@@ -1505,6 +1507,12 @@ Required semantics:
 - `json.encode` of the decoded record emits the existing canonical escape spelling and declaration
   field order. Decode/encode symmetry does not require retaining the input's alternate escape
   spelling;
+- scanner framing is N/A to this request. Scanner fixtures use only well-formed top-level-array and
+  NDJSON frames admitted by the shipped parser; Request 7 changes string-token grammar inside a
+  Request 6-admitted Copy row only. Missing delimiters, ambiguous EOF, frame selection, row
+  boundaries, and other framing behavior retain their shipped semantics. No C6 consumer uses
+  `json.scan`; a concrete future consumer must register a separate request before requiring
+  framing repair;
 - on already-correct nested field-array cleanup paths, partial decode failure still drops every
   owned array spine and nested owned field already constructed; arena allocations follow normal
   arena cleanup and are not individually freed. The prerequisite must extend exact cleanup to the
@@ -1551,7 +1559,7 @@ semantic policy. Each row below is a complete otherwise-valid fixture for that p
 | Malformed escape or raw C0 in any declared or ignored key/value | `Error.Code(1)` | `Error.Code(1)` | `Error.Code(1)` | parse `Err` |
 | Literal and escaped spellings of the same declared key | `Error.Code(1)` duplicate | `Error.Code(1)` duplicate | `Error.Code(1)` duplicate | success under the shipped document duplicate policy; lookup remains first-match |
 | Missing required declared field or declared type mismatch | `Error.Code(1)` | `Error.Code(1)` | `Error.Code(1)` | success as a schema-unknown document |
-| Non-whitespace trailing bytes or invalid scanner framing | `Error.Code(1)` | `Error.Code(1)` | `Error.Code(1)` for the applicable union, top-level-array, or NDJSON fixture | parse `Err` |
+| Non-whitespace trailing bytes after a complete non-scanner top-level value | `Error.Code(1)` | `Error.Code(1)` | `Error.Code(1)` for the applicable union; scanner framing is N/A and unchanged | parse `Err` |
 
 The hand-authored multi-invalid precedence corpus fixes the following typed-decode outcomes on slow,
 speculative-success, and fallback rails; the same applicable outcome is required for AoS, SoA,
@@ -1569,9 +1577,11 @@ union payload records, and scanner rows:
 
 For `json.doc`, duplicate, missing, and declared-type conditions are intentionally not semantic
 errors; its applicable precedence cases are UTF-8, malformed string grammar, and trailing input.
-The scanner runs both top-level-array and NDJSON variants. Every precedence regression asserts the
-internal failure kind and byte offset described below in addition to the public `Error.Code(1)` or
-parse `Err`, so identical public error discriminants cannot hide rail drift.
+The scanner runs both top-level-array and NDJSON variants, but only with valid outer framing; its
+applicable precedence cases combine UTF-8, string grammar, and row-semantic failures, not trailing
+or framing faults. Every precedence regression asserts the internal failure kind and byte offset
+described below in addition to the public `Error.Code(1)` or parse `Err`, so identical public error
+discriminants cannot hide rail drift.
 
 The implementation closure ledger for the future Align design is:
 
@@ -1581,7 +1591,7 @@ The implementation closure ledger for the future Align design is:
 | Record and nested-record success, outside-arena failure, later sibling failure, return, and cleanup | `align_rt_json_decode`, `parse_object`, shared value writing, and the shipped decoded-owner cleanup prerequisite | `json_escape_record_lifecycle` and `json_escape_record_owner_transition_integration` |
 | Top-level and field AoS success plus slow/speculative/fallback string equivalence | `align_rt_json_decode_struct_array`, `json_speculate`, `json_fallback`, `write_field_indexed`, and the shipped decoded-owner cleanup prerequisite | `json_escape_aos_path_equivalence` and `json_escape_aos_owner_transition_integration` |
 | SoA count, allocation, fill success/failure, and arena cleanup | `align_rt_json_decode_soa` and the shared indexed writers | `json_escape_soa_path_equivalence` |
-| Union and scanner non-materialization, including ignored and malformed input | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility | `json_escape_nonmaterializing_paths` |
+| Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
 
@@ -1601,7 +1611,13 @@ the logical materialization fields exactly where it reserves bytes for one retur
 string; fallback tests require those fields to remain zero until fallback validation succeeds.
 Each runtime unit test creates its own probe, so concurrent tests have no shared counter, reset
 order, lock, or cross-test contamination. Existing heap-allocation instrumentation remains
-separate and continues to observe array-spine ownership.
+separate and continues to observe array-spine ownership. Every regression that reads those
+process-global heap allocation counters must acquire the existing `ALLOC_COUNT_LOCK` as its first
+executable statement, before fixture or descriptor setup and before any allocation. It must hold
+the guard through baseline snapshots, decode success or failure, cleanup or `Drop`, final
+snapshots, and assertions. Such a regression must not acquire the lock recursively. A test using
+only its caller-owned probe needs no lock; if it also reads a heap counter, the whole-body lock
+rule applies.
 
 An exact internal arena-passing ABI is N/A while this request is `PROPOSED`: align-llm must not code
 against a hypothetical lowering. Before the request can become `ACCEPTED`, Align's authoritative
@@ -1649,25 +1665,45 @@ Align compiler/runtime tests must:
    `soa<Struct>` with clean and escaped column elements; direct and nested/object/array union
    payloads plus a union field in an arena-backed record, all of which accept clean text but reject
    any selected transitively reachable escaped view as `Error.Code(1)`; top-level-array and NDJSON
-   `json.scan` rows admitted by Request 6's recursively Copy boundary that accept all-clean text but
-   reject an escaped declared view even when it is unprojected, nested, optional, or
-   union-reachable; malformed ignored text rejection on both paths; and compile-time rejection of
-   top-level `str` and `array<str>` decode targets. Request 6, not Request 7, owns compile-time
-   rejection and diagnostic coverage for scanner rows containing an owned scalar or record array.
+   `json.scan` rows admitted by the merged Request 6 recursively Copy boundary, always inside
+   well-formed outer frames, that accept all-clean text but reject an escaped declared view even
+   when it is unprojected, nested, optional, or union-reachable; malformed ignored text rejection
+   on both paths; and compile-time rejection of top-level `str` and `array<str>` decode targets.
+   Request 6, not Request 7, owns compile-time rejection and diagnostic coverage for scanner rows
+   containing an owned scalar or record array. Scanner framing behavior is N/A and receives no
+   changed production code or repair assertion.
 10. compile cold and cache-hit whole-program and per-unit users. A compiler update invalidates old
     objects through the compiler build identity; within one compiler build, unchanged schemas may
     hit while a reachable schema edit misses through the structural MIR fingerprint, and all four
     executions produce identical values/errors. If lowering adds an arena parameter to a runtime
     entrypoint, the Align plan must name that internal ABI signature and keep compiler/runtime
     identity lockstep; unrelated public JSON source syntax and runtime entrypoints remain unchanged.
-11. run exactly 4,096 SplitMix64-generated string-token cases from seed
-    `0xA11C_0000_0000_0007`. The generator records each case's raw token bytes, expected RFC 8259
-    grammar validity, semantic bytes when valid, declared/ignored key/value position,
-    nested-record depth, and SIMD block-boundary placement. Instantiate each case in otherwise-valid
-    fixtures for record/AoS/SoA/union typed decode, `json.doc`, and Request 6-admitted Copy
-    `json.scan`, then assert the exact differential result-oracle row rather than unconditional
-    agreement. Duplicate, missing, type, and framing semantics are excluded from this random corpus
-    and remain in the hand-authored result and precedence matrices above.
+11. consume an exact checked-in 4,096-line JSONL corpus at
+    `crates/align_driver/tests/fixtures/json_escape_differential.jsonl`. The fixture bytes, not a
+    generator or seed, are the test source of truth. Each compact-JSON line uses this canonical key
+    order:
+    `schema_version`, `ordinal`, `validity_class`, `position`, `nesting_depth`,
+    `boundary_class`, `decisive_byte_offset`, `raw_token_hex`, `grammar_valid`, and
+    `semantic_bytes_hex`; the last field is lowercase hex for a valid token and `null` for an
+    invalid token. Files use UTF-8, LF endings, no blank lines, and ordinals `0..4095`.
+    Coverage is the complete Cartesian product of eight validity classes (`clean_ascii`,
+    `clean_utf8`, `short_escape`, `unicode_escape`, `surrogate_pair`, `malformed_escape`,
+    `malformed_surrogate`, and `raw_c0`), four positions (`declared_key`, `ignored_key`,
+    `declared_value`, and `ignored_value`), nesting depths `0..3`, four boundary classes
+    (`interior`, `end_16`, `end_32`, and `end_64`), and variants `0..7`, ordered lexicographically
+    by those dimensions. The variant is encoded by `ordinal % 8`; it is not a separate field.
+    For `end_16`, `end_32`, and `end_64`, safe ASCII prefix bytes place the token's decisive
+    grammar byte immediately before the corresponding 16-, 32-, or 64-byte boundary in the
+    containing JSON document; `decisive_byte_offset` records its zero-based document offset.
+    `interior` places that byte at least four bytes from each of those boundaries. The authoritative
+    Align design must check in this exact fixture and record its lowercase SHA-256 before Request 7
+    may advance to `ACCEPTED`; the test first verifies the byte hash, line count, ordinal sequence,
+    field schema, and Cartesian coverage, then instantiates every row in otherwise-valid fixtures
+    for record/AoS/SoA/union typed decode, `json.doc`, and a Request 6-admitted Copy `json.scan`
+    inside a valid frame. It asserts the exact differential result-oracle row rather than
+    unconditional agreement. Duplicate, missing, declared-type, trailing-input, and scanner
+    framing semantics are excluded from this corpus and remain only in their applicable
+    hand-authored matrices above.
 12. run the existing `bench/json_decode` and `bench/json_soa` escape-free fixtures on the same named
     host with at least 10 alternating baseline/candidate samples, report both medians, and treat a
     candidate slowdown greater than 5% as a failed gate until the design or implementation removes
@@ -1677,37 +1713,80 @@ Align compiler/runtime tests must:
     fixtures; place owners in the current and completed rows before the same failures on slow,
     speculative, and fallback top-level AoS rails. The request's caller-owned probes and existing
     heap-allocation instrumentation must prove deterministic failure position, zero leaked owners,
-    no returned partial value, and full cleanup on every ordering.
+    no returned partial value, and full cleanup on every ordering. Each regression reading the
+    existing process-global heap counters must acquire `ALLOC_COUNT_LOCK` as its first executable
+    statement and hold it through all setup, snapshots, decode, cleanup or `Drop`, and assertions;
+    caller-owned-probe-only regressions remain lock-free.
 
 ### align-llm adoption gate
 
-After Request 7 reaches `ALIGN_MERGED` on top of its named shipped cleanup prerequisite, align-llm
-owns a separate adoption slice with one immutable observable gate. It release-builds and writes
-only the final Request 7 Align commit to the single `.align-revision`; the cleanup lifecycle entry
-retains its distinct commit. The adoption slice also checks in
-`eval/fixtures/c6-json-escape-adoption/cleanup-align-revision`, containing exactly that lowercase
-40-hex cleanup commit plus one newline. It adds `c6-json-escape-adoption` to the `Makefile`, includes
-that target in `make ci`, and requires the cleanup lifecycle entry to equal the fixture file while
-Request 7's lifecycle entry equals `.align-revision`. The target validates the cleanup fixture's
-exact encoding, first runs the existing exact-checkout revision check, then proves
+After Request 7 reaches `ALIGN_MERGED` on top of its two named shipped prerequisites, align-llm owns
+a separate adoption slice with one immutable observable gate. It release-builds and writes only the
+final Request 7 Align commit to the single `.align-revision`; the Request 6 and cleanup lifecycle
+entries retain their distinct commits. The adoption slice also checks in
+`eval/fixtures/c6-json-escape-adoption/scanner-align-revision` and
+`eval/fixtures/c6-json-escape-adoption/cleanup-align-revision`, each containing exactly its
+lowercase 40-hex prerequisite commit plus one newline. It adds `c6-json-escape-adoption` to the
+`Makefile`, includes that target in `make ci`, and requires each prerequisite lifecycle entry to
+equal its fixture file while Request 7's lifecycle entry equals `.align-revision`.
+
+The hosted CI checkout must make the prerequisite history available without moving the exact
+detached Request 7 checkout. Its adoption-slice workflow records `HEAD` and the porcelain worktree
+status immediately after the existing pinned checkout, expands a shallow repository with
+`git fetch --no-tags --unshallow origin`, and proves that both observations are byte-identical
+afterward. If the repository is already complete, it performs no history-changing fetch. The gate
+itself runs the existing exact-checkout revision check and then fails closed when
+`git rev-parse --is-shallow-repository` is not exactly `false`; it never fetches or changes the
+external repository. A regression creates a depth-one detached checkout of the final commit,
+proves that the gate fails before history expansion, expands its history, then proves the same
+detached `HEAD` and clean worktree pass. This replaces the current hosted workflow's depth-one-only
+behavior only in the future adoption slice.
+
+The target validates all three revision files' exact encoding, disables replacement objects and
+ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves
 external-repository reachability with:
 
 ```sh
+clean_git() {
+  env -i \
+    PATH=/usr/bin:/bin \
+    LC_ALL=C \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_ATTR_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    XDG_CONFIG_HOME=/dev/null \
+    git "$@"
+}
+
+align_scanner_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/scanner-align-revision)"
 align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cleanup-align-revision)"
 align_request7_revision="$(tr -d '\n' < .align-revision)"
-git -C "$ALIGN_REPO" cat-file -e "${align_cleanup_revision}^{commit}"
-git -C "$ALIGN_REPO" cat-file -e "${align_request7_revision}^{commit}"
+
+test "$(clean_git -C "$ALIGN_REPO" rev-parse --is-shallow-repository)" = false
+test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_scanner_revision")" = commit
+test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_cleanup_revision")" = commit
+test "$(clean_git -C "$ALIGN_REPO" cat-file -t "$align_request7_revision")" = commit
+test "$align_scanner_revision" != "$align_cleanup_revision"
+test "$align_scanner_revision" != "$align_request7_revision"
 test "$align_cleanup_revision" != "$align_request7_revision"
-git -C "$ALIGN_REPO" merge-base --is-ancestor \
+clean_git -C "$ALIGN_REPO" merge-base --is-ancestor \
+  "$align_scanner_revision" \
+  "$align_request7_revision"
+clean_git -C "$ALIGN_REPO" merge-base --is-ancestor \
   "$align_cleanup_revision" \
   "$align_request7_revision"
 ```
 
-Every command must return zero before any adoption fixture executes. The adoption smoke includes
-negative copies of this gate proving that equal cleanup/Request 7 revisions and two valid but
-unrelated commit objects are rejected. A cherry-pick or joint commit that merely reproduces cleanup
-content without preserving the named cleanup commit as a strict ancestor is rejected. The target
-then runs
+Before these commands, a bytewise validator requires each file to match
+`[0-9a-f]{40}\n` exactly; `tr` is extraction, not validation. Every command must return zero before
+any adoption fixture executes. The adoption smoke includes isolated negative copies of this gate
+proving rejection of a shallow repository, a symbolic or annotated-tag object, a replacement
+object that would forge ancestry, equal prerequisite/final revisions, equal prerequisite
+revisions, and valid but unrelated commit objects. The negative repositories and Git configuration
+must not affect the caller's repository. A cherry-pick, squash, or joint commit that merely
+reproduces either prerequisite's content without preserving both named commits as strict ancestors
+is rejected. The target then runs
 `scripts/run-c6-json-escape-adoption-smoke` against checked-in
 `eval/fixtures/c6-json-escape-adoption/`.
 That directory owns `main.align`, `escape-heavy.input.json`, and
