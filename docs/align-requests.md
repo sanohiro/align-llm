@@ -1692,15 +1692,22 @@ Request 7's lifecycle entry equals `.align-revision`. The target validates the c
 exact encoding, first runs the existing exact-checkout revision check, then proves
 external-repository reachability with:
 
-```text
+```sh
+align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cleanup-align-revision)"
+align_request7_revision="$(tr -d '\n' < .align-revision)"
+git -C "$ALIGN_REPO" cat-file -e "${align_cleanup_revision}^{commit}"
+git -C "$ALIGN_REPO" cat-file -e "${align_request7_revision}^{commit}"
+test "$align_cleanup_revision" != "$align_request7_revision"
 git -C "$ALIGN_REPO" merge-base --is-ancestor \
-  "$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cleanup-align-revision)" \
-  "$(tr -d '\n' < .align-revision)"
+  "$align_cleanup_revision" \
+  "$align_request7_revision"
 ```
 
-The command must return zero before any adoption fixture executes. A cherry-pick or joint commit
-that merely reproduces cleanup content without preserving the named cleanup commit's ancestry is
-rejected. The target then runs
+Every command must return zero before any adoption fixture executes. The adoption smoke includes
+negative copies of this gate proving that equal cleanup/Request 7 revisions and two valid but
+unrelated commit objects are rejected. A cherry-pick or joint commit that merely reproduces cleanup
+content without preserving the named cleanup commit as a strict ancestor is rejected. The target
+then runs
 `scripts/run-c6-json-escape-adoption-smoke` against checked-in
 `eval/fixtures/c6-json-escape-adoption/`.
 That directory owns `main.align`, `escape-heavy.input.json`, and
