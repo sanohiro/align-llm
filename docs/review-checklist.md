@@ -8,6 +8,15 @@ documentation changes; mark other inapplicable sections as `N/A` rather than inv
 ## Scope and gate
 
 - The pull request names one roadmap gate or enabling slice.
+- Before its first content edit, the branch recorded a convergence budget in `HANDOFF.md`: immutable
+  base, allowed paths, hand-written line limit, non-merge commit limit, review-repair limit, and
+  verification schedule. The review envelope reports the recorded and actual values.
+- The actual changed paths, hand-written line count, non-merge commit count, and review-repair count
+  are within that budget. A missing budget, undeclared path, or exceeded limit is a blocking finding,
+  not a documentation suggestion.
+- Review findings were collected before editing, grouped by root-cause class, audited across the
+  complete diff, and applied in at most the recorded consolidated repair commit. The history does
+  not contain one commit per finding or repeated handoff-only review checkpoints.
 - Unrelated governance, Align request, generated artifact, and product changes are excluded.
 - If the one-time initial-bootstrap exception in `CLAUDE.md` applies, its coupled surfaces and
   scoped commits are identified explicitly in the pull request.

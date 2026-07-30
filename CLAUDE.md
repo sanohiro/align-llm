@@ -291,6 +291,56 @@ recursive handoff-only pull request solely to record that the previous pull requ
 only when the user asks, the roadmap has no eligible work, or no safe independent work remains
 after blockers are recorded.
 
+### Per-pull-request convergence budget
+
+Before the first content edit on every branch, record one convergence budget in `HANDOFF.md` and
+the active task plan. The budget must name:
+
+- the immutable base commit;
+- the single gate or enabling slice;
+- the complete allowed changed-path set;
+- the maximum hand-written added-plus-deleted line count;
+- the maximum non-merge commit count;
+- the maximum review-repair rounds; and
+- the exact per-iteration and final verification schedule.
+
+The default budget for a documentation, request-register, design, or governance pull request is
+600 hand-written changed lines, three non-merge commits, and one consolidated review-repair round.
+The three commits are the initial complete change, at most one class-wide review repair, and an
+optional final verification or handoff update. Do not create one commit per finding. An
+implementation pull request must set its budget from the reviewed closure matrix and remains subject
+to the roughly 1,000-line split rule above. A larger or different commit topology is permitted only
+when an authoritative plan records the unavoidable identity or ancestry requirement before the
+first edit, including the exact required commits and merge method. Convenience, accumulated review
+findings, or an already-large diff is not an exception.
+
+After every non-merge commit, run and report:
+
+```text
+git rev-list --count --no-merges <base>..HEAD
+git diff --shortstat <base>...HEAD
+git diff --name-only <base>...HEAD
+```
+
+Stop content work immediately when any recorded limit is reached. The next action is to open the
+coherent pull request, split the uncommitted remainder to a new branch, or reduce the plan scope;
+do not add another "small fix" commit. Collect a complete review before editing, group findings by
+root-cause class, audit the whole diff for each class, and apply all accepted findings in the single
+allowed repair commit. If the final review finds a new P1 or equivalent correctness issue, the pull
+request is not repairable inside the same budget: re-scope or split it instead of extending the
+patch loop.
+
+For documentation-only iterations, run `git diff --check` and the narrow documentation consistency
+check after each edit. Run full project CI once on the final candidate when policy requires it;
+do not rerun an unchanged full suite per documentation commit. Semantic code changes retain their
+own per-change verification requirements.
+
+Every preflight and post-open review envelope must include the recorded budget and the actual base,
+changed paths, hand-written line count, non-merge commit count, and repair-round count. Missing
+budget evidence, an undeclared path, or an exceeded limit makes the review `NOT CLEAN` and blocks
+merge. `HANDOFF.md` is updated once with a consolidated review batch or stable PR-ready checkpoint,
+not once per individual finding.
+
 Elapsed time is not a stopping criterion for a useful command, review, test, or investigation.
 
 - Inspect actual progress at least once per minute while work is running. Check process state, new
