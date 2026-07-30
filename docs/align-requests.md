@@ -36,6 +36,13 @@ The lifecycle is:
 PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CLOSED
 ```
 
+The next transition away from the currently pinned Align commit
+`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` has one repository-wide prerequisite. A reviewed
+`docs/specs/check-gate-topology.md` fresh-compiler design update and its dependent implementation
+must both merge before any request changes `.align-revision`, runs verification against a new
+compiler, or advances to `ALIGN_LLM_VERIFIED`. This augments every lifecycle entry below, including
+older requests whose local resume condition only names their feature-specific adoption gate.
+
 A blocking request pauses only its dependent gate or slice. Record that pause and its resume
 condition in `HANDOFF.md`; continue independent work when it remains valid. Do not implement a
 workaround or write code against a proposed surface. A non-blocking request must name its first
@@ -974,9 +981,9 @@ persisted proposal error label, and resumes only after this adoption gate.
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: Request 7 implementation, whose strict-string grammar matrix exercises Request 6-admitted Copy scanner rows; roadmap C6 remains indirectly blocked behind Request 7
-Independent work that may continue: Request 7 registration and review, its separately registered decoded-owner cleanup prerequisite, C6 design, and other work that neither implements Request 7 nor consumes json.scan
-Resume condition: Request 7 implementation may start only after Request 6 reaches ALIGN_MERGED at a named commit; the Request 6 adoption consumer then pins that release and must pass before Request 6 closes
+Blocked gate or slice: Request 7 implementation, whose strict-string grammar matrix exercises Request 6-admitted Copy scanner rows; Request 6 align-llm adoption and every other pin-changing adoption are blocked on the common fresh-compiler topology design and implementation; roadmap C6 remains indirectly blocked behind Request 7
+Independent work that may continue: the common check-topology design and implementation, Request 7 registration and review, its separately registered decoded-owner cleanup prerequisite, C6 design, and other work that neither implements Request 7 nor consumes json.scan
+Resume condition: Request 7 implementation may start only after Request 6 reaches ALIGN_MERGED at a named commit; after the common check-topology design and implementation merge, the Request 6 adoption consumer may pin that release and must pass before Request 6 closes
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -1326,9 +1333,15 @@ second owner for scanner eligibility.
 
 ### align-llm adoption gate
 
-After `ALIGN_MERGED`, align-llm owns a separate adoption slice. It release-builds and pins the
-shipped Align revision, adds `json-scan-row-ownership-adoption` to the `Makefile`, and includes that
-target in `make ci`. The target runs
+After `ALIGN_MERGED`, align-llm owns a separate adoption slice, but it must not update
+`.align-revision`, run a pin-changing verification, or advance this request to
+`ALIGN_LLM_VERIFIED` until the common fresh-compiler check-topology design and its dependent
+implementation have both merged. That implementation must make canonical `make ci` build and use
+the pinned compiler through the reviewed fresh-build, identity, process, timeout, cache, and
+cleanup contract; this request must consume that shipped path rather than recreate it. The
+adoption then release-builds and pins the shipped Align revision, adds
+`json-scan-row-ownership-adoption` to the `Makefile`, and includes that target in `make ci`. The
+target runs
 `scripts/run-json-scan-row-ownership-adoption-smoke` over
 `eval/fixtures/json-scan-row-ownership-adoption/`.
 
@@ -1399,26 +1412,28 @@ The script removes the validated temporary directory on every exit. Only this ta
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: Request 7 implementation and its align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
-Independent work that may continue: C6 design review, Request 5 bounded-response work, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
-Resume condition: Request 7 may enter IMPLEMENTING only after Request 6, decoded-owner cleanup, and the benchmark-input enabling slice reach their named merged states below; after Request 7 reaches ALIGN_MERGED, align-llm adoption may start only after the separate reviewed `docs/specs/check-gate-topology.md` enabling slice merges, then pins the shipped Align release and passes the exact `make c6-json-escape-adoption` gate defined below plus `make ci`; this closes only the escape prerequisite
+Blocked gate or slice: Request 7 acceptance, implementation, and align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
+Independent work that may continue: the separate benchmark-evidence design and implementation, C6 design review, Request 5 bounded-response work, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
+Resume condition: Request 7 may enter ACCEPTED only after the separate benchmark-evidence design is reviewed and merged; it may enter IMPLEMENTING only after Request 6, decoded-owner cleanup, the benchmark-input slice, and that design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, the common fresh-compiler check-topology design plus its dependent implementation both merge, and the separate Request 7 topology update adding `c6-json-escape-adoption` merges, align-llm adoption pins the shipped Align release and passes that exact target plus `make ci`; this closes only the escape prerequisite
 Align commit or pull request: pending
 align-llm verification: pending
 ```
 
-Request 7 may be registered and reviewed independently, but it must not advance from `PROPOSED` to
-`IMPLEMENTING` until both Request 6 and a separately registered decoded-owner transition cleanup
-request reach `ALIGN_MERGED` at distinct named Align commits. Request 6 supplies the recursively
+Request 7 may be registered and reviewed independently, but it remains `PROPOSED` until the
+benchmark-evidence design below merges and must not advance to `IMPLEMENTING` until both Request 6
+and a separately registered decoded-owner transition cleanup request reach `ALIGN_MERGED` at
+distinct named Align commits and the other acceptance-infrastructure conditions below are met.
+Request 6 supplies the recursively
 Copy scanner-row boundary on which this request's scanner grammar matrix depends. Strict rejection
 of a malformed ignored string and outside-arena rejection of an escaped retained view both add
 failure edges after an earlier field may have made an owner live. The cleanup prerequisite must
 close those edges for every affected `parse_object` caller and indexed AoS staging path. Joint
 delivery is forbidden: the Request 7 implementation branch may be created only from an Align base
-that already contains both named merged prerequisite commits. Merge, rebase, or squash integration
-is permitted only when the final Request 7 commit retains both prerequisite commits as strict
-ancestors. The separately reviewed benchmark-input enabling slice defined below must also merge
-before that implementation branch starts; it is an acceptance-infrastructure prerequisite rather
-than an additional Align language request.
+that already contains both named merged prerequisite commits, the benchmark-input slice, and the
+separately designed and implemented benchmark-evidence boundary below. That reviewed boundary owns
+immutable baseline selection, candidate binding, integration topology, and stale-evidence handling;
+Request 7 does not invent those mechanisms in this register. All acceptance-infrastructure
+prerequisites must merge and select the baseline before the implementation branch starts.
 
 ### Motivation
 
@@ -1660,10 +1675,10 @@ The implementation closure ledger for the future Align design is:
 | Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
-| Root plus detached benchmark dependency resolution, persistent Cargo/Rust identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, and threshold failure | separately merged benchmark-input enabling slice plus candidate-owned `scripts/run-json-escape-bench-gate` | all-command lock/offline self-tests plus executable-mutation, clean/smudge/process-filter, alternate-object race, environment/config isolation, exact three-workspace metadata graph, protected-tree, and malformed-output regressions |
+| Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/ignored checkout state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored build-input, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
-| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | DEFERRED to a separately reviewed and merged `docs/specs/check-gate-topology.md` enabling slice; Request 7 adoption implementation is blocked because the bootstrap, cache, compiler-exec interposition, process, timeout, and cleanup surfaces are not yet designed | that prerequisite plan must name exact unit, fault-injection, and local/hosted integration regressions for every closure class listed in the adoption gate |
+| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | DEFERRED to a separately reviewed and merged `docs/specs/check-gate-topology.md` design update plus a dependent implementation slice; every pin-changing adoption is blocked because the bootstrap, cache, compiler-exec interposition, process, timeout, and cleanup surfaces are not yet designed or installed | that prerequisite plan must name exact unit, fault-injection, and local/hosted integration regressions for every closure class listed in the adoption gate, and its implementation must pass them before a later adoption changes the pin |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -1711,7 +1726,8 @@ Align compiler/runtime tests must:
    `decode -> encode -> decode`, and compare the semantic bytes after both decodes;
 2. cover a nested record, `Option<str>` in both `Some` and missing/`null` states, and an
    `array<str>` containing clean, escaped, empty, embedded-NUL, and multibyte values;
-3. decode `\u0041`, `\u20ac`, and the valid pair `\ud83d\ude00`; reject lone `\ud83d`, lone
+3. decode `\u0041`, `\u20ac`, `\u00E9`, and the valid pairs `\ud83d\ude00` and
+   `\uD83D\uDE00`; reject lone `\ud83d`, lone
    `\ude00`, reversed `\ude00\ud83d`, truncated `\u123`, non-hex `\u12x4`, and a high surrogate
    followed by a non-low-surrogate escape;
 4. prove the clean path still points into the input while escaped values point into the explicit
@@ -1773,6 +1789,25 @@ Align compiler/runtime tests must:
     `suffix_pad`, and `both_pad`), unknown-value nesting depths `0..3`, four boundary classes
     (`interior`, `end_16`, `end_32`, and `end_64`), and variants `0..7`, ordered lexicographically
     by those dimensions. The variant is encoded by `ordinal % 8`; it is not a separate field.
+    The following table is the exact variant oracle. Each comma-separated entry is the lowercase
+    hex for the bytes between the token's opening and closing `22` quote bytes, in variant order
+    `0..7`; the second list is the corresponding `semantic_bytes_hex`. The complete
+    `raw_token_hex` is therefore `22 + body + 22`. `null` is literal JSON null. No generator may
+    substitute another spelling or duplicate an entry:
+
+    | `validity_class` | body hex for variants `0..7` | semantic hex for variants `0..7` |
+    | --- | --- | --- |
+    | `clean_ascii` | `61`, `5a`, `30`, `20`, `7e`, `2f`, `2d`, `7f` | `61`, `5a`, `30`, `20`, `7e`, `2f`, `2d`, `7f` |
+    | `clean_utf8` | `c2a2`, `c3a9`, `e282ac`, `e6b0b4`, `f09f9880`, `f09090b7`, `c3b1`, `d096` | `c2a2`, `c3a9`, `e282ac`, `e6b0b4`, `f09f9880`, `f09090b7`, `c3b1`, `d096` |
+    | `short_escape` | `5c22`, `5c5c`, `5c2f`, `5c62`, `5c66`, `5c6e`, `5c72`, `5c74` | `22`, `5c`, `2f`, `08`, `0c`, `0a`, `0d`, `09` |
+    | `unicode_escape` | `5c7530303431`, `5c7530304539`, `5c7532304143`, `5c7536433334`, `5c7530303030`, `5c7530303166`, `5c7530303766`, `5c7546464644` | `41`, `c3a9`, `e282ac`, `e6b0b4`, `00`, `1f`, `7f`, `efbfbd` |
+    | `surrogate_pair` | `5c75443833445c7544453030`, `5c75643833645c7564653033`, `5c75643833645c7564653830`, `5c75643833345c7564643165`, `5c75643830305c7564633030`, `5c75646266665c7564666666`, `5c75643833635c7564663064`, `5c75643833655c7564646431` | `f09f9880`, `f09f9883`, `f09f9a80`, `f09d849e`, `f0908080`, `f48fbfbf`, `f09f8c8d`, `f09fa791` |
+    | `malformed_escape` | `5c78`, `5c61`, `5c75`, `5c7531`, `5c753132`, `5c75313233`, `5c7531327834`, `5c752b313233` | `null`, `null`, `null`, `null`, `null`, `null`, `null`, `null` |
+    | `malformed_surrogate` | `5c7564383030`, `5c7564633030`, `5c75646330305c7564383030`, `5c75643830305c7530303431`, `5c75643830305c6e`, `5c75643830305c7564383030`, `5c75646266665c7564376666`, `5c75643830305c7564633078` | `null`, `null`, `null`, `null`, `null`, `null`, `null`, `null` |
+    | `raw_c0` | `00`, `01`, `08`, `09`, `0a`, `0d`, `1e`, `1f` | `null`, `null`, `null`, `null`, `null`, `null`, `null`, `null` |
+
+    The fixture verifier recomputes this table from every row's class and `ordinal % 8` and rejects
+    any byte, semantic value, ordering, or duplicate drift before invoking a parser.
     `grammar_valid` is `true` exactly for the first five named validity classes and `false` for
     `malformed_escape`, `malformed_surrogate`, and `raw_c0`; a true row's
     `semantic_bytes_hex` is exactly the semantic UTF-8 byte sequence obtained from `T`.
@@ -1847,193 +1882,78 @@ Align compiler/runtime tests must:
 12. first merge a separately reviewed benchmark-input enabling slice that removes the detached
     `bench/json_decode/Cargo.lock` and `bench/json_soa/Cargo.lock` ignores, checks in both generated
     lockfiles, and makes every Cargo command in both benchmark scripts use `--locked --offline`:
-    both root-workspace `cargo build` commands and the detached-workspace `cargo run`. The scripts
-    invoke the absolute `CARGO` executable supplied by the harness and leave compiler selection to
-    its absolute `RUSTC` environment value; neither searches `PATH` for a Rust tool. The enabling
+    both root-workspace `cargo build` commands and the detached-workspace `cargo run`. The enabling
     slice's tests prove that the root and each detached workspace reject a missing or
     manifest-inconsistent lockfile and that an incomplete offline cache fails without network
-    access, registry update, lockfile write, or build output; the harness's raw protected-tree
-    comparison separately rejects any lockfile byte difference between baseline and candidate. No
-    Request 7 implementation may start before this slice merges. Then add an
-    Align-owned checked-in `scripts/run-json-escape-bench-gate` harness. Its only public invocation
-    is `scripts/run-json-escape-bench-gate --baseline <40-lower-hex> --candidate <40-lower-hex>
-    --cargo <absolute-file> --rustc <absolute-file> --cargo-cache <absolute-dir>`; every option is required
-    exactly once, no environment fallback or default is permitted, and unknown, duplicate,
-    malformed, relative, missing, or wrong-kind inputs fail before a worktree or output is created.
-    `cargo` and `rustc` must each be a regular, non-symlinked executable path containing no colon or
-    control byte; `cargo-cache` must be an absolute, non-symlinked directory with the same byte
-    restrictions. Their identities are the file type, mode, device, inode, size, nanosecond mtime,
-    and SHA-256 plus exact `cargo -V` and `rustc -Vv` output. The harness revalidates that complete
-    tuple before every Cargo command and after the final measurement; any persistent content,
-    type, mode, or stat-identity mutation fails and suppresses the accepted report. Concurrent
-    mutate-and-restore behavior is outside the otherwise-idle exclusive-host contract. Run it on one
-    otherwise-idle named host over two clean detached Align
-    worktrees. The baseline commit is the exact parent of the first Request 7
-    implementation commit, is descended from the merged benchmark-input slice, and already
-    contains both named prerequisites; the candidate is the proposed final Request 7 commit. Each
-    worktree is created with `git worktree add --detach --no-checkout`; checkout is forbidden.
-    The harness loads the selected tree into that worktree's index without `-u`, then a checked-in
-    materializer validates the complete NUL-delimited tree and index before its first filesystem
-    write. It requires the worktree root to contain only the ordinary non-symlinked `.git` control
-    file created by `git worktree add`. Every raw path must be relative and nonempty; every
-    slash-separated byte component must be nonempty and must not equal `.`, `..`, or `.git` under
-    ASCII case folding. Full paths must be unique, and no regular-file or symlink path may be a
-    prefix of another entry. Duplicate entries, file/tree prefix collisions, gitlinks, unsupported
-    modes, and any tree/index disagreement reject the whole tree before writing. Before accepting a
-    symlink, a tree-only resolver interprets its raw target relative to the link's parent, rejects
-    empty or absolute targets and every `..` step that would leave the root, follows chained
-    tracked symlinks with cycle detection, and requires the final canonical target to be either a
-    tracked materialized entry or a directory trie node with tracked descendants. Dangling,
-    cyclic, root-escaping, or untracked targets reject the whole tree. This admits Align's tracked
-    `AGENTS.md -> CLAUDE.md` and `.agents/skills/align-self-review ->
-    ../../.claude/skills/align-self-review` links while excluding ambient inputs.
+    access, registry update, lockfile write, or build output. Tool selection and invocation belong
+    to the benchmark-evidence design rather than this slice.
 
-    After prevalidation, the materializer holds an open directory descriptor for the worktree root
-    and creates each directory with `mkdirat`, reopens every ancestor with
-    `openat(O_DIRECTORY|O_NOFOLLOW)`, and creates each regular file with
-    `openat(O_CREAT|O_EXCL|O_NOFOLLOW)` or each symlink with `symlinkat`; it never joins a raw path
-    to an absolute pathname and never follows a previously materialized entry. It writes raw blob
-    bytes or symlink-target bytes, applies only the indexed executable-bit class, and fsyncs/closes
-    each regular file before moving on; symlink creation must return successfully before traversal
-    continues. The post-write comparator uses the same whole-tree parser and
-    dirfd-relative `fstatat(..., AT_SYMLINK_NOFOLLOW)`/`openat(..., O_NOFOLLOW)` traversal. Thus
-    repository-local clean, smudge, process, text-conversion, and EOL attributes cannot transform
-    bytes or execute during creation. Adversarial raw-object fixtures cover absolute and empty
-    paths, `.`, `..`, every ASCII case of `.git`, duplicates, file/tree collisions, a symlink
-    ancestor followed by a child path, absolute/empty/dangling/root-escaping symlink targets,
-    multi-link cycles and escapes, valid regular-file and directory targets, preexisting destination
-    entries, and path replacement between validation and creation; all invalid cases reject without
-    an outside-root write or control-file change. Each worktree uses its own default `target/`
-    directory, and the harness rejects a SHA or worktree-state mismatch before measurement. That
-    check compares raw tree/index records and hashes raw filesystem bytes and symlink targets
-    without `git status`, `git diff`, checkout, or content filters; local clean, smudge, and process
-    filter markers must remain absent while different bytes are rejected. Before either warm-up,
-    isolated Git inspection
-    compares raw tree-entry
-    mode/type/object records and requires byte- and mode-identical tracked entries between the two
-    commits for `.cargo/`, root `Cargo.toml`,
-    `Cargo.lock`, optional root `rust-toolchain` and `rust-toolchain.toml`, and the complete
-    optional `bench/.cargo/`, `bench/json_decode/`, and `bench/json_soa/` trees.
-    Missing-versus-present is a mismatch. Any
-    required benchmark workload, data generator, timing loop, dependency lock, Cargo configuration,
-    or toolchain-input change must merge before the named baseline so both measured revisions
-    contain the same bytes. The candidate-owned harness is orchestration, not a measured workload
-    input. Its regression changes one file in each protected path class and proves rejection before
-    either benchmark command. The harness rejects any inherited variable whose name begins with
-    `CARGO_`, `RUST`, `RUSTC_`, `RUSTDOC`, or `GIT_`, plus `CC`, `CXX`, `AR`, `LD`, `CFLAGS`,
-    `CXXFLAGS`, `LDFLAGS`, `MAKEFLAGS`, and `GNUMAKEFLAGS`, before it creates a worktree or build
-    output. Every Git operation, including commit validation, protected-tree inspection, worktree
-    creation and cleanup, runs the fixed `/usr/bin/git` through `env -i` with only
-    `PATH=/usr/bin:/bin`, `LC_ALL=C`, an empty harness-owned `HOME`,
-    `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
-    `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE=/dev/null`, `GIT_NO_LAZY_FETCH=1`,
-    `GIT_OPTIONAL_LOCKS=0`, `XDG_CONFIG_HOME=/dev/null`, and command-scope
-    `core.fsmonitor=false`, `core.hooksPath=/dev/null`, and `core.commitGraph=false`. No caller
-    environment or system/global configuration may select a repository, worktree, object
-    directory, alternate object store, replacement, graft, hook, fsmonitor, or commit graph.
-    The harness's first Git invocation is `/usr/bin/git --version` under that environment; it uses
-    the same exact one-line numeric parser specified for adoption below and requires Git 2.45 or
-    newer before locating a repository, creating output, or running any object command. A 2.44
-    fixture with repository and output markers proves the unsupported version fails before both.
-    Before the first object command and again before accepting each object command's output or
-    status, the harness performs the effective config-with-includes promisor query and requires no
-    match, resolves the common object directory without reading an object, and rejects any existing
-    or symlinked `objects/info/alternates` or `objects/info/http-alternates`. Standard,
-    included-config, and linked-worktree promisor fixtures must reject without remote access,
-    object/index mutation, worktree creation, or output. A
-    deterministic barrier persistently creates each file after the precheck but before raw tree,
-    blob, and ancestry reads; the postcheck must suppress worktree materialization, measurement, and
-    the accepted report. Object output is first captured in a harness-owned temporary file outside
-    either worktree and is not consumed or copied into a worktree until the postcheck passes.
-    Concurrent create-and-remove mutation is outside the otherwise-idle
-    exclusive-host contract. A
-    hostile fixture injects each rejected Git repository/worktree/object/config variable and
-    system, global, XDG, hook, fsmonitor, replacement, graft, alternate-object, and commit-graph
-    source; separately configured clean, smudge, and long-running process filters cover worktree
-    creation and later comparison. Every marker remains absent and the exact intended commits and
-    worktree roots are recorded. It
-    invokes each benchmark through `env -i` with only `PATH=/usr/bin:/bin`, `LC_ALL=C`, the
-    validated absolute `CARGO` and `RUSTC` files, an empty temporary `HOME`, and one harness-owned
-    absolute `CARGO_HOME` copied from the named pre-populated offline registry/git cache but
-    containing no `config`, `config.toml`, credentials, or symlink. Before every Cargo invocation,
-    it starts at that command's actual working directory—the Align root, `bench/json_decode`, or
-    `bench/json_soa`—and walks every directory through the filesystem root. A `.cargo/config` or
-    `.cargo/config.toml` inside the worktree must be a tracked regular file in the protected root
-    `.cargo/`, optional `bench/.cargo/`, or corresponding complete benchmark tree and must have the
-    same raw tree record at baseline and candidate; every untracked, ignored, symlinked, or
-    outside-worktree configuration path is rejected. It leaves
-    `CARGO_TARGET_DIR`, `RUSTFLAGS`, wrappers, target selectors, and linker/compiler overrides
-    absent, so Cargo discovers only the protected per-worktree `.cargo` configuration and writes
-    that worktree's default `target/`. Before timing, the harness invokes the validated absolute
-    Cargo as `metadata --format-version 1 --locked --offline` under this same environment for all
-    six revision/workspace pairs: baseline and candidate at the Align root,
-    `bench/json_decode/Cargo.toml`, and `bench/json_soa/Cargo.toml`. It compares baseline with
-    candidate independently for each workspace and records three labeled SHA-256 digests; it never
-    compares the two distinct benchmark workspaces to one another.
+    Request 7 must remain `PROPOSED` until a separate Align design slice at
+    `docs/impl/core-design/json-escape-benchmark-evidence.md` defines and merges the
+    benchmark-evidence boundary. It must remain below `IMPLEMENTING` until that design's own reviewed
+    enabling implementation also merges. The prerequisite owns the controller source and delivery,
+    exact public invocation, immutable pre-work baseline selection, candidate binding, trust roots,
+    executable and source identities, raw-object and checkout isolation, environment and descriptor mapping,
+    credential handling if any provider API is used, concurrency boundary, report schema, exact-SHA
+    review and integration evidence, failure cleanup, and every adversarial regression. It must
+    prevent implementation-controlled measurement code from selecting or attesting itself and must make every
+    accepted baseline, candidate, executable, and report identity independently reproducible.
 
-    A checked-in canonicalizer requires top-level metadata `version == 1` and a non-null `resolve`,
-    retains the complete JSON document, and performs only these normalizations in JSON string
-    values: replace the exact current worktree absolute path when preceded by string start or
-    `file://` (including `path+file://`) and followed by string end, `/`, `#`, or `?` with
-    `<WORKTREE>`; apply the same rule to the exact harness-owned Cargo-home path and
-    `<CARGO_HOME>`;
-    reject any remaining baseline/candidate worktree path or local `path+file` identity outside the
-    named worktree. It recursively sorts object keys; sorts `packages` by normalized `id`, package
-    dependency entries by their complete normalized JSON bytes, package targets by complete
-    normalized JSON bytes, every feature's member list lexically, `workspace_members` and
-    `workspace_default_members` lexically, `resolve.nodes` by normalized `id`, each node's
-    dependencies and `dep_kinds` by complete normalized JSON bytes, and each node's feature list
-    lexically. Other arrays retain source order. It emits UTF-8 canonical JSON with no insignificant
-    whitespace, no ASCII escaping, and exactly one trailing LF. Registry checksums remain fixed by
-    the protected lockfiles. The canonicalizer's self-test covers every retained field, both path
-    tokens and URI forms, prefix-but-not-boundary paths, path escape, each sorted set, an
-    order-sensitive retained array, missing/unsupported version, null resolve, extra fields,
-    non-UTF-8, and exact output bytes. Root member-manifest dependency/feature/target drift and
-    each detached manifest/lockfile drift must change only its labeled report and fail before
-    warm-up.
+    The design must explicitly close construction, success, failure, cleanup, early exit, malformed
+    input, executable swap, descriptor collision and inheritance, stale or forged report, base
+    drift, and integration races. It must either bind execution to already-open verified objects or
+    state and test an equivalent non-conflicting privilege boundary. If it uses a hosting API, it
+    must bind endpoint, authenticated principal, repository, ref, expected-old and new OIDs, client,
+    request bytes, response semantics, and secret non-exposure. Request 7 deliberately does not name
+    a hypothetical controller, launcher, token channel, merge mechanism, or provider helper before
+    that independent design review. The dependent enabling implementation and its full acceptance
+    matrix must merge before the immutable baseline is selected or a Request 7 implementation
+    branch is created.
 
-    Negative tests also inject
-    every rejected environment-name class, a Cargo config at each excluded home, Cargo-home,
-    command-directory, or ancestor location, including `bench/.cargo`, a symlinked config,
-    colon/control-bearing tool paths, symlinked Cargo/Rust executables, a graph mismatch in each
-    workspace class, and a shared target override; each fails before either warm-up. Deterministic
-    comparator self-test changes exactly one saved identity field at a time—file type, mode,
-    device, inode, size, nanosecond mtime, SHA-256, Cargo version output, and Rustc version
-    output—and proves that every field independently rejects. Synthetic stat records own the
-    device-only case and any other field that cannot be isolated portably on one filesystem.
-    Real-filesystem barriers then cross each accepted tool (`cargo` and `rustc`) with both
-    revalidation placements (immediately before the next Cargo command and after measurement
-    before report acceptance). At every crossing they persistently perform, as separate cases:
-    a same-size content change with the original mode and mtime restored (SHA-256 only); a
-    mode-only change with bytes, inode, size, and mtime restored; an mtime-only change; a
-    same-content atomic replacement that preserves mode, size, and mtime (inode); a size-changing
-    content replacement; and replacement by a non-regular filesystem object (type). Each case
-    must fail at that next identity check, execute no later benchmark command, and emit no accepted
-    sample report.
-    A separate hostile ambient `PATH` places marker executables for
-    `cargo`, `rustc`, `bash`, `git`, the C compiler, and linker first and proves the empty-environment
-    boundary executes none of them. The otherwise-idle host contract excludes concurrent mutation
-    of these inspected benchmark-input paths during the gate. The harness records the hostname,
-    `uname -a`, CPU model, baseline and
-    candidate SHAs, the three dependency-graph digests, and exact `rustc -Vv`, `cargo -V`, and
-    `git --version` outputs. For each of
-    `bench/json_decode/run.sh native` and
-    `bench/json_soa/run.sh native`, it first runs one discarded baseline warm-up and one discarded
-    candidate warm-up, then runs ten measured pairs sequentially with no overlap: odd-numbered pairs
-    run baseline then candidate and even-numbered pairs run candidate then baseline. One sample is
-    the numeric millisecond value already reported by that script for the named field in the row
-    whose first column is the decimal integer `1000000`; the scripts' internal round minima remain
-    part of that sample definition.
-    `json_decode` measures `A-full` and `A-proj`; `json_soa` measures `soa ms`, `aos ms`, and
-    `proj ms`. The scripts format those values to three decimal places; for each of the five fields
-    and each revision, sort the ten parsed values without further rounding and define the median as
-    the arithmetic mean of samples five and six. The harness prints every parsed sample, both
-    medians, and the ratio `candidate_median / baseline_median`, and fails if any of the five ratios
-    is greater than `1.05`. It also prints the matching Rust comparison fields so host drift is
-    reviewable, but they do not determine the threshold. Missing, duplicate, non-finite, wrong-row,
-    or otherwise unparsable output fails the harness. The pull request records the exact harness
-    command and complete report; a failure remains blocking until the design or implementation
-    removes it;
+    The separately reviewed evidence design may refine orchestration, but it must preserve the
+    benchmark workload and acceptance outcome below: one pre-work baseline containing the
+    benchmark-input slice plus both language prerequisites and serving as the exact Request 7
+    implementation branch point, the proposed final Request 7 candidate with no unrelated delta,
+    byte- and mode-identical protected benchmark inputs, one identical verified effective toolchain,
+    one otherwise-idle named host, ten
+    order-balanced sample pairs, and all five candidate/baseline median ratios at or below `1.05`.
+    The pull request must carry the controller-produced complete report and immutable identities.
+    Request 7 supplies only these consumer acceptance requirements to that separate design:
+
+    - the baseline is the exact parent of the first Request 7 implementation commit; candidate is
+      its reviewed final descendant, and every intervening commit and changed path belongs to the
+      accepted Request 7 implementation closure. An unrelated commit or path, or target-branch
+      movement before branch creation, requires a new baseline and evidence rather than measuring a
+      mixed delta;
+    - baseline and candidate use byte- and mode-identical `.cargo/`, root `Cargo.toml`,
+      `Cargo.lock`, optional root `rust-toolchain` and `rust-toolchain.toml`, optional
+      `bench/.cargo/`, and complete `bench/json_decode/` and `bench/json_soa/` trees; any
+      missing/present mismatch or content, dependency, configuration, workload, generator, timing,
+      or lockfile drift fails before measurement;
+    - baseline and candidate dependency resolution for the root, `bench/json_decode`, and
+      `bench/json_soa` workspaces is `--locked --offline`, semantically identical per corresponding
+      workspace, and neither writes a lockfile, updates a registry, or accesses the network;
+    - both revisions use the same verified Cargo and Rust compiler binaries, versions, effective
+      target/configuration, environment semantics, and dependency cache contents; any difference
+      that can affect generated code or timing rejects the comparison before measurement;
+    - both revisions run the protected `bench/json_decode/run.sh native` and
+      `bench/json_soa/run.sh native` workloads on the same otherwise-idle named host with native CPU
+      mode and the row whose first column is exactly decimal `1000000`; no baseline/candidate run
+      overlaps another;
+    - one discarded warm-up per revision and benchmark precedes ten measured pairs; odd pairs run
+      baseline then candidate and even pairs candidate then baseline;
+    - the five measured fields are exactly `A-full`, `A-proj`, `soa ms`, `aos ms`, and `proj ms`;
+      each sample is the script's numeric millisecond value for the named million-row field, and
+      missing, duplicate, non-finite, wrong-row, or otherwise unparsable output fails;
+    - for each field and revision, sort the ten values without additional rounding and define the
+      median as the arithmetic mean of samples five and six; every
+      `candidate_median / baseline_median` ratio must be at most `1.05`; and
+    - any identity, isolation, protected-input, dependency, execution, parsing, timeout, cleanup,
+      or evidence failure produces no accepted benchmark result. The Request 7 pull request records
+      the controller-produced immutable baseline/candidate identities, all parsed samples, medians,
+      ratios, host/toolchain observations required by the evidence design, and its accepted report;
+      a failed threshold or missing evidence remains blocking.
+
 13. after the cleanup prerequisite ships, place a required owner before a malformed ignored string
     and before an outside-arena escaped returned field in record and union-payload fixtures; if the
     prerequisite retains `Option<Move record>`, repeat with an optional owner. Place owners in the
@@ -2111,18 +2031,20 @@ mode also substitutes a `2.44.4` fixture executor with a repository-access marke
 the marker remains absent. Neither production call accepts a caller-selected Git binary or version
 text.
 
-Synthetic version records test only the parser. Before the adoption implementation may start, the
-topology-ledger design must also name an immutable OCI image digest whose `/usr/bin/git` is exactly
-Git `2.45.0` and whose remaining build toolchain satisfies the declared hosted gate; a mutable tag
-or later `2.45.x` is not acceptance evidence. The adoption pull request adds a required
+Synthetic version records test only the parser. Before any pin-changing adoption implementation
+may start, the topology-ledger design must also name an immutable OCI image digest whose
+`/usr/bin/git` is exactly Git `2.45.0` and whose remaining build toolchain satisfies the declared
+hosted gate; a mutable tag or later `2.45.x` is not acceptance evidence. The Request 7 adoption
+pull request adds a required
 `git-2.45-compat` job that runs in that image, first requires the production preflight to print
 exactly `git version 2.45.0`, and then executes the complete topology self-test, exact-checkout
 revision check, `c6-json-escape-adoption` target, and every shallow, included/worktree promisor,
 lazy-fetch, replacement, graft-race, raw-object, equality, and unrelated-ancestry negative through
 the production scripts. It must not substitute version text or a different Git binary. The
 ordinary Ubuntu job remains required separately. The immutable image digest and its build
-provenance are sources of truth in the topology design, and Request 7 adoption implementation
-cannot start until that reviewed design records them.
+provenance are sources of truth in the topology design. Its dependent implementation must make
+the common topology tests pass in that image before any later adoption changes the pin; Request 7
+then adds its feature-specific compatibility job.
 
 ```sh
 export LC_ALL=C
@@ -2227,14 +2149,14 @@ index/worktree entry, `120000` must name a `blob` and maps to a symlink, and `16
 mode/type pairing rejects.
 Its ordinary and workflow shallow-checkout entry points both run the effective promisor query
 before `ls-tree` or any other object read.
-Before filesystem access it builds the same complete path trie required of the benchmark
-materializer: relative nonempty paths, no empty, `.`, `..`, or ASCII-case-folded `.git`
+Before filesystem access the adoption comparator builds its own complete path trie: relative
+nonempty paths, no empty, `.`, `..`, or ASCII-case-folded `.git`
 components, unique entries, and no file/symlink prefix collision. It opens the worktree root once
 and performs every lookup dirfd-relatively with no-follow semantics, so a raw malicious tree or
 concurrent ancestor replacement cannot redirect a read outside the checkout. The same absolute,
 dot/dotdot/dotgit, duplicate, prefix-collision, and symlink-ancestor raw-object fixtures run through
-the comparator and must reject without an outside-root read. It also runs the same tree-only
-symlink-chain resolver as the benchmark materializer and rejects absolute, dangling, cyclic,
+the comparator and must reject without an outside-root read. Its tree-only symlink-chain resolver
+rejects absolute, dangling, cyclic,
 root-escaping, or untracked targets before any later Cargo or compiler command can follow them;
 fixtures cover both current valid Align symlinks and every rejected class.
 For every index entry it then uses byte-path filesystem operations: `lstat`, raw regular-file
@@ -2272,11 +2194,16 @@ files and helpers must never execute. This replaces
 the current hosted workflow's depth-one-only behavior only in the future adoption slice.
 
 An allowed ordinary root `target/` is treated only as unrelated prior output; no acceptance command
-may execute or link an artifact from it. Before adoption implementation, a separate reviewed
-enabling slice must update `docs/specs/check-gate-topology.md` and merge. That plan, rather than
-this request register, owns the exact public inputs, bootstrap, commands, statuses, timeout
-constants, process topology, cleanup algorithm, implementation modules, and regression names for
-building and using a fresh pinned compiler outside `ALIGN_REPO`.
+may execute or link an artifact from it. Before the next adoption or verification that changes
+`.align-revision`, a separate reviewed design slice must update
+`docs/specs/check-gate-topology.md` and merge, followed by a dependent implementation slice that
+makes canonical `make ci` consume the reviewed fresh-compiler path and passes its complete local
+and hosted acceptance matrix. This is a repository-wide pin-transition prerequisite, not a
+Request 7-only helper: Request 6, decoded-owner cleanup, Request 7, and any other request that would
+advance the pin or claim `ALIGN_LLM_VERIFIED` against a new compiler must wait for both slices.
+The plan, rather than this request register, owns the exact public inputs, bootstrap, commands,
+statuses, timeout constants, process topology, cleanup algorithm, implementation modules, and
+regression names for building and using a fresh pinned compiler outside `ALIGN_REPO`.
 
 The topology plan must close all of these classes before code is written: creation and cleanup
 authority for a private empty Cargo target; explicit trust and mutation semantics for every
@@ -2297,8 +2224,8 @@ version probes exist beyond the required Git preflight above and, if so, how the
 are owned; how an offline Cargo cache is materialized without nested symlink or rename escape; and
 how compiler identity is enforced inside aggregate-internal invocations. Request 7 does not name a
 controller, wrapper, environment variable, path, timeout, or PID mechanism ahead of that review.
-The adoption implementation must consume the merged topology contract exactly and may not code
-against a proposed interface.
+The topology implementation and every later adoption must consume the merged topology contract
+exactly and may not code against a proposed interface.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
 ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves
