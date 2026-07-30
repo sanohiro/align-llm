@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `dee7db95118b2ffc25e01e981711fda2f555f5bd`
+  `ac4ac3947322e3fd5c10da7137c50b17d5da7c6f`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -143,6 +143,17 @@ inspection, binary-safe revision-file validation, Git 2.45 compatibility, promis
 isolation, and a fresh compiler. The exact fresh-build identity, process, timeout, cache, and
 cleanup mechanism belongs to the common prerequisite topology design described next.
 
+The final host-native review reproduced another Git trust-boundary failure: repository-local
+`core.ignoreCase=true` hides a case-fold-colliding untracked Rust source from both
+`git ls-files --others` queries even though Align's recursive build script consumes it. The
+corrected contract no longer delegates any additional-path decision to Git. Its binary-safe raw
+comparator owns a complete dirfd-relative, no-follow filesystem enumeration and compares every
+entry against the tree/index trie, excluding only the validated root `.git` administrative entry
+and an ordinary root `target/` output subtree. The hostile matrix fixes the reproduced
+`LIB.rs`/`lib.rs` collision, extra directories, type and rename observations, and ignore/excludes
+cases. Git's ignore and case-fold configuration can therefore no longer make a compiler input
+invisible to the gate.
+
 Two successive controller-design reviews found new critical correctness classes, so the local
 patch loop is closed and that boundary is split out. Before the next `.align-revision` change or
 `ALIGN_LLM_VERIFIED` claim against a new compiler, a separate reviewed
@@ -171,7 +182,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`dee7db95118b2ffc25e01e981711fda2f555f5bd` against a clean detached checkout of the exact pinned
+`ac4ac3947322e3fd5c10da7137c50b17d5da7c6f` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
