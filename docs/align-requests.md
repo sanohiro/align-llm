@@ -482,15 +482,6 @@ Align commit or pull request: pending
 align-llm verification: pending
 ```
 
-Request 7 may be registered and reviewed independently, but it must not advance from `PROPOSED` to
-`IMPLEMENTING` until a separately registered decoded-owner transition cleanup request reaches
-`ALIGN_MERGED` at a named Align commit. Strict rejection of a malformed ignored string and
-outside-arena rejection of an escaped retained view both add failure edges after an earlier field
-may have made an owner live. The prerequisite must close those edges for every affected
-`parse_object` caller and indexed AoS staging path. If Align delivers both capabilities jointly,
-the shared pull request must satisfy the cleanup request first and both lifecycle entries must name
-the same shipped commit; Request 7 still cannot claim independent implementation readiness.
-
 ### Motivation
 
 OpenAI-compatible streaming APIs normally return server-sent events with HTTP/1.1
@@ -1379,6 +1370,15 @@ Resume condition: after ALIGN_MERGED, a separate JSON-escape adoption slice pins
 Align commit or pull request: pending
 align-llm verification: pending
 ```
+
+Request 7 may be registered and reviewed independently, but it must not advance from `PROPOSED` to
+`IMPLEMENTING` until a separately registered decoded-owner transition cleanup request reaches
+`ALIGN_MERGED` at a named Align commit. Strict rejection of a malformed ignored string and
+outside-arena rejection of an escaped retained view both add failure edges after an earlier field
+may have made an owner live. The prerequisite must close those edges for every affected
+`parse_object` caller and indexed AoS staging path. If Align delivers both capabilities jointly,
+the shared pull request must satisfy the cleanup request first and both lifecycle entries must name
+the same shipped commit; Request 7 still cannot claim independent implementation readiness.
 
 ### Motivation
 
