@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `190436934f06307b1dfe3570a72ec2ad94259f14`
+  `73ec8e7715dbf397f8e61b3267faba7f0090399d`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -28,27 +28,36 @@ because the scanner has no arena.
 Ordinary decode, encode, and owner drop for eligible `Option<Move record>` success are already
 shipped. A first adversarial preflight proved that strict ignored-string rejection and
 outside-arena escaped-view rejection add failure edges after earlier fields may make owners live.
-Request 7 may therefore be registered independently but cannot advance to `IMPLEMENTING` until the
-next decoded-owner transition cleanup request is `ALIGN_MERGED` at a named commit. That prerequisite
-must audit construction, speculative write, replacement and source nulling, fallback success and
-failure, staging, return, and cleanup. Demonstrated classes include optional owners followed by
-later enclosing-object failure, indexed top-level AoS speculation overwritten by fallback,
-top-level `array<MoveStruct>` partial staging, and required or optional top-level record owners
-followed by trailing-garbage rejection.
+Request 7 may therefore be registered independently but cannot advance to `IMPLEMENTING` until both
+Request 6 and the next decoded-owner transition cleanup request are `ALIGN_MERGED` at distinct
+named commits. Request 6 is a prerequisite because Request 7's scanner grammar coverage assumes
+its recursively Copy row boundary. The cleanup prerequisite must audit construction, speculative
+write, replacement and source nulling, fallback success and failure, staging, return, and cleanup.
+Demonstrated classes include optional owners followed by later enclosing-object failure, indexed
+top-level AoS speculation overwritten by fallback, top-level `array<MoveStruct>` partial staging,
+and required or optional top-level record owners followed by trailing-garbage rejection.
 
 The review follow-up also adds an exact per-path result oracle, hand-authored multi-invalid
-precedence cases, a fixed 4,096-case SplitMix64 grammar corpus, and a caller-owned
-`cfg(test)`-only probe for failure byte offsets and logical arena allocations. The probe is not a
-production ABI or process-global counter.
+precedence cases, an exact checked-in 4,096-line grammar manifest whose byte hash and Cartesian
+coverage become authoritative before acceptance, and a caller-owned `cfg(test)`-only probe for
+failure byte offsets and logical arena allocations. The probe is not a production ABI or
+process-global counter. Tests that also read existing process-global heap counters must acquire
+`ALLOC_COUNT_LOCK` before setup and hold it through cleanup and assertions.
 
 A second adversarial review found that a proposed joint-delivery exception contradicted the
 cleanup-first lifecycle and that align-llm can pin only one Align commit. The final contract removes
-joint delivery. A Request 7 implementation branch may start only after the named cleanup commit is
-merged, and the final Request 7 commit must retain that cleanup commit as an ancestor. Adoption pins
-only the final Request 7 commit in `.align-revision`, records the cleanup commit in a checked-in
-fixture, rejects equal or non-commit revisions, and then runs an Align-repository
-`merge-base --is-ancestor` check before any client fixture. Equal and unrelated valid commits are
-explicit negative regressions, so the cleanup revision must be a strict ancestor.
+joint delivery. A Request 7 implementation branch may start only after both named prerequisite
+commits are merged, and the final Request 7 commit must retain both as strict ancestors. Adoption
+pins only the final Request 7 commit in `.align-revision`, records both prerequisite commits in
+checked-in fixtures, rejects equal, non-raw-commit, replacement-forged, shallow, and unrelated
+revision states, and then runs isolated Align-repository `merge-base --is-ancestor` checks before
+any client fixture. Hosted adoption CI must expand history without changing the exact detached
+Request 7 checkout or worktree.
+
+Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
+NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
+delimiters, ambiguous EOF, and other framing behavior remain shipped behavior; a future concrete
+consumer must register a separate request if that boundary becomes necessary.
 
 The bounded retrospective after PR #24 established three reusable decisions:
 
@@ -60,7 +69,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`190436934f06307b1dfe3570a72ec2ad94259f14` against the exact pinned sibling checkout:
+`73ec8e7715dbf397f8e61b3267faba7f0090399d` against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
@@ -69,15 +78,14 @@ ALIGN_REPO=/home/hiro/prj/align make ci  PASS
 
 ## Exact next steps
 
-1. Run a fresh independent adversarial preflight against the complete final diff and pinned Align
-   implementation. Resolve valid findings before opening the pull request.
-2. Open a focused draft pull request, publish SHA-bound preflight, host-native,
-   independent-adversarial, and check evidence, and merge only when all current-SHA evidence is
-   clean against an unchanged base tip.
+1. Push the review follow-up, rerun a preflight-equivalent independent adversarial review against
+   the complete final diff, and repeat both required post-open reviews on the resulting exact SHA.
+2. Publish current-SHA preflight, host-native, independent-adversarial, and check evidence, and
+   merge only when every envelope is clean against an unchanged base tip.
 3. Refresh `main`, run the bounded retrospective, and register decoded-owner transition cleanup
    first, then strict numeric grammar if retained and record-array construction as separate reviewed
    slices. Request 7 implementation remains blocked until the cleanup request reaches
-   `ALIGN_MERGED`.
+   `ALIGN_MERGED`; it also requires Request 6 to reach `ALIGN_MERGED`.
 4. Return to the C6 design branch only after its complete prerequisite set is registered; do not
    implement against a proposed Align surface.
 
