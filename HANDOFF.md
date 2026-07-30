@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `9276de9e74f99f336c316681d7e995e3aabcd2a6`
+  `7b4da28662495fe32563491f5aa7e418aedbc457`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -98,11 +98,13 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`9276de9e74f99f336c316681d7e995e3aabcd2a6` against the exact pinned sibling checkout:
+`7b4da28662495fe32563491f5aa7e418aedbc457` against a clean detached checkout of the exact pinned
+Align commit:
 
 ```text
-git diff --check                         PASS
-ALIGN_REPO=/home/hiro/prj/align make ci  PASS
+git diff --check                                      PASS
+ALIGN_REPO=<clean detached pinned Align worktree> \
+  make ci                                             PASS
 ```
 
 ## Exact next steps
