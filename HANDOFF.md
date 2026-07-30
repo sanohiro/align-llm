@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `43d221f29326dd6b3d649bf6f8d1e11b59afdbb9`
+  `b80883fb4d7ca5e25d40c611210be90f5057f56f`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -76,9 +76,9 @@ check-topology design instead of adding a workflow-only command. A reviewed topo
 must merge first; implementation then adds the target to `HOSTED_CHECK_TARGETS`, its embedded
 oracle/self-test, and the workflow's canonical `hosted-checks` aggregate. All inspection uses
 an empty, override-isolated Git environment with optional locks and lazy fetch disabled; standard
-promisor-remote partial clones, including promisor keys reached through repository-local includes,
-reject before object lookup, and negative fixtures prove no index/object mutation, hidden dirt,
-fsmonitor execution, or promisor access. The performance gate
+promisor-remote partial clones, including promisor keys reached through repository-local includes
+or linked-worktree configuration, reject before object lookup; negative fixtures prove no
+index/object mutation, hidden dirt, fsmonitor execution, or promisor access. The performance gate
 now owns a checked-in harness, two isolated clean revisions, byte-identical benchmark/configuration
 inputs, native CPU mode, five named one-million-row fields, ten order-balanced sample pairs, an
 exact median calculation, and a per-field 1.05 ratio threshold. Outside-arena key and skipped-value
@@ -99,7 +99,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`43d221f29326dd6b3d649bf6f8d1e11b59afdbb9` against a clean detached checkout of the exact pinned
+`b80883fb4d7ca5e25d40c611210be90f5057f56f` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
