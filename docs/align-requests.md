@@ -1901,7 +1901,7 @@ align_cleanup_revision="$(tr -d '\n' < eval/fixtures/c6-json-escape-adoption/cle
 align_request7_revision="$(tr -d '\n' < .align-revision)"
 
 partial_clone_status=0
-clean_git -C "$ALIGN_REPO" config --includes --local --name-only --get-regexp \
+clean_git -C "$ALIGN_REPO" config --includes --name-only --get-regexp \
   '^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$' \
   >/dev/null 2>&1 || partial_clone_status=$?
 test "$partial_clone_status" = 1
@@ -1952,10 +1952,13 @@ reject the actual `remote.<name>.promisor` / `remote.<name>.partialclonefilter` 
 `cat-file` or `merge-base`, without contacting the remote, creating an object, or changing the
 index. Separate negatives cover the legacy extension key and mixed-case remote subsections. A
 repository-local `include.path` negative places the promisor keys only in the included file and
-proves that effective local configuration is still rejected. A separate clean-checkout regression
-makes the index stat cache eligible for refresh and proves the exact revision check plus every
-ancestry command leaves its index bytes and metadata unchanged under `GIT_OPTIONAL_LOCKS=0`. The
-common-dir capture
+proves that included configuration is still rejected. A linked-worktree negative enables
+`extensions.worktreeConfig` and places the promisor keys only in that worktree's
+`config.worktree`; it must also reject before object access. Thus the query covers all effective
+repository-local and worktree configuration after the empty environment has excluded system,
+global, XDG, and command-scope inputs. A separate clean-checkout regression makes the index stat
+cache eligible for refresh and proves the exact revision check plus every ancestry command leaves
+its index bytes and metadata unchanged under `GIT_OPTIONAL_LOCKS=0`. The common-dir capture
 appends a fixed non-newline sentinel before shell command
 substitution can discard Git's output terminator, requires exactly one LF immediately before that
 sentinel, removes only that exact suffix with shell parameter expansion, and then requires a
