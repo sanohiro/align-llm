@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `ab833d0d229f43fcc63c844882387bac655e5cd8`
+  `ebe777111ae9484ad68b7818c7c0d83b90e51952`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -44,7 +44,13 @@ failure byte offsets and logical arena allocations. The probe is not a productio
 process-global counter. Tests that also read existing process-global heap counters must acquire
 `ALLOC_COUNT_LOCK` before setup and hold it through cleanup and assertions. Every corpus validity
 class now has a unique class anchor, and its recorded document offset obeys an exact block-boundary
-equation, so boundary coverage cannot be satisfied by choosing an irrelevant byte.
+equation, so boundary coverage cannot be satisfied by choosing an irrelevant byte. A later
+host-native review demonstrated that crossing all token classes with declared-key positions and
+nested flat-SoA paths was not executable under Align's ASCII identifier and flat-column rules. The
+corpus design was therefore reopened: the 4,096-row Cartesian artifact now owns grammar only,
+places every token in a nested undeclared `probe` value that every named path can parse or skip,
+and leaves declared-key, returned-value materialization, `json.doc.key`, and duplicate semantics to
+the exact hand-authored public matrices.
 
 A second adversarial review found that a proposed joint-delivery exception contradicted the
 cleanup-first lifecycle and that align-llm can pin only one Align commit. The final contract removes
@@ -55,7 +61,9 @@ checked-in fixtures, rejects equal, non-raw-commit, replacement-forged, shallow,
 revision states, and then runs isolated Align-repository `merge-base --is-ancestor` checks before
 any client fixture. Hosted adoption CI must expand history without changing the exact detached
 Request 7 checkout or worktree, and its fixed target list must invoke the same
-`c6-json-escape-adoption` target that local `make ci` runs.
+`c6-json-escape-adoption` target that local `make ci` runs. The ancestry gate also resolves the
+Git common directory and rejects any existing or symlinked `info/grafts` path before ancestry
+inspection; `GIT_NO_REPLACE_OBJECTS` alone does not disable graft parents.
 
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
@@ -72,7 +80,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`ab833d0d229f43fcc63c844882387bac655e5cd8` against the exact pinned sibling checkout:
+`ebe777111ae9484ad68b7818c7c0d83b90e51952` against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
