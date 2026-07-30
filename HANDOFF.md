@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `8a568cd77d0faa7c081e2c76222da9a200118f69`
+  `0a97df2872957c25406d30419206fb4c804f8ea7`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -86,7 +86,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`8a568cd77d0faa7c081e2c76222da9a200118f69` against the exact pinned sibling checkout:
+`0a97df2872957c25406d30419206fb4c804f8ea7` against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
