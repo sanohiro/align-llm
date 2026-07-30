@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `02f0204bcbf3e7e67c909520e1ddc017db2d20be`
+  `2cdf18340fe0456f01f5a7bfe7b50c952d23f5fb`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -122,6 +122,14 @@ ignored inputs outside an ordinary root `target/`. Typed paths perform fixed-sta
 string-grammar validation before retained-string materialization, so grammar failures allocate
 zero; later semantic failures have an exact zero/one/two per-rail allocation oracle.
 
+The latest exact-SHA reviews then closed the remaining evidence-level ambiguity in those two
+boundaries. The benchmark comparator must isolate every field in the saved Cargo/Rust identity,
+while real-file barriers cross both tools, both revalidation placements, and content, mode, mtime,
+inode, size, and type mutations. Persisted revision validation now uses one shared binary-safe
+reader for `.align-revision` and both prerequisite fixtures before shell extraction or Git access;
+its matrix includes a NUL at every position and the command-substitution-sensitive
+`<40-hex><NUL><LF>` case.
+
 Scanner framing repair is outside Request 7. Scanner coverage uses only valid top-level-array and
 NDJSON frames and changes string-token grammar inside Request 6-admitted Copy rows. Missing
 delimiters, ambiguous EOF, and other framing behavior remain shipped behavior; a future concrete
@@ -137,7 +145,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`02f0204bcbf3e7e67c909520e1ddc017db2d20be` against a clean detached checkout of the exact pinned
+`2cdf18340fe0456f01f5a7bfe7b50c952d23f5fb` against a clean detached checkout of the exact pinned
 Align commit:
 
 ```text
