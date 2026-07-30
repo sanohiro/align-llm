@@ -9,7 +9,7 @@ request checks, reviews, and attestations.
 - Base and relevant main commit:
   `54f290154a5f33e476cd17d6770f90b0f3838903` (`origin/main`)
 - Relevant Request 7 content head:
-  `8e32d5a856b53f12ba4a2a1973d1e5fe4ff0582e`
+  `190436934f06307b1dfe3570a72ec2ad94259f14`
 - Active goal: review and merge Request 7, escaped strings and strict string grammar for declared
   JSON decoding, as the next independently demonstrated Align prerequisite for C6.
 - Product implementation: not started.
@@ -46,7 +46,9 @@ cleanup-first lifecycle and that align-llm can pin only one Align commit. The fi
 joint delivery. A Request 7 implementation branch may start only after the named cleanup commit is
 merged, and the final Request 7 commit must retain that cleanup commit as an ancestor. Adoption pins
 only the final Request 7 commit in `.align-revision`, records the cleanup commit in a checked-in
-fixture, and runs an Align-repository `merge-base --is-ancestor` check before any client fixture.
+fixture, rejects equal or non-commit revisions, and then runs an Align-repository
+`merge-base --is-ancestor` check before any client fixture. Equal and unrelated valid commits are
+explicit negative regressions, so the cleanup revision must be a strict ancestor.
 
 The bounded retrospective after PR #24 established three reusable decisions:
 
@@ -58,7 +60,7 @@ The bounded retrospective after PR #24 established three reusable decisions:
 ## Verification
 
 Verified on 2026-07-30 at Request 7 content head
-`8e32d5a856b53f12ba4a2a1973d1e5fe4ff0582e` against the exact pinned sibling checkout:
+`190436934f06307b1dfe3570a72ec2ad94259f14` against the exact pinned sibling checkout:
 
 ```text
 git diff --check                         PASS
