@@ -108,6 +108,14 @@ portability correction was audited against merged baseline-identity design commi
   crosses into the child.
 - No unnamed configuration input is added. Existing tool and operating-system requirements remain
   explicit in their owning scripts and documentation.
+- The later `git245-locked-inputs-unit` recipe uses target-specific `override` assignments for
+  `SHELL=/bin/sh` and `.SHELLFLAGS=-eu -c`. Its only direct acceptance invocation is the exact
+  option-free `make git245-locked-inputs-unit`; other caller Make control-plane states remain
+  unsupported diagnostics because GNU Make parses them before a recipe can establish isolation.
+  The canonical aggregate child remains admitted because this topology clears inherited option
+  variables and supplies only its owned `-j1` plus the exact goal list. The locked-input design owns
+  the complete distinction between Make control state and the Python process's fixed empty-derived
+  environment.
 
 ### 2.2 Result, error, ownership, and allocation
 
@@ -626,6 +634,7 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Topology malformed input | script self-test | synthetic argument vectors and environment maps through production validation helpers | All 27 exact/missing/non-ASCII field states reach their exact empty-arity outcome and arity-first outcome; mutation, empty, and whitespace cases reach their specified diagnostics. |
 | Topology bounded diagnostics | script self-test | compare full report bytes while bounding only each escaped diagnostic input to 4,096 bytes with an in-cap truncation marker | Two reports that differ only beyond their identical retained diagnostic prefix still reach different full-byte comparison outcomes; the retained prefix is exactly 4,096 bytes and both escaped diagnostic values contain the same in-cap marker. |
 | Make-to-shell boundary | `Makefile` plus script self-test | `override :=` lists and target-specific `override export`; recipe contains no list expansion | Dangerous command-line and environment overrides are ignored, the gate passes, and no marker is created. |
+| Locked-input Make control plane | `Makefile` plus script self-test | target-specific override `/bin/sh` and `-eu -c`; no audit-data expansion; exact option-free direct invocation or canonical option-cleared aggregate child only | Hostile `SHELL` and `.SHELLFLAGS` assignments cannot replace the recipe shell. A synthetic unit failure propagates through both admitted invocations. Ignore/dry-run/question/touch/keep-going/silent modes, inherited `MAKEFLAGS`/`GNUMAKEFLAGS`, alternate makefiles, `--eval`, assignments, and extra goals are classified as unsupported diagnostics rather than valid gate evidence. |
 | Self-test child output and lifecycle | `scripts/check-gate-topology` | own a new-session child group; concurrently drain binary pipes in fixed chunks; retain at most 4,096 bytes per stream; enforce the deadline; terminate, kill, reap, join, and close in order; reject overflow or non-UTF-8 | A simultaneous two-pipe overflow child sets both overflow bits with exactly 4,096 retained bytes per stream; after a bounded readiness handshake, a hanging child plus descendant is terminated without a live process-group member or pipe reader; missing readiness plus synthetic launch, nonzero, invalid-UTF-8, stderr, and wrong-stdout cases reject; the real Make child returns exact PASS stdout and empty stderr within 10 seconds. |
 | Self-test child OS-operation faults | `scripts/check-gate-topology` | put every operation after successful `Popen` inside the cleanup guard and track only successfully started readers | Injected first-reader start failure enters cleanup, reaps the direct child, closes both pipes, and leaves no process-group member. DEFERRED: deterministic injection of pipe-read, wait, signal, thread-join, and pipe-close failures requires a substitutable process-operation seam that this repository does not otherwise need. The implementation review audits the remaining post-launch exception paths against the specified cleanup order; timeout plus descendant and launch-failure regressions cover the executable lifecycle. A separate child-runner hardening slice must add the seam before claiming the remaining fault-injection coverage. |
 | Direct hosted success | `Makefile` | one explicit `-j1` child Make over the ordered hosted goals | Run with the pinned compiler; the offline Git 2.45 locked-input unit and all existing hosted-compatible focused smokes pass. |

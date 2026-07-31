@@ -22,13 +22,16 @@ or modify LLVM on the developer machine.
 Delivery order is:
 
 1. merge this locked-input/audit design;
-2. implement and accept the lock, vendored installer, audit executable, fixtures, and Make target;
-3. separately design and implement Docker construction and local no-push acceptance against the
+2. implement and accept the lock, vendored installer, offline production parser/self-test, and Make
+   target as one independently passing hosted slice;
+3. extend that same executable with the bounded HTTPS transfer and real four-archive audit as a
+   second independently passing slice;
+4. separately design and implement Docker construction and local no-push acceptance against the
    merged locked inputs;
-4. separately design and implement the hosted minimum-environment no-push gate;
-5. design publication/provenance, then publish only with explicit repository-owner authority;
-6. separately design and implement registration; and
-7. let `docs/specs/check-gate-topology.md` consume only the registered immutable digest.
+5. separately design and implement the hosted minimum-environment no-push gate;
+6. design publication/provenance, then publish only with explicit repository-owner authority;
+7. separately design and implement registration; and
+8. let `docs/specs/check-gate-topology.md` consume only the registered immutable digest.
 
 ## 2. Public-contract ledger
 
@@ -37,11 +40,12 @@ Delivery order is:
 | Input directory | `.github/images/git-2.45-compat/inputs/`. Its complete descendant topology is exactly two regular files, `sources.json` and `llvm.sh`, with no symlink, hard link, subdirectory, device, socket, or additional entry. Checked-in file modes are `100644`; an author filesystem may expose directory mode `0555`/`0755` and file mode `0444`/`0644`. |
 | Source lock | `.github/images/git-2.45-compat/inputs/sources.json`, schema version 1. Its complete 1,301 bytes are the canonical JSON in section 3; SHA-256 is `0b27dd188cd4536efe2adb5b92e86d81bfbf23fd7fe87e770d58d03d061459a0`. |
 | LLVM input | `.github/images/git-2.45-compat/inputs/llvm.sh`, exactly 8,277 bytes, SHA-256 `9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36`. The origin URL is attribution only; the audit never fetches or executes it. |
-| Offline target | `make git245-locked-inputs-unit`. Its fixed recipe invokes the production audit executable's self-test mode through `/usr/bin/env -i`. It accepts no caller value, performs no network, Git, Docker, or repository write, and is a hosted focused target included in `hosted-checks`, `capable-checks`, and `make ci` through the authoritative graph in `docs/specs/check-gate-topology.md`. |
+| Offline target | `make git245-locked-inputs-unit`. Under the admitted Make control plane below, its fixed recipe invokes the production audit executable's self-test mode through `/usr/bin/env -i`. It accepts no audit-data value, performs no network, Git, Docker, or repository write, and is a hosted focused target included in `hosted-checks`, `capable-checks`, and `make ci` through the authoritative graph in `docs/specs/check-gate-topology.md`. |
 | Real audit command | `/usr/bin/env -i LC_ALL=C /usr/bin/python3 -I -B ./.github/image-tests/git-2.45-compat/audit-locked-archives --audit`, invoked from the repository root with exactly those fixed tokens. It accepts no Make variable, path, operation ID, URL, credential, or other caller value and downloads and audits only the four locked archives. |
 | Minimum host | Linux x86_64, CPython 3.12 or newer at `/usr/bin/python3`, `/usr/bin/env`, the Python `errno`, `hashlib`, `json`, `lzma`, `os`, `platform`, `secrets`, `signal`, `ssl`, `stat`, `struct`, `sys`, `time`, `urllib.error`, `urllib.parse`, `urllib.request`, and `zlib` standard-library modules, a mode-`01777` `/tmp`, and HTTPS connectivity to the four locked origins. The offline target additionally requires GNU Make 4.3 or newer. Ubuntu 24.04 x86_64 with its `/usr/bin/python3` 3.12 and GNU Make 4.3 is the required minimum acceptance environment; newer local CPython and Make runs are supplementary. |
 | Credentials and environment | None. Both public entrypoints start the Python process with exactly `LC_ALL=C` through `/usr/bin/env -i`; the executable rejects any other process-environment name or value before input, owned-root, or network side effects. The opener has no proxy, cookie, authentication, redirect, or caller-header handler. No secret value is inherited, read, or reported. |
-| Output | The offline Make recipe suppresses command echo and preserves the executable's status and bytes. On its failure GNU Make may append its own host-version diagnostic to stderr; that suffix is not part of the executable contract. The direct audit command has no Make-owned suffix. Both modes otherwise use the exact status and byte contracts in sections 5.4 and 6 and stream no child output. |
+| Make control plane | Valid focused evidence is the exact command `make git245-locked-inputs-unit` with the repository's default Makefile and no option, environment-supplied `MAKEFLAGS`/`GNUMAKEFLAGS`, alternate makefile, `--eval`, variable assignment, or additional goal. Canonical aggregate evidence is only the option-cleared child invocation owned by `docs/specs/check-gate-topology.md`. Target-specific `override` assignments fix `SHELL=/bin/sh` and `.SHELLFLAGS=-eu -c`. GNU Make parses caller control state before any recipe can establish a security boundary, so every other direct Make invocation is unsupported diagnostic behavior and is not acceptance evidence. |
+| Output | For an admitted Make invocation, the offline recipe suppresses command echo and preserves the executable's status and bytes. On its failure GNU Make may append its own host-version diagnostic to stderr; that suffix is not part of the executable contract. Ignore-errors, dry-run, question, touch, keep-going, silent, alternate-makefile, `--eval`, or other caller Make modes are outside this promise. The direct audit command has no Make-owned suffix. Both executable modes otherwise use the exact status and byte contracts in sections 5.4 and 6 and stream no child output. |
 | Persisted identity | `sources.json` and `llvm.sh` are reviewed inputs. The audit result, downloaded archives, and owned root are disposable and are never a persisted result, cache identity, or publication attestation. |
 | Cache | N/A: the audit performs fresh fixed downloads and has no cache import, export, lookup, or write. |
 | Hosted integration | The existing Ubuntu 24.04 workflow runs the offline target only through the canonical `make -j8 hosted-checks` aggregate. The real network audit remains an author acceptance command and is not added to Actions. Docker no-push acceptance, Actions credentials, OCI identity, registry authentication, visibility, provenance, artifact transport, and commit registration are deferred. |
@@ -143,12 +147,14 @@ slice makes no claim that the script has run.
 ### 5.1 Fixed entrypoints, host, paths, and environment
 
 Executable `.github/image-tests/git-2.45-compat/audit-locked-archives` is the sole implementation
-behind both modes. Neither public entrypoint accepts a variable input. The offline target has this
-exact Make fragment, with each `<TAB>` replaced by one literal recipe tab:
+behind both modes. Neither Python invocation accepts a variable audit-data input. The offline target
+has this exact Make fragment, with each `<TAB>` replaced by one literal recipe tab:
 
 ```text
 .PHONY: git245-locked-inputs-unit
 
+git245-locked-inputs-unit: override SHELL := /bin/sh
+git245-locked-inputs-unit: override .SHELLFLAGS := -eu -c
 git245-locked-inputs-unit:
 <TAB>@/usr/bin/env -i LC_ALL=C \
 <TAB>  /usr/bin/python3 -I -B \
@@ -172,12 +178,21 @@ The corresponding process argument vectors are exactly:
  "./.github/image-tests/git-2.45-compat/audit-locked-archives","--audit"]
 ```
 
-No Make variable, shell-expanded value, path, URL, operation ID, credential, or ambient option
-crosses either boundary. The executable accepts exactly one mode token, `--audit` or `--self-test`;
-unknown, repeated, empty, or positional tokens reject. It then requires its complete environment
-map to be exactly `{"LC_ALL": "C"}` and rejects any additional, missing, or changed name or value
-before opening repository inputs, creating an owned root, or using the network. The executable
-reads no stdin and launches no child process.
+No Make variable, shell-expanded audit-data value, path, URL, operation ID, credential, or ambient
+option reaches the Python process. The two target-specific `override` assignments prevent a
+command-line or environment `SHELL` or `.SHELLFLAGS` value from changing the recipe shell. They do
+not turn GNU Make into a security boundary: Make has already parsed its process options, alternate
+makefiles, `--eval` text, variable values, and goals. Only the two admitted Make invocations in the
+ledger are acceptance evidence; all other Make control-plane states are unsupported diagnostics.
+
+Before selecting a mode, the executable admits exactly the complete argument vector containing one
+token, `--audit` or `--self-test`. Missing, empty, unknown, repeated, or additional positional or
+option tokens return status 1, empty stdout, and exactly
+`git 2.45 locked-input: ERROR argument` plus LF on stderr. This pre-dispatch grammar is independent
+of both mode-specific prefixes. An admitted mode then requires its complete environment map to be
+exactly `{"LC_ALL": "C"}` and rejects any additional, missing, or changed name or value before
+opening repository inputs, creating an owned root, or using the network. The executable reads no
+stdin and launches no child process.
 
 Both modes require Linux, machine `x86_64`, CPython 3.12 or newer, and the standard-library modules
 named in the ledger. The offline target additionally relies on GNU Make 4.3 or newer only to invoke
@@ -223,8 +238,9 @@ according to acquisition state. No mode overlaps two timed operations in one pro
 `KeyboardInterrupt` and any other Python exception that reaches the owner use the same
 cleanup attempt. An external signal that terminates the process without entering Python cleanup is
 outside this slice's cleanup guarantee. If attempted cleanup cannot finish, at most one root with
-the exact mode-specific prefix and a 32-hex suffix may remain below `/tmp`. No broad recovery
-deletion is authorized.
+the exact mode-specific prefix and a 32-hex suffix may remain: the current invocation's one retained
+basename. The process neither counts, alters, nor makes any guarantee about matching roots left by
+an earlier or simultaneous unsupported invocation. No broad recovery deletion is authorized.
 
 ### 5.2 Transfer contract
 
@@ -234,28 +250,36 @@ no partial sibling, rename, link, or replacement transition. The file is in `wri
 its size and digest are accepted; no scan observes that state. The audit constructs a fresh
 `urllib.request.OpenerDirector`, sets `addheaders` to the empty list, and registers exactly one
 `HTTPSHandler` made with the owned TLS context. It registers no `ProxyHandler`,
-`HTTPErrorProcessor`, cookie, authentication, redirect, or caller-header handler and implements
-status handling and redirects itself.
+`HTTPErrorProcessor`, cookie, authentication, redirect, or caller-header handler.
 It issues only `GET` with no body, fixed `Accept-Encoding: identity`, and no caller-derived header.
-It accepts only HTTPS port 443 URLs without userinfo or fragment; redirect status 301, 302, 303,
-307, or 308 with exactly one syntactically valid `Location`; a final status 200; exactly one
-canonical-decimal `Content-Length` equal to the locked size; no `Transfer-Encoding`; and absent or
-exactly `identity` `Content-Encoding`. It permits at most five redirects, rejects a repeated URL,
-resolves a relative `Location` against the current HTTPS URL, and rejects userinfo, fragments,
-non-443 ports, non-HTTPS schemes, and downgrade after every resolution.
+It admits each canonical locked origin only when it is an HTTPS port 443 URL without userinfo or
+fragment. The response must be the immediate final status 200; every informational, redirect, other
+successful, or error status rejects without following a `Location`. It requires exactly one
+canonical-decimal `Content-Length` equal to the locked size, no `Transfer-Encoding`, and absent or
+exactly `identity` `Content-Encoding`. Because no redirect is admitted, no redirect header encoding,
+resolution, normalization, repetition, or allocation contract exists in this slice.
 TLS uses `ssl.create_default_context()` with hostname and certificate verification enabled and no
 caller-supplied CA, client certificate, key-log path, or context mutation. Each request produces at
 most one owned `HttpsResponse`, comprising the response object and its underlying TLS socket. A
-redirect response is closed before the next request begins. Status/header rejection, read failure,
-digest failure, and successful EOF all close the current response in a `finally` path before file
-acceptance or transfer cleanup; response-close failure remains a failure in the active download
-phase.
+status/header rejection, read failure, digest failure, and successful EOF all close the current
+response in a `finally` path before file acceptance or transfer cleanup; response-close failure
+remains a failure in the active download phase. A rejected response never triggers another request
+for that archive.
 
-The reader fails before buffering or writing one byte beyond the locked compressed size. It
-requires exact size and SHA-256, flushes and `fsync`s the file and downloads directory, then moves
-the already named file from `writing` to `accepted` while retaining the same descriptor for
-scanning. A failed transfer closes and unlinks only its exact fixed destination and `fsync`s the
-downloads directory. No downloaded byte is logged.
+The reader owns one fixed 65,536-byte `bytearray` and uses `response.readinto()` with a memoryview
+bounded by both that capacity and the locked remaining size. After the locked size is reached it
+performs exactly one one-byte `readinto()` EOF probe. It never calls unbounded `read()`, retains a
+second body chunk, or hashes or writes bytes beyond the locked size. A returned count outside the
+offered view rejects before hash or write. Each admitted slice is hashed and written completely
+before the buffer is reused.
+
+The reader requires exact size and SHA-256, flushes and `fsync`s the file and downloads directory,
+then moves the already named file from `writing` to `accepted`. It performs exactly
+`os.lseek(descriptor, 0, os.SEEK_SET)`, requires returned offset zero, and only then lends that same
+descriptor to `ArchiveScan`. The scanner's first bounded read begins at offset zero, validates the
+exact leading compression magic without discarding it, and feeds that complete buffered chunk,
+including the magic, to the decompressor. A failed transfer or cursor transition closes and unlinks
+only its exact fixed destination and `fsync`s the downloads directory. No downloaded byte is logged.
 
 ### 5.3 Compression and tar contract
 
@@ -335,14 +359,14 @@ archives to pass those same production scanners.
 
 ### 5.4 Status, validation order, and cleanup
 
-In `--audit` mode the executable launches no child and streams no nonsemantic output. Direct
-success status is zero,
+The pre-dispatch malformed-vector result is the exact universal argument error in section 5.1; it
+creates no mode owner and emits no audit- or unit-prefixed line. After `--audit` is selected, the
+executable launches no child and streams no nonsemantic output. Direct success status is zero,
 stdout is exactly `git 2.45 locked-input archive audit: PASS` plus LF, and stderr is empty. Failure
 status is 1, stdout is empty, and stderr contains one primary line and, only when cleanup also
 fails, one following cleanup line. The finite categories are:
 
 ```text
-argument
 environment
 source
 filesystem
@@ -358,8 +382,8 @@ internal
 cleanup
 ```
 
-Each line is exactly `git 2.45 locked-input archive audit: ERROR <category>` plus LF. The first
-failure in this validation order is immutable:
+Each audit-mode line is exactly `git 2.45 locked-input archive audit: ERROR <category>` plus LF.
+Across dispatch and audit mode, the first failure in this validation order is immutable:
 
 1. exact mode;
 2. exact process environment, operating system, machine, CPython version, required modules, initial
@@ -369,10 +393,10 @@ failure in this validation order is immutable:
 5. the four downloads in section 3 order; and
 6. the four archive scans in section 3 order.
 
-Mode failures map to `argument`; environment, host, initial signal/timer, or work-deadline
-acquisition failures to `environment`; input validation to `source`; root operations to
-`filesystem`; and each transfer/scan to its named category. An unexpected exception maps to the
-active phase, or `internal` if no phase owns it. Cleanup then closes every
+Mode failures use the universal argument line; environment, host, initial signal/timer, or
+work-deadline acquisition failures map to `environment`; input validation to `source`; root
+operations to `filesystem`; and each transfer/scan to its named category. An unexpected exception
+maps to the active phase, or `internal` if no phase owns it. Cleanup then closes every
 response, buffer, file, and directory descriptor, unlinks fixed archive names, removes fixed
 children, and removes the owned root descriptor-relatively through the retained `/tmp` descriptor
 in reverse acquisition order. Cleanup failure appends exactly one final
@@ -388,8 +412,8 @@ Offline target `make git245-locked-inputs-unit` has the silent fixed recipe argu
 `["/usr/bin/env","-i","LC_ALL=C","/usr/bin/python3","-I","-B",
 "./.github/image-tests/git-2.45-compat/audit-locked-archives","--self-test"]`. It therefore executes
 the same checked-in source and production helper functions as audit mode. Self-test mode receives
-only the exact fixed environment, performs no network or child-process call, and accepts no caller
-value. Direct success status is
+only the exact fixed environment, performs no network or child-process call, and accepts no
+audit-data value from the caller. Direct success status is
 zero with exact stdout `git 2.45 locked-input unit tests: PASS` plus LF and empty stderr. Failure
 status is 1 with empty stdout and bounded UTF-8 stderr: at most 1 MiB, LF-terminated lines without
 NUL or CR. Fixed diagnostic lines are followed by exact primary line
@@ -410,7 +434,7 @@ fixed offline adapter and inclusion of the offline target in the authoritative h
 `scripts/check-gate-topology` owns the corresponding exact graph oracle. Audit mode is invoked only
 through the direct fixed command and has no Makefile adapter.
 
-The implementation uses eight ordinary, non-persisted ownership records:
+The implementation uses nine ordinary, non-persisted ownership records:
 
 - `InputSet` retains no-follow descriptors for the repository root, audit file, input directory,
   lock, and LLVM file. The repository descriptor remains live through owned-root construction and
@@ -427,19 +451,27 @@ The implementation uses eight ordinary, non-persisted ownership records:
   then disarms and restores before output or return.
 - `HttpsClient` owns one default-verifying TLS context and one exact-handler opener from construction
   in the first download phase until the four sequential downloads finish or cleanup releases them.
-  It has no ambient proxy, credential, cookie, redirect, or caller-header state.
+  It has no ambient proxy, credential, cookie, redirect, or caller-header state and issues exactly
+  one request per archive.
 - `HttpsResponse` owns at most one response and its TLS socket from opener return until mandatory
-  close. Ownership ends before a redirect, transfer acceptance, or error return.
+  close. Ownership ends before transfer acceptance or error return.
+- `TransferBuffer` owns one 65,536-byte mutable body buffer from immediately before the final-status
+  body loop until response closure. Only one bounded memoryview is live per `readinto()` call; an
+  admitted slice is fully hashed and written before reuse, and no slice escapes the owner.
 - `DownloadFile` moves from absent to writing to accepted while retaining the direct fixed-name
   descriptor; every non-absent state authorizes only exact-name unlink below the retained downloads
-  descriptor. It has no second name or install transition.
-- `ArchiveScan` borrows one accepted descriptor and owns bounded decompressor/parser buffers plus
-  the complete-byte normalized-path set bounded by 16,384 entries and 64 MiB of path bytes. It
-  closes buffers, releases the table, and transfers no handle or semantic object to a caller.
+  descriptor. Acceptance includes an exact seek-to-zero transition before lending the descriptor;
+  it has no second name or install transition.
+- `ArchiveScan` borrows one accepted descriptor positioned at zero and owns bounded
+  decompressor/parser buffers plus the complete-byte normalized-path set bounded by 16,384 entries
+  and 64 MiB of path bytes. Its first buffer both validates and retains the exact compression magic
+  for decompression; it closes buffers, releases the table, and transfers no handle or semantic
+  object to a caller.
 
 | Path | Owner | Success | Failure/early exit | Required regression |
 | --- | --- | --- | --- | --- |
-| Fixed entrypoints and mode | Makefile + audit | offline recipe and direct audit command have the exact fixed `/usr/bin/env` and Python vectors; executable receives exactly one admitted mode | no audit input can undergo Make or recipe-shell expansion; malformed mode fails before input/root/network | static byte/token comparison for the Make recipe and documented direct command; missing/empty/repeated/unknown/positional mode cases through a direct argument vector; no `GIT245_AUDIT_*` variable or parser exists |
+| Make control plane | Makefile | admitted direct command or canonical option-cleared aggregate child; target-specific override shell and flags | other Make options, environment flags, alternate files, eval text, assignments, and goals are unsupported diagnostics, not a security or evidence boundary | static exact fragment; `SHELL=/bin/false` and hostile `.SHELLFLAGS` cannot replace the recipe shell; admitted direct and aggregate invocations propagate a synthetic executable failure; `-i`, `-n`, `-q`, `-t`, `-k`, `-s`, inherited `MAKEFLAGS`/`GNUMAKEFLAGS`, `-f`, `--eval`, assignment, and extra-goal cases are explicitly rejected as acceptance evidence by the harness without claiming their Make-level status |
+| Fixed entrypoints and mode | Makefile + audit | admitted offline recipe and direct audit command have the exact fixed `/usr/bin/env` and Python vectors; executable receives exactly one admitted mode | no audit-data input can undergo Make or recipe-shell expansion; malformed vector fails before environment/input/root/network | static byte/token comparison for the Make recipe and documented direct command; missing/empty/repeated/unknown/positional vectors each return status 1, empty stdout, and the exact universal argument line; no `GIT245_AUDIT_*` variable or parser exists |
 | Environment and minimum host | audit | exact `LC_ALL=C` map; Linux x86_64; CPython 3.12+ and required stdlib; GNU Make 4.3+ for the offline adapter | exact environment diagnostic before input/root/network | added/missing/changed environment; wrong OS/machine/Python version; missing-module injected seams; required Ubuntu 24.04 x86_64 hosted run with CPython 3.12 and GNU Make 4.3; newer author run recorded separately |
 | Source lock | `InputSet` | exact bytes/hash, canonical decode/re-encode, exact semantics | all opened descriptors close; no root/network | golden bytes/hash; every key/order/type/UTF-8/NUL/CR/LF/number/string mutation; replacement/in-place/short read |
 | LLVM file | `InputSet` | exact descriptor kind/link-count/mode/size/hash | descriptors close; no root/network | missing/extra/symlink/hard-link/mode/size/hash/source replacement/partial-open cases |
@@ -447,16 +479,16 @@ The implementation uses eight ordinary, non-persisted ownership records:
 | Audit-root creation | `AuditRoot` | retained `/tmp`, create-exclusive random basename, mode-`0700` root, and fixed child retained | `/tmp`-descriptor-relative partial cleanup and absence proof | deterministic suffix collision and eight-attempt exhaustion; partial mkdir/open/chmod/fsync; parent path replacement; cleanup failure |
 | Unit-root lifecycle | `UnitRoot` | create-exclusive random root and synthetic fixtures removed | exact unit/cleanup diagnostics; no repository write | deterministic suffix collision and exhaustion; exact empty environment; partial fixture creation; cleanup failure; root absence proof |
 | Deadline lifecycle | `AuditDeadline` | exact 300/3,600-second work timer, at-most-60-second network operations, 30-second cleanup timer, then default/zero restoration | timeout retains the active primary; cleanup timeout appends cleanup and may leave only the exact owned root | inherited ignored handler or active timer; install/replacement/disarm/restore faults; timeout in source/download/archive/unit and cleanup; remaining-duration boundary; final default/zero proof |
-| HTTPS client | `HttpsClient` | one default TLS context and exact one-handler opener serve the four sequential downloads | construction/use failure maps to the active download and releases context/opener references | exact handler list and empty `addheaders`; no proxy/auth/cookie/redirect handler; context verification flags; construction failure; release on first-through-fourth download exits |
-| HTTPS response | `HttpsResponse` | each final or redirect response closes exactly once before the next transition | active download remains primary; no socket/response retained | opener failure; redirect; status/header rejection; read/hash/EOF failure; close failure; success close |
-| HTTPS transfer | `DownloadFile` | direct fixed name moves writing to accepted with exact size/hash | response/file close, exact fixed-name unlink, and parent fsync | each URL/redirect/status/encoding/size/hash/write/fsync failure; failure before/after direct create and acceptance; no credential/proxy/header |
+| HTTPS client | `HttpsClient` | one default TLS context and exact one-handler opener issue one request for each of four sequential downloads | construction/use failure maps to the active download and releases context/opener references; no redirect is followed | exact handler list and empty `addheaders`; no proxy/auth/cookie/redirect handler; context verification flags; every non-200 status including all redirect classes; construction failure; release on first-through-fourth download exits |
+| HTTPS response and body buffer | `HttpsResponse` + `TransferBuffer` | each final response closes exactly once; one 65,536-byte buffer is reused with bounded `readinto`, exact EOF probe, and no retained slice | active download remains primary; no socket, response, memoryview, or body chunk retained | opener failure; status/header rejection; readinto counts 0/1/65,535/65,536 and invalid count; locked-size boundary plus extra byte; read/hash/write/EOF/close failure; proof that unbounded `read` is never called |
+| HTTPS transfer and scan handoff | `DownloadFile` | direct fixed name moves writing to accepted with exact size/hash, exact seek-to-zero, and compression-magic first read | response/file close, exact fixed-name unlink, and parent fsync | each URL/status/encoding/size/hash/write/fsync/lseek failure; failure before/after direct create and acceptance; pre-seek EOF position followed by zero-offset/magic observation; no credential/proxy/header |
 | Compression | `ArchiveScan` | exactly one bounded XZ stream or gzip member, with no unused byte including zero padding | buffers and table release; accepted file remains cleanup-owned | truncation/checksum/concatenation/unused/zero-padding/unconsumed-tail/uncompressed-size/buffer/allocation limits |
 | Tar scan | `ArchiveScan` | exact header dialect, complete admitted semantic set, full-byte uniqueness, and terminator | buffers and table release; accepted file remains cleanup-owned | every field, checksum, type, path, collision, long-name, terminator, entry/path/table/buffer limit in section 5.3 |
 | Diagnostics | audit | PASS only after absence proof | exact primary and optional cleanup lines | every category, active-phase exception, primary+cleanup, cleanup-only, exact status/stdout/stderr |
 | Unit diagnostics | focused runner | exact PASS or bounded fixed-identifier failure grammar | primary unit line retained before optional cleanup | assertion failure, overflow, invalid diagnostic byte, unit+cleanup, cleanup-only |
 | Production-source binding | audit executable | both modes dispatch to the same helper objects in the same loaded source | mode-specific failure grammar | source inspection plus sentinel mutation of each production helper observed by self-test; no duplicate parser implementation |
 | Normal cleanup | all owners | responses closed; downloads, children, and root absent through retained parent | primary retained; one cleanup line | failure before/after every acquisition, response transition, unlink, and cleanup operation; repeated cleanup after success is no-op |
-| Python interruption | audit owner | N/A | `KeyboardInterrupt` or another Python exception entering the owner attempts ordinary bounded cleanup; at most one exact mode-prefixed 32-hex root may remain below `/tmp`; no automatic broad deletion | injected `KeyboardInterrupt` after each ownership acquisition and during active transfer/scan; static confirmation that externally terminating signals are outside this slice |
+| Python interruption | audit owner | N/A | `KeyboardInterrupt` or another Python exception entering the owner attempts ordinary bounded cleanup; the current invocation may leave at most its own one retained mode-prefixed 32-hex basename below `/tmp`; no claim or mutation applies to another invocation's root | injected `KeyboardInterrupt` after each ownership acquisition and during active transfer/scan; stale matching-root fixture remains untouched and outside the current invocation's absence/count proof; static confirmation that externally terminating signals are outside this slice |
 
 Construction, success, failure, malformed input, cleanup, and early exit are covered above.
 Replacement, move-out, returned handles, generic monomorphization, interface serialization,
@@ -473,9 +505,11 @@ one top-level Make invocation. Their complete coexistence and independent-proces
 | `F+F` | GNU Make de-duplicates the repeated goal and runs it once | focused marker/de-duplication self-test |
 | `F+C` | rejected during Makefile parsing before side effects because an aggregate must be the sole top-level goal | existing aggregate-plus-focused topology self-test, with `F` as the real focused goal |
 | `C+C` | every repeated or distinct aggregate pair rejects during Makefile parsing before side effects | existing aggregate coexistence self-test |
-| `A+A` | simultaneous direct processes are unsupported; sequential commands are supported after the first proves root absence | static policy check; two sequential real audits each pass with distinct owned basenames and absence proofs |
+| `A+A` | simultaneous direct processes are unsupported; sequential commands are supported after the first proves its own root absence | static policy check; two sequential real audits each pass and prove their current-invocation root absent |
 | `A+F` | simultaneous independent processes are unsupported; sequential execution in either order is supported | static policy check; sequential real-audit/offline-target controls in both orders |
-| `A+C` | simultaneous independent process trees are unsupported; sequential execution in either order is supported | static policy check; sequential real-audit/hosted-aggregate controls in both orders on a capable author host |
+| `A+hosted-checks` | simultaneous independent process trees are unsupported; sequential execution in either order is supported | static policy check; audit then hosted and hosted then audit controls on a capable author host |
+| `A+capable-checks` | simultaneous independent process trees are unsupported; sequential execution in either order is supported | static policy check; audit then capable and capable then audit controls on a capable author host |
+| `A+ci` | simultaneous independent process trees are unsupported; sequential execution in either order is supported | static policy check; audit then `ci` and `ci` then audit controls on a capable author host |
 
 As already required by `docs/specs/check-gate-topology.md`, separate concurrent Make processes are
 unsupported caller behavior in the same or independent worktrees and are never valid verification
@@ -496,9 +530,9 @@ root-cause classes in one consolidated follow-up. Run the conditional final revi
 repair meets the material-change trigger in `CLAUDE.md`. Review/check envelopes remain external
 metadata and are not copied into `HANDOFF.md`.
 
-### Locked-input implementation pull request
+### Offline locked-input implementation pull request
 
-The implementation adds only:
+The first implementation slice adds only:
 
 ```text
 .github/images/git-2.45-compat/inputs/sources.json
@@ -513,21 +547,29 @@ HANDOFF.md
 ```
 
 No other source, fixture, workflow, or documentation path is permitted. The executable generates
-its bounded synthetic fixtures in self-test mode. The implementation adds the one exact offline
-Make target and inserts it into the existing hosted focused list; the audit remains a direct fixed
-command with no Make target. Because
+its bounded synthetic fixtures in self-test mode. This slice implements source and LLVM validation,
+the unit-root/deadline/diagnostic owners, both streaming decompressors, the complete tar scanner,
+and the production-bound offline regressions. It adds the one exact offline Make target and inserts
+it into the existing hosted focused list. Until the second slice merges, `--audit` is not a public
+entrypoint and deliberately returns the universal malformed-vector result; the hosted offline
+target is complete and independently useful. Because
 `Makefile` is a baseline-identity artifact, the implementation must follow the source -> oracle ->
 finalization commit sequence in `docs/specs/check-gate-topology.md` and refresh only the three exact
 baseline paths above. It adds no Dockerfile, Docker command, workflow, registry client, extracted
 artifact parser, publication path, or registration record.
 
-Required checks are:
+This offline slice is expected to be approximately 1,200–1,600 hand-written lines because the
+single production parser and the synthetic byte-level regression corpus must land atomically before
+the hosted target can truthfully pass. Splitting it again would either merge unreachable parser
+fragments with no independently correct public behavior, expose a focused target before all four
+archive dialect/limit contracts are enforced, or introduce a second implementation module and
+invalidate the reviewed same-loaded-source binding. That is the recorded reason this smallest
+independently correct vertical slice may exceed the repository's approximate 1,000-line threshold.
+
+Required offline-slice checks are:
 
 ```text
 make git245-locked-inputs-unit
-/usr/bin/env -i LC_ALL=C \
-  /usr/bin/python3 -I -B \
-  ./.github/image-tests/git-2.45-compat/audit-locked-archives --audit
 make gate-topology-check
 python3 scripts/check-gate-topology --self-test
 make format-check
@@ -536,11 +578,49 @@ make build
 make -j8 ci ALIGN_REPO=<sibling pinned Align checkout>
 ```
 
-The implementation slice is complete only when the exact lock and LLVM bytes validate, every
-synthetic format/ownership/diagnostic and entrypoint-policy regression passes, the four real archives pass
-the structural audit, cleanup proves the audit root absent, and full-diff inspection confirms that
-no Docker, publication, or registration surface was added. The required Ubuntu 24.04 hosted check
-must pass with CPython 3.12 and GNU Make 4.3; a newer author environment is supplementary only.
+The offline slice is complete only when the exact lock and LLVM bytes validate, every synthetic
+format/ownership/diagnostic/Make-control regression passes, cleanup proves the unit root absent, and
+full-diff inspection confirms that no network, Docker, publication, or registration surface was
+added. The required Ubuntu 24.04 hosted check must pass with CPython 3.12 and GNU Make 4.3; a newer
+author environment is supplementary only.
+
+### Real locked-archive audit implementation pull request
+
+After the offline slice merges, the second implementation slice changes only:
+
+```text
+.github/image-tests/git-2.45-compat/audit-locked-archives
+HANDOFF.md
+```
+
+It admits final `--audit` dispatch and adds only `AuditRoot`, `HttpsClient`, `HttpsResponse`,
+`TransferBuffer`, `DownloadFile`, real-download fault seams, and the direct audit orchestration over
+the already merged production scanners. It adds no Make target or graph change. Neither changed path
+belongs to the coding-v1 baseline artifact manifest, so this slice does not refresh the canonical
+baseline. The final executable is expected to add less than approximately 1,000 hand-written lines.
+
+Required audit-slice checks are the offline check block above plus the exact direct audit command.
+The pull request also records these sequential coexistence controls, with every `A` expanded to the
+exact direct audit command and every command required to pass before the next begins:
+
+```text
+A && A
+A && make git245-locked-inputs-unit
+make git245-locked-inputs-unit && A
+A && make hosted-checks
+make hosted-checks && A
+A && make capable-checks
+make capable-checks && A
+A && make ci
+make ci && A
+```
+
+These nine lines cover `A+A`, both orders of `A+F`, and both orders of `A` with each member of `C`.
+They are acceptance notation, not an additional script, Make target, cache, or public input. The
+audit slice is complete only when every synthetic transfer/ownership/diagnostic regression passes,
+the four real archives pass the structural audit in every `A`, each current-invocation root absence
+proof succeeds, and full-diff inspection confirms that no Docker, publication, or registration
+surface was added.
 
 ### Deferred Docker, hosted image, publication, and registration work
 
