@@ -55,6 +55,12 @@ make run
 ./scripts/alignc size src/main.align --profile tiny
 ```
 
+Run `make ci` for the complete capable-host gate. It builds the exact pinned Align release compiler,
+then runs every hosted check, the sandboxed coding corpus, and canonical baseline verification in a
+deterministic order. Run `make hosted-checks` only on hosts that cannot provide the coding corpus's
+nested user namespace; it intentionally omits `eval-coding` and `baseline-check`. A focused target
+is diagnostic evidence for that surface, not evidence that either aggregate completed.
+
 ## Managing language dependencies
 
 When the engine needs a feature that does not compile in the current Align checkout:

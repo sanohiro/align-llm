@@ -1,0 +1,1061 @@
+#!/usr/bin/env python3
+
+import errno
+import itertools
+import json
+import os
+import re
+import select
+import shlex
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Mapping, Optional, Sequence
+
+
+FIELDS = (
+    ("hosted", "ALIGN_LLM_HOSTED_CHECK_TARGETS"),
+    ("capable-only", "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS"),
+    ("serialized", "ALIGN_LLM_SERIAL_CHECK_AGGREGATES"),
+)
+EXPECTED = (
+    b"hosted=gate-topology-check format-check check build eval-smoke loop-smoke "
+    b"provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
+    b"verify-loop-smoke failure-memory-smoke\n"
+    b"capable-only=eval-coding baseline-check\n"
+    b"serialized=hosted-checks capable-checks ci\n"
+)
+PASS_BYTES = b"check gate topology: PASS\n"
+SELF_TEST_PASS_BYTES = b"check gate topology self-test: PASS\n"
+DIAGNOSTIC_LIMIT = 4096
+TRUNCATION_MARKER = b"...[truncated]"
+READ_CHUNK = 8192
+CAPTURE_LIMIT = 4096
+
+
+def bounded_repr(value: bytes) -> str:
+    if len(value) > DIAGNOSTIC_LIMIT:
+        value = value[: DIAGNOSTIC_LIMIT - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+    return ascii(value)
+
+
+def evaluate(
+    argv: Sequence[str], environment: Mapping[str, str]
+) -> tuple[int, str, str]:
+    if argv:
+        return 1, "", "check gate topology accepts no arguments\n"
+
+    for field_name, variable in FIELDS:
+        if variable not in environment:
+            return 1, "", f"check gate topology missing {field_name} input\n"
+
+    rows = []
+    for field_name, variable in FIELDS:
+        value = environment[variable]
+        try:
+            encoded = value.encode("ascii")
+        except UnicodeEncodeError:
+            return 1, "", f"check gate topology {field_name} input is not ASCII\n"
+        rows.append(field_name.encode("ascii") + b"=" + encoded + b"\n")
+
+    return compare_report(b"".join(rows))
+
+
+def compare_report(actual: bytes, expected: bytes = EXPECTED) -> tuple[int, str, str]:
+    if actual != expected:
+        return (
+            1,
+            "",
+            "check gate topology mismatch: "
+            f"expected {bounded_repr(expected)}, actual {bounded_repr(actual)}\n",
+        )
+    return 0, PASS_BYTES.decode("ascii"), ""
+
+
+def exact_environment() -> dict[str, str]:
+    return {
+        "ALIGN_LLM_HOSTED_CHECK_TARGETS": (
+            "gate-topology-check format-check check build eval-smoke loop-smoke "
+            "provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
+            "verify-loop-smoke failure-memory-smoke"
+        ),
+        "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": "eval-coding baseline-check",
+        "ALIGN_LLM_SERIAL_CHECK_AGGREGATES": "hosted-checks capable-checks ci",
+    }
+
+
+def require_result(
+    name: str,
+    actual: tuple[int, str, str],
+    expected: tuple[int, str, str],
+) -> None:
+    if actual != expected:
+        raise RuntimeError(
+            f"case {name} differed: expected {expected!r}, received {actual!r}"
+        )
+
+
+def require_mismatch(
+    name: str, argv: Sequence[str], environment: Mapping[str, str]
+) -> None:
+    status, stdout, stderr = evaluate(argv, environment)
+    if (
+        status != 1
+        or stdout
+        or not stderr.startswith("check gate topology mismatch: ")
+        or not stderr.endswith("\n")
+    ):
+        raise RuntimeError(f"case {name} did not reach the mismatch diagnostic")
+
+
+@dataclass
+class StreamCapture:
+    retained: bytearray = field(default_factory=bytearray)
+    overflow: bool = False
+    error: Optional[str] = None
+
+    def read(self, stream: object) -> None:
+        try:
+            while True:
+                chunk = stream.read(READ_CHUNK)
+                if not chunk:
+                    return
+                remaining = CAPTURE_LIMIT - len(self.retained)
+                if remaining > 0:
+                    self.retained.extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    self.overflow = True
+        except BaseException as error:  # cleanup must still own the process
+            self.error = type(error).__name__
+
+
+@dataclass
+class ChildResult:
+    status: Optional[int]
+    stdout: bytes
+    stderr: bytes
+    stdout_overflow: bool
+    stderr_overflow: bool
+    timed_out: bool = False
+    readiness_error: Optional[str] = None
+    lifecycle_errors: tuple[str, ...] = ()
+    launch_error: Optional[str] = None
+
+
+def process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def await_readiness(read_fd: int, timeout_seconds: float) -> Optional[str]:
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "late readiness"
+            readable, _, _ = select.select([read_fd], [], [], remaining)
+            if not readable:
+                return "late readiness"
+            value = os.read(read_fd, 2)
+            if value == b"":
+                return "missing readiness"
+            if value != b"R":
+                return "extra or invalid readiness"
+
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return "readiness pipe remained open"
+                readable, _, _ = select.select([read_fd], [], [], remaining)
+                if not readable:
+                    return "readiness pipe remained open"
+                extra = os.read(read_fd, 1)
+                if extra == b"":
+                    return None
+                return "extra or invalid readiness"
+    except OSError as error:
+        return f"readiness {error.__class__.__name__}"
+
+
+def close_descriptor(fd: int, errors: list[str], label: str) -> None:
+    try:
+        os.close(fd)
+    except OSError as error:
+        if error.errno != errno.EBADF:
+            errors.append(f"{label}-close-{error.__class__.__name__}")
+
+
+def close_stream(stream: object, errors: list[str], label: str) -> None:
+    try:
+        stream.close()
+    except OSError as error:
+        errors.append(f"{label}-close-{error.__class__.__name__}")
+
+
+def terminate_group(
+    process: subprocess.Popen[bytes],
+    readers: Sequence[threading.Thread],
+    errors: list[str],
+) -> None:
+    process_group = process.pid
+    if process_group_exists(process_group):
+        try:
+            os.killpg(process_group, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            errors.append(f"sigterm-{error.__class__.__name__}")
+
+    term_deadline = time.monotonic() + 1.0
+    while time.monotonic() < term_deadline:
+        if not process_group_exists(process_group) and not any(
+            reader.is_alive() for reader in readers
+        ):
+            break
+        time.sleep(0.01)
+
+    if process_group_exists(process_group) or any(
+        reader.is_alive() for reader in readers
+    ):
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            errors.append(f"sigkill-{error.__class__.__name__}")
+
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        errors.append("wait-timeout")
+    except OSError as error:
+        errors.append(f"wait-{error.__class__.__name__}")
+
+    for reader in readers:
+        reader.join(timeout=2.0)
+        if reader.is_alive():
+            errors.append("reader-join-timeout")
+
+    reap_deadline = time.monotonic() + 1.0
+    while process_group_exists(process_group) and time.monotonic() < reap_deadline:
+        time.sleep(0.01)
+    if process_group_exists(process_group):
+        errors.append("process-group-remains")
+
+
+def run_child(
+    argv: Sequence[str],
+    *,
+    cwd: Optional[Path] = None,
+    environment: Optional[Mapping[str, str]] = None,
+    deadline_seconds: float = 5.0,
+    pass_fds: Sequence[int] = (),
+    close_after_launch: Sequence[int] = (),
+    readiness_fd: Optional[int] = None,
+    readiness_timeout: float = 5.0,
+) -> ChildResult:
+    lifecycle_errors: list[str] = []
+    process: Optional[subprocess.Popen[bytes]] = None
+    stdout_capture = StreamCapture()
+    stderr_capture = StreamCapture()
+    readers: list[threading.Thread] = []
+    readiness_error: Optional[str] = None
+    timed_out = False
+
+    try:
+        process = subprocess.Popen(
+            list(argv),
+            cwd=None if cwd is None else os.fspath(cwd),
+            env=None if environment is None else dict(environment),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            pass_fds=tuple(pass_fds),
+        )
+    except OSError as error:
+        for fd in close_after_launch:
+            close_descriptor(fd, lifecycle_errors, "launch-owned")
+        if readiness_fd is not None:
+            close_descriptor(readiness_fd, lifecycle_errors, "readiness")
+        return ChildResult(
+            status=None,
+            stdout=b"",
+            stderr=b"",
+            stdout_overflow=False,
+            stderr_overflow=False,
+            lifecycle_errors=tuple(lifecycle_errors),
+            launch_error=type(error).__name__,
+        )
+
+    owned_readiness_fd = readiness_fd
+    try:
+        for fd in close_after_launch:
+            close_descriptor(fd, lifecycle_errors, "parent-pass-fd")
+
+        assert process.stdout is not None
+        assert process.stderr is not None
+        reader_candidates = (
+            threading.Thread(
+                target=stdout_capture.read,
+                args=(process.stdout,),
+                name="topology-stdout-reader",
+            ),
+            threading.Thread(
+                target=stderr_capture.read,
+                args=(process.stderr,),
+                name="topology-stderr-reader",
+            ),
+        )
+        for reader in reader_candidates:
+            reader.start()
+            readers.append(reader)
+
+        if owned_readiness_fd is not None:
+            readiness_error = await_readiness(
+                owned_readiness_fd, readiness_timeout
+            )
+            close_descriptor(owned_readiness_fd, lifecycle_errors, "readiness")
+            owned_readiness_fd = None
+
+        deadline = time.monotonic() + deadline_seconds
+        while readiness_error is None:
+            if stdout_capture.error is not None or stderr_capture.error is not None:
+                lifecycle_errors.append("stream-read")
+                break
+            status = process.poll()
+            if status is not None and not any(reader.is_alive() for reader in readers):
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            time.sleep(0.005)
+
+        if (
+            readiness_error is not None
+            or timed_out
+            or lifecycle_errors
+            or process.poll() is None
+            or any(reader.is_alive() for reader in readers)
+        ):
+            terminate_group(process, readers, lifecycle_errors)
+        else:
+            try:
+                process.wait(timeout=0)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                lifecycle_errors.append(f"wait-{error.__class__.__name__}")
+    except BaseException as error:  # preserve cleanup on unexpected runner faults
+        lifecycle_errors.append(f"runner-{type(error).__name__}")
+        terminate_group(process, readers, lifecycle_errors)
+    finally:
+        if owned_readiness_fd is not None:
+            close_descriptor(owned_readiness_fd, lifecycle_errors, "readiness")
+        close_stream(process.stdout, lifecycle_errors, "stdout")
+        close_stream(process.stderr, lifecycle_errors, "stderr")
+
+    return ChildResult(
+        status=process.returncode,
+        stdout=bytes(stdout_capture.retained),
+        stderr=bytes(stderr_capture.retained),
+        stdout_overflow=stdout_capture.overflow,
+        stderr_overflow=stderr_capture.overflow,
+        timed_out=timed_out,
+        readiness_error=readiness_error,
+        lifecycle_errors=tuple(lifecycle_errors),
+    )
+
+
+def require_clean_child(
+    name: str,
+    result: ChildResult,
+    *,
+    stdout: bytes,
+    stderr: bytes = b"",
+) -> None:
+    if (
+        result.launch_error is not None
+        or result.timed_out
+        or result.readiness_error is not None
+        or result.lifecycle_errors
+        or result.status != 0
+        or result.stdout_overflow
+        or result.stderr_overflow
+        or result.stdout != stdout
+        or result.stderr != stderr
+    ):
+        raise RuntimeError(f"child case {name} failed: {result!r}")
+    try:
+        result.stdout.decode("utf-8")
+        result.stderr.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RuntimeError(f"child case {name} returned non-UTF-8") from error
+
+
+def require_rejected_child(
+    name: str,
+    result: ChildResult,
+    *,
+    accepted_stdout: bytes = PASS_BYTES,
+    accepted_stderr: bytes = b"",
+) -> None:
+    try:
+        require_clean_child(
+            name,
+            result,
+            stdout=accepted_stdout,
+            stderr=accepted_stderr,
+        )
+    except RuntimeError:
+        return
+    raise RuntimeError(f"child case {name} was accepted")
+
+
+def require_observed_child(
+    name: str,
+    result: ChildResult,
+    *,
+    status: int,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    if (
+        result.launch_error is not None
+        or result.timed_out
+        or result.readiness_error is not None
+        or result.lifecycle_errors
+        or result.status != status
+        or result.stdout_overflow
+        or result.stderr_overflow
+        or result.stdout != stdout
+        or result.stderr != stderr
+    ):
+        raise RuntimeError(f"child observation {name} differed: {result!r}")
+
+
+def test_validation_contract() -> None:
+    exact = exact_environment()
+    require_result(
+        "exact",
+        evaluate((), exact),
+        (0, PASS_BYTES.decode("ascii"), ""),
+    )
+
+    states = ("exact", "missing", "non-ascii")
+    for ordinal, combination in enumerate(itertools.product(states, repeat=3)):
+        environment = dict(exact)
+        expected = (0, PASS_BYTES.decode("ascii"), "")
+        first_missing: Optional[str] = None
+        first_non_ascii: Optional[str] = None
+        for state, (field_name, variable) in zip(combination, FIELDS):
+            if state == "missing":
+                del environment[variable]
+                if first_missing is None:
+                    first_missing = field_name
+            elif state == "non-ascii":
+                environment[variable] = "non-ascii-\N{SNOWMAN}"
+                if first_non_ascii is None:
+                    first_non_ascii = field_name
+        if first_missing is not None:
+            expected = (
+                1,
+                "",
+                f"check gate topology missing {first_missing} input\n",
+            )
+        elif first_non_ascii is not None:
+            expected = (
+                1,
+                "",
+                f"check gate topology {first_non_ascii} input is not ASCII\n",
+            )
+        require_result(f"cartesian-{ordinal}", evaluate((), environment), expected)
+        require_result(
+            f"cartesian-arity-{ordinal}",
+            evaluate(("extra",), environment),
+            (1, "", "check gate topology accepts no arguments\n"),
+        )
+
+    mutations = {
+        "added": (
+            "ALIGN_LLM_HOSTED_CHECK_TARGETS",
+            exact["ALIGN_LLM_HOSTED_CHECK_TARGETS"] + " extra",
+        ),
+        "removed": (
+            "ALIGN_LLM_HOSTED_CHECK_TARGETS",
+            exact["ALIGN_LLM_HOSTED_CHECK_TARGETS"].replace(
+                " format-check", "", 1
+            ),
+        ),
+        "duplicated": (
+            "ALIGN_LLM_HOSTED_CHECK_TARGETS",
+            exact["ALIGN_LLM_HOSTED_CHECK_TARGETS"] + " format-check",
+        ),
+        "reordered": (
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
+            "baseline-check eval-coding",
+        ),
+        "serialized-removed": (
+            "ALIGN_LLM_SERIAL_CHECK_AGGREGATES",
+            "hosted-checks capable-checks",
+        ),
+        "empty": ("ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS", ""),
+        "leading-space": (
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
+            " eval-coding baseline-check",
+        ),
+        "trailing-space": (
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
+            "eval-coding baseline-check ",
+        ),
+        "repeated-space": (
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
+            "eval-coding  baseline-check",
+        ),
+    }
+    for name, (variable, value) in mutations.items():
+        mutated = dict(exact)
+        mutated[variable] = value
+        require_mismatch(name, (), mutated)
+
+    oversized_prefix = b"x" * (DIAGNOSTIC_LIMIT * 2)
+    oversized_expected = oversized_prefix + b"A"
+    oversized_actual = oversized_prefix + b"B"
+    retained = (
+        oversized_prefix[: DIAGNOSTIC_LIMIT - len(TRUNCATION_MARKER)]
+        + TRUNCATION_MARKER
+    )
+    if (
+        len(retained) != DIAGNOSTIC_LIMIT
+        or bounded_repr(oversized_expected) != ascii(retained)
+        or bounded_repr(oversized_actual) != ascii(retained)
+    ):
+        raise RuntimeError("bounded diagnostic did not retain the exact capped prefix")
+    require_result(
+        "oversized-full-byte-success",
+        compare_report(oversized_expected, oversized_expected),
+        (0, PASS_BYTES.decode("ascii"), ""),
+    )
+    require_result(
+        "oversized-full-byte-mismatch",
+        compare_report(oversized_actual, oversized_expected),
+        (
+            1,
+            "",
+            "check gate topology mismatch: "
+            f"expected {ascii(retained)}, actual {ascii(retained)}\n",
+        ),
+    )
+
+
+def test_make_override_isolation(project_root: Path, temporary: Path) -> None:
+    marker = temporary / "override-expanded"
+    dangerous = (
+        f"ignored `quoted` \"double\" 'single' \\ "
+        f"$(shell printf marker > {marker})"
+    )
+    child_environment = os.environ.copy()
+    child_environment.update(
+        {
+            "ALIGN_LLM_HOSTED_CHECK_TARGETS": dangerous,
+            "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": dangerous,
+            "ALIGN_LLM_SERIAL_CHECK_AGGREGATES": dangerous,
+        }
+    )
+    result = run_child(
+        (
+            "make",
+            "--no-print-directory",
+            "gate-topology-check",
+            f"HOSTED_CHECK_TARGETS={dangerous}",
+            f"CAPABLE_ONLY_CHECK_TARGETS={dangerous}",
+            f"SERIAL_CHECK_AGGREGATES={dangerous}",
+        ),
+        cwd=project_root,
+        environment=child_environment,
+        deadline_seconds=10.0,
+    )
+    require_clean_child("Make override isolation", result, stdout=PASS_BYTES)
+    if marker.exists():
+        raise RuntimeError("Make override isolation created its marker")
+
+
+def write_instrumented_makefiles(temporary: Path) -> tuple[Path, Path, Path]:
+    log_path = temporary / "order.log"
+    lock_path = temporary / "active"
+    probe_path = temporary / "probe.json"
+    helper_path = temporary / "instrument.py"
+    helper_path.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+mode = sys.argv[1]
+if mode == "action":
+    name = sys.argv[2]
+    lock = Path(os.environ["TOPOLOGY_LOCK"])
+    log = Path(os.environ["TOPOLOGY_LOG"])
+    lock.mkdir()
+    with log.open("a", encoding="ascii") as stream:
+        stream.write(f"start {name}\\n")
+        stream.flush()
+    time.sleep(0.03)
+    with log.open("a", encoding="ascii") as stream:
+        stream.write(f"finish {name}\\n")
+        stream.flush()
+    lock.rmdir()
+elif mode == "probe":
+    Path(os.environ["TOPOLOGY_PROBE"]).write_text(
+        json.dumps(
+            {
+                "alignc": os.environ.get("ALIGNC"),
+                "alignc_origin": sys.argv[2],
+                "align_repo": os.environ.get("ALIGN_REPO"),
+                "align_repo_origin": sys.argv[3],
+                "makeflags": os.environ.get("MAKEFLAGS"),
+                "gnumakeflags": os.environ.get("GNUMAKEFLAGS"),
+            },
+            sort_keys=True,
+        ) + "\\n",
+        encoding="ascii",
+    )
+else:
+    raise SystemExit("unknown mode")
+""",
+        encoding="utf-8",
+    )
+
+    helper = shlex.quote(os.fspath(helper_path))
+    log = os.fspath(log_path)
+    lock = os.fspath(lock_path)
+    probe = os.fspath(probe_path)
+    makefile = temporary / "Makefile"
+    makefile.write_text(
+        f"""ALIGNC ?= missing-alignc
+ALIGN_REPO ?= missing-align-repo
+override export TOPOLOGY_LOG := {log}
+override export TOPOLOGY_LOCK := {lock}
+override export TOPOLOGY_PROBE := {probe}
+
+.PHONY: aggregate first second third probe
+
+aggregate:
+\t+MAKEFLAGS= GNUMAKEFLAGS= $(MAKE) --no-print-directory -j1 first second third probe
+
+first:
+\t@/usr/bin/python3 {helper} action first
+
+second:
+\t@/usr/bin/python3 {helper} action second
+
+third:
+\t@/usr/bin/python3 {helper} action third
+
+probe:
+\t@/usr/bin/python3 {helper} probe \"$(origin ALIGNC)\" \"$(origin ALIGN_REPO)\"
+""",
+        encoding="utf-8",
+    )
+    return log_path, lock_path, probe_path
+
+
+def test_recursive_make_boundary(temporary: Path, *, shuffle: bool) -> None:
+    temporary.mkdir()
+    log_path, lock_path, probe_path = write_instrumented_makefiles(temporary)
+    make_arguments = ["make", "--no-print-directory", "-j8"]
+    if shuffle:
+        make_arguments.append("--shuffle=reverse")
+    make_arguments.extend(
+        ("ALIGNC=sentinel-alignc", "ALIGN_REPO=sentinel-align-repo", "aggregate")
+    )
+    result = run_child(
+        make_arguments,
+        cwd=temporary,
+    )
+    if (
+        result.launch_error is not None
+        or result.timed_out
+        or result.readiness_error is not None
+        or result.lifecycle_errors
+        or result.status != 0
+        or result.stdout_overflow
+        or result.stderr_overflow
+        or result.stderr
+    ):
+        raise RuntimeError(f"recursive Make boundary failed: {result!r}")
+    if b"jobserver" in result.stdout.lower() or b"jobserver" in result.stderr.lower():
+        raise RuntimeError("recursive Make boundary emitted a jobserver warning")
+    expected_log = (
+        "start first\nfinish first\n"
+        "start second\nfinish second\n"
+        "start third\nfinish third\n"
+    )
+    if log_path.read_text(encoding="ascii") != expected_log or lock_path.exists():
+        raise RuntimeError("recursive Make boundary did not serialize exact goal order")
+    probe = json.loads(probe_path.read_text(encoding="ascii"))
+    if (
+        probe["alignc"] != "sentinel-alignc"
+        or probe["alignc_origin"] != "environment"
+        or probe["align_repo"] != "sentinel-align-repo"
+        or probe["align_repo_origin"] != "environment"
+        or probe["gnumakeflags"] != ""
+    ):
+        raise RuntimeError(f"recursive Make input propagation differed: {probe!r}")
+    makeflags = probe["makeflags"]
+    if not isinstance(makeflags, str):
+        raise RuntimeError("recursive Make did not export MAKEFLAGS")
+    flag_tokens = makeflags.split()
+    if (
+        not any(token in ("-j1", "j1") for token in flag_tokens)
+        or any("jobserver" in token for token in flag_tokens)
+        or any(token in ("-j8", "j8") for token in flag_tokens)
+        or any("shuffle" in token for token in flag_tokens)
+    ):
+        raise RuntimeError(f"recursive Make flags differed: {makeflags!r}")
+
+
+def make_supports_shuffle() -> bool:
+    result = run_child(("make", "--version"))
+    if (
+        result.launch_error is not None
+        or result.timed_out
+        or result.readiness_error is not None
+        or result.lifecycle_errors
+        or result.status != 0
+        or result.stdout_overflow
+        or result.stderr_overflow
+        or result.stderr
+    ):
+        raise RuntimeError(f"GNU Make version probe failed: {result!r}")
+    try:
+        first_line = result.stdout.decode("ascii").splitlines()[0]
+    except (UnicodeDecodeError, IndexError) as error:
+        raise RuntimeError("GNU Make version record was not ASCII") from error
+    match = re.fullmatch(r"GNU Make ([0-9]+)\.([0-9]+)(?:\..*)?", first_line)
+    if match is None:
+        raise RuntimeError(f"GNU Make version record differed: {first_line!r}")
+    return (int(match.group(1)), int(match.group(2))) >= (4, 4)
+
+
+def topology_eval(marker: Path) -> str:
+    return (
+        ".PHONY: topology-focused-marker topology-side-effect-marker\n"
+        "topology-focused-marker: topology-side-effect-marker\n"
+        "hosted-checks capable-checks ci: topology-side-effect-marker\n"
+        "topology-side-effect-marker:\n"
+        f"\t@touch {marker}\n"
+    )
+
+
+def test_aggregate_coexistence(project_root: Path, temporary: Path) -> None:
+    aggregates = ("hosted-checks", "capable-checks", "ci")
+    focused = "topology-focused-marker"
+    marker = temporary / "coexistence-marker"
+    injected = topology_eval(marker)
+    pairs = [(left, right) for left in aggregates for right in aggregates]
+    pairs.extend((aggregate, focused) for aggregate in aggregates)
+    pairs.extend((focused, aggregate) for aggregate in aggregates)
+    for ordinal, (left, right) in enumerate(pairs):
+        if marker.exists():
+            marker.unlink()
+        result = run_child(
+            (
+                "make",
+                "--no-print-directory",
+                "-j8",
+                "--eval",
+                injected,
+                left,
+                right,
+            ),
+            cwd=project_root,
+        )
+        if (
+            result.launch_error is not None
+            or result.timed_out
+            or result.lifecycle_errors
+            or result.status == 0
+            or b"verification aggregates must be requested alone" not in result.stderr
+            or marker.exists()
+        ):
+            raise RuntimeError(
+                f"aggregate coexistence case {ordinal} ({left}, {right}) failed: "
+                f"{result!r}"
+            )
+
+    if marker.exists():
+        marker.unlink()
+    result = run_child(
+        (
+            "make",
+            "--no-print-directory",
+            "-j8",
+            "--eval",
+            injected,
+            focused,
+        ),
+        cwd=project_root,
+    )
+    require_clean_child("focused-only coexistence control", result, stdout=b"")
+    if not marker.is_file():
+        raise RuntimeError("focused-only coexistence control did not create its marker")
+    marker.unlink()
+
+
+def test_child_runner() -> None:
+    overflow = run_child(
+        (
+            "/usr/bin/python3",
+            "-c",
+            "import os; os.write(1, b'o' * 131072); os.write(2, b'e' * 131072)",
+        )
+    )
+    if (
+        overflow.status != 0
+        or overflow.launch_error is not None
+        or overflow.timed_out
+        or overflow.readiness_error is not None
+        or overflow.lifecycle_errors
+        or not overflow.stdout_overflow
+        or not overflow.stderr_overflow
+        or overflow.stdout != b"o" * CAPTURE_LIMIT
+        or overflow.stderr != b"e" * CAPTURE_LIMIT
+    ):
+        raise RuntimeError(f"two-stream overflow case failed: {overflow!r}")
+    require_rejected_child(
+        "two-stream overflow rejection",
+        overflow,
+        accepted_stdout=overflow.stdout,
+        accepted_stderr=overflow.stderr,
+    )
+
+    nonzero = run_child(
+        (
+            "/usr/bin/python3",
+            "-c",
+            "import os,sys; os.write(1, b'check gate topology: PASS\\n'); sys.exit(3)",
+        )
+    )
+    require_observed_child(
+        "nonzero",
+        nonzero,
+        status=3,
+        stdout=PASS_BYTES,
+        stderr=b"",
+    )
+    require_rejected_child("nonzero rejection", nonzero)
+
+    invalid_utf8 = run_child(
+        ("/usr/bin/python3", "-c", "import os; os.write(1, b'\\xff')")
+    )
+    require_observed_child(
+        "invalid UTF-8",
+        invalid_utf8,
+        status=0,
+        stdout=b"\xff",
+        stderr=b"",
+    )
+    require_rejected_child(
+        "invalid UTF-8 rejection",
+        invalid_utf8,
+        accepted_stdout=b"\xff",
+    )
+
+    stderr_case = run_child(
+        (
+            "/usr/bin/python3",
+            "-c",
+            "import os; os.write(1, b'check gate topology: PASS\\n'); "
+            "os.write(2, b'bad\\n')",
+        )
+    )
+    require_observed_child(
+        "stderr",
+        stderr_case,
+        status=0,
+        stdout=PASS_BYTES,
+        stderr=b"bad\n",
+    )
+    require_rejected_child("stderr rejection", stderr_case)
+
+    wrong_stdout = run_child(
+        ("/usr/bin/python3", "-c", "print('wrong')")
+    )
+    require_observed_child(
+        "wrong stdout",
+        wrong_stdout,
+        status=0,
+        stdout=b"wrong\n",
+        stderr=b"",
+    )
+    require_rejected_child("wrong stdout rejection", wrong_stdout)
+
+    launch = run_child(("/definitely/missing/check-gate-topology",))
+    if (
+        launch.launch_error is None
+        or launch.status is not None
+        or launch.stdout
+        or launch.stderr
+        or launch.stdout_overflow
+        or launch.stderr_overflow
+        or launch.timed_out
+        or launch.readiness_error is not None
+        or launch.lifecycle_errors
+    ):
+        raise RuntimeError(f"launch-failure child case failed: {launch!r}")
+    require_rejected_child("launch failure rejection", launch)
+
+
+def test_reader_start_failure_cleanup() -> None:
+    original_start = threading.Thread.start
+
+    def fail_start(_thread: threading.Thread) -> None:
+        raise RuntimeError("injected reader start failure")
+
+    threading.Thread.start = fail_start
+    try:
+        result = run_child(
+            ("/usr/bin/python3", "-c", "import time; time.sleep(60)"),
+        )
+    finally:
+        threading.Thread.start = original_start
+
+    if (
+        result.launch_error is not None
+        or result.timed_out
+        or result.readiness_error is not None
+        or result.status is None
+        or result.stdout
+        or result.stderr
+        or result.stdout_overflow
+        or result.stderr_overflow
+        or result.lifecycle_errors != ("runner-RuntimeError",)
+    ):
+        raise RuntimeError(f"reader-start cleanup case failed: {result!r}")
+
+
+def run_readiness_case(
+    script: str,
+    *,
+    deadline_seconds: float,
+    readiness_timeout: float,
+) -> ChildResult:
+    read_fd, write_fd = os.pipe()
+    environment = os.environ.copy()
+    environment["TOPOLOGY_READINESS_FD"] = str(write_fd)
+    return run_child(
+        ("/usr/bin/python3", "-c", script),
+        environment=environment,
+        deadline_seconds=deadline_seconds,
+        pass_fds=(write_fd,),
+        close_after_launch=(write_fd,),
+        readiness_fd=read_fd,
+        readiness_timeout=readiness_timeout,
+    )
+
+
+def test_hanging_child_cleanup() -> None:
+    hanging_script = """
+import os
+import signal
+import time
+
+fd = int(os.environ["TOPOLOGY_READINESS_FD"])
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = os.fork()
+if child == 0:
+    os.close(fd)
+    while True:
+        time.sleep(1)
+os.write(fd, b"R")
+os.close(fd)
+while True:
+    time.sleep(1)
+"""
+    result = run_readiness_case(
+        hanging_script,
+        deadline_seconds=0.1,
+        readiness_timeout=5.0,
+    )
+    if (
+        not result.timed_out
+        or result.readiness_error is not None
+        or result.lifecycle_errors
+        or result.status is None
+    ):
+        raise RuntimeError(f"hanging child cleanup failed: {result!r}")
+
+    missing = run_readiness_case(
+        "import os; os.close(int(os.environ['TOPOLOGY_READINESS_FD']))",
+        deadline_seconds=0.1,
+        readiness_timeout=5.0,
+    )
+    if missing.readiness_error != "missing readiness" or missing.lifecycle_errors:
+        raise RuntimeError(f"missing readiness case failed: {missing!r}")
+
+    extra = run_readiness_case(
+        "import os; fd=int(os.environ['TOPOLOGY_READINESS_FD']); "
+        "os.write(fd,b'RR'); os.close(fd)",
+        deadline_seconds=0.1,
+        readiness_timeout=5.0,
+    )
+    if extra.readiness_error != "extra or invalid readiness" or extra.lifecycle_errors:
+        raise RuntimeError(f"extra readiness case failed: {extra!r}")
+
+    late = run_readiness_case(
+        "import os,time; time.sleep(0.2); "
+        "fd=int(os.environ['TOPOLOGY_READINESS_FD']); os.write(fd,b'R'); os.close(fd)",
+        deadline_seconds=0.1,
+        readiness_timeout=0.05,
+    )
+    if late.readiness_error != "late readiness" or late.lifecycle_errors:
+        raise RuntimeError(f"late readiness case failed: {late!r}")
+
+
+def run_self_test() -> int:
+    project_root = Path(__file__).resolve().parents[1]
+    test_validation_contract()
+    test_child_runner()
+    test_reader_start_failure_cleanup()
+    test_hanging_child_cleanup()
+    with tempfile.TemporaryDirectory(prefix="align-llm-topology-") as temporary_name:
+        temporary = Path(temporary_name)
+        test_make_override_isolation(project_root, temporary)
+        test_recursive_make_boundary(temporary / "recursive", shuffle=False)
+        if make_supports_shuffle():
+            test_recursive_make_boundary(temporary / "shuffle", shuffle=True)
+        test_aggregate_coexistence(project_root, temporary)
+    sys.stdout.buffer.write(SELF_TEST_PASS_BYTES)
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        try:
+            return run_self_test()
+        except (OSError, RuntimeError, UnicodeError, ValueError) as error:
+            print(f"check gate topology self-test failed: {error}", file=sys.stderr)
+            return 1
+
+    status, stdout, stderr = evaluate(sys.argv[1:], os.environ)
+    if stdout:
+        print(stdout, end="")
+    if stderr:
+        print(stderr, end="", file=sys.stderr)
+    return status
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
