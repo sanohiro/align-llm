@@ -14,7 +14,8 @@ request checks, reviews, and attestations.
   acceptance, hosted minimum-environment acceptance, publication/provenance, registration, and the
   common fresh-compiler topology as separate reviewed slices.
 - Current slice: immutable Git/Rust/LLVM inputs plus reproducible locked-archive audit.
-- Plan of record: `docs/specs/git-245-compat-image.md`.
+- Plans of record: `docs/specs/git-245-compat-image.md` plus the exact hosted-target extension in
+  `docs/specs/check-gate-topology.md`.
 - Product implementation: not started.
 - Pinned Align commit: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 - C6 design remains preserved separately on `agent/c6-prompt-context-design`.
@@ -30,7 +31,8 @@ The current slice owns only:
 
 - canonical Git 2.45.0 and Rust 1.96.0 archive identities;
 - the exact reviewed LLVM installer bytes;
-- offline canonical-format and byte-level archive-parser tests; and
+- offline canonical-format and byte-level archive-parser tests through the production executable;
+  and
 - one real author-run HTTPS audit of the four locked archives with exact root ownership, bounded
   parsing, deterministic diagnostics, and cleanup.
 
@@ -41,14 +43,13 @@ modify LLVM on a developer machine.
 
 ## Exact next steps
 
-1. Complete the locked-input/audit author ledger-to-prose-to-matrix pass, stage only the plan and
-   handoff, run `git diff --check` and
-   `make ci ALIGN_REPO=<sibling pinned Align checkout>`, then commit and open the design pull
-   request if it is not already open.
-2. Run the one comprehensive high-effort independent-adversarial review required by `CLAUDE.md`,
-   disposition all findings, apply any accepted root-cause classes in one consolidated follow-up,
-   rerun affected checks, and merge only when ready.
-3. Refresh `main`, perform the bounded retrospective, and implement the locked inputs and audit.
+1. Finish the consolidated locked-input design repair, including the authoritative hosted-target
+   topology amendment; run the author ledger/prose/matrix pass and all design checks.
+2. Commit and push the one repair, run the required conditional final comprehensive review, resolve
+   it under the repository workflow, and merge only when all current evidence is clean.
+3. Refresh `main`, perform the bounded retrospective, and implement the locked inputs, single
+   production/self-test executable, fixed Make adapters, topology oracle update, and required
+   baseline source -> oracle -> finalization chain.
 4. Design and implement Docker construction and local no-push acceptance as a separate slice.
 5. Design and implement the hosted no-push gate on the exact minimum environment, including
    platform credential recipients and bounded/abrupt cleanup.
@@ -80,23 +81,32 @@ Rust 1.96.0 rustc
 Vendored LLVM installer
   8277 bytes
   9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36
-Prior fixed-archive inspection
-  PASS (one expected compression stream and top-level directory; no escaping/special/setid,
-  duplicate, hard-link, PAX, sparse, concatenated-stream, or trailing-nonzero record)
 Current locked-input/audit design
-  Author ledger/prose/closure pass: PASS
+  Consolidated review repair: complete locally
+  Author ledger/prose/closure consistency pass: PASS
+  Canonical JSON byte oracle: PASS (1301 bytes; expected SHA-256)
+  Raw Make-value transport prototype: PASS
+    (literal $(shell ...), quotes, dollars, backticks, spaces, and metacharacters retained;
+    no marker side effect)
+  Fixed real-archive dialect inspection: PASS
+    (Git: 4683 ustar headers, 174458 normalized-path bytes, max path 96;
+    cargo: 68 GNU headers, 4455 path bytes, max path 98;
+    rust-std: 146 GNU headers including 65 long names, 10648 path bytes, max path 167;
+    rustc: 71 GNU headers including one long name, 4837 path bytes, max path 102)
   git diff --check: PASS
   make ci ALIGN_REPO=<sibling pinned Align checkout>: PASS
     (pinned release build, 15 units with 3 existing compiler warnings, fixed evaluations,
     loop smoke tests, and baseline validation)
 ```
 
-The prior archive inspection is fixed-input evidence, not acceptance for the unimplemented audit
-target. The implementation slice must produce the named reproducible real-audit result.
+The archive hashes above identify the inputs but are not acceptance for the unimplemented audit
+target. The implementation slice must produce the named reproducible real-audit result through the
+committed production executable.
 
 ## Constraints and intentional state
 
-- This branch intentionally changes only `docs/specs/git-245-compat-image.md` and `HANDOFF.md`.
+- This branch intentionally changes only `docs/specs/git-245-compat-image.md`, the exact
+  `docs/specs/check-gate-topology.md` hosted-target amendment, and `HANDOFF.md`.
 - No image has been built, published, registered, or added to the source tree.
 - Do not publish from a pull request, consume a tag, or infer authority to change package
   visibility.
