@@ -5,7 +5,18 @@ ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
 CODING_CORPUS := eval/tasks/coding-v1.json
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke baseline-check align-revision align-build ci
+override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke
+override CAPABLE_ONLY_CHECK_TARGETS := eval-coding baseline-check
+override SERIAL_CHECK_AGGREGATES := hosted-checks capable-checks ci
+override REQUESTED_SERIAL_CHECK_AGGREGATES := \
+  $(filter $(SERIAL_CHECK_AGGREGATES),$(MAKECMDGOALS))
+ifneq ($(REQUESTED_SERIAL_CHECK_AGGREGATES),)
+ifneq ($(words $(MAKECMDGOALS)),1)
+$(error verification aggregates must be requested alone)
+endif
+endif
+
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke baseline-check gate-topology-check hosted-checks capable-checks align-revision align-build ci
 
 check:
 	$(ALIGNC) check-per-unit $(ENTRY)
@@ -57,6 +68,21 @@ baseline-check:
 	./scripts/run-baseline-invalid-smoke
 	./scripts/run-baseline-failure-smoke
 
+gate-topology-check: override export ALIGN_LLM_HOSTED_CHECK_TARGETS := $(HOSTED_CHECK_TARGETS)
+gate-topology-check: override export ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS := $(CAPABLE_ONLY_CHECK_TARGETS)
+gate-topology-check: override export ALIGN_LLM_SERIAL_CHECK_AGGREGATES := $(SERIAL_CHECK_AGGREGATES)
+gate-topology-check:
+	@python3 ./scripts/check-gate-topology
+
+hosted-checks: gate-topology-check
+	+MAKEFLAGS= GNUMAKEFLAGS= $(MAKE) --no-print-directory -j1 \
+	  $(filter-out gate-topology-check,$(HOSTED_CHECK_TARGETS))
+
+capable-checks: gate-topology-check
+	+MAKEFLAGS= GNUMAKEFLAGS= $(MAKE) --no-print-directory -j1 \
+	  $(filter-out gate-topology-check,$(HOSTED_CHECK_TARGETS)) \
+	  $(CAPABLE_ONLY_CHECK_TARGETS)
+
 align-revision:
 	./scripts/check-align-revision
 
@@ -66,4 +92,5 @@ align-build: align-revision
 
 ci: align-build
 	@test -x "$(PINNED_ALIGNC)" || { echo "pinned Align compiler was not built at $(PINNED_ALIGNC)" >&2; exit 1; }
-	$(MAKE) ALIGNC="$(PINNED_ALIGNC)" format-check check build eval-smoke eval-coding loop-smoke baseline-check
+	+MAKEFLAGS= GNUMAKEFLAGS= $(MAKE) --no-print-directory -j1 \
+	  ALIGNC="$(PINNED_ALIGNC)" capable-checks
