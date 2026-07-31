@@ -63,13 +63,16 @@ def evaluate(
             return 1, "", f"check gate topology {field_name} input is not ASCII\n"
         rows.append(field_name.encode("ascii") + b"=" + encoded + b"\n")
 
-    actual = b"".join(rows)
-    if actual != EXPECTED:
+    return compare_report(b"".join(rows))
+
+
+def compare_report(actual: bytes, expected: bytes = EXPECTED) -> tuple[int, str, str]:
+    if actual != expected:
         return (
             1,
             "",
             "check gate topology mismatch: "
-            f"expected {bounded_repr(EXPECTED)}, actual {bounded_repr(actual)}\n",
+            f"expected {bounded_repr(expected)}, actual {bounded_repr(actual)}\n",
         )
     return 0, PASS_BYTES.decode("ascii"), ""
 
@@ -296,30 +299,35 @@ def run_child(
             launch_error=type(error).__name__,
         )
 
-    for fd in close_after_launch:
-        close_descriptor(fd, lifecycle_errors, "parent-pass-fd")
-
-    assert process.stdout is not None
-    assert process.stderr is not None
-    readers = [
-        threading.Thread(
-            target=stdout_capture.read,
-            args=(process.stdout,),
-            name="topology-stdout-reader",
-        ),
-        threading.Thread(
-            target=stderr_capture.read,
-            args=(process.stderr,),
-            name="topology-stderr-reader",
-        ),
-    ]
-    for reader in readers:
-        reader.start()
-
+    owned_readiness_fd = readiness_fd
     try:
-        if readiness_fd is not None:
-            readiness_error = await_readiness(readiness_fd, readiness_timeout)
-            close_descriptor(readiness_fd, lifecycle_errors, "readiness")
+        for fd in close_after_launch:
+            close_descriptor(fd, lifecycle_errors, "parent-pass-fd")
+
+        assert process.stdout is not None
+        assert process.stderr is not None
+        reader_candidates = (
+            threading.Thread(
+                target=stdout_capture.read,
+                args=(process.stdout,),
+                name="topology-stdout-reader",
+            ),
+            threading.Thread(
+                target=stderr_capture.read,
+                args=(process.stderr,),
+                name="topology-stderr-reader",
+            ),
+        )
+        for reader in reader_candidates:
+            reader.start()
+            readers.append(reader)
+
+        if owned_readiness_fd is not None:
+            readiness_error = await_readiness(
+                owned_readiness_fd, readiness_timeout
+            )
+            close_descriptor(owned_readiness_fd, lifecycle_errors, "readiness")
+            owned_readiness_fd = None
 
         deadline = time.monotonic() + deadline_seconds
         while readiness_error is None:
@@ -351,6 +359,8 @@ def run_child(
         lifecycle_errors.append(f"runner-{type(error).__name__}")
         terminate_group(process, readers, lifecycle_errors)
     finally:
+        if owned_readiness_fd is not None:
+            close_descriptor(owned_readiness_fd, lifecycle_errors, "readiness")
         close_stream(process.stdout, lifecycle_errors, "stdout")
         close_stream(process.stderr, lifecycle_errors, "stderr")
 
@@ -397,12 +407,40 @@ def require_rejected_child(
     result: ChildResult,
     *,
     accepted_stdout: bytes = PASS_BYTES,
+    accepted_stderr: bytes = b"",
 ) -> None:
     try:
-        require_clean_child(name, result, stdout=accepted_stdout)
+        require_clean_child(
+            name,
+            result,
+            stdout=accepted_stdout,
+            stderr=accepted_stderr,
+        )
     except RuntimeError:
         return
     raise RuntimeError(f"child case {name} was accepted")
+
+
+def require_observed_child(
+    name: str,
+    result: ChildResult,
+    *,
+    status: int,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    if (
+        result.launch_error is not None
+        or result.timed_out
+        or result.readiness_error is not None
+        or result.lifecycle_errors
+        or result.status != status
+        or result.stdout_overflow
+        or result.stderr_overflow
+        or result.stdout != stdout
+        or result.stderr != stderr
+    ):
+        raise RuntimeError(f"child observation {name} differed: {result!r}")
 
 
 def test_validation_contract() -> None:
@@ -488,6 +526,35 @@ def test_validation_contract() -> None:
         mutated = dict(exact)
         mutated[variable] = value
         require_mismatch(name, (), mutated)
+
+    oversized_prefix = b"x" * (DIAGNOSTIC_LIMIT * 2)
+    oversized_expected = oversized_prefix + b"A"
+    oversized_actual = oversized_prefix + b"B"
+    retained = (
+        oversized_prefix[: DIAGNOSTIC_LIMIT - len(TRUNCATION_MARKER)]
+        + TRUNCATION_MARKER
+    )
+    if (
+        len(retained) != DIAGNOSTIC_LIMIT
+        or bounded_repr(oversized_expected) != ascii(retained)
+        or bounded_repr(oversized_actual) != ascii(retained)
+    ):
+        raise RuntimeError("bounded diagnostic did not retain the exact capped prefix")
+    require_result(
+        "oversized-full-byte-success",
+        compare_report(oversized_expected, oversized_expected),
+        (0, PASS_BYTES.decode("ascii"), ""),
+    )
+    require_result(
+        "oversized-full-byte-mismatch",
+        compare_report(oversized_actual, oversized_expected),
+        (
+            1,
+            "",
+            "check gate topology mismatch: "
+            f"expected {ascii(retained)}, actual {ascii(retained)}\n",
+        ),
+    )
 
 
 def test_make_override_isolation(project_root: Path, temporary: Path) -> None:
@@ -759,6 +826,7 @@ def test_child_runner() -> None:
         overflow.status != 0
         or overflow.launch_error is not None
         or overflow.timed_out
+        or overflow.readiness_error is not None
         or overflow.lifecycle_errors
         or not overflow.stdout_overflow
         or not overflow.stderr_overflow
@@ -766,6 +834,12 @@ def test_child_runner() -> None:
         or overflow.stderr != b"e" * CAPTURE_LIMIT
     ):
         raise RuntimeError(f"two-stream overflow case failed: {overflow!r}")
+    require_rejected_child(
+        "two-stream overflow rejection",
+        overflow,
+        accepted_stdout=overflow.stdout,
+        accepted_stderr=overflow.stderr,
+    )
 
     nonzero = run_child(
         (
@@ -774,14 +848,30 @@ def test_child_runner() -> None:
             "import os,sys; os.write(1, b'check gate topology: PASS\\n'); sys.exit(3)",
         )
     )
-    if nonzero.status != 3 or nonzero.stdout != PASS_BYTES:
-        raise RuntimeError(f"nonzero child case failed: {nonzero!r}")
+    require_observed_child(
+        "nonzero",
+        nonzero,
+        status=3,
+        stdout=PASS_BYTES,
+        stderr=b"",
+    )
     require_rejected_child("nonzero rejection", nonzero)
 
     invalid_utf8 = run_child(
         ("/usr/bin/python3", "-c", "import os; os.write(1, b'\\xff')")
     )
-    require_rejected_child("invalid UTF-8 rejection", invalid_utf8, accepted_stdout=b"\xff")
+    require_observed_child(
+        "invalid UTF-8",
+        invalid_utf8,
+        status=0,
+        stdout=b"\xff",
+        stderr=b"",
+    )
+    require_rejected_child(
+        "invalid UTF-8 rejection",
+        invalid_utf8,
+        accepted_stdout=b"\xff",
+    )
 
     stderr_case = run_child(
         (
@@ -791,25 +881,69 @@ def test_child_runner() -> None:
             "os.write(2, b'bad\\n')",
         )
     )
-    if (
-        stderr_case.status != 0
-        or stderr_case.stdout != PASS_BYTES
-        or stderr_case.stderr != b"bad\n"
-    ):
-        raise RuntimeError(f"stderr child case failed: {stderr_case!r}")
+    require_observed_child(
+        "stderr",
+        stderr_case,
+        status=0,
+        stdout=PASS_BYTES,
+        stderr=b"bad\n",
+    )
     require_rejected_child("stderr rejection", stderr_case)
 
     wrong_stdout = run_child(
         ("/usr/bin/python3", "-c", "print('wrong')")
     )
-    if wrong_stdout.status != 0 or wrong_stdout.stdout == PASS_BYTES:
-        raise RuntimeError(f"wrong-stdout child case failed: {wrong_stdout!r}")
+    require_observed_child(
+        "wrong stdout",
+        wrong_stdout,
+        status=0,
+        stdout=b"wrong\n",
+        stderr=b"",
+    )
     require_rejected_child("wrong stdout rejection", wrong_stdout)
 
     launch = run_child(("/definitely/missing/check-gate-topology",))
-    if launch.launch_error is None or launch.status is not None:
+    if (
+        launch.launch_error is None
+        or launch.status is not None
+        or launch.stdout
+        or launch.stderr
+        or launch.stdout_overflow
+        or launch.stderr_overflow
+        or launch.timed_out
+        or launch.readiness_error is not None
+        or launch.lifecycle_errors
+    ):
         raise RuntimeError(f"launch-failure child case failed: {launch!r}")
     require_rejected_child("launch failure rejection", launch)
+
+
+def test_reader_start_failure_cleanup() -> None:
+    original_start = threading.Thread.start
+
+    def fail_start(_thread: threading.Thread) -> None:
+        raise RuntimeError("injected reader start failure")
+
+    threading.Thread.start = fail_start
+    try:
+        result = run_child(
+            ("/usr/bin/python3", "-c", "import time; time.sleep(60)"),
+        )
+    finally:
+        threading.Thread.start = original_start
+
+    if (
+        result.launch_error is not None
+        or result.timed_out
+        or result.readiness_error is not None
+        or result.status is None
+        or result.stdout
+        or result.stderr
+        or result.stdout_overflow
+        or result.stderr_overflow
+        or result.lifecycle_errors != ("runner-RuntimeError",)
+    ):
+        raise RuntimeError(f"reader-start cleanup case failed: {result!r}")
 
 
 def run_readiness_case(
@@ -894,6 +1028,7 @@ def run_self_test() -> int:
     project_root = Path(__file__).resolve().parents[1]
     test_validation_contract()
     test_child_runner()
+    test_reader_start_failure_cleanup()
     test_hanging_child_cleanup()
     with tempfile.TemporaryDirectory(prefix="align-llm-topology-") as temporary_name:
         temporary = Path(temporary_name)

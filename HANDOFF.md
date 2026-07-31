@@ -30,20 +30,19 @@ focused diagnostic checks.
 
 The topology implementation and strict C0 baseline chain are complete. The positive provenance
 block, all specified scalar and linear negative cases, all four merge-hidden path cases, and the
-capable aggregate pass. The pull request and its required comprehensive review have not started.
-No image was built or published, no package database was introduced, and the existing local LLVM
-22.1.8 installation was neither installed nor modified by this work.
+capable aggregate pass. Post-launch child setup is inside the fail-closed cleanup guard, synthetic
+child rejection tests isolate their intended discriminator, and oversized diagnostics have an exact
+regression. Review attestations and check status remain in GitHub rather than this file. No image
+was built or published, and the existing local LLVM 22.1.8 installation was neither installed nor
+modified by this work.
 
 ## Exact next steps
 
-1. Push the branch and open the implementation pull request with the exact verification and
-   baseline identities.
-2. Complete the required hosted check and comprehensive independent review. Apply at most one
-   consolidated repair; any repair to a recorded baseline input or owned output restarts the full
-   source, oracle, and finalization sequence.
-3. Merge with a merge commit only after every check passes and no valid finding remains, then verify
-   the three baseline commits remain ancestors of refreshed `main` and rerun the structural block.
-4. Run the bounded retrospective, then redesign the locked-input and audit slice on
+1. Complete the external review and check workflow for the exact branch state, and merge with a
+   merge commit only after every check passes and no valid finding remains.
+2. Verify the three baseline commits remain ancestors of refreshed `main` and rerun the structural
+   block.
+3. Run the bounded retrospective, then redesign the locked-input and audit slice on
    top of the merged topology. The redesign must use a direct fixed-name command boundary rather
    than raw Make command-line value transport and must declare the minimum hosted Python/platform
    contract.
