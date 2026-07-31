@@ -7,10 +7,10 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/git-245-locked-inputs-redesign-v2`
 - Base: `4ad70bef2ca757d7174b5f14ff901c31a8c3ae88` (`origin/main`, topology merge)
-- Relevant commit: initial design `5adf639fcb848deabe6e0e9d21624739358fa412`; the consolidated
-  contract repair follows it in this branch's history.
-- Active goal: finish and merge the locked-input/audit design before Git 2.45 compatibility image
-  construction.
+- Relevant commits: initial design `5adf639fcb848deabe6e0e9d21624739358fa412` and consolidated
+  contract repair `932ef264e024c9d7c439deccfeb4ffdbed20b953`.
+- Active goal: finish review and merge of the locked-input/audit design, then stop. No product work
+  is active after that merge unless the user explicitly resumes it.
 - Design paths: `docs/specs/git-245-compat-image.md` and the target-list amendment in
   `docs/specs/check-gate-topology.md`.
 - Product implementation, Docker construction, hosted image build, publication, provenance, and
@@ -51,14 +51,14 @@ the full sequential matrix covers the audit with each of the three aggregates in
 
 ## Exact next steps
 
-1. Push the consolidated repair after its local commit.
-2. Run the conditional final review because the repair materially changes the Make boundary,
+1. Run the conditional final review because the repair materially changes the Make boundary,
    network contract, and implementation split; merge only if it is clean and required checks pass.
-3. From refreshed `main`, implement the offline locked inputs, shared parser/self-test executable,
-   one Make target, topology oracle update, and identity-coupled baseline refresh as the first
-   implementation branch.
-4. After that slice merges, implement and accept the direct real-archive network audit as the
-   second implementation branch.
+2. Verify the design commits are ancestors of refreshed `main`, perform the bounded retrospective,
+   and stop without starting another branch.
+3. When the user explicitly resumes roadmap work, the next eligible item is the offline locked-input
+   implementation: exact inputs, shared parser/self-test executable, one Make target, topology
+   oracle update, and identity-coupled baseline refresh. The direct network audit follows only after
+   that offline slice merges.
 
 ## Verification
 
