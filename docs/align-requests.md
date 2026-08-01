@@ -52,7 +52,7 @@ After Align merges the capability, rebuild its release compiler and runtime, upd
 `.align-revision`, and run the original acceptance gate through `make ci`. Close the request only
 after this file records both Align's response and align-llm's real-client verification.
 
-> **Status (2026-08-01): Requests 1 and 3 are CLOSED; Request 2 is ALIGN_MERGED; Requests 4, 5, 6, 7, and 8 are PROPOSED.**
+> **Status (2026-08-01): Requests 1 and 3 are CLOSED; Request 2 is ALIGN_MERGED; Requests 4, 5, 6, 7, 8, and 9 are PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -2906,6 +2906,689 @@ artifacts. Only that named adoption target plus `make ci` may advance Request 8 
   declared JSON array and materializing-terminal compatibility regressions.
 - `../align/crates/align_driver/tests/cache_parallel.rs` — independent-process cache/concurrency
   regression harness.
+
+---
+
+## Request 9 — `core.json`: owned text fields and runtime-sized text arrays
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: C7's named `C7-PersistedResult` persisted verification-result slice (the first expected consumer; its detailed contract is not yet designed); the first Align implementation of this request is also gated on Request 7's named `ALIGN_MERGED` escape-grammar commit and a reviewed Align memory-model/spec update that defines explicit free-standing JSON materialization inside an arena, and C6 remains independent
+Independent work that may continue: Request 5, Request 6, Request 7, application designs, and any consumer that does not require this direct owned JSON shape
+Resume condition: Request 9 remains non-blocking until the named `C7-PersistedResult` design names this capability as its prerequisite; then reclassify it as blocking for that named slice. Request 9's Align implementation may start only after Request 7 reaches `ALIGN_MERGED` at a named Align commit that supplies the authoritative escape grammar/vector and the reviewed Align memory-model/spec update authorizes this JSON terminal's explicit free-standing allocation inside an arena; Request 9 reuses that grammar but owns its separate free-standing materialization contract. After Request 9 reaches ALIGN_MERGED at a named Align commit, a separately reviewed consumer adoption slice must rebuild the sibling release compiler and runtime, update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged, run its named adoption target and `make ci`, and resume only that named consumer
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation
+
+`C7 Algorithm Verification`'s named `C7-PersistedResult` slice may need to retain a declared record after its input document and
+borrowed `str` views have expired. The pinned `core.json` decoder accepts `str` and `array<str>` fields whose
+elements borrow the input, but it rejects the direct `string`/`array<string>` field shape required
+for an explicitly owned record. An application-side JSON value tree, private encoder, or reparse
+would violate Align's declared-record and explicit-ownership design.
+
+This request extends the existing declared-record JSON operations with one explicitly owned text
+domain. It does not add a dynamic JSON value type, reflection, a second encoder, implicit cloning
+of arbitrary values, or support for nested owned aggregate graphs that are not listed below.
+
+### Current-state evidence at the pinned Align revision
+
+Verified against `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` on 2026-08-01:
+
+- `json_struct_fields_ok_rec` in `../align/crates/align_sema/src/lib.rs` admits `str`, scalar
+  fields, nested records, `array<Struct>`, and `array<str>` for the shipped descriptor path, but
+  rejects `string` and `array<string>` in the JSON direction.
+- `check_json_decode` has a separate existing top-level scalar-array path for `array<i64>`,
+  `array<f64>`, and `array<bool>` (and the corresponding declared scalar primitive types); this
+  path copies elements into an owned dynamic array and must remain separate from the new direct
+  owned-record selector.
+- Struct formation's pass 0b-2 check rejects an `array<string>` field because the current recursive
+  field cleanup is not implemented, even though a top-level `array<string>` payload exists for
+  narrower library producers such as `fs.read_dir`.
+- `../align/docs/impl/core-design/json.md` defines `array<str>` as an owned spine of borrowed
+  elements and explicitly leaves `array<string>` fields deferred. The decoded record is input-region
+  bound, so cloning each element is the current way to persist text.
+- The existing builder can push individual owned `string` values, but no shipped declared-record
+  codec or recursive field `DropPlan` constructs and cleans an owned text array inside a record.
+- The current runtime's decoded-owner failure path does not yet recursively clean every optional
+  descriptor after a `Some` value becomes live. Request 9 explicitly owns that transition audit and
+  its success, failure, replacement, move-out, and branch-join tests; it does not claim the pinned
+  cleanup path already passes.
+- The pinned memory model allocates owned `array`/`string` values inside `arena {}` in the arena and
+  forbids moving them out. Request 9 therefore requires a reviewed update to
+  `../align/draft.md`, `../align/docs/language-spec.md`,
+  `../align/docs/impl/08-memory-model-v2.md`, and `../align/docs/impl/core-design/json.md` that
+  defines this JSON materializing terminal's explicit free-standing allocation mode inside an arena,
+  plus source-drop, move-out, and failure-cleanup ownership tests. Until that Align design/update is
+  merged, the arena persistence case is a future acceptance gate rather than an available capability.
+- `../align/docs/impl/07-roadmap.md` marks L1b Move sum/Option/Result payload completion complete,
+  and `../align/crates/align_driver/tests/owned_tagged_payloads.rs::retained_result_with_recursive_move_payload_is_supported`
+  compiles retained raw results, including `Result<array<Message>, Error>` produced by
+  `json.decode`. Per `../align/CLAUDE.md`, the checked-out compiler and its tests are the
+  implemented surface when design prose disagrees; that implementation/test evidence is the
+  current positive evidence for the recursive Move carrier.
+- `../align/docs/impl/core-design/option-result.md` and
+  `../align/docs/impl/core-design/json.md` §3 still contain pre-L1b statements that owned
+  Move-result values are rejected or must be consumed directly with `?`. Those documents are
+  stale design material at this pin, not positive evidence for the raw-`Result` contract. The Align
+  implementation PR must reconcile both documents at a named commit before Request 9 can reach
+  `ALIGN_MERGED`; Request 9 adopts the compiler/test-proven carrier and does not invent a new result
+  mechanism.
+- The pinned negative regression
+  `../align/crates/align_driver/tests/m5.rs::json_option_move_struct_payload_still_rejected` currently
+  fails because a record with only `Option<MoveStruct>` is admitted by the existing JSON route. That
+  is a pre-existing route inconsistency, not evidence that the new owned descriptor is available:
+  Request 9 rejects unsupported optional owners only after its direct owned-text selector has been
+  chosen, while preserving the existing route for records with no owned text leaf. Align may decide
+  and repair the existing-route behavior separately if it wants to change it.
+
+This is a genuine Align type/standard-library boundary, not an align-llm compatibility concern.
+Request 9 must be designed and implemented in Align before any consumer targets it.
+
+### Requested capability
+
+Keep the existing context-inferred declared-record operations and expand their accepted field graph:
+
+```text
+json.decode(input: str) -> Result<T, Error>   // T is inferred from the annotated declared-record binding
+json.encode(value: T) -> str                  // returns the existing canonical output view
+```
+
+The exact source idiom remains the current declared-record form; no expression-position type
+arguments are introduced. The declaration and the positional call are shown separately so the
+future syntax fixture does not imply a type-argument call form:
+
+```align
+import core.json
+
+OwnedTask {
+  id: string
+  priority: i64
+  attempts: u16
+  limit: u64
+  enabled: bool
+  argv: array<string>
+  note: Option<string>
+}
+```
+
+```align
+fn use_task(input: str) -> Result<(), Error> {
+  task: OwnedTask := json.decode(input)?
+  print(json.encode(task))
+  return Ok(())
+}
+```
+
+The owned field walk is an operation-specific extension, not a replacement for the existing shared
+JSON schema predicate. The target routing is fixed before any descriptor or runtime allocation is
+introduced:
+
+| Entry point and expected target | Request 9 behavior | Required boundary regression |
+| --- | --- | --- |
+| Direct `json.decode` with `Result<Struct, Error>` | Select the new owned direct-record predicate when the record has an owned text leaf; otherwise retain the existing all-borrowed predicate | `m5_owned_json.rs::owned_json_direct_record_target_selects_owned_path` |
+| `json.encode` with a direct `Struct` source | Use the owned descriptor only for the same accepted flat direct-record grammar; existing encode targets retain their existing routes | `m5_owned_json.rs::owned_json_direct_record_encode_route` |
+| `json.decode` with `Result<array<scalar>, Error>` | Retain the existing top-level scalar-array decoder for `array<i64>`, `array<f64>`, `array<bool>`, and the corresponding supported scalar primitive forms; it copies elements into its existing owned dynamic-array representation and never selects `OwnedJsonDescV1` | Existing `m5.rs::json_decode_scalar_array` and `m5.rs::json_decode_float_array`; the Align implementation PR adds the currently missing `m5.rs::json_decode_bool_array` regression for the already-supported top-level bool path |
+| `json.decode` with `Result<array<Struct>, Error>` | Retain the existing AoS predicate and descriptor, including already-shipped Move element graphs such as a union carrying `array<Part>`. The new direct owned-text selector is never entered; an element containing `string`, `Option<string>`, or `array<string>` is rejected before `OwnedJsonDescV1` construction and allocation | `m5_owned_json.rs::owned_json_record_array_preserves_shipped_move_aos` and `m5_owned_json.rs::owned_json_record_array_owned_text_rejected_before_owned_descriptor` |
+| `json.scan` with `json.scanner<Struct>` | Retain Request 6's recursively Copy scanner-row predicate. An owned record is rejected before scanner construction, descriptor construction, or row-slot allocation | `m5_owned_json.rs::owned_json_scanner_target_rejected_before_allocation` |
+| `json.decode` with `Result<soa<Struct>, Error>`, a union, or a scalar | Unchanged existing target-specific validation; none can select the owned direct-record path | `m5_owned_json.rs::owned_json_non_record_targets_unchanged` |
+| `json.encode` with a fixed `StructArray` source | Retain the existing fixed-array template/unrolled route; `OwnedJsonDescV1` is never selected, and existing borrowed or shipped Move element behavior is unchanged | `m5_owned_json.rs::owned_json_fixed_struct_array_encode_route_unchanged` |
+| `json.encode` with a direct union/`Enum` source | Retain the existing shape-directed union route; `OwnedJsonDescV1` is never selected, including for shipped Move union payloads | `m5_owned_json.rs::owned_json_union_encode_route_unchanged` |
+
+The implementation must keep the existing all-borrowed `json_struct_fields_ok_rec`, the existing AoS
+descriptor route, the existing top-level scalar-array decoder, and the Request 6 scanner ownership
+predicate separate from the new direct-record selector. A shared helper may classify a field graph, but a caller must pass an explicit
+operation/target mode. The scanner mode must reject every non-Copy graph; the record-array mode must
+reject only the new Request 9 direct `string`/`Option<string>`/`array<string>` graph before
+`OwnedJsonDescV1`, while continuing to accept the already-shipped Move AoS/union graph that its
+existing descriptor can deep-drop. Fixed struct-array and union encode modes likewise retain their
+existing routes and must not be widened by a direct-record descriptor walk.
+
+The Move boundary is deliberately explicit and follows the shipped recursive Move `Result` carrier.
+The `json.decode(input)?` expression above consumes the temporary result and binds the owned record
+as the local `task`. A raw `Result<OwnedTask, Error>` is also a normal Move value: it may be bound
+with an explicit type, passed to or returned from a function with the same result type, reassigned,
+stored in a supported local, or moved through a branch. Every transfer nulls the source slot and
+leaves exactly one live owner. These are positive ownership fixtures:
+
+```align
+fn retain(input: str) -> Result<OwnedTask, Error> {
+  return json.decode(input)
+}
+
+fn pass_raw(result: Result<OwnedTask, Error>) -> Result<OwnedTask, Error> {
+  return result
+}
+
+fn store_raw(input: str) -> Result<OwnedTask, Error> {
+  raw: Result<OwnedTask, Error> := json.decode(input)
+  return raw
+}
+```
+
+The supported error-conversion form is:
+
+```align
+fn to_error(value: Error) -> Error {
+  return value
+}
+
+fn use_mapped(input: str) -> Result<OwnedTask, Error> {
+  raw: Result<OwnedTask, Error> := json.decode(input)
+  mapped: Result<OwnedTask, Error> := raw.map_err(to_error)
+  task: OwnedTask := mapped?
+  return Ok(task)
+}
+```
+
+The complete raw-`Result` and explicit typed `map_err` examples above are included in
+`docs/examples/request9-owned-json-syntax.align` and are parser-checked together; their runtime
+ownership behavior remains an Align implementation acceptance gate. The explicit `raw` and `mapped`
+bindings keep the decode target and mapped result type inferable, and `mapped?` yields `OwnedTask`,
+which is returned through `Ok(task)`. `map_err` consumes the source `Result`, moves the selected `Ok`
+record or converted error into its rebuilt result, and then `?` consumes that result. A mapper may not
+retain the consumed source after the call. A result source is dropped on `Err`, moved on `Ok`, and the
+old owner is dropped before reassignment. `Result` fields are not part of the flat JSON descriptor
+grammar, and unsupported optional owners are rejected by this JSON descriptor before decode
+allocation only after the direct owned-text selector is chosen; records with no owned text leaf retain
+the existing JSON route. Neither rule changes the language-wide recursive Move `Result` support.
+
+The public contract is:
+
+1. The owned JSON path is selected only when the declared record has at least one direct owned text
+   leaf: `string`, direct `Option<string>`, or direct `array<string>`. Once selected, its grammar is
+   closed and flat: every other field is one of the Copy JSON scalars `int` or `bool`. Copy integer
+   fields retain their declared 8/16/32/64-bit width and signedness, and decode rejects a JSON number
+   outside that exact range as a recoverable decode error; a width-64 unsigned field accepts the full
+   `0..=u64::MAX` range and encode writes its canonical decimal digits through a full-range unsigned
+   writer, never through a signed `i64` intermediate. If an earlier owner is already live, the error
+   follows item 4's cleanup contract rather than a preallocation guarantee. Boolean fields
+   accept and emit only JSON `true` or `false`. `float` is
+   intentionally outside the owned v1 domain: this path never accepts a non-finite value that the
+   existing writer would render as invalid JSON; the existing all-borrowed codec retains its own
+   float behavior unchanged. The
+   record has no `str`/`array<str>` field, nested record, `array<Struct>` field, enum/sum field,
+   `Option<array<string>>`, or other aggregate owner. Records with no owned text leaf continue
+   through the existing borrowed/all-borrowed JSON codec unchanged, including its current nested,
+   `array<Struct>`, `str`, and `array<str>` forms. Missing and JSON `null` both decode to `None`;
+   `Some(empty)` is distinct from `None`, and `json.encode` omits `None` fields as in the existing
+   direct `Option<T>` contract. Required fields reject both missing and `null`, and `null` is not a
+   valid `array<string>` element. Any generic substitution is accepted by the owned descriptor
+   only when it reduces to this exact direct grammar; the language itself may form
+   `Option<MoveStruct>`, but the selected owned descriptor rejects `Option<MoveStruct>`, `Option<OwnedRecord>`,
+   `Option<array<string>>`, `Option<array<Struct>>`, `Option<enum>`, `Option<Result<...>>`, nested
+   `Option<Option<string>>`, move-enum payloads, and every other unsupported optional owner within
+   the selected owned descriptor at JSON descriptor formation before construction. A record with no
+   direct owned text leaf remains on the existing all-borrowed route and is not newly rejected by
+   this item solely because it contains an existing-route Move option.
+2. A record with an owned text leaf enters the owned JSON domain only when every reachable field is
+   in item 1's direct grammar; a `str` or `array<str>` anywhere in that otherwise-owned graph is a
+   mixed graph and is rejected before allocation. A record without an owned text leaf is not a
+   mixed graph and remains with the existing codec. There is no `Owned*` marker type and no
+   implicit `clone_in(out)`. The requested JSON terminal explicitly selects free-standing allocation
+   outside and inside `arena {}`; inside an arena this is a new allocation mode, not the pinned
+   language default, and Align must first update the memory-model/spec sources and ownership tests
+   named above to authorize it. Once that prerequisite is merged, a successful owned result can move
+   out of the decoding scope and outlive its input. The owned-path record declaration must use natural layout: explicit `layout(C)`
+   and `align(N)` attributes on the record are rejected before descriptor construction, even when
+   their effective alignment would otherwise be representable.
+3. `json.decode` allocates an independently owned `string` for each owned text field and an owned
+   dynamic spine plus one owned `string` per `array<string>` element. The result is the current
+   `Result<T, Error>` expression shape. A Move `T` may be consumed by `?`, direct same-scope
+   `match`, or the explicit typed `raw`/`mapped` bindings with `mapped?` shown above; the raw
+   `Result<T, Error>` may also be bound, passed, returned, reassigned, and moved through supported
+   control-flow joins under the ordinary recursive Move rules. `map_err` transfers the selected `Ok`
+   owner and converted error exactly once. A successful owned result has no lifetime dependency on
+   the input. The Align implementation
+   PR must first reconcile the stale `option-result.md`/`json.md` Move-result prose at a named
+   commit; the pinned compiler/test behavior is the implementation evidence, and this request adds
+   no alternate raw-result mechanism.
+4. Every recoverable decode failure after any direct owned field or array element becomes live drops
+   every initialized field, array spine, and string buffer exactly once. Recoverable failures include
+   malformed or incomplete input, wrong shapes, duplicate declared keys, out-of-range integers, and
+   non-whitespace trailing bytes after an otherwise valid object. Capacity overflow and allocator
+   failure are terminal process-abort conditions rather than recoverable `Error` results; they are
+   covered by separate rows below and carry no cleanup-after-abort guarantee. The supported `Option`
+   cleanup is only the direct `Some(string)` payload; all unsupported optional owners reject before
+   allocation.
+   Cleanup order is deterministic and independent of JSON key order: direct record fields are
+   visited in source declaration order; within a live direct `array<string>` field, initialized
+   elements are released in ascending element-index order and then the array spine is released.
+   An optional string payload is released while its field is visited, and an uninitialized field or
+   element is skipped. The same order applies to ordinary record `Drop` and to the top-level
+   trailing-byte failure path. Replacement drops the previous direct owner before installing the
+   new one; move-out nulls the source; `?`, `else`, `map_err`, branch joins, loop back-edges, and
+   early return preserve the same live-field state. No new Request 9 nested aggregate or top-level
+   AoS staging path is part of this request, so those existing paths and their separate cleanup
+   prerequisites are not widened or implied. Malformed, incomplete, or non-whitespace-
+   trailing input never returns a partially initialized successful record; the top-level post-parse
+   trailing-byte error path invokes the same direct-owner cleanup before returning `Err`. Terminal
+   capacity or allocator aborts are outside this recoverable-failure cleanup guarantee.
+5. `json.encode` accepts the same flat owned field grammar, borrows owned strings only for the
+   duration of encoding, and returns the existing canonical `str`. Inside an `arena {}` the result is
+   arena-backed through `builder_finish_stack` and cannot escape that arena. Outside an arena it uses
+   `builder_into_string_stack`; the compiler retains the corresponding hidden free-standing owner
+   for the returned view under the existing template-owner rules. It never consumes, clones, or
+   mutates the source record. The caller must keep the source and returned view live for the call and
+   must explicitly call `canonical.clone()` to obtain a free-standing `string` before crossing an
+   arena boundary or persisting the bytes. Field declaration order, scalar formatting, string
+   escaping, embedded NUL, and text-array order use the owned-path grammar defined below.
+6. JSON field/type validation is compile-time and the encode operation is non-fallible after a valid
+   descriptor is compiled; it does not perform consumer artifact validation or file commit. A future
+   consumer owns its separate validation, output clone, and persisted-artifact boundary. Runtime
+   decode returns the existing `Error` for malformed input and follows the deterministic cleanup
+   order below.
+7. The accepted field graph participates in type formation, interface serialization,
+   monomorphization, structural identity, codegen cache keys, and ABI validation. Its canonical
+   internal descriptor is the self-versioned byte sequence `OwnedJsonDescV1`:
+
+   ```text
+   descriptor := u8 schema_version (= 0x01)
+                u8 layout_mode (= 0x00, natural layout only)
+                u8 layout_algorithm (= 0x01, descending alignment with stable declaration-index ties)
+                u32 field_count (little-endian, non-zero)
+                field[field_count]
+   field := u32 name_len (little-endian)
+            byte[name_len] name_utf8
+            u8 type_tag
+            type_payload
+            u32 physical_payload_offset (little-endian)
+            u32 optional_tag_offset (little-endian, = 0xffffffff for a required field)
+            u32 layout_size (little-endian)
+            u32 layout_align (little-endian)
+            u8 allocation_mode (= 0x00 Copy, 0x01 free-standing owner)
+            u8 drop_tag
+   type_payload for 0x01 copy-integer := u8 bit_width, u8 signedness (= 0 signed, = 1 unsigned)
+   type_payload for 0x03 copy-bool    := empty
+   type_payload for 0x10 owned-string := empty
+   type_payload for 0x11 optional-owned-string := empty
+   type_payload for 0x12 owned-string-array := u8 element_tag (= 0x10),
+                                                u8 drop_plan_version (= 0x01)
+   ```
+
+   The only accepted type tags are `0x01`, `0x03`, `0x10`, `0x11`, and `0x12`; `0x02` is reserved
+   and rejected by v1. Integer widths are exactly `8`, `16`, `32`, or `64`, and `signedness` is
+   exactly `0` for signed or `1` for unsigned. `name_utf8` must be a non-empty ASCII identifier using the current
+   declared-field grammar, and field names must be unique and appear in source declaration order.
+   The drop tags are exactly `0x00` for Copy fields, `0x01` for an owned string, `0x02` for an
+   optional owned string, and `0x03` for a direct owned string array; the tag must agree with the
+   type tag. Copy type tags must carry allocation mode `0x00`; owned type tags must carry `0x01`.
+   `layout_algorithm = 0x01` means that physical fields are ordered by descending natural ABI
+   alignment, with ties resolved by the stable source declaration index, matching Align's pinned
+   `logical_to_physical` rule. Fields remain serialized in source declaration order. Every serialized
+   physical offset is an absolute byte offset from the decoded record's base address; no descriptor
+   offset is relative to a logical field base. For a required field, `physical_payload_offset` is
+   its target-local field offset and `optional_tag_offset` is the required-field sentinel. For the
+   `0x11` optional-owned-string field, let `field_base` be the target-local offset of the logical
+   field and let the target ABI provide the `Option` tag and payload offsets within that field.
+   `physical_payload_offset` is `field_base + option_payload_offset`, and `optional_tag_offset` is
+   `field_base + option_tag_offset`; both record-base-relative offsets are serialized, target-local,
+   and independently validated. This explicit addition is required even when the `Option` tag is
+   currently at offset zero, so a nonzero-position field such as `OwnedTask.note` cannot be read from
+   the wrong origin. Equivalently, the two optional offsets follow the
+   `field_base + option_{payload,tag}_offset` rule. Neither offset is an inferred host pointer or a
+   runtime scan. The serialized
+   `layout_align` is that field's target-local `field_abi_align`, and
+   `layout_size` is its target-local ABI size. A descriptor is rejected before interface or codegen use when its
+   schema version, natural
+   `layout_mode`, or `layout_algorithm` is wrong, field count is zero, a length/count overflows the
+   remaining byte sequence, a name is invalid or duplicated, a type payload or drop tag is invalid,
+   a physical payload offset, optional tag offset, layout width, or alignment is not the compiler's
+   descriptor for the field, an
+   allocation mode is not the mode required by the type tag, an array element/drop-plan pair is not
+   exactly `(0x10, 0x01)`, fields are not in declaration order, or any trailing byte remains. The
+   owned path rejects explicit `layout(C)` and `align(N)` before this descriptor exists. A different
+   physical layout mismatch—whether in the algorithm, payload offset, optional tag offset, size, or
+   alignment—therefore rejects or
+   cache-misses before field access, cleanup, or code generation rather than being treated as the
+   same ABI. No pointer, local struct ID, source position, or declaration hash is part of this
+   identity. A field reorder, field-name change, scalar-width change, ownership tag, natural layout
+   value, allocation mode, physical layout, or drop-plan change therefore changes structural
+   identity; an edit/revert restores the original identity. Whole-program and imported/per-unit
+   compilation must make the same decisions, and stale interface descriptors reject or cache-miss
+   before code generation. A golden byte fixture covers the complete header including the
+   natural-layout mode and algorithm, field order, signed and unsigned integer payload mappings,
+   payload widths, physical payload/tag offsets, layout values, allocation tags, drop tags, and
+   rejection of each malformed, mismatched, or trailing boundary.
+8. Allocation remains explicit at the decode/encode boundary: no hidden global arena, JSON value
+   object, private application encoder, automatic conversion between `array<string>` and `array<str>`,
+   new Request 9 top-level owned-text record-array decoder, or nested owned aggregate codec is added.
+   Existing AoS/union routes, including shipped Move element graphs, remain under their existing
+   descriptors and are not reclassified by this request. A separate wire DTO remains out of scope
+   until a consumer records its own lifecycle contract.
+
+9. Same-process concurrency is supported for the complete Request 9 entrypoint matrix. Define the
+   operation classes as follows:
+
+   | ID | Entry point class |
+   | --- | --- |
+   | `OD` | direct owned-record `json.decode` |
+   | `OE` | direct owned-record `json.encode` |
+   | `BD` | existing direct borrowed-record `json.decode` |
+   | `SD` | existing bare scalar `json.decode` (`int`, `float`, or `bool`) |
+   | `AD` | existing top-level scalar-array `json.decode` (`array<i64>`, `array<f64>`, or `array<bool>`) |
+   | `BE` | existing borrowed direct-record `json.encode` |
+   | `FE` | existing fixed `StructArray` `json.encode` |
+   | `UD` | existing direct union/`Enum` `json.decode` |
+   | `UE` | existing direct union/`Enum` `json.encode` |
+   | `DOC` | existing `json.doc` |
+   | `SCAN` | existing `json.scan` |
+   | `AOS` | existing `array<Struct>` `json.decode` |
+   | `SOA` | existing `soa<Struct>` `json.decode` |
+
+   Let `J = {OD, OE, BD, SD, AD, BE, FE, UD, UE, DOC, SCAN, AOS, SOA}`. The required policy is
+   the full unordered Cartesian product `J × J`, including the diagonal: all 91 class pairs are
+   supported concurrently, neither serialized nor rejected before side effects. Each class's
+   listed target variants is exercised, so the matrix explicitly includes existing-only pairs such
+   as `BD + AD`, `DOC + SCAN`, and `FE + UE`, as well as aggregate-plus-aggregate and
+   aggregate-plus-focused pairs. Direct owned decode and direct owned encode keep parser,
+   destination, temporary-owner, and output-builder state in caller-local storage; immutable
+   descriptor tables may be shared, but no mutable codec or allocator state is process-global. Every
+   pair retains its own input/output ownership and result semantics; existing entrypoints keep
+   their existing arena, Copy-row, and region restrictions. Independent processes have the same
+   no-shared-state policy. A future connection-global or process-global codec cache would require a
+   separately reviewed contract and cannot be introduced under this request.
+
+10. Capacity overflow is distinct from allocator failure. The owned `array<string>` decoder checks
+   element-count, element-width, byte-count, and temporary/output-copy arithmetic before every
+   resize or allocation; the owned encoder checks builder length-plus-additional arithmetic before
+   every growth. A reachable overflow is terminal under the pinned runtime policy, is not a
+   recoverable `Error`, and returns no successful partial record/string. It may occur after an earlier
+   owner became live, but item 4's recoverable-failure cleanup guarantee does not apply after this
+   terminal abort. This is separate from an allocator failure, which is also terminal and has no
+   promised cleanup-after-abort behavior. Exact child regressions cover decode growth and encode
+   growth independently.
+
+11. Metric / benchmark: N/A as a performance acceptance claim. Request 9 is a correctness and
+    ownership prerequisite and introduces no optimization threshold or speed promise. Allocation
+    parity between whole-program and per-unit compilation remains a required correctness measurement
+    in `m5_owned_json.rs::owned_json_whole_program_per_unit_allocation_parity`; any later codec
+   optimization must add its own reproducible baseline, workload, and threshold in a separate
+   design.
+
+12. Minimum compiler/platform baseline: the target-local ABI is part of this request's contract
+    because `layout_algorithm`, `physical_payload_offset`, `optional_tag_offset`, `layout_size`, and
+    `layout_align` are serialized
+    and validated. The required baseline is
+    `x86_64-unknown-linux-gnu` on Ubuntu 24.04 with Rust 1.96 and LLVM 22, using the compiler and
+    runtime at the exact pinned Align revision above. Align's supported release targets
+    `aarch64-unknown-linux-gnu` on Ubuntu 24.04-arm and `aarch64-apple-darwin` on macOS 15 are also
+    required acceptance environments because natural size and alignment are target-dependent; they
+    are not optional evidence. No 32-bit or other target is supported by this request. The descriptor
+    is target-local: interface exchange must match the target triple before descriptor validation,
+    and a target/ABI mismatch rejects before code generation. Newer hosts are supplementary, not a
+    substitute for the named baseline environments.
+
+13. Configuration boundaries: CLI/build inputs are N/A because Request 9 adds no flag, build
+    setting, profile, or artifact-selection input; source declarations and explicit function
+    arguments are its complete inputs. Option/environment isolation is N/A because Request 9 adds
+    no option state, environment variable, process-global codec setting, or persistent boundary
+    across which accepted or rejected state could cross. The implementation must not read ambient
+    configuration to change descriptor formation, allocation, parsing, encoding, or cleanup; the
+    exact pinned compiler/runtime revision is a development prerequisite, not a Request 9 runtime
+    option.
+
+Request 9 consumes Request 7's already-authoritative JSON string grammar and canonical escape vector;
+Request 7 remains the source of truth for lexical acceptance and semantic duplicate-key handling.
+Request 9 does not revise that grammar, make Request 7 depend on this later request, or claim Request
+7's arena/borrowed-view materialization. The owned path applies the same `\"`, `\\`, `\/`, `\b`,
+`\f`, `\n`, `\r`, `\t`, and valid `\uXXXX` sequence rules, including valid surrogate pairs; it
+rejects the same lone/reversed/malformed surrogates, truncated or non-hex escapes, raw C0 bytes,
+duplicate declared keys, and malformed text in ignored keys or values. Unknown keys retain the
+existing ignore behavior, including repeated unknown keys. `\u0000` becomes one embedded
+NUL byte. The `OwnedTask` pair below is a separate owned-materialization golden fixture derived from
+that earlier grammar, not a second lexical source of truth. The comparison is over JSON bytes before
+any CLI newline. Request 7 may return an outside-arena error for an escaped borrowed view; Request 9
+instead returns an owned value, so the shared grammar does not imply shared materialization behavior.
+
+The normative owned-path golden pair is bytewise and independent of any future adoption file. It
+includes one signed integer and one boolean so the owned route has a semantic-to-byte and
+byte-to-semantic vector for its accepted Copy field domain:
+
+```text
+OwnedTask {
+  id: string
+  priority: i64
+  attempts: u16
+  limit: u64
+  enabled: bool
+  argv: array<string>
+  note: Option<string>
+}
+
+input UTF-8 bytes:
+{"id":"task-1","priority":-7,"attempts":3,"limit":18446744073709551615,"enabled":true,"argv":["","quote:\" slash:\/ backslash:\\ controls:\b\f\n\r\t","nul:\u0000","emoji:\ud83d\ude00"],"note":"\u20ac"}
+
+canonical output UTF-8 bytes:
+{"id":"task-1","priority":-7,"attempts":3,"limit":18446744073709551615,"enabled":true,"argv":["","quote:\" slash:/ backslash:\\ controls:\b\f\n\r\t","nul:\u0000","emoji:😀"],"note":"€"}
+```
+
+The output pair is compared before a CLI newline. The `limit` field is the `u64::MAX` boundary
+vector: its decimal bytes must survive decode/encode without signed conversion. The null and omitted-note cases are separate
+vectors: both decode to None, while Some(empty) is encoded as an explicit empty JSON string.
+The exact optional-note vectors are:
+
+```text
+omitted-note input UTF-8 bytes:
+{"id":"task-1","priority":-7,"attempts":3,"limit":18446744073709551615,"enabled":true,"argv":[]}
+
+omitted-note canonical output UTF-8 bytes:
+{"id":"task-1","priority":-7,"attempts":3,"limit":18446744073709551615,"enabled":true,"argv":[]}
+
+null-note input UTF-8 bytes:
+{"id":"task-1","priority":-7,"attempts":3,"limit":18446744073709551615,"enabled":true,"argv":[],"note":null}
+
+null-note canonical output UTF-8 bytes:
+{"id":"task-1","priority":-7,"attempts":3,"limit":18446744073709551615,"enabled":true,"argv":[]}
+
+some-empty-note input UTF-8 bytes:
+{"id":"task-1","priority":-7,"attempts":3,"limit":18446744073709551615,"enabled":true,"argv":[],"note":""}
+
+some-empty-note canonical output UTF-8 bytes:
+{"id":"task-1","priority":-7,"attempts":3,"limit":18446744073709551615,"enabled":true,"argv":[],"note":""}
+```
+
+`m5_owned_json.rs::owned_json_optional_note_byte_vectors` compares each input/output pair bytewise
+before any CLI newline and separately checks the decoded `None`/`Some(empty)` states.
+Deterministic validation and failure order is:
+
+| Order | Validation |
+| --- | --- |
+| 1 | Compile-time parser/import/arity and expected-record inference |
+| 2 | Compile-time direct declared field grammar, ownership classification, `DropPlan`, allocation mode, and interface identity; mixed or unsupported aggregate graphs reject before allocation |
+| 3 | Recoverable runtime decode syntax/duplicate/schema/range validation in the existing parser order; on recoverable failure, direct-field cleanup of already-live owners; capacity overflow and allocator failure take the separate terminal-abort policy |
+| 4 | Successful decode result construction and Move transfer; raw `Result<OwnedRecord, Error>` bind, parameter, return, reassignment, branch-join, and `map_err` paths use the pinned recursive Move carrier and are checked as ordinary ownership transfers |
+| 5 | Compile-time encode descriptor validation, then non-fallible canonical field-order emission into the existing output region |
+| 6 | Consumer-only output clone, artifact validation, and file commit after `json.encode`; these are not Request 9 runtime errors |
+
+### Ownership closure matrix
+
+The matrix below is the reopened design gate. Before implementation, it must close the finite owned
+numeric domain and its canonical
+signedness tags, preserve the existing top-level scalar-array entrypoints, cleanup after a valid
+object followed by non-whitespace trailing bytes, recoverable integer-range failure cleanup versus
+terminal abort timing, the exact declared-key duplicate scope, deterministic cleanup order, the named
+first expected consumer, operation-specific entrypoint routing including existing Move AoS/union
+compatibility, same-process concurrency, separate capacity-overflow and allocator-failure policy, the
+metric decision, optional-state byte vectors, target ABI baseline, configuration-boundary N/A decisions,
+the selected-owned-path scope for unsupported optional owners while preserving the existing no-owned-
+leaf route, the explicit free-standing JSON allocation mode inside an arena versus the existing arena
+default, the required memory-model/spec source updates, and reproducible process-level regression names.
+Align's reviewed design must keep the canonical implementation matrix in the authoritative JSON and
+memory design, while this register records the adoption-visible coverage. A change to the ownership,
+entrypoint, wire, capacity, metric, or concurrency boundary updates both documents before
+implementation.
+
+| Case | Exact owner | Exact regression |
+| --- | --- | --- |
+| Owned-path selection and field formation | `../align/crates/align_sema/src/lib.rs` owned-path selector beside `json_struct_fields_ok_rec`/`is_field_ok`, plus direct JSON descriptor validation | `m5_owned_json.rs::owned_text_field_formation_and_inference` covers the unchanged all-borrowed route, one-owned-leaf selection, Copy `int`/`bool`, `string`, direct `Option<string>`, direct `array<string>`, owned-path `float` rejection, missing expected type, mixed `str`/`array<str>`, nested-record, enum, and unsupported-option rejection before allocation; `m5_owned_json.rs::owned_json_copy_scalar_width_sign_range_and_bool` covers every accepted integer width/sign with `0 = signed` and `1 = unsigned`, including the full `u64` range and `u64::MAX` encode vector, range rejection, and boolean decode/encode; the same formation test rejects owned-path `layout(C)` and `align(N)` before allocation |
+| Operation-specific target routing | `../align/crates/align_sema/src/lib.rs` direct-record selector plus unchanged `check_json_decode`, `check_json_scan`, fixed-`StructArray` encode, and union target gates | `m5_owned_json.rs::owned_json_direct_record_target_selects_owned_path`, `owned_json_direct_record_encode_route`, `owned_json_record_array_preserves_shipped_move_aos`, `owned_json_record_array_owned_text_rejected_before_owned_descriptor`, `owned_json_scanner_target_rejected_before_allocation`, `owned_json_non_record_targets_unchanged`, `owned_json_fixed_struct_array_encode_route_unchanged`, and `owned_json_union_encode_route_unchanged` prove the new direct owned-text graph cannot widen scanner, new AoS, SoA, union, scalar, fixed-array, or existing Move-union routes |
+| Top-level scalar-array target routing | `../align/crates/align_sema/src/lib.rs` `check_json_decode` `Ty::DynArray` branch and its existing `JsonDecodeArray` lowering; no `OwnedJsonDescV1` construction | Existing `m5.rs::json_decode_scalar_array` and `m5.rs::json_decode_float_array`, plus the new Align implementation regression `m5.rs::json_decode_bool_array` required because the pinned suite has only field-level bool-array coverage, cover the existing `array<i64>`, `array<f64>`, and `array<bool>` targets; `m5_owned_json.rs::owned_json_same_process_entrypoint_matrix` includes scalar-array decode as an independent concurrent entrypoint column |
+| Direct `array<string>` type and `DropPlan` | `../align/crates/align_sema/src/lib.rs` pass 0b-2, `struct_is_move`/`drop_plan`; `../align/crates/align_codegen_llvm/src/lib.rs` field/drop lowering | `m5_owned_json.rs::owned_text_array_field_drop_plan` proves the direct array spine/owned-string element descriptor and rejects `Option<array<string>>`, nested arrays, and unsupported elements |
+| Owned scalar text decode and free-standing allocation | `../align/crates/align_mir/src/lib.rs` JSON decode lowering, `../align/crates/align_runtime/src/lib.rs` owned string allocation, `../align/crates/align_sema/src/lib.rs` region/move checks, and the required allocation-mode update in `../align/docs/impl/08-memory-model-v2.md` / `../align/docs/impl/core-design/json.md` | `m5_owned_json.rs::decode_owned_string_field_detaches_from_input` drops the input before reading the result and returns/moves the free-standing owner; `m5_owned_json.rs::owned_decode_inside_arena_free_standing_result`, `owned_decode_inside_arena_source_drop_and_move_out`, and `owned_decode_inside_arena_failure_cleanup` are the required ownership tests for the newly authorized free-standing JSON terminal inside an arena; `m5_owned_json.rs::owned_encode_output_region_and_clone_boundary` separately rejects an arena-backed encoded view escaping |
+| Arena allocation-mode source of truth | `../align/draft.md`, `../align/docs/language-spec.md`, `../align/docs/impl/08-memory-model-v2.md`, and `../align/docs/impl/core-design/json.md` must explicitly define and reconcile the JSON terminal's free-standing allocation inside an arena before implementation | The same `owned_decode_inside_arena_free_standing_result`, `owned_decode_inside_arena_source_drop_and_move_out`, and `owned_decode_inside_arena_failure_cleanup` tests must cover source drop, move-out, ordinary success cleanup, and recoverable failure cleanup; the implementation PR cannot reach `ALIGN_MERGED` while this source update or its tests is missing |
+| Owned text-array spine, elements, and reallocation | `../align/crates/align_runtime/src/lib.rs` array spine/element allocation and typed decode | `m5_owned_json.rs::decode_owned_string_array_empty_many_and_nul` covers zero, one, many, reallocation, embedded NUL, and multibyte values; `m5_owned_json.rs::owned_text_array_move_out_and_drop` proves source nulling and exactly-once deep drop |
+| Unsupported nested/mixed graph rejection | `../align/crates/align_sema/src/lib.rs` direct field walk and region/move checks | `m5_owned_json.rs::owned_json_rejects_nested_array_record_enum_and_mixed_view_graphs` proves rejection before any decode allocation |
+| Optional owned text and null semantics | `../align/crates/align_runtime/src/lib.rs` missing/null/Some field paths and optional cleanup | `m5_owned_json.rs::decode_owned_option_string_states` covers missing/null → `None`, `Some(empty)`, and non-empty values; `m5_owned_json.rs::owned_json_optional_note_byte_vectors` provides exact omitted/null/empty input-output bytes; `m5_owned_json.rs::owned_option_replacement_drop` proves replacement cleanup; `m5_owned_json.rs::reject_unsupported_owned_options_before_allocation` rejects `Option<MoveStruct>`, `Option<OwnedRecord>`, `Option<array<string>>`, and move-enum payloads only after the owned direct-record selector is chosen, while the existing no-owned-leaf route remains unchanged |
+| Decode recoverable failures and partial cleanup | `../align/crates/align_runtime/src/lib.rs` parse and semantic error edges, numeric range checks, top-level post-parse trailing-byte check, `drop_decoded_owned`, and direct-field cleanup; `../align/crates/align_mir/src/lib.rs` failure CFG | `m5_owned_json.rs::owned_decode_partial_failure_cleans_every_live_owner` covers recoverable malformed escapes, wrong shapes, truncation, duplicate declared keys, out-of-range integers, live `Some(string)`, array-spine publication/reallocation, `?`, `else`, `map_err`, and branch joins without nested/AoS claims; `m5_owned_json.rs::owned_decode_trailing_garbage_cleans_every_live_owner` covers a valid object followed by non-whitespace bytes and proves the top-level error path frees every direct owner; terminal capacity/allocator aborts are covered separately and are excluded from this cleanup guarantee |
+| Deterministic owned-value cleanup order | `../align/crates/align_codegen_llvm/src/lib.rs` canonical `DropPlan`/record cleanup and `../align/crates/align_runtime/src/lib.rs` direct decoded-owner cleanup | `m5_owned_json.rs::owned_json_cleanup_order_is_declaration_and_element_order` uses permuted JSON key order and injected failure/ordinary `Drop` paths to assert source declaration-order field cleanup, ascending initialized `array<string>` element-index cleanup, optional payload cleanup within its field, and array-spine release after its elements; all initialized owners are released exactly once |
+| Move-in, move-out, return, and source nulling | `../align/crates/align_sema/src/lib.rs` MoveCheck and `../align/crates/align_mir/src/lib.rs` transfer/null cleanup | `m5_owned_json.rs::owned_json_move_source_null_and_return_cleanup` covers direct `?`, same-scope `match`, raw `Result<OwnedRecord, Error>` bind/parameter/return/reassignment, `map_err`, and exactly-once source nulling/cleanup |
+| Reassignment, replacement, and all control-flow joins | `../align/crates/align_sema/src/lib.rs` `MoveCheck`/`BorrowState` assignment state and `../align/crates/align_mir/src/lib.rs` `drop_old`, branch/loop cleanup CFG | `m5_owned_json.rs::owned_option_replacement_drop` and `m5_owned_json.rs::owned_json_all_control_flow_cleanup` cover `if`, `match`, `else`, `?`, `map_err` mapper early exit, value-carrying `break`, loop back-edges, early return, malformed input, and source/owner reset; `continue` is N/A because Align has no such construct |
+| Owned encode field order and escapes | `../align/crates/align_runtime/src/lib.rs` declared encoder descriptor and string writer | `m5_owned_json.rs::encode_owned_json_canonical_bytes` proves declaration order, the inline owned-path grammar vectors, escapes, embedded NUL, empty arrays, text-array order, and no source mutation |
+| Encode output region and explicit persistence clone | `../align/crates/align_sema/src/lib.rs` region escape checks and `../align/crates/align_runtime/src/lib.rs` output builder | `m5_owned_json.rs::owned_encode_output_region_and_clone_boundary` proves arena result expiry, outside hidden-owner lifetime, explicit clone before persistence, and rejection of a dangling return |
+| Encode/decode semantic and byte round-trip | `../align/crates/align_mir/src/lib.rs` JSON nodes plus runtime codec | `m5_owned_json.rs::owned_json_encode_decode_encode_identity` proves semantic equality and byte identity while source, decoded, and cloned-output owners remain live |
+| Input/source lifetime boundary and mixed records | `../align/crates/align_sema/src/lib.rs` region/drop checks | `m5_owned_json.rs::owned_decode_has_no_input_region_dependency` drops input before using every owned field and rejects treating a mixed borrowed `str` record as `Owned*` |
+| Generic and imported graph parity | `../align/crates/align_sema/src/lib.rs` substitution; `../align/crates/align_driver/src/lib.rs` interface emission | `generics.rs::owned_json_direct_grammar_substitution` and `per_unit.rs::owned_json_imported_direct_graph_parity` cover only accepted direct shapes and equivalent rejection |
+| Structural identity, natural layout, and cache | `../align/crates/align_driver/src/lib.rs` existing structural/interface cache identity plus the new natural-layout-only `OwnedJsonDescV1` descriptor; `../align/crates/align_sema/src/lib.rs` layout validation; `../align/crates/align_codegen_llvm/src/lib.rs` `logical_to_physical`, `field_byte_offset`, and target `Option` payload/tag offsets | `cache_codegen.rs::owned_json_descriptor_golden_and_definition_edit_revert_identity` proves the natural-layout header and algorithm, fixed tags/widths, explicit `0 = signed`/`1 = unsigned` payload mapping, signed/unsigned golden fields including `u64::MAX`, record-base-relative physical payload/tag offsets for a nonzero-position optional field, target-local sizes/alignments, cold hit, definition edit miss, revert identity, explicit `layout(C)`/`align(N)` rejection, and stale descriptor rejection; `interface_param_modes.rs::owned_json_descriptor_physical_layout_mismatch_rejected` rejects an algorithm, payload offset, optional tag offset, or layout mismatch before field access, cleanup, or codegen |
+| ABI descriptor and allocation parity | `../align/crates/align_driver/src/lib.rs` interface serialization, `../align/crates/align_codegen_llvm/src/lib.rs` ABI/drop descriptors, and `../align/crates/align_runtime/src/lib.rs` ownership flags | `interface_param_modes.rs::owned_json_direct_drop_descriptor_abi`, `m5_owned_json.rs::owned_json_whole_program_per_unit_allocation_parity`, and `m5_owned_json.rs::owned_json_allocation_transfer` |
+| Capacity overflow | `../align/crates/align_runtime/src/lib.rs` checked element-count/byte-count arithmetic for owned array decode and checked builder length/growth arithmetic for owned encode | `m5_owned_json.rs::owned_json_decode_capacity_overflow_terminal_child` and `m5_owned_json.rs::owned_json_encode_capacity_overflow_terminal_child` cover decode growth and encode growth independently; each proves terminal non-zero exit and no successful partial record/string |
+| Allocator failure | `../align/crates/align_runtime/src/lib.rs` allocator/cleanup and the Align test-only child-process failpoint | `m5_owned_json.rs::owned_json_allocation_transfer` covers recoverable parse/type failures; `m5_owned_json.rs::owned_json_allocator_failure_terminal_child` records the distinct terminal allocator-abort policy for direct fields, text-array growth, and output-builder growth and explicitly makes no cleanup-after-abort claim |
+| Same-process and process concurrency policy | per-call parser, destination, temporary-owner, and output-builder state in `../align/crates/align_runtime/src/lib.rs`; immutable descriptor tables may be shared; no process-global mutable codec state or codec-instance API is added | `m5_owned_json.rs::owned_json_same_process_entrypoint_matrix` runs the full 91-pair unordered `J × J` matrix, including diagonal and existing-only pairs (`BD + AD`, `DOC + SCAN`, `FE + UE`) and every target variant named in item 9; every pair is supported concurrently, not serialized or pre-rejected; `cache_parallel.rs::owned_json_two_processes` confirms independent processes have the same no-shared-state policy |
+| Existing borrowed and shipped Move JSON compatibility | `../align/crates/align_sema/src/lib.rs` target-specific predicates plus existing runtime template/descriptor/union paths | `m5.rs::json_decode_struct_array_len`, `json_decode_struct_array_malformed_errors`, existing `owned_tagged_payloads.rs::retained_result_with_recursive_move_payload_is_supported`, `m5_owned_json.rs::owned_json_record_array_preserves_shipped_move_aos`, `owned_json_fixed_struct_array_encode_route_unchanged`, `owned_json_union_encode_route_unchanged`, and Request 7's escaped-view tests remain green; no new `OwnedJsonDescV1` route is used |
+| Metric / benchmark decision | Request 9 public contract item 11; allocation instrumentation in `../align/crates/align_runtime/src/lib.rs` and whole-program/per-unit test harness | `m5_owned_json.rs::owned_json_whole_program_per_unit_allocation_parity` is the required correctness measurement; no performance benchmark or threshold is claimed because this is a correctness prerequisite, and a later optimization must register its own workload and baseline |
+| First expected consumer and lifecycle | `docs/specs/roadmap.md` named `C7-PersistedResult` slice and Request 9 lifecycle metadata | N/A until the `C7-PersistedResult` detailed consumer design names the accepted record shapes; the named roadmap slice is the first consumer, Request 9 remains non-blocking until that design gate, and the consumer must reclassify this request before implementation/adoption |
+| Target ABI baseline and target-local descriptor exchange | `../align/crates/align_driver/src/lib.rs` target-triple/interface identity, `../align/crates/align_codegen_llvm/src/lib.rs` natural layout, and `../align/docs/impl/11-release-distribution.md` supported release environments | `interface_param_modes.rs::owned_json_target_abi_descriptor_matches_target` runs the required `x86_64-unknown-linux-gnu` baseline and the `aarch64-unknown-linux-gnu`/`aarch64-apple-darwin` release-target acceptance environments; `interface_param_modes.rs::owned_json_target_abi_mismatch_rejected` rejects a target/ABI mismatch before code generation |
+| Normative syntax and baseline declaration | `../align/crates/align_fmt` parser/formatter for the proposed source fixture; no product path consumes it | `docs/examples/request9-owned-json-syntax.align` passes the pinned `alignc fmt` parser-only check; declarations and positional calls are shown as separate blocks in this register. The required platform baseline and release-target environments are the target-ABI tests above; parser formatting remains a separate syntax check |
+| CLI/build and option/environment boundaries | N/A: Request 9 adds no CLI flag, build setting, profile, artifact-selection input, option state, environment variable, or persistent boundary; only source declarations and explicit function arguments are inputs, and no ambient configuration may affect the route | N/A by design; there is no new accepted/rejected state to isolate or preserve across a configuration boundary, while the pinned compiler/runtime revision remains a development prerequisite rather than a runtime option |
+
+### Align acceptance gate
+
+Before any owned-path implementation starts, Align must update `../align/draft.md`,
+`../align/docs/language-spec.md`, `../align/docs/impl/08-memory-model-v2.md`, and
+`../align/docs/impl/core-design/json.md` to authorize the JSON materializing terminal's explicit
+free-standing allocation inside `arena {}` while preserving the existing arena default for ordinary
+owned values. That source update must land with
+`m5_owned_json.rs::owned_decode_inside_arena_free_standing_result`,
+`owned_decode_inside_arena_source_drop_and_move_out`, and
+`owned_decode_inside_arena_failure_cleanup`, which cover source drop, move-out, success cleanup,
+recoverable failure cleanup, and the result's ability to outlive the input. Request 9 cannot reach
+`ALIGN_MERGED` on the pinned memory-model contradiction alone.
+
+Before Align marks Request 9 `ALIGN_MERGED`, focused tests must prove:
+
+1. A direct record with no owned text leaf continues through the existing borrowed/all-borrowed
+   codec, including its shipped `str`/`array<str>`, nested/array-struct, and union forms. Existing
+   top-level AoS decode, fixed struct-array encode, and union encode targets—including shipped Move
+   element/union graphs—continue through their existing target modes. A flat declared record
+   with a direct owned text leaf plus Copy `int`/`bool` fields at every supported integer width and
+   signedness, `string`, direct `Option<string>`, and direct `array<string>` fields passes the owned
+   descriptor formation correctly; a width-64 unsigned field accepts and re-encodes `u64::MAX`
+   through the full-range unsigned writer rather than a signed `i64` writer. JSON integer range
+   failures return a recoverable decode error and use item 4's cleanup path when earlier owners are live, while an owned-path `float` field rejects
+   at descriptor formation before runtime allocation and boolean true/false values round-trip. Mixed borrowed fields,
+   nested records, `array<Struct>`, enum/sum fields, owned-path `layout(C)`/`align(N)`,
+   `Option<MoveStruct>`, `Option<OwnedRecord>`, `Option<array<string>>`, unsupported generic
+   substitutions, and missing expected types reject at owned descriptor formation before runtime
+   allocation. This rejection applies only after the direct owned-text selector is chosen; a direct
+   record with no owned text leaf remains on the existing JSON route, including any pre-existing
+   `Option<MoveStruct>` behavior, while general language formation of `Option<MoveStruct>` remains
+   supported.
+2. Existing top-level scalar-array decode remains unchanged for `array<i64>`, `array<f64>`, and
+   `array<bool>`, independently of the new direct owned-record selector. Owned scalar and direct
+   runtime-sized text-array fields decode for empty, one, many, NUL, and
+   multibyte values; the input can be dropped before all owned fields are read. New Request 9 nested
+   and top-level owned-text record-array routes are explicitly out of scope, while existing shipped
+   Move AoS/union record-array targets remain covered by their compatibility regressions.
+3. Missing and `null` both decode to `None`, `Some(empty)` is distinct from `None`, and `None` is
+   omitted by encode. The omitted-note, null-note, and Some(empty)-note byte vectors above are
+   compared independently by `m5_owned_json.rs::owned_json_optional_note_byte_vectors`. Required
+   fields reject both missing and `null`, `null` array elements reject with the existing type error,
+   and optional values are cleaned exactly once on success, replacement, move-out, and failure.
+4. Malformed syntax, the inline owned-path escape vectors, wrong shapes, truncation, duplicate
+   declared keys, out-of-range integer values, non-whitespace trailing bytes after an otherwise valid
+   object, and mid-`array<string>` failures return the deterministic recoverable error and free every
+   initialized direct owner, including a live `Some(string)`, without a leak, double free, panic, or
+   successful partial record. Cleanup is asserted in source declaration order, with initialized
+   text-array elements in ascending index order before their spine, and is independent of JSON key
+   order. Repeated unknown keys remain ignored after their values pass the shared grammar. Capacity
+   overflow and allocator failure remain terminal aborts covered by item 7 and have no cleanup-after-
+   abort assertion.
+5. Owned records encode with canonical declaration order and exact inline-vector bytes for escapes,
+   embedded NUL, the full `u64::MAX` decimal boundary, empty text arrays, multibyte text, and all
+   three optional-note states without consuming or mutating the source. A width-64 unsigned field
+   must use a full-range unsigned writer and never pass through a signed `i64` intermediate.
+6. `decode -> encode -> decode` preserves semantic owned values and `encode` bytes while the source
+   and output owners are independently live; the output does not borrow source text.
+7. Generic, imported/per-unit, cache-cold/edit/revert, `OwnedJsonDescV1` ABI descriptor including
+   the pinned natural-layout algorithm, every logical field's physical payload offset and optional
+   tag offset, explicit signed/unsigned descriptor tags, raw-`Result` bind/parameter/return/reassignment and typed
+   `map_err` transfer, the complete same-process entrypoint
+   matrix including all 91 unordered pairs and every target variant in item 9, existing scalar-array
+   target regressions (`m5.rs::json_decode_scalar_array`, `json_decode_float_array`, and the new
+   Align implementation regression `json_decode_bool_array`), existing Move AoS/fixed-array/union
+   target compatibility, reconciliation of the stale `option-result.md`/`json.md` Move-result
+   prose and the arena allocation-mode source update at named Align commits,
+   `m5_owned_json.rs::owned_decode_inside_arena_free_standing_result`,
+   `owned_decode_inside_arena_source_drop_and_move_out`,
+   `owned_decode_inside_arena_failure_cleanup`, `cache_parallel.rs::owned_json_two_processes`,
+   `m5_owned_json.rs::owned_json_cleanup_order_is_declaration_and_element_order`,
+   `m5_owned_json.rs::owned_json_decode_capacity_overflow_terminal_child`,
+   `m5_owned_json.rs::owned_json_encode_capacity_overflow_terminal_child`, and
+   `m5_owned_json.rs::owned_json_allocator_failure_terminal_child` have the same validation and
+   ownership result. Capacity overflow and allocator failure are distinct terminal policies under
+   the pinned runtime; neither returns a recoverable error or successful partial result, and no
+   cleanup-after-abort path is promised.
+8. Existing `str`/`array<str>` zero-copy behavior and Request 7's separately tracked escaped-view
+   behavior remain unchanged. Request 9 does not claim to close Request 7.
+9. A future named align-llm adoption slice, created only after a concrete consumer design exists,
+   must construct the flat owned record, drop the input, encode the inline canonical bytes, decode
+   again, and exercise direct text-array cleanup. Only that named target plus `make ci` may advance
+   Request 9 to `ALIGN_LLM_VERIFIED`; this proposal does not claim that target or its fixture exists.
+
+10. The metric decision is explicit: Request 9 makes no performance claim or threshold. The
+    whole-program/per-unit allocation-parity measurement must pass, and any speed/size optimization
+    is deferred to a separately designed benchmark slice.
+
+11. The normative syntax fixture `docs/examples/request9-owned-json-syntax.align` passes the pinned
+    `alignc fmt` parser-only check and contains the declaration, positional call, raw-`Result` bind/
+    parameter/return examples, and explicit typed `map_err`/`?` form shown above. The declaration and
+    positional call are separately shown above; no current `alignc check` result is claimed for the
+    proposed `string`/`array<string>` field surface. The required target-ABI baseline and release
+    target acceptance environments in item 12 are exercised by the named interface regressions.
+
+12. Request 9 introduces no CLI/build input and no option/environment isolation boundary. Its
+    source declarations and explicit `json.decode`/`json.encode` arguments are the complete input
+    surface; no ambient configuration may change route selection, descriptor identity, allocation,
+    parsing, encoding, or cleanup. The closure matrix records both dimensions as N/A with these
+    reasons, and the pinned compiler/runtime revision is not treated as a runtime option.
+
+The adoption target is separate from Align implementation. After `ALIGN_MERGED`, the named consumer
+slice rebuilds the sibling release compiler and runtime from the named commit, updates
+`.align-revision`, creates its exact bytewise fixture, and runs it through the common fresh-compiler
+topology. No later consumer dependency is asserted until that consumer's design is durable and
+updated to name this merged request.
+
+### References
+
+- `../align/docs/impl/core-design/json.md` §§3–4 — current declared JSON field domains, borrowed
+  `str`/`array<str>` ownership, and the deferred `array<string>` field.
+- `../align/draft.md` and `../align/docs/language-spec.md` — the public ownership and allocation
+  rules that must be updated to authorize this explicit JSON terminal mode without changing the
+  ordinary arena default.
+- `../align/docs/impl/core-design/option-result.md` and `../align/docs/impl/07-roadmap.md` — the
+  roadmap's L1b completion status, the stale per-area Move-result design prose, and the source pair
+  that the Align implementation PR must reconcile against the pinned compiler/test evidence before
+  this request reaches `ALIGN_MERGED`.
+- `../align/docs/impl/08-memory-model-v2.md` §§6–8 and 11 — the pinned ordinary arena/free-standing
+  ownership rule, materializing-terminal bounds, Move cleanup, and declared dynamic-array field
+  boundaries; the Align implementation must add the explicit JSON-terminal allocation exception
+  here before this request is implementable.
+- `../align/docs/impl/11-release-distribution.md` — supported compiler/runtime release targets and
+  required baseline environments for the target-local ABI descriptor.
+- `../align/crates/align_sema/src/lib.rs` — `json_struct_fields_ok_rec`, `is_field_ok`, field
+  formation, structural `DropPlan`, and current `array<string>` rejection.
+- `../align/crates/align_mir/src/lib.rs` and `../align/crates/align_runtime/src/lib.rs` — current
+  JSON lowering, descriptor-driven parse/encode, and cleanup paths.
+- `../align/crates/align_driver/tests/m5.rs` — shipped declared JSON regressions.
+- `../align/crates/align_driver/tests/owned_tagged_payloads.rs` — shipped recursive Move payload and
+  Move AoS/union compatibility regressions.
+- `docs/examples/request9-owned-json-syntax.align` — parser-only syntax fixture for the proposed
+  declaration and positional call; it is not a product example consumed by `make check`.
+- `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — the committed roadmap and architecture
+  that future consumers must refine before adoption.
 
 ## Not requested (respecting Align's design)
 

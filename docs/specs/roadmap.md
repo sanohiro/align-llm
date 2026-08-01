@@ -220,6 +220,17 @@ align-coder prompt rollback
 - benchmark comparison
 ```
 
+### First planned consumer slice: C7-PersistedResult
+
+The first planned C7 consumer is the `C7-PersistedResult` slice: retain a declared verification
+result after its input document and borrowed views have expired, then verify the persisted value
+through the algorithm-testing gate. This is a named roadmap slice, not an implementation contract;
+its own design must define the persisted artifact schema, validation boundary, and adoption test
+before implementation starts. It may depend on Align Request 9 only after that request reaches
+`ALIGN_MERGED` at a named Align commit and the consumer design explicitly names the accepted owned
+record shapes. Until that design gate is complete, Request 9 remains a non-blocking prerequisite and
+C6 work remains independent.
+
 ### Gate
 
 意図的に入れた境界条件バグ、性能劣化、挙動差を検出できること。
