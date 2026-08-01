@@ -7,8 +7,9 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6-record-array-request`, based on `origin/main` commit
   `b90e4f769fd6f4067706472ccb4cc6fb801926b2`.
-- Relevant commit: none yet; `HEAD` remains `b90e4f769fd6f4067706472ccb4cc6fb801926b2` while the
-  two intentional documentation files are uncommitted.
+- Relevant commit: `6048d2e` (`Register standalone declared-record array builder request`), based on
+  `b90e4f769fd6f4067706472ccb4cc6fb801926b2`; the working tree is clean after that documentation
+  commit.
 - Active goal: register and merge the standalone Align Request 8 prerequisite for runtime
   construction of view-free declared-record arrays; no consumer-specific JSON or C6 dependency is
   authoritative on this branch.
@@ -39,7 +40,7 @@ available at the current compiler pin, while direct local builder use remains in
 
 ## Exact next steps
 
-1. Commit and push the two documentation files after the repaired author checks and `make ci` pass.
+1. Push the committed documentation slice after the repaired author checks and `make ci` pass.
 2. Open the focused draft PR with exact check
    results; the completed comprehensive review findings must be dispositioned in the PR metadata.
 3. Merge only after the required SHA-bound review/check evidence is recorded and every finding is
