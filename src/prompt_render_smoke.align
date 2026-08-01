@@ -1,0 +1,29 @@
+module prompt_render_smoke
+
+import prompt_render
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  rendered := prompt_render.render(
+    "BASE",
+    "REPO",
+    "TASK",
+    "LEARNED",
+    prompt_render.ContextSources {
+      patch_evaluation: "PATCH",
+      failure_memory: "MEMORY",
+      diagnostic_stdout: "STDOUT",
+      diagnostic_stderr: "STDERR",
+    },
+    prompt_render.ContextPolicy {
+      include_patch_evaluation: true,
+      include_failure_memory: false,
+      include_diagnostics: true,
+    },
+  )
+  print("prompt renderer:")
+  print("status:")
+  print("PASS")
+  print("text:")
+  print(rendered.text)
+  return Ok(())
+}
