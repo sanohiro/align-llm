@@ -3773,6 +3773,83 @@ encode unboundedly and then discard an oversized string.
 
 ---
 
+## Request 13 — `core.json`: recursive owned C6 artifact graphs
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6a1/C6a2 canonical artifact declarations and every C6 command that persists a nested result
+Independent work that may continue: C6b/C6c pure rendering and scoring, C6d fixture-only state work, Request 5, Request 7, Request 9, Request 11, Request 12, and any work that does not persist the recursive C6 graph
+Resume condition: Align reviews and merges the exact recursive owned graph below at a named commit; the sibling release compiler/runtime are rebuilt, `.align-revision` is updated, and the C6a1/C6a2 owned-graph adoption target plus `make ci` pass
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation and current-state evidence
+
+C6 artifacts are declared records with nested records, `Option<T>`, runtime-sized arrays, and
+persistent text. At the pinned Align revision, `json.decode` exposes `str` views into its input and
+the shipped encoder does not accept the owned `string`/`array<string>` graph needed after that input
+is dropped. Request 9 deliberately handles only flat direct-owned text fields and excludes nested
+owned graphs; Request 8/10 handle evaluator construction but do not provide a JSON wire boundary.
+The current application cannot safely retain a borrowed view, concatenate JSON fragments, or add a
+private dynamic value tree. This is therefore a distinct Align capability, not an align-llm
+workaround.
+
+### Requested capability
+
+Extend the declared-record JSON route with one explicitly owned C6 graph selector. The accepted
+graph is finite, acyclic, and consists only of Copy scalar leaves, owned `string`, declared records,
+`Option<T>` of an accepted graph, and `array<T>` of an accepted graph. It must cover the exact C6
+records named in `docs/specs/c6-prompt-context-optimizer.md` §4.5, including prompt variants,
+scope/policy records, snapshots, task rows, aggregates, reasons, environment identity, and the
+canonical gate envelope. `str`, slices, resources, region-bound values, functions, raw values,
+builders, enums, and unsupported floating or composite forms are rejected before allocation unless
+the C6 ledger explicitly names them as a Copy scalar.
+
+The public source keeps expected-type inference and existing `json.decode`/`json.encode` names;
+there is no type argument syntax, dynamic JSON value, implicit clone, or second wire format. A
+borrowed decode view may be used only while its input owner is live. The owned selector explicitly
+materializes every text field, including nested and array elements, and the result has no input
+region dependency. Encode/decode preserves declaration order, escaped text, omitted `None`, nested
+records, array order, and the exact semantic-to-byte vectors. Request 12's bounded encoder remains
+the separate cap operation used by C6.
+
+### Acceptance criteria
+
+The Align design and implementation must prove:
+
+1. formation admits every named C6 graph and rejects every unsupported reachable field before any
+   decode or encode allocation;
+2. empty/non-empty arrays, `Option.None`, `Option.Some`, nested records, embedded NUL, escapes,
+   multibyte UTF-8, malformed input, duplicate keys, wrong shapes, and trailing bytes have the
+   declared byte and error vectors;
+3. decode materializes free-standing owned text, permits the input owner to drop before every
+   retained field is read, and cleans partial nested arrays/options exactly once on `?`, `else`,
+   `map_err`, replacement, branch joins, loop exits, and malformed input;
+4. encode uses the same declared graph and canonical field order without mutating or borrowing the
+   source; `decode -> encode -> decode` is semantically and bytewise stable;
+5. generic monomorphization, whole-program/per-unit interface serialization, structural cache
+   identity, target-local layout, reallocation, capacity overflow, allocator failure, and concurrent
+   independent calls have explicit owner tests and no hidden collection or arena conversion; and
+6. the align-llm C6a1/C6a2 adoption target constructs, encodes, decodes, drops, and revalidates the
+   exact named artifacts through the shipped compiler, then passes `make ci` without a private
+   compatibility layer.
+
+### References
+
+- `../align/docs/impl/core-design/json.md` — current borrowed JSON ownership and descriptor route.
+- `../align/docs/impl/08-memory-model-v2.md` — recursive Move cleanup and region boundaries.
+- `../align/crates/align_sema/src/lib.rs`, `align_mir`, `align_codegen_llvm`, and
+  `align_runtime` — formation, lowering, descriptor, and cleanup owners.
+- Request 8/10 — runtime construction of the same owned evaluator graph.
+- Request 9 — the flat direct-owned text prerequisite, whose ownership rules this request reuses.
+- Request 12 — bounded canonical encoding, which remains a separate prerequisite.
+- `docs/specs/c6-prompt-context-optimizer.md` §§1.2, 4.5, 6, and 10.1 — C6 ownership and vectors.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design

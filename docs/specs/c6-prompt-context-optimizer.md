@@ -61,17 +61,23 @@ hypothetical API part of C6:
    record shapes, including partial push/build/drop behavior. Request 8 is registered and merged
    in align-llm PR #32, but remains `PROPOSED` until Align implements it and a real-client adoption
    gate passes; its proposed surface is not used by this design.
-5. **Request 10 — recursive evaluator record fields.** C6f2 also needs `Option<T>` and nested
+5. **Request 13 — recursive owned C6 JSON artifact graphs.** C6 artifacts contain nested records,
+   options, runtime-sized arrays, and persistent text. Request 9's intentionally flat owned-text
+   route is not sufficient, and the current borrowed JSON route cannot encode a record containing
+   owned text fields after its input buffer expires. C6 therefore requires the exact Request 13
+   graph and its shipped direct-owned route before C6a1/C6a2; a temporary borrowed wire view is
+   materialized with explicit `.clone()` before its input buffer is dropped.
+6. **Request 10 — recursive evaluator record fields.** C6f2 also needs `Option<T>` and nested
    dynamic `array<T>` fields inside those records. Request 8 explicitly excludes them, so Request
    10 owns the separately reviewed recursive `DropPlan`, reallocation, and partial-construction
    extension. C6f2 is blocked on both Requests 8 and 10.
-6. **Request 11 — bounded child-process capture.** The current `std.process.run()` captures
+7. **Request 11 — bounded child-process capture.** The current `std.process.run()` captures
    stdout/stderr without a receiver-selected limit. C6f1, C6f2, and C6g1 must wait for a shipped
    cap that kills/reaps over-limit children before claiming their helper and adapter bounds.
-7. **Request 12 — bounded canonical JSON encoding.** The current `core.json.encode` returns a
+8. **Request 12 — bounded canonical JSON encoding.** The current `core.json.encode` returns a
    complete owned string and cannot prove the C6 268,435,456-byte result cap before allocation.
    C6a1 and C6a2 must wait for a shipped bounded canonical encoder.
-8. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
+9. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
    adoption gate remains pending. C6e and C6g1 cannot claim the provider timeout gate until that
    original acceptance target passes, whether it is completed by Request 2's adoption slice or by
    the combined Request 5 adoption slice.
@@ -79,7 +85,8 @@ hypothetical API part of C6:
 Before a blocked slice starts, every named request must reach `ALIGN_MERGED`; build that named Align
 revision in release mode, update `.align-revision`, and pass `make ci`. Do not write C6 declarations
 against an unpinned newer checkout. The slice resumes only after each original align-llm acceptance
-test also passes. Request 6 and Request 9 remain independent of C6.
+test also passes. Requests 6 and 9 remain independent of C6; Request 13 is the named C6a1/C6a2
+dependency because no C6 artifact may rely on a borrowed JSON view after its input buffer expires.
 
 ### 1.2 Review-closure contract
 
@@ -124,11 +131,24 @@ JSON schema notation uses `str` for a decoded view only. A decoder may borrow it
 buffer is live, but every record or array retained by the evaluator materializes persistent text as
 an owned `string` before moving it into a collection. No persistent builder, result, snapshot,
 task, row, aggregate, option, or reason contains a `str`, slice, resource, or input-buffer view.
-The input/document buffer stays live until all views have been cloned; after materialization it is
-dropped and no view remains. Request 8 owns the recursively Copy base builder, and Request 10 owns
-`Option`/dynamic-array recursion, deep cleanup, source nulling, reallocation, and abandonment.
-The closure tests cover successful move-in/move-out, replacement, `Drop`, `?`, `map_err`, branch
-and loop joins, malformed input, partial arrays, and early return.
+
+The persistence boundary is explicit and has two phases:
+
+1. A bounded file reader owns one `string` wire buffer. A declared JSON decode may create borrowed
+   wire records, but those records are region-bound to that buffer and never cross the reader's
+   function boundary.
+2. Before a value enters a persistent record, builder, result, or artifact, every borrowed text
+   view is copied with an explicit `.clone()` into the Request 8/10-owned record graph. Request 13
+   supplies the exact recursive owned C6 JSON encode/decode path; Request 12 supplies the bounded
+   canonical output operation. The owner keeps the cloned records live until encoding and writing
+   finish, then drops them. There is no JSON-fragment concatenation, private wire format, hidden
+   copy-on-escape, or retained `str` field.
+
+The input/document buffer stays live until the last explicit clone completes and is then dropped.
+Request 8 owns the recursively Copy base builder, and Request 10 owns `Option`/dynamic-array
+recursion, deep cleanup, source nulling, reallocation, and abandonment. The closure tests cover
+successful move-in/move-out, replacement, `Drop`, `?`, `map_err`, branch and loop joins, malformed
+input, partial arrays, and early return at both the borrowed-wire and owned-record boundaries.
 
 The result cap is a pre-allocation contract, not a post-encode check. C6 uses the Request 12
 bounded canonical encoder for every capped persisted artifact. C6 uses the Request 11 cap-aware
@@ -138,24 +158,94 @@ aggregates without allocating or writing the oversized result.
 
 #### Producer-owned environment identity
 
-The producer/verifier table is fixed before implementation:
+The producer/verifier table is fixed before implementation. A child never supplies the final
+identity directly. It supplies a validated `EnvironmentProbe` carrier; the evaluator combines the
+two matching carriers with the checked-in source and policy identities.
 
 | Field | Producer and source | Normalization and unavailable value |
 | --- | --- | --- |
-| `environment_id` | evaluator, hash of the canonical identity record with its digest field empty | lowercase SHA-256; never supplied by a helper |
-| `os`, `os_release`, `architecture` | trusted snapshot/helper environment probe | UTF-8, trimmed, bounded labels; `UNKNOWN` only when the probe explicitly reports unavailable |
-| `cpu`, `logical_cpu_count` | same trusted probe | normalized non-empty CPU label; count is positive or `UNKNOWN` only in a non-gate error |
-| `gpu` | same trusted probe | normalized non-secret label; exact `NONE` means unavailable, never an omitted field |
+| `environment_id` | evaluator, SHA-256 of `EnvironmentIdentityCore` with no identity or content-digest field | lowercase SHA-256; never supplied by a helper |
+| `os`, `os_release`, `architecture` | matching snapshot-helper and measurement-adapter `EnvironmentProbe` carriers | UTF-8, trimmed, bounded labels; `UNKNOWN` only when the probe explicitly reports unavailable |
+| `cpu`, `logical_cpu_count` | matching carriers | normalized non-empty CPU label; `logical_cpu_count: Some(n)` is positive, `None` is the explicit unavailable value |
+| `gpu` | matching carriers | normalized non-secret label; exact `NONE` means unavailable, never an omitted field |
 | `align_llm_commit` | evaluator from the clean repository HEAD named by the task | lowercase full SHA and verified reachability; no source-file inference |
 | `align_revision` | evaluator from `.align-revision` and the sibling checkout | lowercase full external SHA; checkout must equal the file |
-| `measurement_adapter_runtime` | adapter request and declared runtime identity | bounded declared label/digest; no hidden reflection |
-| `snapshot_helper_runtime` | helper request and declared runtime identity | bounded declared label/digest; no hidden reflection |
+| `measurement_adapter_runtime` | task manifest's content-bound adapter executable identity | bounded declared label/digest; carrier must match it |
+| `snapshot_helper_runtime` | task manifest's content-bound snapshot-helper executable identity | bounded declared label/digest; carrier must match it |
+| `environment_policy_sha256` | evaluator from the validated policy artifact | full digest; included in the identity preimage |
 
-The evaluator canonicalizes, hashes, and verifies the identity; helpers and adapters may report the
-same record but do not define its semantics. `MATCH`/`MISMATCH` and every retained row require
-`Some(EnvironmentIdentity)` with one equal digest. Missing probe values are explicit `UNKNOWN` or
-`NONE` according to the table and are not silently omitted. Fixtures cover every field-presence,
-detail-level, variant, and verification-state combination.
+`EnvironmentIdentityCore` is a declared record whose field order is its schema/kind fields followed
+by the producer table order excluding `environment_id`; it contains `logical_cpu_count: Option<i64>`
+and no identity or digest field. The evaluator
+computes `environment_id = SHA256(canonical(EnvironmentIdentityCore))`, then computes the normal
+record `content_sha256` over `EnvironmentIdentity { core, environment_id, content_sha256: "" }`.
+This two-record construction is the non-circular preimage and is the only producer of the final
+identity. `EnvironmentProbe` is an ephemeral, content-bound carrier with explicit producer,
+runtime identity, and the six machine-probe fields; its `content_sha256` is verified before use.
+The snapshot helper and adapter must emit matching carriers for every complete invocation. A
+`MATCH`/`MISMATCH` and every retained row require `Some(EnvironmentIdentity)` with one equal digest;
+`ERROR` may retain a probe only when its validation succeeded. Missing probe values are explicit
+`UNKNOWN`, `NONE`, or `None` according to the field table and are never silently omitted. Fixtures
+cover every probe/identity field-presence, detail-level, variant, and verification-state combination.
+
+#### Explicit bounds for paths, commands, endpoints, and policy
+
+All bounds below are byte bounds on UTF-8 input, not character counts. A rejected bound is
+`INVALID_BOUNDS` before filesystem, process, or network side effects; C6 never truncates an
+identifier, path, command, endpoint, or environment value to make it fit.
+
+| Input family | Exact bound |
+| --- | ---: |
+| ordinary identifier or artifact label | 128 bytes; ASCII, non-empty |
+| caller operation ID component | 96 bytes; the derived form must still fit 128 bytes |
+| absolute or project-relative path | 4,096 bytes; no NUL, empty, `.` or `..` component |
+| one path component | 255 bytes |
+| command executable, one argument, or `cwd` | 4,096 bytes each; no NUL |
+| command argument count | 64 entries including `argv[0]` |
+| complete command vector | 262,144 bytes including one NUL separator per entry |
+| endpoint or tokenize endpoint | 4,096 bytes; no userinfo or credential query |
+| provider model, endpoint ID, or service revision | 256 bytes |
+| environment variables | 64 entries, 256-byte names, 4,096-byte values, 65,536 total bytes |
+| executable search paths | 32 absolute paths, 4,096 bytes each, 65,536 total bytes |
+| workspace allowlist entries | 256 paths, 4,096 bytes each, 1,048,576 total bytes |
+| task files and additional snapshot files | 64 and 32 entries respectively, 262,144 total path bytes per list |
+| expanded tree entries | 128 files/directories and 1,073,741,824 file bytes per task |
+| ancestor activation paths | 256 entries and 1,048,576 total path bytes |
+
+The `EnvironmentPolicy` has no ambient fallback: `allowed_variables` is ordered by environment
+name, contains no duplicates, excludes the provider credential name, and records each variable's
+source and precedence. `executable_paths` is an explicit absolute search path; helpers and
+adapters receive exactly that list after `env_clear()`. A policy's canonical bytes must fit
+65,536 bytes in addition to the general referenced-artifact cap. `project_root`, `repo_path`,
+`workspace_path`, `cwd`, every artifact path, every output parent, and every adapter-owned path
+use the same lexical and physical checks; the list bounds above apply before expansion.
+Filesystem entries whose raw name is not valid UTF-8 are rejected as `PATH` rather than being
+lossily transcoded into an artifact path. For valid UTF-8 names, the tree digest retains the raw
+filename bytes and `/` separators exactly; this keeps the persisted path representation and the
+physical scan's byte order unambiguous.
+
+The evaluator requires the six machine-probe fields (`os`, `os_release`, `architecture`, `cpu`,
+`logical_cpu_count`, and `gpu`) to be equal across the snapshot-helper and measurement-adapter
+carriers. Their producer tags and runtime identities are intentionally different: each runtime
+identity is checked against its own task-manifest declaration and is placed in its corresponding
+field of `EnvironmentIdentityCore`. No producer is allowed to choose, omit, or hash the final
+identity.
+
+The following closure table is part of the C6 design review, not an implementation backlog. Each
+row names the exact acceptance fixture that the first owning slice must add; a slice cannot claim
+completion by adding only the prose or only a fixture that does not exercise the named boundary.
+
+| Previous review class | Contract decision | First owner and exact acceptance fixture |
+| --- | --- | --- |
+| Borrowed wire versus owned persistence | bounded reader, explicit `.clone()`, Request 13 recursive graph, no escaping view | C6a1; `prompt-owned-wire-lifetime-smoke` |
+| Environment identity circularity | evaluator-only two-record preimage plus explicit probe carriers and `Option` CPU count | C6a2; `prompt-environment-core-golden` and `prompt-environment-unavailable-smoke` |
+| Environment policy and physical inputs | fixed byte/count bounds, `env_clear()`, lexical/physical path checks, no lossy filename conversion | C6a2; `prompt-policy-bounds-smoke` and `prompt-physical-input-bounds-smoke` |
+| Seed capability | content-bound request digest and `APPLIED`/`UNSUPPORTED`/`REJECTED` attestation | C6e; `prompt-seed-attestation-smoke` |
+| Proposal credential lifecycle | one startup read, allowlisted child handoff, pre-truncation redaction, drop before result | C6e; `prompt-credential-lifetime-smoke` |
+| Derived identifiers | bounded ASCII components, exact derived forms, reject rather than truncate/hash | C6a2; `prompt-derived-id-bounds-smoke` |
+| TREE root metadata | root mode/path is the first identity-bearing record, including an empty root | C6f1; `prompt-tree-root-metadata-smoke` |
+| Corpus revision | tagged `GIT_COMMIT` or `FILE_SET` source identity with no ambient branch/time | C6a2; `prompt-corpus-revision-smoke` |
+| Command and endpoint inputs | explicit argv/path/vector/endpoint bounds and credential-free endpoint syntax | C6a2; `prompt-command-endpoint-bounds-smoke` |
 
 #### Paths, ancestry, compatibility, and integration
 
@@ -341,9 +431,13 @@ before any lifecycle implementation consumes the codec.
 An output that is truncated by a crash or otherwise malformed is invalid. Recovery means rerunning
 the command with a new output path; C6 does not claim atomic file replacement.
 
-Operation IDs are bounded caller-supplied labels, not content identity. `candidate_id` is
-`<experiment_id>/candidate` and `activation_id` is `<decision_id>/activation`; these aid diagnostics
-but do not replace a digest. Every top-level cross-artifact reference carries its artifact kind,
+Operation IDs are bounded caller-supplied labels, not content identity. The caller-supplied
+`experiment_id` and `decision_id` are each at most 96 ASCII bytes. `candidate_id` is exactly
+`<experiment_id>/candidate`, `variant_id` is exactly `<experiment_id>/variant`, and `activation_id`
+is exactly `<decision_id>/activation`; each derived value must be at most 128 bytes and is rejected
+if the concatenation would overflow that bound. There is no truncation, hashing, or alternate
+spelling for an overlong derived ID. These IDs aid diagnostics but do not replace a digest. Every
+top-level cross-artifact reference carries its artifact kind,
 locator path, referenced label, and full `content_sha256`. The kind, label, and digest must match
 the artifact loaded from that path. The path is a locator rather than identity, and lineage is
 followed by digest. Embedded records such as variants are copied in full when a later operation
@@ -456,7 +550,7 @@ PromptScope:
   repo_profile_revision
   align_revision
   corpus_id
-  corpus_revision
+  corpus_revision: CorpusRevision
   evaluation_provider_kind
   evaluation_provider_model
   generation_policy_sha256
@@ -466,9 +560,29 @@ PromptScope:
   content_sha256
 ```
 
+`CorpusRevision` is the exact source identity, not a free-form label:
+
+```text
+CorpusRevision:
+  schema_version
+  artifact_kind: CORPUS_REVISION
+  source_kind: GIT_COMMIT | FILE_SET
+  source_repository_id
+  source_sha256
+  content_sha256
+```
+
+For `GIT_COMMIT`, `source_repository_id` is a non-empty repository identity and
+`source_sha256` is a lowercase full commit SHA whose clean checkout contains every corpus task.
+For `FILE_SET`, `source_repository_id` is empty and `source_sha256` is the lowercase SHA-256 of
+the canonical corpus file-set manifest, including each relative path, mode, and file digest. The
+two forms are mutually exclusive and neither may use a shortened SHA, a branch, a timestamp, or an
+ambient worktree. The record's own canonical `content_sha256` is not part of the source preimage.
+
 `repo_profile_revision` names the immutable repository-rule/profile revision being optimized;
-individual evaluation tasks bind their own source revisions. `corpus_revision` is an immutable
-commit or artifact identity, not ambient worktree state. The acceptance-policy digest prevents an
+individual evaluation tasks bind their own source revisions. `corpus_revision` is the complete
+tagged `CorpusRevision` record described above, never an ambient worktree or a free-form revision
+label. The acceptance-policy digest prevents an
 experiment from choosing easier thresholds than its parent activation. Acceptance and rollback
 require an exact scope match.
 
@@ -618,7 +732,7 @@ WorkspacePreflightResult:
   error
   physical_project_root
   physical_workspace_path
-  environment: Option<EnvironmentIdentity>
+  environment_probe: Option<EnvironmentProbe>
   content_sha256
 
 SnapshotResult:
@@ -628,7 +742,7 @@ SnapshotResult:
   status: MATCH | MISMATCH | ERROR
   error_code
   error
-  environment: Option<EnvironmentIdentity>
+  environment_probe: Option<EnvironmentProbe>
   artifact_digests: array<ArtifactDigest>
   content_sha256
 
@@ -718,23 +832,43 @@ TaskAdapterRequest:
   workspace_path
   result_path
   paired_seed
+  credential_env_name: Option<str>
   environment_policy_sha256
   content_sha256
 
-EnvironmentIdentity:
+EnvironmentProbe:
   schema_version
-  artifact_kind: ENVIRONMENT_IDENTITY
-  environment_id
+  artifact_kind: ENVIRONMENT_PROBE
+  producer: SNAPSHOT_HELPER | MEASUREMENT_ADAPTER
   os
   os_release
   architecture
   cpu
-  logical_cpu_count
+  logical_cpu_count: Option<i64>
+  gpu
+  runtime_identity
+  content_sha256
+
+EnvironmentIdentityCore:
+  schema_version
+  artifact_kind: ENVIRONMENT_IDENTITY_CORE
+  os
+  os_release
+  architecture
+  cpu
+  logical_cpu_count: Option<i64>
   gpu
   align_llm_commit
   align_revision
   measurement_adapter_runtime
   snapshot_helper_runtime
+  environment_policy_sha256
+
+EnvironmentIdentity:
+  schema_version
+  artifact_kind: ENVIRONMENT_IDENTITY
+  core: EnvironmentIdentityCore
+  environment_id
   content_sha256
 
 EvaluationInputIdentity:
@@ -766,15 +900,42 @@ GenerationRequestIdentity:
   max_tokens
   temperature_micros
   paired_seed
+  provider_request_sha256
+  seed_attestation_sha256
+  content_sha256
+
+SeedCapabilityAttestation:
+  schema_version
+  artifact_kind: SEED_CAPABILITY_ATTESTATION
+  provider_kind
+  provider_model
+  requested_seed
+  result: APPLIED | UNSUPPORTED | REJECTED
+  applied_seed: Option<i64>
+  provider_request_sha256
   content_sha256
 ```
+
+`EnvironmentVariable.name` is an ASCII environment name of at most 256 bytes and
+`non_secret_value` is at most 4,096 UTF-8 bytes. `locale` is a non-empty label of at most 64
+bytes. `precedence` is non-negative and at most 64;
+the ordered list has no duplicate names. `runtime_identity` is a non-empty, non-secret label of
+at most 256 bytes. `logical_cpu_count: Some(n)` requires `1 <= n <= 1,048,576`; `None` is the
+only unavailable-count representation and makes a run non-gate-eligible, but does not by itself
+make a non-gate diagnostic invalid.
+
+`endpoint`, `tokenize_endpoint`, and `proposal_provider_endpoint` each have the 4,096-byte bound
+from §1.2. They must use the provider's accepted scheme and host form, contain no userinfo, and
+contain no credential query or fragment. `api_key_env` is only a validated name; the corresponding
+value is never a field in any declared record.
 
 `max_prompt_bytes` and `max_tokens` are from 1 through 1,048,576. The evaluated parent must fit the
 prompt-byte limit or the fixed corpus/policy pair is `ERROR`. An oversized candidate is still
 passed to the same adapter, which must return `POLICY_VIOLATION`; any other state is `ERROR`, and
 the violation is a serious regression. `temperature_micros` is from zero through one million.
 `seed_base` must permit all requested one-based sample offsets without signed-`i64` overflow.
-`logical_cpu_count` is positive. Provider endpoint and service-revision identities are non-secret,
+`logical_cpu_count: None` is the explicit unavailable value; a gate-eligible evaluation requires
+`Some(n)` with a positive count. Provider endpoint and service-revision identities are non-secret,
 non-empty labels; they are not inferred from a credential-bearing URL.
 
 The provider control supplies the executable `model.ProviderConfig` inputs. Its kind, endpoint ID,
@@ -799,6 +960,19 @@ encoded, transformed, or reversible derivative of the credential. The snapshot h
 receives it. Deterministic fixtures cover credentials containing regex punctuation, overlapping
 prefixes, and occurrences that cross the eventual truncation boundary.
 
+Credential lifetime is a separate, non-persisted phase. After request validation, the command reads
+the named startup environment entry exactly once into a temporary owner. For `experiment`, that
+owner lives through proposal request construction and the provider call; for `evaluate`, it lives
+through the adapter child launches only. The name is copied into `credential_env_name` in each
+adapter request, but the value is passed only to the allowlisted measurement-adapter child under
+that exact name. It is never placed in `EnvironmentPolicy.allowed_variables`, a snapshot request,
+an `EnvironmentIdentity`, a result record, a digest preimage, or a diagnostic. The temporary owner
+is dropped before result construction; redaction runs before any provider/adapter text is
+truncated, hashed, or stored. Missing, empty, or duplicate credential names fail with
+`MISSING_CREDENTIAL` before the first external call. A provider implementation may use the value
+in-process or through the child environment, but it must receive the same explicit one-shot value
+and may not reread ambient environment state.
+
 The task manifest's `artifacts` array is mandatory and closed. It covers the adapter executable or
 script, repository fixture tree, validation runner and command owner, task prompt/context
 artifacts, and every other static file that can affect candidate generation or scoring. It does
@@ -815,11 +989,15 @@ checkout requirement. The snapshot binds raw bytes and modes for pre/post equali
 named commit and clean worktree when required, and does not reinterpret added artifact schemas.
 Duplicate or overlapping expanded paths are invalid.
 
-Each expectation carries its reviewed digest. A `TREE` digest hashes all non-root directory and
-regular-file entries in one canonical bytewise path order. A directory contributes
-`octal-mode SP tree-relative-path NUL D LF`; a regular file contributes
-`octal-mode SP tree-relative-path NUL F SP file-sha256 LF`. A tree whose root has no entries is
-invalid, but empty nested directories are identity-bearing. A `FILE` expectation hashes
+Each expectation carries its reviewed digest. A `TREE` digest hashes the root and every descendant
+directory and regular-file entry in one canonical bytewise path order. The root directory is always
+the first record, so its mode and project-relative path are identity-bearing even when it is empty.
+A directory contributes `octal-mode SP tree-relative-path NUL D LF`; a regular file contributes
+`octal-mode SP tree-relative-path NUL F SP file-sha256 LF`. The root record uses the exact
+expectation path without a trailing slash; descendant records use `/`-separated raw filename bytes
+and are sorted by their complete relative path. Empty nested directories remain identity-bearing.
+A root must be a real directory, but an empty root is valid because the root record itself is
+present. A `FILE` expectation hashes
 `octal-mode SP project-relative-path NUL F SP file-sha256 LF`. Modes are the zero-padded six octal
 permission/type digits returned by the trusted snapshot helper, SHA values are lowercase
 hexadecimal, and paths use `/` separators with their raw filename bytes unchanged. Expanded paths
@@ -832,12 +1010,13 @@ One task may expand at most 128 artifact files and 1,073,741,824 total bytes. Ea
 non-negative, the sum uses checked arithmetic, and exceeding either bound is `ERROR`. Static
 expectations contain at most 64 entries and additional files at most 32.
 
-The snapshot helper and measurement adapter both report `EnvironmentIdentity`; the evaluator
-records its digest and requires the same identity in both snapshots and every row in one
-evaluation. A `MATCH` or `MISMATCH` snapshot requires `Some`; `ERROR` may use `None` when environment
-discovery itself failed. The provider endpoint identity is a non-secret stable service label, not a
-credential-bearing URL. The service revision is required even when the provider exposes only an
-operator-recorded API/model revision.
+The snapshot helper and measurement adapter both report an `EnvironmentProbe`; the evaluator
+normalizes both carriers into one producer-owned `EnvironmentIdentity`, records its digest, and
+requires the same identity in both snapshots and every row in one evaluation. A `MATCH` or
+`MISMATCH` snapshot requires a valid probe and a finalized identity; `ERROR` may omit both when
+environment discovery itself failed. The provider endpoint identity is a non-secret stable service
+label, not a credential-bearing URL. The service revision is required even when the provider exposes
+only an operator-recorded API/model revision.
 
 C6 gate evaluations require paired fixed randomness. For sample `n`, both variants receive the
 same checked `seed_base + n - 1`; overflow is `ERROR`. Providers without seed support may exercise
@@ -846,10 +1025,15 @@ non-gate lifecycle/evaluator paths, but their results are never gate-eligible or
 The real-consumer slice extends `model.GenerationRequest` with `seed: Option<i64>` and
 `ModelInfo` with `supports_seed`. Existing callers use `None`; provider serializers retain their
 legacy request record in that branch, while `Some` selects a declared seeded wire record. Thus
-unseeded request bytes do not gain a JSON `null` field. Only a provider adapter that reports
-support and serializes the paired seed may produce a gate-eligible row. Earlier slices define and
-test the evaluation policy record without coding against a hypothetical provider surface.
-`FIXTURE` records can exercise the seed/math contract but are always non-gate.
+unseeded request bytes do not gain a JSON `null` field. Each adapter result also carries a
+content-bound `SeedCapabilityAttestation`: the requested seed, the provider request digest, and
+either `APPLIED`
+with the same `applied_seed`, `UNSUPPORTED`, or `REJECTED`. The evaluator validates the attestation
+digest and request identity before accepting the row. Every row in a gate-eligible evaluation must
+be `APPLIED`; an unsupported or rejected seed may exercise a non-gate lifecycle path but makes the
+evaluation ineligible. Earlier slices define and test the evaluation policy record without coding
+against a hypothetical provider surface. `FIXTURE` records can exercise the seed/math contract but
+are always non-gate.
 
 For every evaluated generation, the provider-independent request mapping is normative:
 `GenerationRequest.system` is the empty string and `GenerationRequest.user` is exactly
@@ -858,8 +1042,9 @@ OpenAI user-role content and llama.cpp concatenated prompt the same rendered byt
 temperature, and seed come only from `GenerationPolicy`.
 
 The evaluator, not the task adapter, writes task/sample/variant/input identities into the final row.
-The measurement adapter returns only the measured payload. A fixed snapshot helper returns only
-`SnapshotResult`; the evaluator validates and incorporates it. Both executables remain trusted,
+The measurement adapter returns only the measured payload plus its `EnvironmentProbe` and seed
+attestation. A fixed snapshot helper returns only `SnapshotResult` with its probe carrier; the
+evaluator validates and incorporates it. Both executables remain trusted,
 content-bound task inputs, matching the current baseline trust model. Acceptance validates the
 evaluation's complete persisted pre/post identities and embedded content digests. It does not
 require historical task assets to remain at their old paths. The checked-in gate validator
@@ -972,9 +1157,9 @@ The snapshot helper uses its narrower table:
 
 | Snapshot status | Cross-field contract |
 | --- | --- |
-| `MATCH` | code `NONE`, empty detail, `environment: Some`, and the complete ordered digest array |
-| `MISMATCH` | code `PATH`, `TYPE`, `MODE`, `CONTENT`, `TREE`, `REPO_REVISION`, or `DIRTY_REPO`; non-empty detail; `environment: Some`; successfully observed prefix through the entry before the first failure |
-| `ERROR` | code `ENVIRONMENT` or `INTERNAL`; non-empty detail; environment is `None` only for `ENVIRONMENT`; successfully observed prefix when available |
+| `MATCH` | code `NONE`, empty detail, a valid `environment_probe`, and the complete ordered digest array |
+| `MISMATCH` | code `PATH`, `TYPE`, `MODE`, `CONTENT`, `TREE`, `REPO_REVISION`, or `DIRTY_REPO`; non-empty detail; a valid `environment_probe`; successfully observed prefix through the entry before the first failure |
+| `ERROR` | code `ENVIRONMENT` or `INTERNAL`; non-empty detail; the probe is absent only for `ENVIRONMENT`; successfully observed prefix when available |
 
 Snapshot checks run in this order: environment, repository path/revision/cleanliness, static
 expectations in declared/expanded order, then additional files. The first failing check fixes the
@@ -984,7 +1169,7 @@ Workspace preflight checks run in this order: environment, physical project-root
 workspace type, workspace symlink/ancestor exclusion, physical containment, then raw-byte
 emptiness. `SAFE` uses `NONE` and empty detail; `UNSAFE` uses `TYPE`, `SYMLINK`, `ESCAPE`, or
 `NOT_EMPTY`; `ERROR` uses `ENVIRONMENT` or `INTERNAL`. Only `SAFE`
-has both physical paths and `environment: Some`.
+has both physical paths and `environment_probe: Some`.
 
 ### 5.1 `prompt experiment`
 
@@ -1013,7 +1198,7 @@ temperature_micros
 
 `api_key_env` is `Some` with an environment-variable name for a credentialed provider and `None`
 for a provider that requires no credential. It is the only persisted credential-related field.
-The variable's value is loaded only for the provider call and never appears in the result or
+The variable's value is resolved once for the provider call and never appears in the result or
 diagnostics. `tokenize_endpoint` is `Some` only for a provider kind that requires it. `timeout_ns`
 is from 1 through `7_200_000_000_000`; `max_prompt_bytes` is from 1 through 262,144,
 `max_tokens` is from 1 through 8,192, and temperature uses the common millionth-unit integer range.
@@ -1049,6 +1234,12 @@ The model does not choose IDs, scope, parent, acceptance thresholds, or evaluati
 align-coder validates the proposal and computes `candidate_id` and `content_sha256`. The rendered
 learned append and context policy must differ from the parent effective variant; changing only the
 summary is `INVALID_PROPOSAL`.
+
+For `INVALID_PROPOSAL` and `PROVIDER_ERROR`, `bounded_provider_output`, provider status text,
+elapsed diagnostics, and the proposal summary are redacted with the exact credential replacement
+pass before UTF-8 truncation, digesting, or result construction. A successful proposal retains no
+provider response bytes. The unredacted response owner is dropped before the result is encoded;
+the output cap and `PROVIDER_RESPONSE_TOO_LARGE` outcome are enforced by Request 5 while receiving.
 
 The parent specification's lifecycle terms map as follows: a `PROPOSED` candidate is experimental
 until evaluated, a complete `NO_IMPROVEMENT` or `SERIOUS_REGRESSION` evaluation is its rejection
@@ -1128,7 +1319,7 @@ PromptEvaluationCorpus:
   schema_version
   artifact_kind: PROMPT_EVALUATION_CORPUS
   corpus_id
-  corpus_revision
+  corpus_revision: CorpusRevision
   task_files: array<str>
   content_sha256
 ```
@@ -1137,8 +1328,8 @@ It contains from one through 64 unique task IDs; at least two are required for a
 evaluation. The supplied acceptance policy must match the digest bound into the experiment's parent
 scope. The supplied parent activation must match the experiment's parent reference. Every task
 must resolve the same generation policy and provider control. Their digests, provider kind,
-endpoint identity, and model must match each other and the parent scope. The corpus ID and revision
-must also match that scope. Every task's
+endpoint identity, and model must match each other and the parent scope. The corpus ID and complete
+`CorpusRevision` record must also match that scope. Every task's
 `repo_id` must equal the scope repo ID; its named repository revision is independently checked by
 the snapshot helper so different fixed fixture revisions cannot hide behind one corpus label.
 
@@ -1156,6 +1347,8 @@ cmd
 argv: array<str>
 snapshot_cmd
 snapshot_argv: array<str>
+measurement_adapter_runtime
+snapshot_helper_runtime
 cwd
 timeout_ns
 task_prompt_path
@@ -1182,11 +1375,14 @@ Limits are task-specific, non-negative, and human-owned by the fixed corpus. `No
 task has no benchmark claim; it does not turn an unknown benchmark result into a pass.
 `maximum_repair_loops` cannot exceed 64, `maximum_patch_size_bytes` cannot exceed 67,108,864, and
 the remaining count limits cannot exceed 1,048,576. Benchmark ppm is from zero through one million.
-`timeout_ns` is from 1 through `7_200_000_000_000`. Each command argument array contains at most 64
-entries, and each entry is at most 4,096 UTF-8 bytes. `cmd` and `snapshot_cmd` are non-empty UTF-8
-without NUL. Each corresponding argv array is non-empty, includes its exact `argv[0]`, and every
-element is non-empty UTF-8 without NUL, matching the pinned `std.process` marshalling contract.
-These checks occur in validation step 2 before either command runs.
+`repo_revision` is a lowercase full commit SHA and must be clean/reachable when
+`require_clean_repo` is true. `timeout_ns` is from 1 through `7_200_000_000_000`. Each command
+argument array contains at most 64 entries, and each entry is at most 4,096 UTF-8 bytes; the
+complete marshalled vector, including NUL separators, is at most 262,144 bytes. `cmd` and
+`snapshot_cmd` are non-empty UTF-8 without NUL and each `argv[0]` must equal its command. The
+declared `measurement_adapter_runtime` and `snapshot_helper_runtime` labels are non-empty and at
+most 256 bytes, and are content-bound by the corresponding executable in `artifacts`. These checks
+occur in validation step 2 before either command runs.
 
 The evaluator creates and content-validates one `TaskAdapterRequest` for each invocation. It invokes
 the same `cmd`, `argv`, `cwd`, and timeout for both variants and appends only:
@@ -1228,8 +1424,8 @@ writes nothing and returns exactly one bounded `WorkspacePreflightResult` on std
 stderr. It resolves both roots physically, rejects a workspace that is not a real directory, is a
 symlink, has a symlinked component below the physical project root, escapes that root, is not
 empty under a raw-byte directory scan. The same no-race/single-writer precondition as output
-artifacts requires the caller not to mutate the workspace concurrently. `SAFE`
-requires the same `EnvironmentIdentity` later reported by snapshots. `UNSAFE` becomes evaluation
+artifacts requires the caller not to mutate the workspace concurrently. `SAFE` requires a probe
+whose normalized fields match the later `EnvironmentIdentity`. `UNSAFE` becomes evaluation
 `ERROR`/`WORKSPACE_UNSAFE` with no workspace mutation or adapter call; helper execution failure is
 `SNAPSHOT_ERROR`. The helper is trusted and content-bound; its fixed response is at most 65,536
 bytes, enforced by the cap-aware process surface required by Request 11. Until that request is
@@ -1240,8 +1436,8 @@ does not mutate any declared input. It performs the file-type, mode, closed-tree
 checks that the current Align `std.fs` metadata surface does not expose. It also raw-byte scans the
 workspace and rejects any entry not in `allowed_workspace_entries`; listed entries are permitted
 to be absent so the same request can cover the before/after result-file transition. Its script or
-executable is a declared artifact expectation; its external runtime identity is bound by
-`EnvironmentIdentity`. `MATCH` is required before and after;
+executable is a declared artifact expectation; its external runtime identity is bound by the task
+manifest and the finalized `EnvironmentIdentity`. `MATCH` is required before and after;
 the two ordered `artifact_digests` arrays must be byte-for-byte equal. Result order is manifest
 expectation order with each tree expanded in bytewise path order, followed by
 `additional_files` in request order. `MISMATCH`, `ERROR`, process output, nonzero exit, malformed
@@ -1288,9 +1484,9 @@ The fixed, content-hashed adapter is intentionally a silent trusted boundary. It
 kill/reap behavior, and environment isolation come from Request 11; C6 does not run model-produced
 commands directly through this boundary and does not use the current uncapped `run()` surface.
 
-A candidate is never installed while evaluation is running. Every row in one evaluation must
-report the same non-empty `environment_id`; an environment change during the comparison makes it
-`ERROR`.
+A candidate is never installed while evaluation is running. Every retained row's validated
+`environment_probe` must normalize with the surrounding snapshots to the same non-empty final
+`environment_id`; an environment change during the comparison makes it `ERROR`.
 
 The adapter emits only this measured payload:
 
@@ -1313,12 +1509,23 @@ TaskMeasurement:
   generation_to_passing_patch_ns: Option<i64>
   rendered_prompt_sha256
   generation_request: GenerationRequestIdentity
-  environment: EnvironmentIdentity
+  environment_probe: EnvironmentProbe
+  seed_attestation: SeedCapabilityAttestation
   diagnostic_summary
   diagnostic_stdout
   diagnostic_stderr
   content_sha256
 ```
+
+`environment_probe.producer` must be `MEASUREMENT_ADAPTER`, its declared runtime identity must
+match the task manifest, and its fields must equal the probe from the surrounding snapshots.
+`SeedCapabilityAttestation` is content-bound and its `provider_request_sha256` must identify the
+exact serialized provider request bytes containing `paired_seed`. The provider boundary computes
+that hash from the bytes immediately before dispatch, independently of the attestation, and the
+evaluator requires it to equal `GenerationRequestIdentity.provider_request_sha256`; the two values
+therefore cannot be circular. `APPLIED` requires
+`applied_seed == requested_seed`;
+`UNSUPPORTED` and `REJECTED` require `applied_seed: None` and make the evaluation ineligible.
 
 `rendered_prompt_sha256` is the evaluator-produced `RenderedPromptArtifact.content_sha256`. The
 request identity uses the raw SHA-256 of an empty string for `system_text_sha256`, the
@@ -1376,7 +1583,10 @@ test `NOT_RUN`; `TEST` requires build `PASS` and test `FAIL`. `POLICY_VIOLATION`
 For `ERROR`, failure precedence is deterministic: failed containment yields `CONTAINMENT`;
 otherwise failed cleanup yields `CLEANUP`; otherwise an internal adapter failure or any stage
 `ERROR` yields `ADAPTER`. A malformed or missing adapter document produces no row. If containment
-and cleanup both fail, `CONTAINMENT` wins. Non-error states require both flags true.
+and cleanup both fail, `CONTAINMENT` wins. Non-error states require both flags true, a valid
+measurement-adapter probe, and a valid seed attestation. `PASS`, `FAIL`, and
+`POLICY_VIOLATION` may be structurally complete with `UNSUPPORTED`/`REJECTED` seed results, but
+those rows make the evaluation non-gate-eligible.
 
 `task_completed` is not persisted; it is derived only from `status == PASS`. All count fields and
 optional numeric values are non-negative; repair loops cannot exceed 64, patch bytes cannot exceed
@@ -1389,6 +1599,14 @@ malformed output, or task-order drift makes the evaluation `ERROR`; it is never 
 The diagnostic summary is at most 4,096 UTF-8 bytes. Each diagnostic stream is at most 16,384
 bytes and uses the existing UTF-8-safe truncation marker. These fields retain the measured failure
 evidence without relying on adapter process output.
+
+`gate_eligible` is true only when every requested pair is complete, the corpus and sample minima
+hold, the named source and external Align revisions pass their reachability checks, the final
+`EnvironmentIdentity.core.logical_cpu_count` is `Some(positive)`, and every row's
+`SeedCapabilityAttestation.result` is `APPLIED` with the requested seed. A complete evaluation with
+`None` CPU availability or any `UNSUPPORTED`/`REJECTED` seed remains a valid non-gate comparison;
+it cannot be accepted as C6 evidence. The evaluator computes this flag from the embedded rows and
+policy and never trusts a persisted caller-provided value.
 
 The complete result is:
 
@@ -1938,16 +2156,18 @@ explicitly reviewed deferral.
 | Initial context-policy semantics | `src/prompt_model.align`, `src/failure_memory.align`, `src/verification_loop.align` | event order, count/byte limits, disabled sections, UTF-8 truncation |
 | Content-bound A/B inputs | `src/prompt_evaluate.align`, task manifests | expected digest, per-invocation pre/post drift, mode, tree, dirty-source, seed, generation, and environment regressions |
 | Explicit adapter request and environment isolation | `src/prompt_evaluate.align`, task adapter | adapter-request identity/path/digest fixtures; env-clear rejection and exact allowlisted-value survival in both directions |
-| Producer-owned environment identity | trusted probe, evaluator verifier | field/source/normalization table plus OS/CPU/GPU/compiler/runtime unavailable-value and digest fixtures |
+| Producer-owned environment identity | trusted probe carriers, evaluator verifier | non-circular core preimage, carrier equality, OS/CPU/GPU/compiler/runtime unavailable-value, `Option` CPU-count, and digest fixtures |
 | Physical path trust boundary | snapshot helper and all command owners | symlink component, dangling link, output link, special file, physical escape, relative/absolute, cleanup, and early-exit regressions |
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
-| Bounded canonical persistence | Align Request 12 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, and no-partial-write vectors |
+| Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
+| Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, and no-partial-write vectors |
 | Exact source identity and integration method | gate manifest, CI validator | clean full SHA, ancestor/normal-merge, base-tip/head/merge-base, corpus and external Align reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
-| Provider proposal with no secret persistence | `src/prompt_experiment.align`, bounded provider boundary | after Request 5 merges: deterministic provider fixture, transport-size cap, and API-key redaction regression |
+| Provider proposal with no secret persistence | `src/prompt_experiment.align`, bounded provider boundary | after Request 5 merges: deterministic provider fixture, transport-size cap, one-shot credential lifetime, pre-truncation redaction, and API-key regression |
 | Executable provider control and prompt roles | provider control, task adapter | config-field identity fixtures and exact empty-system/rendered-user request bytes |
+| Seed capability attestation | provider adapter, evaluator verifier | requested/applied seed equality, provider request digest, unsupported/rejected ineligibility, and paired-row fixtures |
 | Same adapter and alternating A/B order | `src/prompt_evaluate.align` | invocation-log smoke with odd/even samples |
 | Exact row and scope binding | `src/prompt_evaluate.align` | stale variant, wrong task/sample/provider/digest fixtures |
 | Validation precedence and invalid-result shape | all command owners | table-driven first-failure fixtures prove no external call and exact `Option` population |
@@ -1986,7 +2206,7 @@ Applicability decisions:
 | Text/encoding/NUL | applicable; UTF-8 JSON, Request 7 escape symmetry, raw tree-byte encoding, and pre-side-effect NUL rejection above |
 | Persistent identity/version | applicable; content-bound immutable candidates, evaluations, and activations |
 | Ownership/cleanup | applicable; module and task-adapter ownership defined in sections 6 and 9 |
-| Allocation | applicable; bounded readers, Request 5 response cap, Request 11 process cap, Request 12 result encoder cap, recursive record-array prerequisites, and owned-result cleanup are explicit |
+| Allocation | applicable; bounded readers, Request 5 response cap, Request 11 process cap, Requests 12/13 result persistence, recursive record-array prerequisites, explicit text clones, and owned-result cleanup are explicit |
 | External process/network | applicable; fixed helper/adapter commands, TaskAdapterRequest, EnvironmentPolicy/env-clear contract, provider controls, timeouts, cap-aware output, and validation-before-call order are explicit |
 | Public CLI/build inputs | applicable; exact JSON command paths, explicit adapter request, environment policy, provider/helper/task inputs, and no unnamed ambient configuration |
 | Global state | no implicit global active prompt; explicit activation input only |
@@ -2012,14 +2232,14 @@ and must split again before coding if the estimate no longer holds.
      `make ci`;
    - no C6 product declaration or behavior;
    - estimated review surface: pin/request/docs integration below 300 hand-written lines.
-2. **C6a1 — canonical codec and prompt foundations (blocked on Requests 7 and 12)**
+2. **C6a1 — canonical codec and prompt foundations (blocked on Requests 7, 12, and 13)**
    - SHA-256/lowercase-hex helpers, bounded JSON reader, canonical digest validation, universal
      labels/bounds, prompt/context/scope/policy records, and their semantic-to-byte and
      byte-to-semantic golden vectors;
    - after Request 12 is adopted, use its bounded canonical encoder for every capped artifact;
    - no evaluator/result schemas, renderer, process, provider, lifecycle, or CLI mutation;
    - estimated review surface: one module plus fixtures below 900 hand-written lines.
-3. **C6a2 — evaluation and activation artifact declarations (blocked on Request 12)**
+3. **C6a2 — evaluation and activation artifact declarations (blocked on Requests 12 and 13)**
    - declared snapshot, measurement, evaluation, activation, gate-manifest, and operation-envelope
      records plus field-specific validators and all remaining golden vectors;
    - no scoring, rendering, process, provider, lifecycle, or CLI mutation;
@@ -2043,35 +2263,37 @@ and must split again before coding if the estimate no longer holds.
    - estimated review surface below 800 hand-written lines.
 7. **C6d1 — immutable activation model**
    - fixture-only baseline and pure accept/rollback construction/lineage validation;
+   - uses in-memory declared values only; it does not write or decode a canonical JSON artifact,
+     so it does not bypass Requests 12 or 13;
    - every fixture evaluation first passes the shared pure verifier; status-only and aggregate
      tampering cannot reach activation construction;
    - no public CLI or canonical provider-quality claim;
    - estimated review surface below 700 hand-written lines.
-8. **C6d2 — activation CLI**
+8. **C6d2 — activation CLI (blocked on Requests 12 and 13)**
    - `prompt accept` and `prompt rollback`, bounded request/result persistence, and stable summaries;
    - fixtures exercise eligibility, parent mismatch, branching, ancestry, reason, scope, and
      no-overwrite behavior;
    - no provider-quality claim.
    - estimated review surface below 700 hand-written lines.
-9. **C6e — provider proposal (blocked on Requests 2 and 5)**
+9. **C6e — provider proposal (blocked on Requests 2, 5, 12, and 13)**
    - after both request adoption gates reach `ALIGN_LLM_VERIFIED`, `prompt experiment`, the bounded provider boundary,
      declared proposal decoding, and secret redaction;
    - deterministic provider fixture, transport-size limit, and provider-error coverage;
    - do not implement against the current whole-body provider call.
    - estimated review surface below 900 hand-written lines.
-10. **C6f1 — trusted snapshot/workspace boundary (blocked on Request 11)**
+10. **C6f1 — trusted snapshot/workspace boundary (blocked on Requests 11, 12, and 13)**
     - helper protocol, physical workspace preflight, raw-byte tree/entry closure, per-invocation
       input snapshots, environment identity, and cleanup primitives;
     - after Request 11 is adopted, use cap-aware child capture, explicit `env_clear`/allowlist,
       physical path checks, environment identity, and cleanup primitives;
     - no paired evaluation loop or scoring decision;
     - estimated review surface below 1,000 hand-written lines.
-11. **C6f2 — deterministic paired evaluator (blocked on Requests 8, 10, and 11)**
-    - after Requests 8, 10, and 11 reach `ALIGN_LLM_VERIFIED` and are adopted, `prompt evaluate`, alternating samples,
+11. **C6f2 — deterministic paired evaluator (blocked on Requests 8, 10, 11, 12, and 13)**
+   - after Requests 8, 10, 11, 12, and 13 reach `ALIGN_LLM_VERIFIED` and are adopted, `prompt evaluate`, alternating samples,
       checked construction of runtime-sized record arrays, C6c reuse, and deterministic corpus;
     - may proceed while C6e is blocked because its fixed adapter does not call a model provider;
     - estimated review surface below 1,000 hand-written lines.
-12. **C6g1 — real consumer and frozen gate assets (blocked on Requests 2, 5, and 11)**
+12. **C6g1 — real consumer and frozen gate assets (blocked on Requests 2, 5, 11, 12, and 13)**
    - have the fixed adapter consume evaluator-produced `RenderedPromptArtifact`, generate through the
      bound provider policy, and verify the patch through the existing contained task runner;
    - finalize and review the at-least-two-task corpus, provider control, generation policy,
