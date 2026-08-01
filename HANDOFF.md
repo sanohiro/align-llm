@@ -6,9 +6,10 @@ request checks, reviews, and attestations.
 ## Current state
 
 - Branch: `agent/c6-prompt-renderer`, based on `origin/main` at `4e1482e8e4942b70a9576f96285c0bf02aaaaae9`.
-- Relevant commit: `345adc4` (`Implement pure prompt hierarchy renderer`).
-- Active goal: publish one small C6 pure-renderer implementation PR, complete one review, fix all
-  valid findings, run the required final verification, and stop this work.
+- Relevant commits: `345adc4` (initial renderer) and `a18e7e4` (`Keep prompt renderer
+  fixture-private`).
+- Active goal: publish the repaired fixture-private C6 renderer PR #34, with the one completed
+  review's findings fixed, and stop this work.
 - The implementation adds `src/prompt_render.align` and a fixture-only
   `src/prompt_render_smoke.align` executable. It does not add a product CLI, call a provider,
   write artifacts, or mutate activation state.
@@ -25,21 +26,19 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push the repair commit for PR #34 with the focused verification results.
-2. The comprehensive review is complete. Fix every valid finding in one consolidated repair; do not
-   start another review unless the repair materially changes the design, implementation approach,
-   public behavior, or governance.
-3. Run the required final `make ci` once after review because this change updates the hosted check
-   graph, then record its result in the PR and merge when all findings and checks are complete.
+1. Push `a18e7e4` and update PR #34 with the repair and disposition of all three findings.
+2. The comprehensive review is complete. No second review is needed: the repair only removes the
+   unreviewed public surface, separates the smoke from the hosted topology, and removes unrelated
+   governance changes.
+3. Merge PR #34 after the focused check is recorded; this final diff does not change the product
+   CLI, build graph, or CI gate, so full `make ci` is not required.
 
 ## Latest verification
 
 ```text
-make prompt-render-smoke                         PASS
-make check format-check gate-topology-check      PASS
-make fmt                                         PASS
+./scripts/run-prompt-render-smoke                 PASS
 git diff --check                                 PASS
-make ci                                          not yet run; reserved for final integration
+make ci                                          not applicable to the final fixture-only diff
 ```
 
 ## Constraints and intentional state
