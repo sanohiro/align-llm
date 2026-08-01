@@ -5,10 +5,11 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6-prompt-context-design`, rebasing onto `origin/main` commit
+- Branch: `agent/c6-prompt-context-design`, based on `origin/main` commit
   `4e1482e8e4942b70a9576f96285c0bf02aaaaae9` (Request 9 PR #33 merge).
-- Relevant commit: the C6 design commit is being replayed; record its new SHA after the rebase
-  completes. The intentional C6 design change is `docs/specs/c6-prompt-context-optimizer.md`.
+- Relevant commit: `bdcd1f6` (`Draft C6 prompt optimizer contract`) is the rebased C6 design
+  commit. The intentional uncommitted follow-up is the dependency normalization in
+  `docs/specs/c6-prompt-context-optimizer.md`.
 - Active goal: complete the C6 prompt/context optimizer design, merge it, then continue through the
   eligible enabling and implementation slices.
 - C0 through C5 are complete. The current product slice is design only; no C6 Align source exists.
@@ -44,19 +45,20 @@ merge preserved the request and Handoff commits as ancestors.
 
 ## Exact next steps
 
-1. Finish the rebase onto `origin/main`, restore the intentional uncommitted C6 design edit, and
-   record the new design commit SHA in this Handoff.
-2. Run the author ledger-to-prose and closure-matrix consistency pass, then verify all literal
-   references against the pinned Align checkout and `git diff --check`.
-3. Run a fresh full adversarial review of the rebased C6 design, resolve valid findings in one
+1. Complete the author ledger-to-prose and closure-matrix consistency pass, then verify all
+   literal references against the pinned Align checkout and `git diff --check`.
+2. Commit the dependency normalization together with this current handoff correction and run
+   the repository checks.
+3. Run a fresh full adversarial review of the complete C6 design, resolve valid findings in one
    consolidated repair, and complete the SHA-bound review workflow.
 4. Continue with the first eligible post-design slice. C6a waits for Request 7 to reach
    `ALIGN_MERGED`; no code may target a proposed Align API.
 
 ## Latest durable verification
 
-Before this rebase, the C6 draft passed `git diff --check`. Fresh verification is required after
-dependency normalization and the merge-base change.
+The rebase onto `origin/main` completed as `bdcd1f6`, the intentional design edit was restored
+cleanly, and `git diff --check` passes. Author consistency, `make ci`, and the fresh adversarial
+review remain pending for the normalized design.
 
 ## Constraints and intentional state
 

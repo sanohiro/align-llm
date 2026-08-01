@@ -38,22 +38,31 @@ itself satisfy item 6.
 
 ### 1.1 Align prerequisites and blocked slices
 
-The reviewed contract exposes three capabilities that the pinned Align revision does not provide.
+The reviewed contract exposes three capabilities that the pinned Align revision does not provide,
+and one independent capability whose current implementation is too narrow for the evaluator.
 They must be recorded as separate requests in `docs/align-requests.md`; this design does not make
 their hypothetical APIs part of C6:
 
 1. **Request 5 — bounded HTTP response reception.** The HTTP client must enforce a caller-selected
    response-body cap while receiving, before an owning body can grow past that cap. This request is
    already recorded and blocks C6e and the real-provider portion of C6g.
-2. **Request 6 — escaped strings in declared-record JSON.** Typed `json.decode` must decode every
+2. **Request 6 — recursively Copy `json.scan` rows.** The scanner reuses one row slot and currently
+   admits schemas with owned arrays or other transitively Move fields. C6 does not consume scanner
+   rows; this request is an independent prerequisite for the later JSON escape acceptance matrix.
+3. **Request 7 — escaped strings in declared-record JSON.** Typed `json.decode` must decode every
    JSON escape accepted by `json.encode` into declared `str` fields and `array<str>` elements,
    including nested records and options. This blocks C6a and therefore every later C6 product
    slice. Escape-free fixtures, `json.doc`, and an application-specific base64 wire format are not
-   substitutes for the declared-record round trip.
-3. **Request 7 — runtime construction of arrays of declared records.** A growable, ownership-safe
-   construction path must build the arrays of snapshot records, rows, aggregates, and regression
-   reasons required by the evaluator. This blocks evaluator construction in C6f, but not fixture
-   decoding and pure verification in C6c.
+   substitutes for the declared-record round trip. Request 7 is already registered and remains
+   `PROPOSED` until its recorded benchmark and decoded-owner prerequisites are satisfied.
+4. **Request 8 — runtime construction of evaluator record arrays.** The pinned `array_builder<T>`
+   accepts only scalar elements and owned `string`, while C6f2 must construct runtime-sized arrays
+   of declared records such as snapshot requests, task rows, aggregates, and regression reasons.
+   Align must define a visible, ownership-safe construction path for the required record shapes,
+   including partial push/build/drop behavior. This blocks only C6f2; fixture decoding and pure
+   verification in C6c may use the existing declared-record JSON array path. Request 8 is registered
+   and merged in align-llm PR #32, but remains `PROPOSED` until Align implements it and a real-client
+   adoption gate passes; its proposed surface is not used by this design.
 
 The current project pin already contains recursive Move `Option`/`Result` support needed by
 optional embedded evaluation records. Before a blocked slice starts, its request must reach
@@ -157,7 +166,7 @@ Every optimizer-produced artifact and every content-bound input has `schema_vers
 are control envelopes: they have a schema and kind but no content digest; every artifact they
 reference is independently content-bound.
 
-After Request 6 is merged and adopted, the canonical payload is `core.json.encode` of the declared
+After Request 7 is merged and adopted, the canonical payload is `core.json.encode` of the declared
 record after replacing
 `content_sha256` with an empty string. Therefore field order, escaping, nested records, arrays,
 options, integers, booleans, and UTF-8 strings follow the pinned Align JSON encoder named by the
@@ -1766,7 +1775,7 @@ Applicability decisions:
 | Dimension | Decision |
 | --- | --- |
 | Wire/API schema | applicable; JSON schema version 1 records above |
-| Text/encoding/NUL | applicable; UTF-8 JSON, Request 6 escape symmetry, raw tree-byte encoding, and pre-side-effect NUL rejection above |
+| Text/encoding/NUL | applicable; UTF-8 JSON, Request 7 escape symmetry, raw tree-byte encoding, and pre-side-effect NUL rejection above |
 | Persistent identity/version | applicable; content-bound immutable candidates, evaluations, and activations |
 | Ownership/cleanup | applicable; module and task-adapter ownership defined in sections 6 and 9 |
 | Allocation | applicable; bounded readers, response caps, result cap, runtime record-array prerequisite, and owned-result cleanup are explicit |
@@ -1784,8 +1793,8 @@ Implementation starts only after this design is independently reviewed and merge
 targets at most roughly 1,000 changed hand-written lines; its pull request records the actual count
 and must split again before coding if the estimate no longer holds.
 
-1. **C6a0 — Align adoption (blocked on Request 6)**
-   - after Request 6 reaches `ALIGN_MERGED`, build the named Align revision, advance
+1. **C6a0 — Align adoption (blocked on Request 7)**
+   - after Request 7 reaches `ALIGN_MERGED`, build the named Align revision, advance
      `.align-revision`, update the request lifecycle and pinned-era ownership comments, and pass
      `make ci`;
    - no C6 product declaration or behavior;
@@ -1841,8 +1850,8 @@ and must split again before coding if the estimate no longer holds.
       input snapshots, environment identity, and cleanup primitives;
     - no paired evaluation loop or scoring decision;
     - estimated review surface below 1,000 hand-written lines.
-11. **C6f2 — deterministic paired evaluator (blocked on Request 7)**
-    - after Request 7 reaches `ALIGN_MERGED` and is adopted, `prompt evaluate`, alternating samples,
+11. **C6f2 — deterministic paired evaluator (blocked on Request 8)**
+    - after Request 8 reaches `ALIGN_MERGED` and is adopted, `prompt evaluate`, alternating samples,
       checked construction of runtime-sized record arrays, C6c reuse, and deterministic corpus;
     - may proceed while C6e is blocked because its fixed adapter does not call a model provider;
     - estimated review surface below 1,000 hand-written lines.
