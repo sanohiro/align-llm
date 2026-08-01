@@ -7,9 +7,9 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6-prompt-context-redesign`, based on `origin/main` commit
   `99837e29ec303574956614a1d26439def23e9e8d` (merged PR #34).
-- Current base commit: `22186b8` (`Record C6 final-review redesign stop`). The worktree has
-  intentional, uncommitted redesign edits in `docs/specs/c6-prompt-context-optimizer.md` and
-  `docs/align-requests.md`.
+- Current design commit: `80b8f7b` (`Redesign C6 prompt optimizer contract`), on top of
+  `22186b8` (`Record C6 final-review redesign stop`). The worktree is clean after this handoff
+  update.
 - Active goal: make the C6 design merge-ready, open one focused design PR, merge it, and then
   start the first eligible implementation slice. C6 product implementation has not started.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
@@ -35,7 +35,7 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Finish the author-side consistency pass over the edited C6 plan and Request 13 register; keep
+1. Run the final author-side consistency pass over the committed C6 plan and Request 13 register; keep
    the design-only verification limited to `git diff --check`, Markdown/schema structure checks,
    and targeted consistency scans. Do not run full `make ci` for this documentation-only change.
 2. Update this handoff with the final design commit, then run one comprehensive independent
@@ -49,7 +49,7 @@ request checks, reviews, and attestations.
 
 ## Latest durable verification
 
-- `git diff --check`: passed for the current intentional redesign edits.
+- `git diff --check`: passed for the redesign before commit `80b8f7b`.
 - Markdown fenced-block parity check: passed (`70` fences, even count).
 - Full `make ci` has intentionally not been rerun for the current documentation-only redesign;
   it is reserved for the applicable implementation/adoption or final integration gate.
@@ -67,5 +67,7 @@ request checks, reviews, and attestations.
   slice; full `make ci` runs only at the explicitly applicable final/integration gate.
 - Review is one comprehensive pass. Consolidate valid findings, rerun only affected verification,
   and require another review only for a material behavior/design/contract expansion.
+- The explicit verification-timing rule still needs to be recorded in `CLAUDE.md` as a separate
+  governance slice; do not mix that change into the C6 design PR.
 - Source, documentation, diagnostics, commits, pull requests, reviews, and releases remain in
   English.
