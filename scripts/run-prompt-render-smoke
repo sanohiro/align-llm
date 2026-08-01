@@ -3,15 +3,11 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-binary="${ALIGN_LLM_BIN:-${project_root}/main}"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
 output_file="$(mktemp)"
 trap 'rm -f "${output_file}"' EXIT
 
-if [[ ! -x "${binary}" ]]; then
-  make -C "${project_root}" build
-fi
-
-"${binary}" --prompt-render >"${output_file}"
+"${compiler}" run "${project_root}/src/prompt_render_smoke.align" >"${output_file}"
 
 python3 - "${output_file}" <<'PY'
 import sys

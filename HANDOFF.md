@@ -9,9 +9,9 @@ request checks, reviews, and attestations.
 - Relevant commit: `345adc4` (`Implement pure prompt hierarchy renderer`).
 - Active goal: publish one small C6 pure-renderer implementation PR, complete one review, fix all
   valid findings, run the required final verification, and stop this work.
-- The implementation adds `src/prompt_render.align`, a focused `--prompt-render` smoke command,
-  and the `prompt-render-smoke` hosted check. It does not call a provider, write artifacts, or
-  mutate activation state.
+- The implementation adds `src/prompt_render.align` and a fixture-only
+  `src/prompt_render_smoke.align` executable. It does not add a product CLI, call a provider,
+  write artifacts, or mutate activation state.
 - The earlier documentation-only C6 design work is intentionally outside this branch and must not
   be pulled into this PR.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
@@ -20,18 +20,13 @@ request checks, reviews, and attestations.
 
 - Implemented the ordered base/repo/task/learned/context prompt hierarchy as a pure Align
   renderer with explicit context inclusion policy.
-- Added an executable smoke that checks exact section order, delimiters, learned text, omitted
-  failure memory, and diagnostic streams.
-- Registered the focused smoke in the hosted check topology and synchronized its specification
-  oracle.
-- Added the repository verification-cadence rule: documentation-only changes do not require
-  compilation, tests, or CI; focused verification happens once after a coherent implementation;
-  full CI is reserved for changes that actually require it or the final integration point.
+- Added a fixture-only executable smoke that checks exact section order, delimiters, learned text,
+  omitted failure memory, and diagnostic streams.
 
 ## Exact next steps
 
-1. Push `345adc4` and open the implementation PR with the focused verification results.
-2. Run one comprehensive review. Fix every valid finding in one consolidated repair; do not
+1. Push the repair commit for PR #34 with the focused verification results.
+2. The comprehensive review is complete. Fix every valid finding in one consolidated repair; do not
    start another review unless the repair materially changes the design, implementation approach,
    public behavior, or governance.
 3. Run the required final `make ci` once after review because this change updates the hosted check

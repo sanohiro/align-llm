@@ -1,8 +1,9 @@
 module prompt_render
 
-// C6's first executable slice is deliberately pure: it composes the fixed prompt hierarchy
-// without touching providers, files, or activation state. The first three sections are always
-// human/task-owned; learned text and context are the only optional sections.
+// C6's first executable slice is deliberately pure and fixture-private: it composes the fixed
+// prompt hierarchy without touching providers, files, or activation state. The first three
+// sections are always human/task-owned; learned text and context are the only optional sections.
+// The product CLI must not import this module until the reviewed C6 artifact contract is merged.
 
 pub ContextPolicy {
   include_patch_evaluation: bool,

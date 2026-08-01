@@ -24,7 +24,7 @@ FIELDS = (
     ("serialized", "ALIGN_LLM_SERIAL_CHECK_AGGREGATES"),
 )
 EXPECTED = (
-    b"hosted=gate-topology-check format-check check build eval-smoke loop-smoke prompt-render-smoke "
+    b"hosted=gate-topology-check format-check check build eval-smoke loop-smoke "
     b"provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
     b"verify-loop-smoke failure-memory-smoke\n"
     b"capable-only=eval-coding baseline-check\n"
@@ -80,7 +80,7 @@ def compare_report(actual: bytes, expected: bytes = EXPECTED) -> tuple[int, str,
 def exact_environment() -> dict[str, str]:
     return {
         "ALIGN_LLM_HOSTED_CHECK_TARGETS": (
-            "gate-topology-check format-check check build eval-smoke loop-smoke prompt-render-smoke "
+            "gate-topology-check format-check check build eval-smoke loop-smoke "
             "provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
             "verify-loop-smoke failure-memory-smoke"
         ),
