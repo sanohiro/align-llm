@@ -11,7 +11,8 @@ request checks, reviews, and attestations.
   with current prerequisite register`), `15b3d95` (`Record C6 design verification`), and
   `52bf28a` (`Close C6 design review gaps`), the current repaired design head.
 - Active goal: complete the C6 prompt/context optimizer design, merge it, then continue through the
-  eligible enabling and implementation slices.
+  eligible enabling and implementation slices. The design is not merge-ready: the final independent
+  review found unresolved contract gaps, so no PR has been opened.
 - C0 through C5 are complete. The current product slice is design only; no C6 Align source exists.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
@@ -50,19 +51,25 @@ merge preserved the request and Handoff commits as ancestors.
 
 ## Exact next steps
 
-1. Run a fresh complete adversarial review of the repaired C6 design at `52bf28a`; do not edit
-   content while that review is in progress.
-2. Open and merge the design PR after its review evidence and final integration checks are
-   recorded.
-3. Continue with the first eligible post-design slice. C6a waits for Request 7 and Request 12;
-   C6f2 waits for Requests 8, 10, and 11; no code may target a proposed Align API.
+1. Reopen the C6 closure matrix and redesign the unresolved contracts before another PR attempt:
+   add a viable shipped borrowed-wire/owned-record persistence path (or make its exact Align
+   request a prerequisite), define a non-circular EnvironmentIdentity preimage and explicit
+   producer carriers, represent unavailable CPU counts, and close the environment-policy and
+   physical input bounds.
+2. Resolve the seed-capability attestation, proposal-provider credential lifecycle, derived-ID
+   bounds, TREE-root metadata, corpus-revision representation, and command/endpoint bounds in one
+   coherent design slice. Do not start a repair/re-review loop against the current final-review
+   envelope; re-scope the design first.
+3. Only after that redesign is independently reviewed should the design PR be opened and merged.
+   No implementation may target a proposed Align API.
 
 ## Latest durable verification
 
-The repaired design is committed as `52bf28a`. The author consistency pass, `git diff --check`,
-Align-pin/reference checks, canonical SHA-256 vector, and `make ci` passed on the repaired tree
-(pinned Align release build, topology, format, existing unit/smoke gates, coding-task boundaries,
-timeout, and baseline validation). The fresh final adversarial review and design PR remain pending.
+The repaired design is committed as `52bf28a`, with Handoff state at `55c399d`. The author
+consistency pass, `git diff --check`, Align-pin/reference checks, canonical SHA-256 vector, and
+`make ci` passed on the repaired tree (pinned Align release build, topology, format, existing
+unit/smoke gates, coding-task boundaries, timeout, and baseline validation). The final independent
+review completed against `55c399d` but found unresolved design gaps; the design PR remains unopened.
 
 ## Constraints and intentional state
 
@@ -79,3 +86,5 @@ timeout, and baseline validation). The fresh final adversarial review and design
   English.
 - There are no intentional uncommitted files after the repair commit; generated CI cache
   directories were moved outside the repository.
+- The next agent must preserve the final-review stop condition: redesign and re-split the contract
+  before any new content repair, PR creation, or merge attempt.
