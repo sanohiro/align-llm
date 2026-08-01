@@ -7,19 +7,17 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6-owned-json-request`, based on `origin/main` commit
   `0c712cf459408a29fc697cb392546a98d83c3020`.
-- Relevant commit: none yet; the intentional changes are uncommitted in
-  `docs/align-requests.md`, `docs/examples/request9-owned-json-syntax.align`,
-  `docs/specs/roadmap.md`, and `HANDOFF.md`,
-  based on merged Request 8 commit
-  `0c712cf459408a29fc697cb392546a98d83c3020`.
+- Relevant commit: `ad7c576` (`Register owned JSON direct-record request`), containing the Request 9
+  design, fixture, roadmap entry, and initial handoff state; this branch also contains the follow-up
+  handoff-state commit below.
 - Active goal: finish and merge the standalone Align Request 9 prerequisite for a closed, directly
-  owned JSON record shape; its revised contract is still uncommitted.
+  owned JSON record shape; the content is committed and the focused PR is not yet opened.
 - Product implementation has not started. Request 8 is merged at `0c712cf459408a29fc697cb392546a98d83c3020`; this branch remains independent and must not consume the proposed owned-JSON API.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 - Current plan of record: `docs/specs/roadmap.md` and `docs/specs/align-llm.md`; a consumer-specific
   design is not durable on this branch and must be merged before it becomes a Request 9 dependency.
 
-Request 9 is `PROPOSED` (`Blocking: no`) and remains uncommitted. The pinned declared-record JSON codec accepts
+Request 9 is `PROPOSED` (`Blocking: no`) and is committed on this branch. The pinned declared-record JSON codec accepts
 borrowed `str` and `array<str>` fields but rejects owned `string`/`array<string>` fields. The revised
 contract keeps the existing all-borrowed route, selects a closed direct owned path only when an owned
 text leaf is present, keeps that selector separate from scanner and record-array entrypoints, depends
@@ -53,10 +51,10 @@ consume it; a later consumer must wait for a named Align merge and its real-clie
 
 ## Exact next steps
 
-1. Rerun the author contract/reference/pin/formatter/diff checks and `make ci` after the descriptor
-   record-base offset-origin clarification; update this Handoff with their results.
-2. Inspect the final delta for unrelated changes, then commit, push, and open a focused PR with
-   exact verification and all finding dispositions. Do not consume the proposed API.
+1. Record this committed content SHA in the handoff-state commit, then inspect the final delta for
+   unrelated changes.
+2. Push and open a focused PR with exact verification and all finding dispositions. Do not consume the
+   proposed API.
 3. Merge only after the SHA-bound review/check evidence is recorded. Do not implement or consume the
    proposed owned-JSON API before a named Align merge and real-client adoption gate.
 4. After this Request 9 PR merges, stop roadmap implementation at the user's direction; do not resume
