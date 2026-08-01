@@ -2482,10 +2482,10 @@ product slice starts only after every other separately registered JSON prerequis
 ```text
 Status: PROPOSED
 Priority: high
-Blocking: no
-Blocked gate or slice: none currently; when a concrete consumer requires mutable append of a runtime-sized array of declared records, reclassify this request as blocking for that named slice; existing Copy-record collections expressible through shipped `.to_array()` shapes remain unblocked
+Blocking: yes
+Blocked gate or slice: C6f2 deterministic paired evaluator; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension
 Independent work that may continue: application designs, pure codecs, renderers, scorers, activation slices, Request 5, Request 6, Request 7, and any work that does not construct a runtime-sized declared-record array
-Resume condition: when a concrete consumer names this capability as a prerequisite, reclassify the request as blocking for that slice; after ALIGN_MERGED at a named Align commit, rebuild both the sibling release compiler and runtime, update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged, run the named align-llm adoption target and `make ci`, and then resume only that consumer
+Resume condition: Request 8 must reach ALIGN_MERGED at a named Align commit before its recursive extension can start; after ALIGN_MERGED at a named Align commit, rebuild both the sibling release compiler and runtime, update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged, run the named C6f2 adoption target and `make ci`, and then resume only that consumer
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -3589,6 +3589,189 @@ updated to name this merged request.
   declaration and positional call; it is not a product example consumed by `make check`.
 - `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — the committed roadmap and architecture
   that future consumers must refine before adoption.
+
+---
+
+## Request 10 — `core.array_builder`: recursive evaluator record fields
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6f2 deterministic paired evaluator; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension
+Independent work that may continue: C6a1 codec work that does not materialize recursive runtime arrays, C6b, C6c, C6d, Request 5, Request 6, Request 7, Request 8, Request 9, and all pure verification work
+Resume condition: Request 8 first reaches ALIGN_MERGED at a named Align commit; then Align merges this request at a named commit, the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, the C6f2 adoption target and `make ci` pass, and the original recursive-construction acceptance matrix passes in align-llm
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation
+
+C6f2 discovers task, row, aggregate, snapshot, and regression cardinalities while it evaluates a
+fixed corpus. The evaluator therefore needs ordinary declared Align records inside runtime-sized
+arrays. Request 8 provides the recursively Copy, owned-record base, but its accepted graph
+deliberately excludes `Option<T>` and dynamic `array<T>` fields. C6's exact records contain both,
+including nested arrays and optional embedded records. Treating Request 8 as sufficient would
+silently require a shallow copy or a private collection implementation.
+
+### Current-state evidence at the pinned Align revision
+
+At `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`, Request 8's `array_builder<T>` element predicate
+rejects the C6 record shapes that contain `Option`, nested dynamic arrays, or arrays of records.
+The declared JSON array route is a decode path, not a mutable append API for evaluator control flow.
+Request 9 owns direct owned JSON text fields and is not a substitute for a record builder. The
+request remains a genuine Align ownership and lowering boundary; align-llm must not encode JSON
+fragments and parse them back or add a private vector.
+
+### Requested capability
+
+Extend the reviewed Request 8 builder using its expected-type, data-oriented construction idiom.
+The exact public spelling is an Align design decision, but it must accept an `EvaluatorRecord<T>`
+graph whose leaves are Copy scalars or owned `string`, and whose recursive fields are only:
+
+- another accepted declared record;
+- `Option<T>` where `T` is accepted recursively; or
+- `array<T>` where `T` is accepted recursively.
+
+`str`, slices, resources, functions, raw pointers, builders, and region-bound values are rejected
+in the graph. Every nested array and option is a separately owned value; no shallow byte copy or
+arena alias is allowed. The builder must specify source nulling, move-out, replacement, reallocation,
+abandonment, and `Drop` behavior for every partial state.
+
+C6 names these first exact consumers: `SnapshotRequest`, `PromptEvaluationTask`, `PromptTaskRow`,
+`TaskAggregate`, `CorpusAggregate`, `RegressionReason`, `RunSnapshotAttestation`, `SnapshotResult`,
+and `TaskInputSnapshot`, including their top-level result collections. The Align request must not
+generalize beyond the recursively accepted graph needed by those records.
+
+### Acceptance criteria
+
+The Align implementation and its align-llm adoption target must prove, with declarations shown
+separately from positional calls:
+
+1. recursive type formation rejects every unsupported leaf and admits every named C6 shape;
+2. empty and non-empty arrays, `Option.None`, `Option.Some`, nested arrays, and nested records
+   have exact ownership and allocation behavior;
+3. push, reallocation, build, abandonment, replacement, and partial construction clean every
+   live child exactly once, including `?`, `map_err`, branch joins, loop exits, and enclosing-record
+   failure;
+4. generic monomorphization, per-unit and whole-program compilation, interface serialization, and
+   cache identity agree on the structural record graph;
+5. allocation parity is measured against the ordinary declared-record representation, and no
+   hidden arena or private collection is introduced; and
+6. C6f2 constructs and drops the named records through the shipped surface, then passes its
+   runtime-array, malformed-input, early-exit, and cleanup regressions through `make ci`.
+
+### References
+
+- `../align/docs/language-spec.md` §§7–8 and `../align/docs/open-questions.md` §array_builder —
+  current builder forms, element restrictions, and the unresolved recursive extension.
+- `../align/docs/impl/08-memory-model-v2.md` — recursive Move cleanup, region boundaries, and
+  allocation ownership.
+- `../align/crates/align_sema/src/lib.rs` and `../align/crates/align_mir/src/lib.rs` — type
+  formation, lowering, and `DropPlan` owners at the pinned revision.
+- `docs/specs/c6-prompt-context-optimizer.md` §4.5 — the exact first consumer record shapes.
+
+---
+
+## Request 11 — `std.process`: bounded child output capture
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6f1 trusted snapshot/workspace boundary, C6f2 paired evaluator, and C6g1 real-consumer process boundaries
+Independent work that may continue: C6a1 through C6d2 pure codecs, rendering, scoring, activation, and any work without an external child process
+Resume condition: Align merges a cap-aware process capture surface at a named commit; the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, and C6's helper/adapter over-cap, timeout, environment, kill/reap, and cleanup tests pass through `make ci`
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation and current-state evidence
+
+C6 invokes a trusted snapshot helper and task adapter as external processes. Its contract requires
+hard stdout/stderr bounds before allocation, but the pinned `std.process.run()` drains both pipes
+into unbounded buffers. `../align/docs/impl/std-design/process.md` P12 explicitly records
+unbounded v1 capture and defers `max_capture`/the bytes tier. A post-capture length check is not a
+memory or process-safety bound and cannot satisfy C6.
+
+### Requested capability
+
+Add an explicit command-local capture limit, for example a reviewed `max_capture_bytes(limit)`
+configuration or an equivalent bytes-tier API. The final API must define whether the limit is per
+stream or total, reserve no capacity above the declared limit, drain without deadlock, and on
+exceeding the limit kill and reap the child or process group before returning a deterministic
+limit error. It must define whether partial bytes are retained, and must not report a successful
+run after truncation. Existing uncapped callers remain unchanged only if that compatibility is
+explicitly tested.
+
+### Acceptance criteria
+
+Align tests and the C6 adoption target must cover stdout-only and stderr-only over-cap output,
+simultaneous pipe pressure, exact-limit output, one-byte overflow, timeout-plus-cap precedence,
+nonzero exit, invalid UTF-8 in the bytes tier, process-group cleanup, repeated command reuse,
+concurrent independent commands, and allocation/cleanup after every error. C6 must use the
+shipped cap for its 65,536-byte helper response and 262,144-byte measurement response; it may not
+claim a bound using `run()` followed by a length check.
+
+### References
+
+- `../align/docs/impl/std-design/process.md` §§4, 8, and P12 — shipped `run()` behavior and the
+  recorded deferred capture-cap boundary.
+- `../align/crates/align_runtime/src/lib.rs` and
+  `../align/crates/align_driver/tests/m11_process_command.rs` — current pipe draining, timeout,
+  kill, reap, and environment implementation.
+- `docs/specs/c6-prompt-context-optimizer.md` §§4.5, 9, and 10.1 — C6 process limits and cleanup.
+
+---
+
+## Request 12 — `core.json`: bounded canonical encoding
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6a1/C6a2 canonical artifact persistence and every C6 slice that writes a result with a declared raw-byte cap
+Independent work that may continue: pure prompt rendering, scoring, and design work that does not encode a capped persisted artifact
+Resume condition: Align merges a bounded canonical encoder at a named commit; the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, and C6's exact-cap, overflow, malformed-record, and cleanup adoption target plus `make ci` pass
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation and current-state evidence
+
+C6 promises that a prompt evaluation result is at most 268,435,456 raw bytes and that an oversized
+result is rejected without allocating or writing that artifact. The pinned `core.json.encode`
+returns a complete owned `str`; it provides no cap-aware writer or preflight size contract. A
+post-encode length check therefore allocates the complete result and cannot satisfy the promised
+bound.
+
+### Requested capability
+
+Extend the existing canonical declared-record encoder with an explicit bounded operation, such as
+`json.encode_bounded(value, max_bytes) -> Result<string, Error>`, or an equivalent bounded writer
+chosen by Align. The bounded result must be byte-for-byte identical to `json.encode` when it fits,
+reject at the first byte beyond the limit with a deterministic limit error, never expose partial
+success, and define allocation and recursive cleanup on every failure. It must preserve the
+existing field order, escaping, omitted-`None` behavior, unknown-field behavior, and no dynamic
+JSON value type.
+
+### Acceptance criteria
+
+The Align implementation and C6 adoption target must cover exact-limit and limit-plus-one cases,
+escape expansion, nested records, options, arrays, empty values, malformed descriptors, checked
+size overflow, allocation failure, partial writer cleanup, and semantic-to-byte golden vectors.
+C6a1 and C6a2 must use this surface before constructing a capped persisted artifact; they must not
+encode unboundedly and then discard an oversized string.
+
+### References
+
+- `../align/docs/impl/core-design/json.md` §§2–4 — canonical field order, escaping, and current
+  complete-string encoder.
+- `../align/crates/align_runtime/src/lib.rs` and the JSON driver tests — current encoder allocation
+  and cleanup behavior.
+- `docs/specs/c6-prompt-context-optimizer.md` §§4.1 and 5.2 — C6 identity and result caps.
+
+---
 
 ## Not requested (respecting Align's design)
 
