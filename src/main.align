@@ -11,6 +11,7 @@ import repo_index
 import patch_eval
 import verification_loop
 import result
+import prompt_render
 import std.env
 import std.fs
 import std.time
@@ -19,7 +20,7 @@ import std.time
 fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
-  print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --select-tests <repo> <changed-path> <tests.json> [timeout-ns] | --evaluate-patch <repo> <patch.diff> <evaluation.json> [timeout-ns] | --verify-loop <task.json> <result.json> | --eval [corpus] | --loop]")
+  print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --select-tests <repo> <changed-path> <tests.json> [timeout-ns] | --evaluate-patch <repo> <patch.diff> <evaluation.json> [timeout-ns] | --verify-loop <task.json> <result.json> | --eval [corpus] | --loop | --prompt-render]")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
 
@@ -361,6 +362,34 @@ fn loop_demo() {
   print(r6.iterations)
 }
 
+// Keep the first prompt-renderer slice executable without a provider or persisted artifact. The
+// focused smoke compares this exact hierarchy and proves that optional sections are controlled by
+// explicit policy rather than ambient state.
+fn prompt_render_demo() {
+  rendered := prompt_render.render(
+    "BASE",
+    "REPO",
+    "TASK",
+    "LEARNED",
+    prompt_render.ContextSources {
+      patch_evaluation: "PATCH",
+      failure_memory: "MEMORY",
+      diagnostic_stdout: "STDOUT",
+      diagnostic_stderr: "STDERR",
+    },
+    prompt_render.ContextPolicy {
+      include_patch_evaluation: true,
+      include_failure_memory: false,
+      include_diagnostics: true,
+    },
+  )
+  print("prompt renderer:")
+  print("status:")
+  print("PASS")
+  print("text:")
+  print(rendered.text)
+}
+
 // Exercise the newly shipped std.process captured-run surface (Align Request 1,
 // Slice 4/5) as a real client: run `git status --porcelain` in the repo root,
 // capturing its output, with a 30s timeout that surfaces a hang as Error.Timeout.
@@ -406,7 +435,11 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                       if args[1] == "--loop" {
                         loop_demo()
                       } else {
-                        print_help()
+                        if args[1] == "--prompt-render" {
+                          prompt_render_demo()
+                        } else {
+                          print_help()
+                        }
                       }
                     }
                   }

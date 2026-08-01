@@ -5,7 +5,7 @@ ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
 CODING_CORPUS := eval/tasks/coding-v1.json
 
-override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke
+override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke prompt-render-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke
 override CAPABLE_ONLY_CHECK_TARGETS := eval-coding baseline-check
 override SERIAL_CHECK_AGGREGATES := hosted-checks capable-checks ci
 override REQUESTED_SERIAL_CHECK_AGGREGATES := \
@@ -16,7 +16,7 @@ $(error verification aggregates must be requested alone)
 endif
 endif
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke baseline-check gate-topology-check hosted-checks capable-checks align-revision align-build ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke prompt-render-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke baseline-check gate-topology-check hosted-checks capable-checks align-revision align-build ci
 
 check:
 	$(ALIGNC) check-per-unit $(ENTRY)
@@ -45,6 +45,9 @@ eval-coding: build
 
 loop-smoke: build
 	./scripts/run-loop-smoke
+
+prompt-render-smoke: build
+	./scripts/run-prompt-render-smoke
 
 provider-smoke: build
 	./scripts/run-provider-smoke

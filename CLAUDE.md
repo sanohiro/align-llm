@@ -306,6 +306,15 @@ Elapsed time is not a stopping criterion for a useful command, review, test, or 
   measurement, or a recorded blocker. If implementation work goes two hours without a PR-ready
   checkpoint, excluding a single required command that is still making progress, re-scope to
   the next smaller independently correct slice and record why in `HANDOFF.md`.
+- Verification cadence is proportional to the change and is not a per-edit ritual. Documentation-
+  or comment-only changes require only the relevant diff, reference, and formatting checks; they
+  do not require compilation, tests, or `make ci`. During implementation, finish one coherent
+  slice and its tests before running verification rather than rerunning checks after each edit.
+  Run the focused tests once for a narrow slice. Run the full test suite only when the change is
+  cross-cutting or affects a public contract, ownership, persisted format, or build path, and run
+  it at the PR's final verification point. Run `make ci` only for an Align adoption, build/gate
+  change, or final integration that actually requires the complete gate; do not run it for ordinary
+  documentation, narrow implementation, or review-record changes.
 - When a reviewer finds a bug, audit the complete diff for the same root-cause class and fix that
   class in one pass. If the conditionally required final review finds any issue requiring another
   non-trivial change, stop the local patch loop, reopen the closure matrix, identify the missed

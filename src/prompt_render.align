@@ -1,0 +1,64 @@
+module prompt_render
+
+// C6's first executable slice is deliberately pure: it composes the fixed prompt hierarchy
+// without touching providers, files, or activation state. The first three sections are always
+// human/task-owned; learned text and context are the only optional sections.
+
+pub ContextPolicy {
+  include_patch_evaluation: bool,
+  include_failure_memory: bool,
+  include_diagnostics: bool,
+}
+
+pub ContextSources {
+  patch_evaluation: str,
+  failure_memory: str,
+  diagnostic_stdout: str,
+  diagnostic_stderr: str,
+}
+
+pub PromptRender { text: string }
+
+pub fn render(
+  base: str,
+  repo: str,
+  task: str,
+  learned: str,
+  sources: ContextSources,
+  policy: ContextPolicy,
+) -> PromptRender {
+  mut b := builder()
+  b.write(base)
+  b.write("\n\n--- repo prompt ---\n")
+  b.write(repo)
+  b.write("\n\n--- task prompt ---\n")
+  b.write(task)
+  b.write("\n\n--- learned prompt append ---\n")
+  if learned.len() == 0 {
+    b.write("(none)")
+  } else {
+    b.write(learned)
+  }
+  b.write("\n\n--- patch evaluation context ---\n")
+  if policy.include_patch_evaluation {
+    b.write(sources.patch_evaluation)
+  } else {
+    b.write("(omitted)")
+  }
+  b.write("\n\n--- failure memory context ---\n")
+  if policy.include_failure_memory {
+    b.write(sources.failure_memory)
+  } else {
+    b.write("(omitted)")
+  }
+  b.write("\n\n--- current failure diagnostics ---\n")
+  if policy.include_diagnostics {
+    b.write("stdout:\n")
+    b.write(sources.diagnostic_stdout)
+    b.write("\nstderr:\n")
+    b.write(sources.diagnostic_stderr)
+  } else {
+    b.write("(omitted)")
+  }
+  return PromptRender { text: b.to_string() }
+}
