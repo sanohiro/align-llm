@@ -1,0 +1,41 @@
+import core.json
+
+OwnedTask {
+  id: string
+  priority: i64
+  attempts: u16
+  limit: u64
+  enabled: bool
+  argv: array<string>
+  note: Option<string>
+}
+
+fn use_task(input: str) -> Result<(), Error> {
+  task: OwnedTask := json.decode(input)?
+  print(json.encode(task))
+  return Ok(())
+}
+
+fn retain(input: str) -> Result<OwnedTask, Error> {
+  return json.decode(input)
+}
+
+fn pass_raw(result: Result<OwnedTask, Error>) -> Result<OwnedTask, Error> {
+  return result
+}
+
+fn store_raw(input: str) -> Result<OwnedTask, Error> {
+  raw: Result<OwnedTask, Error> := json.decode(input)
+  return raw
+}
+
+fn to_error(value: Error) -> Error {
+  return value
+}
+
+fn use_mapped(input: str) -> Result<OwnedTask, Error> {
+  raw: Result<OwnedTask, Error> := json.decode(input)
+  mapped: Result<OwnedTask, Error> := raw.map_err(to_error)
+  task: OwnedTask := mapped?
+  return Ok(task)
+}
