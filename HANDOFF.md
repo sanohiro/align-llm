@@ -11,7 +11,7 @@ request checks, reviews, and attestations.
   design, fixture, roadmap entry, and initial handoff state; this branch also contains the follow-up
   handoff-state commit below.
 - Active goal: finish and merge the standalone Align Request 9 prerequisite for a closed, directly
-  owned JSON record shape; the content is committed and the focused PR is not yet opened.
+  owned JSON record shape; PR #33 is open and its SHA-bound review/check evidence is pending.
 - Product implementation has not started. Request 8 is merged at `0c712cf459408a29fc697cb392546a98d83c3020`; this branch remains independent and must not consume the proposed owned-JSON API.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 - Current plan of record: `docs/specs/roadmap.md` and `docs/specs/align-llm.md`; a consumer-specific
@@ -51,13 +51,10 @@ consume it; a later consumer must wait for a named Align merge and its real-clie
 
 ## Exact next steps
 
-1. Record this committed content SHA in the handoff-state commit, then inspect the final delta for
-   unrelated changes.
-2. Push and open a focused PR with exact verification and all finding dispositions. Do not consume the
-   proposed API.
-3. Merge only after the SHA-bound review/check evidence is recorded. Do not implement or consume the
+1. Complete the SHA-bound review/check evidence for PR #33 and record every finding disposition there.
+2. Merge PR #33 only after the review/check evidence is complete. Do not implement or consume the
    proposed owned-JSON API before a named Align merge and real-client adoption gate.
-4. After this Request 9 PR merges, stop roadmap implementation at the user's direction; do not resume
+3. After this Request 9 PR merges, stop roadmap implementation at the user's direction; do not resume
    the separate C6 worktree or start another gate in this session.
 
 ## Latest durable verification
