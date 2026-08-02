@@ -329,12 +329,12 @@ After each merge, perform one bounded retrospective before starting the next bra
 Classify the changed surface before choosing verification. Verification is evidence for a coherent
 slice, not an edit-loop ritual.
 
-- A documentation/specification/HANDOFF-only change uses `git diff --check`, Markdown and schema
-  structure checks, link or reference scans, and other targeted static checks that exercise the
-  changed prose. It does not run source tests, `make check`, `make build`, `make ci`, or the full
-  hosted check unless it also changes executable automation, workflow files, the Makefile, a build
-  or toolchain input, a fixture or acceptance corpus, `.align-revision`, or another executable
-  contract boundary.
+- A documentation/specification/HANDOFF-only change uses `git diff --check` and the applicable
+  Markdown, schema, link/reference, or other targeted static checks available for the changed
+  surface; unavailable checks are recorded as `N/A` with a concrete reason. It does not run source
+  tests, `make check`, `make build`, `make ci`, or the full hosted check unless it also changes
+  executable automation, workflow files, the Makefile, a build or toolchain input, a fixture or
+  acceptance corpus, `.align-revision`, or another executable contract boundary.
 - A pure or local implementation slice runs its focused compiler, unit, fixture, or smoke checks
   once after the slice is coherent. Do not run the aggregate suite after each small edit.
 - Run the full aggregate (`make ci` locally, or its applicable hosted equivalent) only at a named

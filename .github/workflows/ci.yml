@@ -43,9 +43,15 @@ jobs:
           else
             while IFS= read -r path; do
               case "$path" in
-                .align-revision|Makefile|build.rs|Cargo.*|.github/workflows/*|src/*|scripts/*|eval/*|tests/*|examples/*|bench/*|*.align|*.py|*.sh)
+                .align-revision|Makefile|build.rs|Cargo.*|.github/workflows/*|src/*|scripts/*|tests/*|examples/*|bench/*|*.align|*.py|*.sh)
                   full=true
                   break
+                  ;;
+                eval/*)
+                  if [[ "$path" != *.md ]]; then
+                    full=true
+                    break
+                  fi
                   ;;
               esac
             done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
@@ -67,6 +73,9 @@ jobs:
           set -euo pipefail
           git diff --check "$BASE_SHA" "$HEAD_SHA" -- .
           while IFS= read -r path; do
+            if [[ ! -f "$path" ]]; then
+              continue
+            fi
             case "$path" in
               *.md)
                 fences="$(awk '/^```/ { count++ } END { print count + 0 }' "$path")"
