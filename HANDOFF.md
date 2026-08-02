@@ -8,8 +8,8 @@ request checks, reviews, and attestations.
 - Branch: `agent/c6c2-verifier-design`; the branch is based on merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
 - Current source checkpoint: merged C6c1 implementation at
-  `1029eec641bce338c5ba7b878101b7a0daab28e9`; the C6c2 design repair is prepared in the working
-  tree after its initial review and is not yet the implementation slice.
+  `1029eec641bce338c5ba7b878101b7a0daab28e9`; the consolidated C6c2 design repair is committed at
+  `c7e4a1f7f25c041e4466f2db13c3246baeec1b21` and the implementation slice has not started.
 - Active goal: design, independently review, and merge the pure C6c2 evaluation-document verifier
   before opening its implementation slice. C6c1 implementation, review repair, final verification,
   and merge are complete.
@@ -27,9 +27,8 @@ request checks, reviews, and attestations.
   merge the design before implementation.
 - Not started: C6c2 implementation, its focused smoke/topology registration, and its implementation
   pull request.
-- Intentional uncommitted file until the consolidated repair commit: the C6c2 design plan below.
-  After that commit, the working tree must be clean; no generated binaries, model weights,
-  credentials, or machine-specific paths may be committed.
+- The working tree is clean after the consolidated design repair; no generated binaries, model
+  weights, credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 
@@ -85,8 +84,9 @@ request checks, reviews, and attestations.
   `5338951e77415a21c42fbe030494c55d015f3542`, and finalization
   `bc386d8297d21bc0dc125fe71002f019108ea28e` as ancestors.
 - `make fmt`, `./scripts/check-format`, and `git diff --check`: PASS.
-- C6c2 design repair `git diff --check`: PASS; source tests, `make check`, `make build`, and `make ci`
-  are N/A until the implementation slice exists because this repair changes documentation only.
+- C6c2 design repair commit `c7e4a1f7f25c041e4466f2db13c3246baeec1b21` and `git diff --check`: PASS;
+  source tests, `make check`, `make build`, and `make ci` are N/A until the implementation slice
+  exists because this repair changes documentation only.
 
 ## Constraints and decisions to preserve
 
@@ -100,7 +100,9 @@ request checks, reviews, and attestations.
   producer-input digest table, and requires embedded experiment/parent-activation records beside
   their references. It validates `FIXTURE` as non-gate, preserves strict `IMPROVED` as a valid
   non-gate comparison, enforces status-specific error families, and closes the attestation trace at
-  the first failing invocation.
+  the first failing invocation. A document-only caller cannot supply authenticating evidence from
+  the result file itself; future acceptance must provide the same external trust/evidence inputs or
+  fail closed.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
