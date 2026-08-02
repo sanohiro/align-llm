@@ -5,12 +5,12 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6b-prompt-context-renderer`, current implementation commit
-  `509d229`; based on `main` commit `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
+- Branch: `agent/c6b-prompt-context-renderer`, current repair commit
+  `835fb07`; based on `main` commit `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
 - Active goal: publish and merge the independently testable C6b pure renderer core. The
-  implementation is complete; C0 through C5 are complete.
+  implementation and consolidated review repair are complete; C0 through C5 are complete.
 - This slice implements bounded prompt/context rendering, SHA-256 identity, and failure-memory
   selection. Canonical artifact declarations and persistence remain owned by the blocked C6a1/C6a2
   slices and are not implemented here.
@@ -39,11 +39,11 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push this commit, open one focused PR, and complete one comprehensive review with the hosted
-   check appropriate for the implementation change.
-2. Apply all valid findings in one repair, rerun only affected checks, and merge without a second
-   review unless the repair materially expands behavior or the contract.
-3. After merge, continue with the next eligible pure C6 slice. Do not code against proposed Align
+1. Push the consolidated repair and HANDOFF checkpoint, then obtain fresh hosted check evidence for
+   the new head.
+2. Record the three accepted finding dispositions and complete the one conditional final review
+   required because the repair expands the public `PromptRenderStatus` contract.
+3. Merge after the final review and checks; then continue with the next eligible pure C6 slice. Do not code against proposed Align
    APIs; a blocked artifact slice resumes only after its named Align revision is release-built,
    pinned, and verified through `make ci`.
 
@@ -76,6 +76,9 @@ request checks, reviews, and attestations.
   selection, invalid input, and SHA-256).
 - `scripts/run-prompt-render-smoke`: PASS (C5 legacy renderer remains unchanged).
 - `scripts/check-format` and `git diff --cached --check`: PASS before commit.
+- Repair commit `835fb07`: policy/source caps, schema-version rejection, `INVALID_INPUT`, and
+  focused invalid-input smoke cases; `make check`, `make prompt-model-smoke`, C5 smoke,
+  `scripts/check-format`, and `git diff --check` all passed.
 
 ## Constraints and decisions to preserve
 
