@@ -334,7 +334,7 @@ slice, not an edit-loop ritual.
   surface; unavailable checks are recorded as `N/A` with a concrete reason. It does not run source
   tests, `make check`, `make build`, `make ci`, or the full hosted check unless it also changes
   executable automation, workflow files, the Makefile, a build or toolchain input, a fixture or
-  acceptance corpus, `.align-revision`, or another executable contract boundary.
+  acceptance corpus, `.align-revision`, `.gitattributes`, or another executable contract boundary.
 - A pure or local implementation slice runs its focused compiler, unit, fixture, or smoke checks
   once after the slice is coherent. Do not run the aggregate suite after each small edit.
 - Run the full aggregate (`make ci` locally, or its applicable hosted equivalent) only at a named

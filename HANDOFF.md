@@ -5,13 +5,13 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6-prompt-context-redesign`, based on `origin/main` commit
-  `736cd4cfaff62489e7096f6d696d117d2e57f077` (merged PR #36; PR #34 is also included).
-- Current branch merge commit: `27712de`; C6 repair commit is `6a09347` (`Close C6 design review
-  findings`), and design content is in `80b8f7b` (`Redesign C6 prompt optimizer contract`), on
-  top of `22186b8` (`Record C6 final-review redesign stop`).
-- Active goal: make the C6 design merge-ready, open one focused design PR, merge it, and then
-  start the first eligible implementation slice. C6 product implementation has not started.
+- Branch: `agent/verification-scope-push`, based on `main` commit
+  `0fc204fb2bb47911707b0759e131cc57363063c1`.
+- PR #35 merged the C6 prompt optimizer contract. PR #36 merged the verification-timing and
+  review-convergence governance, including the CI scope guard.
+- Active goal: close the remaining CI scope gap so documentation-only pushes to `main` use static
+  verification instead of automatically running the full suite. No product implementation slice
+  is active.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
   not complete C6.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -35,24 +35,26 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push the merge-dependent Handoff correction and obtain fresh base-tip integration evidence for
-   PR #35; its comprehensive review envelope is already recorded and does not need to be repeated.
-2. Merge PR #35 after its final check passes. The separate verification-timing governance PR #36
-   already merged at `736cd4c`.
-3. Refresh `main`, perform one bounded retrospective, and begin the first eligible C6b
-   implementation slice. Do not code against proposed Align APIs; a blocked slice resumes only
-   after the named Align commit is release-built, pinned, and verified through `make ci`.
+1. Validate the workflow change, open one focused governance PR, and run one comprehensive review.
+2. Apply all valid review findings in one repair, rerun only affected checks, and merge after the
+   workflow change's required hosted check passes.
+3. Refresh `main`, record the post-merge state, and only then consider the first eligible C6b
+   implementation slice. Keep C6b pure and provider-independent; do not code against proposed
+   Align APIs.
 
 ## Latest durable verification
 
 - `git diff --check`: passed after consolidated repair commit `6a09347`.
 - Markdown fenced-block parity: passed (`70` C6-spec fences; `82` request-register fences).
 - Canonical digest vector: passed (`21780af056f4245f2796e186c88064abe911ea287094dd22b4b3b9c8c07c4328`).
-- Independent adversarial review: completed against head `e187f82`; four valid findings were
-  fixed together in `6a09347` (unknown-field canonicalization, credential injection, seed-base
-  provenance, and C6g1 slice prerequisites).
-- Governance PR #36 hosted supported check: PASS (`30725231172`); its workflow now keeps the
-  required check name while routing documentation-only changes to static verification.
+- Independent adversarial review for PR #35: completed against head `e187f82`; four valid findings
+  were fixed together in `6a09347` (unknown-field canonicalization, credential injection,
+  seed-base provenance, and C6g1 slice prerequisites).
+- Governance PR #36 hosted supported check: PASS (`30725231172`); its workflow keeps the required
+  check name while routing documentation-only changes to static verification.
+- PR #35 merged as `0fc204f` after its review and integration gate.
+- Current branch verification: `git diff --check` passed after adding push-diff classification;
+  workflow execution is pending the governance PR.
 - Full `make ci` has intentionally not been rerun for the current documentation-only redesign;
   it is reserved for the applicable implementation/adoption or final integration gate.
 

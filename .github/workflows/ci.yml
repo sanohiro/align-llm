@@ -35,28 +35,47 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           full=false
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            full=true
-          else
-            while IFS= read -r path; do
-              case "$path" in
-                .align-revision|Makefile|build.rs|Cargo.*|.github/workflows/*|src/*|scripts/*|tests/*|examples/*|bench/*|*.align|*.py|*.sh)
-                  full=true
-                  break
-                  ;;
-                eval/*)
-                  if [[ "$path" != *.md ]]; then
+          base_sha="$BASE_SHA"
+          head_sha="$HEAD_SHA"
+          case "$EVENT_NAME" in
+            pull_request)
+              ;;
+            push)
+              base_sha="$PUSH_BEFORE_SHA"
+              head_sha="$PUSH_HEAD_SHA"
+              ;;
+            *)
+              full=true
+              ;;
+          esac
+          if [[ "$full" == "false" ]]; then
+            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+              full=true
+            else
+              while IFS= read -r path; do
+                case "$path" in
+                  .align-revision|.gitattributes|Makefile|build.rs|Cargo.*|.github/workflows/*|src/*|scripts/*|tests/*|examples/*|bench/*|*.align|*.py|*.sh)
                     full=true
                     break
-                  fi
-                  ;;
-              esac
-            done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+                    ;;
+                  eval/*)
+                    if [[ "$path" != *.md ]]; then
+                      full=true
+                      break
+                    fi
+                    ;;
+                esac
+              done < <(git diff --no-renames --name-only "$base_sha" "$head_sha")
+            fi
           fi
           echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "base=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head=$head_sha" >> "$GITHUB_OUTPUT"
           if [[ "$full" == "true" ]]; then
             echo "Verification scope: full supported checks"
           else
@@ -67,8 +86,8 @@ jobs:
         if: steps.scope.outputs.full != 'true'
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ steps.scope.outputs.base }}
+          HEAD_SHA: ${{ steps.scope.outputs.head }}
         run: |
           set -euo pipefail
           git diff --check "$BASE_SHA" "$HEAD_SHA" -- .
