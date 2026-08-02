@@ -17,7 +17,16 @@ from pathlib import Path
 
 actual = [json.loads(line) for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()]
 names = [row["case_name"] for row in actual]
-expected_names = ["baseline", "bounded", "memory", "memory-skip", "invalid-memory"]
+expected_names = [
+    "baseline",
+    "bounded",
+    "memory",
+    "memory-skip",
+    "invalid-memory",
+    "invalid-version",
+    "invalid-policy",
+    "oversized-source",
+]
 if names != expected_names:
     raise SystemExit(f"unexpected smoke cases: {names!r}")
 
@@ -32,9 +41,9 @@ def bounded(value: str, limit: int, marker: str) -> str:
     return raw[: limit - len(suffix)].decode("utf-8", errors="ignore") + marker
 
 
-def event(root: str, task_id: str, final_status: str, repair_result: str, repair_count: int) -> str:
+def event(schema_version: int, root: str, task_id: str, final_status: str, repair_result: str, repair_count: int) -> str:
     value = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "root": root,
         "task_id": task_id,
         "attempted_patch": "p",
@@ -109,9 +118,9 @@ def row(name: str, status: str, text: str) -> dict[str, str]:
     }
 
 
-old = event("old", "task-1", "FAIL", "none", 0)
-new = event("new", "task-1", "PASS", "PASS", 1)
-other = event("other", "other", "FAIL", "none", 0)
+old = event(1, "old", "task-1", "FAIL", "none", 0)
+new = event(1, "new", "task-1", "PASS", "PASS", 1)
+other = event(1, "other", "other", "FAIL", "none", 0)
 memory_lines = [old, other, new]
 memory = select_memory(memory_lines, "task-1", 2, 800)
 memory_skip = select_memory(memory_lines, "task-1", 2, len(old.encode()))
@@ -138,6 +147,9 @@ expected = [
         render("BASE", "REPO", "TASK", "learned", "", memory_skip, "", "", False, True, False, 0, len(old.encode()), 0),
     ),
     {"case_name": "invalid-memory", "status": "INVALID_FAILURE_MEMORY", "text": "", "sha256": ""},
+    {"case_name": "invalid-version", "status": "INVALID_FAILURE_MEMORY", "text": "", "sha256": ""},
+    {"case_name": "invalid-policy", "status": "INVALID_INPUT", "text": "", "sha256": ""},
+    {"case_name": "oversized-source", "status": "INVALID_INPUT", "text": "", "sha256": ""},
 ]
 
 if actual != expected:

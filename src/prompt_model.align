@@ -14,7 +14,7 @@ pub ContextPolicy {
   max_diagnostic_bytes_per_stream: i64,
 }
 
-pub PromptRenderStatus { Valid, InvalidFailureMemory }
+pub PromptRenderStatus { Valid, InvalidFailureMemory, InvalidInput }
 
 pub PromptRender {
   status: PromptRenderStatus,
@@ -83,6 +83,61 @@ fn invalid_memory() -> PromptRender {
   }
 }
 
+fn invalid_input() -> PromptRender {
+  return PromptRender {
+    status: PromptRenderStatus.InvalidInput,
+    text: "".clone(),
+    sha256: "".clone(),
+  }
+}
+
+fn valid_section_limit(enabled: bool, limit: i64, maximum: i64) -> bool {
+  if limit < 0 || limit > maximum {
+    return false
+  }
+  if enabled {
+    return limit > 0
+  }
+  return limit == 0
+}
+
+fn valid_policy(policy: ContextPolicy) -> bool {
+  if !valid_section_limit(policy.include_patch_evaluation, policy.max_patch_evaluation_bytes, 65536) {
+    return false
+  }
+  if !valid_section_limit(policy.include_failure_memory, policy.max_failure_context_bytes, 65536) {
+    return false
+  }
+  if !valid_section_limit(policy.include_diagnostics, policy.max_diagnostic_bytes_per_stream, 65536) {
+    return false
+  }
+  if policy.max_failure_events < 0 || policy.max_failure_events > 64 {
+    return false
+  }
+  if policy.include_failure_memory {
+    return policy.max_failure_events > 0
+  }
+  return policy.max_failure_events == 0
+}
+
+fn valid_sources(
+  base_prompt: str,
+  repo_prompt: str,
+  task_prompt: str,
+  patch_evaluation: str,
+  failure_memory_jsonl: str,
+  diagnostic_stdout: str,
+  diagnostic_stderr: str,
+) -> bool {
+  if base_prompt.len() > 65536 || repo_prompt.len() > 65536 || task_prompt.len() > 65536 {
+    return false
+  }
+  if patch_evaluation.len() > 65536 || diagnostic_stdout.len() > 65536 || diagnostic_stderr.len() > 65536 {
+    return false
+  }
+  return failure_memory_jsonl.len() <= 1048576
+}
+
 pub fn render(
   base_prompt: str,
   repo_prompt: str,
@@ -95,6 +150,18 @@ pub fn render(
   diagnostic_stdout: str,
   diagnostic_stderr: str,
 ) -> PromptRender {
+  if !valid_policy(policy) || !valid_sources(
+    base_prompt,
+    repo_prompt,
+    task_prompt,
+    patch_evaluation,
+    failure_memory_jsonl,
+    diagnostic_stdout,
+    diagnostic_stderr,
+  ) {
+    return invalid_input()
+  }
+
   memory := failure_memory.select_context(
     failure_memory_jsonl,
     task_id,
