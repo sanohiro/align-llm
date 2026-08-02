@@ -219,6 +219,8 @@ identifier, path, command, endpoint, or environment value to make it fit.
 | command executable, one argument, or `cwd` | 4,096 bytes each; no NUL |
 | command argument count | 64 entries including `argv[0]` |
 | complete command vector | 262,144 bytes including one NUL separator per entry |
+| source-verifier child timeout | exactly 60,000,000,000 ns per invocation; not caller- or policy-configurable |
+| scorer reason records | `9 * task_count * sample_count + task_count + 2`; at most 9,282 records for the declared corpus bounds |
 | endpoint or tokenize endpoint | 4,096 bytes; no userinfo or credential query |
 | provider model, endpoint ID, or service revision | 256 bytes |
 | environment variables | 64 entries, 256-byte names, 4,096-byte values, 65,536 total bytes |
@@ -1623,8 +1625,9 @@ only the fixed non-secret locale/Git configuration entries `LANG=C`, `LC_ALL=C`,
 `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`,
 `GIT_OPTIONAL_LOCKS=0`, and `GIT_TERMINAL_PROMPT=0`; its working directory is the declared project
 root for `EVALUATION` and the explicit source-bundle root for `GATE`. The request is capped at
-65,536 bytes, the result and captured child streams at 262,144 bytes, and the timeout uses the
-common bound. The helper uses raw byte filesystem APIs for FILE_SET traversal and streams the
+65,536 bytes, the result and captured child streams at 262,144 bytes, and the timeout is exactly
+60,000,000,000 ns; this fixed timeout is part of the helper contract and cannot be selected by a
+request, policy, environment, or caller. The helper uses raw byte filesystem APIs for FILE_SET traversal and streams the
 manifest under its 8,388,608-byte cap; it does not use Align `fs.read_dir`, ambient `PATH`, or a
 credential-bearing environment. A timeout, over-limit output, malformed result, unavailable Git
 tool, missing safe source, or inability to prove a source yields `UNAVAILABLE`/`UNVERIFIED` for the
@@ -2563,6 +2566,15 @@ Task-aggregate time reasons use that task ID and `sample_index: 0`.
 The three value fields use canonical base-10 integers or the exact labels `NONE`, `PASS`, `FAIL`,
 `POLICY_VIOLATION`, and `ERROR`.
 
+The reason stream has a deterministic capacity bound. For each task/sample pair, the reason pass
+emits at most one record for each of the nine non-`TIME` codes; task-level `TIME` emits at most one
+record per task, and corpus-level `TIME` and `REPAIR_LOOPS` emit at most one record each. Therefore,
+for `T = task_count` and `S = sample_count`, the exact checked maximum is
+`R_max(T, S) = 9 * T * S + T + 2`, with checked arithmetic before allocation. The declared bounds
+`1 <= T <= 64` and `2 <= S <= 16` give `R_max <= 9,282`. A reason count above this value is invalid
+input, not truncation; every producer and consumer uses this same formula and preserves the complete
+ordered stream.
+
 A serious regression is any of:
 
 - a paired parent `PASS` whose candidate is not `PASS`;
@@ -2713,21 +2725,28 @@ When a canonical C6 gate manifest is present, the complete command is
 The Make target passes these explicit command-line values to the gate validator as
 `--source-bundle-root` and `--git-executable-path`; it rejects a missing, empty, relative, unsafe,
 or unreadable value and has no environment or sibling-checkout fallback.
-Before deriving the head, the target requires the actual CI checkout at `$(pwd)` to report an empty
-`git -C "$(pwd)" status --porcelain --untracked-files=all`, `true` from
-`git -C "$(pwd)" rev-parse --is-inside-work-tree`, and `false` from
-`git -C "$(pwd)" rev-parse --is-shallow-repository`. It then derives
-`tested_align_llm_head` from that same checkout with the fixed command
-`git -C "$(pwd)" rev-parse --verify HEAD` and passes that value as
-`--tested-align-llm-head`; it does not accept an environment or user override for this derived
-argument. The validator resolves every applicable relative locator from the manifest beneath the
-explicit root, invokes the content-bound source verifier with the exact helper/runtime contract,
-and requires the source-bundle align-llm checkout's clean, complete-history `HEAD` to equal the
-derived actual CI head. It then runs
-`git merge-base --is-ancestor <evidence.expected_align_llm_commit> <tested_align_llm_head>` in that
-same checkout. A missing commit, shallow/unavailable ancestry, or a non-zero ancestry result fails
-the gate. This binds a separate source bundle to the actual checked head without persisting a
-self-referential head in the manifest. The validator also proves exact pinned Align revision and
+Before deriving the head, the validator validates `C6_GATE_GIT_EXECUTABLE_PATH` as an explicit
+absolute regular executable and checks its bytes against the locator/policy Git digest. The Make
+target does not invoke an ambient `git` to perform these checks. The validator then invokes that
+exact executable path, with `env_clear()` and only `LANG=C`, `LC_ALL=C`, `GIT_CONFIG_NOSYSTEM=1`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_OPTIONAL_LOCKS=0`, and
+`GIT_TERMINAL_PROMPT=0`, for each fixed command in the actual CI checkout at `$(pwd)`:
+`<git> -C <ci-root> status --porcelain --untracked-files=all`,
+`<git> -C <ci-root> rev-parse --is-inside-work-tree`,
+`<git> -C <ci-root> rev-parse --is-shallow-repository`, and
+`<git> -C <ci-root> rev-parse --verify HEAD`. The required results are an empty status, `true`,
+`false`, and one full lowercase commit SHA. The validator derives `tested_align_llm_head` from
+that last command and does not accept an environment or user override for the derived value. It
+constructs the temporary GATE verifier request with that value; it does not expose a caller-supplied
+`--tested-align-llm-head` gate argument. The validator resolves every applicable relative locator
+from the manifest beneath the explicit root, invokes the content-bound source verifier with the
+exact helper/runtime contract, and requires the source-bundle align-llm checkout's clean,
+complete-history `HEAD` to equal the derived actual CI head. It then runs
+`<git> -C <source-bundle-align-llm> merge-base --is-ancestor <evidence.expected_align_llm_commit>
+<tested_align_llm_head>` with the same executable and cleared environment. A missing commit,
+shallow/unavailable ancestry, or a non-zero ancestry result fails the gate. This binds a separate
+source bundle to the actual checked head without persisting a self-referential head in the manifest.
+The validator also proves exact pinned Align revision and
 exact corpus `GIT_COMMIT` or `FILE_SET` identity. For `FILE_SET`, it reads the locator's manifest,
 hashes its exact canonical bytes, verifies every listed regular file beneath the corpus root, and
 requires the manifest digest and membership to equal the evidence's expected source identity. It
@@ -2871,7 +2890,7 @@ and must split again before coding if the estimate no longer holds.
    - validate empty, strict-prefix, terminal-`ERROR`, and complete row sequences without
      aggregation, persistence, JSON, process, provider, or evaluator behavior;
    - estimated review surface below 350 hand-written lines.
-7. **C6c2 — pure decoded evaluation verifier (blocked on C6c1p, C6a1/C6a2, and Requests 7, 8, 10, 12, and 13)**
+7. **C6c2 — pure decoded evaluation verifier (blocked on C6c1p, C6a1/C6a2, Requests 7, 8, 10, 12, and 13, and the named `c6c2-request8-adoption` and `c6c2-request10-adoption` targets)**
    - consume already-decoded, content-validated `PromptEvaluationResult` and
      `PromptEvaluationEvidence` records through the borrowed `verify_result` API;
    - validate embedded experiment/parent records, cross-field identities, independent expected-input
@@ -3036,6 +3055,9 @@ column is zero in that case. `reason_*_value_kind` uses `NONE = 0`, `PASS = 1`, 
 for `NUMBER`. `reason_code` uses the `ScoreReasonCode` order below as zero-based ordinals. Validation
 and the complete reason-count pass happen before any output column is written. An insufficient
 column returns `OUTPUT_TOO_SMALL` with the required count and leaves every output column untouched.
+The checked pass rejects a reason count above `R_max(task_limits.len(), sample_count)`; callers may
+allocate each reason column to that exact declared maximum, and no larger or unbounded reason buffer
+is part of the contract.
 This explicit scalar-column topology keeps C6c1 independent of Request 8/10 runtime-sized
 record-array construction and of the pinned compiler's unsupported struct-element output stores.
 
@@ -3142,7 +3164,9 @@ The deterministic validation order is:
    candidate/parent), and every row state follows the §5.2 state machine.
 5. A structurally valid `ERROR` row returns `EVALUATION_ERROR` at its row index without scoring or
    writing output. A malformed combination returns `INVALID_INPUT` at its first row index.
-6. The pure analysis pass computes the complete reason count and checks the reason output capacity.
+6. The pure analysis pass computes the complete reason count with
+   `R_max = 9 * task_count * sample_count + task_count + 2` using checked arithmetic, rejects an
+   overflow or count above `R_max`, and checks the reason output capacity.
 7. Only then are task output columns and reason output columns written in
    corpus/task/sample/code order, followed by the corpus aggregate in the returned value.
 
@@ -3184,7 +3208,7 @@ The C6c1 closure matrix is:
 | construction and successful aggregation | `src/prompt_score.align` | `prompt-score-smoke` all-pass and mixed-pass fixtures; exact task/corpus counts, medians, and ppm |
 | row state validation | `src/prompt_score.align` | `prompt-score-smoke` PASS/FAIL/POLICY/ERROR state matrix and every stage combination |
 | malformed/order/bounds input | `src/prompt_score.align` | invalid first-row index, duplicate/missing/order, limit, time, count, and overflow fixtures |
-| reason completeness/order | `src/prompt_score.align` | multi-reason pair plus task/corpus TIME and REPAIR_LOOPS output in canonical code order |
+| reason completeness/order/capacity | `src/prompt_score.align` | multi-reason pair plus task/corpus TIME and REPAIR_LOOPS output in canonical code order; exact `R_max` bound, checked arithmetic, and `OUTPUT_TOO_SMALL` sentinel fixtures |
 | output ownership and early exit | `src/prompt_score.align` | undersized scalar-column output and invalid-input fixtures prove every caller buffer remains sentinel-filled |
 | incomplete-prefix validation | `src/prompt_score.align` in C6c1p | empty, strict-prefix, terminal-`ERROR`, out-of-order, post-error, complete-prefix, invalid task-limit plan, invalid-plan sentinel, and checked-count/overflow fixtures through `validate_prefix` |
 | cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
@@ -3238,8 +3262,9 @@ whether the surrounding persisted result is complete, incomplete, or malformed.
 C6c2 is the pure decoded evaluation verifier. It is not a JSON reader or a file-backed document
 validator. C6a1/C6a2 must first provide the declared records and validate their canonical content
 digests at the shipped Align revision, and C6c1p must first provide the merged public prefix validator.
-The C6c2 implementation is therefore blocked on C6c1p, those codec slices, and their Request 7,
-Request 8, Request 10, Request 12, and Request 13 adoption gates. No C6c2 fixture may be an
+The C6c2 implementation is therefore blocked on C6c1p, those codec slices, Requests 7, 8, 10, 12,
+and 13, and the named C6c2 enabling adoption targets `c6c2-request8-adoption` and
+`c6c2-request10-adoption`. No C6c2 fixture may be an
 escape-free JSON document; fixtures construct the declared values directly after the codec gate.
 
 The exact public surface is:
@@ -3261,10 +3286,12 @@ shipped, it may construct one bounded temporary `array<ScoreRow>` and verifier-o
 primitive output columns passed to C6c1's `aggregate` call. For an incomplete result it passes the
 same borrowed scratch rows to C6c1p's `validate_prefix` and does not allocate aggregate/reason
 columns. The row scratch is bounded by the declared maximum of 2,048 retained task/sample/variant
-rows; task columns are bounded by 64 tasks, and reason columns use the checked C6c1 reason-count
-pass and its declared output bound. Those scratch values are released before return;
-capacity/allocation failure returns `Err(Error.Invalid)`, and no fixed-size workaround or duplicated
-scorer is permitted. No scratch value becomes persisted state.
+rows; task columns are bounded by 64 tasks, and every primitive reason column is allocated with
+capacity `R_max = 9 * task_count * sample_count + task_count + 2`, at most 9,282, using the same
+checked arithmetic as C6c1. If that arithmetic or any scratch-column allocation fails, C6c2 returns
+`Err(Error.Invalid)` before invoking C6c1 or writing output; it never truncates reasons or retries
+with an unbounded or fixed-size substitute. Those scratch values are released before return, and
+no scratch value becomes persisted state.
 
 The verifier's deterministic validation order is:
 
@@ -3356,7 +3383,7 @@ The C6c2 closure matrix is:
 | trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; policy/helper/Git identity, fixed argv/env/cap/timeout, raw-byte FILE_SET traversal, derived gate-head ancestry, expected-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
 | row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
 | malformed input and error precedence | `src/prompt_score.align` | status-specific error families including `ADAPTER_FAILED` and `RESULT_TOO_LARGE`, invalid option/discriminator combinations, first failing validation, compact counter/digest/empty-shape checks, and no side effects |
-| allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus primitive C6c1 output columns only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, and compiler ownership/drop checks |
+| allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; arithmetic/allocation failure is invalid before scorer call; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, and compiler ownership/drop checks |
 | JSON/document binding | C6a1/C6a2, deferred | N/A for C6c2; escaped-string round trips, canonical bytes, and content-digest recomputation require Request 7/12/13 acceptance before this verifier is called |
 
 The C6c2 metric is verifier correctness: every declared state, identity, evidence combination, and
