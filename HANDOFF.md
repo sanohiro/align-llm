@@ -5,17 +5,21 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6b-prompt-context-renderer`, current repair commit
-  `835fb07`; based on `main` commit `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
+- Branch: `agent/c6b-prompt-context-renderer`, PR checkpoint
+  `9fd8e0d`; based on `main` commit `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
-- Active goal: publish and merge the independently testable C6b pure renderer core. The
-  implementation and consolidated review repair are complete; C0 through C5 are complete.
+- Active goal: publish and merge the independently testable C6b pure renderer core. The initial
+  implementation and consolidated repair are complete, but PR #38 is not merge-ready because
+  failure-memory adoption is blocked by Align Request 7; C0 through C5 are complete.
 - This slice implements bounded prompt/context rendering, SHA-256 identity, and failure-memory
   selection. Canonical artifact declarations and persistence remain owned by the blocked C6a1/C6a2
   slices and are not implemented here.
 - Working tree was clean after the implementation commit; there are no intentional uncommitted
   files.
+- Request 7 is still `PROPOSED` and blocks escaped-string declared-record decoding. The pinned
+  `json.decode` returns `Err` for valid escaped `MemoryEvent` strings; do not use `json.doc`, a
+  hand-written compatibility parser, or another private wire format to bypass the request.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
   not complete C6.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -39,13 +43,13 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push the consolidated repair and HANDOFF checkpoint, then obtain fresh hosted check evidence for
-   the new head.
-2. Record the three accepted finding dispositions and complete the one conditional final review
-   required because the repair expands the public `PromptRenderStatus` contract.
-3. Merge after the final review and checks; then continue with the next eligible pure C6 slice. Do not code against proposed Align
-   APIs; a blocked artifact slice resumes only after its named Align revision is release-built,
-   pinned, and verified through `make ci`.
+1. Do not merge PR #38 at its current scope. Re-scope the renderer core to exclude failure-memory
+   adoption, or wait for Request 7 to reach `ALIGN_MERGED`; do not start another repair/re-review
+   loop on the terminally reviewed PR.
+2. Before any re-scoped implementation review, fix the learned-text bound, register the prompt-model
+   smoke in the authoritative check aggregate/topology, and replace Japanese fixture literals.
+3. After Request 7 is merged, rebuild the pinned Align release, update `.align-revision`, and pass
+   the original memory acceptance through `make ci` before resuming that slice.
 
 ## Bounded post-merge retrospective
 
@@ -79,6 +83,10 @@ request checks, reviews, and attestations.
 - Repair commit `835fb07`: policy/source caps, schema-version rejection, `INVALID_INPUT`, and
   focused invalid-input smoke cases; `make check`, `make prompt-model-smoke`, C5 smoke,
   `scripts/check-format`, and `git diff --check` all passed.
+- Hosted check for repair head `9fd8e0d`: PASS (`Pinned Align compiler and supported checks`,
+  1m27s).
+- Conditional final review for head `9fd8e0d`: changes requested; four findings recorded in PR #38,
+  with Request 7 as the blocking issue. This is the terminal review for the current PR.
 
 ## Constraints and decisions to preserve
 
