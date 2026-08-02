@@ -6,11 +6,10 @@ request checks, reviews, and attestations.
 ## Current state
 
 - Branch: `agent/c6-prompt-context-redesign`, based on `origin/main` commit
-  `99837e29ec303574956614a1d26439def23e9e8d` (merged PR #34).
-- Current repair commit: `6a09347` (`Close C6 design review findings`); design content is in
-  `80b8f7b` (`Redesign C6 prompt optimizer contract`), on top of `22186b8` (`Record C6
-  final-review redesign stop`). This handoff update is the next commit; the worktree is clean
-  after it.
+  `736cd4cfaff62489e7096f6d696d117d2e57f077` (merged PR #36; PR #34 is also included).
+- Current branch merge commit: `27712de`; C6 repair commit is `6a09347` (`Close C6 design review
+  findings`), and design content is in `80b8f7b` (`Redesign C6 prompt optimizer contract`), on
+  top of `22186b8` (`Record C6 final-review redesign stop`).
 - Active goal: make the C6 design merge-ready, open one focused design PR, merge it, and then
   start the first eligible implementation slice. C6 product implementation has not started.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
@@ -36,16 +35,13 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Publish the focused C6 design PR with the exact structural verification evidence below.
-2. Record the one comprehensive review envelope for head `e187f82`, base/merge-base
-   `99837e29`, with four findings and consolidated repair commit `6a09347`; do not start another
-   review for these ordinary finding fixes.
-3. Create the separate governance slice that records verification timing and review-convergence
-   rules in `CLAUDE.md`; do not mix it into the C6 design PR.
-4. After the required PRs merge, refresh `main`, perform one bounded retrospective, and begin the
-   first eligible implementation slice. Do not code against proposed Align APIs; a blocked slice
-   resumes only after the named Align commit is release-built, pinned, and verified through
-   `make ci`.
+1. Push the merge-dependent Handoff correction and obtain fresh base-tip integration evidence for
+   PR #35; its comprehensive review envelope is already recorded and does not need to be repeated.
+2. Merge PR #35 after its final check passes. The separate verification-timing governance PR #36
+   already merged at `736cd4c`.
+3. Refresh `main`, perform one bounded retrospective, and begin the first eligible C6b
+   implementation slice. Do not code against proposed Align APIs; a blocked slice resumes only
+   after the named Align commit is release-built, pinned, and verified through `make ci`.
 
 ## Latest durable verification
 
@@ -55,6 +51,8 @@ request checks, reviews, and attestations.
 - Independent adversarial review: completed against head `e187f82`; four valid findings were
   fixed together in `6a09347` (unknown-field canonicalization, credential injection, seed-base
   provenance, and C6g1 slice prerequisites).
+- Governance PR #36 hosted supported check: PASS (`30725231172`); its workflow now keeps the
+  required check name while routing documentation-only changes to static verification.
 - Full `make ci` has intentionally not been rerun for the current documentation-only redesign;
   it is reserved for the applicable implementation/adoption or final integration gate.
 
@@ -71,7 +69,8 @@ request checks, reviews, and attestations.
   slice; full `make ci` runs only at the explicitly applicable final/integration gate.
 - Review is one comprehensive pass. Consolidate valid findings, rerun only affected verification,
   and require another review only for a material behavior/design/contract expansion.
-- The explicit verification-timing rule still needs to be recorded in `CLAUDE.md` as a separate
-  governance slice; do not mix that change into the C6 design PR.
+- The explicit verification-timing and review-convergence rule is recorded in `CLAUDE.md` and
+  enforced by the merged CI scope guard from PR #36; keep future governance and product slices
+  separate.
 - Source, documentation, diagnostics, commits, pull requests, reviews, and releases remain in
   English.
