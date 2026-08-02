@@ -7,8 +7,8 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6c2-verifier-rescope`, based on merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf` (C6c1 PR #41 merge commit).
-- Current source checkpoint: the working re-scope design edits are based on the same
-  `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`; they are not yet committed.
+- Current source checkpoint: `a27c3de` (`Rescope C6c2 as decoded evaluation verifier`), based on
+  merged `main` commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
 - Active goal: finish, independently review, and merge the re-scoped C6c2 pure decoded evaluation
   verifier design. Implementation is not started and must wait for the reviewed design plus the
   C6a1/C6a2 decoded-record and Align adoption prerequisites.
