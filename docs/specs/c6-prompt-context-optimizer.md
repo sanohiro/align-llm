@@ -268,7 +268,7 @@ completion by adding only the prose or only a fixture that does not exercise the
 | Proposal credential lifecycle | one startup read, allowlisted child handoff, pre-truncation redaction, drop before result | C6e; `prompt-credential-lifetime-smoke` |
 | Derived identifiers | bounded ASCII components, exact derived forms, reject rather than truncate/hash | C6a2; `prompt-derived-id-bounds-smoke` |
 | TREE root metadata | root mode/path is the first identity-bearing record, including an empty root | C6f1; `prompt-tree-root-metadata-smoke` |
-| Corpus revision | tagged `GIT_COMMIT` or `FILE_SET` source identity with no ambient branch/time | C6a2; `prompt-corpus-revision-smoke` |
+| Corpus revision | tagged `GIT_COMMIT` or canonical `FILE_SET` manifest identity with no ambient branch/time | C6a2; `prompt-corpus-revision-smoke` and `prompt-file-set-manifest-smoke` |
 | Command and endpoint inputs | explicit argv/path/vector/endpoint bounds and credential-free endpoint syntax | C6a2; `prompt-command-endpoint-bounds-smoke` |
 
 #### Paths, ancestry, compatibility, and integration
@@ -282,17 +282,18 @@ does not promise race-free protection against an out-of-band mutator; the docume
 precondition and preflight failure are part of the contract. Regression tests cover root,
 component, output, dangling-link, physical-escape, non-regular, cleanup, and early-exit cases.
 
-The three explicit verifier source roots are a read-only exception to the project-root-descendant
-rule: `verifier_align_llm_repository_path`, `verifier_align_repository_path`, and
-`verifier_corpus_source_path` may name external checkouts or file-set roots, including a sibling
-checkout supplied by its absolute path. They must still have bounded NUL-free path syntax, no
-`.`/`..` components, no symlink or dangling-link
-component in every existing ancestor/root component, and a real-directory root when present; a
-special file, physical escape through a link, or unsafe component is `INVALID_INPUT`. A missing or
-unreadable but syntactically safe root is `UNVERIFIED`, not a reason to write or create it. These
-paths are opened only by the trusted source boundary, never written or passed to an adapter, and
-are not included in the project-root containment check. The source-boundary owner records the
-resolved physical identity or the unavailable observation before releasing the path owner.
+The explicit verifier source roots are a read-only exception to the project-root-descendant rule:
+`verifier_align_llm_repository_path`, `verifier_align_repository_path`, and
+`verifier_corpus_source_path` may name external checkouts or a file-set root, including a sibling
+checkout supplied by its absolute path. A `FILE_SET` request also names the separate
+`verifier_corpus_file_set_manifest_path` sidecar. All four paths must have bounded NUL-free path
+syntax, no `.`/`..` component, no symlink or dangling-link component in every existing
+ancestor/root component, and the expected directory or regular-file type. A special file,
+physical escape through a link, or unsafe component is `INVALID_INPUT`. A missing or unreadable but
+syntactically safe source root or manifest is `UNVERIFIED`, not a reason to write or create it.
+These paths are opened only by the trusted source boundary, never written or passed to an adapter,
+and are not included in the project-root containment check. The source-boundary owner records the
+resolved physical identity or the unavailable observation before releasing each path owner.
 
 C6's minimum compatibility environment is the repository CI floor: Ubuntu 24.04 x86_64, Git
 2.45.0 where ancestry is inspected, Rust 1.96.0, LLVM 22, CPython 3.12, GNU Make 4.3, and the
@@ -300,17 +301,20 @@ exact pinned Align release named by `.align-revision`. Newer environments are su
 evidence. The C6 coding-v1 gate requires a capable local or self-hosted environment but must run
 the same minimum-floor checks.
 
-Every persisted source identity claim records an exact clean commit. `align_llm_commit` and
+Every persisted source identity claim records an exact clean commit or canonical FILE_SET manifest.
+`align_llm_commit` and
 `align_revision` in `EnvironmentIdentityCore` are the explicitly requested claims copied from the
 validated evaluation input; they are not observations inferred from a source file or replaced by a
 different checkout revision. A `VERIFIED` reachability state proves the corresponding claim from a
 clean checkout; `UNVERIFIED` keeps the exact claim while recording that this evaluation did not prove
 it. The external Align and corpus revisions are exact full SHA claims. The verifier source boundary
 uses exact-HEAD equality rather than an ancestor-with-unchanged-scope rule, so no undefined source
-scope is part of its proof. Normal merge is the permitted integration method for other
-ancestry-bearing artifacts; squash and rebase are not permitted when they would discard the recorded
-commit. CI records head, tested base tip, merge base, and tested
-tree/integration identity, and verifies the required reachability before accepting an artifact.
+scope is part of its proof. The checked-in gate is the one explicit exception: its source bundle
+records the exact tested align-llm `HEAD`, and the evaluated commit in the evidence must be an
+ancestor of that tested head. Normal merge is the permitted integration method for this and other
+ancestry-bearing artifacts; squash and rebase are not permitted when they would discard the
+recorded commit. CI records head, tested base tip, merge base, and tested tree/integration identity,
+and verifies the required reachability before accepting an artifact.
 Verifier evidence records separate reachability results for the align-llm source repository, the
 external Align repository, and the corpus source; a gate-eligible result requires all three to be
 `VERIFIED`. The pure C6c2 verifier consumes those attestations and never walks a repository itself.
@@ -634,9 +638,36 @@ CorpusRevision:
 For `GIT_COMMIT`, `source_repository_id` is a non-empty repository identity and
 `source_sha256` is a lowercase full commit SHA whose clean checkout contains every corpus task.
 For `FILE_SET`, `source_repository_id` is empty and `source_sha256` is the lowercase SHA-256 of
-the canonical corpus file-set manifest, including each relative path, mode, and file digest. The
-two forms are mutually exclusive and neither may use a shortened SHA, a branch, a timestamp, or an
-ambient worktree. The record's own canonical `content_sha256` is not part of the source preimage.
+the canonical corpus file-set manifest, including the exact membership, relative path bytes, mode,
+and file digest. The two forms are mutually exclusive and neither may use a shortened SHA, a branch,
+a timestamp, or an ambient worktree. The record's own canonical `content_sha256` is not part of the
+source preimage.
+
+The `FILE_SET` manifest is a separate regular file and is not itself a member of the set. Its exact
+canonical bytes are:
+
+```text
+ALIGN-LLM-CORPUS-FILE-SET-V1 LF
+<entry_count in canonical unsigned decimal> LF
+<six octal mode> SP <path byte count in canonical unsigned decimal> SP
+<exact relative path bytes> NUL F SP <lowercase file SHA-256> LF
+```
+
+There is exactly one entry line for each of the declared `entry_count` entries and then end of file;
+there are no extra bytes, blank lines, or alternate numeric spellings. `entry_count` is from 1
+through 1,048,576, the complete manifest is at most 8,388,608 bytes, and each path is at most
+4,096 bytes; all totals use checked arithmetic. Entries are sorted by the complete raw
+relative-path byte sequence and are unique. A path is non-empty, uses `/` separators, has no NUL,
+empty, `.` or `..` component, and names a regular file physically below the FILE_SET root; its
+bytes may be non-UTF-8 but its length is measured before any text conversion. The mode is the
+six-digit octal regular-file mode, the digest is over the exact file bytes, and the manifest digest
+is SHA-256 over the complete bytes above. The manifest path itself is excluded even when it is
+physically below the source bundle. A manifest entry whose path is the manifest itself is invalid;
+when the manifest is physically below the source root, it remains metadata and is excluded from the
+set. A validator rejects a path that escapes the source root,
+duplicates an entry, names a symlink or special file, disagrees on mode or digest, or leaves any
+entry unverified. A gate corpus must include every declared corpus task file in this manifest; a
+file not listed is outside the FILE_SET identity and cannot be consumed by a gate task.
 
 `repo_profile_revision` names the immutable repository-rule/profile revision being optimized;
 individual evaluation tasks bind their own source revisions. `corpus_revision` is the complete
@@ -1137,7 +1168,9 @@ evaluator validates and incorporates it. Both executables remain trusted,
 content-bound task inputs, matching the current baseline trust model. Acceptance validates the
 evaluation's complete persisted pre/post identities and embedded content digests. It does not
 require historical task assets to remain at their old paths. The checked-in gate validator
-separately rehashes the current canonical corpus assets so stale evidence cannot satisfy `make ci`.
+separately rehashes the source-bundle corpus root through its exact `GIT_COMMIT` or canonical
+`FILE_SET` manifest, and checks the tested align-llm head ancestry, so stale evidence cannot satisfy
+`make ci`.
 
 The evaluator also records the canonical `TaskAdapterRequest.content_sha256` in
 `EvaluationInputIdentity.adapter_request_sha256`. This keeps the exact adapter request available to
@@ -1413,6 +1446,7 @@ verifier_align_repository_path
 verifier_align_revision
 verifier_corpus_source_path
 verifier_corpus_source_kind: GIT_COMMIT | FILE_SET
+verifier_corpus_file_set_manifest_path: Option<str>
 verifier_corpus_source_repository_id
 verifier_corpus_source_sha256
 evaluation_evidence_path
@@ -1432,21 +1466,24 @@ The `verifier_*` fields are explicit source-boundary inputs, not ambient configu
 defaults and are not inherited from `project_root`, the task manifest, the process environment, or
 the evidence artifact. The first path names the align-llm checkout and the second names the
 external Align checkout; the corpus path names the repository for `GIT_COMMIT` or the canonical
-file-set root for `FILE_SET`. `verifier_align_revision` must equal the scope's `align_revision`,
-and the corpus kind, repository ID, and source digest must equal the complete scope
-`CorpusRevision`; `verifier_align_llm_commit` names the expected align-llm source commit to be
-checked and later equals the result environment's `align_llm_commit` claim. The source-boundary
-root fields are absolute paths after caller-side canonical spelling; they do not use the ordinary
-project-relative input-path rule. The source-boundary inputs are consumed in this
-deterministic order: path syntax and physical containment, source-kind/repository-label agreement,
-full expected identity shape, then checkout/file-set observation. A missing, duplicated, or
-malformed field is `INVALID_INPUT` before any snapshot or adapter call.
+file-set root for `FILE_SET`. `verifier_corpus_file_set_manifest_path` is `Some` exactly for
+`FILE_SET` and names its separate canonical manifest; it is `None` for `GIT_COMMIT`.
+`verifier_align_revision` must equal the scope's `align_revision`, and the corpus kind, repository
+ID, and source digest must equal the complete scope `CorpusRevision`;
+`verifier_align_llm_commit` names the expected align-llm source commit to be checked and later equals
+the result environment's `align_llm_commit` claim. The source-boundary root and manifest fields are
+absolute paths after caller-side canonical spelling; they do not use the ordinary project-relative
+input-path rule. The source-boundary inputs are consumed in this deterministic order: path syntax
+and physical containment, source-kind/manifest/repository-label agreement, full expected identity
+shape, then checkout/file-set observation. A missing, duplicated, or malformed field is
+`INVALID_INPUT` before any snapshot or adapter call.
 
 `src/prompt_evaluate.align` owns the source-boundary call and constructs `PromptVerifierTrust`; it
-does not accept caller-supplied reachability booleans. The boundary receives the three explicit
-paths and expected identities, returns one observation for each named source, and persists the
-resulting `VERIFIED`/`UNVERIFIED` states and the unchanged expected identities in the evidence
-sidecar. The evaluator copies those expected identities into `EnvironmentIdentityCore`; it never
+does not accept caller-supplied reachability booleans. The boundary receives the three source roots,
+the conditional FILE_SET manifest path, and expected identities, returns one observation for each
+named source, and persists the resulting `VERIFIED`/`UNVERIFIED` states and the unchanged expected
+identities in the evidence sidecar. The evaluator copies those expected identities into
+`EnvironmentIdentityCore`; it never
 uses an observed checkout revision as the core field:
 
 1. invalid or physically unsafe paths, malformed identities, or an expected identity that disagrees
@@ -1462,9 +1499,10 @@ The align-llm observation requires a clean checkout whose `HEAD` exactly equals
 `verifier_align_llm_commit`; no ancestor commit or source-scope exception is permitted. The Align
 observation requires the clean checkout revision from `verifier_align_repository_path` to equal the
 project `.align-revision` and `verifier_align_revision`; and the corpus observation checks the named
-`GIT_COMMIT` or canonical `FILE_SET` identity under `verifier_corpus_source_path`. A source path that
-is readable but cannot prove the exact clean identity is not an input error: its state is `UNVERIFIED`; a syntactically valid but
-absent or unreadable root has the same state. The evaluator never falls
+`GIT_COMMIT` or canonical `FILE_SET` manifest and its physically verified entries under
+`verifier_corpus_source_path`. A source path or manifest that is readable but cannot prove the exact
+clean identity is not an input error: its state is `UNVERIFIED`; a syntactically valid but absent or
+unreadable root or manifest has the same state. The evaluator never falls
 back to the task repository's `repo_path`, an ambient sibling checkout, or an environment variable.
 These three verifier roots are read-only source inputs and may be outside `project_root`; they use
 the same physical-resolution, symlink, special-file, and single-writer checks but are not required
@@ -1631,7 +1669,11 @@ The evaluator reads at most 262,144 bytes plus one probe byte from each measurem
 `std.fs.open`; a larger result is `ERROR` without whole-file allocation. It removes owned
 measurement, snapshot, variant, and rendered-prompt files after incorporating them, then requires
 the workspace to be empty. Snapshot files use a 1,048,576-byte bound plus one probe byte. Cleanup
-failure is `ERROR`.
+failure is `ERROR` with `CLEANUP_FAILED`. If the measurement and its complete before/after
+attestation were already valid, evaluator-owned cleanup failure does not discard that non-`ERROR`
+measurement row: the row is retained as the final valid prefix, no later invocation starts, and the
+terminal cleanup event is represented by the result status/error rather than by a synthetic scorer
+row. Cleanup failure before a valid measurement or attestation contributes no row.
 The evaluator creates each `PromptVariant` file and `RenderedPromptArtifact` itself, passes only
 their paths to the adapter, and verifies that the returned digest names those exact rendered bytes.
 Those per-run files, the exact adapter request file, and every other evaluator-created adapter
@@ -1921,9 +1963,11 @@ only if one valid measurement established it before the failure.
 Retention is the longest execution-order prefix whose measurement and before/after attestation both
 validate; a valid `ERROR` measurement with an unchanged complete attestation is the final retained
 row, while a failed pre/post check contributes no row and is represented only by its terminal
-attestation. The prefix validator returns `TERMINAL_ERROR` when that final retained row has status
-`ERROR`, and `VALID_PREFIX` when the terminal failure contributes no row. No invocation or
-attestation occurs after the first error. `RESULT_TOO_LARGE` is the
+attestation. A cleanup failure after a valid non-`ERROR` measurement and complete attestation also
+retains that row and is represented by the terminal `CLEANUP_FAILED` result error. The prefix
+validator returns `TERMINAL_ERROR` when that final retained row has status `ERROR`, and
+`VALID_PREFIX` when the terminal failure contributes no row or is this post-row cleanup failure.
+No invocation or attestation occurs after the first error. `RESULT_TOO_LARGE` is the
 sole exception and emits empty rows and aggregates while retaining no scoreable prefix. All complete
 comparison statuses require every
 reference and its matching `experiment_artifact`/`parent_activation_artifact`, embedded scope,
@@ -2425,18 +2469,26 @@ PromptGateSourceLocator:
   artifact_kind: PROMPT_GATE_SOURCE_LOCATOR
   source_bundle_id
   align_llm_source_relative_path
+  align_llm_tested_head
   align_source_relative_path
   corpus_source_relative_path
+  corpus_file_set_manifest_relative_path: Option<str>
   content_sha256
 ```
 
-The three locator paths are non-empty, source-bundle-relative UTF-8 paths with the ordinary path
-bound, no NUL, empty, `.`, or `..` component, and no absolute spelling. They are content identity
-for the locator only; they do not contain a machine-specific absolute path. The validator receives
-the source bundle root as an explicit build input and resolves each locator beneath it after the
-same physical symlink, dangling-link, special-file, and real-directory checks as the evaluation
-source boundary. The source bundle root is not read from the environment or inferred from an
-evidence path.
+`source_bundle_id` is a non-empty bounded ID for the CI-created bundle, and
+`align_llm_tested_head` is the exact lowercase 40-hex full commit SHA expected at the align-llm
+source root. The
+three required locator paths are non-empty, source-bundle-relative UTF-8 paths with the ordinary
+path bound, no NUL, empty, `.`, or `..` component, and no absolute spelling.
+`corpus_file_set_manifest_relative_path` is `Some` exactly when the evidence trust record says
+`FILE_SET`, and names the separate regular-file manifest; it is `None` for `GIT_COMMIT`. All
+locator paths are content identity for the locator only; they do not contain a machine-specific
+absolute path. The validator receives the source bundle root as an explicit build input and
+resolves every applicable locator beneath it after the same physical symlink, dangling-link,
+special-file, and expected-type checks as the evaluation source boundary: the align-llm, Align, and
+corpus paths are real directories, and the conditional FILE_SET manifest is a regular file. The
+source bundle root is not read from the environment or inferred from an evidence path.
 
 `make ci` does not call a credentialed external provider. It validates the checked-in gate result's
 schema, content identities, named source commit, task coverage, aggregates, acceptance decision,
@@ -2463,13 +2515,21 @@ When a canonical C6 gate manifest is present, the complete command is
 `make ci C6_GATE_SOURCE_BUNDLE_ROOT=/absolute/source-bundle-root`. The Make target passes that
 explicit command-line value to the gate validator as `--source-bundle-root`; it rejects a missing,
 empty, relative, unsafe, or unreadable value and has no environment or sibling-checkout fallback.
-The validator resolves the three relative locators from the manifest beneath that root, independently
-proves exact clean align-llm `HEAD`, exact pinned Align revision, and exact corpus `GIT_COMMIT` or
-`FILE_SET` identity, and compares those observations with the evidence's expected identities. It
-does not trust persisted reachability booleans and never uses the historical absolute paths from the
-evaluation request. The required CI environment creates or checks out the source bundle, supplies
-its explicit root to this command, and records the command and source-bundle content identities as
-check evidence; the root itself is not persisted in the gate artifact.
+The validator resolves every applicable relative locator from the manifest beneath that root,
+independently checks that the align-llm source is a clean, complete-history checkout whose actual
+`HEAD` equals `source_locator.align_llm_tested_head`, and runs
+`git merge-base --is-ancestor <evidence.expected_align_llm_commit>
+<source_locator.align_llm_tested_head>`. A missing commit, shallow/unavailable ancestry, or a
+non-zero ancestry result fails the gate. This is the explicit gate rule: the source root is at the
+tested head, while the evidence commit is the historical evaluated commit that must be preserved as
+an ancestor. The validator also proves exact pinned Align revision and exact corpus `GIT_COMMIT` or
+`FILE_SET` identity. For `FILE_SET`, it reads the locator's manifest, hashes its exact canonical
+bytes, verifies every listed regular file beneath the corpus root, and requires the manifest digest
+and membership to equal the evidence's expected source identity. It does not trust persisted
+reachability booleans and never uses the historical absolute paths from the evaluation request. The
+required CI environment creates or checks out the source bundle, supplies its explicit root to this
+command, and records the command, the tested head, and source-bundle content identities as check
+evidence; the root itself is not persisted in the gate artifact.
 
 ## 10. Contract ledger and acceptance matrix
 
@@ -2479,19 +2539,20 @@ explicitly reviewed deferral.
 | Contract | Intended owner | Planned acceptance evidence |
 | --- | --- | --- |
 | Four CLI operations and exact arguments | `src/main.align` | CLI smoke covers valid and invalid arity for every operation |
-| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root>` passes the command-line value as `--source-bundle-root`, rejects missing/relative/unsafe roots before source reads, and revalidates every manifest locator and exact source identity |
+| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root>` passes the command-line value as `--source-bundle-root`, rejects missing/relative/unsafe roots before source reads, checks the exact tested align-llm head and evaluated-commit ancestry, and revalidates every locator and exact source identity |
 | Declared records, bounds, canonical digest | `src/prompt_model.align` | round-trip, tamper, unknown-version, and oversize fixtures |
 | Persisted string-label mapping | `src/prompt_model.align` | every allowed and unknown kind/status/operation/stage label plus canonical golden vectors |
 | Fixed hierarchy and rendering order | `src/prompt_model.align` | golden rendered prompt and immutable base/repo/task tests |
 | Initial context-policy semantics | `src/prompt_model.align` | disabled sections, source bounds, UTF-8-safe patch/diagnostic truncation; failure-memory selection is explicitly deferred to C6b-memory after Request 7 |
-| Content-bound A/B inputs | `src/prompt_evaluate.align`, task manifests | expected digest, workspace preflight, deduplicated snapshot/input-snapshot records, per-invocation pre/post drift, mode, tree, dirty-source, seed, generation, and environment regressions |
+| Content-bound A/B inputs | `src/prompt_evaluate.align`, task manifests | expected digest, workspace preflight, deduplicated snapshot/input-snapshot records, per-invocation pre/post drift, mode, tree, dirty-source, seed, generation, environment, and FILE_SET-manifest regressions |
+| Explicit verifier source inputs | `src/prompt_evaluate.align` | absolute root/manifest path validation, `FILE_SET` option pairing, canonical manifest membership/mode/digest, exact clean checkout observations, and `UNVERIFIED` preservation before any adapter or snapshot call |
 | Explicit adapter request and environment isolation | `src/prompt_evaluate.align`, task adapter | adapter-request identity/path/digest fixtures; env-clear rejection and exact allowlisted-value survival in both directions |
 | Producer-owned environment identity | trusted probe carriers, evaluator verifier | non-circular core preimage, carrier equality, OS/CPU/GPU/compiler/runtime unavailable-value, `Option` CPU-count, and digest fixtures |
 | Physical path trust boundary | snapshot helper, all command owners, and explicit verifier source boundary | project-root containment for ordinary inputs plus read-only external verifier-root exception; symlink component, dangling link, output link, special file, physical escape, relative/absolute, cleanup, and early-exit regressions |
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, and no-partial-write vectors |
-| Exact source identity and integration method | explicit evaluator source inputs, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for align-llm, expected-identity/environment binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
+| Exact source identity and integration method | explicit evaluator source inputs, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for evaluator align-llm, tested-head equality plus evaluated-commit ancestry for the gate, expected-identity/environment binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
@@ -2503,7 +2564,7 @@ explicitly reviewed deferral.
 | Exact row and scope binding | `src/prompt_evaluate.align` | stale variant, wrong task/sample/provider/digest fixtures |
 | Validation precedence and invalid-result shape | all command owners | table-driven first-failure fixtures prove no external call, evidence-output handling, result/evidence alias rejection, and exact `Option` population |
 | Complete metrics and serious regressions | `src/prompt_score.align` | table-driven comparison fixtures for every rule in section 8 |
-| Persisted evaluation execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete attestation equality, terminal failed-attestation, exact error prefix, and `RESULT_TOO_LARGE` empty-result fixtures |
+| Persisted evaluation execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete attestation equality, terminal failed-attestation, retained non-`ERROR` row after post-row `CLEANUP_FAILED`, exact error prefix, and `RESULT_TOO_LARGE` empty-result fixtures |
 | Evaluation evidence binding | `src/prompt_evaluate.align`, `src/prompt_model.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing/wrong/duplicate/out-of-order expected-input rows, result-digest mismatch, expected-align-llm binding, each reachability state, explicit evidence-path acceptance, and gate-manifest pairing fixtures |
 | Acceptance reuses the pure verifier | `src/prompt_score.align`, `src/prompt_state.align` | tampered fixture status/aggregate/reason/eligibility/evidence is rejected before activation |
 | Accept only eligible improvement | `src/prompt_state.align` | improved/no-improvement/regression/error/parent-mismatch cases |
@@ -2512,7 +2573,7 @@ explicitly reviewed deferral.
 | Single-writer immutable persistence | all command owners | existing-output, result/evidence physical-alias, documented no-race precondition, and corrupt-partial-artifact regressions |
 | Physical workspace containment and raw entry closure | trusted snapshot helper, `src/prompt_evaluate.align` | symlink root/component, physical escape, non-UTF-8 extra entry, mutation, and cleanup regressions |
 | Fixed-corpus provider quality gate | evaluation adapter and `eval/tasks/prompt-v1/` | at least 2 tasks x 2 samples; improvement and zero serious regressions |
-| Canonical acceptance and rollback chain | gate manifest and validator | source-bundle locator and explicit root revalidation plus real improved evaluation + matching evidence -> accepted activation -> rollback, with every wrong/missing digest or evidence reference rejected |
+| Canonical acceptance and rollback chain | gate manifest and validator | source-bundle locator, tested-head ancestry, explicit root/FILE_SET-manifest revalidation plus real improved evaluation + matching evidence -> accepted activation -> rollback, with every wrong/missing digest or evidence reference rejected |
 | Regression integration | `Makefile`, `.github/workflows/ci.yml`, smoke script | `make ci` and hosted supported check |
 
 ### 10.1 Implementation closure matrix
@@ -2524,8 +2585,8 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
 | Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
-| Gate source revalidation | manifest/locator decode and digest | N/A | gate validator reopens all three locator roots and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` reaches the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke` |
-| Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke` |
+| Gate source revalidation | manifest/locator decode, canonical FILE_SET manifest, and digest | N/A | gate validator reopens all locator roots, checks the tested align-llm head and evaluated-commit ancestry, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` reaches the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke` |
+| Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation and accepts a retained non-`ERROR` row after `CLEANUP_FAILED` | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke`, `prompt-verifier-cleanup-retention-smoke` |
 | Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
 | Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-error-smoke` |
 | Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first external failure stops later invocations and retains only the valid prefix | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke` |
@@ -3017,9 +3078,12 @@ The verifier's deterministic validation order is:
    fields but no row. A failed attestation is terminal: no later attestation or row is permitted.
    For `ERROR`, rows are exactly the longest valid execution-order prefix; a valid `ERROR`
    measurement with an unchanged complete attestation is the final retained row, and an
-   adapter/precheck/postcheck/cleanup failure is the first terminal event. `RESULT_TOO_LARGE` is
-   the sole empty-result exception: rows, task aggregates, corpus aggregate, and regression
-   reasons must all be empty while the trace still obeys the same order and terminal rules.
+   adapter/precheck/postcheck/cleanup failure is the first terminal event. A cleanup failure after
+   a valid non-`ERROR` measurement and complete attestation retains that final row, binds
+   `CLEANUP_FAILED`, and is verified as `VALID_PREFIX`; cleanup before a valid row retains none.
+   `RESULT_TOO_LARGE` is the sole empty-result exception: rows, task aggregates, corpus aggregate,
+   and regression reasons must all be empty while the trace still obeys the same order and terminal
+   rules.
 4. Validate the evidence artifact kind, evaluation ID, `evaluation_result_sha256`, trust identity
    fields, and the three reachability labels. The result content digest must equal the evidence's
    result digest. For a complete result, `expected_align_llm_commit` must equal
@@ -3038,9 +3102,10 @@ The verifier's deterministic validation order is:
    and recompute task aggregates, the corpus aggregate, every regression reason, and their canonical
    order; compare every persisted aggregate/reason field. For a paired `ERROR` result, require an
    empty aggregate/reason set and use only the prefix result: `VALID_PREFIX` is allowed when the
-   terminal event produced no retained row, while `TERMINAL_ERROR` is required when the final
-   retained row has status `ERROR`. For a paired `INVALID_INPUT`, require empty rows, aggregates,
-   and reasons and do not invoke either C6c1 path. A status-only or aggregate-only tamper is invalid.
+   terminal event produced no retained row or when `CLEANUP_FAILED` occurred after a valid
+   non-`ERROR` retained row, while `TERMINAL_ERROR` is required when the final retained row has
+   status `ERROR`. For a paired `INVALID_INPUT`, require empty rows, aggregates, and reasons and do
+   not invoke either C6c1 path. A status-only or aggregate-only tamper is invalid.
 7. Recompute comparison status from the policy and the recomputed values. Preserve a strict but
    non-gate `IMPROVED` result as a valid complete comparison; it returns
    `COMPLETE_INELIGIBLE`, not `NONCOMPLETE_ERROR`. A valid `NO_IMPROVEMENT` or
