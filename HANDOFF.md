@@ -5,13 +5,12 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/verification-scope-push`, based on `main` commit
-  `0fc204fb2bb47911707b0759e131cc57363063c1`.
-- PR #35 merged the C6 prompt optimizer contract. PR #36 merged the verification-timing and
-  review-convergence governance, including the CI scope guard.
-- Active goal: close the remaining CI scope gap so documentation-only pushes to `main` use static
-  verification instead of automatically running the full suite. No product implementation slice
-  is active.
+- Branch: `main`, synchronized with `origin/main` at merge commit
+  `29f79e0a29edb59303a08d8d7fb3b561d6c6ed7b`.
+- PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
+  and review-convergence governance, including PR and `main` push scope guards.
+- No work is active. C0 through C5 are complete; C6 product implementation has not started.
+- There are no intentional uncommitted files.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
   not complete C6.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -35,12 +34,23 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Validate the workflow change, open one focused governance PR, and run one comprehensive review.
-2. Apply all valid review findings in one repair, rerun only affected checks, and merge after the
-   workflow change's required hosted check passes.
-3. Refresh `main`, record the post-merge state, and only then consider the first eligible C6b
-   implementation slice. Keep C6b pure and provider-independent; do not code against proposed
-   Align APIs.
+1. If work resumes, perform the bounded post-merge retrospective and begin the first eligible C6b
+   implementation slice from `main`.
+2. Keep C6b pure and provider-independent. Do not code against proposed Align APIs; a blocked slice
+   resumes only after the named Align commit is release-built, pinned, and verified through `make ci`.
+3. For future changes, classify the changed surface first: documentation-only work uses structural
+   checks, coherent implementation slices use focused checks, and full CI is reserved for the named
+   implementation, adoption, integration, pin, or topology gate.
+
+## Bounded post-merge retrospective
+
+- Root cause: the original scope guard handled pull requests but treated every `main` push as a
+  full-suite event, so documentation-only merges still caused unnecessary hosted work.
+- Reusable rule: classify both pull-request and push ranges; use `--no-renames` and treat checkout
+  attributes as executable contract inputs. Keep one comprehensive review and one consolidated
+  repair; ordinary finding repairs do not trigger another review.
+- The rule is now encoded in `CLAUDE.md` and `.github/workflows/ci.yml`. No additional governance
+  slice is queued.
 
 ## Latest durable verification
 
@@ -50,13 +60,12 @@ request checks, reviews, and attestations.
 - Independent adversarial review for PR #35: completed against head `e187f82`; four valid findings
   were fixed together in `6a09347` (unknown-field canonicalization, credential injection,
   seed-base provenance, and C6g1 slice prerequisites).
-- Governance PR #36 hosted supported check: PASS (`30725231172`); its workflow keeps the required
-  check name while routing documentation-only changes to static verification.
 - PR #35 merged as `0fc204f` after its review and integration gate.
-- Current branch verification: `git diff --check` passed after adding push-diff classification;
-  workflow execution is pending the governance PR.
-- Full `make ci` has intentionally not been rerun for the current documentation-only redesign;
-  it is reserved for the applicable implementation/adoption or final integration gate.
+- `git diff --check`: passed after consolidated repair commit `de29b56`.
+- Ruby YAML parse of `.github/workflows/ci.yml`: passed after `de29b56`.
+- The workflow-change hosted check passed once; its transient check evidence remains in GitHub.
+- Local full `make ci` was intentionally not rerun for this documentation/governance change; it is
+  reserved for the applicable implementation/adoption or final integration gate.
 
 ## Constraints and decisions to preserve
 
@@ -72,7 +81,7 @@ request checks, reviews, and attestations.
 - Review is one comprehensive pass. Consolidate valid findings, rerun only affected verification,
   and require another review only for a material behavior/design/contract expansion.
 - The explicit verification-timing and review-convergence rule is recorded in `CLAUDE.md` and
-  enforced by the merged CI scope guard from PR #36; keep future governance and product slices
-  separate.
+  enforced by the merged CI scope guards from PR #36 and PR #37; keep future governance and
+  product slices separate.
 - Source, documentation, diagnostics, commits, pull requests, reviews, and releases remain in
   English.
