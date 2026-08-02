@@ -5,15 +5,15 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-source-gate-rescope`, based on the terminal corrected-design checkpoint
-  `192ca4086d11980f54c36991845f7b847901c925` and merged `main` commit
+- Branch: `agent/c6c2-cleanup-gate-rescope`, based on the terminal source-gate design checkpoint
+  `c4efaf52373a53404ab1f0b52f340f69150f521e` and merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `a5255e5` (`Define gate source revalidation contract`), based on the
-  terminal corrected-design checkpoint and merged `main` commit above.
+- Current source checkpoint: `6165003` (`Define cleanup and FILE_SET gate revalidation`), based on
+  the terminal source-gate design checkpoint and merged `main` commit above.
 - Active goal: finish, independently review, and merge the corrected C6c1p/C6c2 design. This branch
-  resolves the latest review's exact-HEAD source proof, checked-in gate source revalidation, and
-  invalid-task-limit validation-order findings. Implementation is not started and must wait for this
-  design plus the C6a1/C6a2 decoded-record and Align adoption prerequisites.
+  resolves the latest review's cleanup-retention, tested-head ancestry, and deterministic FILE_SET
+  manifest findings. Implementation is not started and must wait for this design plus the C6a1/C6a2
+  decoded-record and Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -24,15 +24,20 @@ request checks, reviews, and attestations.
 - Complete: the latest design correction keeps expected source identity claims in the environment
   core while recording proof separately as reachability, and defines every C6c1p prefix-result field
   on invalid plans without unchecked multiplication.
-- Complete: verifier source proof now requires exact align-llm `HEAD` equality with the expected full
-  commit; no ancestor/source-scope exception is allowed. `PromptGateManifest` now embeds a
-  content-bound source-bundle-relative locator, and `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute>`
-  passes the explicit root to a validator that reopens all three source roots and recomputes exact
-  identities instead of trusting persisted reachability.
+- Complete: evaluator FILE_SET validation now has an explicit manifest path and a bounded canonical
+  byte grammar for exact membership, raw relative paths, modes, and file digests. Gate locators use
+  the same manifest model and require every declared gate task file to be listed.
+- Complete: the checked-in gate source bundle records an exact tested align-llm head; validation
+  checks the actual clean complete-history `HEAD` and requires the evidence's evaluated commit to be
+  its ancestor, preserving the normal-merge integration rule.
+- Complete: a post-row evaluator cleanup failure retains a valid non-`ERROR` measurement row and
+  complete attestation, emits `ERROR/CLEANUP_FAILED`, and is accepted by C6c2 as `VALID_PREFIX`;
+  cleanup before a valid row retains none.
 - Complete: C6c1p validates all task-limit fields before computing the bounded expected row count;
   invalid plans use the documented sentinel result.
-- In progress: push this re-scoped design, run one fresh independent comprehensive review, and merge
-  it only after the review, check evidence, and all finding dispositions are complete.
+- In progress: push this re-scoped design, open a new draft design PR, run one fresh independent
+  comprehensive review, and merge it only after the review, check evidence, and all finding
+  dispositions are complete.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -75,8 +80,8 @@ request checks, reviews, and attestations.
 - C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
   and `make ci` all passed before the merged `main` checkpoint.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
-- Current re-scoped design verification: `git diff --check` PASS and Markdown fence count 86 (even),
-  PASS on `a5255e5`. Source tests and `make ci` are N/A because this remains
+- Current re-scoped design verification: `git diff --check` PASS and Markdown fence count 88 (even),
+  PASS on `6165003`. Source tests and `make ci` are N/A because this remains
   documentation/specification-only; the new draft PR requires hosted documentation/static checks.
 
 ## Constraints and decisions to preserve
@@ -98,11 +103,15 @@ request checks, reviews, and attestations.
   construction only; no fixed-size workaround or duplicated scorer is allowed. C6c1p owns the
   borrowed prefix validator, while C6c1 `aggregate` remains complete-row-only. Explicit verifier
   roots are read-only external inputs with their own physical path exception; source states already
-  observed before an early error are preserved. `EnvironmentIdentityCore` keeps the explicit expected
+  observed before an early error are preserved. `PromptEvaluateRequest` includes the conditional
+  canonical FILE_SET manifest path; `EnvironmentIdentityCore` keeps the explicit expected
   align-llm/Align claims even when a source root is unavailable or mismatching; `PromptVerifierTrust`
   reachability is the independent proof state, and only all-`VERIFIED` evidence is gate-eligible.
-  The align-llm source proof uses exact `HEAD` equality; the checked-in gate uses a manifest-owned
-  relative source locator plus explicit `C6_GATE_SOURCE_BUNDLE_ROOT` revalidation. C6c1p validates
+  The evaluator align-llm source proof uses exact `HEAD` equality; the checked-in gate uses a
+  manifest-owned relative source locator, exact tested-head equality, and evaluated-commit ancestry
+  through explicit `C6_GATE_SOURCE_BUNDLE_ROOT` revalidation. The FILE_SET manifest is bounded and
+  canonical, with checked membership and no symlink/special entries. A post-row cleanup failure
+  retains a valid non-`ERROR` row and uses the verifier's `VALID_PREFIX` cleanup branch. C6c1p validates
   every task-limit field before multiplication and returns `row_count: rows.len()`,
   `expected_row_count: -1`, `error_index: -1`, and `error_code: 1` for invalid plans without
   side effects.
