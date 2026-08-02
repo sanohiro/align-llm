@@ -5,22 +5,20 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6b-prompt-context-renderer`, PR checkpoint `03e2891`; based on `main` commit
-  `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
+- Branch: `agent/c6c1-score-contract`; based on merged `main` commit
+  `50a83d1ce238d2d522bceda69f6419ea1050e762` (PR #38 merge commit).
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
-- Active goal: publish and merge the independently testable C6b renderer core. The implementation
-  has been re-scoped to exclude failure-memory adoption, which is blocked by Align Request 7;
-  focused verification, the required fresh comprehensive review, and the baseline repair are
-  complete. Push, record the review envelope, pass the hosted check for the final head, and merge.
-  C0 through C5 are complete.
-- This slice implements fixed prompt hierarchy, learned append validation, bounded patch and
-  diagnostic contexts, UTF-8-safe truncation, and SHA-256 identity. It deliberately emits the
-  failure-memory section as `(omitted)` without accepting or decoding JSONL. Canonical artifact
-  declarations and persistence remain owned by the blocked C6a1/C6a2 slices and are not implemented
-  here.
-- Working tree is clean after the baseline finalization commits; there are no intentional
-  uncommitted files.
+- Active goal: design, review, implement, verify, and merge the independently testable C6c1 pure
+  row-validation and aggregation kernel. C6b is merged; its failure-memory JSONL adoption remains
+  deferred because Align Request 7 is still `PROPOSED`. C0 through C5 and C6b are complete.
+- The merged C6b slice implements fixed prompt hierarchy, learned append validation, bounded patch
+  and diagnostic contexts, UTF-8-safe truncation, and SHA-256 identity. It deliberately emits the
+  failure-memory section as `(omitted)` without accepting or decoding JSONL. The active C6c1 design
+  adds only the pure scalar row-validation/aggregation contract; canonical artifact declarations
+  and persistence remain owned by the blocked C6a1/C6a2 slices.
+- Working tree is clean at the current committed C6c1 design checkpoint; there are no intentional
+  uncommitted files to preserve.
 - Request 7 is still `PROPOSED` and blocks escaped-string declared-record decoding. The pinned
   `json.decode` returns `Err` for valid escaped `MemoryEvent` strings; do not use `json.doc`, a
   hand-written compatibility parser, or another private wire format to bypass the request.
@@ -47,13 +45,15 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push the final branch, including the baseline oracle and finalization commits. The fresh review
-   was run against the re-scoped source head; its single valid baseline finding is repaired in
-   `c75f9a3` and `03e2891`.
-2. Record the SHA-bound review envelope, wait for the hosted supported check for the final head,
-   mark PR #38 ready, and merge it with a merge commit. Do not start a repair/re-review loop for
-   ordinary finding repairs.
-3. After Request 7 is merged, rebuild the pinned Align release, update `.align-revision`, and pass
+1. Run documentation/static checks for the C6c1 contract and review the ledger-to-prose consistency.
+2. Push this design branch, open the design PR, run one fresh comprehensive adversarial review,
+   record all findings and dispositions, and merge the reviewed design before implementation.
+3. Create the implementation branch from the merged design, add `prompt_score` plus its smoke and
+   topology registration, then refresh the identity-bound baseline through the prescribed
+   source → immutable oracle → finalization sequence.
+4. Run focused checks, one comprehensive implementation review, hosted checks, and merge C6c1;
+   then select C6c2 as the next eligible slice.
+5. After Request 7 is merged, rebuild the pinned Align release, update `.align-revision`, and pass
    the deferred failure-memory acceptance through `make ci` before adding that API.
 
 ## Bounded post-merge retrospective
@@ -65,6 +65,17 @@ request checks, reviews, and attestations.
   repair; ordinary finding repairs do not trigger another review.
 - The rule is now encoded in `CLAUDE.md` and `.github/workflows/ci.yml`. No additional governance
   slice is queued.
+
+### C6b merge retrospective (2026-08-02)
+
+- Reusable lesson: changing an identity-bound Makefile/check graph requires the ordered baseline
+  source, immutable-oracle, and finalization commits before review can claim a mergeable tree.
+  This is already enforced by `make baseline-check` and `docs/specs/check-gate-topology.md`; no
+  separate governance PR is queued. C6c1 must follow the same sequence if its smoke target changes
+  an aggregate list.
+- Scope decision preserved: C6c1 consumes only scalar/borrowed pure kernel inputs and caller-owned
+  output slices. It must not target proposed Request 8/10/12/13 surfaces or decode failure-memory
+  JSONL before Request 7 is merged and adopted.
 
 ## Latest durable verification
 
