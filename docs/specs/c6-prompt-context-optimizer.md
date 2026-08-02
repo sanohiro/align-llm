@@ -1,6 +1,7 @@
 # C6 Prompt and Context Optimizer
 
-Status: design plan of record; implementation has not started.
+Status: design plan of record; the C6b pure renderer-core implementation is in progress; C6a0-C6a2,
+C6b artifact binding, and later product slices have not started.
 
 This document refines C6 from `docs/specs/roadmap.md` and the Prompt Optimizer contract in
 `docs/specs/align-llm.md`. If this document conflicts with either parent specification, the parent
@@ -2270,7 +2271,10 @@ and must split again before coding if the estimate no longer holds.
    - estimated review surface: declarations/validators and fixture generator below 1,000
      hand-written lines.
 4. **C6b — pure prompt/context renderer**
-   - fixed hierarchy, exact context selection/budgets, `PromptRender`, and rendered-prompt artifact;
+   - fixed hierarchy, exact context selection/budgets, and `PromptRender`; the first independently
+     mergeable core slice does not persist artifacts;
+   - rendered-prompt artifact binding follows after the C6a1/C6a2 artifact declarations and their
+     blocked Align prerequisites are available;
    - pure golden inputs plus C5 legacy no-activation regression;
    - no accept, rollback, provider, or adapter execution.
    - estimated review surface below 700 hand-written lines.

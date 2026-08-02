@@ -1,0 +1,178 @@
+module prompt_model_smoke
+
+import core.json
+import prompt_model
+
+SmokeOutput { case_name: str, status: str, text: str, sha256: str }
+
+fn status_label(status: prompt_model.PromptRenderStatus) -> str = match status {
+  Valid => "VALID",
+  InvalidFailureMemory => "INVALID_FAILURE_MEMORY",
+}
+
+fn emit(case_name: str, render: prompt_model.PromptRender) {
+  text_view: str := render.text
+  sha256_view: str := render.sha256
+  output := SmokeOutput {
+    case_name: case_name,
+    status: status_label(render.status),
+    text: text_view,
+    sha256: sha256_view,
+  }
+  print(json.encode(output))
+}
+
+fn memory_event(root: str, task_id: str, final_status: str, repair_result: str, repair_count: i64) -> string {
+  output := builder()
+  output.write("{\"schema_version\":1,\"root\":\"")
+  output.write(root)
+  output.write("\",\"task_id\":\"")
+  output.write(task_id)
+  output.write("\",\"attempted_patch\":\"p\",\"final_status\":\"")
+  output.write(final_status)
+  output.write("\",\"failure_stage\":\"test\",\"failed_test\":\"t\",\"failure_status\":\"FAIL\",\"root_cause\":\"c\",\"repair_result\":\"")
+  output.write(repair_result)
+  output.write("\",\"successful_strategy\":\"none\",\"unsuccessful_strategy\":\"none\",\"iteration_count\":1,\"repair_count\":")
+  output.write_int(repair_count)
+  output.write(",\"risk_score\":1,\"recommended_tests\":\"t\",\"risky_symbols\":\"s\"}")
+  return output.to_string()
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  baseline_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: false,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 0,
+    max_failure_context_bytes: 0,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "baseline",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "",
+      baseline_policy,
+      "task-1",
+      "ignored",
+      "",
+      "stdout",
+      "stderr",
+    ),
+  )
+
+  bounded_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: true,
+    include_failure_memory: false,
+    include_diagnostics: true,
+    max_patch_evaluation_bytes: 24,
+    max_failure_events: 0,
+    max_failure_context_bytes: 0,
+    max_diagnostic_bytes_per_stream: 23,
+  }
+  emit(
+    "bounded",
+    prompt_model.render(
+      "ベース",
+      "REPO",
+      "TASK",
+      "learned",
+      bounded_policy,
+      "task-1",
+      "éあabcdefghijklmnopqrstuvwxyz",
+      "",
+      "éあstdout",
+      "stderr-output-0123456789",
+    ),
+  )
+
+  old_event := memory_event("old", "task-1", "FAIL", "none", 0)
+  new_event := memory_event("new", "task-1", "PASS", "PASS", 1)
+  other_event := memory_event("other", "other", "FAIL", "none", 0)
+  memory_builder := builder()
+  memory_builder.write(old_event)
+  memory_builder.write("\n")
+  memory_builder.write(other_event)
+  memory_builder.write("\n")
+  memory_builder.write(new_event)
+  failure_memory := memory_builder.to_string()
+
+  memory_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 2,
+    max_failure_context_bytes: 800,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "memory",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      memory_policy,
+      "task-1",
+      "",
+      failure_memory,
+      "",
+      "",
+    ),
+  )
+
+  skip_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 2,
+    max_failure_context_bytes: old_event.len(),
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "memory-skip",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      skip_policy,
+      "task-1",
+      "",
+      failure_memory,
+      "",
+      "",
+    ),
+  )
+
+  invalid_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 2,
+    max_failure_context_bytes: 100,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "invalid-memory",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      invalid_policy,
+      "task-1",
+      "",
+      "{malformed}",
+      "",
+      "",
+    ),
+  )
+  return Ok(())
+}

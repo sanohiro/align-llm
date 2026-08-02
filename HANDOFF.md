@@ -5,12 +5,14 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `main`, synchronized with `origin/main` at merge commit
-  `29f79e0a29edb59303a08d8d7fb3b561d6c6ed7b`.
+- Branch: `agent/c6b-prompt-context-renderer`, based on `main` commit
+  `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
-- No work is active. C0 through C5 are complete; C6 product implementation has not started.
-- There are no intentional uncommitted files.
+- Active goal: ship the independently testable C6b pure renderer core. C0 through C5 are complete.
+- This slice implements bounded prompt/context rendering, SHA-256 identity, and failure-memory
+  selection. Canonical artifact declarations and persistence remain owned by the blocked C6a1/C6a2
+  slices and are not implemented here.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
   not complete C6.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -34,13 +36,12 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. If work resumes, perform the bounded post-merge retrospective and begin the first eligible C6b
-   implementation slice from `main`.
-2. Keep C6b pure and provider-independent. Do not code against proposed Align APIs; a blocked slice
-   resumes only after the named Align commit is release-built, pinned, and verified through `make ci`.
-3. For future changes, classify the changed surface first: documentation-only work uses structural
-   checks, coherent implementation slices use focused checks, and full CI is reserved for the named
-   implementation, adoption, integration, pin, or topology gate.
+1. Commit this coherent C6b core slice, open one focused PR, and complete one comprehensive review.
+2. Apply all valid findings in one repair, rerun only affected checks, and merge without a second
+   review unless the repair materially expands behavior or the contract.
+3. After merge, continue with the next eligible pure C6 slice. Do not code against proposed Align
+   APIs; a blocked artifact slice resumes only after its named Align revision is release-built,
+   pinned, and verified through `make ci`.
 
 ## Bounded post-merge retrospective
 
@@ -66,6 +67,10 @@ request checks, reviews, and attestations.
 - The workflow-change hosted check passed once; its transient check evidence remains in GitHub.
 - Local full `make ci` was intentionally not rerun for this documentation/governance change; it is
   reserved for the applicable implementation/adoption or final integration gate.
+- `make prompt-model-smoke`: PASS (hierarchy, UTF-8-safe bounds, memory selection, invalid input,
+  and SHA-256).
+- `scripts/run-prompt-render-smoke`: PASS (C5 legacy renderer remains unchanged).
+- `scripts/check-format` and `git diff --check`: PASS for the current C6b implementation.
 
 ## Constraints and decisions to preserve
 

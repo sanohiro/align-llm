@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+"${compiler}" run "${project_root}/src/prompt_model_smoke.align" >"${output_file}"
+
+python3 - "${output_file}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+actual = [json.loads(line) for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()]
+names = [row["case_name"] for row in actual]
+expected_names = ["baseline", "bounded", "memory", "memory-skip", "invalid-memory"]
+if names != expected_names:
+    raise SystemExit(f"unexpected smoke cases: {names!r}")
+
+
+def bounded(value: str, limit: int, marker: str) -> str:
+    raw = value.encode()
+    suffix = marker.encode()
+    if limit <= 0 or len(raw) <= limit:
+        return "" if limit <= 0 else value
+    if len(suffix) > limit:
+        return ""
+    return raw[: limit - len(suffix)].decode("utf-8", errors="ignore") + marker
+
+
+def event(root: str, task_id: str, final_status: str, repair_result: str, repair_count: int) -> str:
+    value = {
+        "schema_version": 1,
+        "root": root,
+        "task_id": task_id,
+        "attempted_patch": "p",
+        "final_status": final_status,
+        "failure_stage": "test",
+        "failed_test": "t",
+        "failure_status": "FAIL",
+        "root_cause": "c",
+        "repair_result": repair_result,
+        "successful_strategy": "none",
+        "unsuccessful_strategy": "none",
+        "iteration_count": 1,
+        "repair_count": repair_count,
+        "risk_score": 1,
+        "recommended_tests": "t",
+        "risky_symbols": "s",
+    }
+    return json.dumps(value, separators=(",", ":"))
+
+
+def select_memory(lines: list[str], task_id: str, max_events: int, max_bytes: int) -> str:
+    selected: list[str] = []
+    remaining = max_bytes
+    for line in reversed(lines):
+        value = json.loads(line)
+        if value["task_id"] != task_id or len(selected) >= max_events:
+            continue
+        needed = len(line.encode()) + (1 if selected else 0)
+        if needed <= remaining:
+            selected.append(line)
+            remaining -= needed
+    return "\n".join(reversed(selected))
+
+
+def render(
+    base: str,
+    repo: str,
+    task: str,
+    learned: str,
+    patch: str,
+    memory: str,
+    stdout: str,
+    stderr: str,
+    include_patch: bool,
+    include_memory: bool,
+    include_diagnostics: bool,
+    patch_limit: int,
+    memory_limit: int,
+    diagnostic_limit: int,
+) -> str:
+    parts = [base, "\n\n--- repo prompt ---\n", repo, "\n\n--- task prompt ---\n", task]
+    parts += ["\n\n--- learned prompt append ---\n", learned or "(none)"]
+    parts += ["\n\n--- patch evaluation context ---\n"]
+    parts += [bounded(patch, patch_limit, "\n[context truncated]") if include_patch else "(omitted)"]
+    parts += ["\n\n--- failure memory context ---\n"]
+    parts += [memory if include_memory else "(omitted)"]
+    parts += ["\n\n--- current failure diagnostics ---\n"]
+    if include_diagnostics:
+        parts += ["stdout:\n", bounded(stdout, diagnostic_limit, "\n[output truncated]")]
+        parts += ["\nstderr:\n", bounded(stderr, diagnostic_limit, "\n[output truncated]")]
+    else:
+        parts += ["(omitted)"]
+    return "".join(parts)
+
+
+def row(name: str, status: str, text: str) -> dict[str, str]:
+    return {
+        "case_name": name,
+        "status": status,
+        "text": text,
+        "sha256": hashlib.sha256(text.encode()).hexdigest(),
+    }
+
+
+old = event("old", "task-1", "FAIL", "none", 0)
+new = event("new", "task-1", "PASS", "PASS", 1)
+other = event("other", "other", "FAIL", "none", 0)
+memory_lines = [old, other, new]
+memory = select_memory(memory_lines, "task-1", 2, 800)
+memory_skip = select_memory(memory_lines, "task-1", 2, len(old.encode()))
+
+expected = [
+    row(
+        "baseline",
+        "VALID",
+        render("BASE", "REPO", "TASK", "", "ignored", "", "stdout", "stderr", False, False, False, 0, 0, 0),
+    ),
+    row(
+        "bounded",
+        "VALID",
+        render("ベース", "REPO", "TASK", "learned", "éあabcdefghijklmnopqrstuvwxyz", "", "éあstdout", "stderr-output-0123456789", True, False, True, 24, 0, 23),
+    ),
+    row(
+        "memory",
+        "VALID",
+        render("BASE", "REPO", "TASK", "learned", "", memory, "", "", False, True, False, 0, 800, 0),
+    ),
+    row(
+        "memory-skip",
+        "VALID",
+        render("BASE", "REPO", "TASK", "learned", "", memory_skip, "", "", False, True, False, 0, len(old.encode()), 0),
+    ),
+    {"case_name": "invalid-memory", "status": "INVALID_FAILURE_MEMORY", "text": "", "sha256": ""},
+]
+
+if actual != expected:
+    raise SystemExit(f"prompt model smoke mismatch:\nexpected={expected!r}\nactual={actual!r}")
+print("prompt model smoke: hierarchy, UTF-8 bounds, memory selection, invalid input, and SHA-256 PASS")
+PY
