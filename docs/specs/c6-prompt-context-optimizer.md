@@ -1,8 +1,9 @@
 # C6 Prompt and Context Optimizer
 
-Status: design plan of record; the independently mergeable C6b renderer-core implementation is in
-progress. Its failure-memory JSONL adoption is deferred to the Request 7 dependent slice; C6a0-C6a2,
-C6b artifact binding, and later product slices have not started.
+Status: design plan of record; the independently mergeable C6b renderer-core implementation is
+merged. Its failure-memory JSONL adoption is deferred to the Request 7 dependent slice; C6c1 row
+validation and aggregation contract is the active next slice, while C6a0-C6a2, C6b artifact binding,
+and later product slices have not started.
 
 This document refines C6 from `docs/specs/roadmap.md` and the Prompt Optimizer contract in
 `docs/specs/align-llm.md`. If this document conflicts with either parent specification, the parent
@@ -2384,6 +2385,190 @@ and must split again before coding if the estimate no longer holds.
 Each slice uses its own branch and pull request. If implementation discovers a missing Align
 language or standard-library capability, record it through `docs/align-requests.md` and pause only
 the dependent slice. Do not replace immutable artifacts with a fragile local compatibility layer.
+
+### 11.1 C6c1 public-contract ledger
+
+C6c1 is the first post-C6b implementation slice. It is a pure scoring kernel and deliberately does
+not declare the persisted C6 artifact records owned by C6a1/C6a2. Its contract is complete here so
+the implementation does not discover row semantics through test fixtures or a later document
+verifier.
+
+The module is `prompt_score` and exposes exactly these scalar or borrowed, non-owning types:
+
+```text
+ScoreVariant: PARENT | CANDIDATE
+ScoreStatus: PASS | FAIL | POLICY_VIOLATION | ERROR
+ScoreFailureKind: NONE | PROVIDER | PATCH | BUILD | TEST | POLICY | CLEANUP | CONTAINMENT | ADAPTER
+ScoreStage: PASS | FAIL | NOT_RUN | ERROR
+
+ScoreRow:
+  task_ordinal: i64                 // zero-based position in the caller's corpus order
+  sample_index: i64                 // one-based sample number
+  variant: ScoreVariant
+  status: ScoreStatus
+  failure_kind: ScoreFailureKind
+  build_status: ScoreStage
+  test_status: ScoreStage
+  repair_loop_count: i64
+  unrelated_diff_count: i64
+  patch_size_bytes: i64
+  public_api_change_count: i64
+  policy_violation_count: i64
+  cleanup_passed: bool
+  containment_passed: bool
+  adapter_error: bool
+  prompt_preparation_ns: i64
+  generation_to_passing_patch_ns: Option<i64>
+  time_to_passing_patch_ns: Option<i64>
+  benchmark_regression_ppm: Option<i64>
+
+ScoreTaskLimit:
+  maximum_unrelated_diff_count: i64
+  maximum_patch_size_bytes: i64
+  maximum_public_api_change_count: i64
+  maximum_repair_loops: i64
+  maximum_benchmark_regression_ppm: Option<i64>
+```
+
+The exact public function is:
+
+```text
+pub fn aggregate(
+  rows: slice<ScoreRow>,
+  task_limits: slice<ScoreTaskLimit>,
+  sample_count: i64,
+  out task_aggregates: slice<ScoreTaskAggregate>,
+  out reasons: slice<ScoreReason>,
+) -> ScoreResult
+```
+
+`task_limits` is ordered by `task_ordinal`. The caller owns every input and output array and keeps
+them live for the call; C6c1 retains no view and performs no filesystem, process, network, or
+global-state operation. The output slices are caller-provided capacity, not hidden allocation:
+`task_aggregates.len()` must be at least the task count and `reasons.len()` must be at least the
+actual reason count. Validation and the complete reason-count pass happen before either output
+slice is written. An insufficient output slice returns `OUTPUT_TOO_SMALL` with the required count
+and leaves both output slices untouched. This explicit output ownership keeps C6c1 independent of
+Request 8/10 runtime-sized record-array construction.
+
+The result and aggregate records are plain Copy values:
+
+```text
+ScoreTaskAggregate:
+  task_ordinal
+  parent_pass_count
+  candidate_pass_count
+  parent_repair_loop_count
+  candidate_repair_loop_count
+  paired_pass_count
+  parent_paired_median_time_ns: Option<i64>
+  candidate_paired_median_time_ns: Option<i64>
+  time_improvement_ppm: Option<i64>
+  time_regression_ppm: Option<i64>
+
+ScoreCorpusAggregate:
+  task_count
+  sample_count
+  parent_pass_count
+  candidate_pass_count
+  parent_repair_loop_count
+  candidate_repair_loop_count
+  paired_pass_count
+  parent_paired_median_time_ns: Option<i64>
+  candidate_paired_median_time_ns: Option<i64>
+  completion_gain_count
+  time_improvement_ppm: Option<i64>
+  time_regression_ppm: Option<i64>
+  repair_loop_regression_count
+
+ScoreValue: NONE | PASS | FAIL | POLICY_VIOLATION | ERROR | NUMBER(i64)
+ScoreReasonCode: PASS_TO_FAIL | BUILD | TEST | POLICY | UNRELATED_DIFF | PUBLIC_API |
+  PATCH_SIZE | REPAIR_LOOPS | BENCHMARK | TIME
+ScoreReason:
+  task_ordinal
+  sample_index
+  code: ScoreReasonCode
+  parent_value: ScoreValue
+  candidate_value: ScoreValue
+  limit: ScoreValue
+
+ScoreOutputKind: NONE | TASK_AGGREGATES | REASONS
+ScoreResultStatus: COMPLETE | EVALUATION_ERROR | INVALID_INPUT | OUTPUT_TOO_SMALL
+ScoreResult:
+  status: ScoreResultStatus
+  error_code                   // 0 complete; 1 invalid plan; 2 invalid row; 3 evaluation error;
+                                // 4 task-output capacity; 5 reason-output capacity
+  error_index                  // row index or -1 when not row-specific
+  reason_count
+  output_kind: ScoreOutputKind
+  required_output_count        // zero unless OUTPUT_TOO_SMALL; capacity for output_kind
+  corpus: ScoreCorpusAggregate
+```
+
+`ScoreValue` is an internal scalar representation of the canonical value labels in section 8;
+C6c2 owns mapping it to persisted task IDs and strings. C6c1 does not claim that these records are
+the C6 JSON schema, does not calculate content digests, and does not validate artifact references,
+environment identity, provider identity, or document lineage.
+
+The deterministic validation order is:
+
+1. `task_limits.len()` is 1 through 64, `sample_count` is 2 through 16, and the expected row
+   count `task_count * sample_count * 2` fits and equals `rows.len()`.
+2. Output task capacity is checked before any row or output mutation.
+3. Every task limit is non-negative and within its corresponding C6 bound; an absent benchmark
+   limit has value zero, while a present limit is 0 through 1,000,000 ppm.
+4. Rows are checked in exact corpus order: task ordinals are zero-based, samples are one-based,
+   each pair has the expected alternating order (odd sample parent/candidate, even sample
+   candidate/parent), and every row state follows the §5.2 state machine.
+5. A structurally valid `ERROR` row returns `EVALUATION_ERROR` at its row index without scoring or
+   writing output. A malformed combination returns `INVALID_INPUT` at its first row index.
+6. The pure analysis pass computes the complete reason count and checks the reason output capacity.
+7. Only then are task aggregates and reasons written in corpus/task/sample/code order, followed by
+   the corpus aggregate in the returned value.
+
+Row validation enforces the full C6c1 state machine: non-negative bounded counters; prompt
+preparation in `[0, 7_200_000_000_000]`; checked positive passing generation and total time with
+`time_to_passing_patch_ns = prompt_preparation_ns + generation_to_passing_patch_ns`; `PASS` as
+`NONE/PASS/PASS`, clean containment and cleanup, and zero policy violations; `FAIL` with only
+`PROVIDER`, `PATCH`, `BUILD`, or `TEST` and the exact stage combinations; `POLICY_VIOLATION` with
+`POLICY`, positive policy count, clean containment and cleanup, and only `NOT_RUN/NOT_RUN`,
+`PASS/NOT_RUN`, or `PASS/PASS`; and `ERROR` with no passing-time fields and deterministic
+`CONTAINMENT` then `CLEANUP` then `ADAPTER` precedence. `adapter_error` is false on containment
+or cleanup errors and is required only for an otherwise clean `ADAPTER` row; a stage `ERROR` is
+independently sufficient. Non-error rows require `adapter_error: false`, valid cleanup/containment,
+and no `ERROR` stage. A benchmark is present only
+for a passing row of a task that declares a benchmark limit; all other rows and tasks without a
+limit use `None`.
+
+Rows are paired by their validated order. Pass counts count `PASS` rows, repair totals sum every
+structurally valid row, and paired timing medians use only samples where both variants pass. Median
+selection is ascending with zero-based `n / 2` for odd `n` and the floor of the two middle values
+for even `n`; no allocation or hidden sort is used. Integer ppm uses the exact §8 formulas and
+returns `None` when either median is absent. Completion gain is candidate pass count minus parent
+pass count, and corpus repair-loop regression is `max(0, candidate total - parent total)`.
+
+The reason pass emits every applicable reason, without deduplication or truncation, in the schema's
+code order. It covers paired pass-to-fail, parent build/test pass to candidate non-pass, every
+candidate policy violation, each candidate task-limit breach, task and corpus time regression,
+corpus repair-loop regression, and candidate benchmark regression. Task-level time reasons use the
+task ordinal and sample zero; corpus-only reasons use task ordinal `-1` and sample zero. C6c2 maps
+these ordinals to canonical task IDs and materializes `RegressionReason` records.
+
+The C6c1 closure matrix is:
+
+| Applicable path | Owner | Exact acceptance evidence |
+| --- | --- | --- |
+| construction and successful aggregation | `src/prompt_score.align` | `prompt-score-smoke` all-pass and mixed-pass fixtures; exact task/corpus counts, medians, and ppm |
+| row state validation | `src/prompt_score.align` | `prompt-score-smoke` PASS/FAIL/POLICY/ERROR state matrix and every stage combination |
+| malformed/order/bounds input | `src/prompt_score.align` | invalid first-row index, duplicate/missing/order, limit, time, count, and overflow fixtures |
+| reason completeness/order | `src/prompt_score.align` | multi-reason pair plus task/corpus TIME and REPAIR_LOOPS output in canonical code order |
+| output ownership and early exit | `src/prompt_score.align` | undersized output and invalid-input fixtures prove caller buffers remain sentinel-filled |
+| cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
+| public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, and refreshed baseline sequence when the hosted list changes |
+
+This ledger is intentionally limited to the C6c1 kernel. Artifact decoding, string/task-ID mapping,
+whole-document error-prefix retention, and runtime-sized result construction remain named owners in
+C6a1/C6a2/C6c2/C6f2 and are not silently pulled into this slice.
 
 ## 12. Deferred extensions
 
