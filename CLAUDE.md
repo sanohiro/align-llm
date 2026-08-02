@@ -324,6 +324,33 @@ After each merge, perform one bounded retrospective before starting the next bra
   a retrospective-only handoff pull request, or mix the improvement into an unrelated product
   slice.
 
+## Verification timing and review convergence
+
+Classify the changed surface before choosing verification. Verification is evidence for a coherent
+slice, not an edit-loop ritual.
+
+- A documentation/specification/HANDOFF-only change uses `git diff --check` and the applicable
+  Markdown, schema, link/reference, or other targeted static checks available for the changed
+  surface; unavailable checks are recorded as `N/A` with a concrete reason. It does not run source
+  tests, `make check`, `make build`, `make ci`, or the full hosted check unless it also changes
+  executable automation, workflow files, the Makefile, a build or toolchain input, a fixture or
+  acceptance corpus, `.align-revision`, or another executable contract boundary.
+- A pure or local implementation slice runs its focused compiler, unit, fixture, or smoke checks
+  once after the slice is coherent. Do not run the aggregate suite after each small edit.
+- Run the full aggregate (`make ci` locally, or its applicable hosted equivalent) only at a named
+  implementation/adoption gate, before a merge that changes integration behavior, after a pin or
+  check-topology change, or when fresh base-tip integration evidence is required. A docs-only
+  change is not a reason to run it.
+- Batch related edits before verification. After review, apply all valid findings from the one
+  comprehensive review in one consolidated repair, then rerun only affected verification. An
+  ordinary repair implementing recorded findings does not require another review.
+- Use one comprehensive review for a pull request. A second review is allowed only when the repair
+  materially expands or changes behavior, design, specification, or governance. If that conditional
+  final review finds another non-trivial issue, stop the local repair loop and re-scope or redesign
+  the slice instead of repeating review and repair indefinitely.
+- Every pull request and `HANDOFF.md` records the exact verification commands and results, or the
+  concrete reason a check is `N/A`.
+
 ## Pull request review and merge workflow
 
 Review is mandatory before merging any pull request that changes code, an authoritative design or
