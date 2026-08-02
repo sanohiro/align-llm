@@ -5,20 +5,22 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6b-prompt-context-renderer`, PR checkpoint `7b16b8b`; based on `main` commit
+- Branch: `agent/c6b-prompt-context-renderer`, PR checkpoint `03e2891`; based on `main` commit
   `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
 - Active goal: publish and merge the independently testable C6b renderer core. The implementation
   has been re-scoped to exclude failure-memory adoption, which is blocked by Align Request 7;
-  local focused verification is complete and commit/push plus one fresh review remain. C0 through
-  C5 are complete.
+  focused verification, the required fresh comprehensive review, and the baseline repair are
+  complete. Push, record the review envelope, pass the hosted check for the final head, and merge.
+  C0 through C5 are complete.
 - This slice implements fixed prompt hierarchy, learned append validation, bounded patch and
   diagnostic contexts, UTF-8-safe truncation, and SHA-256 identity. It deliberately emits the
   failure-memory section as `(omitted)` without accepting or decoding JSONL. Canonical artifact
   declarations and persistence remain owned by the blocked C6a1/C6a2 slices and are not implemented
   here.
-- Working tree is clean after the re-scope commit; there are no intentional uncommitted files.
+- Working tree is clean after the baseline finalization commits; there are no intentional
+  uncommitted files.
 - Request 7 is still `PROPOSED` and blocks escaped-string declared-record decoding. The pinned
   `json.decode` returns `Err` for valid escaped `MemoryEvent` strings; do not use `json.doc`, a
   hand-written compatibility parser, or another private wire format to bypass the request.
@@ -45,11 +47,12 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Commit and push the re-scoped renderer core. The existing terminal review is bound to the old
-   scope; run one fresh comprehensive review for this material contract change.
-2. Resolve any valid findings in one consolidated repair, rerun only affected focused checks, and
-   merge PR #38 after the hosted supported checks and review evidence are complete. Do not start a
-   repair/re-review loop for ordinary finding repairs.
+1. Push the final branch, including the baseline oracle and finalization commits. The fresh review
+   was run against the re-scoped source head; its single valid baseline finding is repaired in
+   `c75f9a3` and `03e2891`.
+2. Record the SHA-bound review envelope, wait for the hosted supported check for the final head,
+   mark PR #38 ready, and merge it with a merge commit. Do not start a repair/re-review loop for
+   ordinary finding repairs.
 3. After Request 7 is merged, rebuild the pinned Align release, update `.align-revision`, and pass
    the deferred failure-memory acceptance through `make ci` before adding that API.
 
@@ -94,6 +97,12 @@ request checks, reviews, and attestations.
 - Current re-scope focused verification: `make check` PASS with three pre-existing warnings,
   `make prompt-model-smoke` PASS, `make build` PASS, `scripts/run-prompt-render-smoke` PASS,
   `make gate-topology-check` PASS, `scripts/check-format` PASS, and `git diff --check` PASS.
+- `make baseline-check`: PASS after the canonical oracle and finalization refresh.
+- Baseline source/oracle/finalization ancestry and exact-tree integrity: PASS for `c9161ca`,
+  `c75f9a3`, and `03e2891`.
+- Fresh comprehensive review for re-scoped head `c9161ca`: one P1 baseline-identity finding,
+  fixed through the prescribed oracle and finalization sequence; no renderer or smoke-harness
+  findings.
 
 ## Constraints and decisions to preserve
 
