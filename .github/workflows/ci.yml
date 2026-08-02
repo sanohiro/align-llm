@@ -59,7 +59,7 @@ jobs:
             else
               while IFS= read -r path; do
                 case "$path" in
-                  .align-revision|Makefile|build.rs|Cargo.*|.github/workflows/*|src/*|scripts/*|tests/*|examples/*|bench/*|*.align|*.py|*.sh)
+                  .align-revision|.gitattributes|Makefile|build.rs|Cargo.*|.github/workflows/*|src/*|scripts/*|tests/*|examples/*|bench/*|*.align|*.py|*.sh)
                     full=true
                     break
                     ;;
@@ -70,7 +70,7 @@ jobs:
                     fi
                     ;;
                 esac
-              done < <(git diff --name-only "$base_sha" "$head_sha")
+              done < <(git diff --no-renames --name-only "$base_sha" "$head_sha")
             fi
           fi
           echo "full=$full" >> "$GITHUB_OUTPUT"

@@ -52,8 +52,7 @@ request checks, reviews, and attestations.
   seed-base provenance, and C6g1 slice prerequisites).
 - Governance PR #36 hosted supported check: PASS (`30725231172`); its workflow keeps the required
   check name while routing documentation-only changes to static verification.
-- Final base-tip integration check for PR #35: PASS (`30725342133`) against head `711cb71` and
-  tested base tip `736cd4c`; PR #35 then merged as `0fc204f`.
+- PR #35 merged as `0fc204f` after its review and integration gate.
 - Current branch verification: `git diff --check` passed after adding push-diff classification;
   workflow execution is pending the governance PR.
 - Full `make ci` has intentionally not been rerun for the current documentation-only redesign;
