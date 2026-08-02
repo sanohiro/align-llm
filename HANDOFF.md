@@ -7,9 +7,10 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6-prompt-context-redesign`, based on `origin/main` commit
   `99837e29ec303574956614a1d26439def23e9e8d` (merged PR #34).
-- Current handoff commit: `e187f82` (`Update C6 redesign handoff`); design content is in
+- Current repair commit: `6a09347` (`Close C6 design review findings`); design content is in
   `80b8f7b` (`Redesign C6 prompt optimizer contract`), on top of `22186b8` (`Record C6
-  final-review redesign stop`). The worktree is clean after this handoff update.
+  final-review redesign stop`). This handoff update is the next commit; the worktree is clean
+  after it.
 - Active goal: make the C6 design merge-ready, open one focused design PR, merge it, and then
   start the first eligible implementation slice. C6 product implementation has not started.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
@@ -35,22 +36,25 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Run the final author-side consistency pass over the committed C6 plan and Request 13 register; keep
-   the design-only verification limited to `git diff --check`, Markdown/schema structure checks,
-   and targeted consistency scans. Do not run full `make ci` for this documentation-only change.
-2. Update this handoff with the final design commit, then run one comprehensive independent
-   adversarial review of the complete design diff. Resolve all valid findings in one consolidated
-   repair; do not start a repeated review loop for ordinary finding fixes.
-3. Publish the focused C6 design PR with exact verification evidence. Merge only after the single
-   review envelope, finding dispositions, and required checks are complete.
-4. After merge, refresh `main`, perform one bounded retrospective, and begin the first eligible
-   implementation/enabling slice. Do not code against proposed Align APIs; a blocked slice resumes
-   only after the named Align commit is release-built, pinned, and verified through `make ci`.
+1. Publish the focused C6 design PR with the exact structural verification evidence below.
+2. Record the one comprehensive review envelope for head `e187f82`, base/merge-base
+   `99837e29`, with four findings and consolidated repair commit `6a09347`; do not start another
+   review for these ordinary finding fixes.
+3. Create the separate governance slice that records verification timing and review-convergence
+   rules in `CLAUDE.md`; do not mix it into the C6 design PR.
+4. After the required PRs merge, refresh `main`, perform one bounded retrospective, and begin the
+   first eligible implementation slice. Do not code against proposed Align APIs; a blocked slice
+   resumes only after the named Align commit is release-built, pinned, and verified through
+   `make ci`.
 
 ## Latest durable verification
 
-- `git diff --check`: passed for the redesign before commit `80b8f7b`.
-- Markdown fenced-block parity check: passed (`70` fences, even count).
+- `git diff --check`: passed after consolidated repair commit `6a09347`.
+- Markdown fenced-block parity: passed (`70` C6-spec fences; `82` request-register fences).
+- Canonical digest vector: passed (`21780af056f4245f2796e186c88064abe911ea287094dd22b4b3b9c8c07c4328`).
+- Independent adversarial review: completed against head `e187f82`; four valid findings were
+  fixed together in `6a09347` (unknown-field canonicalization, credential injection, seed-base
+  provenance, and C6g1 slice prerequisites).
 - Full `make ci` has intentionally not been rerun for the current documentation-only redesign;
   it is reserved for the applicable implementation/adoption or final integration gate.
 
