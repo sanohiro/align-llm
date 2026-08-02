@@ -7,8 +7,8 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6c2-final-review-rescope`, based on terminal PR #50 checkpoint `a1b328b` and
   merged `main` commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `a1b328b` (`Update C6c2 review handoff`); the successor rescope is the
-  active design change on this branch.
+- Current source checkpoint: `733468b` (`Rescope C6c2 after conditional final review`); the
+  successor rescope is the active design change on this branch.
 - Active goal: finish an independently reviewable successor to the terminal C6c2 design checkpoint.
   PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in place.
   Implementation is not started and must wait for this design plus the C6a1/C6a2 decoded-record and
@@ -56,10 +56,11 @@ request checks, reviews, and attestations.
 - Complete: the Git source-verifier redesign, its initial review repair, and the durable Request 14
   prerequisite are retained in terminal PR #50; the successor branch carries the next closure-matrix
   rescope rather than changing that checkpoint in place.
-- In progress: reconcile scratch allocation failure with the shipped terminal Align allocator policy,
-  make pair cleanup ownership-safe under a competing publisher, and make invalid-evaluation evidence
-  output conditional on reaching the paired-evidence boundary. Keep review findings and attestations
-  in GitHub; this handoff records only the durable design decisions and blockers needed to continue.
+- Complete: the successor rescope reconciles scratch allocation failure with the shipped terminal
+  Align allocator policy, makes pair cleanup ownership-safe under a competing publisher, and makes
+  invalid-evaluation evidence output conditional on reaching the paired-evidence boundary. Review
+  findings and attestations remain in GitHub; this handoff records only the durable design decisions
+  and blockers needed to continue.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -85,18 +86,16 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Complete the reopened `10.1b` closure matrix and its ledger-to-prose consistency pass on this
-   successor branch; run the documentation/static checks and keep the working tree clean.
-2. Commit and push the successor design, open a new reviewable PR against `main`, and run one fresh
+1. Commit and push the completed successor design, open a new reviewable PR against `main`, and run one fresh
    comprehensive independent adversarial review of that complete successor diff. Record review
    evidence in GitHub before merge; if that review finds another non-trivial issue, re-scope again
    instead of entering a local patch loop.
-3. After the successor design is reviewed, its findings are disposed, and it is merged, refresh
+2. After the successor design is reviewed, its findings are disposed, and it is merged, refresh
    `main`, perform the bounded retrospective, and implement and merge C6c1p first; implement
    C6c2 only after C6a1/C6a2 provide content-validated
    decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record
    the dependency blocker and continue only with safe independent roadmap work.
-4. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
+3. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
    merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
    `make ci` passes the original acceptance gate.
 
@@ -107,11 +106,11 @@ request checks, reviews, and attestations.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
 - Terminal PR #50 verification remains durable evidence: its documentation/static checks passed for
   the previous design checkpoint, while source tests and `make ci` were N/A for that docs-only slice.
-- Successor rescope verification is pending until the allocator, publication-ownership,
-  invalid-evidence, and continuity-boundary wording is coherent. The required successor checks are
-  `git diff --check`, changed-Markdown fence counts, targeted contract assertions for all four rows
-  in `10.1b`, and the applicable hosted documentation/static check. Source tests and `make ci` remain
-  N/A unless this successor changes executable automation or another executable contract boundary.
+- Successor rescope verification is PASS: `git diff --check a1b328b..733468b`, changed-Markdown
+  fence counts (`c6-prompt-context-optimizer.md` 90, `align-requests.md` 86, `HANDOFF.md` 0),
+  targeted contract assertions for all four rows in `10.1b`, and the `HANDOFF.md` transient-review
+  scan all passed. The hosted documentation/static check runs on the successor PR. Source tests and
+  `make ci` are N/A because this remains a docs-only slice with no executable contract-boundary change.
 
 ## Constraints and decisions to preserve
 
@@ -136,7 +135,8 @@ request checks, reviews, and attestations.
   roots are read-only external inputs with their own physical path exception; source states already
   observed before an early error are preserved. Pre/post baseline drift is retained as explicit
   terminal attestation state, and result/evidence pair finalization uses result-then-evidence
-  no-replace renames with reverse cleanup and explicit orphan recovery. The source verifier and gate
+  no-replace renames with reverse cleanup only for evaluator-owned paths and explicit owned-orphan
+  recovery; a competing destination is never removed. The source verifier and gate
   validator reject repository-local replacement refs, grafts, and object alternates through the
   resolved Git common directory. `PromptEvaluateRequest` includes the conditional
   canonical FILE_SET manifest path; `EnvironmentIdentityCore` keeps the explicit expected
