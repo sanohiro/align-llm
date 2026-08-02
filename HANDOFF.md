@@ -5,26 +5,27 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1-score-kernel-impl`; implementation is based on merged `main` commit
-  `95670134f6f7c503aeae15c7cbebe38434bdc617`.
-- Current source checkpoint: `6700a62d37dff56b864e83ab65d1a86f9c0545bb` (`Reject benchmark values
-  on error rows`), based on merged design checkpoint
-  `95670134f6f7c503aeae15c7cbebe38434bdc617`.
-- Active goal: implement, verify, review, and merge the independently testable pure C6c1 row
-  validation and aggregation kernel. The C6c1 design and its pinned-Align contract repair are
-  merged; implementation is the active slice.
+- Branch: `agent/c6c2-verifier-design`; the branch is based on merged `main` commit
+  `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
+- Current source checkpoint: merged C6c1 implementation at
+  `1029eec641bce338c5ba7b878101b7a0daab28e9`; this branch currently adds only the C6c2 design
+  contract and durable handoff update.
+- Active goal: design, independently review, and merge the pure C6c2 evaluation-document verifier
+  before opening its implementation slice. C6c1 implementation, review repair, final verification,
+  and merge are complete.
 - Complete: `src/prompt_score.align`, its deterministic scalar-column smoke, the `prompt-score-smoke`
-  Make target, the topology oracle update, and the review repair rejecting benchmark values on
-  `ERROR` rows are implemented in the working source checkpoint.
+  Make target, the topology oracle update, the review repair rejecting benchmark values on `ERROR`
+  rows, and the required merge-commit integration.
 - Complete: the identity-bound baseline refresh is complete with source commit
   `4b3019a83598cfbae7feecdc88732b855c2e31c4`, immutable oracle commit
   `5338951e77415a21c42fbe030494c55d015f3542`, and finalization commit
   `bc386d8`.
 - Complete: baseline structural verification, the local implementation/adoption integration gate,
-  the consolidated review repair, and its final-head `make ci` rerun.
-- In progress: finish PR #41 integration after the repair push.
-- Not started: hosted final-head checks, merge, and the bounded post-merge retrospective before
-  C6c2 selection.
+  the consolidated review repair, its final-head `make ci` rerun, hosted CI, and the bounded
+  post-merge retrospective.
+- In progress: complete and review the C6c2 design contract.
+- Not started: C6c2 implementation, its focused smoke/topology registration, and its implementation
+  pull request.
 - Working tree is expected to be clean at the source checkpoint; no generated binaries, model
   weights, credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -50,12 +51,12 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Mark PR #41 ready, wait for the final-head hosted checks, then merge it with the required native
-   review envelope and a merge commit.
-2. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
-   C6c2 slice. Do not start failure-memory JSONL adoption until Request 7 is accepted, merged at a
-   named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and `make ci`
-   passes the original acceptance gate.
+1. Finish the C6c2 design consistency pass, push the design branch, obtain one fresh independent
+   adversarial design review, and merge the design pull request before implementation.
+2. Create the C6c2 implementation branch from the merged design, add the pure verifier and its
+   document smoke/topology target, then run the focused and final aggregate gates. Do not start
+   failure-memory JSONL adoption until Request 7 is accepted, merged at a named Align commit, the
+   pinned release is rebuilt, `.align-revision` is updated, and `make ci` passes the original gate.
 
 ## Latest verification
 
@@ -77,6 +78,10 @@ request checks, reviews, and attestations.
   and Git isolation checks.
 - `make ci`: PASS with the pinned release compiler; topology, all hosted/capable focused checks,
   coding-v1, `prompt-score-smoke`, and baseline verification all passed.
+- Post-merge SHA and ancestry: merge commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf` preserves
+  C6c1 source `4b3019a83598cfbae7feecdc88732b855c2e31c4`, oracle
+  `5338951e77415a21c42fbe030494c55d015f3542`, and finalization
+  `bc386d8297d21bc0dc125fe71002f019108ea28e` as ancestors.
 - `make fmt`, `./scripts/check-format`, and `git diff --check`: PASS.
 
 ## Constraints and decisions to preserve
@@ -90,5 +95,10 @@ request checks, reviews, and attestations.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
+- Retrospective lesson: the C6c1 review caught a missing optional-measurement/state combination;
+  the existing Cartesian-coverage rule was sufficient once the missing `ERROR` benchmark fixture
+  was added. Treat state × optional-field combinations as mandatory evidence in C6c2 and later
+  verifier reviews; no separate governance change is queued because the rule and regression now
+  exist in the design and smoke contract.
 - All source, diagnostics, developer documentation, commits, pull requests, and review records
   remain in English.

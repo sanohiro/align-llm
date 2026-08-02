@@ -1,9 +1,9 @@
 # C6 Prompt and Context Optimizer
 
-Status: design plan of record; the independently mergeable C6b renderer-core implementation is
-merged. Its failure-memory JSONL adoption is deferred to the Request 7 dependent slice; C6c1 row
-validation and aggregation contract is the active next slice, while C6a0-C6a2, C6b artifact binding,
-and later product slices have not started.
+Status: design plan of record; the independently mergeable C6b renderer-core implementation and
+C6c1 row-validation/aggregation implementation are merged. Failure-memory JSONL adoption is deferred
+to the Request 7 dependent slice; the C6c2 pure evaluation-document verifier design is the active
+slice, while C6a0-C6a2, C6b artifact binding, and later product slices have not started.
 
 This document refines C6 from `docs/specs/roadmap.md` and the Prompt Optimizer contract in
 `docs/specs/align-llm.md`. If this document conflicts with either parent specification, the parent
@@ -2328,7 +2328,10 @@ and must split again before coding if the estimate no longer holds.
    - exhaustive measurement/row state validation, checked timing/count math, task/corpus
      aggregation, medians, and regression-reason construction;
    - no whole-document verifier, process, provider, activation, or CLI mutation;
-   - estimated review surface below 900 hand-written lines.
+   - estimated review surface below 900 hand-written lines; the merged implementation is 1,487
+     hand-written lines because the pinned compiler's scalar output-column topology requires
+     repetitive per-column validation/write closure that cannot be split without weakening the
+     no-mutation invariant. The smoke and topology helpers remain separate files.
 6. **C6c2 — pure evaluation-document verifier**
    - full identity/digest/status/gate-eligibility recomputation over fixture-decoded documents,
      reusing C6c1;
@@ -2607,6 +2610,128 @@ The C6c1 closure matrix is:
 This ledger is intentionally limited to the C6c1 kernel. Artifact decoding, string/task-ID mapping,
 whole-document error-prefix retention, and runtime-sized result construction remain named owners in
 C6a1/C6a2/C6c2/C6f2 and are not silently pulled into this slice.
+
+### 11.2 C6c2 public-contract ledger
+
+C6c2 is the pure verifier immediately after the merged C6c1 scorer. It validates a fixture-decoded
+`PromptEvaluationResult` using the declared schemas in §4.1, §4.2, §4.5, and §5.2, reuses C6c1 for
+row validation and complete aggregation, and returns only a Copy verdict. It does not construct,
+persist, accept, rollback, or execute an evaluation. The C6c2 implementation branch may use
+escape-free fixture documents through the pinned `core.json` surface; it must stop and record a
+request if it needs escaped-string JSON, recursive owned-artifact construction, or a bounded
+canonical writer that is not shipped at the pinned revision. No private wire format or local
+compatibility layer is allowed.
+
+The exact public surface is:
+
+```text
+PromptScoreStatus: IMPROVED_ELIGIBLE | COMPLETE_INELIGIBLE | NONCOMPLETE_ERROR
+
+pub fn verify_document(document: str) -> Result<PromptScoreStatus, Error>
+```
+
+The source constructors use the pinned Align convention `PromptScoreStatus.ImprovedEligible`,
+`PromptScoreStatus.CompleteIneligible`, and `PromptScoreStatus.NoncompleteError`; the uppercase
+labels are the logical result values. `document` is a caller-owned UTF-8 JSON view. The verifier
+retains no view after return, performs no filesystem, process, network, provider, activation, or
+global-state operation, and returns only the Copy status through `Result`. It decodes all Move
+records and dynamic arrays inside the call and drops them before returning; no Move record is a
+`Result` payload and no caller-owned output buffer is mutated. A decoded document is bounded at
+268,435,456 bytes before decode; NUL, invalid UTF-8, invalid JSON, and every schema or semantic
+violation return `Err(Error.Invalid)` before any semantic result is returned.
+
+The verifier owns the following producer boundaries:
+
+| Boundary | C6c2 owner and rule |
+| --- | --- |
+| Top-level and nested content identity | Clear only the record's own `content_sha256`, canonical-encode the declared record, hash the exact UTF-8 bytes with SHA-256, and compare the lowercase full digest. The record is restored before any later comparison. |
+| Cross-artifact references | Do not read the referenced path. Match kind, label, and digest against the embedded content-valid record; the path is a locator only. |
+| Prompt/task/measurement row mapping | Convert each valid `PromptTaskRow` and nested `TaskMeasurement` into the C6c1 `ScoreRow` plus its task limit; recompute `time_to_passing_patch_ns` with checked addition and never trust the persisted aggregate fields. |
+| Aggregate and reasons | Call the merged C6c1 aggregate with local scalar scratch columns, then compare every task/corpus scalar, optional presence/value pair, reason ordinal, value kind/number, and canonical order. |
+| Gate eligibility | Derive it from complete task/sample coverage, policy minima, source and Align identity, environment CPU availability, and every seed attestation. Never read the persisted `gate_eligible` as an input. |
+| Terminal status | Derive it from completeness, C6c1 reasons, policy improvement, and gate eligibility. Never trust the persisted status, error code, error text, or aggregate. |
+
+The canonical digest check is semantic rather than raw-input based: declared-record JSON decoding may
+ignore unknown fields as specified in §4, and canonical re-encoding omits them. A digest is checked
+against the canonical declared record with its own digest field empty, not against unknown input
+members or the original whitespace. Every nested content-bound record is checked before its parent
+reference is accepted. The deterministic record order is: scope and corpus revision; embedded
+prompt variants and context sources; acceptance, generation, provider, and environment policies;
+workspace preflight; tasks and their limits; snapshot requests/results and input snapshots;
+attestations; task rows and nested measurements; aggregates and reasons; then the top-level result.
+The implementation must not silently substitute a raw text digest for a record digest or use a
+reference path as identity.
+
+Validation order is fixed and side-effect free:
+
+1. Reject an oversized, NUL-containing, invalid-UTF-8, or empty document before JSON decoding.
+2. Decode the declared top-level record and require `schema_version: 1` and
+   `artifact_kind: PROMPT_EVALUATION_RESULT`; reject duplicate, wrong-type, or out-of-range
+   top-level fields according to the §4 bounds.
+3. Verify the top-level canonical digest and common status/error field shape. A successful complete
+   status has `error_code: NONE` and empty `error`; a noncomplete status has an allowed non-`NONE`
+   code and non-empty bounded detail.
+4. Validate nested records and their canonical digests in the producer order above, then validate
+   every reference against its embedded record, exact scope equality, variant identity, corpus/task
+   identity, policy/provider equality, and required option/array presence.
+5. Validate environment, snapshot, input-snapshot, and attestation deduplication and order. Each
+   retained row must have one matching task input snapshot, equal before/after `MATCH` evidence, the
+   normalized environment identity, and the exact recomputed paired seed and seed attestation.
+6. Validate task order, sample bounds, alternating odd/even pair order, row identity, measurement
+   state, benchmark presence, checked timing, and prefix/retention rules. Use the C6c1 row validator;
+   a complete document must contain every expected row, while a noncomplete document may contain
+   only the longest valid execution-order prefix defined by §5.2.
+7. For a complete document, run the C6c1 aggregate over all rows and compare every persisted task
+   aggregate, corpus aggregate, reason, reason count, and reason ordering. For `ERROR` and
+   `INVALID_INPUT`, require empty aggregates and reasons and validate the documented retained-prefix
+   or last-successful-input shape instead of scoring an incomplete stream.
+8. Recompute `gate_eligible` from the embedded policy, corpus/sample coverage, named source and
+   external Align revisions, final environment identity, and all seed attestations; compare the
+   persisted flag only after the recomputation is complete.
+9. Recompute the terminal status and its exact field-presence rules. Return
+   `ImprovedEligible` only for a valid `IMPROVED` result with strict policy improvement, zero serious
+   reasons, and `gate_eligible: true`; return `CompleteIneligible` for valid complete
+   `NO_IMPROVEMENT` or `SERIOUS_REGRESSION` results or a complete comparison that is not gate
+   eligible; return `NoncompleteError` for a valid `ERROR` or `INVALID_INPUT` result. Any mismatch
+   returns `Err(Error.Invalid)`.
+
+The status mapping and required complete-result invariants are:
+
+| Persisted status | Required recomputation | Returned status |
+| --- | --- | --- |
+| `IMPROVED` | complete rows and aggregates, empty reasons, strict completion/time improvement, all gate conditions true | `ImprovedEligible` |
+| `NO_IMPROVEMENT` | complete rows and aggregates, empty reasons, no strict improvement; gate may be true or false | `CompleteIneligible` |
+| `SERIOUS_REGRESSION` | complete rows and aggregates, at least one complete canonical serious reason, policy comparison complete | `CompleteIneligible` |
+| `ERROR` | valid references and retained valid prefix, no aggregates/reasons, gate false, no invocation after the first error | `NoncompleteError` |
+| `INVALID_INPUT` | only the references validated before the first invalid input are present; rows/aggregates/reasons empty and gate false | `NoncompleteError` |
+
+`IMPROVED` with a false gate flag, `NO_IMPROVEMENT` or `SERIOUS_REGRESSION` with an incomplete
+aggregate, an `ERROR` with a scoreable complete aggregate, an `INVALID_INPUT` with later references,
+or any status whose error fields violate §4 is malformed and returns `Err(Error.Invalid)`. A valid
+`ERROR` measurement retained as the final row must have an unchanged complete snapshot attestation;
+a failed precheck or postcheck contributes no row. The verifier checks that no row appears after the
+first failing invocation and that `RESULT_TOO_LARGE` uses the documented empty-row exception.
+
+The C6c2 closure matrix is:
+
+| Applicable path | Owner | Exact acceptance evidence |
+| --- | --- | --- |
+| JSON decode and local ownership | `src/prompt_score.align` | escape-free fixture decode, malformed JSON, oversized input, and clean return under `prompt-score-document-smoke` |
+| Nested digest and reference identity | `src/prompt_score.align` | one golden valid document plus top-level, nested, kind, label, and digest tampering fixtures; unknown-field canonicalization fixture |
+| Scope/policy/provider/environment identity | `src/prompt_score.align` | exact-match, one-field mismatch, unavailable CPU, seed `APPLIED`/`UNSUPPORTED`/`REJECTED`, and option-presence matrix |
+| Row conversion and C6c1 reuse | `src/prompt_score.align` | every row status/stage combination, checked-time boundary, pair/order/task/sample mismatch, benchmark `None`/`Some`, and invalid retained prefix |
+| Complete aggregate/status recomputation | `src/prompt_score.align` | `IMPROVED`, `NO_IMPROVEMENT`, and `SERIOUS_REGRESSION` fixtures with tampered counts, medians, reasons, status, error fields, and gate flag |
+| Noncomplete retention | `src/prompt_score.align` | valid `ERROR` prefix, failed precheck/postcheck, result-too-large exception, valid `INVALID_INPUT` prefix, and forbidden post-failure row |
+| Early exit and no side effects | `src/prompt_score.align` | sentinel-free pure invocation, no filesystem/process calls, and malformed input before semantic output |
+| Public return/cleanup | `src/prompt_score.align` | per-unit and whole-program compilation; local Move records/arrays are dropped before Copy status return |
+| Minimum compatibility and syntax | repository compiler wrapper | pinned release `check-per-unit`, fixture compile with declarations separate from calls, and final `make ci` |
+
+C6c2 does not add a Make target, CLI dispatch, JSON writer, artifact persistence, provider call, or
+runtime-sized record construction outside the verifier's local decode. The implementation slice adds
+`prompt-score-document-smoke` and its topology registration only after this design is merged. Its
+planned review surface is below 800 hand-written lines, excluding shared C6a2 record declarations;
+if the actual handwritten implementation exceeds that bound, the branch must split or record a
+safe-splitting exception before implementation continues.
 
 ## 12. Deferred extensions
 
