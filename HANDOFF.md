@@ -8,14 +8,16 @@ request checks, reviews, and attestations.
 - Branch: `agent/c6c2-adoption-timeout-reason-rescope`, based on the terminal source/trace design
   checkpoint `86b40aa793b9c7f4e74dfe3bff319178cc3a1abd` and merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `ff25f6e` (`Close C6c2 adoption and bound contracts`), based on the
-  terminal source/trace design checkpoint and merged `main` commit above.
-- Active goal: finish, independently review, and merge the corrected C6c1p/C6c2 design. This branch
+- Current source checkpoint: `34be593` (`Close C6c2 design review findings`), based on the
+  previously reviewed design checkpoint `b485fb8` and merged `main` commit above.
+- Active goal: finish PR #49 with the corrected C6c1p/C6c2 design. This branch
   resolves the latest review findings: runtime-derived clean CI-head binding through the explicit
   validated Git executable and cleared environment, a content-bound native source-verifier/Git
   boundary with raw-byte FILE_SET traversal, explicit `ADAPTER_FAILED` terminal attestations, a
   bounded `RESULT_TOO_LARGE` trace envelope, C6c2-specific Request 8/10 adoption gates, fixed
-  source-verifier timeout, and a deterministic scorer reason capacity.
+  source-verifier timeout, a deterministic scorer reason capacity, repository-local replacement/graft/
+  alternate rejection, explicit pre/post baseline-drift attestations, observed-identity binding for
+  every `VERIFIED` source, and deterministic result/evidence pair cleanup.
   Implementation is not started and must wait for this design plus the C6a1/C6a2 decoded-record and
   Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
@@ -54,9 +56,12 @@ request checks, reviews, and attestations.
 - Complete: scorer reason capacity is `R_max = 9 * task_count * sample_count + task_count + 2`,
   at most 9,282 under the declared bounds; C6c1 and C6c2 reject checked overflow/allocation
   failure before output/scorer side effects and never truncate reasons.
-- In progress: push this corrected design, open a new draft design PR, run one fresh independent
-  comprehensive review, and merge it only after the review, check evidence, and all finding
-  dispositions are complete.
+- Complete: the terminal PR #49 review findings are addressed in one consolidated design repair;
+  repository-local Git replacement/graft/alternate mechanisms are rejected through the resolved
+  common directory, baseline drift has explicit persisted states, `VERIFIED` carries equal observed
+  identities, and result/evidence finalization has no-replace order plus cleanup/recovery behavior.
+- In progress: reopen PR #49 with this checkpoint, run the conditional final independent review,
+  and merge it only after the review, check evidence, and all finding dispositions are complete.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -82,11 +87,11 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push `agent/c6c2-adoption-timeout-reason-rescope`, open a new draft design PR, and record one
-   fresh independent review of the complete corrected design before implementation.
-2. If that review is clean, record the SHA-bound envelope, wait for the documentation/static check,
-   and merge the design PR. If it finds another non-trivial issue, re-scope again rather than
-   entering another local repair/review loop.
+1. Push `agent/c6c2-adoption-timeout-reason-rescope`, reopen PR #49, and update its description with
+   the consolidated repair commit and verification evidence.
+2. Run the conditional final independent review of PR #49. If it is clean, record its SHA-bound
+   envelope, wait for the documentation/static check, and merge PR #49. If it finds another
+   non-trivial issue, stop and re-scope the slice rather than entering another repair/review loop.
 3. Implement and merge C6c1p first; implement C6c2 only after C6a1/C6a2 provide content-validated
    decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record
    the dependency blocker and continue only with safe independent roadmap work.
@@ -99,11 +104,13 @@ request checks, reviews, and attestations.
 - C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
   and `make ci` all passed before the merged `main` checkpoint.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
-- Current corrected design verification: `git diff --check ff25f6e^..ff25f6e` PASS and the exact
-  Markdown fence check over `docs/specs/c6-prompt-context-optimizer.md` and
-  `docs/align-requests.md` reports `markdown_fences=172` (even). Source tests and `make ci` are N/A
-  because this remains documentation/specification-only; the new draft PR requires hosted
-  documentation/static checks. The working tree is clean at this checkpoint.
+- Current corrected design verification: `git diff --check b485fb8..34be593` PASS, the targeted
+  contract assertions for replacement/graft/alternate rejection, drift states, observed identities,
+  pair cleanup, and their named regressions PASS, and the exact Markdown fence check over
+  `docs/specs/c6-prompt-context-optimizer.md` and `docs/align-requests.md` reports
+  `markdown_fences=172` (even). Source tests and `make ci` are N/A because this remains
+  documentation/specification-only; PR #49 requires hosted documentation/static checks. The working
+  tree is clean at this checkpoint.
 
 ## Constraints and decisions to preserve
 
@@ -117,14 +124,19 @@ request checks, reviews, and attestations.
 - `PromptEvaluationEvidence` is a separate content-bound sidecar with an explicit acceptance input;
   it binds the result digest, independent per-row producer-input digests, and separate reachability
   states for align-llm, external Align, and corpus. A complete gate requires all three states to be
-  `VERIFIED`; `UNVERIFIED` remains a valid non-gate comparison. `PromptEvaluateRequest` owns the
-  explicit source paths and expected identities; `PromptGateManifest` owns the checked-in evidence
+  `VERIFIED` with observed identities equal to the expected identities; `UNVERIFIED` remains a valid
+  non-gate comparison. `PromptEvaluateRequest` owns the explicit source paths and expected
+  identities; `PromptGateManifest` owns the checked-in evidence
   reference. The verifier validates the persisted workspace/snapshot/input-snapshot/attestation
   trace and exact error prefix. Its C6c1 adapter uses Request 8/10-shipped temporary record/scalar
   construction only; no fixed-size workaround or duplicated scorer is allowed. C6c1p owns the
   borrowed prefix validator, while C6c1 `aggregate` remains complete-row-only. Explicit verifier
   roots are read-only external inputs with their own physical path exception; source states already
-  observed before an early error are preserved. `PromptEvaluateRequest` includes the conditional
+  observed before an early error are preserved. Pre/post baseline drift is retained as explicit
+  terminal attestation state, and result/evidence pair finalization uses result-then-evidence
+  no-replace renames with reverse cleanup and explicit orphan recovery. The source verifier and gate
+  validator reject repository-local replacement refs, grafts, and object alternates through the
+  resolved Git common directory. `PromptEvaluateRequest` includes the conditional
   canonical FILE_SET manifest path; `EnvironmentIdentityCore` keeps the explicit expected
   align-llm/Align claims even when a source root is unavailable or mismatching; `PromptVerifierTrust`
   reachability is the independent proof state, and only all-`VERIFIED` evidence is gate-eligible.
