@@ -323,7 +323,8 @@ base, and tested tree/integration identity, and verifies the required reachabili
 an artifact.
 Verifier evidence records separate reachability results for the align-llm source repository, the
 external Align repository, and the corpus source; a gate-eligible result requires all three to be
-`VERIFIED`. The pure C6c2 verifier consumes those attestations and never walks a repository itself.
+`VERIFIED` with their observed identities equal to the expected claims. The pure C6c2 verifier
+consumes those attestations and never walks a repository itself.
 
 #### Complete operation overlap policy
 
@@ -882,7 +883,8 @@ RunSnapshotAttestation:
   task_id
   sample_index
   variant: PARENT | CANDIDATE
-  status: COMPLETE | PRECHECK_FAILED | ADAPTER_FAILED | POSTCHECK_FAILED
+  status: COMPLETE | PRECHECK_FAILED | PRECHECK_DRIFT | ADAPTER_FAILED | POSTCHECK_FAILED |
+    POSTCHECK_DRIFT
   error_code
   error
   snapshot_request_sha256
@@ -898,12 +900,18 @@ RunSnapshotAttestation:
 | --- | --- | --- |
 | `COMPLETE` | before and after snapshot results are `MATCH`; both input-snapshot references are `Some` and equal; a scored row exists | `NONE`, empty error |
 | `PRECHECK_FAILED` | before snapshot result is `MISMATCH` or `ERROR`; all after and input-snapshot fields are `None`; no adapter call or row | `WORKSPACE_UNSAFE`, `SNAPSHOT_MISMATCH`, or `SNAPSHOT_ERROR` |
+| `PRECHECK_DRIFT` | before snapshot result is `MATCH`; before input snapshot is `Some` but its environment or task-input identity differs from the established task baseline; all after fields are `None`; no adapter call or row | `INPUT_DRIFT` or `ENVIRONMENT_DRIFT` |
 | `ADAPTER_FAILED` | before snapshot is `MATCH`, before input snapshot is `Some`; all after fields are `None`; no row | `ADAPTER_TIMEOUT`, `ADAPTER_PROCESS_OUTPUT`, or `ADAPTER_RESULT` |
-| `POSTCHECK_FAILED` | before snapshot is `MATCH`, before input snapshot is `Some`, after snapshot is `Some` and `MISMATCH` or `ERROR`, after input snapshot is `None`; no row | `SNAPSHOT_MISMATCH`, `SNAPSHOT_ERROR`, `INPUT_DRIFT`, or `ENVIRONMENT_DRIFT` |
+| `POSTCHECK_FAILED` | before snapshot is `MATCH`, before input snapshot is `Some`, after snapshot is `Some` and `MISMATCH` or `ERROR`, after input snapshot is `None`; no row | `SNAPSHOT_MISMATCH` or `SNAPSHOT_ERROR` |
+| `POSTCHECK_DRIFT` | before and after snapshot results are `MATCH`; both input-snapshot references are `Some`; the after environment or task-input identity differs from the established task baseline; no row | `INPUT_DRIFT` or `ENVIRONMENT_DRIFT` |
 
-`COMPLETE` is the only row-producing attestation. A failed adapter is terminal immediately after a
-successful precheck; the evaluator does not manufacture an after snapshot when no valid measurement
-exists. A failed postcheck is terminal after the after observation and likewise produces no row.
+`COMPLETE` is the only row-producing attestation. A failed precheck or `PRECHECK_DRIFT` is terminal
+before adapter launch; the evaluator does not run the adapter after a `MATCH` observation whose
+environment or derived task-input snapshot differs from the established baseline. A failed adapter is
+terminal immediately after a successful precheck, without an after snapshot. A failed postcheck or
+`POSTCHECK_DRIFT` is terminal after the after observation and likewise produces no row; the drift
+state retains the differing after snapshot and input snapshot so the verifier can distinguish it from
+an ordinary snapshot failure.
 `error_code` is `NONE` with empty `error` only for `COMPLETE`; every failed state has a non-empty
 bounded English `error`. This explicit `ADAPTER_FAILED` state preserves timeout, output, and
 malformed-result attempts in the persisted execution trace without inventing a `TaskMeasurement`.
@@ -1255,9 +1263,10 @@ Malformed request JSON, an existing output path, or an unreadable output locatio
 Opening or reading a referenced input is different from writing the result. A missing input,
 non-regular input, permission failure, read failure, or invalid UTF-8 is a decoded-request
 `INVALID_INPUT` with `INPUT_NOT_FOUND`, `INPUT_TYPE`, or `INPUT_READ`; the command writes that
-result when the output path remains writable. Only an output-path create/write failure and a
-failure before the request envelope decodes escape as a filesystem `Result` error without a
-result artifact.
+result when the output path remains writable. Only an output persistence failure or a failure before
+the request envelope decodes escapes as a filesystem `Result` error without a valid result artifact.
+Pair cleanup failure is reported as `OUTPUT_PAIR_CLEANUP_FAILED` with the surviving evaluator-owned
+path(s), and is never rewritten as a successful result.
 
 No command calls `fs.read_file` on an unbounded JSON input. A shared bounded reader uses
 `fs.open`, a reusable buffer, and one probe byte, accumulating at most the applicable cap before
@@ -1289,7 +1298,9 @@ Validation and side-effect precedence is the same for every command:
    `rollback` perform no external process or network work.
 4. Validate every external result; for `evaluate`, require equal valid pre/post snapshots.
 5. Construct and validate the complete result in memory.
-6. Write the new output path once. A write failure is returned as a filesystem `Error`; a partial
+6. Write the new output path once, or for `evaluate` finalize the two validated temporary files in
+   the exact pair order above. A temporary/finalization failure returns `OUTPUT_WRITE` after cleanup;
+   an unsuccessful cleanup returns `OUTPUT_PAIR_CLEANUP_FAILED` with the recovery path(s). A partial
    output is invalid and is never reported as a successful artifact.
 
 Stable error labels identify the first failing check in this order. Later checks do not overwrite
@@ -1330,6 +1341,7 @@ never parsed. Successful or complete scored statuses use `NONE` and empty detail
 | `INVALID_PROPOSAL` | `PROPOSAL_SCHEMA`, `PROPOSAL_BOUNDS`, `PROPOSAL_NO_CHANGE` |
 | `PROVIDER_ERROR` | `PROVIDER_TIMEOUT`, `PROVIDER_TRANSPORT`, `PROVIDER_HTTP_STATUS`, `PROVIDER_RESPONSE_TOO_LARGE` |
 | Evaluation `ERROR` | `WORKSPACE_UNSAFE`, `SNAPSHOT_MISMATCH`, `SNAPSHOT_ERROR`, `ADAPTER_TIMEOUT`, `ADAPTER_PROCESS_OUTPUT`, `ADAPTER_RESULT`, `INPUT_DRIFT`, `ENVIRONMENT_DRIFT`, `ARITHMETIC`, `RESULT_TOO_LARGE`, `CLEANUP_FAILED` |
+| Output persistence failure before a valid result | `OUTPUT_WRITE`, `OUTPUT_PAIR_CLEANUP_FAILED` |
 | Failed activation decision | the terminal status label itself: `INELIGIBLE`, `PARENT_MISMATCH`, `SCOPE_MISMATCH`, `UNKNOWN_TARGET`, or `NO_CHANGE` |
 
 The snapshot helper uses its narrower table:
@@ -1508,11 +1520,22 @@ evaluation_evidence_path
 `PromptEvaluationEvidence` sidecar. It must be a writable, non-existing path under the same project
 root and is validated before any snapshot, adapter, or other evaluator side effect. The evaluator
 writes the result at the CLI output path and the evidence at this explicit path as one logical pair;
-the evidence never points back to a path in the result. The pair has no cross-file atomicity promise:
-if either final write fails, the command reports the filesystem error and neither output is a valid
-evaluation pair; an existing path is never overwritten. The evidence path must also be physically
-distinct from the CLI result path, including after resolving existing parent components and symlink
-aliases; an alias is `INVALID_INPUT` before any evaluator work.
+the evidence never points back to a path in the result. The pair has no cross-file atomicity promise,
+but its temporary and failure behavior is exact: after both canonical byte strings are complete and
+validated in memory, the evaluator exclusively creates one bounded temporary file beside each target,
+writes and closes both temporary files, and rechecks that both final target paths are still absent. It
+then finalizes in fixed order with no-replace renames: the result temporary file to the result path
+followed by the evidence temporary file to the evidence path. A target created between the recheck
+and its rename is a finalization failure; no rename may replace an existing path. A temporary-write
+or first-finalization failure removes both temporary files and returns
+`OUTPUT_WRITE`. If the second finalization fails, the evaluator removes any finalized output first,
+then both temporary files, and rechecks that both target paths are absent. Successful cleanup returns
+`OUTPUT_WRITE` and leaves no output artifact. If any cleanup removal or recheck fails, the evaluator
+returns `OUTPUT_PAIR_CLEANUP_FAILED` with the exact surviving path(s); it never reports a successful
+result, never overwrites those paths on a retry, and the caller owns removal of the explicitly
+reported orphan before retrying. The evidence path must also be physically distinct from the CLI
+result path, including after resolving existing parent components and symlink aliases; an alias is
+`INVALID_INPUT` before any evaluator work.
 
 The `verifier_*` fields are explicit source-boundary inputs, not ambient configuration. They have no
 defaults and are not inherited from `project_root`, the task manifest, the process environment, or
@@ -1539,8 +1562,9 @@ A missing, duplicated, or malformed field is `INVALID_INPUT` before any snapshot
 does not accept caller-supplied reachability booleans. After request and policy validation, it invokes
 the content-bound source verifier described below with the three source roots, the conditional
 FILE_SET manifest path, the Git tool identity, and expected identities. The helper returns one
-observation for each named source; the evaluator persists only the resulting `VERIFIED`/`UNVERIFIED`
-states and unchanged expected identities in the evidence sidecar. The evaluator copies those
+observation for each named source; the evaluator persists both the resulting `VERIFIED`/`UNVERIFIED`
+states and the observed identity options alongside the unchanged expected identities in the evidence
+sidecar. The evaluator copies those
 expected identities into `EnvironmentIdentityCore`; it never
 uses an observed checkout revision as the core field:
 
@@ -1593,16 +1617,19 @@ PromptSourceVerifierResult:
 
 `PromptSourceVerifierResult.status: COMPLETE` means that the helper produced a valid bounded
 result; it requires `error_code: NONE`, an empty `error`, and one explicit
-`VERIFIED`/`UNVERIFIED` value for each of the three reachability fields. An observed commit or
-file-set digest is `Some` only when the helper opened that source and obtained the corresponding
-value; it is `None` when that source could not be opened or observed, regardless of whether the
-source was otherwise proven. `status: UNAVAILABLE` is the parent-side envelope for a timeout,
-child-output cap, child-process failure, malformed result, or unavailable Git tool; it requires a
-non-`NONE` code from `HELPER_TIMEOUT`, `HELPER_OUTPUT_LIMIT`, `HELPER_PROCESS`,
-`HELPER_RESULT`, or `GIT_UNAVAILABLE`, a bounded non-empty English `error`, all three reachability
-fields `UNVERIFIED`, and all observed fields `None`. The evaluator may synthesize this envelope
-only after validating the child boundary and never treats it as source proof; gate validation
-rejects it before acceptance.
+`VERIFIED`/`UNVERIFIED` value for each of the three reachability fields. `VERIFIED` requires the
+corresponding observed option to be `Some` and exactly equal to the request's expected identity:
+`align_llm_observed_head == expected_align_llm_commit`,
+`align_observed_revision == expected_align_revision`, and
+`corpus_observed_source_sha256 == expected_corpus_source_sha256`. `UNVERIFIED` permits an absent
+observation or an observed value that differs from the expected identity, but the observed option is
+still present whenever the helper opened the source and obtained a value. `status: UNAVAILABLE` is
+the parent-side envelope for a timeout, child-output cap, child-process failure, malformed result,
+or unavailable Git tool; it requires a non-`NONE` code from `HELPER_TIMEOUT`, `HELPER_OUTPUT_LIMIT`,
+`HELPER_PROCESS`, `HELPER_RESULT`, or `GIT_UNAVAILABLE`, a bounded non-empty English `error`, all
+three reachability fields `UNVERIFIED`, and all observed fields `None`. The evaluator may synthesize
+this envelope only after validating the child boundary and never treats it as source proof; gate
+validation rejects it before acceptance.
 
 `mode: EVALUATION` requires `tested_align_llm_head: None` and proves that the align-llm checkout
 `HEAD` exactly equals `expected_align_llm_commit`. `mode: GATE` requires `tested_align_llm_head:
@@ -1610,8 +1637,8 @@ Some(h)`, proves that the source-bundle align-llm checkout `HEAD` exactly equals
 that `expected_align_llm_commit` is an ancestor of `h` in that same complete-history repository.
 Both modes require a clean exact Align checkout and the exact corpus `GIT_COMMIT` or canonical
 `FILE_SET` manifest described in §4.2. The helper reports an observed identity only for a source it
-actually opened; the evaluator uses the expected claims for `EnvironmentIdentityCore` and the
-reachability labels for `PromptVerifierTrust`.
+actually opened; the evaluator uses the expected claims for `EnvironmentIdentityCore` and persists
+both the observation and reachability label in `PromptVerifierTrust`.
 
 `expected_corpus_source_repository_id` is non-empty for `GIT_COMMIT` and empty for `FILE_SET`,
 matching the `CorpusRevision` discriminator. `corpus_file_set_manifest_path` is `Some` exactly for
@@ -1623,16 +1650,26 @@ bounded request file, and invokes exactly `<helper> --source-verifier-request <r
 --result <result>` with no user-supplied extra arguments. The helper runs with `env_clear()` and
 only the fixed non-secret locale/Git configuration entries `LANG=C`, `LC_ALL=C`,
 `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`,
-`GIT_OPTIONAL_LOCKS=0`, and `GIT_TERMINAL_PROMPT=0`; its working directory is the declared project
-root for `EVALUATION` and the explicit source-bundle root for `GATE`. The request is capped at
+`GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, `GIT_NO_REPLACE_OBJECTS=1`, and
+`GIT_GRAFT_FILE=/dev/null`; its working directory is the declared project root for `EVALUATION`
+and the explicit source-bundle root for `GATE`. The request is capped at
 65,536 bytes, the result and captured child streams at 262,144 bytes, and the timeout is exactly
 60,000,000,000 ns; this fixed timeout is part of the helper contract and cannot be selected by a
-request, policy, environment, or caller. The helper uses raw byte filesystem APIs for FILE_SET traversal and streams the
-manifest under its 8,388,608-byte cap; it does not use Align `fs.read_dir`, ambient `PATH`, or a
-credential-bearing environment. A timeout, over-limit output, malformed result, unavailable Git
-tool, missing safe source, or inability to prove a source yields `UNAVAILABLE`/`UNVERIFIED` for the
+request, policy, environment, or caller. The helper uses raw byte filesystem APIs for FILE_SET
+traversal and streams the manifest under its 8,388,608-byte cap; it does not use Align `fs.read_dir`,
+ambient `PATH`, or a credential-bearing environment. A timeout, over-limit output, malformed result,
+unavailable Git tool, missing safe source, or inability to prove a source yields `UNAVAILABLE`/`UNVERIFIED` for the
 unproven sources and no gate eligibility. An invalid helper/tool path, digest, mode, or request is
 `INVALID_INPUT` before this child launch.
+
+Before any source identity or ancestry observation, the helper resolves the repository's absolute
+Git common directory with `<git> -C <repository> rev-parse --path-format=absolute --git-common-dir`
+under that same cleared environment. The result must be one existing physical directory. The raw
+byte filesystem check then rejects any present `refs/replace`, `info/grafts`, or
+`objects/info/alternates` entry in that common directory, including a symlink, directory, or other
+non-regular entry; the explicit `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` settings
+remain in force for every subsequent status, revision, object, and ancestry command. A repository
+using any of these mechanisms is `UNVERIFIED`, never `VERIFIED`.
 
 The align-llm observation requires a clean checkout whose `HEAD` exactly equals
 `verifier_align_llm_commit`; no ancestor commit or source-scope exception is permitted. The Align
@@ -1787,12 +1824,17 @@ The evaluator embeds every unique `SnapshotRequest`, `SnapshotResult`, and norma
 `TaskInputSnapshot` once, keyed by content digest, and persists one `RunSnapshotAttestation` per
 attempted adapter invocation in execution order. A complete attestation requires two `MATCH`
 results, two input-snapshot references equal to the task baseline, the common environment, and
-`status: COMPLETE`. A failed precheck has no after fields and no adapter call. A failed postcheck
-retains the before references and observed after result when available but no scored row. An adapter
-timeout, process-output violation, missing result, or malformed result after a successful precheck
-uses `status: ADAPTER_FAILED`, retains the before references, has no after fields or row, and is the
+`status: COMPLETE`. A failed precheck has no after fields and no adapter call. A later `MATCH`
+precheck whose environment probe or derived task-input snapshot differs from the established task
+baseline uses `status: PRECHECK_DRIFT`, retains the differing before references, has no after fields
+or row, and is terminal before adapter launch. A failed postcheck retains the before references and
+observed after result when available but no scored row. An after `MATCH` whose environment probe or
+derived task-input snapshot differs from the established baseline uses `status: POSTCHECK_DRIFT`,
+retains both differing after references, and is terminal without a row. An adapter timeout,
+process-output violation, missing result, or malformed result after a successful precheck uses
+`status: ADAPTER_FAILED`, retains the before references, has no after fields or row, and is the
 terminal attestation. Thus acceptance can recompute the pre/post equality claim and distinguish an
-adapter failure from a failed snapshot without historical helper files.
+adapter failure, snapshot failure, and baseline drift without historical helper files.
 
 Tasks run sequentially in corpus order. Within each task, samples run in ascending order; odd
 samples run parent then candidate and even samples candidate then parent. No task or variant call
@@ -1943,8 +1985,9 @@ bytes and uses the existing UTF-8-safe truncation marker. These fields retain th
 evidence without relying on adapter process output.
 
 `gate_eligible` is true only when every requested pair is complete, the corpus and sample minima
-hold, the verifier evidence names the exact clean source, external Align, and corpus identities and
-marks all three reachability fields `VERIFIED`, the final
+hold, the verifier evidence names the exact clean source, external Align, and corpus identities,
+marks all three reachability fields `VERIFIED`, and each observed identity equals its corresponding
+expected identity; the final
 `EnvironmentIdentity.core.logical_cpu_count` is `Some(positive)`, the provider kind is not
 `FIXTURE`, and every row's `SeedCapabilityAttestation.result` is `APPLIED` with the requested seed.
 A complete evaluation with `None` CPU availability, any `UNSUPPORTED`/`REJECTED` seed, a
@@ -2042,8 +2085,11 @@ PromptVerifierTrust:
   expected_corpus_source_repository_id
   expected_corpus_source_sha256
   align_llm_reachability: PromptVerifierReachability
+  align_llm_observed_head: Option<str>
   align_reachability: PromptVerifierReachability
+  align_observed_revision: Option<str>
   corpus_reachability: PromptVerifierReachability
+  corpus_observed_source_sha256: Option<str>
   content_sha256
 
 PromptExpectedInputDigest:
@@ -2093,11 +2139,12 @@ and provider request to `GenerationRequestIdentity.provider_request_sha256`. The
 validates both artifact content digests before C6c2 is called; C6c2 compares these decoded fields and
 does not read JSON, re-encode records, or recompute canonical SHA-256 bytes.
 
-`PromptVerifierTrust` carries expected identities, not ambient labels. Its three reachability fields
-are supplied only by the explicit source boundary described in `PromptEvaluateRequest`, after that
-boundary checks the exact clean commit or file-set in each named repository. The evaluator copies the
-three expected source identities into the result environment claim; reachability is the separate
-proof state and never substitutes an observed checkout value. The pure verifier requires
+`PromptVerifierTrust` carries expected and observed identities, not ambient labels. Its three
+reachability and three observed-identity fields are supplied only by the explicit source boundary
+described in `PromptEvaluateRequest`, after that boundary checks the exact clean commit or file-set
+in each named repository. The evaluator copies the three expected source identities into the result
+environment claim; reachability is the separate proof state and never substitutes an observed
+checkout value. The pure verifier requires
 `expected_align_llm_commit` to equal `EnvironmentIdentity.core.align_llm_commit` whenever the result
 carries an environment (mandatory for every complete status), the expected Align revision to equal
 both the evaluation scope and that environment, and the expected corpus fields to equal the complete
@@ -2105,10 +2152,12 @@ both the evaluation scope and that environment, and the expected corpus fields t
 equality; it preserves the source states already observed by the source boundary, while each source
 observation that was unavailable remains `UNVERIFIED`, and it can return only the non-gate
 `NONCOMPLETE_ERROR` verdict. All three reachability fields must be present; their value must be
-`VERIFIED` before returning a gate-eligible verdict. `UNVERIFIED` is a valid reason for a complete
-non-gate comparison, including an unavailable or mismatching verifier checkout, while a malformed
-or scope-disagreeing expected identity is invalid. These content digests detect corruption, not
-author authentication.
+`VERIFIED` before returning a gate-eligible verdict, and each `VERIFIED` field must have a `Some`
+observed identity equal to its expected identity. `UNVERIFIED` is a valid reason for a complete
+non-gate comparison, including an unavailable or mismatching verifier checkout; it may retain a
+different observed identity for diagnostics. A malformed, scope-disagreeing, or
+`VERIFIED`-without-equality identity is invalid. These content digests detect corruption, not author
+authentication.
 
 An `INVALID_INPUT` result emitted before evaluator inputs are established has no evidence sidecar and
 cannot be supplied to `prompt accept`. Once evaluation has established an evaluation identity, an
@@ -2116,8 +2165,9 @@ cannot be supplied to `prompt accept`. Once evaluation has established an evalua
 or source observations are represented by `UNVERIFIED`, while source observations completed before
 the failure remain `VERIFIED`. The decoded verifier returns
 `NONCOMPLETE_ERROR` without treating the prefix as a score. Only complete comparison statuses need a
-full expected-input table and all three reachability fields; the fields may be `VERIFIED` or
-`UNVERIFIED`, but only the all-`VERIFIED` combination can satisfy the gate.
+full expected-input table and all three reachability and observed-identity fields; the fields may be
+`VERIFIED` or `UNVERIFIED`, but only the all-`VERIFIED` combination with three exact observed
+identities can satisfy the gate.
 
 Terminal statuses are:
 
@@ -2146,11 +2196,12 @@ digest; every other optional record is `None`, and every array is empty. Its evi
 expected-input entries.
 Retention is the longest execution-order prefix whose measurement and before/after attestation both
 validate; a valid `ERROR` measurement with an unchanged complete attestation is the final retained
-row, while a failed pre/post check contributes no row and is represented only by its terminal
-attestation. A cleanup failure after a valid non-`ERROR` measurement and complete attestation also
-retains that row and is represented by the terminal `CLEANUP_FAILED` result error. The prefix
-validator returns `TERMINAL_ERROR` when that final retained row has status `ERROR`, and
-`VALID_PREFIX` when the terminal failure contributes no row or is this post-row cleanup failure.
+row, while a failed pre/post check, `PRECHECK_DRIFT`, `ADAPTER_FAILED`, or `POSTCHECK_DRIFT`
+contributes no row and is represented only by its terminal attestation. A cleanup failure after a
+valid non-`ERROR` measurement and complete attestation also retains that row and is represented by
+the terminal `CLEANUP_FAILED` result error. The prefix validator returns `TERMINAL_ERROR` when that
+final retained row has status `ERROR`, and `VALID_PREFIX` when the terminal failure contributes no
+row or is this post-row cleanup failure.
 No invocation or attestation occurs after the first error. `RESULT_TOO_LARGE` emits the compact
 envelope and retains no scoreable prefix or trace array. All complete
 comparison statuses require every
@@ -2729,8 +2780,16 @@ Before deriving the head, the validator validates `C6_GATE_GIT_EXECUTABLE_PATH` 
 absolute regular executable and checks its bytes against the locator/policy Git digest. The Make
 target does not invoke an ambient `git` to perform these checks. The validator then invokes that
 exact executable path, with `env_clear()` and only `LANG=C`, `LC_ALL=C`, `GIT_CONFIG_NOSYSTEM=1`,
-`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_OPTIONAL_LOCKS=0`, and
-`GIT_TERMINAL_PROMPT=0`, for each fixed command in the actual CI checkout at `$(pwd)`:
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_OPTIONAL_LOCKS=0`,
+`GIT_TERMINAL_PROMPT=0`, `GIT_NO_REPLACE_OBJECTS=1`, and `GIT_GRAFT_FILE=/dev/null`, for each
+fixed command in the actual CI checkout at `$(pwd)`. Before those commands, it resolves the
+absolute Git common directory with
+`<git> -C <ci-root> rev-parse --path-format=absolute --git-common-dir` under the same environment,
+requires one existing physical directory, and rejects any present `refs/replace`, `info/grafts`, or
+`objects/info/alternates` entry there, including symlinks, directories, and special files. A source
+bundle with any rejected mechanism fails the gate before identity or ancestry observation. The
+The source verifier applies the same common-directory check and fixed environment to every source-bundle
+Git checkout it opens; the gate validator's own identity and ancestry commands have no exception:
 `<git> -C <ci-root> status --porcelain --untracked-files=all`,
 `<git> -C <ci-root> rev-parse --is-inside-work-tree`,
 `<git> -C <ci-root> rev-parse --is-shallow-repository`, and
@@ -2764,21 +2823,22 @@ explicitly reviewed deferral.
 | Contract | Intended owner | Planned acceptance evidence |
 | --- | --- | --- |
 | Four CLI operations and exact arguments | `src/main.align` | CLI smoke covers valid and invalid arity for every operation |
-| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git>` passes both explicit values as `--source-bundle-root` and `--git-executable-path`, rejects missing/relative/unsafe roots or tools before source reads, checks the derived clean CI head and evaluated-commit ancestry, validates the source-verifier policy/helper/tool identities, and revalidates every locator and exact source identity |
-| Source-verifier request/result boundary | C6f1 source verifier, `src/prompt_evaluate.align`, gate validator | request/result kind, mode, exact argv/env/cwd, helper/Git digests, timeout/capture caps, raw-byte FILE_SET fixtures, `COMPLETE`/`UNAVAILABLE` field shapes, and gate rejection of unavailable proof |
+| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git>` passes both explicit values as `--source-bundle-root` and `--git-executable-path`, rejects missing/relative/unsafe roots or tools before source reads, resolves the Git common directory, rejects replacement/graft/alternate mechanisms, uses the fixed no-replace/no-graft environment for every Git command, checks the derived clean CI head and evaluated-commit ancestry, validates the source-verifier policy/helper/tool identities, and revalidates every locator and exact source identity |
+| Source-verifier request/result boundary | C6f1 source verifier, `src/prompt_evaluate.align`, gate validator | request/result kind, mode, exact argv/env/cwd, common-directory and replacement/graft/alternate rejection, helper/Git digests, timeout/capture caps, raw-byte FILE_SET fixtures, `COMPLETE`/`UNAVAILABLE` field shapes, observed-identity equality for `VERIFIED`, and gate rejection of unavailable proof |
 | Declared records, bounds, canonical digest | `src/prompt_model.align` | round-trip, tamper, unknown-version, and oversize fixtures |
 | Persisted string-label mapping | `src/prompt_model.align` | every allowed and unknown kind/status/operation/stage label plus canonical golden vectors |
 | Fixed hierarchy and rendering order | `src/prompt_model.align` | golden rendered prompt and immutable base/repo/task tests |
 | Initial context-policy semantics | `src/prompt_model.align` | disabled sections, source bounds, UTF-8-safe patch/diagnostic truncation; failure-memory selection is explicitly deferred to C6b-memory after Request 7 |
 | Content-bound A/B inputs | `src/prompt_evaluate.align`, task manifests | expected digest, workspace preflight, deduplicated snapshot/input-snapshot records, per-invocation pre/post drift, mode, tree, dirty-source, seed, generation, environment, and FILE_SET-manifest regressions |
-| Explicit verifier source inputs | `src/prompt_evaluate.align`, C6f1 source verifier | absolute root/manifest/tool path validation, policy/helper/Git digest and runtime validation, `FILE_SET` option pairing, canonical raw-byte manifest membership/mode/digest, exact clean checkout observations, fixed argv/env/cap/timeout, and `UNVERIFIED` preservation before any adapter or snapshot call |
+| Explicit verifier source inputs | `src/prompt_evaluate.align`, C6f1 source verifier | absolute root/manifest/tool path validation, policy/helper/Git digest and runtime validation, `FILE_SET` option pairing, canonical raw-byte manifest membership/mode/digest, exact clean checkout observations, fixed argv/env/cap/timeout, observed identity copied into evidence, `VERIFIED` equality, and `UNVERIFIED` preservation before any adapter or snapshot call |
 | Explicit adapter request and environment isolation | `src/prompt_evaluate.align`, task adapter | adapter-request identity/path/digest fixtures; env-clear rejection and exact allowlisted-value survival in both directions |
 | Producer-owned environment identity | trusted probe carriers, evaluator verifier | non-circular core preimage, carrier equality, OS/CPU/GPU/compiler/runtime unavailable-value, `Option` CPU-count, source-policy/helper/Git identity, and digest fixtures |
-| Physical path trust boundary | snapshot helper, all command owners, and explicit verifier source boundary | project-root containment for ordinary inputs plus read-only external verifier-root exception; symlink component, dangling link, output link, special file, physical escape, relative/absolute, cleanup, and early-exit regressions |
+| Physical path trust boundary | snapshot helper, all command owners, and explicit verifier source boundary | project-root containment for ordinary inputs plus read-only external verifier-root exception; symlink component, dangling link, output link, special file, physical escape, Git common-directory replacement/graft/alternate entries, relative/absolute, cleanup, and early-exit regressions |
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
-| Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, and no-partial-write vectors |
-| Exact source identity and integration method | explicit evaluator source inputs, C6f1 source verifier, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for evaluator align-llm, derived clean CI-head equality plus evaluated-commit ancestry for the gate, policy/helper/Git identity revalidation, expected-identity/environment binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
+| Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, no-partial-write vectors, temporary/final output order, second-finalization failure, and pair cleanup-failure recovery |
+| Evaluation result/evidence pair persistence | `src/prompt_evaluate.align`, `src/main.align` | two exclusive sibling temporary files, bounded canonical bytes, result-then-evidence finalization, first-finalization and second-finalization failures, reverse cleanup, absent-target recheck, `OUTPUT_WRITE`, `OUTPUT_PAIR_CLEANUP_FAILED`, and explicit orphan recovery path |
+| Exact source identity and integration method | explicit evaluator source inputs, C6f1 source verifier, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for evaluator align-llm, derived clean CI-head equality plus evaluated-commit ancestry for the gate, replacement/graft/alternate rejection through the resolved Git common directory, fixed no-replace/no-graft environment, policy/helper/Git identity revalidation, expected/observed-identity binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
@@ -2790,9 +2850,9 @@ explicitly reviewed deferral.
 | Exact row and scope binding | `src/prompt_evaluate.align` | stale variant, wrong task/sample/provider/digest fixtures |
 | Validation precedence and invalid-result shape | all command owners | table-driven first-failure fixtures prove no external call, source-helper/policy/tool rejection before source reads, evidence-output handling, result/evidence alias rejection, and exact `Option` population |
 | Complete metrics and serious regressions | `src/prompt_score.align` | table-driven comparison fixtures for every rule in section 8 |
-| Persisted evaluation execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete/failed attestation state shapes including `ADAPTER_FAILED`, retained non-`ERROR` row after post-row `CLEANUP_FAILED`, exact error prefix, bounded overflow counter/digest, and `RESULT_TOO_LARGE` empty-result fixtures |
+| Persisted evaluation execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete/failed/drift attestation state shapes including `PRECHECK_DRIFT`, `ADAPTER_FAILED`, and `POSTCHECK_DRIFT`, retained non-`ERROR` row after post-row `CLEANUP_FAILED`, exact error prefix, bounded overflow counter/digest, and `RESULT_TOO_LARGE` empty-result fixtures |
 | Compact result-size failure | `src/prompt_evaluate.align`, `src/prompt_model.align`, `src/prompt_score.align` | canonical `PromptTraceOverflow` counter/digest golden vectors, exact empty-array/option shape, cap+1 transition, bounded compact encoding, empty evidence inputs, and no scorer invocation |
-| Evaluation evidence binding | `src/prompt_evaluate.align`, `src/prompt_model.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing/wrong/duplicate/out-of-order expected-input rows, empty compact-result evidence, result-digest mismatch, expected-align-llm binding, each reachability state, explicit evidence-path acceptance, and gate-manifest pairing fixtures |
+| Evaluation evidence binding | `src/prompt_evaluate.align`, `src/prompt_model.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing/wrong/duplicate/out-of-order expected-input rows, empty compact-result evidence, result-digest mismatch, expected/observed source-identity binding for every `VERIFIED` state, each reachability state, explicit evidence-path acceptance, and gate-manifest pairing fixtures |
 | Acceptance reuses the pure verifier | `src/prompt_score.align`, `src/prompt_state.align` | tampered fixture status/aggregate/reason/eligibility/evidence is rejected before activation |
 | Accept only eligible improvement | `src/prompt_state.align` | improved/no-improvement/regression/error/parent-mismatch cases |
 | Activation operation invariants | `src/prompt_state.align` | baseline/accept/rollback cross-field table plus every forbidden combination |
@@ -2812,13 +2872,13 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
 | Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
-| Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator reopens all locator roots, validates policy/helper/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
-| Source-verifier process boundary | policy/helper/Git identity and request/result codecs | N/A | fixed argv, cleared environment, cwd, byte caps, timeout, raw-byte FILE_SET traversal, result-status shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke` |
+| Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator reopens all locator roots, resolves and checks each Git common directory, rejects replacement/graft/alternate mechanisms, validates policy/helper/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
+| Source-verifier process boundary | policy/helper/Git identity and request/result codecs | N/A | fixed argv, cleared environment including no-replace/no-graft controls, cwd, common-directory checks, byte caps, timeout, raw-byte FILE_SET traversal, result-status/observed-identity shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-git-replacement-graft-smoke`, `prompt-source-verifier-observed-identity-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke` |
 | Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation and accepts a retained non-`ERROR` row after `CLEANUP_FAILED` | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke`, `prompt-verifier-cleanup-retention-smoke` |
 | Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
-| Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, cleanup, and result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-error-smoke`, `prompt-adapter-failed-attestation-smoke`, `prompt-trace-overflow-smoke` |
-| Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first source-helper, snapshot, adapter, or postcheck failure stops later invocations and retains only the valid prefix or explicit compact envelope | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke`, `prompt-adapter-failed-terminal-smoke`, `prompt-trace-overflow-terminal-smoke` |
-| Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode; borrowed verifier inputs are not retained | process outputs cloned while owner lives; helper/tool owners, result/evidence owners, and files/checkouts removed; empty raw workspace restored; overflow trace stream released | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke`, `prompt-verifier-borrow-lifetime-smoke`, `prompt-source-helper-cleanup-smoke`, `prompt-trace-overflow-drop-smoke` |
+| Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, cleanup, pair-finalization, and result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-smoke`, `prompt-evidence-pair-finalization-smoke`, `prompt-adapter-failed-attestation-smoke`, `prompt-trace-overflow-smoke` |
+| Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first source-helper, snapshot, adapter, precheck drift, postcheck, postcheck drift, or result-size failure stops later invocations and retains only the valid prefix or explicit compact envelope | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke`, `prompt-adapter-failed-terminal-smoke`, `prompt-drift-attestation-smoke`, `prompt-trace-overflow-terminal-smoke` |
+| Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode; borrowed verifier inputs are not retained | process outputs cloned while owner lives; helper/tool owners, result/evidence temp/final owners, and files/checkouts removed; failed pair finalization performs reverse cleanup or emits its explicit recovery error; empty raw workspace restored; overflow trace stream released | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke`, `prompt-verifier-borrow-lifetime-smoke`, `prompt-source-helper-cleanup-smoke`, `prompt-evidence-pair-cleanup-smoke`, `prompt-trace-overflow-drop-smoke` |
 | Replacement/move-out | source fields are reconstructed or moved once; no aliasing rewrite | `PromptRender` moves to caller as one bare value | accepted/rollback variant embedded unchanged; source not reused; verifier returns only Copy status | rows, snapshots, and independent evidence move into the final result/pair; builder source is consumed once | `prompt-move-compile-smoke`, `prompt-variant-identity-smoke`, `prompt-evidence-move-smoke` |
 | Concurrent/overlap attempt | N/A: pure validation has no shared mutable state | N/A: pure rendering has no shared mutable state | immutable DAG branches are independent; shared output/activation mutation is rejected before side effects | complete experiment/evaluate/accept/rollback 4x4 matrix; no overlapping adapter calls; disjoint independent processes are supported | `prompt-operation-overlap-smoke`, `prompt-no-overlap-smoke`, `prompt-existing-output-smoke`, `prompt-evidence-result-alias-smoke` |
 
@@ -3315,12 +3375,15 @@ The verifier's deterministic validation order is:
    corpus/task/sample schedule and the odd/even variant order, and their task/sample/variant
    identities must equal the corresponding row. `COMPLETE` requires two `MATCH` snapshots, equal
    ordered artifact digests, equal before/after input snapshots, and the common result environment.
-   `PRECHECK_FAILED` and `ADAPTER_FAILED` have no after fields or row;
-   `POSTCHECK_FAILED` has the required before/after fields but no row. A failed attestation is
-   terminal: no later attestation or row is permitted.
+   `PRECHECK_FAILED`, `PRECHECK_DRIFT`, and `ADAPTER_FAILED` have no after fields or row;
+   `POSTCHECK_FAILED` and `POSTCHECK_DRIFT` have the required before/after fields but no row.
+   `PRECHECK_DRIFT` and `POSTCHECK_DRIFT` retain the differing `MATCH` observation and input
+   snapshot, while the ordinary failed states retain only the fields in their state table. A failed
+   attestation is terminal: no later attestation or row is permitted.
    For `ERROR`, rows are exactly the longest valid execution-order prefix; a valid `ERROR`
    measurement with an unchanged complete attestation is the final retained row, and an
-   adapter/precheck/postcheck/cleanup failure is the first terminal event. A cleanup failure after
+   adapter/precheck/precheck-drift/postcheck/postcheck-drift/cleanup failure is the first terminal
+   event. A cleanup failure after
    a valid non-`ERROR` measurement and complete attestation retains that final row, binds
    `CLEANUP_FAILED`, and is verified as `VALID_PREFIX`; cleanup before a valid row retains none.
    `RESULT_TOO_LARGE` is the sole compact-result exception: require `trace_failure: Some`, the
@@ -3330,8 +3393,11 @@ The verifier's deterministic validation order is:
    only the bounded counter and digest fields of the compact envelope;
    the discarded trace is not replayable.
 4. Validate the evidence artifact kind, evaluation ID, `evaluation_result_sha256`, trust identity
-   fields, and the three reachability labels. The result content digest must equal the evidence's
-   result digest. For a complete result, `expected_align_llm_commit` must equal
+   fields, the three reachability labels, and the three observed-identity options. The result content
+   digest must equal the evidence's result digest. For every source, `VERIFIED` requires the observed
+   option to be `Some` and equal to its expected identity; `UNVERIFIED` permits `None` or a differing
+   observed value, while an unavailable helper result requires all three observed options to be
+   `None`. For a complete result, `expected_align_llm_commit` must equal
    `EnvironmentIdentity.core.align_llm_commit`, and expected Align revision must equal both that
    environment and scope. For a noncomplete result with an environment, the same equalities are
    checked; without an environment, preserve the source states captured before the failure, skip
@@ -3378,11 +3444,11 @@ The C6c2 closure matrix is:
 | successful decoded verification | `src/prompt_score.align` | `prompt-verifier-smoke` for eligible improvement, non-gate improvement, no improvement, serious regression, and valid incomplete statuses |
 | embedded identity/reference pairs | `src/prompt_score.align`, C6a1/C6a2 codec | wrong kind/ID/digest/path, missing embedded experiment/parent, and stale parent/candidate fixtures |
 | incomplete-prefix delegation | C6c1p and C6c2 owners in `src/prompt_score.align` | empty/strict/terminal-error/complete prefixes; `validate_prefix` status agrees with trace and no aggregate/reason output is manufactured |
-| persisted execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete before/after equality, `ADAPTER_FAILED`/precheck/postcheck terminal shapes, exact error prefix, no post-failure rows, bounded `PromptTraceOverflow`, and `RESULT_TOO_LARGE` empty-result fixtures |
-| independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing, wrong, duplicate, out-of-order, extra, and mismatched expected-input rows; result digest mismatch; explicit accept evidence path; matching gate-manifest evidence reference |
-| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; policy/helper/Git identity, fixed argv/env/cap/timeout, raw-byte FILE_SET traversal, derived gate-head ancestry, expected-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
+| persisted execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete before/after equality, `ADAPTER_FAILED`/precheck/postcheck/drift terminal shapes, exact error prefix, no post-failure rows, bounded `PromptTraceOverflow`, and `RESULT_TOO_LARGE` empty-result fixtures |
+| independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing, wrong, duplicate, out-of-order, extra, and mismatched expected-input rows; result digest mismatch; explicit accept evidence path; expected/observed source-identity equality; matching gate-manifest evidence reference; `prompt-source-verifier-observed-identity-smoke` |
+| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; policy/helper/Git identity, fixed argv/env/cap/timeout, common-directory replacement/graft/alternate rejection, raw-byte FILE_SET traversal, derived gate-head ancestry, expected/observed-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
 | row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
-| malformed input and error precedence | `src/prompt_score.align` | status-specific error families including `ADAPTER_FAILED` and `RESULT_TOO_LARGE`, invalid option/discriminator combinations, first failing validation, compact counter/digest/empty-shape checks, and no side effects |
+| malformed input and error precedence | `src/prompt_score.align` | status-specific error families including `ADAPTER_FAILED`, drift states, and `RESULT_TOO_LARGE`, invalid option/discriminator combinations, first failing validation, compact counter/digest/empty-shape checks, and no side effects |
 | allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; arithmetic/allocation failure is invalid before scorer call; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, and compiler ownership/drop checks |
 | JSON/document binding | C6a1/C6a2, deferred | N/A for C6c2; escaped-string round trips, canonical bytes, and content-digest recomputation require Request 7/12/13 acceptance before this verifier is called |
 
