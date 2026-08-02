@@ -5,15 +5,15 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-trust-prefix-rescope`, based on the terminal corrected-design checkpoint
-  `20909aecb9c08f9f7313ef2c0ffe34d9fcb61865` and merged `main` commit
+- Branch: `agent/c6c2-source-gate-rescope`, based on the terminal corrected-design checkpoint
+  `192ca4086d11980f54c36991845f7b847901c925` and merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `5bbd24f` (`Separate verifier source claims from reachability`), based on
-  the terminal corrected-design checkpoint and merged `main` commit above.
+- Current source checkpoint: `a5255e5` (`Define gate source revalidation contract`), based on the
+  terminal corrected-design checkpoint and merged `main` commit above.
 - Active goal: finish, independently review, and merge the corrected C6c1p/C6c2 design. This branch
-  resolves the latest review's unavailable-checkout representation and C6c1p invalid-plan result
-  semantics. Implementation is not started and must wait for this design plus the C6a1/C6a2
-  decoded-record and Align adoption prerequisites.
+  resolves the latest review's exact-HEAD source proof, checked-in gate source revalidation, and
+  invalid-task-limit validation-order findings. Implementation is not started and must wait for this
+  design plus the C6a1/C6a2 decoded-record and Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -24,6 +24,13 @@ request checks, reviews, and attestations.
 - Complete: the latest design correction keeps expected source identity claims in the environment
   core while recording proof separately as reachability, and defines every C6c1p prefix-result field
   on invalid plans without unchecked multiplication.
+- Complete: verifier source proof now requires exact align-llm `HEAD` equality with the expected full
+  commit; no ancestor/source-scope exception is allowed. `PromptGateManifest` now embeds a
+  content-bound source-bundle-relative locator, and `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute>`
+  passes the explicit root to a validator that reopens all three source roots and recomputes exact
+  identities instead of trusting persisted reachability.
+- Complete: C6c1p validates all task-limit fields before computing the bounded expected row count;
+  invalid plans use the documented sentinel result.
 - In progress: push this re-scoped design, run one fresh independent comprehensive review, and merge
   it only after the review, check evidence, and all finding dispositions are complete.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
@@ -68,8 +75,8 @@ request checks, reviews, and attestations.
 - C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
   and `make ci` all passed before the merged `main` checkpoint.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
-- Current re-scoped design verification: `git diff --check` PASS and Markdown fence count 84 (even),
-  PASS on `5bbd24f`. Source tests and `make ci` are N/A because this remains
+- Current re-scoped design verification: `git diff --check` PASS and Markdown fence count 86 (even),
+  PASS on `a5255e5`. Source tests and `make ci` are N/A because this remains
   documentation/specification-only; the new draft PR requires hosted documentation/static checks.
 
 ## Constraints and decisions to preserve
@@ -94,8 +101,11 @@ request checks, reviews, and attestations.
   observed before an early error are preserved. `EnvironmentIdentityCore` keeps the explicit expected
   align-llm/Align claims even when a source root is unavailable or mismatching; `PromptVerifierTrust`
   reachability is the independent proof state, and only all-`VERIFIED` evidence is gate-eligible.
-  C6c1p returns `row_count: rows.len()`, `expected_row_count: -1`, `error_index: -1`, and
-  `error_code: 1` for invalid plans, without multiplication or side effects.
+  The align-llm source proof uses exact `HEAD` equality; the checked-in gate uses a manifest-owned
+  relative source locator plus explicit `C6_GATE_SOURCE_BUNDLE_ROOT` revalidation. C6c1p validates
+  every task-limit field before multiplication and returns `row_count: rows.len()`,
+  `expected_row_count: -1`, `error_index: -1`, and `error_code: 1` for invalid plans without
+  side effects.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
