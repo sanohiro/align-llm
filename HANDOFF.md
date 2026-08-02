@@ -20,12 +20,11 @@ request checks, reviews, and attestations.
   `4b3019a83598cfbae7feecdc88732b855c2e31c4`, immutable oracle commit
   `5338951e77415a21c42fbe030494c55d015f3542`, and finalization commit
   `bc386d8`.
-- Complete: baseline structural verification and the local implementation/adoption integration
-  gate.
-- In progress: push the consolidated review repair, refresh aggregate checks, and finish PR #41
-  integration.
-- Not started: hosted review checks, merge, and the bounded post-merge retrospective before C6c2
-  selection.
+- Complete: baseline structural verification, the local implementation/adoption integration gate,
+  the consolidated review repair, and its final-head `make ci` rerun.
+- In progress: finish PR #41 integration after the repair push.
+- Not started: hosted final-head checks, merge, and the bounded post-merge retrospective before
+  C6c2 selection.
 - Working tree is expected to be clean at the source checkpoint; no generated binaries, model
   weights, credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -51,8 +50,8 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push `6700a62`, rerun the aggregate integration gate and hosted checks for the final head, then
-   merge PR #41 with the required native review envelope and a merge commit.
+1. Mark PR #41 ready, wait for the final-head hosted checks, then merge it with the required native
+   review envelope and a merge commit.
 2. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
    C6c2 slice. Do not start failure-memory JSONL adoption until Request 7 is accepted, merged at a
    named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and `make ci`
