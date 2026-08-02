@@ -5,25 +5,27 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-prefix-rescope`, based on prior design checkpoint
-  `932a112e9ba2422bea892a3e52c015e9cd157f04` and merged `main` commit
+- Branch: `agent/c6c2-trust-prefix-rescope`, based on the terminal corrected-design checkpoint
+  `20909aecb9c08f9f7313ef2c0ffe34d9fcb61865` and merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `0ec5f14` (`Add C6c1 prefix validation contract`), based on the prior
-  C6c2 design checkpoint and merged `main` commit above.
-- Active goal: finish, independently review, and merge the corrected C6c1p/C6c2 design. The
-  previous C6c2 design checkpoint is intentionally not merge-ready; this branch re-scopes the
-  complete-row scorer versus incomplete-prefix validation, external verifier-root containment, and
-  early-error source-state preservation. Implementation is not started and must wait for this
-  design plus the C6a1/C6a2 decoded-record and Align adoption prerequisites.
+- Current source checkpoint: `5bbd24f` (`Separate verifier source claims from reachability`), based on
+  the terminal corrected-design checkpoint and merged `main` commit above.
+- Active goal: finish, independently review, and merge the corrected C6c1p/C6c2 design. This branch
+  resolves the latest review's unavailable-checkout representation and C6c1p invalid-plan result
+  semantics. Implementation is not started and must wait for this design plus the C6a1/C6a2
+  decoded-record and Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
-- Complete: the superseded C6c2 design checkpoint is retained as an unmerged historical branch and
-  is not merge-ready; this branch contains the corrected design instead.
+- Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
+  and are not merge-ready; this branch contains the next corrected design instead.
 - Complete: the re-scoped design consumes borrowed, decoded, content-validated result and evidence
   records; persists the execution trace contract; takes explicit verifier source paths and expected
   identities; binds expected align-llm commit to the result environment; references the evidence
   sidecar from `PromptGateManifest`; and now delegates incomplete rows to C6c1p `validate_prefix`.
-- In progress: run the fresh independent design review for this corrected branch and merge it only
-  after the review, check evidence, and all finding dispositions are complete.
+- Complete: the latest design correction keeps expected source identity claims in the environment
+  core while recording proof separately as reachability, and defines every C6c1p prefix-result field
+  on invalid plans without unchecked multiplication.
+- In progress: push this re-scoped design, run one fresh independent comprehensive review, and merge
+  it only after the review, check evidence, and all finding dispositions are complete.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -65,10 +67,10 @@ request checks, reviews, and attestations.
 
 - C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
   and `make ci` all passed before the merged `main` checkpoint.
-- The previous C6c2 design branch is a terminal, unmerged checkpoint; do not repair or merge it.
-- Current corrected design verification: `git diff --check` PASS and Markdown fence count 84 (even),
-  PASS. Source tests and `make ci` are N/A because this remains documentation/specification-only;
-  the new draft PR requires hosted documentation/static checks.
+- The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
+- Current re-scoped design verification: `git diff --check` PASS and Markdown fence count 84 (even),
+  PASS on `5bbd24f`. Source tests and `make ci` are N/A because this remains
+  documentation/specification-only; the new draft PR requires hosted documentation/static checks.
 
 ## Constraints and decisions to preserve
 
@@ -89,7 +91,11 @@ request checks, reviews, and attestations.
   construction only; no fixed-size workaround or duplicated scorer is allowed. C6c1p owns the
   borrowed prefix validator, while C6c1 `aggregate` remains complete-row-only. Explicit verifier
   roots are read-only external inputs with their own physical path exception; source states already
-  observed before an early error are preserved.
+  observed before an early error are preserved. `EnvironmentIdentityCore` keeps the explicit expected
+  align-llm/Align claims even when a source root is unavailable or mismatching; `PromptVerifierTrust`
+  reachability is the independent proof state, and only all-`VERIFIED` evidence is gate-eligible.
+  C6c1p returns `row_count: rows.len()`, `expected_row_count: -1`, `error_index: -1`, and
+  `error_code: 1` for invalid plans, without multiplication or side effects.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
