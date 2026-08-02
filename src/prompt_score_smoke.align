@@ -1,0 +1,424 @@
+module prompt_score_smoke
+
+import core.json
+import prompt_score
+
+SmokeOutput {
+  case_name: str,
+  status: str,
+  output_kind: str,
+  error_code: i64,
+  error_index: i64,
+  reason_count: i64,
+  required_output_count: i64,
+  parent_pass_count: i64,
+  candidate_pass_count: i64,
+  paired_pass_count: i64,
+  parent_median_present: bool,
+  parent_median_ns: i64,
+  candidate_median_present: bool,
+  candidate_median_ns: i64,
+  time_improvement_present: bool,
+  time_improvement_ppm: i64,
+  time_regression_present: bool,
+  time_regression_ppm: i64,
+  repair_loop_regression_count: i64,
+  task_sentinel: bool,
+  reason_sentinel: bool,
+  reason_tasks: array<i64>,
+  reason_samples: array<i64>,
+  reason_codes: array<i64>,
+  reason_parent_kinds: array<i64>,
+  reason_parent_numbers: array<i64>,
+  reason_candidate_kinds: array<i64>,
+  reason_candidate_numbers: array<i64>,
+  reason_limit_kinds: array<i64>,
+  reason_limit_numbers: array<i64>,
+}
+
+fn status_label(status: prompt_score.ScoreResultStatus) -> str = match status {
+  Complete => "COMPLETE",
+  EvaluationError => "EVALUATION_ERROR",
+  InvalidInput => "INVALID_INPUT",
+  OutputTooSmall => "OUTPUT_TOO_SMALL",
+}
+
+fn output_kind_label(kind: prompt_score.ScoreOutputKind) -> str = match kind {
+  None => "NONE",
+  TaskAggregates => "TASK_AGGREGATES",
+  Reasons => "REASONS",
+}
+
+fn pass_row(
+  task: i64,
+  sample: i64,
+  variant: prompt_score.ScoreVariant,
+  preparation: i64,
+  generation: i64,
+  repairs: i64,
+  benchmark: Option<i64>,
+) -> prompt_score.ScoreRow {
+  return prompt_score.ScoreRow {
+    task_ordinal: task,
+    sample_index: sample,
+    variant: variant,
+    status: prompt_score.ScoreStatus.Pass,
+    failure_kind: prompt_score.ScoreFailureKind.None,
+    build_status: prompt_score.ScoreStage.Pass,
+    test_status: prompt_score.ScoreStage.Pass,
+    repair_loop_count: repairs,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 0,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    adapter_error: false,
+    prompt_preparation_ns: preparation,
+    generation_to_passing_patch_ns: Some(generation),
+    time_to_passing_patch_ns: Some(preparation + generation),
+    benchmark_regression_ppm: benchmark,
+  }
+}
+
+fn fail_row(
+  task: i64,
+  sample: i64,
+  variant: prompt_score.ScoreVariant,
+  failure: prompt_score.ScoreFailureKind,
+  build: prompt_score.ScoreStage,
+  test: prompt_score.ScoreStage,
+  repairs: i64,
+  unrelated: i64,
+  patch_size: i64,
+  public_api: i64,
+) -> prompt_score.ScoreRow {
+  return prompt_score.ScoreRow {
+    task_ordinal: task,
+    sample_index: sample,
+    variant: variant,
+    status: prompt_score.ScoreStatus.Fail,
+    failure_kind: failure,
+    build_status: build,
+    test_status: test,
+    repair_loop_count: repairs,
+    unrelated_diff_count: unrelated,
+    patch_size_bytes: patch_size,
+    public_api_change_count: public_api,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    adapter_error: false,
+    prompt_preparation_ns: 10,
+    generation_to_passing_patch_ns: None,
+    time_to_passing_patch_ns: None,
+    benchmark_regression_ppm: None,
+  }
+}
+
+fn policy_row(
+  task: i64,
+  sample: i64,
+  variant: prompt_score.ScoreVariant,
+  build: prompt_score.ScoreStage,
+  test: prompt_score.ScoreStage,
+  violations: i64,
+) -> prompt_score.ScoreRow {
+  return prompt_score.ScoreRow {
+    task_ordinal: task,
+    sample_index: sample,
+    variant: variant,
+    status: prompt_score.ScoreStatus.PolicyViolation,
+    failure_kind: prompt_score.ScoreFailureKind.Policy,
+    build_status: build,
+    test_status: test,
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 0,
+    public_api_change_count: 0,
+    policy_violation_count: violations,
+    cleanup_passed: true,
+    containment_passed: true,
+    adapter_error: false,
+    prompt_preparation_ns: 10,
+    generation_to_passing_patch_ns: None,
+    time_to_passing_patch_ns: None,
+    benchmark_regression_ppm: None,
+  }
+}
+
+fn containment_error_row(task: i64, sample: i64, variant: prompt_score.ScoreVariant) -> prompt_score.ScoreRow {
+  return prompt_score.ScoreRow {
+    task_ordinal: task,
+    sample_index: sample,
+    variant: variant,
+    status: prompt_score.ScoreStatus.Error,
+    failure_kind: prompt_score.ScoreFailureKind.Containment,
+    build_status: prompt_score.ScoreStage.NotRun,
+    test_status: prompt_score.ScoreStage.NotRun,
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 0,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: false,
+    adapter_error: false,
+    prompt_preparation_ns: 10,
+    generation_to_passing_patch_ns: None,
+    time_to_passing_patch_ns: None,
+    benchmark_regression_ppm: None,
+  }
+}
+
+fn task_limit(benchmark: Option<i64>) -> prompt_score.ScoreTaskLimit {
+  return prompt_score.ScoreTaskLimit {
+    maximum_unrelated_diff_count: 1,
+    maximum_patch_size_bytes: 100,
+    maximum_public_api_change_count: 1,
+    maximum_repair_loops: 2,
+    maximum_benchmark_regression_ppm: benchmark,
+  }
+}
+
+fn policy_limit() -> prompt_score.ScorePolicyLimit {
+  return prompt_score.ScorePolicyLimit {
+    maximum_time_regression_ppm: 500000,
+    maximum_repair_loop_regression_count: 10,
+  }
+}
+
+fn strict_policy_limit() -> prompt_score.ScorePolicyLimit {
+  return prompt_score.ScorePolicyLimit {
+    maximum_time_regression_ppm: 0,
+    maximum_repair_loop_regression_count: 0,
+  }
+}
+
+fn emit_case(
+  case_name: str,
+  rows: slice<prompt_score.ScoreRow>,
+  limits: slice<prompt_score.ScoreTaskLimit>,
+  policy: prompt_score.ScorePolicyLimit,
+  sample_count: i64,
+  short_tasks: bool,
+  short_reasons: bool,
+) {
+  mut task_ord := [-99]
+  mut task_parent_pass := [-99]
+  mut task_candidate_pass := [-99]
+  mut task_parent_repairs := [-99]
+  mut task_candidate_repairs := [-99]
+  mut task_paired_pass := [-99]
+  mut task_parent_median_present := [false]
+  mut task_parent_median := [-99]
+  mut task_candidate_median_present := [false]
+  mut task_candidate_median := [-99]
+  mut task_time_improvement_present := [false]
+  mut task_time_improvement := [-99]
+  mut task_time_regression_present := [false]
+  mut task_time_regression := [-99]
+  mut reason_tasks := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+  mut reason_samples := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+  mut reason_codes := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+  mut reason_parent_kinds := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+  mut reason_parent_numbers := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+  mut reason_candidate_kinds := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+  mut reason_candidate_numbers := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+  mut reason_limit_kinds := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+  mut reason_limit_numbers := [-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99]
+
+  mut task_ord_view := task_ord[0..1]
+  if short_tasks {
+    task_ord_view = task_ord[0..0]
+  }
+  mut reason_task_view := reason_tasks[0..16]
+  mut reason_sample_view := reason_samples[0..16]
+  mut reason_code_view := reason_codes[0..16]
+  mut reason_parent_kind := reason_parent_kinds[0..16]
+  mut reason_parent_number := reason_parent_numbers[0..16]
+  mut reason_candidate_kind := reason_candidate_kinds[0..16]
+  mut reason_candidate_number := reason_candidate_numbers[0..16]
+  mut reason_limit_kind := reason_limit_kinds[0..16]
+  mut reason_limit_number := reason_limit_numbers[0..16]
+  if short_reasons {
+    reason_task_view = reason_tasks[0..0]
+    reason_sample_view = reason_samples[0..0]
+    reason_code_view = reason_codes[0..0]
+    reason_parent_kind = reason_parent_kinds[0..0]
+    reason_parent_number = reason_parent_numbers[0..0]
+    reason_candidate_kind = reason_candidate_kinds[0..0]
+    reason_candidate_number = reason_candidate_numbers[0..0]
+    reason_limit_kind = reason_limit_kinds[0..0]
+    reason_limit_number = reason_limit_numbers[0..0]
+  }
+
+  result := prompt_score.aggregate(
+    rows,
+    limits,
+    policy,
+    sample_count,
+    task_ord_view,
+    task_parent_pass,
+    task_candidate_pass,
+    task_parent_repairs,
+    task_candidate_repairs,
+    task_paired_pass,
+    task_parent_median_present,
+    task_parent_median,
+    task_candidate_median_present,
+    task_candidate_median,
+    task_time_improvement_present,
+    task_time_improvement,
+    task_time_regression_present,
+    task_time_regression,
+    reason_task_view,
+    reason_sample_view,
+    reason_code_view,
+    reason_parent_kind,
+    reason_parent_number,
+    reason_candidate_kind,
+    reason_candidate_number,
+    reason_limit_kind,
+    reason_limit_number,
+  )
+  corpus := result.corpus
+  output := SmokeOutput {
+    case_name: case_name,
+    status: status_label(result.status),
+    output_kind: output_kind_label(result.output_kind),
+    error_code: result.error_code,
+    error_index: result.error_index,
+    reason_count: result.reason_count,
+    required_output_count: result.required_output_count,
+    parent_pass_count: corpus.parent_pass_count,
+    candidate_pass_count: corpus.candidate_pass_count,
+    paired_pass_count: corpus.paired_pass_count,
+    parent_median_present: task_parent_median_present[0],
+    parent_median_ns: task_parent_median[0],
+    candidate_median_present: task_candidate_median_present[0],
+    candidate_median_ns: task_candidate_median[0],
+    time_improvement_present: task_time_improvement_present[0],
+    time_improvement_ppm: task_time_improvement[0],
+    time_regression_present: task_time_regression_present[0],
+    time_regression_ppm: task_time_regression[0],
+    repair_loop_regression_count: corpus.repair_loop_regression_count,
+    task_sentinel: task_ord[0] == -99,
+    reason_sentinel: reason_codes[0] == -99,
+    reason_tasks: reason_tasks.to_array(),
+    reason_samples: reason_samples.to_array(),
+    reason_codes: reason_codes.to_array(),
+    reason_parent_kinds: reason_parent_kinds.to_array(),
+    reason_parent_numbers: reason_parent_numbers.to_array(),
+    reason_candidate_kinds: reason_candidate_kinds.to_array(),
+    reason_candidate_numbers: reason_candidate_numbers.to_array(),
+    reason_limit_kinds: reason_limit_kinds.to_array(),
+    reason_limit_numbers: reason_limit_numbers.to_array(),
+  }
+  print(json.encode(output))
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  all_pass_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent, 10, 90, 1, None),
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 50, 2, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate, 20, 80, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent, 20, 180, 0, None),
+  ]
+  limits := [task_limit(None)]
+  emit_case("all-pass", all_pass_rows, limits, policy_limit(), 2, false, false)
+  emit_case("task-output-too-small", all_pass_rows, limits, policy_limit(), 2, true, false)
+
+  reason_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent, 10, 10, 0, None),
+    fail_row(
+      0,
+      1,
+      prompt_score.ScoreVariant.Candidate,
+      prompt_score.ScoreFailureKind.Build,
+      prompt_score.ScoreStage.Fail,
+      prompt_score.ScoreStage.NotRun,
+      3,
+      5,
+      200,
+      2,
+    ),
+    policy_row(
+      0,
+      2,
+      prompt_score.ScoreVariant.Candidate,
+      prompt_score.ScoreStage.Pass,
+      prompt_score.ScoreStage.Pass,
+      1,
+    ),
+    fail_row(
+      0,
+      2,
+      prompt_score.ScoreVariant.Parent,
+      prompt_score.ScoreFailureKind.Test,
+      prompt_score.ScoreStage.Pass,
+      prompt_score.ScoreStage.Fail,
+      0,
+      0,
+      0,
+      0,
+    ),
+  ]
+  emit_case("reasons", reason_rows, limits, policy_limit(), 2, false, false)
+  emit_case("reason-output-too-small", reason_rows, limits, policy_limit(), 2, false, true)
+
+  benchmark_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent, 10, 90, 0, Some(10)),
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 90, 0, Some(150)),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate, 10, 90, 0, Some(150)),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent, 10, 90, 0, Some(10)),
+  ]
+  benchmark_limits := [task_limit(Some(100))]
+  emit_case("benchmark-reasons", benchmark_rows, benchmark_limits, policy_limit(), 2, false, false)
+
+  regression_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent, 10, 90, 0, None),
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 190, 1, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate, 10, 290, 1, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent, 10, 190, 0, None),
+  ]
+  emit_case("aggregate-regressions", regression_rows, limits, strict_policy_limit(), 2, false, false)
+
+  error_rows := [
+    containment_error_row(0, 1, prompt_score.ScoreVariant.Parent),
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent, 10, 10, 0, None),
+  ]
+  emit_case("evaluation-error", error_rows, limits, policy_limit(), 2, false, false)
+
+  invalid_order_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent, 10, 10, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent, 10, 10, 0, None),
+  ]
+  emit_case("invalid-order", invalid_order_rows, limits, policy_limit(), 2, false, false)
+
+  invalid_state_rows := [
+    fail_row(
+      0,
+      1,
+      prompt_score.ScoreVariant.Parent,
+      prompt_score.ScoreFailureKind.Build,
+      prompt_score.ScoreStage.Pass,
+      prompt_score.ScoreStage.NotRun,
+      0,
+      0,
+      0,
+      0,
+    ),
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent, 10, 10, 0, None),
+  ]
+  emit_case("invalid-state", invalid_state_rows, limits, policy_limit(), 2, false, false)
+
+  emit_case("invalid-plan", all_pass_rows, limits, policy_limit(), 1, false, false)
+  return Ok(())
+}

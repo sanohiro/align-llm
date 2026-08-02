@@ -5,140 +5,81 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1-score-contract-repair`; based on merged `main` commit
-  `99eadffcea63908fbcab8eac5b6ae6070619fcca` (the C6c1 design checkpoint).
-- PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
-  and review-convergence governance, including PR and `main` push scope guards.
-- Active goal: repair the C6c1 implementation contract for the pinned Align surface, then implement,
-  verify, and merge the independently testable pure row-validation and aggregation kernel. C6b and
-  the first C6c1 design checkpoint are merged; its failure-memory JSONL adoption remains deferred
-  because Align Request 7 is still `PROPOSED`. C0 through C5 and C6b are complete.
-- The merged C6b slice implements fixed prompt hierarchy, learned append validation, bounded patch
-  and diagnostic contexts, UTF-8-safe truncation, and SHA-256 identity. It deliberately emits the
-  failure-memory section as `(omitted)` without accepting or decoding JSONL. The active C6c1 design
-  adds only the pure scalar row-validation/aggregation contract; canonical artifact declarations
-  and persistence remain owned by the blocked C6a1/C6a2 slices.
-- Pinned Align accepts `slice<Struct>` input and whole-struct reads, but rejects both whole-element
-  and field-level stores through `out slice<Struct>`. The repaired C6c1 contract therefore exposes
-  caller-owned primitive output columns while retaining the logical Copy aggregate/reason records;
-  it does not add a local compatibility layer or target a proposed Align API.
-- Working tree is clean at the current committed C6c1 contract-repair checkpoint; there are no
-  intentional uncommitted files to preserve.
-- Request 7 is still `PROPOSED` and blocks escaped-string declared-record decoding. The pinned
-  `json.decode` returns `Err` for valid escaped `MemoryEvent` strings; do not use `json.doc`, a
-  hand-written compatibility parser, or another private wire format to bypass the request.
-- C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
-  not complete C6.
+- Branch: `agent/c6c1-score-kernel-impl`; implementation is based on merged `main` commit
+  `95670134f6f7c503aeae15c7cbebe38434bdc617`.
+- Current source checkpoint: the clean implementation commit at this branch's `HEAD`; its parent
+  is the exact merged design checkpoint `95670134f6f7c503aeae15c7cbebe38434bdc617`.
+- Active goal: implement, verify, review, and merge the independently testable pure C6c1 row
+  validation and aggregation kernel. The C6c1 design and its pinned-Align contract repair are
+  merged; implementation is the active slice.
+- Complete: `src/prompt_score.align`, its deterministic scalar-column smoke, the `prompt-score-smoke`
+  Make target, and the topology oracle update are implemented in the working source checkpoint.
+- In progress: commit this coherent implementation checkpoint, then refresh the identity-bound
+  baseline through the prescribed source -> immutable-oracle -> finalization sequence.
+- Not started: full integration verification, the implementation pull request and review, hosted
+  checks, merge, and the bounded post-merge retrospective before C6c2 selection.
+- Working tree is expected to be clean at the source checkpoint; no generated binaries, model
+  weights, credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 
-## Completed in the active redesign
+## C6c1 implementation boundary
 
-- Added Request 13 as the exact prerequisite for recursive owned C6 JSON artifact graphs; C6
-  persistence now has an explicit bounded-reader, `.clone()`, owner-lifetime, and Request 12/13
-  boundary.
-- Replaced direct child-supplied environment identity with explicit probe carriers and a
-  non-circular evaluator-owned `EnvironmentIdentityCore` preimage, including `None` for an
-  unavailable logical CPU count.
-- Closed explicit byte/count bounds for identifiers, paths, command vectors, endpoints,
-  environment policy, workspaces, task inputs, and expanded trees.
-- Defined one-shot proposal credential lifetime, pre-truncation redaction, and the content-bound
-  seed capability attestation.
-- Defined bounded derived IDs, tagged corpus revision identity, and TREE root metadata.
-- Added a closure table mapping the ten previous final-review classes to the first owning slice and
-  exact acceptance fixture names.
+- `prompt_score` is pure and allocation-free at the public boundary. It accepts borrowed `Copy`
+  rows and task limits, validates exact alternating row order and the complete row state machine,
+  computes task/corpus counts, paired medians, ppm metrics, and complete ordered reasons, and
+  writes only caller-owned primitive output columns.
+- The pinned compiler accepts `slice<Struct>` input and whole-struct reads but rejects whole-element
+  and field-level stores through `out slice<Struct>`. The implementation therefore uses the merged
+  scalar-column contract and does not add a compatibility layer or target a proposed Align API.
+- Any malformed or undersized call returns before output mutation. Structurally valid `ERROR` rows
+  return `EVALUATION_ERROR`; malformed rows return `INVALID_INPUT`.
+- The smoke covers passing odd/even medians, ppm rounding, paired and corpus repair/time reasons,
+  benchmark reasons, mixed PASS/FAIL/POLICY rows, valid ERROR rows, row/order/plan failures, task
+  and reason output capacity failures, and sentinel-preserving early exits.
+- The implementation retains no filesystem, process, network, JSON, provider, persistence, or
+  failure-memory behavior. Request 7 remains `PROPOSED`; its escaped-string JSON gap still blocks
+  the later failure-memory adoption slice.
 
 ## Exact next steps
 
-1. Run documentation/static checks for the repaired C6c1 contract and complete the ledger-to-prose
-   consistency pass.
-2. Open the contract-repair PR, run one fresh comprehensive adversarial review, record all findings
-   and dispositions, and merge the reviewed contract before implementation.
-3. Create the implementation branch from the repaired design, add `prompt_score` plus its smoke and
-   topology registration, then refresh the identity-bound baseline through the prescribed
-   source → immutable oracle → finalization sequence.
-4. Run focused checks, one comprehensive implementation review, hosted checks, and merge C6c1;
-   then select C6c2 as the next eligible slice.
-5. After Request 7 is merged, rebuild the pinned Align release, update `.align-revision`, and pass
-   the deferred failure-memory acceptance through `make ci` before adding that API.
+1. Commit the clean implementation source checkpoint, record its exact SHA here, and run the
+   prescribed baseline source -> pending measurement -> immutable oracle -> finalization sequence.
+   The Makefile/check graph is identity-bound, so do not skip or manually edit the baseline outputs.
+2. Run `make baseline-check`, the focused C6c1 checks, `make check`, `make build`, and the applicable
+   full `make ci` integration gate after the baseline sequence. Record exact results here.
+3. Open one implementation pull request with English description and exact verification results;
+   obtain one fresh independent comprehensive review, apply valid findings in one repair, rerun
+   affected checks, and use the required native GitHub review envelope and merge commit.
+4. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
+   C6c2 slice. Do not start failure-memory JSONL adoption until Request 7 is accepted, merged at a
+   named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and `make ci`
+   passes the original acceptance gate.
 
-## Bounded post-merge retrospective
+## Latest verification
 
-- Root cause: the original scope guard handled pull requests but treated every `main` push as a
-  full-suite event, so documentation-only merges still caused unnecessary hosted work.
-- Reusable rule: classify both pull-request and push ranges; use `--no-renames` and treat checkout
-  attributes as executable contract inputs. Keep one comprehensive review and one consolidated
-  repair; ordinary finding repairs do not trigger another review.
-- The rule is now encoded in `CLAUDE.md` and `.github/workflows/ci.yml`. No additional governance
-  slice is queued.
-
-### C6b merge retrospective (2026-08-02)
-
-- Reusable lesson: changing an identity-bound Makefile/check graph requires the ordered baseline
-  source, immutable-oracle, and finalization commits before review can claim a mergeable tree.
-  This is already enforced by `make baseline-check` and `docs/specs/check-gate-topology.md`; no
-  separate governance PR is queued. C6c1 must follow the same sequence if its smoke target changes
-  an aggregate list.
-- Scope decision preserved: C6c1 consumes only scalar/borrowed pure kernel inputs and caller-owned
-  output slices. It must not target proposed Request 8/10/12/13 surfaces or decode failure-memory
-  JSONL before Request 7 is merged and adopted.
-
-## Latest durable verification
-
-- `git diff --check`: passed after consolidated repair commit `6a09347`.
-- Markdown fenced-block parity: passed (`70` C6-spec fences; `82` request-register fences).
-- Canonical digest vector: passed (`21780af056f4245f2796e186c88064abe911ea287094dd22b4b3b9c8c07c4328`).
-- Independent adversarial review for PR #35: completed against head `e187f82`; four valid findings
-  were fixed together in `6a09347` (unknown-field canonicalization, credential injection,
-  seed-base provenance, and C6g1 slice prerequisites).
-- PR #35 merged as `0fc204f` after its review and integration gate.
-- `git diff --check`: passed after consolidated repair commit `de29b56`.
-- Ruby YAML parse of `.github/workflows/ci.yml`: passed after `de29b56`.
-- The workflow-change hosted check passed once; its transient check evidence remains in GitHub.
-- Local full `make ci` was intentionally not rerun for this documentation/governance change; it is
-  reserved for the applicable implementation/adoption or final integration gate.
-- `make check`: PASS (15 per-unit checks; three pre-existing compiler warnings).
-- `make prompt-model-smoke`: PASS (hierarchy, UTF-8-safe bounds including truncation, memory
-  selection in the prior scope; the current re-scoped smoke passes hierarchy, UTF-8-safe bounds,
-  source validation, invalid input, and SHA-256).
-- `scripts/run-prompt-render-smoke`: PASS (C5 legacy renderer remains unchanged).
-- `scripts/check-format` and `git diff --cached --check`: PASS before commit.
-- Repair commit `835fb07`: policy/source caps, schema-version rejection, `INVALID_INPUT`, and
-  focused invalid-input smoke cases; `make check`, `make prompt-model-smoke`, C5 smoke,
-  `scripts/check-format`, and `git diff --check` all passed.
-- Hosted check for repair head `9fd8e0d`: PASS (`Pinned Align compiler and supported checks`,
-  1m27s).
-- Conditional final review for head `9fd8e0d`: changes requested; four findings recorded in PR #38,
-  with Request 7 as the blocking issue. It is terminal for the old scope; the re-scoped contract
-  requires one fresh review.
-- Current re-scope focused verification: `make check` PASS with three pre-existing warnings,
-  `make prompt-model-smoke` PASS, `make build` PASS, `scripts/run-prompt-render-smoke` PASS,
-  `make gate-topology-check` PASS, `scripts/check-format` PASS, and `git diff --check` PASS.
-- `make baseline-check`: PASS after the canonical oracle and finalization refresh.
-- Baseline source/oracle/finalization ancestry and exact-tree integrity: PASS for `c9161ca`,
-  `c75f9a3`, and `03e2891`.
-- Fresh comprehensive review for re-scoped head `c9161ca`: one P1 baseline-identity finding,
-  fixed through the prescribed oracle and finalization sequence; no renderer or smoke-harness
-  findings.
-- Pinned compiler probe for the C6c1 contract repair: `slice<Struct>` input and whole-struct reads
-  pass `check-per-unit`; whole-element and field-level stores through `out slice<Struct>` are
-  rejected as unsupported. No product implementation was started against the rejected surface.
+- `./scripts/alignc check-per-unit src/prompt_score.align`: PASS; only the expected large
+  `ScoreResult` Copy-return warnings remain because the public contract requires plain Copy results.
+- `make prompt-score-smoke`: PASS; deterministic validation, medians, ppm, reasons, capacity, and
+  untouched-output checks all pass.
+- `make gate-topology-check`: PASS after registering `prompt-score-smoke` in the Makefile and its
+  embedded topology oracle.
+- `python3 scripts/check-gate-topology --self-test`: PASS.
+- `make check`: PASS (15 existing main units; the repository's pre-existing compiler warnings are
+  unchanged).
+- `make fmt`, `./scripts/check-format`, and `git diff --check`: PASS.
+- Full `make ci` and baseline refresh are pending for this implementation/adoption gate.
 
 ## Constraints and decisions to preserve
 
-- Request 5 blocks provider proposal/real-provider work; Request 7 blocks C6 artifact work;
-  Requests 8 and 10 own recursive runtime construction; Request 11 owns bounded child capture;
-  Request 12 owns bounded canonical encoding; Request 13 owns recursive owned artifact graphs.
-  Requests 6 and 9 remain independent of C6.
+- Request 5 blocks provider proposal/real-provider work; Request 7 blocks C6 artifact and
+  failure-memory JSON work; Requests 8 and 10 own recursive runtime construction; Request 11 owns
+  bounded child capture; Request 12 owns bounded canonical encoding; Request 13 owns recursive
+  owned artifact graphs. Requests 6 and 9 remain independent.
 - C6 must not use a borrowed JSON view after its input buffer expires, concatenate JSON fragments,
-  invent a private wire format, or target any proposed Align API.
-- Full tests and CI are evidence gates for coherent implementation/adoption slices, not an edit
-  loop. Docs-only edits use structural/document checks; targeted tests run after a coherent code
-  slice; full `make ci` runs only at the explicitly applicable final/integration gate.
-- Review is one comprehensive pass. Consolidate valid findings, rerun only affected verification,
-  and require another review only for a material behavior/design/contract expansion.
-- The explicit verification-timing and review-convergence rule is recorded in `CLAUDE.md` and
-  enforced by the merged CI scope guards from PR #36 and PR #37; keep future governance and
-  product slices separate.
-- Source, documentation, diagnostics, commits, pull requests, reviews, and releases remain in
-  English.
+  invent a private wire format, or code against any proposed Align API.
+- Verification is evidence for coherent slices: use focused checks after implementation coherence
+  and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
+  and one consolidated repair; a material redesign requires re-scoping and another review.
+- All source, diagnostics, developer documentation, commits, pull requests, and review records
+  remain in English.

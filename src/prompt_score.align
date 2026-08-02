@@ -1,0 +1,1487 @@
+module prompt_score
+
+// C6c1 is a provider-independent, allocation-free scoring kernel. The public input rows are
+// borrowed Copy records. Output records are exposed as caller-owned scalar columns because the
+// pinned Align compiler does not yet support stores through out slice<Struct>.
+
+pub ScoreVariant { Parent, Candidate }
+pub ScoreStatus { Pass, Fail, PolicyViolation, Error }
+pub ScoreFailureKind { None, Provider, Patch, Build, Test, Policy, Cleanup, Containment, Adapter }
+pub ScoreStage { Pass, Fail, NotRun, StageError }
+
+pub ScoreRow {
+  task_ordinal: i64,
+  sample_index: i64,
+  variant: ScoreVariant,
+  status: ScoreStatus,
+  failure_kind: ScoreFailureKind,
+  build_status: ScoreStage,
+  test_status: ScoreStage,
+  repair_loop_count: i64,
+  unrelated_diff_count: i64,
+  patch_size_bytes: i64,
+  public_api_change_count: i64,
+  policy_violation_count: i64,
+  cleanup_passed: bool,
+  containment_passed: bool,
+  adapter_error: bool,
+  prompt_preparation_ns: i64,
+  generation_to_passing_patch_ns: Option<i64>,
+  time_to_passing_patch_ns: Option<i64>,
+  benchmark_regression_ppm: Option<i64>,
+}
+
+pub ScoreTaskLimit {
+  maximum_unrelated_diff_count: i64,
+  maximum_patch_size_bytes: i64,
+  maximum_public_api_change_count: i64,
+  maximum_repair_loops: i64,
+  maximum_benchmark_regression_ppm: Option<i64>,
+}
+
+pub ScorePolicyLimit {
+  maximum_time_regression_ppm: i64,
+  maximum_repair_loop_regression_count: i64,
+}
+
+pub ScoreTaskAggregate {
+  task_ordinal: i64,
+  parent_pass_count: i64,
+  candidate_pass_count: i64,
+  parent_repair_loop_count: i64,
+  candidate_repair_loop_count: i64,
+  paired_pass_count: i64,
+  parent_paired_median_time_ns: Option<i64>,
+  candidate_paired_median_time_ns: Option<i64>,
+  time_improvement_ppm: Option<i64>,
+  time_regression_ppm: Option<i64>,
+}
+
+pub ScoreCorpusAggregate {
+  task_count: i64,
+  sample_count: i64,
+  parent_pass_count: i64,
+  candidate_pass_count: i64,
+  parent_repair_loop_count: i64,
+  candidate_repair_loop_count: i64,
+  paired_pass_count: i64,
+  parent_paired_median_time_ns: Option<i64>,
+  candidate_paired_median_time_ns: Option<i64>,
+  completion_gain_count: i64,
+  time_improvement_ppm: Option<i64>,
+  time_regression_ppm: Option<i64>,
+  repair_loop_regression_count: i64,
+}
+
+pub ScoreValue { None, Pass, Fail, PolicyViolation, Error, Number(i64) }
+pub ScoreReasonCode { PassToFail, Build, Test, Policy, UnrelatedDiff, PublicApi, PatchSize, RepairLoops, Benchmark, Time }
+
+pub ScoreReason {
+  task_ordinal: i64,
+  sample_index: i64,
+  code: ScoreReasonCode,
+  parent_value: ScoreValue,
+  candidate_value: ScoreValue,
+  limit: ScoreValue,
+}
+
+pub ScoreOutputKind { None, TaskAggregates, Reasons }
+pub ScoreResultStatus { Complete, EvaluationError, InvalidInput, OutputTooSmall }
+
+pub ScoreResult {
+  status: ScoreResultStatus,
+  error_code: i64,
+  error_index: i64,
+  reason_count: i64,
+  output_kind: ScoreOutputKind,
+  required_output_count: i64,
+  corpus: ScoreCorpusAggregate,
+}
+
+RowValidation { Valid, Invalid, EvaluationError }
+
+TimeMetrics {
+  improvement_ppm: Option<i64>,
+  regression_ppm: Option<i64>,
+}
+
+fn row_is_invalid(value: RowValidation) -> bool {
+  return match value {
+    Invalid => true,
+    Valid => false,
+    EvaluationError => false,
+  }
+}
+
+fn row_is_evaluation_error(value: RowValidation) -> bool {
+  return match value {
+    EvaluationError => true,
+    Valid => false,
+    Invalid => false,
+  }
+}
+
+fn result_with(
+  status: ScoreResultStatus,
+  error_code: i64,
+  error_index: i64,
+  reason_count: i64,
+  output_kind: ScoreOutputKind,
+  required_output_count: i64,
+) -> ScoreResult {
+  empty := ScoreCorpusAggregate {
+    task_count: 0,
+    sample_count: 0,
+    parent_pass_count: 0,
+    candidate_pass_count: 0,
+    parent_repair_loop_count: 0,
+    candidate_repair_loop_count: 0,
+    paired_pass_count: 0,
+    parent_paired_median_time_ns: None,
+    candidate_paired_median_time_ns: None,
+    completion_gain_count: 0,
+    time_improvement_ppm: None,
+    time_regression_ppm: None,
+    repair_loop_regression_count: 0,
+  }
+  return ScoreResult {
+    status: status,
+    error_code: error_code,
+    error_index: error_index,
+    reason_count: reason_count,
+    output_kind: output_kind,
+    required_output_count: required_output_count,
+    corpus: empty,
+  }
+}
+
+fn bounded_nonnegative(value: i64, maximum: i64) -> bool {
+  return value >= 0 && value <= maximum
+}
+
+fn optional_bounded(value: Option<i64>, maximum: i64) -> bool {
+  return match value {
+    None => true,
+    Some(number) => bounded_nonnegative(number, maximum),
+  }
+}
+
+fn option_is_none(value: Option<i64>) -> bool {
+  return match value {
+    None => true,
+    Some(_) => false,
+  }
+}
+
+fn same_stage(a: ScoreStage, b: ScoreStage) -> bool {
+  return match a {
+    Pass => match b { Pass => true, _ => false },
+    Fail => match b { Fail => true, _ => false },
+    NotRun => match b { NotRun => true, _ => false },
+    StageError => match b { StageError => true, _ => false },
+  }
+}
+
+fn same_failure(a: ScoreFailureKind, b: ScoreFailureKind) -> bool {
+  return match a {
+    None => match b { None => true, _ => false },
+    Provider => match b { Provider => true, _ => false },
+    Patch => match b { Patch => true, _ => false },
+    Build => match b { Build => true, _ => false },
+    Test => match b { Test => true, _ => false },
+    Policy => match b { Policy => true, _ => false },
+    Cleanup => match b { Cleanup => true, _ => false },
+    Containment => match b { Containment => true, _ => false },
+    Adapter => match b { Adapter => true, _ => false },
+  }
+}
+
+fn same_status(a: ScoreStatus, b: ScoreStatus) -> bool {
+  return match a {
+    Pass => match b { Pass => true, _ => false },
+    Fail => match b { Fail => true, _ => false },
+    PolicyViolation => match b { PolicyViolation => true, _ => false },
+    Error => match b { Error => true, _ => false },
+  }
+}
+
+fn same_variant(a: ScoreVariant, b: ScoreVariant) -> bool {
+  return match a {
+    Parent => match b { Parent => true, _ => false },
+    Candidate => match b { Candidate => true, _ => false },
+  }
+}
+
+fn is_pass(status: ScoreStatus) -> bool {
+  return same_status(status, ScoreStatus.Pass)
+}
+
+fn stage_is_error(stage: ScoreStage) -> bool {
+  return same_stage(stage, ScoreStage.StageError)
+}
+
+fn status_value(status: ScoreStatus) -> ScoreValue {
+  return match status {
+    Pass => ScoreValue.Pass,
+    Fail => ScoreValue.Fail,
+    PolicyViolation => ScoreValue.PolicyViolation,
+    Error => ScoreValue.Error,
+  }
+}
+
+fn valid_task_limit(limit: ScoreTaskLimit) -> bool {
+  if !bounded_nonnegative(limit.maximum_unrelated_diff_count, 1_048_576) {
+    return false
+  }
+  if !bounded_nonnegative(limit.maximum_patch_size_bytes, 67_108_864) {
+    return false
+  }
+  if !bounded_nonnegative(limit.maximum_public_api_change_count, 1_048_576) {
+    return false
+  }
+  if !bounded_nonnegative(limit.maximum_repair_loops, 64) {
+    return false
+  }
+  return match limit.maximum_benchmark_regression_ppm {
+    None => true,
+    Some(number) => bounded_nonnegative(number, 1_000_000),
+  }
+}
+
+fn valid_policy_limit(limit: ScorePolicyLimit) -> bool {
+  if !bounded_nonnegative(limit.maximum_time_regression_ppm, 1_000_000) {
+    return false
+  }
+  return bounded_nonnegative(limit.maximum_repair_loop_regression_count, 65_536)
+}
+
+fn benchmark_is_valid(value: Option<i64>, maximum: Option<i64>, passing: bool) -> bool {
+  if !passing {
+    return match value {
+      None => true,
+      Some(_) => false,
+    }
+  }
+  return match maximum {
+    None => match value {
+      None => true,
+      Some(_) => false,
+    },
+    Some(_) => match value {
+      None => false,
+      Some(number) => bounded_nonnegative(number, 1_000_000),
+    },
+  }
+}
+
+fn passing_time(value: Option<i64>) -> i64 {
+  return match value {
+    Some(number) => number,
+    None => 0,
+  }
+}
+
+fn validate_row(rows: slice<ScoreRow>, row_index: i64, limit: ScoreTaskLimit) -> RowValidation {
+  row := rows[row_index]
+  if !bounded_nonnegative(row.repair_loop_count, 64) {
+    return RowValidation.Invalid
+  }
+  if !bounded_nonnegative(row.unrelated_diff_count, 1_048_576) {
+    return RowValidation.Invalid
+  }
+  if !bounded_nonnegative(row.patch_size_bytes, 67_108_864) {
+    return RowValidation.Invalid
+  }
+  if !bounded_nonnegative(row.public_api_change_count, 1_048_576) {
+    return RowValidation.Invalid
+  }
+  if !bounded_nonnegative(row.policy_violation_count, 1_048_576) {
+    return RowValidation.Invalid
+  }
+  if !bounded_nonnegative(row.prompt_preparation_ns, 7_200_000_000_000) {
+    return RowValidation.Invalid
+  }
+  if !optional_bounded(row.generation_to_passing_patch_ns, 7_200_000_000_000) {
+    return RowValidation.Invalid
+  }
+  if !optional_bounded(row.time_to_passing_patch_ns, 7_200_000_000_000) {
+    return RowValidation.Invalid
+  }
+
+  if same_status(row.status, ScoreStatus.Error) {
+    if !option_is_none(row.generation_to_passing_patch_ns) || !option_is_none(row.time_to_passing_patch_ns) {
+      return RowValidation.Invalid
+    }
+    mut expected := ScoreFailureKind.Adapter
+    if !row.containment_passed {
+      expected = ScoreFailureKind.Containment
+    } else if !row.cleanup_passed {
+      expected = ScoreFailureKind.Cleanup
+    } else if !(row.adapter_error || stage_is_error(row.build_status) || stage_is_error(row.test_status)) {
+      return RowValidation.Invalid
+    }
+    if !same_failure(row.failure_kind, expected) {
+      return RowValidation.Invalid
+    }
+    if (!row.containment_passed || !row.cleanup_passed) && row.adapter_error {
+      return RowValidation.Invalid
+    }
+    return RowValidation.EvaluationError
+  }
+
+  if !row.cleanup_passed || !row.containment_passed || row.adapter_error {
+    return RowValidation.Invalid
+  }
+  if stage_is_error(row.build_status) || stage_is_error(row.test_status) {
+    return RowValidation.Invalid
+  }
+
+  if same_status(row.status, ScoreStatus.Pass) {
+    if !same_failure(row.failure_kind, ScoreFailureKind.None) {
+      return RowValidation.Invalid
+    }
+    if !same_stage(row.build_status, ScoreStage.Pass) || !same_stage(row.test_status, ScoreStage.Pass) {
+      return RowValidation.Invalid
+    }
+    if row.policy_violation_count != 0 {
+      return RowValidation.Invalid
+    }
+    if option_is_none(row.generation_to_passing_patch_ns) {
+      return RowValidation.Invalid
+    }
+    generation := match row.generation_to_passing_patch_ns {
+      None => 0,
+      Some(value) => value,
+    }
+    if option_is_none(row.time_to_passing_patch_ns) {
+      return RowValidation.Invalid
+    }
+    total := match row.time_to_passing_patch_ns {
+      None => 0,
+      Some(value) => value,
+    }
+    if generation <= 0 || total <= 0 || total != row.prompt_preparation_ns + generation {
+      return RowValidation.Invalid
+    }
+    if !benchmark_is_valid(row.benchmark_regression_ppm, limit.maximum_benchmark_regression_ppm, true) {
+      return RowValidation.Invalid
+    }
+    return RowValidation.Valid
+  }
+
+  if same_status(row.status, ScoreStatus.Fail) {
+    if row.policy_violation_count != 0 || !benchmark_is_valid(row.benchmark_regression_ppm, limit.maximum_benchmark_regression_ppm, false) {
+      return RowValidation.Invalid
+    }
+    if !option_is_none(row.generation_to_passing_patch_ns) || !option_is_none(row.time_to_passing_patch_ns) {
+      return RowValidation.Invalid
+    }
+    if same_failure(row.failure_kind, ScoreFailureKind.Provider) || same_failure(row.failure_kind, ScoreFailureKind.Patch) {
+      if !same_stage(row.build_status, ScoreStage.NotRun) || !same_stage(row.test_status, ScoreStage.NotRun) {
+        return RowValidation.Invalid
+      }
+      return RowValidation.Valid
+    }
+    if same_failure(row.failure_kind, ScoreFailureKind.Build) {
+      if !same_stage(row.build_status, ScoreStage.Fail) || !same_stage(row.test_status, ScoreStage.NotRun) {
+        return RowValidation.Invalid
+      }
+      return RowValidation.Valid
+    }
+    if same_failure(row.failure_kind, ScoreFailureKind.Test) {
+      if !same_stage(row.build_status, ScoreStage.Pass) || !same_stage(row.test_status, ScoreStage.Fail) {
+        return RowValidation.Invalid
+      }
+      return RowValidation.Valid
+    }
+    return RowValidation.Invalid
+  }
+
+  if same_status(row.status, ScoreStatus.PolicyViolation) {
+    if !same_failure(row.failure_kind, ScoreFailureKind.Policy) || row.policy_violation_count <= 0 {
+      return RowValidation.Invalid
+    }
+    if !benchmark_is_valid(row.benchmark_regression_ppm, limit.maximum_benchmark_regression_ppm, false) {
+      return RowValidation.Invalid
+    }
+    if !option_is_none(row.generation_to_passing_patch_ns) || !option_is_none(row.time_to_passing_patch_ns) {
+      return RowValidation.Invalid
+    }
+    valid_stage_pair :=
+    (same_stage(row.build_status, ScoreStage.NotRun) && same_stage(row.test_status, ScoreStage.NotRun)) ||
+    (same_stage(row.build_status, ScoreStage.Pass) && same_stage(row.test_status, ScoreStage.NotRun)) ||
+    (same_stage(row.build_status, ScoreStage.Pass) && same_stage(row.test_status, ScoreStage.Pass))
+    if !valid_stage_pair {
+      return RowValidation.Invalid
+    }
+    return RowValidation.Valid
+  }
+
+  return RowValidation.Invalid
+}
+
+fn pair_start(task: i64, sample: i64, sample_count: i64) -> i64 {
+  return task * sample_count * 2 + (sample - 1) * 2
+}
+
+fn parent_index(base: i64, sample: i64) -> i64 {
+  return if sample % 2 == 1 { base } else { base + 1 }
+}
+
+fn candidate_index(base: i64, sample: i64) -> i64 {
+  return if sample % 2 == 1 { base + 1 } else { base }
+}
+
+fn in_scope(task: i64, target_task: i64) -> bool {
+  return target_task < 0 || task == target_task
+}
+
+fn paired_pass_count(rows: slice<ScoreRow>, task_count: i64, sample_count: i64, target_task: i64) -> i64 {
+  mut count := 0
+  mut task := 0
+  loop {
+    if task >= task_count { break }
+    if in_scope(task, target_task) {
+      mut sample := 1
+      loop {
+        if sample > sample_count { break }
+        base := pair_start(task, sample, sample_count)
+        parent := rows[parent_index(base, sample)]
+        candidate := rows[candidate_index(base, sample)]
+        if is_pass(parent.status) && is_pass(candidate.status) {
+          count = count + 1
+        }
+        sample = sample + 1
+      }
+    }
+    task = task + 1
+  }
+  return count
+}
+
+fn variant_pass_count(rows: slice<ScoreRow>, task_count: i64, sample_count: i64, target_task: i64, variant: ScoreVariant) -> i64 {
+  mut count := 0
+  mut task := 0
+  loop {
+    if task >= task_count { break }
+    if in_scope(task, target_task) {
+      mut sample := 1
+      loop {
+        if sample > sample_count { break }
+        base := pair_start(task, sample, sample_count)
+        row := if same_variant(variant, ScoreVariant.Parent) {
+          rows[parent_index(base, sample)]
+        } else {
+          rows[candidate_index(base, sample)]
+        }
+        if is_pass(row.status) {
+          count = count + 1
+        }
+        sample = sample + 1
+      }
+    }
+    task = task + 1
+  }
+  return count
+}
+
+fn variant_repair_sum(rows: slice<ScoreRow>, task_count: i64, sample_count: i64, target_task: i64, variant: ScoreVariant) -> i64 {
+  mut total := 0
+  mut task := 0
+  loop {
+    if task >= task_count { break }
+    if in_scope(task, target_task) {
+      mut sample := 1
+      loop {
+        if sample > sample_count { break }
+        base := pair_start(task, sample, sample_count)
+        row := if same_variant(variant, ScoreVariant.Parent) {
+          rows[parent_index(base, sample)]
+        } else {
+          rows[candidate_index(base, sample)]
+        }
+        total = total + row.repair_loop_count
+        sample = sample + 1
+      }
+    }
+    task = task + 1
+  }
+  return total
+}
+
+fn count_time_le(
+  rows: slice<ScoreRow>,
+  task_count: i64,
+  sample_count: i64,
+  target_task: i64,
+  variant: ScoreVariant,
+  value: i64,
+) -> i64 {
+  mut count := 0
+  mut task := 0
+  loop {
+    if task >= task_count { break }
+    if in_scope(task, target_task) {
+      mut sample := 1
+      loop {
+        if sample > sample_count { break }
+        base := pair_start(task, sample, sample_count)
+        parent := rows[parent_index(base, sample)]
+        candidate := rows[candidate_index(base, sample)]
+        if is_pass(parent.status) && is_pass(candidate.status) {
+          row := if same_variant(variant, ScoreVariant.Parent) { parent } else { candidate }
+          if passing_time(row.time_to_passing_patch_ns) <= value {
+            count = count + 1
+          }
+        }
+        sample = sample + 1
+      }
+    }
+    task = task + 1
+  }
+  return count
+}
+
+fn median_time(
+  rows: slice<ScoreRow>,
+  task_count: i64,
+  sample_count: i64,
+  target_task: i64,
+  variant: ScoreVariant,
+  rank: i64,
+) -> Option<i64> {
+  count := paired_pass_count(rows, task_count, sample_count, target_task)
+  if rank < 0 || rank >= count {
+    return None
+  }
+  mut found := false
+  mut best := 0
+  mut task := 0
+  loop {
+    if task >= task_count { break }
+    if in_scope(task, target_task) {
+      mut sample := 1
+      loop {
+        if sample > sample_count { break }
+        base := pair_start(task, sample, sample_count)
+        parent := rows[parent_index(base, sample)]
+        candidate := rows[candidate_index(base, sample)]
+        if is_pass(parent.status) && is_pass(candidate.status) {
+          value := if same_variant(variant, ScoreVariant.Parent) {
+            passing_time(parent.time_to_passing_patch_ns)
+          } else {
+            passing_time(candidate.time_to_passing_patch_ns)
+          }
+          rank_count := count_time_le(rows, task_count, sample_count, target_task, variant, value)
+          if rank_count > rank && (!found || value < best) {
+            found = true
+            best = value
+          }
+        }
+        sample = sample + 1
+      }
+    }
+    task = task + 1
+  }
+  return if found { Some(best) } else { None }
+}
+
+fn aggregate_median(
+  rows: slice<ScoreRow>,
+  task_count: i64,
+  sample_count: i64,
+  target_task: i64,
+  variant: ScoreVariant,
+) -> Option<i64> {
+  count := paired_pass_count(rows, task_count, sample_count, target_task)
+  if count == 0 {
+    return None
+  }
+  lower := median_time(rows, task_count, sample_count, target_task, variant, (count - 1) / 2)
+  upper := median_time(rows, task_count, sample_count, target_task, variant, count / 2)
+  return match lower {
+    None => None,
+    Some(lower_value) => match upper {
+      None => None,
+      Some(upper_value) => Some(lower_value + (upper_value - lower_value) / 2),
+    },
+  }
+}
+
+fn calculate_time_metrics(parent: Option<i64>, candidate: Option<i64>) -> TimeMetrics {
+  mut metrics := TimeMetrics { improvement_ppm: None, regression_ppm: None }
+  match parent {
+    None => {},
+    Some(parent_value) => match candidate {
+      None => {},
+      Some(candidate_value) => {
+        if candidate_value <= parent_value {
+          metrics.improvement_ppm = Some((parent_value - candidate_value) * 1_000_000 / parent_value)
+          metrics.regression_ppm = Some(0)
+        } else {
+          metrics.improvement_ppm = Some(0)
+          metrics.regression_ppm = Some((candidate_value - parent_value) * 1_000_000 / parent_value)
+        }
+      },
+    },
+  }
+  return metrics
+}
+
+fn candidate_benchmark_exceeds(status: ScoreStatus, value: Option<i64>, maximum: Option<i64>) -> bool {
+  return match maximum {
+    None => false,
+    Some(limit_value) => match value {
+      None => false,
+      Some(measurement) => is_pass(status) && measurement > limit_value,
+    },
+  }
+}
+
+fn reason_count_pair(
+  rows: slice<ScoreRow>,
+  parent_row_index: i64,
+  candidate_row_index: i64,
+  limit: ScoreTaskLimit,
+) -> i64 {
+  parent := rows[parent_row_index]
+  candidate := rows[candidate_row_index]
+  mut count := 0
+  if is_pass(parent.status) && !is_pass(candidate.status) {
+    count = count + 1
+  }
+  if same_stage(parent.build_status, ScoreStage.Pass) && !same_stage(candidate.build_status, ScoreStage.Pass) {
+    count = count + 1
+  }
+  if same_stage(parent.test_status, ScoreStage.Pass) && !same_stage(candidate.test_status, ScoreStage.Pass) {
+    count = count + 1
+  }
+  if same_status(candidate.status, ScoreStatus.PolicyViolation) {
+    count = count + 1
+  }
+  if candidate.unrelated_diff_count > limit.maximum_unrelated_diff_count {
+    count = count + 1
+  }
+  if candidate.public_api_change_count > limit.maximum_public_api_change_count {
+    count = count + 1
+  }
+  if candidate.patch_size_bytes > limit.maximum_patch_size_bytes {
+    count = count + 1
+  }
+  if candidate.repair_loop_count > limit.maximum_repair_loops {
+    count = count + 1
+  }
+  if candidate_benchmark_exceeds(
+    candidate.status,
+    candidate.benchmark_regression_ppm,
+    limit.maximum_benchmark_regression_ppm,
+  ) {
+    count = count + 1
+  }
+  return count
+}
+
+fn reason_count_task(
+  rows: slice<ScoreRow>,
+  task_count: i64,
+  sample_count: i64,
+  task: i64,
+  limit: ScoreTaskLimit,
+  policy: ScorePolicyLimit,
+) -> i64 {
+  mut count := 0
+  parent_median := aggregate_median(rows, task_count, sample_count, task, ScoreVariant.Parent)
+  candidate_median := aggregate_median(rows, task_count, sample_count, task, ScoreVariant.Candidate)
+  metrics := calculate_time_metrics(parent_median, candidate_median)
+  match metrics.regression_ppm {
+    Some(value) => if value > policy.maximum_time_regression_ppm { count = count + 1 },
+    None => {},
+  }
+  mut sample := 1
+  loop {
+    if sample > sample_count { break }
+    base := pair_start(task, sample, sample_count)
+    count = count + reason_count_pair(
+      rows,
+      parent_index(base, sample),
+      candidate_index(base, sample),
+      limit,
+    )
+    sample = sample + 1
+  }
+  return count
+}
+
+fn reason_code_ordinal(code: ScoreReasonCode) -> i64 {
+  return match code {
+    PassToFail => 0,
+    Build => 1,
+    Test => 2,
+    Policy => 3,
+    UnrelatedDiff => 4,
+    PublicApi => 5,
+    PatchSize => 6,
+    RepairLoops => 7,
+    Benchmark => 8,
+    Time => 9,
+  }
+}
+
+fn score_value_kind(value: ScoreValue) -> i64 {
+  return match value {
+    None => 0,
+    Pass => 1,
+    Fail => 2,
+    PolicyViolation => 3,
+    Error => 4,
+    Number(_) => 5,
+  }
+}
+
+fn score_value_number(value: ScoreValue) -> i64 {
+  return match value {
+    Number(number) => number,
+    None => 0,
+    Pass => 0,
+    Fail => 0,
+    PolicyViolation => 0,
+    Error => 0,
+  }
+}
+
+fn option_number(value: Option<i64>) -> i64 {
+  return match value {
+    None => 0,
+    Some(number) => number,
+  }
+}
+
+fn write_optional(out present: slice<bool>, out number: slice<i64>, index: i64, value: Option<i64>) {
+  match value {
+    None => {
+      present[index] = false
+      number[index] = 0
+    },
+    Some(number_value) => {
+      present[index] = true
+      number[index] = number_value
+    },
+  }
+}
+
+fn emit_reason(
+  index: i64,
+  task_ordinal: i64,
+  sample_index: i64,
+  code: ScoreReasonCode,
+  parent_value: ScoreValue,
+  candidate_value: ScoreValue,
+  limit: ScoreValue,
+  out reason_task_ordinal: slice<i64>,
+  out reason_sample_index: slice<i64>,
+  out reason_code: slice<i64>,
+  out reason_parent_value_kind: slice<i64>,
+  out reason_parent_value_number: slice<i64>,
+  out reason_candidate_value_kind: slice<i64>,
+  out reason_candidate_value_number: slice<i64>,
+  out reason_limit_kind: slice<i64>,
+  out reason_limit_number: slice<i64>,
+) -> i64 {
+  reason_task_ordinal[index] = task_ordinal
+  reason_sample_index[index] = sample_index
+  reason_code[index] = reason_code_ordinal(code)
+  reason_parent_value_kind[index] = score_value_kind(parent_value)
+  reason_parent_value_number[index] = score_value_number(parent_value)
+  reason_candidate_value_kind[index] = score_value_kind(candidate_value)
+  reason_candidate_value_number[index] = score_value_number(candidate_value)
+  reason_limit_kind[index] = score_value_kind(limit)
+  reason_limit_number[index] = score_value_number(limit)
+  return index + 1
+}
+
+fn emit_pair_reasons(
+  index: i64,
+  task: i64,
+  sample: i64,
+  rows: slice<ScoreRow>,
+  parent_row_index: i64,
+  candidate_row_index: i64,
+  limit: ScoreTaskLimit,
+  out reason_task_ordinal: slice<i64>,
+  out reason_sample_index: slice<i64>,
+  out reason_code: slice<i64>,
+  out reason_parent_value_kind: slice<i64>,
+  out reason_parent_value_number: slice<i64>,
+  out reason_candidate_value_kind: slice<i64>,
+  out reason_candidate_value_number: slice<i64>,
+  out reason_limit_kind: slice<i64>,
+  out reason_limit_number: slice<i64>,
+) -> i64 {
+  parent := rows[parent_row_index]
+  candidate := rows[candidate_row_index]
+  mut next := index
+  if is_pass(parent.status) && !is_pass(candidate.status) {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.PassToFail,
+      ScoreValue.Pass,
+      status_value(candidate.status),
+      ScoreValue.None,
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  if same_stage(parent.build_status, ScoreStage.Pass) && !same_stage(candidate.build_status, ScoreStage.Pass) {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.Build,
+      ScoreValue.Pass,
+      status_value(candidate.status),
+      ScoreValue.None,
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  if same_stage(parent.test_status, ScoreStage.Pass) && !same_stage(candidate.test_status, ScoreStage.Pass) {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.Test,
+      ScoreValue.Pass,
+      status_value(candidate.status),
+      ScoreValue.None,
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  if same_status(candidate.status, ScoreStatus.PolicyViolation) {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.Policy,
+      ScoreValue.None,
+      ScoreValue.PolicyViolation,
+      ScoreValue.None,
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  if candidate.unrelated_diff_count > limit.maximum_unrelated_diff_count {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.UnrelatedDiff,
+      ScoreValue.None,
+      ScoreValue.Number(candidate.unrelated_diff_count),
+      ScoreValue.Number(limit.maximum_unrelated_diff_count),
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  if candidate.public_api_change_count > limit.maximum_public_api_change_count {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.PublicApi,
+      ScoreValue.None,
+      ScoreValue.Number(candidate.public_api_change_count),
+      ScoreValue.Number(limit.maximum_public_api_change_count),
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  if candidate.patch_size_bytes > limit.maximum_patch_size_bytes {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.PatchSize,
+      ScoreValue.None,
+      ScoreValue.Number(candidate.patch_size_bytes),
+      ScoreValue.Number(limit.maximum_patch_size_bytes),
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  if candidate.repair_loop_count > limit.maximum_repair_loops {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.RepairLoops,
+      ScoreValue.None,
+      ScoreValue.Number(candidate.repair_loop_count),
+      ScoreValue.Number(limit.maximum_repair_loops),
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  if candidate_benchmark_exceeds(
+    candidate.status,
+    candidate.benchmark_regression_ppm,
+    limit.maximum_benchmark_regression_ppm,
+  ) {
+    next = emit_reason(
+      next,
+      task,
+      sample,
+      ScoreReasonCode.Benchmark,
+      ScoreValue.None,
+      ScoreValue.Number(option_number(candidate.benchmark_regression_ppm)),
+      ScoreValue.Number(option_number(limit.maximum_benchmark_regression_ppm)),
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+  }
+  return next
+}
+
+fn emit_time_reason(
+  index: i64,
+  task: i64,
+  metrics: TimeMetrics,
+  parent_median: Option<i64>,
+  candidate_median: Option<i64>,
+  maximum_regression_ppm: i64,
+  out reason_task_ordinal: slice<i64>,
+  out reason_sample_index: slice<i64>,
+  out reason_code: slice<i64>,
+  out reason_parent_value_kind: slice<i64>,
+  out reason_parent_value_number: slice<i64>,
+  out reason_candidate_value_kind: slice<i64>,
+  out reason_candidate_value_number: slice<i64>,
+  out reason_limit_kind: slice<i64>,
+  out reason_limit_number: slice<i64>,
+) -> i64 {
+  mut next := index
+  match metrics.regression_ppm {
+    None => {},
+    Some(regression) => if regression > maximum_regression_ppm {
+      next = emit_reason(
+        next,
+        task,
+        0,
+        ScoreReasonCode.Time,
+        ScoreValue.Number(option_number(parent_median)),
+        ScoreValue.Number(option_number(candidate_median)),
+        ScoreValue.Number(maximum_regression_ppm),
+        reason_task_ordinal,
+        reason_sample_index,
+        reason_code,
+        reason_parent_value_kind,
+        reason_parent_value_number,
+        reason_candidate_value_kind,
+        reason_candidate_value_number,
+        reason_limit_kind,
+        reason_limit_number,
+      )
+    },
+  }
+  return next
+}
+
+fn emit_repair_reason(
+  index: i64,
+  parent_total: i64,
+  candidate_total: i64,
+  maximum_regression: i64,
+  out reason_task_ordinal: slice<i64>,
+  out reason_sample_index: slice<i64>,
+  out reason_code: slice<i64>,
+  out reason_parent_value_kind: slice<i64>,
+  out reason_parent_value_number: slice<i64>,
+  out reason_candidate_value_kind: slice<i64>,
+  out reason_candidate_value_number: slice<i64>,
+  out reason_limit_kind: slice<i64>,
+  out reason_limit_number: slice<i64>,
+) -> i64 {
+  regression := if candidate_total > parent_total { candidate_total - parent_total } else { 0 }
+  if regression <= maximum_regression {
+    return index
+  }
+  return emit_reason(
+    index,
+    -1,
+    0,
+    ScoreReasonCode.RepairLoops,
+    ScoreValue.Number(parent_total),
+    ScoreValue.Number(candidate_total),
+    ScoreValue.Number(maximum_regression),
+    reason_task_ordinal,
+    reason_sample_index,
+    reason_code,
+    reason_parent_value_kind,
+    reason_parent_value_number,
+    reason_candidate_value_kind,
+    reason_candidate_value_number,
+    reason_limit_kind,
+    reason_limit_number,
+  )
+}
+
+pub fn aggregate(
+  rows: slice<ScoreRow>,
+  task_limits: slice<ScoreTaskLimit>,
+  policy_limits: ScorePolicyLimit,
+  sample_count: i64,
+  out task_ordinal: slice<i64>,
+  out task_parent_pass_count: slice<i64>,
+  out task_candidate_pass_count: slice<i64>,
+  out task_parent_repair_loop_count: slice<i64>,
+  out task_candidate_repair_loop_count: slice<i64>,
+  out task_paired_pass_count: slice<i64>,
+  out task_parent_median_present: slice<bool>,
+  out task_parent_median_ns: slice<i64>,
+  out task_candidate_median_present: slice<bool>,
+  out task_candidate_median_ns: slice<i64>,
+  out task_time_improvement_present: slice<bool>,
+  out task_time_improvement_ppm: slice<i64>,
+  out task_time_regression_present: slice<bool>,
+  out task_time_regression_ppm: slice<i64>,
+  out reason_task_ordinal: slice<i64>,
+  out reason_sample_index: slice<i64>,
+  out reason_code: slice<i64>,
+  out reason_parent_value_kind: slice<i64>,
+  out reason_parent_value_number: slice<i64>,
+  out reason_candidate_value_kind: slice<i64>,
+  out reason_candidate_value_number: slice<i64>,
+  out reason_limit_kind: slice<i64>,
+  out reason_limit_number: slice<i64>,
+) -> ScoreResult {
+  task_count := task_limits.len()
+  if task_count < 1 || task_count > 64 || sample_count < 2 || sample_count > 16 {
+    return result_with(
+      ScoreResultStatus.InvalidInput,
+      1,
+      -1,
+      0,
+      ScoreOutputKind.None,
+      0,
+    )
+  }
+  expected_row_count := task_count * sample_count * 2
+  if rows.len() != expected_row_count {
+    return result_with(
+      ScoreResultStatus.InvalidInput,
+      1,
+      -1,
+      0,
+      ScoreOutputKind.None,
+      0,
+    )
+  }
+
+  if task_ordinal.len() < task_count ||
+  task_parent_pass_count.len() < task_count ||
+  task_candidate_pass_count.len() < task_count ||
+  task_parent_repair_loop_count.len() < task_count ||
+  task_candidate_repair_loop_count.len() < task_count ||
+  task_paired_pass_count.len() < task_count ||
+  task_parent_median_present.len() < task_count ||
+  task_parent_median_ns.len() < task_count ||
+  task_candidate_median_present.len() < task_count ||
+  task_candidate_median_ns.len() < task_count ||
+  task_time_improvement_present.len() < task_count ||
+  task_time_improvement_ppm.len() < task_count ||
+  task_time_regression_present.len() < task_count ||
+  task_time_regression_ppm.len() < task_count {
+    return result_with(
+      ScoreResultStatus.OutputTooSmall,
+      4,
+      -1,
+      0,
+      ScoreOutputKind.TaskAggregates,
+      task_count,
+    )
+  }
+
+  if !valid_policy_limit(policy_limits) {
+    return result_with(
+      ScoreResultStatus.InvalidInput,
+      1,
+      -1,
+      0,
+      ScoreOutputKind.None,
+      0,
+    )
+  }
+
+  mut task := 0
+  loop {
+    if task >= task_count {
+      break
+    }
+    limit := task_limits[task]
+    if !valid_task_limit(limit) {
+      return result_with(
+        ScoreResultStatus.InvalidInput,
+        1,
+        -1,
+        0,
+        ScoreOutputKind.None,
+        0,
+      )
+    }
+    task = task + 1
+  }
+
+  mut row_index := 0
+  task = 0
+  loop {
+    if task >= task_count {
+      break
+    }
+    limit := task_limits[task]
+    mut sample := 1
+    loop {
+      if sample > sample_count {
+        break
+      }
+      base := pair_start(task, sample, sample_count)
+      first_variant := if sample % 2 == 1 { ScoreVariant.Parent } else { ScoreVariant.Candidate }
+      second_variant := if sample % 2 == 1 { ScoreVariant.Candidate } else { ScoreVariant.Parent }
+
+      first := rows[row_index]
+      if first.task_ordinal != task || first.sample_index != sample || !same_variant(first.variant, first_variant) {
+        return result_with(
+          ScoreResultStatus.InvalidInput,
+          2,
+          row_index,
+          0,
+          ScoreOutputKind.None,
+          0,
+        )
+      }
+      first_validation := validate_row(rows, row_index, limit)
+      if row_is_invalid(first_validation) {
+        return result_with(
+          ScoreResultStatus.InvalidInput,
+          2,
+          row_index,
+          0,
+          ScoreOutputKind.None,
+          0,
+        )
+      }
+      if row_is_evaluation_error(first_validation) {
+        return result_with(
+          ScoreResultStatus.EvaluationError,
+          3,
+          row_index,
+          0,
+          ScoreOutputKind.None,
+          0,
+        )
+      }
+      row_index = row_index + 1
+
+      second := rows[row_index]
+      if second.task_ordinal != task || second.sample_index != sample || !same_variant(second.variant, second_variant) {
+        return result_with(
+          ScoreResultStatus.InvalidInput,
+          2,
+          row_index,
+          0,
+          ScoreOutputKind.None,
+          0,
+        )
+      }
+      second_validation := validate_row(rows, row_index, limit)
+      if row_is_invalid(second_validation) {
+        return result_with(
+          ScoreResultStatus.InvalidInput,
+          2,
+          row_index,
+          0,
+          ScoreOutputKind.None,
+          0,
+        )
+      }
+      if row_is_evaluation_error(second_validation) {
+        return result_with(
+          ScoreResultStatus.EvaluationError,
+          3,
+          row_index,
+          0,
+          ScoreOutputKind.None,
+          0,
+        )
+      }
+      row_index = row_index + 1
+      sample = sample + 1
+    }
+    task = task + 1
+  }
+
+  corpus_parent_median := aggregate_median(rows, task_count, sample_count, -1, ScoreVariant.Parent)
+  corpus_candidate_median := aggregate_median(rows, task_count, sample_count, -1, ScoreVariant.Candidate)
+  corpus_metrics := calculate_time_metrics(corpus_parent_median, corpus_candidate_median)
+  corpus_parent_repairs := variant_repair_sum(rows, task_count, sample_count, -1, ScoreVariant.Parent)
+  corpus_candidate_repairs := variant_repair_sum(rows, task_count, sample_count, -1, ScoreVariant.Candidate)
+  corpus_repair_regression := if corpus_candidate_repairs > corpus_parent_repairs {
+    corpus_candidate_repairs - corpus_parent_repairs
+  } else {
+    0
+  }
+
+  mut reason_count := 0
+  if corpus_repair_regression > policy_limits.maximum_repair_loop_regression_count {
+    reason_count = reason_count + 1
+  }
+  match corpus_metrics.regression_ppm {
+    Some(value) => if value > policy_limits.maximum_time_regression_ppm {
+      reason_count = reason_count + 1
+    },
+    None => {},
+  }
+  task = 0
+  loop {
+    if task >= task_count {
+      break
+    }
+    reason_count = reason_count + reason_count_task(
+      rows,
+      task_count,
+      sample_count,
+      task,
+      task_limits[task],
+      policy_limits,
+    )
+    task = task + 1
+  }
+
+  if reason_task_ordinal.len() < reason_count ||
+  reason_sample_index.len() < reason_count ||
+  reason_code.len() < reason_count ||
+  reason_parent_value_kind.len() < reason_count ||
+  reason_parent_value_number.len() < reason_count ||
+  reason_candidate_value_kind.len() < reason_count ||
+  reason_candidate_value_number.len() < reason_count ||
+  reason_limit_kind.len() < reason_count ||
+  reason_limit_number.len() < reason_count {
+    return result_with(
+      ScoreResultStatus.OutputTooSmall,
+      5,
+      -1,
+      reason_count,
+      ScoreOutputKind.Reasons,
+      reason_count,
+    )
+  }
+
+  task = 0
+  loop {
+    if task >= task_count {
+      break
+    }
+    limit := task_limits[task]
+    parent_passes := variant_pass_count(rows, task_count, sample_count, task, ScoreVariant.Parent)
+    candidate_passes := variant_pass_count(rows, task_count, sample_count, task, ScoreVariant.Candidate)
+    parent_repairs := variant_repair_sum(rows, task_count, sample_count, task, ScoreVariant.Parent)
+    candidate_repairs := variant_repair_sum(rows, task_count, sample_count, task, ScoreVariant.Candidate)
+    paired_passes := paired_pass_count(rows, task_count, sample_count, task)
+    parent_median := aggregate_median(rows, task_count, sample_count, task, ScoreVariant.Parent)
+    candidate_median := aggregate_median(rows, task_count, sample_count, task, ScoreVariant.Candidate)
+    metrics := calculate_time_metrics(parent_median, candidate_median)
+
+    task_ordinal[task] = task
+    task_parent_pass_count[task] = parent_passes
+    task_candidate_pass_count[task] = candidate_passes
+    task_parent_repair_loop_count[task] = parent_repairs
+    task_candidate_repair_loop_count[task] = candidate_repairs
+    task_paired_pass_count[task] = paired_passes
+    write_optional(task_parent_median_present, task_parent_median_ns, task, parent_median)
+    write_optional(task_candidate_median_present, task_candidate_median_ns, task, candidate_median)
+    write_optional(task_time_improvement_present, task_time_improvement_ppm, task, metrics.improvement_ppm)
+    write_optional(task_time_regression_present, task_time_regression_ppm, task, metrics.regression_ppm)
+    task = task + 1
+  }
+
+  mut reason_index := 0
+  reason_index = emit_repair_reason(
+    reason_index,
+    corpus_parent_repairs,
+    corpus_candidate_repairs,
+    policy_limits.maximum_repair_loop_regression_count,
+    reason_task_ordinal,
+    reason_sample_index,
+    reason_code,
+    reason_parent_value_kind,
+    reason_parent_value_number,
+    reason_candidate_value_kind,
+    reason_candidate_value_number,
+    reason_limit_kind,
+    reason_limit_number,
+  )
+  reason_index = emit_time_reason(
+    reason_index,
+    -1,
+    corpus_metrics,
+    corpus_parent_median,
+    corpus_candidate_median,
+    policy_limits.maximum_time_regression_ppm,
+    reason_task_ordinal,
+    reason_sample_index,
+    reason_code,
+    reason_parent_value_kind,
+    reason_parent_value_number,
+    reason_candidate_value_kind,
+    reason_candidate_value_number,
+    reason_limit_kind,
+    reason_limit_number,
+  )
+
+  task = 0
+  loop {
+    if task >= task_count {
+      break
+    }
+    limit := task_limits[task]
+    parent_median := aggregate_median(rows, task_count, sample_count, task, ScoreVariant.Parent)
+    candidate_median := aggregate_median(rows, task_count, sample_count, task, ScoreVariant.Candidate)
+    metrics := calculate_time_metrics(parent_median, candidate_median)
+    reason_index = emit_time_reason(
+      reason_index,
+      task,
+      metrics,
+      parent_median,
+      candidate_median,
+      policy_limits.maximum_time_regression_ppm,
+      reason_task_ordinal,
+      reason_sample_index,
+      reason_code,
+      reason_parent_value_kind,
+      reason_parent_value_number,
+      reason_candidate_value_kind,
+      reason_candidate_value_number,
+      reason_limit_kind,
+      reason_limit_number,
+    )
+    mut sample := 1
+    loop {
+      if sample > sample_count {
+        break
+      }
+      base := pair_start(task, sample, sample_count)
+      reason_index = emit_pair_reasons(
+        reason_index,
+        task,
+        sample,
+        rows,
+        parent_index(base, sample),
+        candidate_index(base, sample),
+        limit,
+        reason_task_ordinal,
+        reason_sample_index,
+        reason_code,
+        reason_parent_value_kind,
+        reason_parent_value_number,
+        reason_candidate_value_kind,
+        reason_candidate_value_number,
+        reason_limit_kind,
+        reason_limit_number,
+      )
+      sample = sample + 1
+    }
+    task = task + 1
+  }
+
+  parent_passes := variant_pass_count(rows, task_count, sample_count, -1, ScoreVariant.Parent)
+  candidate_passes := variant_pass_count(rows, task_count, sample_count, -1, ScoreVariant.Candidate)
+  paired_passes := paired_pass_count(rows, task_count, sample_count, -1)
+  corpus := ScoreCorpusAggregate {
+    task_count: task_count,
+    sample_count: sample_count,
+    parent_pass_count: parent_passes,
+    candidate_pass_count: candidate_passes,
+    parent_repair_loop_count: corpus_parent_repairs,
+    candidate_repair_loop_count: corpus_candidate_repairs,
+    paired_pass_count: paired_passes,
+    parent_paired_median_time_ns: corpus_parent_median,
+    candidate_paired_median_time_ns: corpus_candidate_median,
+    completion_gain_count: candidate_passes - parent_passes,
+    time_improvement_ppm: corpus_metrics.improvement_ppm,
+    time_regression_ppm: corpus_metrics.regression_ppm,
+    repair_loop_regression_count: corpus_repair_regression,
+  }
+  return ScoreResult {
+    status: ScoreResultStatus.Complete,
+    error_code: 0,
+    error_index: -1,
+    reason_count: reason_count,
+    output_kind: ScoreOutputKind.None,
+    required_output_count: 0,
+    corpus: corpus,
+  }
+}

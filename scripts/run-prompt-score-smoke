@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+"${compiler}" run "${project_root}/src/prompt_score_smoke.align" >"${output_file}"
+
+python3 - "${output_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+actual = [json.loads(line) for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()]
+expected_names = [
+    "all-pass",
+    "task-output-too-small",
+    "reasons",
+    "reason-output-too-small",
+    "benchmark-reasons",
+    "aggregate-regressions",
+    "evaluation-error",
+    "invalid-order",
+    "invalid-state",
+    "invalid-plan",
+]
+names = [row["case_name"] for row in actual]
+if names != expected_names:
+    raise SystemExit(f"unexpected prompt score smoke cases: {names!r}")
+
+
+def core(**values: object) -> dict[str, object]:
+    return values
+
+
+expected = {
+    "all-pass": core(
+        status="COMPLETE",
+        output_kind="NONE",
+        error_code=0,
+        error_index=-1,
+        reason_count=0,
+        required_output_count=0,
+        parent_pass_count=2,
+        candidate_pass_count=2,
+        paired_pass_count=2,
+        parent_median_present=True,
+        parent_median_ns=150,
+        candidate_median_present=True,
+        candidate_median_ns=80,
+        time_improvement_present=True,
+        time_improvement_ppm=466666,
+        time_regression_present=True,
+        time_regression_ppm=0,
+        repair_loop_regression_count=1,
+        task_sentinel=False,
+        reason_sentinel=True,
+        reason_prefix=[],
+    ),
+    "task-output-too-small": core(
+        status="OUTPUT_TOO_SMALL",
+        output_kind="TASK_AGGREGATES",
+        error_code=4,
+        error_index=-1,
+        reason_count=0,
+        required_output_count=1,
+        parent_pass_count=0,
+        candidate_pass_count=0,
+        paired_pass_count=0,
+        parent_median_present=False,
+        parent_median_ns=-99,
+        candidate_median_present=False,
+        candidate_median_ns=-99,
+        time_improvement_present=False,
+        time_improvement_ppm=-99,
+        time_regression_present=False,
+        time_regression_ppm=-99,
+        repair_loop_regression_count=0,
+        task_sentinel=True,
+        reason_sentinel=True,
+        reason_prefix=[],
+    ),
+    "reasons": core(
+        status="COMPLETE",
+        output_kind="NONE",
+        error_code=0,
+        error_index=-1,
+        reason_count=8,
+        required_output_count=0,
+        parent_pass_count=1,
+        candidate_pass_count=0,
+        paired_pass_count=0,
+        parent_median_present=False,
+        parent_median_ns=0,
+        candidate_median_present=False,
+        candidate_median_ns=0,
+        time_improvement_present=False,
+        time_improvement_ppm=0,
+        time_regression_present=False,
+        time_regression_ppm=0,
+        repair_loop_regression_count=3,
+        task_sentinel=False,
+        reason_sentinel=False,
+        reason_prefix={
+            "tasks": [0, 0, 0, 0, 0, 0, 0, 0],
+            "samples": [1, 1, 1, 1, 1, 1, 1, 2],
+            "codes": [0, 1, 2, 4, 5, 6, 7, 3],
+            "parent_kinds": [1, 1, 1, 0, 0, 0, 0, 0],
+            "parent_numbers": [0, 0, 0, 0, 0, 0, 0, 0],
+            "candidate_kinds": [2, 2, 2, 5, 5, 5, 5, 3],
+            "candidate_numbers": [0, 0, 0, 5, 2, 200, 3, 0],
+            "limit_kinds": [0, 0, 0, 5, 5, 5, 5, 0],
+            "limit_numbers": [0, 0, 0, 1, 1, 100, 2, 0],
+        },
+    ),
+    "reason-output-too-small": core(
+        status="OUTPUT_TOO_SMALL",
+        output_kind="REASONS",
+        error_code=5,
+        error_index=-1,
+        reason_count=8,
+        required_output_count=8,
+        parent_pass_count=0,
+        candidate_pass_count=0,
+        paired_pass_count=0,
+        parent_median_present=False,
+        parent_median_ns=-99,
+        candidate_median_present=False,
+        candidate_median_ns=-99,
+        time_improvement_present=False,
+        time_improvement_ppm=-99,
+        time_regression_present=False,
+        time_regression_ppm=-99,
+        repair_loop_regression_count=0,
+        task_sentinel=True,
+        reason_sentinel=True,
+        reason_prefix=[],
+    ),
+    "benchmark-reasons": core(
+        status="COMPLETE",
+        output_kind="NONE",
+        error_code=0,
+        error_index=-1,
+        reason_count=2,
+        required_output_count=0,
+        parent_pass_count=2,
+        candidate_pass_count=2,
+        paired_pass_count=2,
+        parent_median_present=True,
+        parent_median_ns=100,
+        candidate_median_present=True,
+        candidate_median_ns=100,
+        time_improvement_present=True,
+        time_improvement_ppm=0,
+        time_regression_present=True,
+        time_regression_ppm=0,
+        repair_loop_regression_count=0,
+        task_sentinel=False,
+        reason_sentinel=False,
+        reason_prefix={
+            "tasks": [0, 0],
+            "samples": [1, 2],
+            "codes": [8, 8],
+            "parent_kinds": [0, 0],
+            "parent_numbers": [0, 0],
+            "candidate_kinds": [5, 5],
+            "candidate_numbers": [150, 150],
+            "limit_kinds": [5, 5],
+            "limit_numbers": [100, 100],
+        },
+    ),
+    "aggregate-regressions": core(
+        status="COMPLETE",
+        output_kind="NONE",
+        error_code=0,
+        error_index=-1,
+        reason_count=3,
+        required_output_count=0,
+        parent_pass_count=2,
+        candidate_pass_count=2,
+        paired_pass_count=2,
+        parent_median_present=True,
+        parent_median_ns=150,
+        candidate_median_present=True,
+        candidate_median_ns=250,
+        time_improvement_present=True,
+        time_improvement_ppm=0,
+        time_regression_present=True,
+        time_regression_ppm=666666,
+        repair_loop_regression_count=2,
+        task_sentinel=False,
+        reason_sentinel=False,
+        reason_prefix={
+            "tasks": [-1, -1, 0],
+            "samples": [0, 0, 0],
+            "codes": [7, 9, 9],
+            "parent_kinds": [5, 5, 5],
+            "parent_numbers": [0, 150, 150],
+            "candidate_kinds": [5, 5, 5],
+            "candidate_numbers": [2, 250, 250],
+            "limit_kinds": [5, 5, 5],
+            "limit_numbers": [0, 0, 0],
+        },
+    ),
+}
+
+empty_result = {
+    "status": "EVALUATION_ERROR",
+    "output_kind": "NONE",
+    "error_code": 3,
+    "error_index": 0,
+    "reason_count": 0,
+    "required_output_count": 0,
+    "parent_pass_count": 0,
+    "candidate_pass_count": 0,
+    "paired_pass_count": 0,
+    "parent_median_present": False,
+    "parent_median_ns": -99,
+    "candidate_median_present": False,
+    "candidate_median_ns": -99,
+    "time_improvement_present": False,
+    "time_improvement_ppm": -99,
+    "time_regression_present": False,
+    "time_regression_ppm": -99,
+    "repair_loop_regression_count": 0,
+    "task_sentinel": True,
+    "reason_sentinel": True,
+    "reason_prefix": [],
+}
+for name in ("evaluation-error", "invalid-order", "invalid-state"):
+    expected[name] = core(**empty_result)
+expected["invalid-order"]["error_code"] = 2
+expected["invalid-order"]["status"] = "INVALID_INPUT"
+expected["invalid-state"]["error_code"] = 2
+expected["invalid-state"]["status"] = "INVALID_INPUT"
+expected["invalid-plan"] = core(**empty_result)
+expected["invalid-plan"]["status"] = "INVALID_INPUT"
+expected["invalid-plan"]["error_code"] = 1
+expected["invalid-plan"]["error_index"] = -1
+
+scalar_fields = [
+    "status",
+    "output_kind",
+    "error_code",
+    "error_index",
+    "reason_count",
+    "required_output_count",
+    "parent_pass_count",
+    "candidate_pass_count",
+    "paired_pass_count",
+    "parent_median_present",
+    "parent_median_ns",
+    "candidate_median_present",
+    "candidate_median_ns",
+    "time_improvement_present",
+    "time_improvement_ppm",
+    "time_regression_present",
+    "time_regression_ppm",
+    "repair_loop_regression_count",
+    "task_sentinel",
+    "reason_sentinel",
+]
+array_fields = {
+    "tasks": "reason_tasks",
+    "samples": "reason_samples",
+    "codes": "reason_codes",
+    "parent_kinds": "reason_parent_kinds",
+    "parent_numbers": "reason_parent_numbers",
+    "candidate_kinds": "reason_candidate_kinds",
+    "candidate_numbers": "reason_candidate_numbers",
+    "limit_kinds": "reason_limit_kinds",
+    "limit_numbers": "reason_limit_numbers",
+}
+
+for row in actual:
+    want = expected[row["case_name"]]
+    for field in scalar_fields:
+        if row[field] != want[field]:
+            raise SystemExit(
+                f"{row['case_name']} {field}: expected {want[field]!r}, got {row[field]!r}"
+            )
+    prefix = want["reason_prefix"]
+    count = row["reason_count"]
+    if isinstance(prefix, list):
+        if prefix:
+            raise AssertionError("list reason prefix must be replaced by a mapping")
+        prefix = {field: [-99] * count for field in array_fields}
+    for short_name, field in array_fields.items():
+        values = row[field]
+        expected_prefix = prefix[short_name]
+        if values[:count] != expected_prefix:
+            raise SystemExit(
+                f"{row['case_name']} {field}: expected prefix {expected_prefix!r}, got {values[:count]!r}"
+            )
+        if values[count:] != [-99] * (len(values) - count):
+            raise SystemExit(f"{row['case_name']} {field}: output tail was mutated")
+
+print("prompt score smoke: validation, medians, ppm, reasons, capacity, and untouched-output PASS")
+PY
