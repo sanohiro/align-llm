@@ -18,9 +18,11 @@ request checks, reviews, and attestations.
   `4b3019a83598cfbae7feecdc88732b855c2e31c4`, immutable oracle commit
   `5338951e77415a21c42fbe030494c55d015f3542`, and finalization commit
   `bc386d8`.
-- In progress: baseline structural verification and the implementation/adoption integration gate.
-- Not started: the implementation pull request and review, hosted checks, merge, and the bounded
-  post-merge retrospective before C6c2 selection.
+- Complete: baseline structural verification and the local implementation/adoption integration
+  gate.
+- In progress: prepare the implementation pull request and complete its independent review.
+- Not started: hosted review checks, merge, and the bounded post-merge retrospective before C6c2
+  selection.
 - Working tree is expected to be clean at the source checkpoint; no generated binaries, model
   weights, credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -46,12 +48,10 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Run `make baseline-check`, the focused C6c1 checks, `make check`, `make build`, and the applicable
-   full `make ci` integration gate after the baseline sequence. Record exact results here.
-2. Open one implementation pull request with English description and exact verification results;
+1. Open one implementation pull request with English description and exact verification results;
    obtain one fresh independent comprehensive review, apply valid findings in one repair, rerun
    affected checks, and use the required native GitHub review envelope and merge commit.
-3. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
+2. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
    C6c2 slice. Do not start failure-memory JSONL adoption until Request 7 is accepted, merged at a
    named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and `make ci`
    passes the original acceptance gate.
@@ -72,8 +72,11 @@ request checks, reviews, and attestations.
   `bc386d8`, and the pending file was removed.
 - `make check`: PASS (15 existing main units; the repository's pre-existing compiler warnings are
   unchanged).
+- `make baseline-check`: PASS, including canonical provenance, immutable oracle, malformed-input,
+  and Git isolation checks.
+- `make ci`: PASS with the pinned release compiler; topology, all hosted/capable focused checks,
+  coding-v1, `prompt-score-smoke`, and baseline verification all passed.
 - `make fmt`, `./scripts/check-format`, and `git diff --check`: PASS.
-- `make baseline-check` and full `make ci` are pending for this implementation/adoption gate.
 
 ## Constraints and decisions to preserve
 
