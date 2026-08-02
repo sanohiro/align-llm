@@ -5,15 +5,17 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-boundary-trace-rescope`, based on the terminal cleanup/source-gate design
-  checkpoint `3e60265d00afec6645a97962cddf0b786d6858f8` and merged `main` commit
+- Branch: `agent/c6c2-adoption-timeout-reason-rescope`, based on the terminal source/trace design
+  checkpoint `86b40aa793b9c7f4e74dfe3bff319178cc3a1abd` and merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `8a1918d` (`Rescope C6c2 source and trace design`), based on the terminal
-  cleanup/source-gate design checkpoint and merged `main` commit above.
+- Current source checkpoint: `ff25f6e` (`Close C6c2 adoption and bound contracts`), based on the
+  terminal source/trace design checkpoint and merged `main` commit above.
 - Active goal: finish, independently review, and merge the corrected C6c1p/C6c2 design. This branch
-  resolves the latest five findings: runtime-derived clean CI-head binding, a content-bound native
-  source-verifier/Git boundary with raw-byte FILE_SET traversal, explicit `ADAPTER_FAILED` terminal
-  attestations, a bounded `RESULT_TOO_LARGE` trace envelope, and synchronized Request 8/10 blockers.
+  resolves the latest review findings: runtime-derived clean CI-head binding through the explicit
+  validated Git executable and cleared environment, a content-bound native source-verifier/Git
+  boundary with raw-byte FILE_SET traversal, explicit `ADAPTER_FAILED` terminal attestations, a
+  bounded `RESULT_TOO_LARGE` trace envelope, C6c2-specific Request 8/10 adoption gates, fixed
+  source-verifier timeout, and a deterministic scorer reason capacity.
   Implementation is not started and must wait for this design plus the C6a1/C6a2 decoded-record and
   Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
@@ -30,9 +32,10 @@ request checks, reviews, and attestations.
   byte grammar for exact membership, raw relative paths, modes, and file digests. Gate locators use
   the same manifest model and require every declared gate task file to be listed.
 - Complete: the checked-in gate source bundle has no persisted tested-head self-reference; Make
-  derives the actual clean, non-shallow CI checkout `HEAD`, passes it to validation, requires the
-  source bundle to equal it, and requires the evidence's evaluated commit to be its ancestor,
-  preserving the normal-merge integration rule.
+  passes explicit source-bundle and Git-tool paths to validation, and the validator derives the
+  actual clean, non-shallow CI checkout `HEAD` with that validated executable and cleared Git
+  environment. It requires the source bundle to equal it and the evidence's evaluated commit to be
+  its ancestor, preserving the normal-merge integration rule.
 - Complete: source verification has an explicit native helper policy, helper/Git digests, fixed
   argv/environment/cwd/caps, raw-byte FILE_SET traversal, bounded request/result states, and policy
   identity in `EnvironmentIdentityCore`.
@@ -46,7 +49,12 @@ request checks, reviews, and attestations.
   cleanup before a valid row retains none.
 - Complete: C6c1p validates all task-limit fields before computing the bounded expected row count;
   invalid plans use the documented sentinel result.
-- In progress: push this re-scoped design, open a new draft design PR, run one fresh independent
+- Complete: C6c2's source-verifier child timeout is fixed at 60,000,000,000 ns and cannot be
+  selected by a request, policy, environment, or caller.
+- Complete: scorer reason capacity is `R_max = 9 * task_count * sample_count + task_count + 2`,
+  at most 9,282 under the declared bounds; C6c1 and C6c2 reject checked overflow/allocation
+  failure before output/scorer side effects and never truncate reasons.
+- In progress: push this corrected design, open a new draft design PR, run one fresh independent
   comprehensive review, and merge it only after the review, check evidence, and all finding
   dispositions are complete.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
@@ -74,8 +82,8 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push this branch, open a new draft design PR, and record one fresh independent review of the
-   complete corrected design before implementation.
+1. Push `agent/c6c2-adoption-timeout-reason-rescope`, open a new draft design PR, and record one
+   fresh independent review of the complete corrected design before implementation.
 2. If that review is clean, record the SHA-bound envelope, wait for the documentation/static check,
    and merge the design PR. If it finds another non-trivial issue, re-scope again rather than
    entering another local repair/review loop.
@@ -91,11 +99,11 @@ request checks, reviews, and attestations.
 - C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
   and `make ci` all passed before the merged `main` checkpoint.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
-- Current re-scoped design verification: `git diff --check 3e60265d00afec6645a97962cddf0b786d6858f8..8a1918d` PASS
-  and the exact Markdown fence check over `docs/specs/c6-prompt-context-optimizer.md` and
+- Current corrected design verification: `git diff --check ff25f6e^..ff25f6e` PASS and the exact
+  Markdown fence check over `docs/specs/c6-prompt-context-optimizer.md` and
   `docs/align-requests.md` reports `markdown_fences=172` (even). Source tests and `make ci` are N/A
   because this remains documentation/specification-only; the new draft PR requires hosted
-  documentation/static checks.
+  documentation/static checks. The working tree is clean at this checkpoint.
 
 ## Constraints and decisions to preserve
 
@@ -132,6 +140,10 @@ request checks, reviews, and attestations.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
+- The C6c2 source verifier's fixed 60-second timeout is a contract constant rather than a policy
+  field; the explicit gate Git executable and cleared Git environment apply to every CI-head and
+  ancestry command. C6c2 cannot resume from Request 8/10 `ALIGN_MERGED` until its separate
+  `c6c2-request8-adoption` and `c6c2-request10-adoption` targets plus `make ci` pass.
 - All source, diagnostics, developer documentation, commits, pull requests, and review records
   remain in English.
 - Intentional uncommitted files: none at the last committed checkpoint; the next handoff must
