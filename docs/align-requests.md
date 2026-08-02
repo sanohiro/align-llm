@@ -3867,6 +3867,88 @@ The Align design and implementation must prove:
 
 ---
 
+## Request 14 — `std.fs`: exclusive creation and no-replace publication
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6f2 deterministic paired evaluator result/evidence publication and any later C6 command that promises no-replace artifact finalization
+Independent work that may continue: C6c1p and C6c2 pure verification, prompt rendering, scoring, design work, and any implementation that does not publish a pair with exclusive creation and no-replace rename
+Resume condition: Align accepts and merges the reviewed exclusive-create and no-replace-publication design at a named commit; the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, `c6f2-request14-adoption` passes the exact publication race/cleanup matrix, and `make ci` passes
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation and current-state evidence
+
+C6f2 writes a result and an independently content-bound evidence sidecar. Its contract requires
+two sibling temporary files, exclusive creation, fixed result-then-evidence publication, and a
+no-replace finalization failure if another process creates either target between validation and
+publication. The pinned Align `std.fs` surface provides whole-file `write_file` and `remove`, plus
+the `fs.create` writer; `fs.create` opens with create/truncate semantics and can replace an existing
+path. It does not expose an exclusive-create operation or an atomic no-replace rename operation.
+The compiler/runtime's Rust cache publisher uses private `std::fs::rename`, but that is not an Align
+program API and cannot be used by an align-llm client. A check-then-write or delete-and-rename
+workaround would violate the stated race and no-replace contract.
+
+### Requested capability
+
+Extend `std.fs` with one explicit publication pair, or an equivalent reviewed API with the same
+semantics:
+
+```text
+fs.create_exclusive(path: str) -> Result<writer, Error>
+fs.rename_no_replace(source: str, destination: str) -> Result<(), Error>
+```
+
+The exact shipped names may follow Align's library naming, but the design must define that
+`create_exclusive` opens a new regular file without following a destination symlink and fails when
+the path already exists; it must not truncate or replace an existing entry. It must return an owned
+`writer`, preserve the existing explicit Move/drop behavior, and close the descriptor on every
+success, write failure, `?`, `map_err`, branch join, early return, and `Drop` path. The path is a
+bounded NUL-free `str` view consumed only for the call; the returned writer owns the descriptor and
+does not retain the view.
+
+`rename_no_replace` must publish a source path to an absent destination atomically on one filesystem,
+fail with a deterministic already-exists error when the destination is present, never replace or
+delete the destination, and define source/destination validation, cross-device failure, symlink and
+special-file behavior, same-directory behavior, and cleanup after every error. It must be a direct
+OS operation, not a shell command or a check-then-rename sequence. The API must state whether the
+source is consumed on success, and the caller must be able to remove a successfully published first
+target before retrying a failed second publication without the library hiding that cleanup.
+
+### Acceptance criteria
+
+The Align design and implementation must prove:
+
+1. ordinary and linked-worktree path handling, NUL/length/type validation, parent-directory errors,
+   destination symlink and special-file rejection, and exact error mapping;
+2. exclusive creation at an absent target and deterministic failure at an existing target, including
+   a competing creator between preflight and create, with no truncation or replacement;
+3. atomic no-replace rename at an absent destination and deterministic failure when a competing
+   creator wins, with the source and destination states specified for every failure;
+4. same-filesystem publication, cross-device failure, source disappearance, destination directory,
+   symlink, and special-file cases, with no hidden remove or overwrite;
+5. writer ownership, partial writes, `Drop`, `?`, `map_err`, branch/loop joins, allocation failure,
+   and cleanup after a failed pair publication, including the already-published-first-target case;
+6. repeated and concurrent independent calls, process interruption between staging and publication,
+   and the minimum declared filesystem/platform acceptance environment; and
+7. the align-llm `c6f2-request14-adoption` target uses the shipped operations for the exact result-then-
+   evidence pair contract, exercises the race/cleanup matrix, leaves no temporary artifact on
+   successful cleanup, and passes `make ci`. C6f2 must not use `write_file`, delete-before-rename,
+   a check-then-create workaround, or an undeclared native helper in place of this capability.
+
+### References
+
+- `../align/docs/guide/13-std-os.md` — current `std.fs` whole-file and writer APIs.
+- `../align/crates/align_runtime/src/lib.rs` — current `fs.create` create/truncate implementation
+  and owned writer/drop boundary.
+- `docs/specs/c6-prompt-context-optimizer.md` §§5.2, 6, 10, and 11 — result/evidence pair
+  publication, cleanup, ledger ownership, and C6f2 adoption gate.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design

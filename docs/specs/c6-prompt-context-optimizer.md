@@ -87,7 +87,12 @@ hypothetical API part of C6:
 8. **Request 12 — bounded canonical JSON encoding.** The current `core.json.encode` returns a
    complete owned string and cannot prove the C6 268,435,456-byte result cap before allocation.
    C6a1 and C6a2 must wait for a shipped bounded canonical encoder.
-9. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
+9. **Request 14 — exclusive creation and no-replace publication.** C6f2's result/evidence pair
+   contract needs an Align-owned exclusive file create and atomic no-replace rename; the current
+   `std.fs` surface has create/truncate, write, and remove but no safe publication primitive. C6f2
+   must wait for the named `c6f2-request14-adoption` gate and must not use a check-then-create,
+   delete-before-rename, or undeclared native workaround.
+10. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
    adoption gate remains pending. C6e and C6g1 cannot claim the provider timeout gate until that
    original acceptance target passes, whether it is completed by Request 2's adoption slice or by
    the combined Request 5 adoption slice.
@@ -441,18 +446,20 @@ does not interpret learned text as code and does not treat it as a security boun
 
 ## 4. Immutable artifacts and identity
 
-C6 uses caller-named, immutable-after-success JSON artifacts under the complete operation-overlap
-policy in §1.2. A command refuses an output path that already exists before work starts. Because
-every input artifact already exists, this also prevents selecting an input as the output path.
-The pinned filesystem has no exclusive-create operation: a caller that races a new path into
-existence between validation and the final write violates the command precondition, and C6 makes
-no cross-process write-once claim for that race. There is no hidden active pointer and no in-place
-registry rewrite.
+Existing C6 artifact writers use caller-named, immutable-after-success JSON artifacts under the
+complete operation-overlap policy in §1.2. A command refuses an output path that already exists
+before work starts. Because every input artifact already exists, this also prevents selecting an
+input as the output path. The pinned filesystem has no exclusive-create operation for those existing
+writers: a caller that races a new path into existence between validation and the final write
+violates the command precondition, and those writers make no cross-process write-once claim for that
+race. C6f2's result/evidence pair is a later blocked exception with the stronger exclusive-create
+and no-replace publication contract in §5.2; it cannot start until Request 14 is adopted. There is
+no hidden active pointer and no in-place registry rewrite.
 
 This shape is intentional:
 
-- it fits Align's implemented whole-file APIs without inventing rename, lock, transaction, or
-  package features;
+- it fits Align's implemented whole-file APIs for the existing artifact-writing slices without
+  inventing rename, lock, transaction, or package features;
 - an interrupted write cannot replace a previously valid activation;
 - consumers select an activation explicitly;
 - Git or another caller-owned system may version the artifacts without align-coder owning Git
@@ -1522,7 +1529,9 @@ evaluation_evidence_path
 root and is validated before any snapshot, adapter, or other evaluator side effect. The evaluator
 writes the result at the CLI output path and the evidence at this explicit path as one logical pair;
 the evidence never points back to a path in the result. The pair has no cross-file atomicity promise,
-but its temporary and failure behavior is exact: after both canonical byte strings are complete and
+but its temporary and failure behavior is exact. C6f2 may implement this contract only after the
+shipped Request 14 operations pass `c6f2-request14-adoption`; no check-then-create or delete-before-
+rename substitute is permitted. After both canonical byte strings are complete and
 validated in memory, the evaluator exclusively creates one bounded temporary file beside each target,
 writes and closes both temporary files, and rechecks that both final target paths are still absent. It
 then finalizes in fixed order with no-replace renames: the result temporary file to the result path
@@ -1693,9 +1702,10 @@ is the only way the helper locates local configuration; it does not ask Git to d
 itself.
 
 The raw local-config scan is bounded, parses Git section/key syntax without following includes, and
-rejects an `include.path` or `includeIf.*.path` directive. A local config with any executable,
-external-path, network, repository-location, or ref-selection key is rejected before source
-observation, including `alias.*`, `browser.*.cmd`, `browser.*.path`,
+rejects an `include.path` or `includeIf.*.path` directive. A local config with any setting that can
+execute a process, load an external file, change the worktree/object/ref location used by one of the
+fixed commands, invoke a hook/helper/filter/pager, or cause one of those commands to contact a remote
+is rejected before source observation, including `alias.*`, `browser.*.cmd`, `browser.*.path`,
 `core.alternateRefsCommand`, `core.askPass`, `core.attributesFile`, `core.editor`,
 `core.excludesFile`, `core.fsmonitor`, `core.fsmonitorHookVersion`, `core.gitProxy`,
 `core.hooksPath`, `core.pager`, `core.sshCommand`, `core.worktree`, `credential.helper`,
@@ -1703,15 +1713,21 @@ observation, including `alias.*`, `browser.*.cmd`, `browser.*.path`,
 `difftool.*.path`, `filter.<driver>.clean`, `filter.<driver>.smudge`,
 `filter.<driver>.process`, `gpg.*.program`, `gpg.program`, `guitool.*.cmd`, `http.*.proxy`,
 `man.*.cmd`, `man.*.path`, `mergetool.*.cmd`, `mergetool.*.path`, `pager.*`,
-`remote.<name>.proxy`, `remote.<name>.receivepack`, `remote.<name>.uploadpack`,
+`remote.<name>.promisor`, `remote.<name>.partialclonefilter`, `remote.<name>.proxy`,
+`remote.<name>.receivepack`, `remote.<name>.uploadpack`,
 `sequence.editor`, and `uploadpack.packObjectsHook`. More generally, every local key whose pinned
 Git 2.45.0 documentation identifies an executable, command, process, hook, helper, external file,
-filter, pager, proxy, transport, repository-location, or alternate-ref command is rejected,
-including newly discovered keys in those namespaces; harmless identity and branch metadata may
-remain. The acceptance fixture enumerates the pinned configuration reference and includes an
-execution sentinel for every command-bearing family. A missing, non-regular, unreadable,
-malformed, included, or rejected-key local config is `UNVERIFIED`; no repository-local command may
-execute before that result.
+filter, pager, proxy, transport, repository-location, promisor, or alternate-ref command is rejected,
+including newly discovered keys in those effect families. Ordinary clone metadata that the fixed
+local commands do not consume is explicitly allowed: `remote.<name>.url`,
+`remote.<name>.pushurl`, `remote.<name>.fetch`, `branch.<name>.remote`, and
+`branch.<name>.merge` are inert here because the helper never invokes a remote, fetch, push, merge,
+checkout, or transport command. A remote URL is not an executable input at this boundary; a promisor,
+proxy, upload/receive-pack, or other setting that can change object lookup or launch a transport
+remains rejected. The acceptance fixture includes an ordinary-clone configuration with those allowed
+remote keys and an execution sentinel for every rejected command-bearing family. A missing,
+non-regular, unreadable, malformed, included, or rejected-key local config is `UNVERIFIED`; no
+repository-local command may execute before that result.
 
 Only after this raw walk and scan does the helper resolve the repository's absolute Git common
 directory with `<git> --no-pager -C <repository> -c core.useReplaceRefs=false -c core.alternateRefsCommand= -c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.helper= -c diff.external= rev-parse --path-format=absolute --git-common-dir`
@@ -1729,9 +1745,12 @@ bundle. The explicit `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` s
 force for every subsequent status, revision, object, ref-enumeration, and ancestry command. A
 repository using any of these mechanisms is `UNVERIFIED`, never `VERIFIED`.
 
-The align-llm observation requires a clean checkout whose `HEAD` exactly equals
-`verifier_align_llm_commit`; no ancestor commit or source-scope exception is permitted. The Align
-observation requires the clean checkout revision from `verifier_align_repository_path` to equal the
+For `mode: EVALUATION`, the align-llm observation requires a clean checkout whose `HEAD` exactly
+equals `verifier_align_llm_commit`; no ancestor commit or source-scope exception is permitted. For
+`mode: GATE`, the source-bundle align-llm observation requires a clean complete-history checkout
+whose `HEAD` exactly equals the validator-derived `tested_align_llm_head`; the gate validator's
+separate ancestry command proves that `verifier_align_llm_commit` is an ancestor of that head. The
+Align observation requires the clean checkout revision from `verifier_align_repository_path` to equal the
 project `.align-revision` and `verifier_align_revision`; and the corpus observation checks the named
 `GIT_COMMIT` or canonical `FILE_SET` manifest and its physically verified entries under
 `verifier_corpus_source_path`. A source path or manifest that is readable but cannot prove the exact
@@ -2525,9 +2544,11 @@ result/evidence pair. No acceptance path trusts a persisted status, aggregate, r
 The internal Copy verdict labels are `IMPROVED_ELIGIBLE`, `COMPLETE_INELIGIBLE`, and
 `NONCOMPLETE_ERROR`; malformed or contradictory decoded records return `Err(Error.Invalid)`.
 
-Output artifacts are written only after their complete in-memory record validates. There is no
-cross-process lock or exclusive-create primitive. The operation-overlap matrix in §1.2 classifies
-every aggregate-plus-focused and focused-plus-focused pair: disjoint resources are supported,
+Output artifacts outside the blocked C6f2 pair are written only after their complete in-memory
+record validates; those existing writers have no cross-process lock or exclusive-create primitive.
+The C6f2 result/evidence pair is governed by the Request 14 publication contract in §5.2 and is not
+implemented through this weaker path. The operation-overlap matrix in §1.2 classifies every
+aggregate-plus-focused and focused-plus-focused pair: disjoint resources are supported,
 shared outputs/workspaces are rejected before side effects or explicitly unsupported under the
 single-writer precondition, and no concurrent writer is last-writer-wins. After a successful write,
 outputs are immutable and content-verified.
@@ -2844,8 +2865,11 @@ exact executable path, with `env_clear()` and only `LANG=C`, `LC_ALL=C`, `GIT_CO
 fixed command in the actual CI checkout at `$(pwd)`. Before any Git child, the validator performs
 the same bounded raw `.git`/`gitdir`/`commondir` metadata walk and local/worktree config scan as the
 source verifier for the CI checkout and every source-bundle Git checkout. It rejects local includes,
-executable/external-path/network/repository-location/ref-selection keys, and malformed or unsafe
-metadata before invoking Git; the gate validator has no config-scan exception. It then runs the
+settings that can affect the fixed local commands (including command, hook, helper, filter, pager,
+path, promisor, proxy, and transport settings), and malformed or unsafe metadata before invoking
+Git. It explicitly allows only the inert ordinary-clone metadata `remote.<name>.url`,
+`remote.<name>.pushurl`, `remote.<name>.fetch`, `branch.<name>.remote`, and
+`branch.<name>.merge`; the gate validator has no other config-scan exception. It then runs the
 fixed common-directory locator and requires the Git-reported physical directory to equal the
 raw-walk result. The locator itself is
 `<git> --no-pager -C <root> -c core.useReplaceRefs=false -c core.alternateRefsCommand= -c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.helper= -c diff.external= rev-parse --path-format=absolute --git-common-dir`.
@@ -2897,10 +2921,10 @@ explicitly reviewed deferral.
 | Contract | Intended owner | Planned acceptance evidence |
 | --- | --- | --- |
 | Four CLI operations and exact arguments | `src/main.align` | CLI smoke covers valid and invalid arity for every operation |
-| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git>` passes both explicit values as `--source-bundle-root` and `--git-executable-path`, rejects missing/relative/unsafe roots or tools before source reads, resolves the Git common directory, rejects replacement/graft/alternate mechanisms, scans local Git configuration, uses fixed no-replace/no-graft/no-pager/command overrides for every Git command, checks the derived clean CI head and evaluated-commit ancestry as separate proofs, validates the source-verifier policy/helper/tool identities, and revalidates every locator and exact source identity |
+| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git>` passes both explicit values as `--source-bundle-root` and `--git-executable-path`, rejects missing/relative/unsafe roots or tools before source reads, resolves the Git common directory, rejects replacement/graft/alternate mechanisms, scans local Git configuration while allowing only inert ordinary-clone remote/branch metadata, uses fixed no-replace/no-graft/no-pager/command overrides for every Git command, checks the derived clean CI head and evaluated-commit ancestry as separate proofs, validates the source-verifier policy/helper/tool identities, and revalidates every locator and exact source identity |
 | Source-verifier request/result boundary | C6f1 source verifier, `src/prompt_evaluate.align`, gate validator | request/result kind, mode-specific EVALUATION/GATE observed-head semantics, separate evaluated-commit ancestry, exact argv/env/cwd, common-directory and replacement/graft/alternate rejection, bounded local-config scan, fixed Git overrides, helper/Git digests, timeout/capture caps, raw-byte FILE_SET fixtures, `COMPLETE`/`UNAVAILABLE` field shapes, observed-identity equality for `VERIFIED`, and gate rejection of unavailable proof |
 | Mode-specific gate head and ancestry identity | C6f1 source verifier, gate validator | EVALUATION exact-head equality; GATE observed-head equality to derived CI head plus independent expected-commit ancestry; normal-merge fixture where the two SHAs differ; `prompt-source-verifier-mode-identity-smoke` and `prompt-gate-merge-head-ancestry-smoke` |
-| Repository-local Git configuration isolation | C6f1 source verifier, gate validator | raw `.git`/`gitdir`/`commondir` and local/worktree config scan before any Git child, include rejection, command-bearing-key rejection, fixed `--no-pager`/`-c` overrides, fsmonitor sentinel non-execution, and gate rejection before identity observation; `prompt-source-verifier-local-git-config-smoke` and `prompt-gate-local-git-config-smoke` |
+| Repository-local Git configuration isolation | C6f1 source verifier, gate validator | raw `.git`/`gitdir`/`commondir` and local/worktree config scan before any Git child, include rejection, command-bearing-key rejection, ordinary-clone inert remote/branch metadata allowlist, fixed `--no-pager`/`-c` overrides, fsmonitor sentinel non-execution, and gate rejection before identity observation; `prompt-source-verifier-local-git-config-smoke` and `prompt-gate-local-git-config-smoke` |
 | Complete replacement-ref namespace | C6f1 source verifier, gate validator | loose, packed-refs, reftable, nonzero/malformed/capped/non-empty `for-each-ref` output, and no-replacement-object controls; `prompt-source-verifier-replacement-namespace-smoke` and `prompt-gate-replacement-namespace-smoke` |
 | Declared records, bounds, canonical digest | `src/prompt_model.align` | round-trip, tamper, unknown-version, and oversize fixtures |
 | Persisted string-label mapping | `src/prompt_model.align` | every allowed and unknown kind/status/operation/stage label plus canonical golden vectors |
@@ -2914,7 +2938,8 @@ explicitly reviewed deferral.
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, no-partial-write vectors, temporary/final output order, second-finalization failure, and pair cleanup-failure recovery |
-| Evaluation result/evidence pair persistence | `src/prompt_evaluate.align`, `src/main.align` | two exclusive sibling temporary files, bounded canonical bytes, result-then-evidence finalization, first-finalization and second-finalization failures, reverse cleanup, absent-target recheck, `OUTPUT_WRITE`, `OUTPUT_PAIR_CLEANUP_FAILED`, and explicit orphan recovery path |
+| Exclusive artifact publication | Align Request 14 adoption, `src/prompt_evaluate.align` | `create_exclusive`/`rename_no_replace` or the reviewed shipped equivalents; existing-target and competing-creator failures, no replacement, same-filesystem publication, and pair cleanup/recovery before C6f2 writes any result/evidence output |
+| Evaluation result/evidence pair persistence | `src/prompt_evaluate.align`, `src/main.align`, Request 14 adoption | two exclusively created sibling temporary files, bounded canonical bytes, result-then-evidence no-replace finalization, first-finalization and second-finalization failures, reverse cleanup, absent-target recheck, `OUTPUT_WRITE`, `OUTPUT_PAIR_CLEANUP_FAILED`, and explicit orphan recovery path; no check-then-create or undeclared native publication workaround |
 | Exact source identity and integration method | explicit evaluator source inputs, C6f1 source verifier, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for evaluator align-llm, derived clean CI-head equality plus evaluated-commit ancestry for the gate, replacement/graft/alternate rejection through the resolved Git common directory, fixed no-replace/no-graft environment, policy/helper/Git identity revalidation, expected/observed-identity binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
@@ -2949,7 +2974,7 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
 | Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
-| Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator performs the raw `.git`/`gitdir`/`commondir` and local-config walk before any Git child, resolves and checks each Git common directory, rejects replacement/graft/alternate mechanisms across loose and packed/ref-backend storage, validates policy/helper/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry as separate proofs, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-gate-merge-head-ancestry-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
+| Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator performs the raw `.git`/`gitdir`/`commondir` and local-config walk before any Git child, allows only inert ordinary-clone remote/branch metadata, resolves and checks each Git common directory, rejects replacement/graft/alternate mechanisms across loose and packed/ref-backend storage, validates policy/helper/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry as separate proofs, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-gate-merge-head-ancestry-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
 | Source-verifier process boundary | policy/helper/Git identity and request/result codecs | N/A | raw `.git`/`gitdir`/`commondir` metadata and local/worktree config are scanned before any Git child; fixed argv including no-pager/no-replace/no-graft/command overrides, cleared environment, cwd, common-directory checks, complete replacement namespace enumeration, byte caps, timeout, raw-byte FILE_SET traversal, mode-specific result-status/observed-identity shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-mode-identity-smoke`, `prompt-source-verifier-git-replacement-graft-smoke`, `prompt-source-verifier-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke`, `prompt-source-verifier-replacement-namespace-smoke`, `prompt-source-verifier-observed-identity-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke` |
 | Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation and accepts a retained non-`ERROR` row after `CLEANUP_FAILED` | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke`, `prompt-verifier-cleanup-retention-smoke` |
 | Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
@@ -2968,7 +2993,7 @@ fixture in the diff.
 | Final-review invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
 | Gate head versus evaluated commit | C6f1 source verifier and gate validator | EVALUATION records exact expected-head observation; GATE records the derived CI head and proves the evaluated commit is its ancestor; the two SHAs may differ after normal merge | `prompt-source-verifier-mode-identity-smoke`, `prompt-gate-merge-head-ancestry-smoke` |
-| Repository-local Git command isolation | C6f1 source verifier and gate validator | raw-scan bounded `.git`/`gitdir`/`commondir` metadata and common/worktree config before any Git child, without following includes; reject command-bearing keys before observation; apply fixed no-pager/no-replace/no-graft/command overrides to every direct Git invocation | `prompt-source-verifier-local-git-config-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke` |
+| Repository-local Git command isolation | C6f1 source verifier and gate validator | raw-scan bounded `.git`/`gitdir`/`commondir` metadata and common/worktree config before any Git child, without following includes; reject command-bearing keys before observation while accepting only inert ordinary-clone remote/branch metadata; apply fixed no-pager/no-replace/no-graft/command overrides to every direct Git invocation | `prompt-source-verifier-local-git-config-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke`, `prompt-source-verifier-ordinary-clone-config-smoke`, `prompt-gate-ordinary-clone-config-smoke` |
 | Complete replacement-ref namespace | C6f1 source verifier and gate validator | raw-check unsafe loose entries, enumerate `refs/replace/` through the pinned Git ref backend, reject nonzero, capped, malformed, or non-empty output, and preserve the check for packed-refs and reftable | `prompt-source-verifier-replacement-namespace-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-replacement-packed-ref-smoke` |
 
 Applicability decisions:
@@ -3084,11 +3109,13 @@ and must split again before coding if the estimate no longer holds.
       physical path checks, environment identity, and cleanup primitives;
     - no paired evaluation loop or scoring decision;
     - estimated review surface below 1,000 hand-written lines.
-12. **C6f2 — deterministic paired evaluator (blocked on Requests 8, 10, 11, 12, and 13)**
-   - after Requests 8, 10, 11, 12, and 13 reach `ALIGN_LLM_VERIFIED` and are adopted, `prompt evaluate`, alternating samples,
+12. **C6f2 — deterministic paired evaluator (blocked on Requests 8, 10, 11, 12, 13, and 14)**
+   - after Requests 8, 10, 11, 12, 13, and 14 reach `ALIGN_LLM_VERIFIED` and are adopted, `prompt evaluate`, alternating samples,
       checked construction of runtime-sized record arrays, C6c reuse, and deterministic corpus;
-    - may proceed while C6e is blocked because its fixed adapter does not call a model provider;
-    - estimated review surface below 1,000 hand-written lines.
+   - may proceed while C6e is blocked because its fixed adapter does not call a model provider;
+   - result/evidence pair publication uses Request 14's shipped exclusive-create and no-replace
+     rename operations; no delete-before-rename or undeclared native helper is allowed;
+   - estimated review surface below 1,000 hand-written lines.
 13. **C6g1 — real consumer and frozen gate assets (blocked on Requests 2, 5, 11, 12, and 13)**
    - starts only after C6a0, C6a1, C6a2, C6b, C6c1, C6c1p, C6c2, C6d1, C6e, C6f1, and C6f2
      have completed their own acceptance gates; those C6 slice dependencies are not replaced by
