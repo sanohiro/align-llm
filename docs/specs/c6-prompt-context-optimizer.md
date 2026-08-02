@@ -1260,8 +1260,10 @@ All commands:
 - validate all input artifact digests and cross-artifact identities before doing work;
 - never persist API-key values;
 - write one result artifact for a decoded request whenever the output path is new and writable;
-- `prompt evaluate` also writes the independently content-bound evidence artifact named by
-  `evaluation_evidence_path`, after validating both complete records;
+- `prompt evaluate` writes the independently content-bound evidence artifact named by
+  `evaluation_evidence_path` only after the evaluation has established its identity and reached the
+  paired-evidence boundary; a pre-execution decoded-request `INVALID_INPUT` writes only the result
+  and has no evidence sidecar;
 - print the operation, terminal status, and output path in English;
 - return success only for the successful terminal statuses listed below.
 
@@ -1274,7 +1276,9 @@ non-regular input, permission failure, read failure, or invalid UTF-8 is a decod
 result when the output path remains writable. Only an output persistence failure or a failure before
 the request envelope decodes escapes as a filesystem `Result` error without a valid result artifact.
 Pair cleanup failure is reported as `OUTPUT_PAIR_CLEANUP_FAILED` with the surviving evaluator-owned
-path(s), and is never rewritten as a successful result.
+path(s), and is never rewritten as a successful result. A destination created by a competing
+publisher is not evaluator-owned, is never reported as a removable orphan, and is never removed by
+the evaluator or by a retry instruction.
 
 No command calls `fs.read_file` on an unbounded JSON input. A shared bounded reader uses
 `fs.open`, a reusable buffer, and one probe byte, accumulating at most the applicable cap before
@@ -1308,7 +1312,8 @@ Validation and side-effect precedence is the same for every command:
 5. Construct and validate the complete result in memory.
 6. Write the new output path once, or for `evaluate` finalize the two validated temporary files in
    the exact pair order above. A temporary/finalization failure returns `OUTPUT_WRITE` after cleanup;
-   an unsuccessful cleanup returns `OUTPUT_PAIR_CLEANUP_FAILED` with the recovery path(s). A partial
+   an unsuccessful cleanup returns `OUTPUT_PAIR_CLEANUP_FAILED` with only the evaluator-owned
+   recovery path(s); collision destinations are never included or removed. A partial
    output is invalid and is never reported as a successful artifact.
 
 Stable error labels identify the first failing check in this order. Later checks do not overwrite
@@ -1533,19 +1538,26 @@ but its temporary and failure behavior is exact. C6f2 may implement this contrac
 shipped Request 14 operations pass `c6f2-request14-adoption`; no check-then-create or delete-before-
 rename substitute is permitted. After both canonical byte strings are complete and
 validated in memory, the evaluator exclusively creates one bounded temporary file beside each target,
-writes and closes both temporary files, and rechecks that both final target paths are still absent. It
-then finalizes in fixed order with no-replace renames: the result temporary file to the result path
-followed by the evidence temporary file to the evidence path. A target created between the recheck
-and its rename is a finalization failure; no rename may replace an existing path. A temporary-write
-or first-finalization failure removes both temporary files and returns
-`OUTPUT_WRITE`. If the second finalization fails, the evaluator removes any finalized output first,
-then both temporary files, and rechecks that both target paths are absent. Successful cleanup returns
-`OUTPUT_WRITE` and leaves no output artifact. If any cleanup removal or recheck fails, the evaluator
-returns `OUTPUT_PAIR_CLEANUP_FAILED` with the exact surviving path(s); it never reports a successful
-result, never overwrites those paths on a retry, and the caller owns removal of the explicitly
-reported orphan before retrying. The evidence path must also be physically distinct from the CLI
-result path, including after resolving existing parent components and symlink aliases; an alias is
-`INVALID_INPUT` before any evaluator work.
+writes and closes both temporary files, and rechecks that both final target paths are still absent. The
+evaluator owns both temporary files. It then finalizes in fixed order with no-replace renames: the
+result temporary file to the result path followed by the evidence temporary file to the evidence
+path. A successful rename transfers ownership of that final output to the evaluator. A target created
+between the recheck and its rename is a finalization collision; the no-replace operation fails and the
+competing destination remains owned by its creator. No evaluator cleanup or retry may remove or
+overwrite that destination.
+
+A temporary-write or first-finalization failure removes only evaluator-owned temporary files and
+returns `OUTPUT_WRITE` when those owned paths and their rechecks are clean. If the second finalization
+fails, the evaluator removes the evaluator-owned finalized result (if present) and the remaining
+evidence temporary file, then rechecks every evaluator-owned path. It never removes the evidence
+destination when that destination is a collision, and it does not require a collision destination to
+be absent. A collision with otherwise successful owned cleanup returns `OUTPUT_WRITE` and leaves no
+evaluator-owned output artifact. If any removal or recheck of an evaluator-owned path fails, the
+evaluator returns `OUTPUT_PAIR_CLEANUP_FAILED` with only the exact surviving evaluator-owned paths;
+it never reports a successful result. The caller owns removal of explicitly reported evaluator-owned
+orphans before retrying, but never removes a competing destination. The evidence path must also be
+physically distinct from the CLI result path, including after resolving existing parent components
+and symlink aliases; an alias is `INVALID_INPUT` before any evaluator work.
 
 The `verifier_*` fields are explicit source-boundary inputs, not ambient configuration. They have no
 defaults and are not inherited from `project_root`, the task manifest, the process environment, or
@@ -2939,7 +2951,7 @@ explicitly reviewed deferral.
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, no-partial-write vectors, temporary/final output order, second-finalization failure, and pair cleanup-failure recovery |
 | Exclusive artifact publication | Align Request 14 adoption, `src/prompt_evaluate.align` | `create_exclusive`/`rename_no_replace` or the reviewed shipped equivalents; existing-target and competing-creator failures, no replacement, same-filesystem publication, and pair cleanup/recovery before C6f2 writes any result/evidence output |
-| Evaluation result/evidence pair persistence | `src/prompt_evaluate.align`, `src/main.align`, Request 14 adoption | two exclusively created sibling temporary files, bounded canonical bytes, result-then-evidence no-replace finalization, first-finalization and second-finalization failures, reverse cleanup, absent-target recheck, `OUTPUT_WRITE`, `OUTPUT_PAIR_CLEANUP_FAILED`, and explicit orphan recovery path; no check-then-create or undeclared native publication workaround |
+| Evaluation result/evidence pair persistence | `src/prompt_evaluate.align`, `src/main.align`, Request 14 adoption | two exclusively created sibling temporary files, bounded canonical bytes, result-then-evidence no-replace finalization, first-finalization and second-finalization failures, evaluator-owned reverse cleanup, collision destination preservation, owned-path rechecks, `OUTPUT_WRITE`, `OUTPUT_PAIR_CLEANUP_FAILED`, and explicit owned-orphan recovery path; no check-then-create or undeclared native publication workaround |
 | Exact source identity and integration method | explicit evaluator source inputs, C6f1 source verifier, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for evaluator align-llm, derived clean CI-head equality plus evaluated-commit ancestry for the gate, replacement/graft/alternate rejection through the resolved Git common directory, fixed no-replace/no-graft environment, policy/helper/Git identity revalidation, expected/observed-identity binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
@@ -2959,7 +2971,7 @@ explicitly reviewed deferral.
 | Accept only eligible improvement | `src/prompt_state.align` | improved/no-improvement/regression/error/parent-mismatch cases |
 | Activation operation invariants | `src/prompt_state.align` | baseline/accept/rollback cross-field table plus every forbidden combination |
 | Immutable rollback lineage | `src/prompt_state.align` | valid ancestor, broken chain, duplicate, foreign-scope, retained provenance, reason, and no-overwrite cases |
-| Single-writer immutable persistence | all command owners | existing-output, result/evidence physical-alias, documented no-race precondition, and corrupt-partial-artifact regressions |
+| Single-writer immutable persistence | all command owners | existing-output, result/evidence physical-alias, documented no-race precondition, no-replace collision ownership, and corrupt-partial-artifact regressions |
 | Physical workspace containment and raw entry closure | trusted snapshot helper, `src/prompt_evaluate.align` | symlink root/component, physical escape, non-UTF-8 extra entry, mutation, and cleanup regressions |
 | Fixed-corpus provider quality gate | evaluation adapter and `eval/tasks/prompt-v1/` | at least 2 tasks x 2 samples; improvement and zero serious regressions |
 | Canonical acceptance and rollback chain | gate manifest and validator | source-bundle locator/policy/helper/tool, derived tested-head ancestry, explicit root/FILE_SET-manifest revalidation plus real improved evaluation + matching evidence -> accepted activation -> rollback, with every wrong/missing digest or evidence reference rejected |
@@ -2978,9 +2990,9 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | Source-verifier process boundary | policy/helper/Git identity and request/result codecs | N/A | raw `.git`/`gitdir`/`commondir` metadata and local/worktree config are scanned before any Git child; fixed argv including no-pager/no-replace/no-graft/command overrides, cleared environment, cwd, common-directory checks, complete replacement namespace enumeration, byte caps, timeout, raw-byte FILE_SET traversal, mode-specific result-status/observed-identity shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-mode-identity-smoke`, `prompt-source-verifier-git-replacement-graft-smoke`, `prompt-source-verifier-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke`, `prompt-source-verifier-replacement-namespace-smoke`, `prompt-source-verifier-observed-identity-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke` |
 | Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation and accepts a retained non-`ERROR` row after `CLEANUP_FAILED` | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke`, `prompt-verifier-cleanup-retention-smoke` |
 | Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
-| Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, cleanup, pair-finalization, and result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-smoke`, `prompt-evidence-pair-finalization-smoke`, `prompt-adapter-failed-attestation-smoke`, `prompt-trace-overflow-smoke` |
+| Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, cleanup, pair-finalization, collision ownership, and result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-smoke`, `prompt-evidence-pair-finalization-smoke`, `prompt-evidence-pair-collision-ownership-smoke`, `prompt-adapter-failed-attestation-smoke`, `prompt-trace-overflow-smoke` |
 | Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first source-helper, snapshot, adapter, precheck drift, postcheck, postcheck drift, or result-size failure stops later invocations and retains only the valid prefix or explicit compact envelope | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke`, `prompt-adapter-failed-terminal-smoke`, `prompt-drift-attestation-smoke`, `prompt-trace-overflow-terminal-smoke` |
-| Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode; borrowed verifier inputs are not retained | process outputs cloned while owner lives; helper/tool owners, result/evidence temp/final owners, and files/checkouts removed; failed pair finalization performs reverse cleanup or emits its explicit recovery error; empty raw workspace restored; overflow trace stream released | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke`, `prompt-verifier-borrow-lifetime-smoke`, `prompt-source-helper-cleanup-smoke`, `prompt-evidence-pair-cleanup-smoke`, `prompt-trace-overflow-drop-smoke` |
+| Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode; borrowed verifier inputs are not retained | process outputs cloned while owner lives; helper/tool owners, evaluator-owned result/evidence temp/final owners, and files/checkouts removed; collision destinations are never removed; failed pair finalization performs reverse cleanup or emits its explicit recovery error; empty raw workspace restored; overflow trace stream released | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke`, `prompt-verifier-borrow-lifetime-smoke`, `prompt-source-helper-cleanup-smoke`, `prompt-evidence-pair-cleanup-smoke`, `prompt-evidence-pair-collision-ownership-smoke`, `prompt-trace-overflow-drop-smoke` |
 | Replacement/move-out | source fields are reconstructed or moved once; no aliasing rewrite | `PromptRender` moves to caller as one bare value | accepted/rollback variant embedded unchanged; source not reused; verifier returns only Copy status | rows, snapshots, and independent evidence move into the final result/pair; builder source is consumed once | `prompt-move-compile-smoke`, `prompt-variant-identity-smoke`, `prompt-evidence-move-smoke` |
 | Concurrent/overlap attempt | N/A: pure validation has no shared mutable state | N/A: pure rendering has no shared mutable state | immutable DAG branches are independent; shared output/activation mutation is rejected before side effects | complete experiment/evaluate/accept/rollback 4x4 matrix; no overlapping adapter calls; disjoint independent processes are supported | `prompt-operation-overlap-smoke`, `prompt-no-overlap-smoke`, `prompt-existing-output-smoke`, `prompt-evidence-result-alias-smoke` |
 
@@ -2995,6 +3007,25 @@ fixture in the diff.
 | Gate head versus evaluated commit | C6f1 source verifier and gate validator | EVALUATION records exact expected-head observation; GATE records the derived CI head and proves the evaluated commit is its ancestor; the two SHAs may differ after normal merge | `prompt-source-verifier-mode-identity-smoke`, `prompt-gate-merge-head-ancestry-smoke` |
 | Repository-local Git command isolation | C6f1 source verifier and gate validator | raw-scan bounded `.git`/`gitdir`/`commondir` metadata and common/worktree config before any Git child, without following includes; reject command-bearing keys before observation while accepting only inert ordinary-clone remote/branch metadata; apply fixed no-pager/no-replace/no-graft/command overrides to every direct Git invocation | `prompt-source-verifier-local-git-config-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke`, `prompt-source-verifier-ordinary-clone-config-smoke`, `prompt-gate-ordinary-clone-config-smoke` |
 | Complete replacement-ref namespace | C6f1 source verifier and gate validator | raw-check unsafe loose entries, enumerate `refs/replace/` through the pinned Git ref backend, reject nonzero, capped, malformed, or non-empty output, and preserve the check for packed-refs and reftable | `prompt-source-verifier-replacement-namespace-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-replacement-packed-ref-smoke` |
+
+### 10.1b Conditional-final review rescope closure
+
+The conditional final review found two implementation-level ownership contradictions, one output
+state contradiction, and one continuity-boundary violation. This section reopens those cells before
+any successor repair. PR #50 is a terminal review checkpoint; a successor must map each row below to
+the final prose, ledger, and regression before it is reviewed.
+
+| Rescope invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Scratch allocation failure | C6c2 `src/prompt_score.align`, Requests 8/10 | checked capacity overflow is recoverable `Err(Error.Invalid)` before allocation; runtime allocator failure follows the shipped terminal nonzero process policy and has no recoverable-result or cleanup-after-abort promise; normal successful/recoverable paths still drop scratch values | `prompt-c6c2-allocation-overflow-smoke`, `prompt-c6c2-allocation-terminal-failure-smoke`, `prompt-c6c2-scratch-drop-smoke` |
+| Pair publication ownership | C6f2 `src/prompt_evaluate.align`, Request 14 | evaluator-owned temporary and successfully published paths are the only removable paths; a competing final destination is a collision owned by another publisher, is never removed or reported as an orphan, and leaves `OUTPUT_WRITE` after clean owned cleanup | `prompt-evidence-pair-collision-ownership-smoke`, `prompt-evidence-pair-cleanup-ownership-smoke`, `prompt-evidence-pair-no-replace-smoke` |
+| Invalid-evaluation evidence boundary | CLI contract and `src/prompt_evaluate.align` | pre-execution decoded-request `INVALID_INPUT` writes result-only with no sidecar; only an evaluation that establishes identity and reaches the paired-evidence boundary writes evidence; every status/output combination is explicit | `prompt-evaluate-invalid-input-output-smoke`, `prompt-evaluate-evidence-boundary-smoke` |
+| Durable continuity state | `HANDOFF.md` and GitHub review records | HANDOFF records only branch/checkpoint, durable design decisions, blockers, verification, and next work; review IDs, finding lists, dispositions, and pending-review status remain in GitHub | `git diff --check`, Markdown fence checks, and the author-side HANDOFF durable-state assertion in the successor PR |
+
+The successor must not apply a narrow line edit that leaves the corresponding old wording in another
+section. Its matrix-to-diff pass must find every occurrence of allocator failure, pair cleanup,
+evidence publication, and review-state continuity and reconcile the public contract, ledger,
+closure rows, delivery prerequisites, and `HANDOFF.md` in one pass.
 
 Applicability decisions:
 
@@ -3072,8 +3103,9 @@ and must split again before coding if the estimate no longer holds.
      policy, reusing C6c1;
    - after Requests 8 and 10 are adopted, adapt decoded rows through one bounded `array<ScoreRow>`
      and verifier-owned primitive C6c1 output columns; use C6c1p for incomplete prefixes and
-     `aggregate` only for complete rows; allocation failure is invalid input, and a fixed-size
-     workaround or duplicated scorer is out of scope;
+     `aggregate` only for complete rows; checked arithmetic overflow is invalid input, while runtime
+     allocator failure follows the shipped terminal allocation policy; a fixed-size workaround or
+     duplicated scorer is out of scope;
    - use constructed Align values for fixtures only. Do not parse JSON, use escape-free JSON fixtures,
      canonical-encode values, read files, or walk repositories in this slice; those boundaries belong
      to C6a1/C6a2 after the named Align requests are adopted;
@@ -3464,10 +3496,13 @@ same borrowed scratch rows to C6c1p's `validate_prefix` and does not allocate ag
 columns. The row scratch is bounded by the declared maximum of 2,048 retained task/sample/variant
 rows; task columns are bounded by 64 tasks, and every primitive reason column is allocated with
 capacity `R_max = 9 * task_count * sample_count + task_count + 2`, at most 9,282, using the same
-checked arithmetic as C6c1. If that arithmetic or any scratch-column allocation fails, C6c2 returns
-`Err(Error.Invalid)` before invoking C6c1 or writing output; it never truncates reasons or retries
-with an unbounded or fixed-size substitute. Those scratch values are released before return, and
-no scratch value becomes persisted state.
+checked arithmetic as C6c1. A checked-capacity overflow returns `Err(Error.Invalid)` before invoking
+C6c1 or writing output. A runtime allocator failure while constructing a bounded scratch array or
+column follows the shipped Request 8/10 terminal allocation policy: the process exits nonzero with
+no recoverable result and no cleanup-after-abort promise. C6c2 never truncates reasons or retries
+with an unbounded or fixed-size substitute. On every recoverable return and successful completion,
+normally constructed scratch values are released before return and no scratch value becomes persisted
+state.
 
 The verifier's deterministic validation order is:
 
@@ -3565,7 +3600,7 @@ The C6c2 closure matrix is:
 | trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; policy/helper/Git identity, mode-specific EVALUATION/GATE observed-head semantics, separate derived gate-head ancestry, fixed argv/env/cap/timeout, bounded local-config isolation, complete replacement namespace rejection across loose/packed/ref-backend storage, common-directory replacement/graft/alternate rejection, raw-byte FILE_SET traversal, expected/observed-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
 | row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
 | malformed input and error precedence | `src/prompt_score.align` | status-specific error families including `ADAPTER_FAILED`, drift states, and `RESULT_TOO_LARGE`, invalid option/discriminator combinations, first failing validation, compact counter/digest/empty-shape checks, and no side effects |
-| allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; arithmetic/allocation failure is invalid before scorer call; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, and compiler ownership/drop checks |
+| allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; checked arithmetic overflow returns invalid before scorer call, while runtime allocator failure follows the shipped terminal child-process policy; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, normal-path drop checks, and terminal allocator-failure fixture |
 | JSON/document binding | C6a1/C6a2, deferred | N/A for C6c2; escaped-string round trips, canonical bytes, and content-digest recomputation require Request 7/12/13 acceptance before this verifier is called |
 
 The C6c2 metric is verifier correctness: every declared state, identity, evidence combination, and

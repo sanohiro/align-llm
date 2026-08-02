@@ -5,14 +5,14 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-git-boundary-redesign`, based on the terminal PR #49 checkpoint
-  `75bbdc2` and merged `main` commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `8905114` (`Address C6c2 design review findings`). The preceding
-  design checkpoint is `5212242`.
-- Active goal: finish the independently reviewable C6c2 design successor slice in PR #50. The
-  terminal PR #49 remains unmerged and is not to be repaired in place. Implementation is not
-  started and must wait for this design plus the C6a1/C6a2 decoded-record and Align adoption
-  prerequisites.
+- Branch: `agent/c6c2-final-review-rescope`, based on terminal PR #50 checkpoint `a1b328b` and
+  merged `main` commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
+- Current source checkpoint: `a1b328b` (`Update C6c2 review handoff`); the successor rescope is the
+  active design change on this branch.
+- Active goal: finish an independently reviewable successor to the terminal C6c2 design checkpoint.
+  PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in place.
+  Implementation is not started and must wait for this design plus the C6a1/C6a2 decoded-record and
+  Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -53,17 +53,13 @@ request checks, reviews, and attestations.
   for the three terminal findings: mode-specific EVALUATION/GATE head semantics with separate
   evaluated-commit ancestry, pre-Git local Git metadata/config isolation with fixed direct argv, and
   complete `refs/replace/` enumeration across loose, packed, and pinned ref-backend storage.
-- Complete: the initial successor design review's three findings are accepted in one repair:
-  EVALUATION and GATE use mode-specific align-llm head contracts with a separate gate ancestry
-  proof; ordinary-clone inert remote/branch metadata is allowed while command-bearing and transport
-  affecting settings remain rejected; and Request 14 records the Align-owned exclusive-create and
-  no-replace publication capability required by C6f2.
-- In progress: publish the consolidated repair and complete PR #50's review evidence. The initial
-  independent review is recorded externally; its accepted findings are repaired in `8905114`.
-  Because Request 14 materially adds a blocked publication prerequisite, run the one conditional
-  final comprehensive review after the repair. Keep PR #49 as the terminal review checkpoint; do
-  not merge either branch until PR #50's review, findings, and required documentation checks are
-  complete.
+- Complete: the Git source-verifier redesign, its initial review repair, and the durable Request 14
+  prerequisite are retained in terminal PR #50; the successor branch carries the next closure-matrix
+  rescope rather than changing that checkpoint in place.
+- In progress: reconcile scratch allocation failure with the shipped terminal Align allocator policy,
+  make pair cleanup ownership-safe under a competing publisher, and make invalid-evaluation evidence
+  output conditional on reaching the paired-evidence boundary. Keep review findings and attestations
+  in GitHub; this handoff records only the durable design decisions and blockers needed to continue.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -89,13 +85,14 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push `8905114` on `agent/c6c2-git-boundary-redesign`, update PR #50 with the initial review
-   envelope and all three finding dispositions, and run the applicable hosted documentation checks.
-2. Run the one conditional final comprehensive adversarial review required by the material Request
-   14 redesign. If it finds a new non-trivial issue, stop the local repair loop, reopen the closure
-   matrix, and re-scope instead of applying another patch cycle.
-3. After PR #50 is reviewed, its findings are disposed, and it is merged, refresh `main`, perform
-   the bounded retrospective, and implement and merge C6c1p first; implement
+1. Complete the reopened `10.1b` closure matrix and its ledger-to-prose consistency pass on this
+   successor branch; run the documentation/static checks and keep the working tree clean.
+2. Commit and push the successor design, open a new reviewable PR against `main`, and run one fresh
+   comprehensive independent adversarial review of that complete successor diff. Record review
+   evidence in GitHub before merge; if that review finds another non-trivial issue, re-scope again
+   instead of entering a local patch loop.
+3. After the successor design is reviewed, its findings are disposed, and it is merged, refresh
+   `main`, perform the bounded retrospective, and implement and merge C6c1p first; implement
    C6c2 only after C6a1/C6a2 provide content-validated
    decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record
    the dependency blocker and continue only with safe independent roadmap work.
@@ -108,13 +105,13 @@ request checks, reviews, and attestations.
 - C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
   and `make ci` all passed before the merged `main` checkpoint.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
-- Current corrected design verification: `git diff --check 75bbdc2..8905114` PASS, the targeted
-  mode-head, ordinary-clone local-config, fixed-argv, complete-replacement, and Request 14 contract
-  assertions PASS, and Markdown fence counts are 90 for `docs/specs/c6-prompt-context-optimizer.md`
-  and 86 for `docs/align-requests.md` (both even). Source tests and `make ci` are N/A because this
-  remains documentation/specification-only; PR #50 requires its applicable hosted
-  documentation/static checks. The working tree must be clean after this handoff update; the next
-  verification is the PR review-evidence and conditional-final-review sequence.
+- Terminal PR #50 verification remains durable evidence: its documentation/static checks passed for
+  the previous design checkpoint, while source tests and `make ci` were N/A for that docs-only slice.
+- Successor rescope verification is pending until the allocator, publication-ownership,
+  invalid-evidence, and continuity-boundary wording is coherent. The required successor checks are
+  `git diff --check`, changed-Markdown fence counts, targeted contract assertions for all four rows
+  in `10.1b`, and the applicable hosted documentation/static check. Source tests and `make ci` remain
+  N/A unless this successor changes executable automation or another executable contract boundary.
 
 ## Constraints and decisions to preserve
 
@@ -169,6 +166,12 @@ request checks, reviews, and attestations.
   field; the explicit gate Git executable and cleared Git environment apply to every CI-head and
   ancestry command. C6c2 cannot resume from Request 8/10 `ALIGN_MERGED` until its separate
   `c6c2-request8-adoption` and `c6c2-request10-adoption` targets plus `make ci` pass.
+- C6c2 checked-capacity overflow is a recoverable invalid result before scratch allocation; runtime
+  allocator failure follows the shipped Request 8/10 terminal nonzero process policy and has no
+  recoverable-result or cleanup-after-abort promise. Pair publication removes only evaluator-owned
+  temporary or finalized paths; a competing destination is never removed or reported as an orphan.
+  A pre-execution decoded-request `INVALID_INPUT` writes only the result; evidence is written only
+  after the evaluator reaches its paired-evidence boundary.
 - All source, diagnostics, developer documentation, commits, pull requests, and review records
   remain in English.
 - Intentional uncommitted files: none; preserve the clean tree and this corrected design/review
