@@ -1,6 +1,7 @@
 # C6 Prompt and Context Optimizer
 
-Status: design plan of record; the C6b pure renderer-core implementation is in progress; C6a0-C6a2,
+Status: design plan of record; the independently mergeable C6b renderer-core implementation is in
+progress. Its failure-memory JSONL adoption is deferred to the Request 7 dependent slice; C6a0-C6a2,
 C6b artifact binding, and later product slices have not started.
 
 This document refines C6 from `docs/specs/roadmap.md` and the Prompt Optimizer contract in
@@ -51,10 +52,12 @@ hypothetical API part of C6:
    rows; this request is an independent prerequisite for the later JSON escape acceptance matrix.
 3. **Request 7 — escaped strings in declared-record JSON.** Typed `json.decode` must decode every
    JSON escape accepted by `json.encode` into declared `str` fields and `array<str>` elements,
-   including nested records and options. This blocks C6a and therefore every later C6 product
-   slice. Escape-free fixtures, `json.doc`, and an application-specific base64 wire format are not
-   substitutes for the declared-record round trip. Request 7 is already registered and remains
-   `PROPOSED` until its recorded benchmark and decoded-owner prerequisites are satisfied.
+   including nested records and options. This blocks C6a and the JSON-dependent C6 product slices.
+   The current C6b renderer core deliberately does not decode failure-memory JSONL, so it remains
+   independently mergeable. Escape-free fixtures, `json.doc`, and an application-specific base64
+   wire format are not substitutes for the declared-record round trip. Request 7 is already
+   registered and remains `PROPOSED` until its recorded benchmark and decoded-owner prerequisites
+   are satisfied.
 4. **Request 8 — runtime construction of evaluator record arrays.** The pinned `array_builder<T>`
    accepts only scalar elements and owned `string`, while C6f2 must construct runtime-sized arrays
    of declared records such as snapshot requests, task rows, aggregates, and regression reasons.
@@ -335,9 +338,10 @@ C6 does not:
 - claim a model-quality improvement from the checked-in deterministic patch fixture;
 - replace C7 algorithm verification or C8 speed-first context optimization.
 
-The first C6 context surface is deliberately limited to optional information already owned by the
+The full C6 context surface is deliberately limited to optional information already owned by the
 verification loop: failure-memory events, patch-evaluation context, and bounded captured
-diagnostics. Adding new context sources requires a later reviewed design change.
+diagnostics. The current C6b core starts with patch-evaluation context and diagnostics; adding
+failure-memory adoption requires the later reviewed C6b-memory slice described below.
 
 ## 3. Prompt hierarchy and ownership
 
@@ -364,6 +368,12 @@ Ownership is explicit:
 The renderer always emits the first three sections. A learned candidate cannot delete, reorder, or
 substitute them. Empty learned text is allowed only when the candidate changes at least one context
 policy field.
+
+The full C6 target includes all optional context sections shown below. The independently mergeable
+C6b renderer core implements the fixed hierarchy, learned append, bounded patch-evaluation context,
+and bounded diagnostics. It emits the failure-memory heading as `(omitted)` but does not accept,
+decode, or select failure-memory JSONL. Failure-memory adoption is a separate C6b-memory slice that
+may start only after Request 7 reaches `ALIGN_MERGED` and its align-llm acceptance gate passes.
 
 The exact rendering order and delimiters are stable:
 
@@ -535,10 +545,13 @@ RenderedPromptArtifact:
   content_sha256
 
 PromptRender:
-  status: VALID | INVALID_FAILURE_MEMORY | INVALID_INPUT
+  status: VALID | INVALID_INPUT
   text: string
   sha256: string
 ```
+
+The deferred C6b-memory extension adds `INVALID_FAILURE_MEMORY` after Request 7 adoption; it does
+not change the valid rendered-text or digest fields.
 
 The learned fields are empty in the baseline variant. The checked-in baseline uses
 `variant_id: baseline-v1` and `candidate_id: BASELINE`. A proposed candidate uses
@@ -608,6 +621,23 @@ require an exact scope match.
 
 ### 4.3 Context policy
 
+The current C6b renderer-core public policy is:
+
+```text
+ContextPolicy:
+  include_patch_evaluation: bool
+  include_diagnostics: bool
+  max_patch_evaluation_bytes: i64
+  max_diagnostic_bytes_per_stream: i64
+```
+
+The current core validates these fields, a maximum 8,192-byte learned append, and the base/repo/task
+and context-source limits before composing any text. The failure-memory fields and selection
+contract below are deferred to C6b-memory; they are not implemented by the current
+`prompt_model.render` surface.
+
+#### Deferred C6b-memory policy
+
 The initial declared policy is:
 
 ```text
@@ -661,9 +691,10 @@ supplied. Legacy verification tasks without an activation retain their current b
 real-consumer slice changes that contract.
 
 Policy flag/limit mismatches, policy limits above their declared caps, and oversized source
-snapshots return `PromptRender` status `INVALID_INPUT` with empty text and digest before memory
-decoding or prompt composition. An invalid memory JSONL source returns `INVALID_FAILURE_MEMORY`
-with the same empty result shape.
+snapshots return `PromptRender` status `INVALID_INPUT` with empty text and digest before prompt
+composition. The deferred C6b-memory extension additionally validates memory JSONL and returns
+`INVALID_FAILURE_MEMORY` for an invalid source; that status is not part of the current
+renderer-core surface.
 
 `failure_memory.align` continues to own its private `MemoryEvent` schema and exposes:
 
@@ -1861,9 +1892,11 @@ Terminal statuses are:
 
 ## 6. Persistence, ownership, and failure behavior
 
-`src/prompt_model.align` owns schemas, canonical encoding, digest validation, bounds, prompt
-rendering, source validation, and context-policy validation. `src/failure_memory.align` owns failure-memory JSONL
-decoding and bounded event selection through the public Move-result API in section 4.3.
+`src/prompt_model.align` owns the current renderer-core policy, digest validation, bounds, prompt
+rendering, source validation, and UTF-8-safe context truncation. `src/failure_memory.align` remains
+the C5 owner of its existing failure-memory behavior. The deferred C6b-memory slice will own the
+Request 7-dependent JSONL decoding and bounded event selection through the public Move-result API
+in section 4.3.
 
 `src/prompt_experiment.align` owns proposal prompt construction, provider dispatch, response
 decoding, and bounded provider diagnostics. It never owns acceptance.
@@ -1888,12 +1921,14 @@ prompt_model.render(
   task_prompt: str,
   learned_prompt_append: str,
   policy: ContextPolicy,
-  task_id: str,
   patch_evaluation: str,
-  failure_memory_jsonl: str,
   diagnostic_stdout: str,
   diagnostic_stderr: str,
 ) -> PromptRender
+
+Deferred C6b-memory extension after Request 7 adoption: the signature adds `task_id` and
+`failure_memory_jsonl`, and `ContextPolicy` adds `include_failure_memory`, `max_failure_events`,
+and `max_failure_context_bytes`.
 
 prompt_experiment.run_file(request_path: str, result_path: str)
   -> Result<PromptCommandStatus, Error>
@@ -2184,7 +2219,7 @@ explicitly reviewed deferral.
 | Declared records, bounds, canonical digest | `src/prompt_model.align` | round-trip, tamper, unknown-version, and oversize fixtures |
 | Persisted string-label mapping | `src/prompt_model.align` | every allowed and unknown kind/status/operation/stage label plus canonical golden vectors |
 | Fixed hierarchy and rendering order | `src/prompt_model.align` | golden rendered prompt and immutable base/repo/task tests |
-| Initial context-policy semantics | `src/prompt_model.align`, `src/failure_memory.align`, `src/verification_loop.align` | event order, count/byte limits, disabled sections, UTF-8 truncation |
+| Initial context-policy semantics | `src/prompt_model.align` | disabled sections, source bounds, UTF-8-safe patch/diagnostic truncation; failure-memory selection is explicitly deferred to C6b-memory after Request 7 |
 | Content-bound A/B inputs | `src/prompt_evaluate.align`, task manifests | expected digest, per-invocation pre/post drift, mode, tree, dirty-source, seed, generation, and environment regressions |
 | Explicit adapter request and environment isolation | `src/prompt_evaluate.align`, task adapter | adapter-request identity/path/digest fixtures; env-clear rejection and exact allowlisted-value survival in both directions |
 | Producer-owned environment identity | trusted probe carriers, evaluator verifier | non-circular core preimage, carrier equality, OS/CPU/GPU/compiler/runtime unavailable-value, `Option` CPU-count, and digest fixtures |
@@ -2221,8 +2256,8 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | Path | Model/codec | Renderer/memory | Scorer/state | Evaluator/provider | Exact planned regression |
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction | request, snapshot, row, and result construction | `prompt-codec-construction`, `prompt-row-construction` |
-| Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded contexts | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK` | proposal and alternating complete A/B run | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke` |
-| Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid memory, policy, and source-bound results | contradictory row/document/lineage rejection | no provider/helper/adapter call before step 3 | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-validation-precedence-smoke` |
+| Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK` | proposal and alternating complete A/B run | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke` |
+| Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory row/document/lineage rejection | no provider/helper/adapter call before step 3 | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-validation-precedence-smoke` |
 | Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate | provider/helper/adapter timeout, output, status, drift, result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke` |
 | Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first external failure stops later invocations and retains only the valid prefix | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke` |
 | Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode | process outputs cloned while owner lives; owned files/checkouts removed; empty raw workspace restored | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke` |
@@ -2277,8 +2312,11 @@ and must split again before coding if the estimate no longer holds.
    - estimated review surface: declarations/validators and fixture generator below 1,000
      hand-written lines.
 4. **C6b — pure prompt/context renderer**
-   - fixed hierarchy, exact context selection/budgets, and `PromptRender`; the first independently
-     mergeable core slice does not persist artifacts;
+   - fixed hierarchy, learned append, bounded patch/diagnostic contexts, and `PromptRender`; the
+     first independently mergeable core slice does not persist artifacts or adopt failure-memory
+     JSONL;
+   - the Request 7-dependent failure-memory selection is a later C6b-memory slice with its own
+     acceptance gate;
    - rendered-prompt artifact binding follows after the C6a1/C6a2 artifact declarations and their
      blocked Align prerequisites are available;
    - pure golden inputs plus C5 legacy no-activation regression;

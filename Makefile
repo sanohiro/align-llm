@@ -5,7 +5,7 @@ ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
 CODING_CORPUS := eval/tasks/coding-v1.json
 
-override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke
+override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke
 override CAPABLE_ONLY_CHECK_TARGETS := eval-coding baseline-check
 override SERIAL_CHECK_AGGREGATES := hosted-checks capable-checks ci
 override REQUESTED_SERIAL_CHECK_AGGREGATES := \
