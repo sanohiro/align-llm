@@ -5,8 +5,8 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6b-prompt-context-renderer`, PR checkpoint `0d28a01` with an intentional
-  re-scoped working tree; based on `main` commit `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
+- Branch: `agent/c6b-prompt-context-renderer`, PR checkpoint `7b16b8b`; based on `main` commit
+  `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
 - Active goal: publish and merge the independently testable C6b renderer core. The implementation
@@ -18,9 +18,7 @@ request checks, reviews, and attestations.
   failure-memory section as `(omitted)` without accepting or decoding JSONL. Canonical artifact
   declarations and persistence remain owned by the blocked C6a1/C6a2 slices and are not implemented
   here.
-- Intentional uncommitted re-scope files: `Makefile`, the C6 and check-topology specs,
-  `scripts/check-gate-topology`, `scripts/run-prompt-model-smoke`, `src/prompt_model.align`, and
-  `src/prompt_model_smoke.align`. `src/failure_memory.align` is restored to the C5 baseline.
+- Working tree is clean after the re-scope commit; there are no intentional uncommitted files.
 - Request 7 is still `PROPOSED` and blocks escaped-string declared-record decoding. The pinned
   `json.decode` returns `Err` for valid escaped `MemoryEvent` strings; do not use `json.doc`, a
   hand-written compatibility parser, or another private wire format to bypass the request.
