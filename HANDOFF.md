@@ -8,8 +8,8 @@ request checks, reviews, and attestations.
 - Branch: `agent/c6c2-verifier-design`; the branch is based on merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
 - Current source checkpoint: merged C6c1 implementation at
-  `1029eec641bce338c5ba7b878101b7a0daab28e9`; this branch currently adds only the C6c2 design
-  contract and durable handoff update.
+  `1029eec641bce338c5ba7b878101b7a0daab28e9`; the C6c2 design repair is prepared in the working
+  tree after its initial review and is not yet the implementation slice.
 - Active goal: design, independently review, and merge the pure C6c2 evaluation-document verifier
   before opening its implementation slice. C6c1 implementation, review repair, final verification,
   and merge are complete.
@@ -23,11 +23,13 @@ request checks, reviews, and attestations.
 - Complete: baseline structural verification, the local implementation/adoption integration gate,
   the consolidated review repair, its final-head `make ci` rerun, hosted CI, and the bounded
   post-merge retrospective.
-- In progress: complete and review the C6c2 design contract.
+- In progress: consolidate the C6c2 design-review repair, run its conditional final review, and
+  merge the design before implementation.
 - Not started: C6c2 implementation, its focused smoke/topology registration, and its implementation
   pull request.
-- Working tree is expected to be clean at the source checkpoint; no generated binaries, model
-  weights, credentials, or machine-specific paths may be committed.
+- Intentional uncommitted file until the consolidated repair commit: the C6c2 design plan below.
+  After that commit, the working tree must be clean; no generated binaries, model weights,
+  credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 
@@ -51,8 +53,8 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Finish the C6c2 design consistency pass, push the design branch, obtain one fresh independent
-   adversarial design review, and merge the design pull request before implementation.
+1. Commit and push the consolidated C6c2 design repair, update the PR disposition, run the required
+   conditional final comprehensive review, and merge the design pull request before implementation.
 2. Create the C6c2 implementation branch from the merged design, add the pure verifier and its
    document smoke/topology target, then run the focused and final aggregate gates. Do not start
    failure-memory JSONL adoption until Request 7 is accepted, merged at a named Align commit, the
@@ -83,6 +85,8 @@ request checks, reviews, and attestations.
   `5338951e77415a21c42fbe030494c55d015f3542`, and finalization
   `bc386d8297d21bc0dc125fe71002f019108ea28e` as ancestors.
 - `make fmt`, `./scripts/check-format`, and `git diff --check`: PASS.
+- C6c2 design repair `git diff --check`: PASS; source tests, `make check`, `make build`, and `make ci`
+  are N/A until the implementation slice exists because this repair changes documentation only.
 
 ## Constraints and decisions to preserve
 
@@ -92,6 +96,11 @@ request checks, reviews, and attestations.
   owned artifact graphs. Requests 6 and 9 remain independent.
 - C6 must not use a borrowed JSON view after its input buffer expires, concatenate JSON fragments,
   invent a private wire format, or code against any proposed Align API.
+- C6c2's pure verifier now requires caller-owned `PromptVerifierTrust` and an independent expected
+  producer-input digest table, and requires embedded experiment/parent-activation records beside
+  their references. It validates `FIXTURE` as non-gate, preserves strict `IMPROVED` as a valid
+  non-gate comparison, enforces status-specific error families, and closes the attestation trace at
+  the first failing invocation.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
