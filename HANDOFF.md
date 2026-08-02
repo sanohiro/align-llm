@@ -5,14 +5,15 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-final-review-rescope`, based on terminal PR #50 checkpoint `a1b328b` and
-  merged `main` commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
+- Branch: `agent/c6c2-final-review-rescope`, current head `bf26b74` (`Update C6c2 successor
+  handoff`), based on terminal PR #50 checkpoint `a1b328b` and merged `main` commit
+  `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
 - Current source checkpoint: `733468b` (`Rescope C6c2 after conditional final review`); the
   successor rescope is the active design change on this branch.
-- Active goal: finish an independently reviewable successor to the terminal C6c2 design checkpoint.
-  PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in place.
-  Implementation is not started and must wait for this design plus the C6a1/C6a2 decoded-record and
-  Align adoption prerequisites.
+- Active goal: continue the C6 roadmap through completion, beginning by finishing the independently
+  reviewable successor to the terminal C6c2 design checkpoint in PR #51. PR #49 and PR #50 remain
+  unmerged historical checkpoints and are not to be repaired in place. Implementation is not started
+  and must wait for this design plus the C6a1/C6a2 decoded-record and Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -86,12 +87,13 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Commit and push the completed successor design, open a new reviewable PR against `main`, and run one fresh
-   comprehensive independent adversarial review of that complete successor diff. Record review
-   evidence in GitHub before merge; if that review finds another non-trivial issue, re-scope again
-   instead of entering a local patch loop.
-2. After the successor design is reviewed, its findings are disposed, and it is merged, refresh
-   `main`, perform the bounded retrospective, and implement and merge C6c1p first; implement
+1. Resume at PR #51 (`https://github.com/sanohiro/align-llm/pull/51`) from head `bf26b74`: run the
+   required fresh comprehensive independent adversarial review, record the SHA-bound review
+   envelope in GitHub, wait for the hosted documentation/static check, and complete the PR's merge
+   requirements. Keep any transient review findings and attestations in GitHub rather than copying
+   them into this file.
+2. After PR #51 is reviewed, its findings are disposed, and it is merged, refresh `main`, perform
+   the bounded retrospective, and implement and merge C6c1p first; implement
    C6c2 only after C6a1/C6a2 provide content-validated
    decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record
    the dependency blocker and continue only with safe independent roadmap work.
@@ -109,8 +111,9 @@ request checks, reviews, and attestations.
 - Successor rescope verification is PASS: `git diff --check a1b328b..733468b`, changed-Markdown
   fence counts (`c6-prompt-context-optimizer.md` 90, `align-requests.md` 86, `HANDOFF.md` 0),
   targeted contract assertions for all four rows in `10.1b`, and the `HANDOFF.md` transient-review
-  scan all passed. The hosted documentation/static check runs on the successor PR. Source tests and
-  `make ci` are N/A because this remains a docs-only slice with no executable contract-boundary change.
+  scan all passed. PR #51 is the successor review boundary; its hosted documentation/static check
+  and review evidence are owned by GitHub. Source tests and `make ci` are N/A because this remains a
+  docs-only slice with no executable contract-boundary change.
 
 ## Constraints and decisions to preserve
 
