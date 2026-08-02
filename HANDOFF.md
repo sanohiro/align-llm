@@ -17,8 +17,8 @@ request checks, reviews, and attestations.
   failure-memory section as `(omitted)` without accepting or decoding JSONL. The active C6c1 design
   adds only the pure scalar row-validation/aggregation contract; canonical artifact declarations
   and persistence remain owned by the blocked C6a1/C6a2 slices.
-- Working tree is intentionally dirty only for the uncommitted C6c1 design/HANDOFF edits on the
-  current design branch; these files must be kept together until the design checkpoint commit.
+- Working tree is clean at the current committed C6c1 design checkpoint; there are no intentional
+  uncommitted files to preserve.
 - Request 7 is still `PROPOSED` and blocks escaped-string declared-record decoding. The pinned
   `json.decode` returns `Err` for valid escaped `MemoryEvent` strings; do not use `json.doc`, a
   hand-written compatibility parser, or another private wire format to bypass the request.
@@ -68,9 +68,6 @@ request checks, reviews, and attestations.
 
 ### C6b merge retrospective (2026-08-02)
 
-- PR #38 merged as `50a83d1` after final head `23e65fe`; the supported hosted check passed as run
-  `30728831404`, and the final fresh review envelope and finding dispositions are recorded in
-  GitHub.
 - Reusable lesson: changing an identity-bound Makefile/check graph requires the ordered baseline
   source, immutable-oracle, and finalization commits before review can claim a mergeable tree.
   This is already enforced by `make baseline-check` and `docs/specs/check-gate-topology.md`; no

@@ -2098,11 +2098,12 @@ are `None` and the time-based improvement path is unavailable.
 `repair_loop_regression_count` is `max(0, candidate total - parent total)` across every structurally
 valid row. Task-level counts use the same formulas restricted to one task.
 
-When a task declares a benchmark limit, each measurement's benchmark ppm is its non-negative
+When a task declares a benchmark limit, each passing measurement's benchmark ppm is its non-negative
 regression against the immutable benchmark reference named by that task's content-bound artifacts,
-not a comparison the adapter invents between variants. Both variants must report a value from zero
-through one million. A candidate value above the task limit is serious regardless of the parent
-value.
+not a comparison the adapter invents between variants. Both passing variants must report a value from
+zero through one million. Non-passing measurements report no benchmark value and cannot produce a
+benchmark-specific reason. A passing candidate value above the task limit is serious regardless of
+the parent value.
 
 The corpus paired medians pool both values from every task/sample pair where both variants pass;
 task medians pool only that task. The exact ppm formula is applied independently to every task
@@ -2123,7 +2124,7 @@ A serious regression is any of:
 - corpus paired median time regression above `maximum_time_regression_ppm`, regardless of completion
   gain;
 - corpus repair-loop regression above `maximum_repair_loop_regression_count`;
-- a declared benchmark regresses beyond its task-specific limit.
+- a passing candidate's declared benchmark regresses beyond its task-specific limit.
 
 Cleanup, containment, adapter, malformed-row, identity, and artifact-snapshot failures are
 evaluation `ERROR`, not scoreable regressions.
@@ -2428,6 +2429,10 @@ ScoreTaskLimit:
   maximum_public_api_change_count: i64
   maximum_repair_loops: i64
   maximum_benchmark_regression_ppm: Option<i64>
+
+ScorePolicyLimit:
+  maximum_time_regression_ppm: i64
+  maximum_repair_loop_regression_count: i64
 ```
 
 The exact public function is:
@@ -2436,15 +2441,17 @@ The exact public function is:
 pub fn aggregate(
   rows: slice<ScoreRow>,
   task_limits: slice<ScoreTaskLimit>,
+  policy_limits: ScorePolicyLimit,
   sample_count: i64,
   out task_aggregates: slice<ScoreTaskAggregate>,
   out reasons: slice<ScoreReason>,
 ) -> ScoreResult
 ```
 
-`task_limits` is ordered by `task_ordinal`. The caller owns every input and output array and keeps
-them live for the call; C6c1 retains no view and performs no filesystem, process, network, or
-global-state operation. The output slices are caller-provided capacity, not hidden allocation:
+`task_limits` is ordered by `task_ordinal`, and `policy_limits` carries the global acceptance
+thresholds for time and corpus repair-loop regressions. The caller owns every input and output array
+and keeps them live for the call; C6c1 retains no view and performs no filesystem, process, network,
+or global-state operation. The output slices are caller-provided capacity, not hidden allocation:
 `task_aggregates.len()` must be at least the task count and `reasons.len()` must be at least the
 actual reason count. Validation and the complete reason-count pass happen before either output
 slice is written. An insufficient output slice returns `OUTPUT_TOO_SMALL` with the required count
@@ -2516,7 +2523,8 @@ The deterministic validation order is:
    count `task_count * sample_count * 2` fits and equals `rows.len()`.
 2. Output task capacity is checked before any row or output mutation.
 3. Every task limit is non-negative and within its corresponding C6 bound; an absent benchmark
-   limit has value zero, while a present limit is 0 through 1,000,000 ppm.
+   limit has value zero, while a present limit is 0 through 1,000,000 ppm. The policy time limit is
+   0 through 1,000,000 ppm and the policy repair-loop limit is 0 through 65,536.
 4. Rows are checked in exact corpus order: task ordinals are zero-based, samples are one-based,
    each pair has the expected alternating order (odd sample parent/candidate, even sample
    candidate/parent), and every row state follows the §5.2 state machine.
@@ -2549,10 +2557,13 @@ pass count, and corpus repair-loop regression is `max(0, candidate total - paren
 
 The reason pass emits every applicable reason, without deduplication or truncation, in the schema's
 code order. It covers paired pass-to-fail, parent build/test pass to candidate non-pass, every
-candidate policy violation, each candidate task-limit breach, task and corpus time regression,
-corpus repair-loop regression, and candidate benchmark regression. Task-level time reasons use the
-task ordinal and sample zero; corpus-only reasons use task ordinal `-1` and sample zero. C6c2 maps
-these ordinals to canonical task IDs and materializes `RegressionReason` records.
+candidate policy violation, each candidate task-limit breach, task and corpus time regression above
+`policy_limits.maximum_time_regression_ppm`, corpus repair-loop regression above
+`policy_limits.maximum_repair_loop_regression_count`, and candidate benchmark regression above its
+task limit. Benchmark reasons use only passing candidate rows, because non-passing rows have no
+benchmark measurement. Task-level time reasons use the task ordinal and sample zero; corpus-only
+reasons use task ordinal `-1` and sample zero. C6c2 maps these ordinals to canonical task IDs and
+materializes `RegressionReason` records.
 
 The C6c1 closure matrix is:
 
