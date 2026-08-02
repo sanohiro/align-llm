@@ -312,6 +312,9 @@ fn validate_row(rows: slice<ScoreRow>, row_index: i64, limit: ScoreTaskLimit) ->
     if !option_is_none(row.generation_to_passing_patch_ns) || !option_is_none(row.time_to_passing_patch_ns) {
       return RowValidation.Invalid
     }
+    if !benchmark_is_valid(row.benchmark_regression_ppm, None, false) {
+      return RowValidation.Invalid
+    }
     mut expected := ScoreFailureKind.Adapter
     if !row.containment_passed {
       expected = ScoreFailureKind.Containment

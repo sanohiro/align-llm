@@ -147,7 +147,12 @@ fn policy_row(
   }
 }
 
-fn containment_error_row(task: i64, sample: i64, variant: prompt_score.ScoreVariant) -> prompt_score.ScoreRow {
+fn containment_error_row(
+  task: i64,
+  sample: i64,
+  variant: prompt_score.ScoreVariant,
+  benchmark: Option<i64>,
+) -> prompt_score.ScoreRow {
   return prompt_score.ScoreRow {
     task_ordinal: task,
     sample_index: sample,
@@ -167,7 +172,7 @@ fn containment_error_row(task: i64, sample: i64, variant: prompt_score.ScoreVari
     prompt_preparation_ns: 10,
     generation_to_passing_patch_ns: None,
     time_to_passing_patch_ns: None,
-    benchmark_regression_ppm: None,
+    benchmark_regression_ppm: benchmark,
   }
 }
 
@@ -385,12 +390,20 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   emit_case("aggregate-regressions", regression_rows, limits, strict_policy_limit(), 2, false, false)
 
   error_rows := [
-    containment_error_row(0, 1, prompt_score.ScoreVariant.Parent),
+    containment_error_row(0, 1, prompt_score.ScoreVariant.Parent, None),
     pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
     pass_row(0, 2, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
     pass_row(0, 2, prompt_score.ScoreVariant.Parent, 10, 10, 0, None),
   ]
   emit_case("evaluation-error", error_rows, limits, policy_limit(), 2, false, false)
+
+  invalid_error_benchmark_rows := [
+    containment_error_row(0, 1, prompt_score.ScoreVariant.Parent, Some(-1)),
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent, 10, 10, 0, None),
+  ]
+  emit_case("invalid-error-benchmark", invalid_error_benchmark_rows, limits, policy_limit(), 2, false, false)
 
   invalid_order_rows := [
     pass_row(0, 1, prompt_score.ScoreVariant.Candidate, 10, 10, 0, None),

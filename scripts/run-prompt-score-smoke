@@ -23,6 +23,7 @@ expected_names = [
     "benchmark-reasons",
     "aggregate-regressions",
     "evaluation-error",
+    "invalid-error-benchmark",
     "invalid-order",
     "invalid-state",
     "invalid-plan",
@@ -232,6 +233,9 @@ empty_result = {
 }
 for name in ("evaluation-error", "invalid-order", "invalid-state"):
     expected[name] = core(**empty_result)
+expected["invalid-error-benchmark"] = core(**empty_result)
+expected["invalid-error-benchmark"]["status"] = "INVALID_INPUT"
+expected["invalid-error-benchmark"]["error_code"] = 2
 expected["invalid-order"]["error_code"] = 2
 expected["invalid-order"]["status"] = "INVALID_INPUT"
 expected["invalid-state"]["error_code"] = 2
