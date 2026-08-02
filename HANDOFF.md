@@ -5,14 +5,17 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6b-prompt-context-renderer`, based on `main` commit
-  `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
+- Branch: `agent/c6b-prompt-context-renderer`, current implementation commit
+  `509d229`; based on `main` commit `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
-- Active goal: ship the independently testable C6b pure renderer core. C0 through C5 are complete.
+- Active goal: publish and merge the independently testable C6b pure renderer core. The
+  implementation is complete; C0 through C5 are complete.
 - This slice implements bounded prompt/context rendering, SHA-256 identity, and failure-memory
   selection. Canonical artifact declarations and persistence remain owned by the blocked C6a1/C6a2
   slices and are not implemented here.
+- Working tree was clean after the implementation commit; there are no intentional uncommitted
+  files.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
   not complete C6.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -36,7 +39,8 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Commit this coherent C6b core slice, open one focused PR, and complete one comprehensive review.
+1. Push this commit, open one focused PR, and complete one comprehensive review with the hosted
+   check appropriate for the implementation change.
 2. Apply all valid findings in one repair, rerun only affected checks, and merge without a second
    review unless the repair materially expands behavior or the contract.
 3. After merge, continue with the next eligible pure C6 slice. Do not code against proposed Align
@@ -67,10 +71,11 @@ request checks, reviews, and attestations.
 - The workflow-change hosted check passed once; its transient check evidence remains in GitHub.
 - Local full `make ci` was intentionally not rerun for this documentation/governance change; it is
   reserved for the applicable implementation/adoption or final integration gate.
-- `make prompt-model-smoke`: PASS (hierarchy, UTF-8-safe bounds, memory selection, invalid input,
-  and SHA-256).
+- `make check`: PASS (15 per-unit checks; three pre-existing compiler warnings).
+- `make prompt-model-smoke`: PASS (hierarchy, UTF-8-safe bounds including truncation, memory
+  selection, invalid input, and SHA-256).
 - `scripts/run-prompt-render-smoke`: PASS (C5 legacy renderer remains unchanged).
-- `scripts/check-format` and `git diff --check`: PASS for the current C6b implementation.
+- `scripts/check-format` and `git diff --cached --check`: PASS before commit.
 
 ## Constraints and decisions to preserve
 
