@@ -2483,8 +2483,8 @@ product slice starts only after every other separately registered JSON prerequis
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C6f2 deterministic paired evaluator; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension
-Independent work that may continue: application designs, pure codecs, renderers, scorers, activation slices, Request 5, Request 6, Request 7, and any work that does not construct a runtime-sized declared-record array
+Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension, and C6c2 cannot adopt its runtime-sized declared-record result arrays until the capability is merged
+Independent work that may continue: C6c2 design and other application designs, pure codecs, renderers, scorers, activation slices, Request 5, Request 6, Request 7, and any implementation that does not construct a runtime-sized declared-record array
 Resume condition: Request 8 must reach ALIGN_MERGED at a named Align commit before its recursive extension can start; after ALIGN_MERGED at a named Align commit, rebuild both the sibling release compiler and runtime, update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged, run the named C6f2 adoption target and `make ci`, and then resume only that consumer
 Align commit or pull request: pending
 align-llm verification: pending
@@ -3598,8 +3598,8 @@ updated to name this merged request.
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C6f2 deterministic paired evaluator; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension
-Independent work that may continue: C6a1 codec work that does not materialize recursive runtime arrays, C6b, C6c, C6d, Request 5, Request 6, Request 7, Request 8, Request 9, and all pure verification work
+Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by this evaluator extension, and C6c2 cannot adopt its recursive runtime-sized result arrays until both requests are merged
+Independent work that may continue: C6c2 design, C6a1 codec work that does not materialize recursive runtime arrays, C6b, C6c, C6d, Request 5, Request 6, Request 7, Request 8, Request 9, and verification work that does not construct the blocked record graph
 Resume condition: Request 8 first reaches ALIGN_MERGED at a named Align commit; then Align merges this request at a named commit, the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, the C6f2 adoption target and `make ci` pass, and the original recursive-construction acceptance matrix passes in align-llm
 Align commit or pull request: pending
 align-llm verification: pending
