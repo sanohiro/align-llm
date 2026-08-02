@@ -7,9 +7,9 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6-prompt-context-redesign`, based on `origin/main` commit
   `99837e29ec303574956614a1d26439def23e9e8d` (merged PR #34).
-- Current design commit: `80b8f7b` (`Redesign C6 prompt optimizer contract`), on top of
-  `22186b8` (`Record C6 final-review redesign stop`). The worktree is clean after this handoff
-  update.
+- Current handoff commit: `e187f82` (`Update C6 redesign handoff`); design content is in
+  `80b8f7b` (`Redesign C6 prompt optimizer contract`), on top of `22186b8` (`Record C6
+  final-review redesign stop`). The worktree is clean after this handoff update.
 - Active goal: make the C6 design merge-ready, open one focused design PR, merge it, and then
   start the first eligible implementation slice. C6 product implementation has not started.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did

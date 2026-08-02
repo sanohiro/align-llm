@@ -182,11 +182,14 @@ record `content_sha256` over `EnvironmentIdentity { core, environment_id, conten
 This two-record construction is the non-circular preimage and is the only producer of the final
 identity. `EnvironmentProbe` is an ephemeral, content-bound carrier with explicit producer,
 runtime identity, and the six machine-probe fields; its `content_sha256` is verified before use.
-The snapshot helper and adapter must emit matching carriers for every complete invocation. A
-`MATCH`/`MISMATCH` and every retained row require `Some(EnvironmentIdentity)` with one equal digest;
-`ERROR` may retain a probe only when its validation succeeded. Missing probe values are explicit
-`UNKNOWN`, `NONE`, or `None` according to the field table and are never silently omitted. Fixtures
-cover every probe/identity field-presence, detail-level, variant, and verification-state combination.
+The snapshot helper and adapter must emit matching carriers for every complete invocation. The
+evaluator finalizes `Some(EnvironmentIdentity)` with one equal digest for every `MATCH`/`MISMATCH`
+snapshot and every retained row; the wire-level snapshot records carry the producer-owned
+`environment_probe` shown in §4.5, and the evaluator's normalized identity is retained at the
+evaluation-result boundary. `ERROR` may retain a probe only when its validation succeeded. Missing
+probe values are explicit `UNKNOWN`, `NONE`, or `None` according to the field table and are never
+silently omitted. Fixtures cover every probe/identity field-presence, detail-level, variant, and
+verification-state combination.
 
 #### Explicit bounds for paths, commands, endpoints, and policy
 
@@ -223,6 +226,17 @@ Filesystem entries whose raw name is not valid UTF-8 are rejected as `PATH` rath
 lossily transcoded into an artifact path. For valid UTF-8 names, the tree digest retains the raw
 filename bytes and `/` separators exactly; this keeps the persisted path representation and the
 physical scan's byte order unambiguous.
+
+Credential delivery is a separate ephemeral injection boundary, not an `EnvironmentPolicy` entry.
+For an adapter child, the evaluator constructs the environment in this order: `env_clear()`, copy
+the policy's ordered `allowed_variables`, then add exactly one credential entry when
+`credential_env_name` is `Some`; the name must be absent from the policy and the value is the
+one-shot temporary owner described below. The evaluator rejects a missing, duplicate, or
+conflicting name before launch. Snapshot-helper children receive only the cleared policy
+environment and never receive the credential injection. A provider call receives the same
+one-shot value as an explicit boundary argument; if its implementation uses a child process, it
+uses the same construction order. The injected name and value are not part of the policy digest,
+environment identity, or any persisted diagnostic.
 
 The evaluator requires the six machine-probe fields (`os`, `os_release`, `architecture`, `cpu`,
 `logical_cpu_count`, and `gpu`) to be equal across the snapshot-helper and measurement-adapter
@@ -411,8 +425,11 @@ failure, stage, and reason-code fields are declared `str` fields with exact allo
 labels; internal Copy enums may map to and from them only through explicit validators. This avoids
 making artifact identity depend on an implicit enum wire representation. Readers decode into the
 declared record, clear the digest field, re-encode, and recompute before use. Unknown JSON fields
-are ignored under Align's declared-record JSON contract and are not identity-bearing.
-`artifact_kind` provides domain separation between otherwise equal records.
+are ignored under Align's declared-record JSON contract and are not identity-bearing. Bytewise
+stability is required only for canonical bytes emitted from the declared record: an input containing
+unknown fields may decode semantically, but re-encoding omits those fields and is not required to
+equal the original input bytes. `artifact_kind` provides domain separation between otherwise equal
+records.
 
 The first golden vector is normative:
 
@@ -446,8 +463,10 @@ must remain reconstructable without resolving the enclosing artifact.
 In the schema blocks below, unannotated IDs, labels, paths, text, and digests are `str`/persisted
 JSON strings; counts, byte sizes, indices, time values, and ppm values are `i64`; flags are `bool`.
 Collections and optional values are written explicitly. A field whose allowed labels are separated
-by `|` is a validated `str`, not an implicit JSON enum. Every ID is non-empty, ASCII, and at most
-128 bytes; every digest is lowercase hexadecimal. IDs and non-path labels cannot contain NUL.
+by `|` is a validated `str`, not an implicit JSON enum. Every present ID is ASCII and at most
+128 bytes; every digest is lowercase hexadecimal. Every present required ID is non-empty; an
+optional ID is empty only when its enclosing `Option` is `None`, and fields explicitly declared
+empty for a baseline or invalid result remain empty. IDs and non-path labels cannot contain NUL.
 Every operation request declares an absolute, lexically normalized `project_root`; all other
 persisted paths are non-empty UTF-8 paths relative to that root, at most 4,096 bytes, cannot
 contain NUL, and cannot contain an empty component, `.` or `..`. An environment-variable name
@@ -933,7 +952,12 @@ value is never a field in any declared record.
 prompt-byte limit or the fixed corpus/policy pair is `ERROR`. An oversized candidate is still
 passed to the same adapter, which must return `POLICY_VIOLATION`; any other state is `ERROR`, and
 the violation is a serious regression. `temperature_micros` is from zero through one million.
-`seed_base` must permit all requested one-based sample offsets without signed-`i64` overflow.
+`seed_base` is read only from the evaluator-validated `GenerationPolicy`; it is not supplied by a
+task adapter or selected independently for a row. Its value is covered by the generation-policy
+content digest and must permit all requested one-based sample offsets without signed-`i64`
+overflow. The evaluator recomputes every `paired_seed` as `seed_base + sample_index - 1`, copies
+that result into `EvaluationInputIdentity` and `TaskAdapterRequest`, and rejects any returned or
+persisted value that differs from that recomputation.
 `logical_cpu_count: None` is the explicit unavailable value; a gate-eligible evaluation requires
 `Some(n)` with a positive count. Provider endpoint and service-revision identities are non-secret,
 non-empty labels; they are not inferred from a credential-bearing URL.
@@ -1012,7 +1036,7 @@ expectations contain at most 64 entries and additional files at most 32.
 
 The snapshot helper and measurement adapter both report an `EnvironmentProbe`; the evaluator
 normalizes both carriers into one producer-owned `EnvironmentIdentity`, records its digest, and
-requires the same identity in both snapshots and every row in one evaluation. A `MATCH` or
+requires the same normalized identity in both snapshots and every row in one evaluation. A `MATCH` or
 `MISMATCH` snapshot requires a valid probe and a finalized identity; `ERROR` may omit both when
 environment discovery itself failed. The provider endpoint identity is a non-secret stable service
 label, not a credential-bearing URL. The service revision is required even when the provider exposes
@@ -2294,6 +2318,9 @@ and must split again before coding if the estimate no longer holds.
     - may proceed while C6e is blocked because its fixed adapter does not call a model provider;
     - estimated review surface below 1,000 hand-written lines.
 12. **C6g1 — real consumer and frozen gate assets (blocked on Requests 2, 5, 11, 12, and 13)**
+   - starts only after C6a0, C6a1, C6a2, C6b, C6c1, C6c2, C6d1, C6e, C6f1, and C6f2
+     have completed their own acceptance gates; those C6 slice dependencies are not replaced by
+     the Align-request prerequisites in this heading;
    - have the fixed adapter consume evaluator-produced `RenderedPromptArtifact`, generate through the
      bound provider policy, and verify the patch through the existing contained task runner;
    - finalize and review the at-least-two-task corpus, provider control, generation policy,

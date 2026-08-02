@@ -3813,8 +3813,10 @@ there is no type argument syntax, dynamic JSON value, implicit clone, or second 
 borrowed decode view may be used only while its input owner is live. The owned selector explicitly
 materializes every text field, including nested and array elements, and the result has no input
 region dependency. Encode/decode preserves declaration order, escaped text, omitted `None`, nested
-records, array order, and the exact semantic-to-byte vectors. Request 12's bounded encoder remains
-the separate cap operation used by C6.
+records, array order, and the exact semantic-to-byte vectors. Unknown input fields may be decoded
+and ignored, but canonical re-encoding omits them; bytewise stability is required for canonical
+declared-record bytes, not for a non-canonical input containing unknown fields. Request 12's bounded
+encoder remains the separate cap operation used by C6.
 
 ### Acceptance criteria
 
@@ -3829,7 +3831,8 @@ The Align design and implementation must prove:
    retained field is read, and cleans partial nested arrays/options exactly once on `?`, `else`,
    `map_err`, replacement, branch joins, loop exits, and malformed input;
 4. encode uses the same declared graph and canonical field order without mutating or borrowing the
-   source; `decode -> encode -> decode` is semantically and bytewise stable;
+   source; `decode -> encode -> decode` is semantically stable, and canonical declared-record bytes
+   are bytewise stable; an input containing unknown fields may re-encode without those fields;
 5. generic monomorphization, whole-program/per-unit interface serialization, structural cache
    identity, target-local layout, reallocation, capacity overflow, allocator failure, and concurrent
    independent calls have explicit owner tests and no hidden collection or arena conversion; and
