@@ -7,10 +7,12 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6c2-git-boundary-redesign`, based on the terminal PR #49 checkpoint
   `75bbdc2` and merged `main` commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `5212242` (`Redesign C6c2 Git source boundary contracts`).
-- Active goal: finish the independently reviewable C6c2 design successor slice. The terminal PR #49
-  remains unmerged and is not to be repaired in place. Implementation is not started and must wait
-  for this design plus the C6a1/C6a2 decoded-record and Align adoption prerequisites.
+- Current source checkpoint: `8905114` (`Address C6c2 design review findings`). The preceding
+  design checkpoint is `5212242`.
+- Active goal: finish the independently reviewable C6c2 design successor slice in PR #50. The
+  terminal PR #49 remains unmerged and is not to be repaired in place. Implementation is not
+  started and must wait for this design plus the C6a1/C6a2 decoded-record and Align adoption
+  prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -51,9 +53,17 @@ request checks, reviews, and attestations.
   for the three terminal findings: mode-specific EVALUATION/GATE head semantics with separate
   evaluated-commit ancestry, pre-Git local Git metadata/config isolation with fixed direct argv, and
   complete `refs/replace/` enumeration across loose, packed, and pinned ref-backend storage.
-- In progress: publish this successor design slice for a fresh comprehensive independent review.
-  Keep PR #49 as the terminal review checkpoint; do not merge either branch until the successor's
-  review, findings, and required documentation checks are complete.
+- Complete: the initial successor design review's three findings are accepted in one repair:
+  EVALUATION and GATE use mode-specific align-llm head contracts with a separate gate ancestry
+  proof; ordinary-clone inert remote/branch metadata is allowed while command-bearing and transport
+  affecting settings remain rejected; and Request 14 records the Align-owned exclusive-create and
+  no-replace publication capability required by C6f2.
+- In progress: publish the consolidated repair and complete PR #50's review evidence. The initial
+  independent review is recorded externally; its accepted findings are repaired in `8905114`.
+  Because Request 14 materially adds a blocked publication prerequisite, run the one conditional
+  final comprehensive review after the repair. Keep PR #49 as the terminal review checkpoint; do
+  not merge either branch until PR #50's review, findings, and required documentation checks are
+  complete.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -79,12 +89,13 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push `agent/c6c2-git-boundary-redesign` and open a successor reviewable PR targeting `main`; keep
-   the plan-of-record and handoff commits in this one design slice.
-2. Run one fresh comprehensive independent adversarial review of the successor diff. Record its
-   SHA-bound envelope and every finding/disposition in GitHub; apply any valid findings in one
-   consolidated repair before merge.
-3. After the successor design is reviewed and merged, implement and merge C6c1p first; implement
+1. Push `8905114` on `agent/c6c2-git-boundary-redesign`, update PR #50 with the initial review
+   envelope and all three finding dispositions, and run the applicable hosted documentation checks.
+2. Run the one conditional final comprehensive adversarial review required by the material Request
+   14 redesign. If it finds a new non-trivial issue, stop the local repair loop, reopen the closure
+   matrix, and re-scope instead of applying another patch cycle.
+3. After PR #50 is reviewed, its findings are disposed, and it is merged, refresh `main`, perform
+   the bounded retrospective, and implement and merge C6c1p first; implement
    C6c2 only after C6a1/C6a2 provide content-validated
    decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record
    the dependency blocker and continue only with safe independent roadmap work.
@@ -97,12 +108,13 @@ request checks, reviews, and attestations.
 - C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
   and `make ci` all passed before the merged `main` checkpoint.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
-- Current corrected design verification: `git diff --check` PASS after the redesign, the targeted
-  mode-head, pre-Git local-config, fixed-argv, and complete-replacement contract assertions PASS,
-  and the Markdown fence count for `docs/specs/c6-prompt-context-optimizer.md` is 90 (even).
-  Source tests and `make ci` are N/A because this remains documentation/specification-only; the
-  successor PR requires its applicable hosted documentation/static checks. The working tree must be
-  clean after this handoff commit; the next verification is the fresh successor-PR review.
+- Current corrected design verification: `git diff --check 75bbdc2..8905114` PASS, the targeted
+  mode-head, ordinary-clone local-config, fixed-argv, complete-replacement, and Request 14 contract
+  assertions PASS, and Markdown fence counts are 90 for `docs/specs/c6-prompt-context-optimizer.md`
+  and 86 for `docs/align-requests.md` (both even). Source tests and `make ci` are N/A because this
+  remains documentation/specification-only; PR #50 requires its applicable hosted
+  documentation/static checks. The working tree must be clean after this handoff update; the next
+  verification is the PR review-evidence and conditional-final-review sequence.
 
 ## Constraints and decisions to preserve
 
@@ -137,9 +149,13 @@ request checks, reviews, and attestations.
   manifest-owned relative source locator, runtime-derived clean tested-head equality, and
   evaluated-commit ancestry through explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and
   `C6_GATE_GIT_EXECUTABLE_PATH` revalidation. Both source and gate boundaries raw-scan `.git`,
-  `gitdir`, `commondir`, and local/worktree configuration before any Git child, reject executable or
-  path/network/ref-selection settings, use fixed direct Git argv and cleared environment, and
-  enumerate `refs/replace/` through loose, packed, and pinned ref-backend storage. The FILE_SET
+  `gitdir`, `commondir`, and local/worktree configuration before any Git child, allow only inert
+  ordinary-clone remote/branch metadata, reject command/hook/helper/filter/pager/path/promisor/
+  proxy/transport settings, use fixed direct Git argv and cleared environment, and enumerate
+  `refs/replace/` through loose, packed, and pinned ref-backend storage. Request 14 blocks C6f2
+  result/evidence publication until Align ships exclusive creation and no-replace rename at a named
+  commit and the align-llm adoption gate passes; no check-then-create, delete-before-rename, or
+  undeclared native workaround is allowed. The FILE_SET
   manifest is bounded and canonical, with
   checked raw-byte membership and no symlink/special entries. A post-row cleanup failure
   retains a valid non-`ERROR` row and uses the verifier's `VALID_PREFIX` cleanup branch. C6c1p validates
