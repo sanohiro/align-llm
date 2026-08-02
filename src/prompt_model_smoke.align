@@ -1,0 +1,125 @@
+module prompt_model_smoke
+
+import core.json
+import prompt_model
+
+SmokeOutput { case_name: str, status: str, text: str, sha256: str }
+
+fn status_label(status: prompt_model.PromptRenderStatus) -> str = match status {
+  Valid => "VALID",
+  InvalidInput => "INVALID_INPUT",
+}
+
+fn emit(case_name: str, render: prompt_model.PromptRender) {
+  text_view: str := render.text
+  sha256_view: str := render.sha256
+  output := SmokeOutput {
+    case_name: case_name,
+    status: status_label(render.status),
+    text: text_view,
+    sha256: sha256_view,
+  }
+  print(json.encode(output))
+}
+
+fn repeated(value: str, count: i64) -> string {
+  output := builder()
+  mut cursor := 0
+  loop {
+    if cursor >= count { break }
+    output.write(value)
+    cursor = cursor + 1
+  }
+  return output.to_string()
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  baseline_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "baseline",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "",
+      baseline_policy,
+      "ignored",
+      "stdout",
+      "stderr",
+    ),
+  )
+
+  bounded_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: true,
+    include_diagnostics: true,
+    max_patch_evaluation_bytes: 24,
+    max_diagnostic_bytes_per_stream: 23,
+  }
+  emit(
+    "bounded",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      bounded_policy,
+      "é🙂abcdefghijklmnopqrstuvwxyz",
+      "é🙂stdout",
+      "stderr-output-0123456789",
+    ),
+  )
+
+  invalid_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "invalid-policy",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      invalid_policy,
+      "patch",
+      "",
+      "",
+    ),
+  )
+
+  oversized_source_policy := baseline_policy
+  emit(
+    "oversized-source",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "",
+      oversized_source_policy,
+      repeated("x", 65537),
+      "",
+      "",
+    ),
+  )
+  emit(
+    "oversized-learned",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      repeated("x", 8193),
+      oversized_source_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+  return Ok(())
+}

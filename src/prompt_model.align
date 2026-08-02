@@ -1,0 +1,196 @@
+module prompt_model
+
+import std.crypto
+import std.encoding
+
+pub ContextPolicy {
+  include_patch_evaluation: bool,
+  include_diagnostics: bool,
+  max_patch_evaluation_bytes: i64,
+  max_diagnostic_bytes_per_stream: i64,
+}
+
+pub PromptRenderStatus { Valid, InvalidInput }
+
+pub PromptRender {
+  status: PromptRenderStatus,
+  text: string,
+  sha256: string,
+}
+
+fn utf8_prefix(value: str, max_bytes: i64) -> str {
+  mut boundary := max_bytes
+  if boundary > value.len() {
+    boundary = value.len()
+  }
+  if boundary <= 0 {
+    return value[0..0]
+  }
+
+  bytes := value.bytes()
+  mut probe := boundary
+  mut safe_end := boundary
+  mut done := false
+  loop {
+    if probe <= 0 || done {
+      break
+    }
+    last := bytes[probe - 1] as i64
+    if last >= 0x80 && last <= 0xBF {
+      probe = probe - 1
+    } else {
+      expected := if last <= 0x7F { 1 } else if last <= 0xDF { 2 } else if last <= 0xEF { 3 } else { 4 }
+      if boundary - (probe - 1) < expected {
+        safe_end = probe - 1
+      }
+      done = true
+    }
+  }
+  return value[0..safe_end]
+}
+
+fn bounded_text(value: str, limit: i64, marker: str) -> string {
+  if limit <= 0 {
+    return "".clone()
+  }
+  if value.len() <= limit {
+    return value.clone()
+  }
+  if marker.len() > limit {
+    return "".clone()
+  }
+  body := utf8_prefix(value, limit - marker.len())
+  output := builder()
+  output.write(body)
+  output.write(marker)
+  return output.to_string()
+}
+
+fn digest_text(value: str) -> string {
+  digest := crypto.sha256(value)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn invalid_input() -> PromptRender {
+  return PromptRender {
+    status: PromptRenderStatus.InvalidInput,
+    text: "".clone(),
+    sha256: "".clone(),
+  }
+}
+
+fn valid_section_limit(enabled: bool, limit: i64, maximum: i64) -> bool {
+  if limit < 0 || limit > maximum {
+    return false
+  }
+  if enabled {
+    return limit > 0
+  }
+  return limit == 0
+}
+
+fn valid_policy(policy: ContextPolicy) -> bool {
+  if !valid_section_limit(policy.include_patch_evaluation, policy.max_patch_evaluation_bytes, 65536) {
+    return false
+  }
+  if !valid_section_limit(policy.include_diagnostics, policy.max_diagnostic_bytes_per_stream, 65536) {
+    return false
+  }
+  return true
+}
+
+fn valid_sources(
+  base_prompt: str,
+  repo_prompt: str,
+  task_prompt: str,
+  learned_prompt_append: str,
+  patch_evaluation: str,
+  diagnostic_stdout: str,
+  diagnostic_stderr: str,
+) -> bool {
+  if base_prompt.len() > 65536 || repo_prompt.len() > 65536 || task_prompt.len() > 65536 {
+    return false
+  }
+  if learned_prompt_append.len() > 8192 {
+    return false
+  }
+  if patch_evaluation.len() > 65536 || diagnostic_stdout.len() > 65536 || diagnostic_stderr.len() > 65536 {
+    return false
+  }
+  return true
+}
+
+pub fn render(
+  base_prompt: str,
+  repo_prompt: str,
+  task_prompt: str,
+  learned_prompt_append: str,
+  policy: ContextPolicy,
+  patch_evaluation: str,
+  diagnostic_stdout: str,
+  diagnostic_stderr: str,
+) -> PromptRender {
+  if !valid_policy(policy) || !valid_sources(
+    base_prompt,
+    repo_prompt,
+    task_prompt,
+    learned_prompt_append,
+    patch_evaluation,
+    diagnostic_stdout,
+    diagnostic_stderr,
+  ) {
+    return invalid_input()
+  }
+
+  output := builder()
+  output.write(base_prompt)
+  output.write("\n\n--- repo prompt ---\n")
+  output.write(repo_prompt)
+  output.write("\n\n--- task prompt ---\n")
+  output.write(task_prompt)
+  output.write("\n\n--- learned prompt append ---\n")
+  if learned_prompt_append.len() == 0 {
+    output.write("(none)")
+  } else {
+    output.write(learned_prompt_append)
+  }
+
+  output.write("\n\n--- patch evaluation context ---\n")
+  if policy.include_patch_evaluation {
+    patch := bounded_text(patch_evaluation, policy.max_patch_evaluation_bytes, "\n[context truncated]")
+    output.write(patch)
+  } else {
+    output.write("(omitted)")
+  }
+
+  output.write("\n\n--- failure memory context ---\n")
+  output.write("(omitted)")
+
+  output.write("\n\n--- current failure diagnostics ---\n")
+  if policy.include_diagnostics {
+    stdout := bounded_text(
+      diagnostic_stdout,
+      policy.max_diagnostic_bytes_per_stream,
+      "\n[output truncated]",
+    )
+    stderr := bounded_text(
+      diagnostic_stderr,
+      policy.max_diagnostic_bytes_per_stream,
+      "\n[output truncated]",
+    )
+    output.write("stdout:\n")
+    output.write(stdout)
+    output.write("\nstderr:\n")
+    output.write(stderr)
+  } else {
+    output.write("(omitted)")
+  }
+
+  text := output.to_string()
+  sha256 := digest_text(text)
+  return PromptRender {
+    status: PromptRenderStatus.Valid,
+    text: text.clone(),
+    sha256: sha256.clone(),
+  }
+}

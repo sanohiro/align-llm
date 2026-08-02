@@ -5,12 +5,25 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `main`, synchronized with `origin/main` at merge commit
-  `29f79e0a29edb59303a08d8d7fb3b561d6c6ed7b`.
+- Branch: `agent/c6b-prompt-context-renderer`, PR checkpoint `03e2891`; based on `main` commit
+  `ac10ccf6a8a38c4732153da85bf6546159e54bf3`.
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
-- No work is active. C0 through C5 are complete; C6 product implementation has not started.
-- There are no intentional uncommitted files.
+- Active goal: publish and merge the independently testable C6b renderer core. The implementation
+  has been re-scoped to exclude failure-memory adoption, which is blocked by Align Request 7;
+  focused verification, the required fresh comprehensive review, and the baseline repair are
+  complete. Push, record the review envelope, pass the hosted check for the final head, and merge.
+  C0 through C5 are complete.
+- This slice implements fixed prompt hierarchy, learned append validation, bounded patch and
+  diagnostic contexts, UTF-8-safe truncation, and SHA-256 identity. It deliberately emits the
+  failure-memory section as `(omitted)` without accepting or decoding JSONL. Canonical artifact
+  declarations and persistence remain owned by the blocked C6a1/C6a2 slices and are not implemented
+  here.
+- Working tree is clean after the baseline finalization commits; there are no intentional
+  uncommitted files.
+- Request 7 is still `PROPOSED` and blocks escaped-string declared-record decoding. The pinned
+  `json.decode` returns `Err` for valid escaped `MemoryEvent` strings; do not use `json.doc`, a
+  hand-written compatibility parser, or another private wire format to bypass the request.
 - C0 through C5 are complete. PR #34 delivered the merged fixture-only prompt renderer; it did
   not complete C6.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -34,13 +47,14 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. If work resumes, perform the bounded post-merge retrospective and begin the first eligible C6b
-   implementation slice from `main`.
-2. Keep C6b pure and provider-independent. Do not code against proposed Align APIs; a blocked slice
-   resumes only after the named Align commit is release-built, pinned, and verified through `make ci`.
-3. For future changes, classify the changed surface first: documentation-only work uses structural
-   checks, coherent implementation slices use focused checks, and full CI is reserved for the named
-   implementation, adoption, integration, pin, or topology gate.
+1. Push the final branch, including the baseline oracle and finalization commits. The fresh review
+   was run against the re-scoped source head; its single valid baseline finding is repaired in
+   `c75f9a3` and `03e2891`.
+2. Record the SHA-bound review envelope, wait for the hosted supported check for the final head,
+   mark PR #38 ready, and merge it with a merge commit. Do not start a repair/re-review loop for
+   ordinary finding repairs.
+3. After Request 7 is merged, rebuild the pinned Align release, update `.align-revision`, and pass
+   the deferred failure-memory acceptance through `make ci` before adding that API.
 
 ## Bounded post-merge retrospective
 
@@ -66,6 +80,29 @@ request checks, reviews, and attestations.
 - The workflow-change hosted check passed once; its transient check evidence remains in GitHub.
 - Local full `make ci` was intentionally not rerun for this documentation/governance change; it is
   reserved for the applicable implementation/adoption or final integration gate.
+- `make check`: PASS (15 per-unit checks; three pre-existing compiler warnings).
+- `make prompt-model-smoke`: PASS (hierarchy, UTF-8-safe bounds including truncation, memory
+  selection in the prior scope; the current re-scoped smoke passes hierarchy, UTF-8-safe bounds,
+  source validation, invalid input, and SHA-256).
+- `scripts/run-prompt-render-smoke`: PASS (C5 legacy renderer remains unchanged).
+- `scripts/check-format` and `git diff --cached --check`: PASS before commit.
+- Repair commit `835fb07`: policy/source caps, schema-version rejection, `INVALID_INPUT`, and
+  focused invalid-input smoke cases; `make check`, `make prompt-model-smoke`, C5 smoke,
+  `scripts/check-format`, and `git diff --check` all passed.
+- Hosted check for repair head `9fd8e0d`: PASS (`Pinned Align compiler and supported checks`,
+  1m27s).
+- Conditional final review for head `9fd8e0d`: changes requested; four findings recorded in PR #38,
+  with Request 7 as the blocking issue. It is terminal for the old scope; the re-scoped contract
+  requires one fresh review.
+- Current re-scope focused verification: `make check` PASS with three pre-existing warnings,
+  `make prompt-model-smoke` PASS, `make build` PASS, `scripts/run-prompt-render-smoke` PASS,
+  `make gate-topology-check` PASS, `scripts/check-format` PASS, and `git diff --check` PASS.
+- `make baseline-check`: PASS after the canonical oracle and finalization refresh.
+- Baseline source/oracle/finalization ancestry and exact-tree integrity: PASS for `c9161ca`,
+  `c75f9a3`, and `03e2891`.
+- Fresh comprehensive review for re-scoped head `c9161ca`: one P1 baseline-identity finding,
+  fixed through the prescribed oracle and finalization sequence; no renderer or smoke-harness
+  findings.
 
 ## Constraints and decisions to preserve
 
