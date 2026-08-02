@@ -5,20 +5,25 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1-score-contract`; based on merged `main` commit
-  `50a83d1ce238d2d522bceda69f6419ea1050e762` (PR #38 merge commit).
+- Branch: `agent/c6c1-score-contract-repair`; based on merged `main` commit
+  `99eadffcea63908fbcab8eac5b6ae6070619fcca` (the C6c1 design checkpoint).
 - PR #35 merged the C6 prompt optimizer contract. PR #36 and PR #37 merged the verification-timing
   and review-convergence governance, including PR and `main` push scope guards.
-- Active goal: design, review, implement, verify, and merge the independently testable C6c1 pure
-  row-validation and aggregation kernel. C6b is merged; its failure-memory JSONL adoption remains
-  deferred because Align Request 7 is still `PROPOSED`. C0 through C5 and C6b are complete.
+- Active goal: repair the C6c1 implementation contract for the pinned Align surface, then implement,
+  verify, and merge the independently testable pure row-validation and aggregation kernel. C6b and
+  the first C6c1 design checkpoint are merged; its failure-memory JSONL adoption remains deferred
+  because Align Request 7 is still `PROPOSED`. C0 through C5 and C6b are complete.
 - The merged C6b slice implements fixed prompt hierarchy, learned append validation, bounded patch
   and diagnostic contexts, UTF-8-safe truncation, and SHA-256 identity. It deliberately emits the
   failure-memory section as `(omitted)` without accepting or decoding JSONL. The active C6c1 design
   adds only the pure scalar row-validation/aggregation contract; canonical artifact declarations
   and persistence remain owned by the blocked C6a1/C6a2 slices.
-- Working tree is clean at the current committed C6c1 design checkpoint; there are no intentional
-  uncommitted files to preserve.
+- Pinned Align accepts `slice<Struct>` input and whole-struct reads, but rejects both whole-element
+  and field-level stores through `out slice<Struct>`. The repaired C6c1 contract therefore exposes
+  caller-owned primitive output columns while retaining the logical Copy aggregate/reason records;
+  it does not add a local compatibility layer or target a proposed Align API.
+- Working tree is clean at the current committed C6c1 contract-repair checkpoint; there are no
+  intentional uncommitted files to preserve.
 - Request 7 is still `PROPOSED` and blocks escaped-string declared-record decoding. The pinned
   `json.decode` returns `Err` for valid escaped `MemoryEvent` strings; do not use `json.doc`, a
   hand-written compatibility parser, or another private wire format to bypass the request.
@@ -45,10 +50,11 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Run documentation/static checks for the C6c1 contract and review the ledger-to-prose consistency.
-2. Push this design branch, open the design PR, run one fresh comprehensive adversarial review,
-   record all findings and dispositions, and merge the reviewed design before implementation.
-3. Create the implementation branch from the merged design, add `prompt_score` plus its smoke and
+1. Run documentation/static checks for the repaired C6c1 contract and complete the ledger-to-prose
+   consistency pass.
+2. Open the contract-repair PR, run one fresh comprehensive adversarial review, record all findings
+   and dispositions, and merge the reviewed contract before implementation.
+3. Create the implementation branch from the repaired design, add `prompt_score` plus its smoke and
    topology registration, then refresh the identity-bound baseline through the prescribed
    source → immutable oracle → finalization sequence.
 4. Run focused checks, one comprehensive implementation review, hosted checks, and merge C6c1;
@@ -114,6 +120,9 @@ request checks, reviews, and attestations.
 - Fresh comprehensive review for re-scoped head `c9161ca`: one P1 baseline-identity finding,
   fixed through the prescribed oracle and finalization sequence; no renderer or smoke-harness
   findings.
+- Pinned compiler probe for the C6c1 contract repair: `slice<Struct>` input and whole-struct reads
+  pass `check-per-unit`; whole-element and field-level stores through `out slice<Struct>` are
+  rejected as unsupported. No product implementation was started against the rejected surface.
 
 ## Constraints and decisions to preserve
 

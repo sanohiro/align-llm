@@ -2443,20 +2443,47 @@ pub fn aggregate(
   task_limits: slice<ScoreTaskLimit>,
   policy_limits: ScorePolicyLimit,
   sample_count: i64,
-  out task_aggregates: slice<ScoreTaskAggregate>,
-  out reasons: slice<ScoreReason>,
+  out task_ordinal: slice<i64>,
+  out task_parent_pass_count: slice<i64>,
+  out task_candidate_pass_count: slice<i64>,
+  out task_parent_repair_loop_count: slice<i64>,
+  out task_candidate_repair_loop_count: slice<i64>,
+  out task_paired_pass_count: slice<i64>,
+  out task_parent_median_present: slice<bool>,
+  out task_parent_median_ns: slice<i64>,
+  out task_candidate_median_present: slice<bool>,
+  out task_candidate_median_ns: slice<i64>,
+  out task_time_improvement_present: slice<bool>,
+  out task_time_improvement_ppm: slice<i64>,
+  out task_time_regression_present: slice<bool>,
+  out task_time_regression_ppm: slice<i64>,
+  out reason_task_ordinal: slice<i64>,
+  out reason_sample_index: slice<i64>,
+  out reason_code: slice<i64>,
+  out reason_parent_value_kind: slice<i64>,
+  out reason_parent_value_number: slice<i64>,
+  out reason_candidate_value_kind: slice<i64>,
+  out reason_candidate_value_number: slice<i64>,
+  out reason_limit_kind: slice<i64>,
+  out reason_limit_number: slice<i64>,
 ) -> ScoreResult
 ```
 
 `task_limits` is ordered by `task_ordinal`, and `policy_limits` carries the global acceptance
 thresholds for time and corpus repair-loop regressions. The caller owns every input and output array
 and keeps them live for the call; C6c1 retains no view and performs no filesystem, process, network,
-or global-state operation. The output slices are caller-provided capacity, not hidden allocation:
-`task_aggregates.len()` must be at least the task count and `reasons.len()` must be at least the
-actual reason count. Validation and the complete reason-count pass happen before either output
-slice is written. An insufficient output slice returns `OUTPUT_TOO_SMALL` with the required count
-and leaves both output slices untouched. This explicit output ownership keeps C6c1 independent of
-Request 8/10 runtime-sized record-array construction.
+or global-state operation. The output slices are caller-provided primitive columns, not hidden
+allocation. Every `task_*` output column must have length at least the task count, and every
+`reason_*` output column must have length at least the actual reason count. The columns reconstruct
+the logical `ScoreTaskAggregate` and `ScoreReason` records below in their shared ordinal order.
+`*_present` is false when the corresponding logical `Option<i64>` is `None`; its paired numeric
+column is zero in that case. `reason_*_value_kind` uses `NONE = 0`, `PASS = 1`, `FAIL = 2`,
+`POLICY_VIOLATION = 3`, `ERROR = 4`, and `NUMBER = 5`; its paired numeric column is meaningful only
+for `NUMBER`. `reason_code` uses the `ScoreReasonCode` order below as zero-based ordinals. Validation
+and the complete reason-count pass happen before any output column is written. An insufficient
+column returns `OUTPUT_TOO_SMALL` with the required count and leaves every output column untouched.
+This explicit scalar-column topology keeps C6c1 independent of Request 8/10 runtime-sized
+record-array construction and of the pinned compiler's unsupported struct-element output stores.
 
 The result and aggregate records are plain Copy values:
 
@@ -2521,7 +2548,7 @@ The deterministic validation order is:
 
 1. `task_limits.len()` is 1 through 64, `sample_count` is 2 through 16, and the expected row
    count `task_count * sample_count * 2` fits and equals `rows.len()`.
-2. Output task capacity is checked before any row or output mutation.
+2. Every task output column capacity is checked before any row or output mutation.
 3. Every task limit is non-negative and within its corresponding C6 bound; an absent benchmark
    limit has value zero, while a present limit is 0 through 1,000,000 ppm. The policy time limit is
    0 through 1,000,000 ppm and the policy repair-loop limit is 0 through 65,536.
@@ -2531,8 +2558,8 @@ The deterministic validation order is:
 5. A structurally valid `ERROR` row returns `EVALUATION_ERROR` at its row index without scoring or
    writing output. A malformed combination returns `INVALID_INPUT` at its first row index.
 6. The pure analysis pass computes the complete reason count and checks the reason output capacity.
-7. Only then are task aggregates and reasons written in corpus/task/sample/code order, followed by
-   the corpus aggregate in the returned value.
+7. Only then are task output columns and reason output columns written in
+   corpus/task/sample/code order, followed by the corpus aggregate in the returned value.
 
 Row validation enforces the full C6c1 state machine: non-negative bounded counters; prompt
 preparation in `[0, 7_200_000_000_000]`; checked positive passing generation and total time with
@@ -2573,7 +2600,7 @@ The C6c1 closure matrix is:
 | row state validation | `src/prompt_score.align` | `prompt-score-smoke` PASS/FAIL/POLICY/ERROR state matrix and every stage combination |
 | malformed/order/bounds input | `src/prompt_score.align` | invalid first-row index, duplicate/missing/order, limit, time, count, and overflow fixtures |
 | reason completeness/order | `src/prompt_score.align` | multi-reason pair plus task/corpus TIME and REPAIR_LOOPS output in canonical code order |
-| output ownership and early exit | `src/prompt_score.align` | undersized output and invalid-input fixtures prove caller buffers remain sentinel-filled |
+| output ownership and early exit | `src/prompt_score.align` | undersized scalar-column output and invalid-input fixtures prove every caller buffer remains sentinel-filled |
 | cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
 | public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, and refreshed baseline sequence when the hosted list changes |
 
