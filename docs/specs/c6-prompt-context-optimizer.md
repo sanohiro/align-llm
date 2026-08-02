@@ -305,9 +305,11 @@ Every persisted source identity claim records an exact clean commit. `align_llm_
 validated evaluation input; they are not observations inferred from a source file or replaced by a
 different checkout revision. A `VERIFIED` reachability state proves the corresponding claim from a
 clean checkout; `UNVERIFIED` keeps the exact claim while recording that this evaluation did not prove
-it. The external Align and corpus revisions are exact full SHA claims. Normal merge is the permitted
-integration method for ancestry-bearing artifacts; squash and rebase are not permitted when they
-would discard the recorded commit. CI records head, tested base tip, merge base, and tested
+it. The external Align and corpus revisions are exact full SHA claims. The verifier source boundary
+uses exact-HEAD equality rather than an ancestor-with-unchanged-scope rule, so no undefined source
+scope is part of its proof. Normal merge is the permitted integration method for other
+ancestry-bearing artifacts; squash and rebase are not permitted when they would discard the recorded
+commit. CI records head, tested base tip, merge base, and tested
 tree/integration identity, and verifies the required reachability before accepting an artifact.
 Verifier evidence records separate reachability results for the align-llm source repository, the
 external Align repository, and the corpus source; a gate-eligible result requires all three to be
@@ -503,7 +505,8 @@ optional ID is empty only when its enclosing `Option` is `None`, and fields expl
 empty for a baseline or invalid result remain empty. IDs and non-path labels cannot contain NUL.
 Every operation request declares an absolute, lexically normalized `project_root`; all other
 persisted paths are non-empty UTF-8 paths relative to that root, at most 4,096 bytes, cannot
-contain NUL, and cannot contain an empty component, `.` or `..`. An environment-variable name
+contain NUL, and cannot contain an empty component, `.` or `..`, except for the explicitly
+source-bundle-relative `PromptGateSourceLocator` paths defined in §9. An environment-variable name
 must match `[A-Za-z_][A-Za-z0-9_]*`, which also excludes `=` and every process-API-aborting form,
 and is at most 256 ASCII bytes. Other provider, runtime, revision, and environment labels are
 non-empty and at most 256 UTF-8 bytes. Every result `error`
@@ -1455,12 +1458,12 @@ uses an observed checkout revision as the core field:
    evidence before the source-boundary owners are released; an unavailable or mismatching source
    never changes the expected identity claim to an observed value.
 
-The align-llm observation checks the requested source commit and permitted source-scope ancestry in
-the clean `verifier_align_llm_repository_path` checkout; the Align observation checks the clean
-checkout revision from `verifier_align_repository_path` against the project `.align-revision` and
-`verifier_align_revision`; and the corpus observation checks the named `GIT_COMMIT` or canonical
-`FILE_SET` identity under `verifier_corpus_source_path`. A source path that is readable but cannot prove the
-exact clean identity is not an input error: its state is `UNVERIFIED`; a syntactically valid but
+The align-llm observation requires a clean checkout whose `HEAD` exactly equals
+`verifier_align_llm_commit`; no ancestor commit or source-scope exception is permitted. The Align
+observation requires the clean checkout revision from `verifier_align_repository_path` to equal the
+project `.align-revision` and `verifier_align_revision`; and the corpus observation checks the named
+`GIT_COMMIT` or canonical `FILE_SET` identity under `verifier_corpus_source_path`. A source path that
+is readable but cannot prove the exact clean identity is not an input error: its state is `UNVERIFIED`; a syntactically valid but
 absent or unreadable root has the same state. The evaluator never falls
 back to the task repository's `repo_path`, an ambient sibling checkout, or an environment variable.
 These three verifier roots are read-only source inputs and may be outside `project_root`; they use
@@ -2404,6 +2407,7 @@ PromptGateManifest:
   schema_version
   artifact_kind: PROMPT_GATE_MANIFEST
   gate_id
+  source_locator: PromptGateSourceLocator
   baseline_activation: ArtifactReference
   improved_evaluation: ArtifactReference
   improved_evaluation_evidence: ArtifactReference
@@ -2411,6 +2415,28 @@ PromptGateManifest:
   rollback_activation: ArtifactReference
   content_sha256
 ```
+
+`PromptGateSourceLocator` is the checked-in, content-bound locator used by the independent gate
+validator:
+
+```text
+PromptGateSourceLocator:
+  schema_version
+  artifact_kind: PROMPT_GATE_SOURCE_LOCATOR
+  source_bundle_id
+  align_llm_source_relative_path
+  align_source_relative_path
+  corpus_source_relative_path
+  content_sha256
+```
+
+The three locator paths are non-empty, source-bundle-relative UTF-8 paths with the ordinary path
+bound, no NUL, empty, `.`, or `..` component, and no absolute spelling. They are content identity
+for the locator only; they do not contain a machine-specific absolute path. The validator receives
+the source bundle root as an explicit build input and resolves each locator beneath it after the
+same physical symlink, dangling-link, special-file, and real-directory checks as the evaluation
+source boundary. The source bundle root is not read from the environment or inferred from an
+evidence path.
 
 `make ci` does not call a credentialed external provider. It validates the checked-in gate result's
 schema, content identities, named source commit, task coverage, aggregates, acceptance decision,
@@ -2433,6 +2459,18 @@ An absent artifact, a fixture-only artifact, a changed source asset, or any ID/d
 link mismatch fails `make ci`. The gate pull request records the exact command and provider
 environment used to create the measured artifact without recording credentials.
 
+When a canonical C6 gate manifest is present, the complete command is
+`make ci C6_GATE_SOURCE_BUNDLE_ROOT=/absolute/source-bundle-root`. The Make target passes that
+explicit command-line value to the gate validator as `--source-bundle-root`; it rejects a missing,
+empty, relative, unsafe, or unreadable value and has no environment or sibling-checkout fallback.
+The validator resolves the three relative locators from the manifest beneath that root, independently
+proves exact clean align-llm `HEAD`, exact pinned Align revision, and exact corpus `GIT_COMMIT` or
+`FILE_SET` identity, and compares those observations with the evidence's expected identities. It
+does not trust persisted reachability booleans and never uses the historical absolute paths from the
+evaluation request. The required CI environment creates or checks out the source bundle, supplies
+its explicit root to this command, and records the command and source-bundle content identities as
+check evidence; the root itself is not persisted in the gate artifact.
+
 ## 10. Contract ledger and acceptance matrix
 
 Before implementation review, each row must point to the actual diff and a passing test or to an
@@ -2441,6 +2479,7 @@ explicitly reviewed deferral.
 | Contract | Intended owner | Planned acceptance evidence |
 | --- | --- | --- |
 | Four CLI operations and exact arguments | `src/main.align` | CLI smoke covers valid and invalid arity for every operation |
+| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root>` passes the command-line value as `--source-bundle-root`, rejects missing/relative/unsafe roots before source reads, and revalidates every manifest locator and exact source identity |
 | Declared records, bounds, canonical digest | `src/prompt_model.align` | round-trip, tamper, unknown-version, and oversize fixtures |
 | Persisted string-label mapping | `src/prompt_model.align` | every allowed and unknown kind/status/operation/stage label plus canonical golden vectors |
 | Fixed hierarchy and rendering order | `src/prompt_model.align` | golden rendered prompt and immutable base/repo/task tests |
@@ -2452,7 +2491,7 @@ explicitly reviewed deferral.
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, and no-partial-write vectors |
-| Exact source identity and integration method | explicit evaluator source inputs, gate manifest, CI validator, verifier evidence | clean full SHA claims, expected-identity/environment binding, unavailable or mismatching source roots as `UNVERIFIED`, ancestor/normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
+| Exact source identity and integration method | explicit evaluator source inputs, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for align-llm, expected-identity/environment binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
@@ -2473,7 +2512,7 @@ explicitly reviewed deferral.
 | Single-writer immutable persistence | all command owners | existing-output, result/evidence physical-alias, documented no-race precondition, and corrupt-partial-artifact regressions |
 | Physical workspace containment and raw entry closure | trusted snapshot helper, `src/prompt_evaluate.align` | symlink root/component, physical escape, non-UTF-8 extra entry, mutation, and cleanup regressions |
 | Fixed-corpus provider quality gate | evaluation adapter and `eval/tasks/prompt-v1/` | at least 2 tasks x 2 samples; improvement and zero serious regressions |
-| Canonical acceptance and rollback chain | gate manifest and validator | real improved evaluation + matching evidence -> accepted activation -> rollback, with every wrong/missing digest or evidence reference rejected |
+| Canonical acceptance and rollback chain | gate manifest and validator | source-bundle locator and explicit root revalidation plus real improved evaluation + matching evidence -> accepted activation -> rollback, with every wrong/missing digest or evidence reference rejected |
 | Regression integration | `Makefile`, `.github/workflows/ci.yml`, smoke script | `make ci` and hosted supported check |
 
 ### 10.1 Implementation closure matrix
@@ -2485,7 +2524,8 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
 | Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
-| Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes; C6c2 skips aggregation | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke` |
+| Gate source revalidation | manifest/locator decode and digest | N/A | gate validator reopens all three locator roots and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` reaches the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke` |
+| Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke` |
 | Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
 | Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-error-smoke` |
 | Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first external failure stops later invocations and retains only the valid prefix | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke` |
@@ -2873,7 +2913,7 @@ The C6c1 closure matrix is:
 | malformed/order/bounds input | `src/prompt_score.align` | invalid first-row index, duplicate/missing/order, limit, time, count, and overflow fixtures |
 | reason completeness/order | `src/prompt_score.align` | multi-reason pair plus task/corpus TIME and REPAIR_LOOPS output in canonical code order |
 | output ownership and early exit | `src/prompt_score.align` | undersized scalar-column output and invalid-input fixtures prove every caller buffer remains sentinel-filled |
-| incomplete-prefix validation | `src/prompt_score.align` in C6c1p | empty, strict-prefix, terminal-`ERROR`, out-of-order, post-error, complete-prefix, invalid-plan sentinel, and checked-count/overflow fixtures through `validate_prefix` |
+| incomplete-prefix validation | `src/prompt_score.align` in C6c1p | empty, strict-prefix, terminal-`ERROR`, out-of-order, post-error, complete-prefix, invalid task-limit plan, invalid-plan sentinel, and checked-count/overflow fixtures through `validate_prefix` |
 | cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
 | public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, and refreshed baseline sequence when the hosted list changes |
 
@@ -2905,11 +2945,12 @@ The exact C6c1p surface is the `ScorePrefixStatus`, `ScorePrefixResult`, and
 
 Its validation order is:
 
-1. Validate task-limit count and sample count before multiplication; if either is invalid, return
-   `INVALID_INPUT` with `error_code: 1`, `error_index: -1`, `row_count: rows.len()`, and
-   `expected_row_count: -1`. Otherwise compute the bounded expected count and validate that
-   `rows.len()` is no greater than it.
-2. Validate task limits and every row in execution order using the merged C6c1 row-state rules.
+1. Validate task-limit count, sample count, and every task-limit field before multiplication. If
+   any plan field is invalid, return `INVALID_INPUT` with `error_code: 1`, `error_index: -1`,
+   `row_count: rows.len()`, and `expected_row_count: -1`; no expected-count multiplication is
+   attempted. Otherwise compute the bounded expected count and validate that `rows.len()` is no
+   greater than it.
+2. Validate every row in execution order using the merged C6c1 row-state rules.
 3. Reject any row after a structurally valid `ERROR`; return `TERMINAL_ERROR` only when that row is
    the final supplied row, otherwise return `VALID_PREFIX` for a prefix with no terminal row.
 4. Return the first invalid index without output mutation or any side effect.
