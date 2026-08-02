@@ -7,20 +7,23 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6c1-score-kernel-impl`; implementation is based on merged `main` commit
   `95670134f6f7c503aeae15c7cbebe38434bdc617`.
-- Current source checkpoint: `4b3019a83598cfbae7feecdc88732b855c2e31c4` (`Implement C6c1 scoring
-  kernel`), based on merged design checkpoint `95670134f6f7c503aeae15c7cbebe38434bdc617`.
+- Current source checkpoint: `6700a62d37dff56b864e83ab65d1a86f9c0545bb` (`Reject benchmark values
+  on error rows`), based on merged design checkpoint
+  `95670134f6f7c503aeae15c7cbebe38434bdc617`.
 - Active goal: implement, verify, review, and merge the independently testable pure C6c1 row
   validation and aggregation kernel. The C6c1 design and its pinned-Align contract repair are
   merged; implementation is the active slice.
 - Complete: `src/prompt_score.align`, its deterministic scalar-column smoke, the `prompt-score-smoke`
-  Make target, and the topology oracle update are implemented in the working source checkpoint.
+  Make target, the topology oracle update, and the review repair rejecting benchmark values on
+  `ERROR` rows are implemented in the working source checkpoint.
 - Complete: the identity-bound baseline refresh is complete with source commit
   `4b3019a83598cfbae7feecdc88732b855c2e31c4`, immutable oracle commit
   `5338951e77415a21c42fbe030494c55d015f3542`, and finalization commit
   `bc386d8`.
 - Complete: baseline structural verification and the local implementation/adoption integration
   gate.
-- In progress: prepare the implementation pull request and complete its independent review.
+- In progress: push the consolidated review repair, refresh aggregate checks, and finish PR #41
+  integration.
 - Not started: hosted review checks, merge, and the bounded post-merge retrospective before C6c2
   selection.
 - Working tree is expected to be clean at the source checkpoint; no generated binaries, model
@@ -48,9 +51,8 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Open one implementation pull request with English description and exact verification results;
-   obtain one fresh independent comprehensive review, apply valid findings in one repair, rerun
-   affected checks, and use the required native GitHub review envelope and merge commit.
+1. Push `6700a62`, rerun the aggregate integration gate and hosted checks for the final head, then
+   merge PR #41 with the required native review envelope and a merge commit.
 2. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
    C6c2 slice. Do not start failure-memory JSONL adoption until Request 7 is accepted, merged at a
    named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and `make ci`
@@ -61,7 +63,7 @@ request checks, reviews, and attestations.
 - `./scripts/alignc check-per-unit src/prompt_score.align`: PASS; only the expected large
   `ScoreResult` Copy-return warnings remain because the public contract requires plain Copy results.
 - `make prompt-score-smoke`: PASS; deterministic validation, medians, ppm, reasons, capacity, and
-  untouched-output checks all pass.
+  untouched-output checks all pass, including malformed benchmark data on an `ERROR` row.
 - `make gate-topology-check`: PASS after registering `prompt-score-smoke` in the Makefile and its
   embedded topology oracle.
 - `python3 scripts/check-gate-topology --self-test`: PASS.
