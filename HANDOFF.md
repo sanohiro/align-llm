@@ -7,17 +7,21 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6c2-verifier-rescope`, based on merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf` (C6c1 PR #41 merge commit).
-- Current source checkpoint: `a27c3de` (`Rescope C6c2 as decoded evaluation verifier`), based on
-  merged `main` commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
+- Current source checkpoint: `7935d95` (`Rescope C6c2 around decoded trace verification`), based on
+  merged `main` commit `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf` (C6c1 PR #41 merge commit).
 - Active goal: finish, independently review, and merge the re-scoped C6c2 pure decoded evaluation
-  verifier design. Implementation is not started and must wait for the reviewed design plus the
+  verifier design. The seven findings from the first comprehensive review are repaired in one
+  design commit; implementation is not started and must wait for the reviewed design plus the
   C6a1/C6a2 decoded-record and Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: superseded PR #42's initial review repair and final-review evidence are recorded on
   GitHub, but PR #42 is intentionally unmerged and not merge-ready.
-- In progress: replace the rejected whole-document C6c2 contract with a borrowed
-  `verify_result(result, evidence)` contract, explicit independent evidence persistence, embedded
-  experiment/parent records, and separate align-llm/Align/corpus reachability states.
+- Complete: the re-scoped C6c2 design now consumes borrowed, decoded, content-validated result and
+  evidence records; persists the execution trace contract; takes explicit verifier source paths and
+  expected identities; binds expected align-llm commit to the result environment; and references
+  the evidence sidecar from `PromptGateManifest`.
+- In progress: push repair commit `7935d95`, update PR #43's review disposition, and run the
+  conditional final comprehensive design review.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -43,14 +47,15 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Finish the C6c2 re-scope in `docs/specs/c6-prompt-context-optimizer.md`, including the contract
-   ledger and closure matrix; run `git diff --check` and the targeted Markdown/static checks.
-2. Run one fresh independent adversarial design review, open a new draft PR from this branch, and
-   record the SHA-bound review envelope and all finding dispositions. PR #42's conditional final
-   review found four valid findings and is terminal; do not apply another non-trivial repair there.
-3. Merge the new reviewed design PR only after its required checks and review evidence pass. Then
-   select implementation only if C6a1/C6a2 provide content-validated decoded records; otherwise
-   record the dependency blocker and continue only with safe independent roadmap work.
+1. Push `7935d95` and update draft PR #43 with the initial review envelope `4838096926`, seven
+   valid findings, their consolidated-repair disposition, and the repair checkpoint.
+2. Run the conditional final comprehensive review against `main`. If it finds another non-trivial
+   issue, stop the local repair loop and re-scope/redesign a new slice; do not repair this PR again.
+   If it is clean, record the final SHA-bound envelope, wait for the required documentation check,
+   and merge PR #43.
+3. After the design merge, select C6c2 implementation only if C6a1/C6a2 provide content-validated
+   decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions; otherwise record
+   the dependency blocker and continue only with safe independent roadmap work.
 4. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
    merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
    `make ci` passes the original acceptance gate.
@@ -62,9 +67,13 @@ request checks, reviews, and attestations.
 - PR #42 final-review evidence is recorded as GitHub review `4838027797`; its alternate independent
   reviewer found four valid findings. The two long-running primary review attempts were terminated
   after no verdict and are not review evidence.
-- Re-scope document edits: `git diff --check` PASS; source tests and `make ci` are N/A for this
-  documentation-only design slice unless executable contracts change. The final targeted static
-  result will be recorded before the design PR is opened.
+- PR #43 initial comprehensive review evidence is recorded as GitHub review `4838096926` against
+  head `3b4f9595420b58a6f24c544124e8a1aa4f425395`; the reviewer found seven valid findings, all
+  addressed by `7935d95`. A conditional final review is still required because the repair materially
+  changed the design.
+- Current design-slice verification: `git diff --check` PASS and Markdown fence count 82 (even),
+  PASS. Source tests and `make ci` are N/A because this remains documentation/specification-only;
+  hosted documentation/static checks are required after the repair is pushed.
 
 ## Constraints and decisions to preserve
 
@@ -78,9 +87,15 @@ request checks, reviews, and attestations.
 - `PromptEvaluationEvidence` is a separate content-bound sidecar with an explicit acceptance input;
   it binds the result digest, independent per-row producer-input digests, and separate reachability
   states for align-llm, external Align, and corpus. A complete gate requires all three states to be
-  `VERIFIED`; `UNVERIFIED` remains a valid non-gate comparison.
+  `VERIFIED`; `UNVERIFIED` remains a valid non-gate comparison. `PromptEvaluateRequest` owns the
+  explicit source paths and expected identities; `PromptGateManifest` owns the checked-in evidence
+  reference. The verifier validates the persisted workspace/snapshot/input-snapshot/attestation
+  trace and exact error prefix. Its C6c1 adapter uses Request 8/10-shipped temporary record/scalar
+  construction only; no fixed-size workaround or duplicated scorer is allowed.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
 - All source, diagnostics, developer documentation, commits, pull requests, and review records
   remain in English.
+- Intentional uncommitted files: none at the last committed checkpoint; the next handoff must
+  preserve the clean tree and the PR #43 review boundary.
