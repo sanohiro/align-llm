@@ -170,7 +170,7 @@ aggregates without allocating or writing the oversized result.
 
 The producer/verifier table is fixed before implementation. A child never supplies the final
 identity directly. It supplies a validated `EnvironmentProbe` carrier; the evaluator combines the
-two matching carriers with the checked-in source and policy identities.
+two matching carriers with the requested source-identity claims and policy identities.
 
 | Field | Producer and source | Normalization and unavailable value |
 | --- | --- | --- |
@@ -178,8 +178,8 @@ two matching carriers with the checked-in source and policy identities.
 | `os`, `os_release`, `architecture` | matching snapshot-helper and measurement-adapter `EnvironmentProbe` carriers | UTF-8, trimmed, bounded labels; `UNKNOWN` only when the probe explicitly reports unavailable |
 | `cpu`, `logical_cpu_count` | matching carriers | normalized non-empty CPU label; `logical_cpu_count: Some(n)` is positive, `None` is the explicit unavailable value |
 | `gpu` | matching carriers | normalized non-secret label; exact `NONE` means unavailable, never an omitted field |
-| `align_llm_commit` | evaluator/source boundary from the explicit `verifier_align_llm_repository_path` checkout | lowercase full SHA and verified reachability; no source-file inference |
-| `align_revision` | evaluator/source boundary from the explicit `verifier_align_repository_path` checkout, checked against the project `.align-revision` and request | lowercase full external SHA; checkout must equal the pinned revision |
+| `align_llm_commit` | evaluator from the explicit expected identity in `PromptEvaluateRequest`; the source boundary supplies reachability separately | lowercase full SHA claim; `VERIFIED` means the named checkout proves it, while `UNVERIFIED` preserves the requested claim without proof |
+| `align_revision` | evaluator from the explicit expected identity in `PromptEvaluateRequest`, checked against scope; the source boundary supplies reachability separately | lowercase full external SHA claim; `VERIFIED` means the named checkout proves it, while `UNVERIFIED` preserves the requested claim without proof |
 | `measurement_adapter_runtime` | task manifest's content-bound adapter executable identity | bounded declared label/digest; carrier must match it |
 | `snapshot_helper_runtime` | task manifest's content-bound snapshot-helper executable identity | bounded declared label/digest; carrier must match it |
 | `environment_policy_sha256` | evaluator from the validated policy artifact | full digest; included in the identity preimage |
@@ -300,16 +300,18 @@ exact pinned Align release named by `.align-revision`. Newer environments are su
 evidence. The C6 coding-v1 gate requires a capable local or self-hosted environment but must run
 the same minimum-floor checks.
 
-Every persisted source identity records an exact clean commit. `align_llm_commit` must be the
-checked-in source commit or an ancestor whose source-scope tree is unchanged; artifacts generated
-after integration may record the exact integrated head. The external Align and corpus revisions
-are exact full SHAs from clean checkouts. Normal merge is the permitted integration method for
-these ancestry-bearing artifacts; squash and rebase are not permitted when they would discard the
-recorded commit. CI records head, tested base tip, merge base, and tested tree/integration identity,
-and verifies the required reachability before accepting an artifact. Verifier evidence records
-separate reachability results for the align-llm source repository, the external Align repository,
-and the corpus source; a gate-eligible result requires all three to be `VERIFIED`. The pure C6c2
-verifier consumes those attestations and never walks a repository itself.
+Every persisted source identity claim records an exact clean commit. `align_llm_commit` and
+`align_revision` in `EnvironmentIdentityCore` are the explicitly requested claims copied from the
+validated evaluation input; they are not observations inferred from a source file or replaced by a
+different checkout revision. A `VERIFIED` reachability state proves the corresponding claim from a
+clean checkout; `UNVERIFIED` keeps the exact claim while recording that this evaluation did not prove
+it. The external Align and corpus revisions are exact full SHA claims. Normal merge is the permitted
+integration method for ancestry-bearing artifacts; squash and rebase are not permitted when they
+would discard the recorded commit. CI records head, tested base tip, merge base, and tested
+tree/integration identity, and verifies the required reachability before accepting an artifact.
+Verifier evidence records separate reachability results for the align-llm source repository, the
+external Align repository, and the corpus source; a gate-eligible result requires all three to be
+`VERIFIED`. The pure C6c2 verifier consumes those attestations and never walks a repository itself.
 
 #### Complete operation overlap policy
 
@@ -1429,8 +1431,8 @@ the evidence artifact. The first path names the align-llm checkout and the secon
 external Align checkout; the corpus path names the repository for `GIT_COMMIT` or the canonical
 file-set root for `FILE_SET`. `verifier_align_revision` must equal the scope's `align_revision`,
 and the corpus kind, repository ID, and source digest must equal the complete scope
-`CorpusRevision`; `verifier_align_llm_commit` names the separate clean align-llm source commit to
-be checked and later must equal the result environment's `align_llm_commit`. The source-boundary
+`CorpusRevision`; `verifier_align_llm_commit` names the expected align-llm source commit to be
+checked and later equals the result environment's `align_llm_commit` claim. The source-boundary
 root fields are absolute paths after caller-side canonical spelling; they do not use the ordinary
 project-relative input-path rule. The source-boundary inputs are consumed in this
 deterministic order: path syntax and physical containment, source-kind/repository-label agreement,
@@ -1439,22 +1441,25 @@ malformed field is `INVALID_INPUT` before any snapshot or adapter call.
 
 `src/prompt_evaluate.align` owns the source-boundary call and constructs `PromptVerifierTrust`; it
 does not accept caller-supplied reachability booleans. The boundary receives the three explicit
-paths and expected identities, returns one observation for each named source, and persists only the
-resulting `VERIFIED`/`UNVERIFIED` states and expected identities in the evidence sidecar:
+paths and expected identities, returns one observation for each named source, and persists the
+resulting `VERIFIED`/`UNVERIFIED` states and the unchanged expected identities in the evidence
+sidecar. The evaluator copies those expected identities into `EnvironmentIdentityCore`; it never
+uses an observed checkout revision as the core field:
 
 1. invalid or physically unsafe paths, malformed identities, or an expected identity that disagrees
    with the scope are `INVALID_INPUT` before external evaluation work;
 2. a valid source path whose clean exact commit/file-set cannot be proven produces `UNVERIFIED` for
    that repository and continues as a valid non-gate comparison;
 3. only a clean, exact, reachable source identity checked in its named repository produces
-   `VERIFIED`. The resulting three statuses and expected identities are captured in evidence before
-   the source-boundary owners are released.
+   `VERIFIED`. The resulting three statuses and unchanged expected identities are captured in
+   evidence before the source-boundary owners are released; an unavailable or mismatching source
+   never changes the expected identity claim to an observed value.
 
-The align-llm observation is the clean HEAD of `verifier_align_llm_repository_path`; the Align
-observation is the clean checkout revision from `verifier_align_repository_path`, checked against
-the project `.align-revision` and `verifier_align_revision`; and the corpus observation is the
-named `GIT_COMMIT` or canonical `FILE_SET` identity under `verifier_corpus_source_path`. A source
-path that is readable but cannot prove the
+The align-llm observation checks the requested source commit and permitted source-scope ancestry in
+the clean `verifier_align_llm_repository_path` checkout; the Align observation checks the clean
+checkout revision from `verifier_align_repository_path` against the project `.align-revision` and
+`verifier_align_revision`; and the corpus observation checks the named `GIT_COMMIT` or canonical
+`FILE_SET` identity under `verifier_corpus_source_path`. A source path that is readable but cannot prove the
 exact clean identity is not an input error: its state is `UNVERIFIED`; a syntactically valid but
 absent or unreadable root has the same state. The evaluator never falls
 back to the task repository's `repo_path`, an ambient sibling checkout, or an environment variable.
@@ -1865,17 +1870,20 @@ does not read JSON, re-encode records, or recompute canonical SHA-256 bytes.
 
 `PromptVerifierTrust` carries expected identities, not ambient labels. Its three reachability fields
 are supplied only by the explicit source boundary described in `PromptEvaluateRequest`, after that
-boundary checks the exact clean commit or file-set in each named repository. The pure verifier
-requires `expected_align_llm_commit` to equal `EnvironmentIdentity.core.align_llm_commit` whenever
-the result carries an environment (mandatory for every complete status), the expected Align revision
-to equal both the evaluation scope and that environment, and the expected corpus fields to equal the
-complete `CorpusRevision`. A noncomplete result without an environment cannot prove the align-llm or
-Align equality; it preserves the source states already observed by the source boundary, while each
-source observation that was unavailable remains `UNVERIFIED`, and it can return only the non-gate
+boundary checks the exact clean commit or file-set in each named repository. The evaluator copies the
+three expected source identities into the result environment claim; reachability is the separate
+proof state and never substitutes an observed checkout value. The pure verifier requires
+`expected_align_llm_commit` to equal `EnvironmentIdentity.core.align_llm_commit` whenever the result
+carries an environment (mandatory for every complete status), the expected Align revision to equal
+both the evaluation scope and that environment, and the expected corpus fields to equal the complete
+`CorpusRevision`. A noncomplete result without an environment cannot prove the align-llm or Align
+equality; it preserves the source states already observed by the source boundary, while each source
+observation that was unavailable remains `UNVERIFIED`, and it can return only the non-gate
 `NONCOMPLETE_ERROR` verdict. All three reachability fields must be present; their value must be
 `VERIFIED` before returning a gate-eligible verdict. `UNVERIFIED` is a valid reason for a complete
-non-gate comparison, while a mismatched expected identity is invalid. These content digests detect
-corruption, not author authentication.
+non-gate comparison, including an unavailable or mismatching verifier checkout, while a malformed
+or scope-disagreeing expected identity is invalid. These content digests detect corruption, not
+author authentication.
 
 An `INVALID_INPUT` result emitted before evaluator inputs are established has no evidence sidecar and
 cannot be supplied to `prompt accept`. Once evaluation has established an evaluation identity, an
@@ -2444,7 +2452,7 @@ explicitly reviewed deferral.
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, and no-partial-write vectors |
-| Exact source identity and integration method | explicit evaluator source inputs, gate manifest, CI validator, verifier evidence | clean full SHA, expected-align-llm/environment binding, ancestor/normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
+| Exact source identity and integration method | explicit evaluator source inputs, gate manifest, CI validator, verifier evidence | clean full SHA claims, expected-identity/environment binding, unavailable or mismatching source roots as `UNVERIFIED`, ancestor/normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
@@ -2865,7 +2873,7 @@ The C6c1 closure matrix is:
 | malformed/order/bounds input | `src/prompt_score.align` | invalid first-row index, duplicate/missing/order, limit, time, count, and overflow fixtures |
 | reason completeness/order | `src/prompt_score.align` | multi-reason pair plus task/corpus TIME and REPAIR_LOOPS output in canonical code order |
 | output ownership and early exit | `src/prompt_score.align` | undersized scalar-column output and invalid-input fixtures prove every caller buffer remains sentinel-filled |
-| incomplete-prefix validation | `src/prompt_score.align` in C6c1p | empty, strict-prefix, terminal-`ERROR`, out-of-order, post-error, and complete-prefix fixtures through `validate_prefix` |
+| incomplete-prefix validation | `src/prompt_score.align` in C6c1p | empty, strict-prefix, terminal-`ERROR`, out-of-order, post-error, complete-prefix, invalid-plan sentinel, and checked-count/overflow fixtures through `validate_prefix` |
 | cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
 | public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, and refreshed baseline sequence when the hosted list changes |
 
@@ -2883,10 +2891,24 @@ ownership. C6c2 cannot start implementation until this slice is independently im
 reviewed, and merged.
 
 The exact C6c1p surface is the `ScorePrefixStatus`, `ScorePrefixResult`, and
-`validate_prefix` declaration above. Its validation order is:
+`validate_prefix` declaration above. Its result fields have these values on every return:
 
-1. Validate task-limit count, sample count, and that `rows.len()` is no greater than the complete
-   expected count.
+- `row_count` is always the supplied `rows.len()`.
+- On a valid plan, `expected_row_count` is the checked value
+  `task_limits.len() * sample_count * 2`, which is at most 2,048. On an invalid plan,
+  `expected_row_count` is `-1`; no multiplication is attempted.
+- `error_index` is `-1` for `VALID_PREFIX`, `TERMINAL_ERROR`, and invalid-plan returns. For an
+  invalid row/order return it is the zero-based first failing row index; when `rows.len()` exceeds
+  the valid-plan expected count, that index is `expected_row_count`, the first extra row.
+- `error_code` is `0` for `VALID_PREFIX` and `TERMINAL_ERROR`, `1` for an invalid plan, and `2`
+  for an invalid row or order.
+
+Its validation order is:
+
+1. Validate task-limit count and sample count before multiplication; if either is invalid, return
+   `INVALID_INPUT` with `error_code: 1`, `error_index: -1`, `row_count: rows.len()`, and
+   `expected_row_count: -1`. Otherwise compute the bounded expected count and validate that
+   `rows.len()` is no greater than it.
 2. Validate task limits and every row in execution order using the merged C6c1 row-state rules.
 3. Reject any row after a structurally valid `ERROR`; return `TERMINAL_ERROR` only when that row is
    the final supplied row, otherwise return `VALID_PREFIX` for a prefix with no terminal row.
@@ -3003,7 +3025,7 @@ The C6c2 closure matrix is:
 | incomplete-prefix delegation | C6c1p and C6c2 owners in `src/prompt_score.align` | empty/strict/terminal-error/complete prefixes; `validate_prefix` status agrees with trace and no aggregate/reason output is manufactured |
 | persisted execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete before/after equality, terminal failed attestation, exact error prefix, no post-failure rows, and `RESULT_TOO_LARGE` empty-result fixtures |
 | independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing, wrong, duplicate, out-of-order, extra, and mismatched expected-input rows; result digest mismatch; explicit accept evidence path; matching gate-manifest evidence reference |
-| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; expected-align-llm/environment mismatch; `FIXTURE`, unavailable CPU, and seed ineligibility |
+| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; expected-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
 | row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
 | malformed input and error precedence | `src/prompt_score.align` | status-specific error families, invalid option/discriminator combinations, first failing validation, and no side effects |
 | allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus primitive C6c1 output columns only for complete rows; prefix validation uses no output columns; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, and compiler ownership/drop checks |
