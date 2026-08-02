@@ -1,9 +1,10 @@
 # C6 Prompt and Context Optimizer
 
-Status: design plan of record; the independently mergeable C6b renderer-core implementation is
-merged. Its failure-memory JSONL adoption is deferred to the Request 7 dependent slice; C6c1 row
-validation and aggregation contract is the active next slice, while C6a0-C6a2, C6b artifact binding,
-and later product slices have not started.
+Status: design plan of record; the independently mergeable C6b renderer-core implementation and
+C6c1 row validation/aggregation kernel are merged. C6c2 is in a re-scoped design-review slice as a
+pure verifier over already-decoded records; JSON/document binding remains deferred to C6a1/C6a2 and
+their Align prerequisites. C6a0-C6a2, C6b artifact binding, and later product slices have not
+started.
 
 This document refines C6 from `docs/specs/roadmap.md` and the Prompt Optimizer contract in
 `docs/specs/align-llm.md`. If this document conflicts with either parent specification, the parent
@@ -58,7 +59,8 @@ hypothetical API part of C6:
    independently mergeable. Escape-free fixtures, `json.doc`, and an application-specific base64
    wire format are not substitutes for the declared-record round trip. Request 7 is already
    registered and remains `PROPOSED` until its recorded benchmark and decoded-owner prerequisites
-   are satisfied.
+   are satisfied. C6c2 does not bypass this request: its pure verifier consumes only records that
+   C6a1/C6a2 have already decoded and content-validated, and its implementation has no JSON reader.
 4. **Request 8 — runtime construction of evaluator record arrays.** The pinned `array_builder<T>`
    accepts only scalar elements and owned `string`, while C6f2 must construct runtime-sized arrays
    of declared records such as snapshot requests, task rows, aggregates, and regression reasons.
@@ -289,7 +291,10 @@ after integration may record the exact integrated head. The external Align and c
 are exact full SHAs from clean checkouts. Normal merge is the permitted integration method for
 these ancestry-bearing artifacts; squash and rebase are not permitted when they would discard the
 recorded commit. CI records head, tested base tip, merge base, and tested tree/integration identity,
-and verifies the required reachability before accepting an artifact.
+and verifies the required reachability before accepting an artifact. Verifier evidence records
+separate reachability results for the align-llm source repository, the external Align repository,
+and the corpus source; a gate-eligible result requires all three to be `VERIFIED`. The pure C6c2
+verifier consumes those attestations and never walks a repository itself.
 
 #### Complete operation overlap policy
 
@@ -940,6 +945,7 @@ EvaluationInputIdentity:
   context_sources_sha256
   generation_policy_sha256
   generation_request_sha256
+  adapter_request_sha256
   environment_policy_sha256
   environment_sha256
   sample_index
@@ -1113,6 +1119,10 @@ evaluation's complete persisted pre/post identities and embedded content digests
 require historical task assets to remain at their old paths. The checked-in gate validator
 separately rehashes the current canonical corpus assets so stale evidence cannot satisfy `make ci`.
 
+The evaluator also records the canonical `TaskAdapterRequest.content_sha256` in
+`EvaluationInputIdentity.adapter_request_sha256`. This keeps the exact adapter request available to
+the later independent evidence comparison without requiring C6c2 to read the request file.
+
 ## 5. CLI contracts
 
 The commands use JSON request and result paths so the public boundary remains declared and
@@ -1132,6 +1142,8 @@ All commands:
 - validate all input artifact digests and cross-artifact identities before doing work;
 - never persist API-key values;
 - write one result artifact for a decoded request whenever the output path is new and writable;
+- `prompt evaluate` also writes the independently content-bound evidence artifact named by
+  `evaluation_evidence_path`, after validating both complete records;
 - print the operation, terminal status, and output path in English;
 - return success only for the successful terminal statuses listed below.
 
@@ -1156,6 +1168,7 @@ No command calls `fs.read_file` on an unbounded JSON input. A shared bounded rea
 | Snapshot result | 1,048,576 |
 | Task measurement | 262,144 |
 | Prompt evaluation result | 268,435,456 |
+| Prompt evaluation evidence | 8,388,608 |
 
 The lowest applicable cap wins for a nested operation. Exceeding it fails at validation step 1 for
 the request itself or writes `INVALID_INPUT` at step 2 for a referenced artifact, before external
@@ -1163,7 +1176,8 @@ work. Unknown JSON fields remain non-identity-bearing but cannot bypass these ra
 
 Validation and side-effect precedence is the same for every command:
 
-1. Validate CLI arity, require that the output path does not exist, and decode the declared request.
+1. Validate CLI arity, require that the result output path and, for `evaluate`, the declared
+   evidence output path do not exist, and decode the declared request.
    Failure here produces no result artifact because there is no trusted result envelope.
 2. Validate request fields, directly readable artifact schemas/digests, scope, bounds, and
    cross-record identities. A decoded invalid request writes `INVALID_INPUT` and performs no
@@ -1198,8 +1212,8 @@ Within step 2, operation-specific precedence is:
 | Operation | Validation order before side effects |
 | --- | --- |
 | experiment | request bounds; parent activation envelope; scope and embedded prompt variant; opportunity artifact; proposal-provider kind/config; environment-key presence |
-| evaluate | request bounds; experiment and parent; scope; corpus then task manifests in declared order; acceptance, generation, and provider-control policies; credential-name/value presence; empty workspace |
-| accept | evaluation artifact and all nested records; persisted pre/post identity equality; gate eligibility and `IMPROVED`; empty serious-regression array; supplied-parent validity; parent identity match |
+| evaluate | request bounds and evidence output path; experiment and parent; scope; corpus then task manifests in declared order; acceptance, generation, and provider-control policies; credential-name/value presence; empty workspace |
+| accept | evaluation and evidence artifacts and all nested records; persisted pre/post identity equality; gate eligibility and `IMPROVED`; empty serious-regression array; supplied-parent validity; parent identity match |
 | rollback | current activation; target activation; ancestor paths in supplied order; digest links; scope match; target ancestry; effective-variant difference; bounded reason |
 
 For example, a tampered evaluation is `INVALID_INPUT` even when its supplied parent also differs,
@@ -1373,7 +1387,16 @@ sample_count
 acceptance_policy_path
 workspace_path
 workspace_preflight_path
+evaluation_evidence_path
 ```
+
+`evaluation_evidence_path` is the new output path for the independently produced
+`PromptEvaluationEvidence` sidecar. It must be a writable, non-existing path under the same project
+root and is validated before any snapshot, adapter, or other evaluator side effect. The evaluator
+writes the result at the CLI output path and the evidence at this explicit path as one logical pair;
+the evidence never points back to a path in the result. The pair has no cross-file atomicity promise:
+if either final write fails, the command reports the filesystem error and neither output is a valid
+evaluation pair; an existing path is never overwritten.
 
 `sample_count` must be from two through sixteen. The corpus manifest is:
 
@@ -1664,12 +1687,14 @@ bytes and uses the existing UTF-8-safe truncation marker. These fields retain th
 evidence without relying on adapter process output.
 
 `gate_eligible` is true only when every requested pair is complete, the corpus and sample minima
-hold, the named source and external Align revisions pass their reachability checks, the final
-`EnvironmentIdentity.core.logical_cpu_count` is `Some(positive)`, and every row's
-`SeedCapabilityAttestation.result` is `APPLIED` with the requested seed. A complete evaluation with
-`None` CPU availability or any `UNSUPPORTED`/`REJECTED` seed remains a valid non-gate comparison;
-it cannot be accepted as C6 evidence. The evaluator computes this flag from the embedded rows and
-policy and never trusts a persisted caller-provided value.
+hold, the verifier evidence names the exact clean source, external Align, and corpus identities and
+marks all three reachability fields `VERIFIED`, the final
+`EnvironmentIdentity.core.logical_cpu_count` is `Some(positive)`, the provider kind is not
+`FIXTURE`, and every row's `SeedCapabilityAttestation.result` is `APPLIED` with the requested seed.
+A complete evaluation with `None` CPU availability, any `UNSUPPORTED`/`REJECTED` seed, a
+`FIXTURE` provider, or any `UNVERIFIED` reachability remains a valid non-gate comparison; it cannot
+be accepted as C6 evidence. The evaluator computes this flag from the decoded records and evidence,
+and the pure verifier recomputes it rather than trusting a persisted caller-provided value.
 
 The complete result is:
 
@@ -1682,7 +1707,9 @@ PromptEvaluationResult:
   error_code
   error
   experiment: Option<ArtifactReference>
+  experiment_artifact: Option<PromptExperimentResult>
   parent_activation: Option<ArtifactReference>
+  parent_activation_artifact: Option<PromptActivationResult>
   scope: Option<PromptScope>
   parent_variant: Option<PromptVariant>
   candidate_variant: Option<PromptVariant>
@@ -1712,6 +1739,78 @@ PromptEvaluationResult:
   content_sha256
 ```
 
+The verifier sidecar is a separate persisted artifact:
+
+```text
+PromptVerifierReachability: VERIFIED | UNVERIFIED
+
+PromptVerifierTrust:
+  schema_version
+  artifact_kind: PROMPT_VERIFIER_TRUST
+  expected_align_llm_commit
+  expected_align_revision
+  expected_corpus_source_kind: GIT_COMMIT | FILE_SET
+  expected_corpus_source_repository_id
+  expected_corpus_source_sha256
+  align_llm_reachability: PromptVerifierReachability
+  align_reachability: PromptVerifierReachability
+  corpus_reachability: PromptVerifierReachability
+  content_sha256
+
+PromptExpectedInputDigest:
+  schema_version
+  artifact_kind: PROMPT_EXPECTED_INPUT_DIGEST
+  task_id
+  sample_index
+  variant: PARENT | CANDIDATE
+  rendered_prompt_sha256
+  context_sources_sha256
+  generation_request_sha256
+  adapter_request_sha256
+  provider_request_sha256
+  content_sha256
+
+PromptEvaluationEvidence:
+  schema_version
+  artifact_kind: PROMPT_EVALUATION_EVIDENCE
+  evaluation_id
+  evaluation_result_sha256
+  trust: PromptVerifierTrust
+  expected_inputs: array<PromptExpectedInputDigest>
+  content_sha256
+```
+
+Evidence is content-bound and has at most 2,048 expected-input entries. Its raw JSON cap is
+8,388,608 bytes. `evaluation_result_sha256` equals the result record's `content_sha256`; the result
+does not contain an evidence path or digest, so the two artifacts do not form a reference cycle.
+The evaluator captures the expected-input table independently from the exact evaluator/producer
+inputs before those owners are released, then binds the finished result's content digest when it
+forms the sidecar. It must not reconstruct an entry by reading a completed result row. Entries are
+in retained execution-row order, exactly one per retained `PromptTaskRow`, with no duplicate, missing,
+or extra task/sample/variant identity.
+
+The expected-input columns bind the independently observed values as follows: rendered prompt to
+`TaskMeasurement.rendered_prompt_sha256`, context sources and generation request to the corresponding
+`EvaluationInputIdentity` fields, adapter request to `EvaluationInputIdentity.adapter_request_sha256`,
+and provider request to `GenerationRequestIdentity.provider_request_sha256`. The C6a1/C6a2 codec
+validates both artifact content digests before C6c2 is called; C6c2 compares these decoded fields and
+does not read JSON, re-encode records, or recompute canonical SHA-256 bytes.
+
+`PromptVerifierTrust` carries expected identities, not ambient labels. Its three reachability fields
+are supplied only by the outer source boundary after checking the exact clean commit or file-set in
+the named repository. The pure verifier requires the expected Align revision to equal both the
+evaluation scope and environment identity, the expected corpus fields to equal the complete
+`CorpusRevision`, and all three reachability values to be `VERIFIED` before returning a gate-eligible
+verdict. `UNVERIFIED` is a valid reason for a complete non-gate comparison; a mismatched expected
+identity is invalid. These content digests detect corruption, not author authentication.
+
+An `INVALID_INPUT` result emitted before evaluator inputs are established has no evidence sidecar and
+cannot be supplied to `prompt accept`. Once evaluation has established an evaluation identity, an
+`ERROR` result may have a paired evidence artifact for its retained prefix; unavailable environment
+or source observations are represented by `UNVERIFIED`, and the decoded verifier returns
+`NONCOMPLETE_ERROR` without treating the prefix as a score. Only complete comparison statuses need a
+full expected-input table and all three `VERIFIED` reachability assertions.
+
 Terminal statuses are:
 
 - `IMPROVED`: policy says strictly improved and the serious-regression array is empty; command
@@ -1734,14 +1833,16 @@ whose measurement and before/after attestation both validate; a valid `ERROR` me
 unchanged complete attestation is the final retained row, while a failed pre/post check contributes
 no row. No invocation occurs after the first error. `RESULT_TOO_LARGE` is the sole exception and
 emits empty rows and aggregates. All complete comparison statuses require every
-reference, embedded scope, variant, corpus, policy, successful workspace preflight, and
-environment, the complete declared task array, the complete deduplicated snapshot records, one
-complete attestation per row, and the aggregate to be present. Each row's
+reference and its matching `experiment_artifact`/`parent_activation_artifact`, embedded scope,
+variant, corpus, policy, successful workspace preflight, and environment, the complete declared task
+array, the complete deduplicated snapshot records, one complete attestation per row, and the
+aggregate to be present. Each row's
 `task_input_snapshot_sha256` must resolve exactly one matching snapshot. The embedded records make
-aggregation and acceptance
-reconstructable from the evaluation artifact. Their digests must match the source references that
-were validated during evaluation, but acceptance need not reload historical task assets. The gate
-validator does reload and rehash the source paths when proving that checked-in evidence still
+aggregation and acceptance reconstructable from the evaluation artifact. Their digests must match the
+source references that were validated during evaluation, but acceptance need not reload historical
+task assets. The paired `PromptEvaluationEvidence` must be content-valid, have the same evaluation ID
+and result digest, and contain the complete independent input table before acceptance can proceed.
+The gate validator does reload and rehash the source paths when proving that checked-in evidence still
 matches the canonical corpus.
 
 The canonical evaluation result is bounded at 268,435,456 bytes by Request 12's bounded canonical
@@ -1763,16 +1864,24 @@ decision_id
 project_root
 evaluation_path
 parent_activation_path
+evaluation_evidence_path
 ```
+
+`evaluation_evidence_path` is required and is an explicit input to acceptance; a result-only path is
+never sufficient.
 
 Acceptance validates:
 
 - evaluation status is `IMPROVED`;
 - the serious-regression array is empty;
 - the evaluation is gate-eligible;
+- the evidence artifact is content-valid, has the same evaluation ID and result digest, and passes
+  the independent expected-input and three-repository reachability checks;
 - candidate, parent, scope, policy, corpus, and evaluation provider/model identities match;
 - the supplied parent activation is exactly the evaluated parent;
-- all persisted pre/post artifact identities, embedded content digests, and task rows verify.
+- the same decoded-result verifier accepts the evaluation and evidence before activation
+  construction; all persisted pre/post artifact identities, embedded content digests, and task rows
+  verify.
 
 The immutable activation and shared decision envelope are:
 
@@ -1902,10 +2011,12 @@ in section 4.3.
 `src/prompt_experiment.align` owns proposal prompt construction, provider dispatch, response
 decoding, and bounded provider diagnostics. It never owns acceptance.
 
-`src/prompt_score.align` owns pure row validation, aggregation, policy application, and full
-evaluation-document verification. `src/prompt_evaluate.align` owns snapshots, adapter execution,
-A/B ordering, and construction of inputs for that shared scorer. Task adapters own task-specific
-sandboxing and cleanup.
+`src/prompt_score.align` owns pure row validation, aggregation, policy application, and the decoded
+evaluation-result verifier. It does not decode JSON, inspect paths, recompute canonical bytes, or
+walk source repositories. `src/prompt_model.align` and the C6a1/C6a2 codec owners own canonical
+document decoding and content-digest validation. `src/prompt_evaluate.align` owns snapshots, adapter
+execution, A/B ordering, independent evidence construction, and construction of inputs for the
+shared scorer. Task adapters own task-specific sandboxing and cleanup.
 
 `src/prompt_state.align` owns accept/rollback validation and activation construction. It has no
 provider or task-runner dependency.
@@ -1933,7 +2044,10 @@ and `max_failure_context_bytes`.
 
 prompt_experiment.run_file(request_path: str, result_path: str)
   -> Result<PromptCommandStatus, Error>
-prompt_score.verify_document(document: str)
+prompt_score.verify_result(
+  borrow result: PromptEvaluationResult,
+  borrow evidence: PromptEvaluationEvidence,
+)
   -> Result<PromptScoreStatus, Error>
 prompt_evaluate.run_file(request_path: str, result_path: str)
   -> Result<PromptCommandStatus, Error>
@@ -1944,6 +2058,15 @@ prompt_state.rollback_file(request_path: str, result_path: str)
 ```
 
 `ContextPolicy`, `PromptRenderStatus`, `PromptScoreStatus`, and `PromptCommandStatus` are Copy data.
+`PromptScoreStatus` has exactly `IMPROVED_ELIGIBLE`, `COMPLETE_INELIGIBLE`, and
+`NONCOMPLETE_ERROR`. A structurally and semantically valid result with status `IMPROVED` can return
+`IMPROVED_ELIGIBLE` only when every gate condition and evidence attestation passes; a valid complete
+`NO_IMPROVEMENT` or `SERIOUS_REGRESSION` result, or an otherwise non-gate complete comparison,
+returns `COMPLETE_INELIGIBLE`; a valid `INVALID_INPUT` or `ERROR` result returns
+`NONCOMPLETE_ERROR`. A valid noncomplete result is passed to this API only when evaluation reached
+the paired evidence boundary; a pre-execution `INVALID_INPUT` result has no evidence sidecar and is
+handled by the command codec. A malformed decoded record, mismatched evidence, or contradictory
+field returns `Err(Error.Invalid)` before any status is emitted.
 `PromptRender` owns
 its rendered `string` and digest and is returned as a bare Move struct, never as a `Result`
 payload. Each fallible
@@ -1952,17 +2075,23 @@ retained text field into owned `string`, uses the owning records, and drops them
 function; only the Copy status escapes through `Result`. Region-bound process stdout/stderr is
 cloned or persisted while its `run_output` owner remains alive, following `src/verify.align`.
 Persistent records and builder elements contain no borrowed view. Request 8 and Request 10 own the
-recursive array/option cleanup required by the evaluator.
+recursive array/option cleanup required by the evaluator. The two `borrow` parameters to
+`verify_result` are caller-owned decoded records whose `str` views remain live for the call; the
+verifier retains no view, allocates no persistent value, mutates neither record, and returns only the
+Copy status through `Result`.
 
-`verify_document` decodes from the caller-owned document view, verifies every nested digest and
-cross-field invariant, recomputes rows, aggregates, reasons, status, and gate eligibility, and
-returns only a Copy verdict. `prompt state accept` calls it before decoding the same bounded
-document for activation construction. The evaluator also encodes its in-memory result and requires
-the same verifier to accept those exact bytes before writing. No acceptance path trusts a fixture's
-persisted status or aggregate.
+`verify_result` receives records whose canonical content digests have already been checked by the
+C6a1/C6a2 codec. It validates the result/evidence identity pair, embedded experiment and parent
+activation references, trust identities and all three reachability states, every independent input
+digest row, C6c1 aggregate/reason output, status/error family, and recomputed gate eligibility. It
+does not decode a document, read a file, access a process or network, traverse a repository, or
+re-encode a record. `prompt state accept` loads the result and explicit evidence through separate
+paths, invokes this same decoded verifier, and only then constructs an activation. The evaluator
+invokes it before writing the result/evidence pair. No acceptance path trusts a persisted status,
+aggregate, reason, or gate flag.
 
 The internal Copy verdict labels are `IMPROVED_ELIGIBLE`, `COMPLETE_INELIGIBLE`, and
-`NONCOMPLETE_ERROR`; malformed or contradictory documents return `Err(Error.Invalid)`.
+`NONCOMPLETE_ERROR`; malformed or contradictory decoded records return `Err(Error.Invalid)`.
 
 Output artifacts are written only after their complete in-memory record validates. There is no
 cross-process lock or exclusive-create primitive. The operation-overlap matrix in §1.2 classifies
@@ -2028,8 +2157,9 @@ invalid input rather than an automatic rejection.
 
 First, a comparison is eligible only when all requested task/sample pairs complete for both
 variants, every row is structurally valid, and every identity matches. Gate eligibility additionally
-requires the policy minima, a clean named source commit, the exact pinned Align revision, and
-`PAIRED_FIXED` seed support.
+requires the policy minima, a non-`FIXTURE` provider, a clean named source commit, the exact pinned
+Align revision and corpus source, `VERIFIED` reachability for align-llm, external Align, and the
+corpus, and `PAIRED_FIXED` seed support.
 
 The persisted aggregate records are:
 
@@ -2229,7 +2359,7 @@ explicitly reviewed deferral.
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, and no-partial-write vectors |
-| Exact source identity and integration method | gate manifest, CI validator | clean full SHA, ancestor/normal-merge, base-tip/head/merge-base, corpus and external Align reachability fixtures |
+| Exact source identity and integration method | gate manifest, CI validator, verifier evidence | clean full SHA, ancestor/normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
@@ -2238,9 +2368,10 @@ explicitly reviewed deferral.
 | Seed capability attestation | provider adapter, evaluator verifier | requested/applied seed equality, provider request digest, unsupported/rejected ineligibility, and paired-row fixtures |
 | Same adapter and alternating A/B order | `src/prompt_evaluate.align` | invocation-log smoke with odd/even samples |
 | Exact row and scope binding | `src/prompt_evaluate.align` | stale variant, wrong task/sample/provider/digest fixtures |
-| Validation precedence and invalid-result shape | all command owners | table-driven first-failure fixtures prove no external call and exact `Option` population |
+| Validation precedence and invalid-result shape | all command owners | table-driven first-failure fixtures prove no external call, evidence-output handling, and exact `Option` population |
 | Complete metrics and serious regressions | `src/prompt_score.align` | table-driven comparison fixtures for every rule in section 8 |
-| Acceptance reuses the pure verifier | `src/prompt_score.align`, `src/prompt_state.align` | tampered fixture status/aggregate/reason/eligibility is rejected before activation |
+| Evaluation evidence binding | `src/prompt_evaluate.align`, `src/prompt_model.align`, `src/prompt_score.align`, `src/prompt_state.align` | missing/wrong/duplicate/out-of-order expected-input rows, result-digest mismatch, each reachability state, and explicit evidence-path acceptance fixtures |
+| Acceptance reuses the pure verifier | `src/prompt_score.align`, `src/prompt_state.align` | tampered fixture status/aggregate/reason/eligibility/evidence is rejected before activation |
 | Accept only eligible improvement | `src/prompt_state.align` | improved/no-improvement/regression/error/parent-mismatch cases |
 | Activation operation invariants | `src/prompt_state.align` | baseline/accept/rollback cross-field table plus every forbidden combination |
 | Immutable rollback lineage | `src/prompt_state.align` | valid ancestor, broken chain, duplicate, foreign-scope, retained provenance, reason, and no-overwrite cases |
@@ -2257,13 +2388,13 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 
 | Path | Model/codec | Renderer/memory | Scorer/state | Evaluator/provider | Exact planned regression |
 | --- | --- | --- | --- | --- | --- |
-| Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction | request, snapshot, row, and result construction | `prompt-codec-construction`, `prompt-row-construction` |
-| Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK` | proposal and alternating complete A/B run | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke` |
-| Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory row/document/lineage rejection | no provider/helper/adapter call before step 3 | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-validation-precedence-smoke` |
-| Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate | provider/helper/adapter timeout, output, status, drift, result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke` |
+| Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
+| Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
+| Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before step 3 | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
+| Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-error-smoke` |
 | Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first external failure stops later invocations and retains only the valid prefix | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke` |
-| Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode | process outputs cloned while owner lives; owned files/checkouts removed; empty raw workspace restored | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke` |
-| Replacement/move-out | source fields are reconstructed or moved once; no aliasing rewrite | `PromptRender` moves to caller as one bare value | accepted/rollback variant embedded unchanged; source not reused | rows and snapshots move into the final result; builder source is consumed once | `prompt-move-compile-smoke`, `prompt-variant-identity-smoke` |
+| Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode; borrowed verifier inputs are not retained | process outputs cloned while owner lives; result/evidence owners and files/checkouts removed; empty raw workspace restored | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke`, `prompt-verifier-borrow-lifetime-smoke` |
+| Replacement/move-out | source fields are reconstructed or moved once; no aliasing rewrite | `PromptRender` moves to caller as one bare value | accepted/rollback variant embedded unchanged; source not reused; verifier returns only Copy status | rows, snapshots, and independent evidence move into the final result/pair; builder source is consumed once | `prompt-move-compile-smoke`, `prompt-variant-identity-smoke`, `prompt-evidence-move-smoke` |
 | Concurrent/overlap attempt | N/A: pure validation has no shared mutable state | N/A: pure rendering has no shared mutable state | immutable DAG branches are independent; shared output/activation mutation is rejected before side effects | complete experiment/evaluate/accept/rollback 4x4 matrix; no overlapping adapter calls; disjoint independent processes are supported | `prompt-operation-overlap-smoke`, `prompt-no-overlap-smoke`, `prompt-existing-output-smoke` |
 
 Applicability decisions:
@@ -2327,13 +2458,18 @@ and must split again before coding if the estimate no longer holds.
 5. **C6c1 — pure row validation and aggregation**
    - exhaustive measurement/row state validation, checked timing/count math, task/corpus
      aggregation, medians, and regression-reason construction;
-   - no whole-document verifier, process, provider, activation, or CLI mutation;
+   - no decoded-result verifier, process, provider, activation, or CLI mutation;
    - estimated review surface below 900 hand-written lines.
-6. **C6c2 — pure evaluation-document verifier**
-   - full identity/digest/status/gate-eligibility recomputation over fixture-decoded documents,
-     reusing C6c1;
-   - fixture documents cover every score/status boundary and tampered persisted claim;
-   - no process, provider, activation, or CLI mutation.
+6. **C6c2 — pure decoded evaluation verifier (blocked on C6a1/C6a2 and Requests 7, 12, and 13)**
+   - consume already-decoded, content-validated `PromptEvaluationResult` and
+     `PromptEvaluationEvidence` records through the borrowed `verify_result` API;
+   - validate embedded experiment/parent records, cross-field identities, independent expected-input
+     rows, C6c1 aggregates/reasons, status/error families, and the three-repository reachability
+     policy, reusing C6c1;
+   - use constructed Align values for fixtures only. Do not parse JSON, use escape-free JSON fixtures,
+     canonical-encode values, read files, or walk repositories in this slice; those boundaries belong
+     to C6a1/C6a2 after the named Align requests are adopted;
+   - no process, provider, activation construction, or CLI mutation;
    - estimated review surface below 800 hand-written lines.
 7. **C6d1 — immutable activation model**
    - fixture-only baseline and pure accept/rollback construction/lineage validation;
@@ -2391,7 +2527,7 @@ the dependent slice. Do not replace immutable artifacts with a fragile local com
 
 C6c1 is the first post-C6b implementation slice. It is a pure scoring kernel and deliberately does
 not declare the persisted C6 artifact records owned by C6a1/C6a2. Its contract is complete here so
-the implementation does not discover row semantics through test fixtures or a later document
+the implementation does not discover row semantics through test fixtures or a later decoded-record
 verifier.
 
 The module is `prompt_score` and exposes exactly these scalar or borrowed, non-owning types:
@@ -2604,9 +2740,90 @@ The C6c1 closure matrix is:
 | cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
 | public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, and refreshed baseline sequence when the hosted list changes |
 
-This ledger is intentionally limited to the C6c1 kernel. Artifact decoding, string/task-ID mapping,
-whole-document error-prefix retention, and runtime-sized result construction remain named owners in
-C6a1/C6a2/C6c2/C6f2 and are not silently pulled into this slice.
+This ledger is intentionally limited to the C6c1 kernel. Artifact decoding, whole-document
+error-prefix retention, and runtime-sized result construction remain named owners in C6a1/C6a2/C6f2
+and are not silently pulled into this slice. C6c2 may map already-decoded task ordinals to their
+declared task IDs, but it does not move or persist the artifact records.
+
+### 11.2 C6c2 public-contract ledger
+
+C6c2 is the pure decoded evaluation verifier. It is not a JSON reader or a file-backed document
+validator. C6a1/C6a2 must first provide the declared records and validate their canonical content
+digests at the shipped Align revision. The C6c2 implementation is therefore blocked on those slices
+and their Request 7, Request 12, and Request 13 adoption gates. No C6c2 fixture may be an
+escape-free JSON document; fixtures construct the declared values directly after the codec gate.
+
+The exact public surface is:
+
+```text
+PromptScoreStatus: IMPROVED_ELIGIBLE | COMPLETE_INELIGIBLE | NONCOMPLETE_ERROR
+
+pub fn verify_result(
+  borrow result: PromptEvaluationResult,
+  borrow evidence: PromptEvaluationEvidence,
+) -> Result<PromptScoreStatus, Error>
+```
+
+The caller owns both decoded records and keeps every borrowed string and nested array live for the
+call. `verify_result` borrows, does not move, replace, null, mutate, or retain either input. It
+returns one Copy status or `Err(Error.Invalid)` and performs no filesystem, JSON, canonical-encoding,
+process, network, global-state, or repository-reachability operation. Any bounded temporary values
+used to adapt rows to C6c1 are scalar, released before return, and never become persisted state.
+
+The verifier's deterministic validation order is:
+
+1. Validate schema version, artifact kinds, required scalar labels, digest shape, option/discriminator
+   combinations, and status-specific error-code families in declaration order. Complete statuses
+   require `error_code: NONE` and empty `error`; `INVALID_INPUT` and `ERROR` require their own
+   allowed non-`NONE` families.
+2. Validate the result's evaluation ID, scope, corpus revision, provider identity, task order,
+   parent/candidate variants, and the `experiment`/`experiment_artifact` and
+   `parent_activation`/`parent_activation_artifact` reference pairs. Embedded IDs, kinds, and
+   digests must equal their references; no path is used as identity.
+3. Validate the evidence artifact kind, evaluation ID, `evaluation_result_sha256`, trust identity
+   fields, and the three reachability labels. The result content digest must equal the evidence's
+   result digest. Expected Align and corpus fields must equal the result's environment, scope, and
+   complete `CorpusRevision`.
+4. Compare `expected_inputs` to `result.rows` in retained execution order. Require exactly one
+   matching task/sample/variant entry per row, no duplicate or extra identity, and equality of every
+   rendered-prompt, context-source, generation-request, adapter-request, and provider-request
+   digest. Missing, wrong, duplicate, or out-of-order evidence is invalid.
+5. Map the validated rows and task limits to the already reviewed C6c1 contract and recompute task
+   aggregates, the corpus aggregate, every regression reason, and their canonical order. Compare
+   every persisted aggregate/reason field; a status-only or aggregate-only tamper is invalid.
+6. Recompute comparison status from the policy and the recomputed values. Preserve a strict but
+   non-gate `IMPROVED` result as a valid complete comparison; it returns
+   `COMPLETE_INELIGIBLE`, not `NONCOMPLETE_ERROR`. A valid `NO_IMPROVEMENT` or
+   `SERIOUS_REGRESSION` likewise returns `COMPLETE_INELIGIBLE`.
+7. Recompute gate eligibility from the complete records, provider kind, CPU availability, seed
+   attestations, exact identities, and all three reachability states. Compare the persisted boolean;
+   a mismatch is invalid. Return `IMPROVED_ELIGIBLE` only for a valid `IMPROVED` result with zero
+   serious regressions and every gate condition true.
+
+After the structural and semantic checks, valid paired `INVALID_INPUT` or `ERROR` records return
+`NONCOMPLETE_ERROR`. They never become a scoreable regression and never reach activation. A
+malformed record, contradictory status, invalid evidence, mismatched digest, or any failure of the
+ordered checks returns `Err(Error.Invalid)`; the verifier does not manufacture or rewrite a result
+error code.
+
+The C6c2 closure matrix is:
+
+| Applicable path | Owner | Exact acceptance evidence |
+| --- | --- | --- |
+| borrowed input formation and lifetime | `src/prompt_score.align`, Align compiler | declaration/positional-call fixture, per-unit and whole-program compile, caller-owned sentinel records, and no retained view after return |
+| successful decoded verification | `src/prompt_score.align` | `prompt-verifier-smoke` for eligible improvement, non-gate improvement, no improvement, serious regression, and valid incomplete statuses |
+| embedded identity/reference pairs | `src/prompt_score.align`, C6a1/C6a2 codec | wrong kind/ID/digest/path, missing embedded experiment/parent, and stale parent/candidate fixtures |
+| independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align` | missing, wrong, duplicate, out-of-order, extra, and mismatched expected-input rows; result digest mismatch; explicit accept evidence path |
+| trust and reachability | outer source boundary, `src/prompt_score.align` | align-llm, external Align, and corpus each `VERIFIED`/`UNVERIFIED`; exact expected-identity mismatch; `FIXTURE`, unavailable CPU, and seed ineligibility |
+| row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
+| malformed input and error precedence | `src/prompt_score.align` | status-specific error families, invalid option/discriminator combinations, first failing validation, and no side effects |
+| allocation and cleanup | N/A at public boundary: borrowed records and bounded scalar temporaries | no moved input, no retained view, no file/process/network call, and compiler ownership/drop checks |
+| JSON/document binding | C6a1/C6a2, deferred | N/A for C6c2; escaped-string round trips, canonical bytes, and content-digest recomputation require Request 7/12/13 acceptance before this verifier is called |
+
+The C6c2 metric is verifier correctness: every declared state, identity, evidence combination, and
+tamper class reaches the specified status or error with zero false acceptance. Runtime performance
+is secondary and is measured only after a real result/evidence pair exists; it is not a provider
+quality or time-to-passing-patch claim.
 
 ## 12. Deferred extensions
 

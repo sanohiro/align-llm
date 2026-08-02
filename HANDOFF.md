@@ -5,28 +5,21 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1-score-kernel-impl`; implementation is based on merged `main` commit
-  `95670134f6f7c503aeae15c7cbebe38434bdc617`.
-- Current source checkpoint: `6700a62d37dff56b864e83ab65d1a86f9c0545bb` (`Reject benchmark values
-  on error rows`), based on merged design checkpoint
-  `95670134f6f7c503aeae15c7cbebe38434bdc617`.
-- Active goal: implement, verify, review, and merge the independently testable pure C6c1 row
-  validation and aggregation kernel. The C6c1 design and its pinned-Align contract repair are
-  merged; implementation is the active slice.
-- Complete: `src/prompt_score.align`, its deterministic scalar-column smoke, the `prompt-score-smoke`
-  Make target, the topology oracle update, and the review repair rejecting benchmark values on
-  `ERROR` rows are implemented in the working source checkpoint.
-- Complete: the identity-bound baseline refresh is complete with source commit
-  `4b3019a83598cfbae7feecdc88732b855c2e31c4`, immutable oracle commit
-  `5338951e77415a21c42fbe030494c55d015f3542`, and finalization commit
-  `bc386d8`.
-- Complete: baseline structural verification, the local implementation/adoption integration gate,
-  the consolidated review repair, and its final-head `make ci` rerun.
-- In progress: finish PR #41 integration after the repair push.
-- Not started: hosted final-head checks, merge, and the bounded post-merge retrospective before
-  C6c2 selection.
-- Working tree is expected to be clean at the source checkpoint; no generated binaries, model
-  weights, credentials, or machine-specific paths may be committed.
+- Branch: `agent/c6c2-verifier-rescope`, based on merged `main` commit
+  `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf` (C6c1 PR #41 merge commit).
+- Current source checkpoint: the working re-scope design edits are based on the same
+  `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`; they are not yet committed.
+- Active goal: finish, independently review, and merge the re-scoped C6c2 pure decoded evaluation
+  verifier design. Implementation is not started and must wait for the reviewed design plus the
+  C6a1/C6a2 decoded-record and Align adoption prerequisites.
+- Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
+- Complete: superseded PR #42's initial review repair and final-review evidence are recorded on
+  GitHub, but PR #42 is intentionally unmerged and not merge-ready.
+- In progress: replace the rejected whole-document C6c2 contract with a borrowed
+  `verify_result(result, evidence)` contract, explicit independent evidence persistence, embedded
+  experiment/parent records, and separate align-llm/Align/corpus reachability states.
+- Working tree must be clean at the next checkpoint; no generated binaries, model weights,
+  credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 
@@ -50,34 +43,28 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Mark PR #41 ready, wait for the final-head hosted checks, then merge it with the required native
-   review envelope and a merge commit.
-2. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
-   C6c2 slice. Do not start failure-memory JSONL adoption until Request 7 is accepted, merged at a
-   named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and `make ci`
-   passes the original acceptance gate.
+1. Finish the C6c2 re-scope in `docs/specs/c6-prompt-context-optimizer.md`, including the contract
+   ledger and closure matrix; run `git diff --check` and the targeted Markdown/static checks.
+2. Run one fresh independent adversarial design review, open a new draft PR from this branch, and
+   record the SHA-bound review envelope and all finding dispositions. PR #42's conditional final
+   review found four valid findings and is terminal; do not apply another non-trivial repair there.
+3. Merge the new reviewed design PR only after its required checks and review evidence pass. Then
+   select implementation only if C6a1/C6a2 provide content-validated decoded records; otherwise
+   record the dependency blocker and continue only with safe independent roadmap work.
+4. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
+   merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
+   `make ci` passes the original acceptance gate.
 
 ## Latest verification
 
-- `./scripts/alignc check-per-unit src/prompt_score.align`: PASS; only the expected large
-  `ScoreResult` Copy-return warnings remain because the public contract requires plain Copy results.
-- `make prompt-score-smoke`: PASS; deterministic validation, medians, ppm, reasons, capacity, and
-  untouched-output checks all pass, including malformed benchmark data on an `ERROR` row.
-- `make gate-topology-check`: PASS after registering `prompt-score-smoke` in the Makefile and its
-  embedded topology oracle.
-- `python3 scripts/check-gate-topology --self-test`: PASS.
-- `python3 eval/runners/record-baseline.py ... --samples 2`: PASS; pending measurement binds to
-  source commit `4b3019a83598cfbae7feecdc88732b855c2e31c4`.
-- `python3 scripts/finalize-canonical-baseline.py ... --oracle-commit
-  5338951e77415a21c42fbe030494c55d015f3542`: PASS; canonical baseline and digest were committed in
-  `bc386d8`, and the pending file was removed.
-- `make check`: PASS (15 existing main units; the repository's pre-existing compiler warnings are
-  unchanged).
-- `make baseline-check`: PASS, including canonical provenance, immutable oracle, malformed-input,
-  and Git isolation checks.
-- `make ci`: PASS with the pinned release compiler; topology, all hosted/capable focused checks,
-  coding-v1, `prompt-score-smoke`, and baseline verification all passed.
-- `make fmt`, `./scripts/check-format`, and `git diff --check`: PASS.
+- C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
+  `make ci`, and hosted final-head CI run `30739108014` all passed before PR #41 merged.
+- PR #42 final-review evidence is recorded as GitHub review `4838027797`; its alternate independent
+  reviewer found four valid findings. The two long-running primary review attempts were terminated
+  after no verdict and are not review evidence.
+- Re-scope document edits: `git diff --check` PASS; source tests and `make ci` are N/A for this
+  documentation-only design slice unless executable contracts change. The final targeted static
+  result will be recorded before the design PR is opened.
 
 ## Constraints and decisions to preserve
 
@@ -86,7 +73,12 @@ request checks, reviews, and attestations.
   bounded child capture; Request 12 owns bounded canonical encoding; Request 13 owns recursive
   owned artifact graphs. Requests 6 and 9 remain independent.
 - C6 must not use a borrowed JSON view after its input buffer expires, concatenate JSON fragments,
-  invent a private wire format, or code against any proposed Align API.
+  invent a private wire format, or code against any proposed Align API. C6c2 specifically consumes
+  only C6a1/C6a2 decoded, content-validated records and never parses or canonical-encodes JSON.
+- `PromptEvaluationEvidence` is a separate content-bound sidecar with an explicit acceptance input;
+  it binds the result digest, independent per-row producer-input digests, and separate reachability
+  states for align-llm, external Align, and corpus. A complete gate requires all three states to be
+  `VERIFIED`; `UNVERIFIED` remains a valid non-gate comparison.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
