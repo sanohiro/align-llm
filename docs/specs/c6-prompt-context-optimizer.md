@@ -322,9 +322,10 @@ not permitted when they would discard the recorded commit. CI records head, test
 base, and tested tree/integration identity, and verifies the required reachability before accepting
 an artifact.
 Verifier evidence records separate reachability results for the align-llm source repository, the
-external Align repository, and the corpus source; a gate-eligible result requires all three to be
-`VERIFIED` with their observed identities equal to the expected claims. The pure C6c2 verifier
-consumes those attestations and never walks a repository itself.
+external Align repository, and the corpus source; a gate-eligible evaluation requires all three
+EVALUATION-mode observations to be `VERIFIED` with their observed identities equal to the expected
+claims. The checked-in gate separately validates the GATE-mode observed CI head and evaluated-commit
+ancestry. The pure C6c2 verifier consumes those attestations and never walks a repository itself.
 
 #### Complete operation overlap policy
 
@@ -1615,15 +1616,29 @@ PromptSourceVerifierResult:
   content_sha256
 ```
 
+The request mode fixes the shape of `tested_align_llm_head`: `EVALUATION` requires `None`, while
+`GATE` requires one full lowercase commit SHA supplied by the gate validator from its own clean CI
+`HEAD`. The helper rejects the opposite pairing before opening a source. The result is interpreted
+with the request mode; it does not carry an ambient mode or a caller-selected tested head.
+
 `PromptSourceVerifierResult.status: COMPLETE` means that the helper produced a valid bounded
 result; it requires `error_code: NONE`, an empty `error`, and one explicit
-`VERIFIED`/`UNVERIFIED` value for each of the three reachability fields. `VERIFIED` requires the
-corresponding observed option to be `Some` and exactly equal to the request's expected identity:
-`align_llm_observed_head == expected_align_llm_commit`,
-`align_observed_revision == expected_align_revision`, and
-`corpus_observed_source_sha256 == expected_corpus_source_sha256`. `UNVERIFIED` permits an absent
-observation or an observed value that differs from the expected identity, but the observed option is
-still present whenever the helper opened the source and obtained a value. `status: UNAVAILABLE` is
+`VERIFIED`/`UNVERIFIED` value for each of the three reachability fields. Every observed option
+records the identity actually obtained from the named source. For `mode: EVALUATION`,
+`align_llm_reachability: VERIFIED` requires `align_llm_observed_head: Some(expected_align_llm_commit)`.
+For `mode: GATE`, the helper result requires `align_llm_observed_head: Some(tested_align_llm_head)`;
+the gate validator separately proves, with the same complete-history repository, that
+`expected_align_llm_commit` is an ancestor of that observed head. The result has no ancestry
+boolean: the gate validator accepts `align_llm_reachability: VERIFIED` only after both the helper's
+head observation and its own ancestry command succeed. Thus GATE deliberately permits the observed
+CI head to differ from the evaluated commit; the head equality and ancestor relation are two parts
+of the gate proof, not one identity equality.
+For both modes, `align_reachability: VERIFIED` requires
+`align_observed_revision: Some(expected_align_revision)`, and
+`corpus_reachability: VERIFIED` requires
+`corpus_observed_source_sha256: Some(expected_corpus_source_sha256)`. `UNVERIFIED` permits an absent
+observation or an observed value that differs from the mode-specific expected identity, but the
+observed option is still present whenever the helper opened the source and obtained a value. `status: UNAVAILABLE` is
 the parent-side envelope for a timeout, child-output cap, child-process failure, malformed result,
 or unavailable Git tool; it requires a non-`NONE` code from `HELPER_TIMEOUT`, `HELPER_OUTPUT_LIMIT`,
 `HELPER_PROCESS`, `HELPER_RESULT`, or `GIT_UNAVAILABLE`, a bounded non-empty English `error`, all
@@ -1633,12 +1648,15 @@ validation rejects it before acceptance.
 
 `mode: EVALUATION` requires `tested_align_llm_head: None` and proves that the align-llm checkout
 `HEAD` exactly equals `expected_align_llm_commit`. `mode: GATE` requires `tested_align_llm_head:
-Some(h)`, proves that the source-bundle align-llm checkout `HEAD` exactly equals `h`, and proves
-that `expected_align_llm_commit` is an ancestor of `h` in that same complete-history repository.
+Some(h)`, and requires the helper to prove that the source-bundle align-llm checkout `HEAD` exactly
+equals `h`; the gate validator separately proves that `expected_align_llm_commit` is an ancestor of
+`h` in that same complete-history repository.
 Both modes require a clean exact Align checkout and the exact corpus `GIT_COMMIT` or canonical
 `FILE_SET` manifest described in §4.2. The helper reports an observed identity only for a source it
 actually opened; the evaluator uses the expected claims for `EnvironmentIdentityCore` and persists
-both the observation and reachability label in `PromptVerifierTrust`.
+both the observation and reachability label in `PromptVerifierTrust`. `PromptVerifierTrust` is an
+EVALUATION-mode evidence record; the GATE-mode observed head is validated by the gate validator and
+is not rewritten into the evaluation's expected identity claim.
 
 `expected_corpus_source_repository_id` is non-empty for `GIT_COMMIT` and empty for `FILE_SET`,
 matching the `CorpusRevision` discriminator. `corpus_file_set_manifest_path` is `Some` exactly for
@@ -1650,7 +1668,7 @@ bounded request file, and invokes exactly `<helper> --source-verifier-request <r
 --result <result>` with no user-supplied extra arguments. The helper runs with `env_clear()` and
 only the fixed non-secret locale/Git configuration entries `LANG=C`, `LC_ALL=C`,
 `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`,
-`GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, `GIT_NO_REPLACE_OBJECTS=1`, and
+`GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_NO_REPLACE_OBJECTS=1`, and
 `GIT_GRAFT_FILE=/dev/null`; its working directory is the declared project root for `EVALUATION`
 and the explicit source-bundle root for `GATE`. The request is capped at
 65,536 bytes, the result and captured child streams at 262,144 bytes, and the timeout is exactly
@@ -1662,14 +1680,54 @@ unavailable Git tool, missing safe source, or inability to prove a source yields
 unproven sources and no gate eligibility. An invalid helper/tool path, digest, mode, or request is
 `INVALID_INPUT` before this child launch.
 
-Before any source identity or ancestry observation, the helper resolves the repository's absolute
-Git common directory with `<git> -C <repository> rev-parse --path-format=absolute --git-common-dir`
-under that same cleared environment. The result must be one existing physical directory. The raw
-byte filesystem check then rejects any present `refs/replace`, `info/grafts`, or
-`objects/info/alternates` entry in that common directory, including a symlink, directory, or other
-non-regular entry; the explicit `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` settings
-remain in force for every subsequent status, revision, object, and ancestry command. A repository
-using any of these mechanisms is `UNVERIFIED`, never `VERIFIED`.
+Before invoking Git for any purpose, the helper performs a bounded raw repository-metadata walk from
+the explicit `<repository>` path. `<repository>/.git` must be either a non-symlink directory or a
+regular `gitdir: <path>` pointer file; the pointer and any optional `commondir` file are parsed as
+bounded raw bytes without Git config or include expansion. The walk resolves the Git directory and
+common directory physically, identifies the common `config` and any active per-worktree
+`config.worktree`, and rejects missing, non-regular, unreadable, malformed, symlinked, or physically
+escaping metadata. It then scans those local config files before starting any Git child. An
+`extensions.worktreeConfig` repository also requires its active per-worktree config to pass the same
+scan; a present but unusable worktree config is `UNVERIFIED` rather than ignored. This pre-Git walk
+is the only way the helper locates local configuration; it does not ask Git to discover the config
+itself.
+
+The raw local-config scan is bounded, parses Git section/key syntax without following includes, and
+rejects an `include.path` or `includeIf.*.path` directive. A local config with any executable,
+external-path, network, repository-location, or ref-selection key is rejected before source
+observation, including `alias.*`, `browser.*.cmd`, `browser.*.path`,
+`core.alternateRefsCommand`, `core.askPass`, `core.attributesFile`, `core.editor`,
+`core.excludesFile`, `core.fsmonitor`, `core.fsmonitorHookVersion`, `core.gitProxy`,
+`core.hooksPath`, `core.pager`, `core.sshCommand`, `core.worktree`, `credential.helper`,
+`diff.external`, `diff.<driver>.command`, `diff.<driver>.textconv`, `difftool.*.cmd`,
+`difftool.*.path`, `filter.<driver>.clean`, `filter.<driver>.smudge`,
+`filter.<driver>.process`, `gpg.*.program`, `gpg.program`, `guitool.*.cmd`, `http.*.proxy`,
+`man.*.cmd`, `man.*.path`, `mergetool.*.cmd`, `mergetool.*.path`, `pager.*`,
+`remote.<name>.proxy`, `remote.<name>.receivepack`, `remote.<name>.uploadpack`,
+`sequence.editor`, and `uploadpack.packObjectsHook`. More generally, every local key whose pinned
+Git 2.45.0 documentation identifies an executable, command, process, hook, helper, external file,
+filter, pager, proxy, transport, repository-location, or alternate-ref command is rejected,
+including newly discovered keys in those namespaces; harmless identity and branch metadata may
+remain. The acceptance fixture enumerates the pinned configuration reference and includes an
+execution sentinel for every command-bearing family. A missing, non-regular, unreadable,
+malformed, included, or rejected-key local config is `UNVERIFIED`; no repository-local command may
+execute before that result.
+
+Only after this raw walk and scan does the helper resolve the repository's absolute Git common
+directory with `<git> --no-pager -C <repository> -c core.useReplaceRefs=false -c core.alternateRefsCommand= -c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.helper= -c diff.external= rev-parse --path-format=absolute --git-common-dir`
+under the same cleared environment. The result must be one existing physical directory and must
+equal the raw-walk common directory. The raw byte filesystem check then rejects any present
+`refs/replace`, `info/grafts`, or `objects/info/alternates` entry in that common directory, including
+a symlink, directory, or other non-regular entry. It then enumerates the complete replacement
+namespace with the fixed command
+`<git> --no-pager -C <repository> -c core.useReplaceRefs=false -c core.alternateRefsCommand= -c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.helper= -c diff.external= for-each-ref --format=%(refname)%00 refs/replace/`;
+the bounded raw output must be either empty or exactly `<refname> NUL LF` per record; a nonzero
+exit, output cap, malformed record, or non-empty record makes the repository `UNVERIFIED`. This
+enumeration covers loose refs, `packed-refs`, and every ref backend supported by the pinned Git tool,
+including reftable. The helper also performs the same replacement namespace check for the gate source
+bundle. The explicit `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` settings remain in
+force for every subsequent status, revision, object, ref-enumeration, and ancestry command. A
+repository using any of these mechanisms is `UNVERIFIED`, never `VERIFIED`.
 
 The align-llm observation requires a clean checkout whose `HEAD` exactly equals
 `verifier_align_llm_commit`; no ancestor commit or source-scope exception is permitted. The Align
@@ -2139,7 +2197,8 @@ and provider request to `GenerationRequestIdentity.provider_request_sha256`. The
 validates both artifact content digests before C6c2 is called; C6c2 compares these decoded fields and
 does not read JSON, re-encode records, or recompute canonical SHA-256 bytes.
 
-`PromptVerifierTrust` carries expected and observed identities, not ambient labels. Its three
+`PromptVerifierTrust` carries expected and observed identities, not ambient labels, and is produced
+only from the evaluator's `mode: EVALUATION` source observation. Its three
 reachability and three observed-identity fields are supplied only by the explicit source boundary
 described in `PromptEvaluateRequest`, after that boundary checks the exact clean commit or file-set
 in each named repository. The evaluator copies the three expected source identities into the result
@@ -2781,28 +2840,43 @@ absolute regular executable and checks its bytes against the locator/policy Git 
 target does not invoke an ambient `git` to perform these checks. The validator then invokes that
 exact executable path, with `env_clear()` and only `LANG=C`, `LC_ALL=C`, `GIT_CONFIG_NOSYSTEM=1`,
 `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_OPTIONAL_LOCKS=0`,
-`GIT_TERMINAL_PROMPT=0`, `GIT_NO_REPLACE_OBJECTS=1`, and `GIT_GRAFT_FILE=/dev/null`, for each
-fixed command in the actual CI checkout at `$(pwd)`. Before those commands, it resolves the
-absolute Git common directory with
-`<git> -C <ci-root> rev-parse --path-format=absolute --git-common-dir` under the same environment,
-requires one existing physical directory, and rejects any present `refs/replace`, `info/grafts`, or
+`GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_NO_REPLACE_OBJECTS=1`, and `GIT_GRAFT_FILE=/dev/null`, for each
+fixed command in the actual CI checkout at `$(pwd)`. Before any Git child, the validator performs
+the same bounded raw `.git`/`gitdir`/`commondir` metadata walk and local/worktree config scan as the
+source verifier for the CI checkout and every source-bundle Git checkout. It rejects local includes,
+executable/external-path/network/repository-location/ref-selection keys, and malformed or unsafe
+metadata before invoking Git; the gate validator has no config-scan exception. It then runs the
+fixed common-directory locator and requires the Git-reported physical directory to equal the
+raw-walk result. The locator itself is
+`<git> --no-pager -C <root> -c core.useReplaceRefs=false -c core.alternateRefsCommand= -c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.helper= -c diff.external= rev-parse --path-format=absolute --git-common-dir`.
+Every Git child is a direct argv vector with the exact prefix
+`<git> --no-pager -C <root> -c core.useReplaceRefs=false -c core.alternateRefsCommand= -c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.helper= -c diff.external=`;
+no shell, ambient Git config, pager, hook, helper, proxy, or replacement setting may alter it.
+The raw common-directory check rejects any present `refs/replace`, `info/grafts`, or
 `objects/info/alternates` entry there, including symlinks, directories, and special files. A source
-bundle with any rejected mechanism fails the gate before identity or ancestry observation. The
+bundle with any rejected mechanism fails the gate before identity or ancestry observation.
 The source verifier applies the same common-directory check and fixed environment to every source-bundle
 Git checkout it opens; the gate validator's own identity and ancestry commands have no exception:
-`<git> -C <ci-root> status --porcelain --untracked-files=all`,
-`<git> -C <ci-root> rev-parse --is-inside-work-tree`,
-`<git> -C <ci-root> rev-parse --is-shallow-repository`, and
-`<git> -C <ci-root> rev-parse --verify HEAD`. The required results are an empty status, `true`,
-`false`, and one full lowercase commit SHA. The validator derives `tested_align_llm_head` from
+For each such common directory, the validator also runs the bounded
+`<git> --no-pager -C <root> -c core.useReplaceRefs=false -c core.alternateRefsCommand= -c core.fsmonitor=false -c core.hooksPath=/dev/null -c credential.helper= -c diff.external= for-each-ref --format=%(refname)%00 refs/replace/`
+check and fails if the exact `<refname> NUL LF` stream is non-empty; this covers loose, packed, and
+reftable replacement refs before any source identity is accepted. A nonzero exit, output cap, or
+malformed replacement stream also fails the gate.
+Appending to that prefix, the validator runs `status --porcelain --untracked-files=all
+--ignore-submodules=all`, `rev-parse --is-inside-work-tree`,
+`rev-parse --is-shallow-repository`, and `rev-parse --verify HEAD` in that order. The required
+results are an empty status, `true`, `false`, and one full lowercase commit SHA. The validator derives
+`tested_align_llm_head` from
 that last command and does not accept an environment or user override for the derived value. It
 constructs the temporary GATE verifier request with that value; it does not expose a caller-supplied
 `--tested-align-llm-head` gate argument. The validator resolves every applicable relative locator
 from the manifest beneath the explicit root, invokes the content-bound source verifier with the
 exact helper/runtime contract, and requires the source-bundle align-llm checkout's clean,
-complete-history `HEAD` to equal the derived actual CI head. It then runs
-`<git> -C <source-bundle-align-llm> merge-base --is-ancestor <evidence.expected_align_llm_commit>
-<tested_align_llm_head>` with the same executable and cleared environment. A missing commit,
+complete-history `HEAD` and the GATE helper's `align_llm_observed_head` to equal the derived actual
+CI head, with `align_llm_reachability: VERIFIED`. This observed head is intentionally not required
+to equal the evaluated commit in the evidence. The validator then runs `merge-base --is-ancestor
+<evidence.expected_align_llm_commit> <tested_align_llm_head>` in the same fixed argv prefix, with
+the same executable and cleared environment. A missing commit,
 shallow/unavailable ancestry, or a non-zero ancestry result fails the gate. This binds a separate
 source bundle to the actual checked head without persisting a self-referential head in the manifest.
 The validator also proves exact pinned Align revision and
@@ -2823,8 +2897,11 @@ explicitly reviewed deferral.
 | Contract | Intended owner | Planned acceptance evidence |
 | --- | --- | --- |
 | Four CLI operations and exact arguments | `src/main.align` | CLI smoke covers valid and invalid arity for every operation |
-| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git>` passes both explicit values as `--source-bundle-root` and `--git-executable-path`, rejects missing/relative/unsafe roots or tools before source reads, resolves the Git common directory, rejects replacement/graft/alternate mechanisms, uses the fixed no-replace/no-graft environment for every Git command, checks the derived clean CI head and evaluated-commit ancestry, validates the source-verifier policy/helper/tool identities, and revalidates every locator and exact source identity |
-| Source-verifier request/result boundary | C6f1 source verifier, `src/prompt_evaluate.align`, gate validator | request/result kind, mode, exact argv/env/cwd, common-directory and replacement/graft/alternate rejection, helper/Git digests, timeout/capture caps, raw-byte FILE_SET fixtures, `COMPLETE`/`UNAVAILABLE` field shapes, observed-identity equality for `VERIFIED`, and gate rejection of unavailable proof |
+| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git>` passes both explicit values as `--source-bundle-root` and `--git-executable-path`, rejects missing/relative/unsafe roots or tools before source reads, resolves the Git common directory, rejects replacement/graft/alternate mechanisms, scans local Git configuration, uses fixed no-replace/no-graft/no-pager/command overrides for every Git command, checks the derived clean CI head and evaluated-commit ancestry as separate proofs, validates the source-verifier policy/helper/tool identities, and revalidates every locator and exact source identity |
+| Source-verifier request/result boundary | C6f1 source verifier, `src/prompt_evaluate.align`, gate validator | request/result kind, mode-specific EVALUATION/GATE observed-head semantics, separate evaluated-commit ancestry, exact argv/env/cwd, common-directory and replacement/graft/alternate rejection, bounded local-config scan, fixed Git overrides, helper/Git digests, timeout/capture caps, raw-byte FILE_SET fixtures, `COMPLETE`/`UNAVAILABLE` field shapes, observed-identity equality for `VERIFIED`, and gate rejection of unavailable proof |
+| Mode-specific gate head and ancestry identity | C6f1 source verifier, gate validator | EVALUATION exact-head equality; GATE observed-head equality to derived CI head plus independent expected-commit ancestry; normal-merge fixture where the two SHAs differ; `prompt-source-verifier-mode-identity-smoke` and `prompt-gate-merge-head-ancestry-smoke` |
+| Repository-local Git configuration isolation | C6f1 source verifier, gate validator | raw `.git`/`gitdir`/`commondir` and local/worktree config scan before any Git child, include rejection, command-bearing-key rejection, fixed `--no-pager`/`-c` overrides, fsmonitor sentinel non-execution, and gate rejection before identity observation; `prompt-source-verifier-local-git-config-smoke` and `prompt-gate-local-git-config-smoke` |
+| Complete replacement-ref namespace | C6f1 source verifier, gate validator | loose, packed-refs, reftable, nonzero/malformed/capped/non-empty `for-each-ref` output, and no-replacement-object controls; `prompt-source-verifier-replacement-namespace-smoke` and `prompt-gate-replacement-namespace-smoke` |
 | Declared records, bounds, canonical digest | `src/prompt_model.align` | round-trip, tamper, unknown-version, and oversize fixtures |
 | Persisted string-label mapping | `src/prompt_model.align` | every allowed and unknown kind/status/operation/stage label plus canonical golden vectors |
 | Fixed hierarchy and rendering order | `src/prompt_model.align` | golden rendered prompt and immutable base/repo/task tests |
@@ -2872,8 +2949,8 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
 | Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
-| Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator reopens all locator roots, resolves and checks each Git common directory, rejects replacement/graft/alternate mechanisms, validates policy/helper/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
-| Source-verifier process boundary | policy/helper/Git identity and request/result codecs | N/A | fixed argv, cleared environment including no-replace/no-graft controls, cwd, common-directory checks, byte caps, timeout, raw-byte FILE_SET traversal, result-status/observed-identity shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-git-replacement-graft-smoke`, `prompt-source-verifier-observed-identity-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke` |
+| Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator performs the raw `.git`/`gitdir`/`commondir` and local-config walk before any Git child, resolves and checks each Git common directory, rejects replacement/graft/alternate mechanisms across loose and packed/ref-backend storage, validates policy/helper/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry as separate proofs, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-gate-merge-head-ancestry-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
+| Source-verifier process boundary | policy/helper/Git identity and request/result codecs | N/A | raw `.git`/`gitdir`/`commondir` metadata and local/worktree config are scanned before any Git child; fixed argv including no-pager/no-replace/no-graft/command overrides, cleared environment, cwd, common-directory checks, complete replacement namespace enumeration, byte caps, timeout, raw-byte FILE_SET traversal, mode-specific result-status/observed-identity shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-mode-identity-smoke`, `prompt-source-verifier-git-replacement-graft-smoke`, `prompt-source-verifier-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke`, `prompt-source-verifier-replacement-namespace-smoke`, `prompt-source-verifier-observed-identity-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke` |
 | Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation and accepts a retained non-`ERROR` row after `CLEANUP_FAILED` | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke`, `prompt-verifier-cleanup-retention-smoke` |
 | Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
 | Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, cleanup, pair-finalization, and result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-smoke`, `prompt-evidence-pair-finalization-smoke`, `prompt-adapter-failed-attestation-smoke`, `prompt-trace-overflow-smoke` |
@@ -2881,6 +2958,18 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode; borrowed verifier inputs are not retained | process outputs cloned while owner lives; helper/tool owners, result/evidence temp/final owners, and files/checkouts removed; failed pair finalization performs reverse cleanup or emits its explicit recovery error; empty raw workspace restored; overflow trace stream released | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke`, `prompt-verifier-borrow-lifetime-smoke`, `prompt-source-helper-cleanup-smoke`, `prompt-evidence-pair-cleanup-smoke`, `prompt-trace-overflow-drop-smoke` |
 | Replacement/move-out | source fields are reconstructed or moved once; no aliasing rewrite | `PromptRender` moves to caller as one bare value | accepted/rollback variant embedded unchanged; source not reused; verifier returns only Copy status | rows, snapshots, and independent evidence move into the final result/pair; builder source is consumed once | `prompt-move-compile-smoke`, `prompt-variant-identity-smoke`, `prompt-evidence-move-smoke` |
 | Concurrent/overlap attempt | N/A: pure validation has no shared mutable state | N/A: pure rendering has no shared mutable state | immutable DAG branches are independent; shared output/activation mutation is rejected before side effects | complete experiment/evaluate/accept/rollback 4x4 matrix; no overlapping adapter calls; disjoint independent processes are supported | `prompt-operation-overlap-smoke`, `prompt-no-overlap-smoke`, `prompt-existing-output-smoke`, `prompt-evidence-result-alias-smoke` |
+
+### 10.1a Final-review redesign closure
+
+The terminal review reopened these cells rather than authorizing another local repair loop. The
+redesigned slice is not implementation-ready until every row below has an actual owner and passing
+fixture in the diff.
+
+| Final-review invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Gate head versus evaluated commit | C6f1 source verifier and gate validator | EVALUATION records exact expected-head observation; GATE records the derived CI head and proves the evaluated commit is its ancestor; the two SHAs may differ after normal merge | `prompt-source-verifier-mode-identity-smoke`, `prompt-gate-merge-head-ancestry-smoke` |
+| Repository-local Git command isolation | C6f1 source verifier and gate validator | raw-scan bounded `.git`/`gitdir`/`commondir` metadata and common/worktree config before any Git child, without following includes; reject command-bearing keys before observation; apply fixed no-pager/no-replace/no-graft/command overrides to every direct Git invocation | `prompt-source-verifier-local-git-config-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke` |
+| Complete replacement-ref namespace | C6f1 source verifier and gate validator | raw-check unsafe loose entries, enumerate `refs/replace/` through the pinned Git ref backend, reject nonzero, capped, malformed, or non-empty output, and preserve the check for packed-refs and reftable | `prompt-source-verifier-replacement-namespace-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-replacement-packed-ref-smoke` |
 
 Applicability decisions:
 
@@ -3446,7 +3535,7 @@ The C6c2 closure matrix is:
 | incomplete-prefix delegation | C6c1p and C6c2 owners in `src/prompt_score.align` | empty/strict/terminal-error/complete prefixes; `validate_prefix` status agrees with trace and no aggregate/reason output is manufactured |
 | persisted execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete before/after equality, `ADAPTER_FAILED`/precheck/postcheck/drift terminal shapes, exact error prefix, no post-failure rows, bounded `PromptTraceOverflow`, and `RESULT_TOO_LARGE` empty-result fixtures |
 | independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing, wrong, duplicate, out-of-order, extra, and mismatched expected-input rows; result digest mismatch; explicit accept evidence path; expected/observed source-identity equality; matching gate-manifest evidence reference; `prompt-source-verifier-observed-identity-smoke` |
-| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; policy/helper/Git identity, fixed argv/env/cap/timeout, common-directory replacement/graft/alternate rejection, raw-byte FILE_SET traversal, derived gate-head ancestry, expected/observed-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
+| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; policy/helper/Git identity, mode-specific EVALUATION/GATE observed-head semantics, separate derived gate-head ancestry, fixed argv/env/cap/timeout, bounded local-config isolation, complete replacement namespace rejection across loose/packed/ref-backend storage, common-directory replacement/graft/alternate rejection, raw-byte FILE_SET traversal, expected/observed-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
 | row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
 | malformed input and error precedence | `src/prompt_score.align` | status-specific error families including `ADAPTER_FAILED`, drift states, and `RESULT_TOO_LARGE`, invalid option/discriminator combinations, first failing validation, compact counter/digest/empty-shape checks, and no side effects |
 | allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; arithmetic/allocation failure is invalid before scorer call; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, and compiler ownership/drop checks |
