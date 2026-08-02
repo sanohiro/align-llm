@@ -282,6 +282,18 @@ does not promise race-free protection against an out-of-band mutator; the docume
 precondition and preflight failure are part of the contract. Regression tests cover root,
 component, output, dangling-link, physical-escape, non-regular, cleanup, and early-exit cases.
 
+The three explicit verifier source roots are a read-only exception to the project-root-descendant
+rule: `verifier_align_llm_repository_path`, `verifier_align_repository_path`, and
+`verifier_corpus_source_path` may name external checkouts or file-set roots, including a sibling
+checkout supplied by its absolute path. They must still have bounded NUL-free path syntax, no
+`.`/`..` components, no symlink or dangling-link
+component in every existing ancestor/root component, and a real-directory root when present; a
+special file, physical escape through a link, or unsafe component is `INVALID_INPUT`. A missing or
+unreadable but syntactically safe root is `UNVERIFIED`, not a reason to write or create it. These
+paths are opened only by the trusted source boundary, never written or passed to an adapter, and
+are not included in the project-root containment check. The source-boundary owner records the
+resolved physical identity or the unavailable observation before releasing the path owner.
+
 C6's minimum compatibility environment is the repository CI floor: Ubuntu 24.04 x86_64, Git
 2.45.0 where ancestry is inspected, Rust 1.96.0, LLVM 22, CPython 3.12, GNU Make 4.3, and the
 exact pinned Align release named by `.align-revision`. Newer environments are supplementary
@@ -1419,7 +1431,8 @@ file-set root for `FILE_SET`. `verifier_align_revision` must equal the scope's `
 and the corpus kind, repository ID, and source digest must equal the complete scope
 `CorpusRevision`; `verifier_align_llm_commit` names the separate clean align-llm source commit to
 be checked and later must equal the result environment's `align_llm_commit`. The source-boundary
-inputs are consumed in this
+root fields are absolute paths after caller-side canonical spelling; they do not use the ordinary
+project-relative input-path rule. The source-boundary inputs are consumed in this
 deterministic order: path syntax and physical containment, source-kind/repository-label agreement,
 full expected identity shape, then checkout/file-set observation. A missing, duplicated, or
 malformed field is `INVALID_INPUT` before any snapshot or adapter call.
@@ -1857,7 +1870,8 @@ requires `expected_align_llm_commit` to equal `EnvironmentIdentity.core.align_ll
 the result carries an environment (mandatory for every complete status), the expected Align revision
 to equal both the evaluation scope and that environment, and the expected corpus fields to equal the
 complete `CorpusRevision`. A noncomplete result without an environment cannot prove the align-llm or
-Align equality; its source states must remain `UNVERIFIED`, and it can return only the non-gate
+Align equality; it preserves the source states already observed by the source boundary, while each
+source observation that was unavailable remains `UNVERIFIED`, and it can return only the non-gate
 `NONCOMPLETE_ERROR` verdict. All three reachability fields must be present; their value must be
 `VERIFIED` before returning a gate-eligible verdict. `UNVERIFIED` is a valid reason for a complete
 non-gate comparison, while a mismatched expected identity is invalid. These content digests detect
@@ -1866,7 +1880,8 @@ corruption, not author authentication.
 An `INVALID_INPUT` result emitted before evaluator inputs are established has no evidence sidecar and
 cannot be supplied to `prompt accept`. Once evaluation has established an evaluation identity, an
 `ERROR` result may have a paired evidence artifact for its retained prefix; unavailable environment
-or source observations are represented by `UNVERIFIED`, and the decoded verifier returns
+or source observations are represented by `UNVERIFIED`, while source observations completed before
+the failure remain `VERIFIED`. The decoded verifier returns
 `NONCOMPLETE_ERROR` without treating the prefix as a score. Only complete comparison statuses need a
 full expected-input table and all three reachability fields; the fields may be `VERIFIED` or
 `UNVERIFIED`, but only the all-`VERIFIED` combination can satisfy the gate.
@@ -1890,11 +1905,14 @@ in the precedence table, rows and aggregates are empty, `corpus_aggregate` is `N
 no evidence sidecar and is not supplied to `verify_result`; a paired invalid result is allowed only
 after an evaluation identity and its evidence have been established. For `ERROR`, all input
 references are `Some`; valid rows are retained by the exact rule below and `corpus_aggregate` is
-`None`; `environment` is `Some` only if one valid measurement established it before the failure.
+`None`; `task_aggregates` and `serious_regression_reasons` are empty; and `environment` is `Some`
+only if one valid measurement established it before the failure.
 Retention is the longest execution-order prefix whose measurement and before/after attestation both
 validate; a valid `ERROR` measurement with an unchanged complete attestation is the final retained
 row, while a failed pre/post check contributes no row and is represented only by its terminal
-attestation. No invocation or attestation occurs after the first error. `RESULT_TOO_LARGE` is the
+attestation. The prefix validator returns `TERMINAL_ERROR` when that final retained row has status
+`ERROR`, and `VALID_PREFIX` when the terminal failure contributes no row. No invocation or
+attestation occurs after the first error. `RESULT_TOO_LARGE` is the
 sole exception and emits empty rows and aggregates while retaining no scoreable prefix. All complete
 comparison statuses require every
 reference and its matching `experiment_artifact`/`parent_activation_artifact`, embedded scope,
@@ -2148,8 +2166,9 @@ Copy status through `Result`.
 C6a1/C6a2 codec. It validates the result/evidence identity pair, embedded experiment and parent
 activation references, the persisted workspace/snapshot/input-snapshot/attestation trace and its
 prefix rules, trust identities and all three reachability states, every independent input digest row,
-C6c1 aggregate/reason output, status/error family, and recomputed gate eligibility. It does not decode
-a document, read a file, access a process or network, traverse a repository, or re-encode a record.
+C6c1p prefix validation or C6c1 aggregate/reason output as appropriate, status/error family, and
+recomputed gate eligibility. It does not decode a document, read a file, access a process or network,
+traverse a repository, or re-encode a record.
 `prompt state accept` loads the result and explicit evidence through separate paths, invokes this same
 decoded verifier, and only then constructs an activation. The evaluator invokes it before writing the
 result/evidence pair. No acceptance path trusts a persisted status, aggregate, reason, or gate flag.
@@ -2421,7 +2440,7 @@ explicitly reviewed deferral.
 | Content-bound A/B inputs | `src/prompt_evaluate.align`, task manifests | expected digest, workspace preflight, deduplicated snapshot/input-snapshot records, per-invocation pre/post drift, mode, tree, dirty-source, seed, generation, and environment regressions |
 | Explicit adapter request and environment isolation | `src/prompt_evaluate.align`, task adapter | adapter-request identity/path/digest fixtures; env-clear rejection and exact allowlisted-value survival in both directions |
 | Producer-owned environment identity | trusted probe carriers, evaluator verifier | non-circular core preimage, carrier equality, OS/CPU/GPU/compiler/runtime unavailable-value, `Option` CPU-count, and digest fixtures |
-| Physical path trust boundary | snapshot helper and all command owners | symlink component, dangling link, output link, special file, physical escape, relative/absolute, cleanup, and early-exit regressions |
+| Physical path trust boundary | snapshot helper, all command owners, and explicit verifier source boundary | project-root containment for ordinary inputs plus read-only external verifier-root exception; symlink component, dangling link, output link, special file, physical escape, relative/absolute, cleanup, and early-exit regressions |
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, and no-partial-write vectors |
@@ -2429,6 +2448,7 @@ explicitly reviewed deferral.
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
+| Incomplete-prefix row validation | C6c1p `src/prompt_score.align` | empty, strict-prefix, terminal-`ERROR`, post-error, complete-prefix, first-invalid-index, and no-output-mutation fixtures |
 | Provider proposal with no secret persistence | `src/prompt_experiment.align`, bounded provider boundary | after Request 5 merges: deterministic provider fixture, transport-size cap, one-shot credential lifetime, pre-truncation redaction, and API-key regression |
 | Executable provider control and prompt roles | provider control, task adapter | config-field identity fixtures and exact empty-system/rendered-user request bytes |
 | Seed capability attestation | provider adapter, evaluator verifier | requested/applied seed equality, provider request digest, unsupported/rejected ineligibility, and paired-row fixtures |
@@ -2457,6 +2477,7 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
 | Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
+| Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes; C6c2 skips aggregation | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke` |
 | Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
 | Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-error-smoke` |
 | Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first external failure stops later invocations and retains only the valid prefix | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke` |
@@ -2527,21 +2548,27 @@ and must split again before coding if the estimate no longer holds.
      aggregation, medians, and regression-reason construction;
    - no decoded-result verifier, process, provider, activation, or CLI mutation;
    - estimated review surface below 900 hand-written lines.
-6. **C6c2 — pure decoded evaluation verifier (blocked on C6a1/C6a2 and Requests 7, 8, 10, 12, and 13)**
+6. **C6c1p — public incomplete-prefix validator**
+   - extend the merged C6c1 module with the borrowed `validate_prefix` API;
+   - validate empty, strict-prefix, terminal-`ERROR`, and complete row sequences without
+     aggregation, persistence, JSON, process, provider, or evaluator behavior;
+   - estimated review surface below 350 hand-written lines.
+7. **C6c2 — pure decoded evaluation verifier (blocked on C6c1p, C6a1/C6a2, and Requests 7, 8, 10, 12, and 13)**
    - consume already-decoded, content-validated `PromptEvaluationResult` and
      `PromptEvaluationEvidence` records through the borrowed `verify_result` API;
    - validate embedded experiment/parent records, cross-field identities, independent expected-input
      rows, C6c1 aggregates/reasons, status/error families, and the three-repository reachability
      policy, reusing C6c1;
    - after Requests 8 and 10 are adopted, adapt decoded rows through one bounded `array<ScoreRow>`
-     and verifier-owned primitive C6c1 output columns; allocation failure is invalid input, and a
-     fixed-size workaround or duplicated scorer is out of scope;
+     and verifier-owned primitive C6c1 output columns; use C6c1p for incomplete prefixes and
+     `aggregate` only for complete rows; allocation failure is invalid input, and a fixed-size
+     workaround or duplicated scorer is out of scope;
    - use constructed Align values for fixtures only. Do not parse JSON, use escape-free JSON fixtures,
      canonical-encode values, read files, or walk repositories in this slice; those boundaries belong
      to C6a1/C6a2 after the named Align requests are adopted;
    - no process, provider, activation construction, or CLI mutation;
    - estimated review surface below 800 hand-written lines.
-7. **C6d1 — immutable activation model**
+8. **C6d1 — immutable activation model**
    - fixture-only baseline and pure accept/rollback construction/lineage validation;
    - uses in-memory declared values only; it does not write or decode a canonical JSON artifact,
      so it does not bypass Requests 12 or 13;
@@ -2549,32 +2576,32 @@ and must split again before coding if the estimate no longer holds.
      tampering cannot reach activation construction;
    - no public CLI or canonical provider-quality claim;
    - estimated review surface below 700 hand-written lines.
-8. **C6d2 — activation CLI (blocked on Requests 12 and 13)**
+9. **C6d2 — activation CLI (blocked on Requests 12 and 13)**
    - `prompt accept` and `prompt rollback`, bounded request/result persistence, and stable summaries;
    - fixtures exercise eligibility, parent mismatch, branching, ancestry, reason, scope, and
      no-overwrite behavior;
    - no provider-quality claim.
    - estimated review surface below 700 hand-written lines.
-9. **C6e — provider proposal (blocked on Requests 2, 5, 12, and 13)**
+10. **C6e — provider proposal (blocked on Requests 2, 5, 12, and 13)**
    - after both request adoption gates reach `ALIGN_LLM_VERIFIED`, `prompt experiment`, the bounded provider boundary,
      declared proposal decoding, and secret redaction;
    - deterministic provider fixture, transport-size limit, and provider-error coverage;
    - do not implement against the current whole-body provider call.
    - estimated review surface below 900 hand-written lines.
-10. **C6f1 — trusted snapshot/workspace boundary (blocked on Requests 11, 12, and 13)**
+11. **C6f1 — trusted snapshot/workspace boundary (blocked on Requests 11, 12, and 13)**
     - helper protocol, physical workspace preflight, raw-byte tree/entry closure, per-invocation
       input snapshots, environment identity, and cleanup primitives;
     - after Request 11 is adopted, use cap-aware child capture, explicit `env_clear`/allowlist,
       physical path checks, environment identity, and cleanup primitives;
     - no paired evaluation loop or scoring decision;
     - estimated review surface below 1,000 hand-written lines.
-11. **C6f2 — deterministic paired evaluator (blocked on Requests 8, 10, 11, 12, and 13)**
+12. **C6f2 — deterministic paired evaluator (blocked on Requests 8, 10, 11, 12, and 13)**
    - after Requests 8, 10, 11, 12, and 13 reach `ALIGN_LLM_VERIFIED` and are adopted, `prompt evaluate`, alternating samples,
       checked construction of runtime-sized record arrays, C6c reuse, and deterministic corpus;
     - may proceed while C6e is blocked because its fixed adapter does not call a model provider;
     - estimated review surface below 1,000 hand-written lines.
-12. **C6g1 — real consumer and frozen gate assets (blocked on Requests 2, 5, 11, 12, and 13)**
-   - starts only after C6a0, C6a1, C6a2, C6b, C6c1, C6c2, C6d1, C6e, C6f1, and C6f2
+13. **C6g1 — real consumer and frozen gate assets (blocked on Requests 2, 5, 11, 12, and 13)**
+   - starts only after C6a0, C6a1, C6a2, C6b, C6c1, C6c1p, C6c2, C6d1, C6e, C6f1, and C6f2
      have completed their own acceptance gates; those C6 slice dependencies are not replaced by
      the Align-request prerequisites in this heading;
    - have the fixed adapter consume evaluator-produced `RenderedPromptArtifact`, generate through the
@@ -2583,7 +2610,7 @@ and must split again before coding if the estimate no longer holds.
      acceptance policy, base/repo prompts, and canonical baseline activation without yet claiming
      improvement;
    - estimated review surface below 1,000 hand-written lines.
-13. **C6g2 — measured gate, acceptance, rollback, and CI**
+14. **C6g2 — measured gate, acceptance, rollback, and CI**
    - record a real parent/candidate provider comparison;
    - accept only if section 8 passes, create the linked rollback, check in the canonical gate
      manifest/evidence set, and make `make ci` reject every missing or mismatched link;
@@ -2690,6 +2717,37 @@ and the complete reason-count pass happen before any output column is written. A
 column returns `OUTPUT_TOO_SMALL` with the required count and leaves every output column untouched.
 This explicit scalar-column topology keeps C6c1 independent of Request 8/10 runtime-sized
 record-array construction and of the pinned compiler's unsupported struct-element output stores.
+
+The complete-row aggregate is intentionally not the prefix validator. C6c1p, the enabling slice on
+this module, exposes the following non-owning validation path for an incomplete evaluation:
+
+```text
+ScorePrefixStatus: VALID_PREFIX | TERMINAL_ERROR | INVALID_INPUT
+
+ScorePrefixResult:
+  status
+  error_code                   // 0 valid; 1 invalid plan; 2 invalid row/order
+  error_index                 // first invalid row, or -1
+  row_count
+  expected_row_count
+
+pub fn validate_prefix(
+  rows: slice<ScoreRow>,
+  task_limits: slice<ScoreTaskLimit>,
+  sample_count: i64,
+) -> ScorePrefixResult
+```
+
+`validate_prefix` accepts zero through the complete expected row count, checks the same task-limit,
+sample, alternating-order, bounds, and row-state rules as `aggregate`, and performs no aggregation
+or output-column write. A structurally valid `ScoreRow.status: ERROR` is permitted only as the last
+row; it returns `TERMINAL_ERROR` so the caller can bind a retained terminal measurement to the
+evaluation error. A prefix that ends before such a row returns `VALID_PREFIX`. A row after an error,
+an out-of-order row, a malformed row, or a row count above the complete expected count returns
+`INVALID_INPUT` at the first failing index. The function borrows all inputs, retains no view, and
+returns one Copy result without filesystem, process, network, or global-state work. C6c2 calls this
+path for `ERROR`/paired noncomplete records and calls `aggregate` only after a complete prefix has
+the exact expected row count and no terminal error.
 
 The result and aggregate records are plain Copy values:
 
@@ -2807,20 +2865,45 @@ The C6c1 closure matrix is:
 | malformed/order/bounds input | `src/prompt_score.align` | invalid first-row index, duplicate/missing/order, limit, time, count, and overflow fixtures |
 | reason completeness/order | `src/prompt_score.align` | multi-reason pair plus task/corpus TIME and REPAIR_LOOPS output in canonical code order |
 | output ownership and early exit | `src/prompt_score.align` | undersized scalar-column output and invalid-input fixtures prove every caller buffer remains sentinel-filled |
+| incomplete-prefix validation | `src/prompt_score.align` in C6c1p | empty, strict-prefix, terminal-`ERROR`, out-of-order, post-error, and complete-prefix fixtures through `validate_prefix` |
 | cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
 | public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, and refreshed baseline sequence when the hosted list changes |
 
 This ledger is intentionally limited to the C6c1 kernel. Artifact decoding, whole-document
 error-prefix retention, and runtime-sized result construction remain named owners in C6a1/C6a2/C6f2
-and are not silently pulled into this slice. C6c2 may map already-decoded task ordinals to their
-declared task IDs, but it does not move or persist the artifact records.
+and are not silently pulled into this slice. C6c1p owns only the public borrowed prefix validator;
+it does not persist artifacts or duplicate C6c2's identity checks. C6c2 may map already-decoded task
+ordinals to their declared task IDs, but it does not move or persist the artifact records.
+
+### 11.1a C6c1p public-contract ledger
+
+C6c1p is a small enabling slice on the merged C6c1 scorer. It adds only `validate_prefix`; it does
+not change the complete-row `aggregate` contract, persisted schemas, JSON boundary, or evaluator
+ownership. C6c2 cannot start implementation until this slice is independently implemented, checked,
+reviewed, and merged.
+
+The exact C6c1p surface is the `ScorePrefixStatus`, `ScorePrefixResult`, and
+`validate_prefix` declaration above. Its validation order is:
+
+1. Validate task-limit count, sample count, and that `rows.len()` is no greater than the complete
+   expected count.
+2. Validate task limits and every row in execution order using the merged C6c1 row-state rules.
+3. Reject any row after a structurally valid `ERROR`; return `TERMINAL_ERROR` only when that row is
+   the final supplied row, otherwise return `VALID_PREFIX` for a prefix with no terminal row.
+4. Return the first invalid index without output mutation or any side effect.
+
+The C6c1p acceptance gate is `prompt-score-prefix-smoke` plus the existing `prompt-score-smoke`,
+`make check`, format/static checks, per-unit and whole-program compilation, and the source/consumer
+allocation-parity fixture. A valid prefix never produces aggregates or reasons; C6c2 alone decides
+whether the surrounding persisted result is complete, incomplete, or malformed.
 
 ### 11.2 C6c2 public-contract ledger
 
 C6c2 is the pure decoded evaluation verifier. It is not a JSON reader or a file-backed document
 validator. C6a1/C6a2 must first provide the declared records and validate their canonical content
-digests at the shipped Align revision. The C6c2 implementation is therefore blocked on those slices
-and their Request 7, Request 8, Request 10, Request 12, and Request 13 adoption gates. No C6c2 fixture may be an
+digests at the shipped Align revision, and C6c1p must first provide the merged public prefix validator.
+The C6c2 implementation is therefore blocked on C6c1p, those codec slices, and their Request 7,
+Request 8, Request 10, Request 12, and Request 13 adoption gates. No C6c2 fixture may be an
 escape-free JSON document; fixtures construct the declared values directly after the codec gate.
 
 The exact public surface is:
@@ -2839,12 +2922,13 @@ call. `verify_result` borrows, does not move, replace, null, mutate, or retain e
 returns one Copy status or `Err(Error.Invalid)` and performs no filesystem, JSON, canonical-encoding,
 process, network, global-state, or repository-reachability operation. After Requests 8 and 10 are
 shipped, it may construct one bounded temporary `array<ScoreRow>` and verifier-owned temporary
-primitive output columns passed to C6c1's `aggregate` call. The row scratch is bounded by the
-declared maximum of 2,048 retained task/sample/variant rows; task columns are bounded by 64 tasks,
-and reason columns use the checked C6c1 reason-count pass and its declared output bound. Those
-scratch values are released before return; capacity/allocation failure returns `Err(Error.Invalid)`,
-and no fixed-size workaround or duplicated scorer is permitted. No scratch value becomes persisted
-state.
+primitive output columns passed to C6c1's `aggregate` call. For an incomplete result it passes the
+same borrowed scratch rows to C6c1p's `validate_prefix` and does not allocate aggregate/reason
+columns. The row scratch is bounded by the declared maximum of 2,048 retained task/sample/variant
+rows; task columns are bounded by 64 tasks, and reason columns use the checked C6c1 reason-count
+pass and its declared output bound. Those scratch values are released before return;
+capacity/allocation failure returns `Err(Error.Invalid)`, and no fixed-size workaround or duplicated
+scorer is permitted. No scratch value becomes persisted state.
 
 The verifier's deterministic validation order is:
 
@@ -2878,16 +2962,22 @@ The verifier's deterministic validation order is:
    result digest. For a complete result, `expected_align_llm_commit` must equal
    `EnvironmentIdentity.core.align_llm_commit`, and expected Align revision must equal both that
    environment and scope. For a noncomplete result with an environment, the same equalities are
-   checked; without an environment, the source states must be `UNVERIFIED` and the verifier returns
-   only `NONCOMPLETE_ERROR`. Expected corpus kind, repository ID, and source digest must equal the
-   complete `CorpusRevision` in every paired result.
+   checked; without an environment, preserve the source states captured before the failure, skip
+   only the unavailable environment equalities, and return only `NONCOMPLETE_ERROR`. Expected corpus
+   kind, repository ID, and source digest must equal the complete `CorpusRevision` in every paired
+   result.
 5. Compare `expected_inputs` to `result.rows` in retained execution order. Require exactly one
    matching task/sample/variant entry per row, no duplicate or extra identity, and equality of every
    rendered-prompt, context-source, generation-request, adapter-request, and provider-request
    digest. Missing, wrong, duplicate, or out-of-order evidence is invalid.
-6. Map the validated rows and task limits to the already reviewed C6c1 contract and recompute task
-   aggregates, the corpus aggregate, every regression reason, and their canonical order. Compare
-   every persisted aggregate/reason field; a status-only or aggregate-only tamper is invalid.
+6. Map the validated rows and task limits to C6c1p's `validate_prefix`. For a complete result, require
+   `VALID_PREFIX`, the exact expected row count, and no terminal `ERROR`, then call C6c1 `aggregate`
+   and recompute task aggregates, the corpus aggregate, every regression reason, and their canonical
+   order; compare every persisted aggregate/reason field. For a paired `ERROR` result, require an
+   empty aggregate/reason set and use only the prefix result: `VALID_PREFIX` is allowed when the
+   terminal event produced no retained row, while `TERMINAL_ERROR` is required when the final
+   retained row has status `ERROR`. For a paired `INVALID_INPUT`, require empty rows, aggregates,
+   and reasons and do not invoke either C6c1 path. A status-only or aggregate-only tamper is invalid.
 7. Recompute comparison status from the policy and the recomputed values. Preserve a strict but
    non-gate `IMPROVED` result as a valid complete comparison; it returns
    `COMPLETE_INELIGIBLE`, not `NONCOMPLETE_ERROR`. A valid `NO_IMPROVEMENT` or
@@ -2910,12 +3000,13 @@ The C6c2 closure matrix is:
 | borrowed input formation and lifetime | `src/prompt_score.align`, Align compiler | declaration/positional-call fixture, per-unit and whole-program compile, caller-owned sentinel records, and no retained view after return |
 | successful decoded verification | `src/prompt_score.align` | `prompt-verifier-smoke` for eligible improvement, non-gate improvement, no improvement, serious regression, and valid incomplete statuses |
 | embedded identity/reference pairs | `src/prompt_score.align`, C6a1/C6a2 codec | wrong kind/ID/digest/path, missing embedded experiment/parent, and stale parent/candidate fixtures |
+| incomplete-prefix delegation | C6c1p and C6c2 owners in `src/prompt_score.align` | empty/strict/terminal-error/complete prefixes; `validate_prefix` status agrees with trace and no aggregate/reason output is manufactured |
 | persisted execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete before/after equality, terminal failed attestation, exact error prefix, no post-failure rows, and `RESULT_TOO_LARGE` empty-result fixtures |
 | independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing, wrong, duplicate, out-of-order, extra, and mismatched expected-input rows; result digest mismatch; explicit accept evidence path; matching gate-manifest evidence reference |
-| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; each source `VERIFIED`/`UNVERIFIED`; expected-align-llm/environment mismatch; `FIXTURE`, unavailable CPU, and seed ineligibility |
+| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; expected-align-llm/environment mismatch; `FIXTURE`, unavailable CPU, and seed ineligibility |
 | row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
 | malformed input and error precedence | `src/prompt_score.align` | status-specific error families, invalid option/discriminator combinations, first failing validation, and no side effects |
-| allocation and cleanup | `src/prompt_score.align`, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus primitive C6c1 output columns; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, and compiler ownership/drop checks |
+| allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus primitive C6c1 output columns only for complete rows; prefix validation uses no output columns; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, and compiler ownership/drop checks |
 | JSON/document binding | C6a1/C6a2, deferred | N/A for C6c2; escaped-string round trips, canonical bytes, and content-digest recomputation require Request 7/12/13 acceptance before this verifier is called |
 
 The C6c2 metric is verifier correctness: every declared state, identity, evidence combination, and
