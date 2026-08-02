@@ -7,17 +7,20 @@ request checks, reviews, and attestations.
 
 - Branch: `agent/c6c1-score-kernel-impl`; implementation is based on merged `main` commit
   `95670134f6f7c503aeae15c7cbebe38434bdc617`.
-- Current source checkpoint: the clean implementation commit at this branch's `HEAD`; its parent
-  is the exact merged design checkpoint `95670134f6f7c503aeae15c7cbebe38434bdc617`.
+- Current source checkpoint: `4b3019a83598cfbae7feecdc88732b855c2e31c4` (`Implement C6c1 scoring
+  kernel`), based on merged design checkpoint `95670134f6f7c503aeae15c7cbebe38434bdc617`.
 - Active goal: implement, verify, review, and merge the independently testable pure C6c1 row
   validation and aggregation kernel. The C6c1 design and its pinned-Align contract repair are
   merged; implementation is the active slice.
 - Complete: `src/prompt_score.align`, its deterministic scalar-column smoke, the `prompt-score-smoke`
   Make target, and the topology oracle update are implemented in the working source checkpoint.
-- In progress: commit this coherent implementation checkpoint, then refresh the identity-bound
-  baseline through the prescribed source -> immutable-oracle -> finalization sequence.
-- Not started: full integration verification, the implementation pull request and review, hosted
-  checks, merge, and the bounded post-merge retrospective before C6c2 selection.
+- Complete: the identity-bound baseline refresh is complete with source commit
+  `4b3019a83598cfbae7feecdc88732b855c2e31c4`, immutable oracle commit
+  `5338951e77415a21c42fbe030494c55d015f3542`, and finalization commit
+  `bc386d8`.
+- In progress: baseline structural verification and the implementation/adoption integration gate.
+- Not started: the implementation pull request and review, hosted checks, merge, and the bounded
+  post-merge retrospective before C6c2 selection.
 - Working tree is expected to be clean at the source checkpoint; no generated binaries, model
   weights, credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -43,15 +46,12 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Commit the clean implementation source checkpoint, record its exact SHA here, and run the
-   prescribed baseline source -> pending measurement -> immutable oracle -> finalization sequence.
-   The Makefile/check graph is identity-bound, so do not skip or manually edit the baseline outputs.
-2. Run `make baseline-check`, the focused C6c1 checks, `make check`, `make build`, and the applicable
+1. Run `make baseline-check`, the focused C6c1 checks, `make check`, `make build`, and the applicable
    full `make ci` integration gate after the baseline sequence. Record exact results here.
-3. Open one implementation pull request with English description and exact verification results;
+2. Open one implementation pull request with English description and exact verification results;
    obtain one fresh independent comprehensive review, apply valid findings in one repair, rerun
    affected checks, and use the required native GitHub review envelope and merge commit.
-4. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
+3. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
    C6c2 slice. Do not start failure-memory JSONL adoption until Request 7 is accepted, merged at a
    named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and `make ci`
    passes the original acceptance gate.
@@ -65,10 +65,15 @@ request checks, reviews, and attestations.
 - `make gate-topology-check`: PASS after registering `prompt-score-smoke` in the Makefile and its
   embedded topology oracle.
 - `python3 scripts/check-gate-topology --self-test`: PASS.
+- `python3 eval/runners/record-baseline.py ... --samples 2`: PASS; pending measurement binds to
+  source commit `4b3019a83598cfbae7feecdc88732b855c2e31c4`.
+- `python3 scripts/finalize-canonical-baseline.py ... --oracle-commit
+  5338951e77415a21c42fbe030494c55d015f3542`: PASS; canonical baseline and digest were committed in
+  `bc386d8`, and the pending file was removed.
 - `make check`: PASS (15 existing main units; the repository's pre-existing compiler warnings are
   unchanged).
 - `make fmt`, `./scripts/check-format`, and `git diff --check`: PASS.
-- Full `make ci` and baseline refresh are pending for this implementation/adoption gate.
+- `make baseline-check` and full `make ci` are pending for this implementation/adoption gate.
 
 ## Constraints and decisions to preserve
 
