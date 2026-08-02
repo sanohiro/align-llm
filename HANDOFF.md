@@ -5,15 +5,17 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-cleanup-gate-rescope`, based on the terminal source-gate design checkpoint
-  `c4efaf52373a53404ab1f0b52f340f69150f521e` and merged `main` commit
+- Branch: `agent/c6c2-boundary-trace-rescope`, based on the terminal cleanup/source-gate design
+  checkpoint `3e60265d00afec6645a97962cddf0b786d6858f8` and merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `6165003` (`Define cleanup and FILE_SET gate revalidation`), based on
-  the terminal source-gate design checkpoint and merged `main` commit above.
+- Current source checkpoint: `8a1918d` (`Rescope C6c2 source and trace design`), based on the terminal
+  cleanup/source-gate design checkpoint and merged `main` commit above.
 - Active goal: finish, independently review, and merge the corrected C6c1p/C6c2 design. This branch
-  resolves the latest review's cleanup-retention, tested-head ancestry, and deterministic FILE_SET
-  manifest findings. Implementation is not started and must wait for this design plus the C6a1/C6a2
-  decoded-record and Align adoption prerequisites.
+  resolves the latest five findings: runtime-derived clean CI-head binding, a content-bound native
+  source-verifier/Git boundary with raw-byte FILE_SET traversal, explicit `ADAPTER_FAILED` terminal
+  attestations, a bounded `RESULT_TOO_LARGE` trace envelope, and synchronized Request 8/10 blockers.
+  Implementation is not started and must wait for this design plus the C6a1/C6a2 decoded-record and
+  Align adoption prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -27,9 +29,18 @@ request checks, reviews, and attestations.
 - Complete: evaluator FILE_SET validation now has an explicit manifest path and a bounded canonical
   byte grammar for exact membership, raw relative paths, modes, and file digests. Gate locators use
   the same manifest model and require every declared gate task file to be listed.
-- Complete: the checked-in gate source bundle records an exact tested align-llm head; validation
-  checks the actual clean complete-history `HEAD` and requires the evidence's evaluated commit to be
-  its ancestor, preserving the normal-merge integration rule.
+- Complete: the checked-in gate source bundle has no persisted tested-head self-reference; Make
+  derives the actual clean, non-shallow CI checkout `HEAD`, passes it to validation, requires the
+  source bundle to equal it, and requires the evidence's evaluated commit to be its ancestor,
+  preserving the normal-merge integration rule.
+- Complete: source verification has an explicit native helper policy, helper/Git digests, fixed
+  argv/environment/cwd/caps, raw-byte FILE_SET traversal, bounded request/result states, and policy
+  identity in `EnvironmentIdentityCore`.
+- Complete: adapter timeout/process-output/malformed-result paths use `ADAPTER_FAILED` with no
+  fabricated row or after snapshot; result-size overflow uses a bounded compact trace digest and
+  empty non-scoreable result/evidence shape.
+- Complete: `docs/align-requests.md` now marks Requests 8 and 10 as blocking both C6f2 and C6c2
+  runtime-sized decoded-record adoption while allowing independent design work.
 - Complete: a post-row evaluator cleanup failure retains a valid non-`ERROR` measurement row and
   complete attestation, emits `ERROR/CLEANUP_FAILED`, and is accepted by C6c2 as `VALID_PREFIX`;
   cleanup before a valid row retains none.
@@ -80,9 +91,11 @@ request checks, reviews, and attestations.
 - C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
   and `make ci` all passed before the merged `main` checkpoint.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
-- Current re-scoped design verification: `git diff --check` PASS and Markdown fence count 88 (even),
-  PASS on `6165003`. Source tests and `make ci` are N/A because this remains
-  documentation/specification-only; the new draft PR requires hosted documentation/static checks.
+- Current re-scoped design verification: `git diff --check 3e60265d00afec6645a97962cddf0b786d6858f8..8a1918d` PASS
+  and the exact Markdown fence check over `docs/specs/c6-prompt-context-optimizer.md` and
+  `docs/align-requests.md` reports `markdown_fences=172` (even). Source tests and `make ci` are N/A
+  because this remains documentation/specification-only; the new draft PR requires hosted
+  documentation/static checks.
 
 ## Constraints and decisions to preserve
 
@@ -108,9 +121,10 @@ request checks, reviews, and attestations.
   align-llm/Align claims even when a source root is unavailable or mismatching; `PromptVerifierTrust`
   reachability is the independent proof state, and only all-`VERIFIED` evidence is gate-eligible.
   The evaluator align-llm source proof uses exact `HEAD` equality; the checked-in gate uses a
-  manifest-owned relative source locator, exact tested-head equality, and evaluated-commit ancestry
-  through explicit `C6_GATE_SOURCE_BUNDLE_ROOT` revalidation. The FILE_SET manifest is bounded and
-  canonical, with checked membership and no symlink/special entries. A post-row cleanup failure
+  manifest-owned relative source locator, runtime-derived clean tested-head equality, and
+  evaluated-commit ancestry through explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and
+  `C6_GATE_GIT_EXECUTABLE_PATH` revalidation. The FILE_SET manifest is bounded and canonical, with
+  checked raw-byte membership and no symlink/special entries. A post-row cleanup failure
   retains a valid non-`ERROR` row and uses the verifier's `VALID_PREFIX` cleanup branch. C6c1p validates
   every task-limit field before multiplication and returns `row_count: rows.len()`,
   `expected_row_count: -1`, `error_index: -1`, and `error_code: 1` for invalid plans without
