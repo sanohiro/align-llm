@@ -10,8 +10,10 @@ request checks, reviews, and attestations.
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
 - Current source checkpoint: `34be593` (`Close C6c2 design review findings`), based on the
   previously reviewed design checkpoint `b485fb8` and merged `main` commit above.
-- Active goal: finish PR #49 with the corrected C6c1p/C6c2 design. This branch
-  resolves the latest review findings: runtime-derived clean CI-head binding through the explicit
+- Active goal: finish PR #49 with a re-scoped C6c1p/C6c2 design. The current PR head is a review
+  checkpoint and is not merge-ready; reopen the closure matrix before any further implementation or
+  review cycle. This branch resolves the initial review findings and carries the earlier design
+  decisions: runtime-derived clean CI-head binding through the explicit
   validated Git executable and cleared environment, a content-bound native source-verifier/Git
   boundary with raw-byte FILE_SET traversal, explicit `ADAPTER_FAILED` terminal attestations, a
   bounded `RESULT_TOO_LARGE` trace envelope, C6c2-specific Request 8/10 adoption gates, fixed
@@ -60,8 +62,11 @@ request checks, reviews, and attestations.
   repository-local Git replacement/graft/alternate mechanisms are rejected through the resolved
   common directory, baseline drift has explicit persisted states, `VERIFIED` carries equal observed
   identities, and result/evidence finalization has no-replace order plus cleanup/recovery behavior.
-- In progress: reopen PR #49 with this checkpoint, run the conditional final independent review,
-  and merge it only after the review, check evidence, and all finding dispositions are complete.
+- In progress: reopen the C6c2 closure matrix and redesign the current slice before any further
+  repair/review loop. The latest final-review evidence is recorded in GitHub; its durable blockers
+  are mode-specific gate-head versus evaluated-commit semantics, neutralization or rejection of
+  executable repository-local Git configuration, and complete replacement-ref namespace inspection
+  including packed/ref-backend storage. Do not merge the current PR head.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -87,15 +92,18 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push `agent/c6c2-adoption-timeout-reason-rescope`, reopen PR #49, and update its description with
-   the consolidated repair commit and verification evidence.
-2. Run the conditional final independent review of PR #49. If it is clean, record its SHA-bound
-   envelope, wait for the documentation/static check, and merge PR #49. If it finds another
-   non-trivial issue, stop and re-scope the slice rather than entering another repair/review loop.
-3. Implement and merge C6c1p first; implement C6c2 only after C6a1/C6a2 provide content-validated
+1. Reopen the C6c2 closure matrix in the plan of record and assign each of the three final-review
+   blockers an owner, exact contract change, and regression fixture before editing the design again.
+2. Re-scope or split the design slice so the gate head/ancestor proof, Git local-configuration
+   isolation, and complete replacement-ref enumeration are independently coherent. Keep the current
+   PR head as the terminal review checkpoint until that redesign is ready; do not begin another
+   repair/review loop against the unchanged checkpoint.
+3. After the redesigned slice is independently reviewable, use the repository's required review and
+   merge workflow; only then continue with C6c1p and the documented Align adoption prerequisites.
+4. Implement and merge C6c1p first; implement C6c2 only after C6a1/C6a2 provide content-validated
    decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record
    the dependency blocker and continue only with safe independent roadmap work.
-4. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
+5. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
    merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
    `make ci` passes the original acceptance gate.
 
@@ -110,7 +118,9 @@ request checks, reviews, and attestations.
   `docs/specs/c6-prompt-context-optimizer.md` and `docs/align-requests.md` reports
   `markdown_fences=172` (even). Source tests and `make ci` are N/A because this remains
   documentation/specification-only; PR #49 requires hosted documentation/static checks. The working
-  tree is clean at this checkpoint.
+  tree is clean at this checkpoint. The conditional final review is recorded in GitHub and is not
+  merge-ready; the next verification must follow the closure-matrix redesign rather than patching
+  this checkpoint in place.
 
 ## Constraints and decisions to preserve
 
