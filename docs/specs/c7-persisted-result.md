@@ -811,7 +811,8 @@ The following order prevents a later slice from being consumed prematurely:
    applicable platform profile has reached its named merged state, rebuild the sibling release
    compiler/runtime, update `.align-revision`, add the exact owned-record syntax and lifetime
    adoption fixture, and run the Request 9 named gate plus the Section 9 fresh `make ci` command
-   with explicit `ALIGN_LLM_TOOLCHAIN_MANIFEST` and `ALIGN_LLM_TOOLCHAIN_MANIFEST_SHA256` inputs.
+   with the fixed image-attested toolchain manifest selected by the bootstrap; caller-supplied
+   `ALIGN_LLM_TOOLCHAIN_MANIFEST` and `ALIGN_LLM_TOOLCHAIN_MANIFEST_SHA256` overrides are rejected.
    `ci` must invoke the fixed bootstrap and must not be replaced by a direct `align-build` or
    sibling compiler path. If that gate fails, C7 implementation remains paused.
 4. **C7-I1 — owned records and pure verifier.** Add `src/persisted_result.align` with the exact
@@ -838,7 +839,7 @@ The following order prevents a later slice from being consumed prematurely:
    list, and any identity-bound baseline are updated together.
 7. **C7-G — named adoption gate.** Run `make persisted-result-smoke`, `make check`, `make build`,
    `make hosted-checks`, `make capable-checks`, and the full Section 9 `make ci` with its explicit
-   manifest path and digest; repeat the focused
+   image-attested manifest identity; repeat the focused
    adoption target on all three required native Align environments; record the final
    head/base/merge-base/integration identity and all results in the pull request and HANDOFF.
 
