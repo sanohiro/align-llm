@@ -5,9 +5,9 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `fd3d811` (`Clarify C6c1p
-  terminal prefix contract`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
-  validation`) and baseline finalization checkpoint `f70ea0e`, based on merged main commit
+- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `fc596e1` (`Run C6c1p prefix
+  smoke in hosted checks`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
+  validation`) and previous baseline finalization checkpoint `f70ea0e`, based on merged main commit
   `74601cda` (`Merge PR #51: Rescope C6c2 after conditional final review`).
 - Current source/design lineage: the merged C6c2 design from PR #51; `aad17dc` is the C6c1p
   implementation and `f70ea0e` is its required Makefile-bound baseline finalization checkpoint.
@@ -76,9 +76,14 @@ request checks, reviews, and attestations.
 - Complete: the author-side C6c1p consistency pass corrected the validation-order prose so a row
   after a terminal `ERROR` is `INVALID_INPUT`, matching the public contract, implementation, and
   post-error smoke case.
+- Complete: `prompt-score-prefix-smoke` is the final hosted target; the Makefile graph, topology
+  oracle, C6c1p ledger, and topology design now agree that `make hosted-checks`, `make capable-checks`,
+  and `make ci` execute the prefix acceptance smoke.
 - Complete: because C6c1p adds a Make target, the required clean-source baseline measurement,
   immutable oracle, and canonical finalization are recorded in separate commits; the evaluation
-  contract and existing baseline checks remain unchanged.
+  contract and existing baseline checks remain unchanged. The topology repair changed two
+  identity-bound baseline artifacts, so the prior finalization at `f70ea0e` is superseded pending
+  the required refresh from this branch's clean source checkpoint.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -105,14 +110,17 @@ request checks, reviews, and attestations.
 ## Exact next steps
 
 1. Perform the author-side C6c1p matrix-to-diff pass, run the required fresh adversarial preflight
-   review, push the branch, and open the independently reviewable PR with the exact verification
-   results and the required review attestation.
-2. Run the post-open independent review, apply only valid recorded findings in one repair, rerun
-   affected checks, wait for hosted checks, and merge C6c1p only after every finding is dispositioned.
-3. After C6c1p is merged, implement C6c2 only after C6a1/C6a2 provide content-validated decoded
-   records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record the
-   dependency blocker and continue only with safe independent roadmap work.
-4. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
+  review, push the branch, and open the independently reviewable PR with the exact verification
+  results and the required review attestation. The pre-PR topology repair is complete; baseline
+  refresh and final `make ci` evidence remain before opening it.
+2. Record the clean source baseline, immutable oracle, and canonical finalization; then rerun
+  `PYTHONDONTWRITEBYTECODE=1 make ci` and the final author-side assertions.
+3. Run the post-open independent review, apply only valid recorded findings in one repair, rerun
+  affected checks, wait for hosted checks, and merge C6c1p only after every finding is dispositioned.
+4. After C6c1p is merged, implement C6c2 only after C6a1/C6a2 provide content-validated decoded
+  records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record the
+  dependency blocker and continue only with safe independent roadmap work.
+5. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
    merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
    `make ci` passes the original acceptance gate.
 
@@ -136,9 +144,12 @@ request checks, reviews, and attestations.
   existing huge-struct-copy warnings remain non-fatal and are preserved as visible diagnostics.
 - C6c1p baseline verification is PASS: clean-source measurement at `60f6033`, immutable oracle
   commit `1c54151`, canonical finalization `f70ea0e`, `verify-baseline.py`, and
-  `PYTHONDONTWRITEBYTECODE=1 make ci` all passed. The pinned Align revision is
-  `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; the ordinary sibling checkout's ignored local
-  settings file was preserved, so baseline recording used the clean `align-clean-672` worktree.
+  `PYTHONDONTWRITEBYTECODE=1 make ci` all passed before the topology repair. The prior baseline is
+  intentionally pending refresh because `Makefile` and `scripts/check-gate-topology` changed.
+- C6c1p topology-repair verification is PASS at `fc596e1`: `python3 scripts/check-gate-topology
+  --self-test`, `make gate-topology-check`, `make prompt-score-prefix-smoke`, and
+  `PYTHONDONTWRITEBYTECODE=1 make hosted-checks` all passed; the aggregate log includes the new
+  prefix target. The pinned Align revision remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 - C6c1p author-side documentation verification is PASS at `fd3d811`: `git diff --check` passed;
   the correction changed no executable contract boundary, so the recorded source verification and
   baseline remain applicable.
