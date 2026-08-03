@@ -5,28 +5,65 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1-score-kernel-impl`; implementation is based on merged `main` commit
-  `95670134f6f7c503aeae15c7cbebe38434bdc617`.
-- Current source checkpoint: `6700a62d37dff56b864e83ab65d1a86f9c0545bb` (`Reject benchmark values
-  on error rows`), based on merged design checkpoint
-  `95670134f6f7c503aeae15c7cbebe38434bdc617`.
-- Active goal: implement, verify, review, and merge the independently testable pure C6c1 row
-  validation and aggregation kernel. The C6c1 design and its pinned-Align contract repair are
-  merged; implementation is the active slice.
-- Complete: `src/prompt_score.align`, its deterministic scalar-column smoke, the `prompt-score-smoke`
-  Make target, the topology oracle update, and the review repair rejecting benchmark values on
-  `ERROR` rows are implemented in the working source checkpoint.
-- Complete: the identity-bound baseline refresh is complete with source commit
-  `4b3019a83598cfbae7feecdc88732b855c2e31c4`, immutable oracle commit
-  `5338951e77415a21c42fbe030494c55d015f3542`, and finalization commit
-  `bc386d8`.
-- Complete: baseline structural verification, the local implementation/adoption integration gate,
-  the consolidated review repair, and its final-head `make ci` rerun.
-- In progress: finish PR #41 integration after the repair push.
-- Not started: hosted final-head checks, merge, and the bounded post-merge retrospective before
-  C6c2 selection.
-- Working tree is expected to be clean at the source checkpoint; no generated binaries, model
-  weights, credentials, or machine-specific paths may be committed.
+- Branch: `agent/c6c2-final-review-rescope`, current content checkpoint `727b5a4` (`Repair C6c2
+  review contract consistency`), based on terminal PR #50 checkpoint `a1b328b` and merged `main` commit
+  `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
+- Current source/design lineage: `733468b` (`Rescope C6c2 after conditional final review`), with
+  the recorded review repair in content checkpoint `727b5a4`.
+- Active goal: continue the C6 roadmap through completion, beginning by finishing the independently
+  reviewable successor to the terminal C6c2 design checkpoint in PR #51. PR #49 and PR #50 remain
+  unmerged historical checkpoints and are not to be repaired in place. Implementation is not started
+  and must wait for this design plus the C6a1/C6a2 decoded-record and Align adoption prerequisites.
+- Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
+- Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
+  and are not merge-ready; this branch contains the next corrected design instead.
+- Complete: the re-scoped design consumes borrowed, decoded, content-validated result and evidence
+  records; persists the execution trace contract; takes explicit verifier source paths and expected
+  identities; binds expected align-llm commit to the result environment; references the evidence
+  sidecar from `PromptGateManifest`; and now delegates incomplete rows to C6c1p `validate_prefix`.
+- Complete: the latest design correction keeps expected source identity claims in the environment
+  core while recording proof separately as reachability, and defines every C6c1p prefix-result field
+  on invalid plans without unchecked multiplication.
+- Complete: evaluator FILE_SET validation now has an explicit manifest path and a bounded canonical
+  byte grammar for exact membership, raw relative paths, modes, and file digests. Gate locators use
+  the same manifest model and require every declared gate task file to be listed.
+- Complete: the checked-in gate source bundle has no persisted tested-head self-reference; Make
+  passes explicit source-bundle and Git-tool paths to validation, and the validator derives the
+  actual clean, non-shallow CI checkout `HEAD` with that validated executable and cleared Git
+  environment. It requires the source bundle to equal it and the evidence's evaluated commit to be
+  its ancestor, preserving the normal-merge integration rule.
+- Complete: source verification has an explicit native helper policy, helper/Git digests, fixed
+  argv/environment/cwd/caps, raw-byte FILE_SET traversal, bounded request/result states, and policy
+  identity in `EnvironmentIdentityCore`.
+- Complete: adapter timeout/process-output/malformed-result paths use `ADAPTER_FAILED` with no
+  fabricated row or after snapshot; result-size overflow uses a bounded compact trace digest and
+  empty non-scoreable result/evidence shape.
+- Complete: `docs/align-requests.md` now marks Requests 8 and 10 as blocking both C6f2 and C6c2
+  runtime-sized decoded-record adoption while allowing independent design work.
+- Complete: a post-row evaluator cleanup failure retains a valid non-`ERROR` measurement row and
+  complete attestation, emits `ERROR/CLEANUP_FAILED`, and is accepted by C6c2 as `VALID_PREFIX`;
+  cleanup before a valid row retains none.
+- Complete: C6c1p validates all task-limit fields before computing the bounded expected row count;
+  invalid plans use the documented sentinel result.
+- Complete: C6c2's source-verifier child timeout is fixed at 60,000,000,000 ns and cannot be
+  selected by a request, policy, environment, or caller.
+- Complete: scorer reason capacity is `R_max = 9 * task_count * sample_count + task_count + 2`,
+  at most 9,282 under the declared bounds; C6c1 and C6c2 reject checked overflow/allocation
+  failure before output/scorer side effects and never truncate reasons.
+- Complete: the reopened C6c2 closure matrix assigns owners, exact contracts, and named regressions
+  for the three terminal findings: mode-specific EVALUATION/GATE head semantics with separate
+  evaluated-commit ancestry, pre-Git local Git metadata/config isolation with fixed direct argv, and
+  complete `refs/replace/` enumeration across loose, packed, and pinned ref-backend storage.
+- Complete: the Git source-verifier redesign, its initial review repair, and the durable Request 14
+  prerequisite are retained in terminal PR #50; the successor branch carries the next closure-matrix
+  rescope rather than changing that checkpoint in place.
+- Complete: the successor rescope reconciles scratch allocation failure with the declared terminal
+  Align allocator policy, makes pair cleanup ownership-safe under a competing publisher, and makes
+  invalid-evaluation evidence output conditional on reaching the paired-evidence boundary. Review
+  findings and attestations remain in GitHub; this handoff records only the durable design decisions
+  and blockers needed to continue.
+- Working tree must be clean at the next checkpoint; no generated binaries, model weights,
+  credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 
@@ -50,34 +87,32 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Mark PR #41 ready, wait for the final-head hosted checks, then merge it with the required native
-   review envelope and a merge commit.
-2. After merge, perform the bounded retrospective, refresh `main`, and select the next eligible
-   C6c2 slice. Do not start failure-memory JSONL adoption until Request 7 is accepted, merged at a
-   named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and `make ci`
-   passes the original acceptance gate.
+1. Push the consolidated repair and this HANDOFF checkpoint for PR #51
+   (`https://github.com/sanohiro/align-llm/pull/51`), rerun the documentation/static check, record
+   the finding dispositions and repair commit in GitHub, and complete the PR's merge requirements.
+   Keep review findings and attestations in GitHub rather than copying them into this file.
+2. After PR #51 is reviewed, its findings are disposed, and it is merged, refresh `main`, perform
+   the bounded retrospective, and implement and merge C6c1p first; implement
+   C6c2 only after C6a1/C6a2 provide content-validated
+   decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record
+   the dependency blocker and continue only with safe independent roadmap work.
+3. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
+   merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
+   `make ci` passes the original acceptance gate.
 
 ## Latest verification
 
-- `./scripts/alignc check-per-unit src/prompt_score.align`: PASS; only the expected large
-  `ScoreResult` Copy-return warnings remain because the public contract requires plain Copy results.
-- `make prompt-score-smoke`: PASS; deterministic validation, medians, ppm, reasons, capacity, and
-  untouched-output checks all pass, including malformed benchmark data on an `ERROR` row.
-- `make gate-topology-check`: PASS after registering `prompt-score-smoke` in the Makefile and its
-  embedded topology oracle.
-- `python3 scripts/check-gate-topology --self-test`: PASS.
-- `python3 eval/runners/record-baseline.py ... --samples 2`: PASS; pending measurement binds to
-  source commit `4b3019a83598cfbae7feecdc88732b855c2e31c4`.
-- `python3 scripts/finalize-canonical-baseline.py ... --oracle-commit
-  5338951e77415a21c42fbe030494c55d015f3542`: PASS; canonical baseline and digest were committed in
-  `bc386d8`, and the pending file was removed.
-- `make check`: PASS (15 existing main units; the repository's pre-existing compiler warnings are
-  unchanged).
-- `make baseline-check`: PASS, including canonical provenance, immutable oracle, malformed-input,
-  and Git isolation checks.
-- `make ci`: PASS with the pinned release compiler; topology, all hosted/capable focused checks,
-  coding-v1, `prompt-score-smoke`, and baseline verification all passed.
-- `make fmt`, `./scripts/check-format`, and `git diff --check`: PASS.
+- C6c1 final evidence remains PASS: focused smoke, `make check`, `make fmt`, format/static checks,
+  and `make ci` all passed before the merged `main` checkpoint.
+- The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
+- Terminal PR #50 verification remains durable evidence: its documentation/static checks passed for
+  the previous design checkpoint, while source tests and `make ci` were N/A for that docs-only slice.
+- Successor rescope verification is PASS: `git diff --check a1b328b..727b5a4`, changed-Markdown
+  fence counts (`c6-prompt-context-optimizer.md` 90, `align-requests.md` 86, `HANDOFF.md` 0),
+  targeted contract assertions for all four rows in `10.1b` at content checkpoint `727b5a4`, and the
+  `HANDOFF.md` durable-state scan all passed. PR #51 is the successor review boundary; its hosted documentation/static check
+  and review evidence are owned by GitHub. Source tests and `make ci` are N/A because this remains a
+  docs-only slice with no executable contract-boundary change.
 
 ## Constraints and decisions to preserve
 
@@ -86,9 +121,60 @@ request checks, reviews, and attestations.
   bounded child capture; Request 12 owns bounded canonical encoding; Request 13 owns recursive
   owned artifact graphs. Requests 6 and 9 remain independent.
 - C6 must not use a borrowed JSON view after its input buffer expires, concatenate JSON fragments,
-  invent a private wire format, or code against any proposed Align API.
+  invent a private wire format, or code against any proposed Align API. C6c2 specifically consumes
+  only C6a1/C6a2 decoded, content-validated records and never parses or canonical-encodes JSON.
+- `PromptEvaluationEvidence` is a separate content-bound sidecar with an explicit acceptance input;
+  it binds the result digest, independent per-row producer-input digests, and separate reachability
+  states for align-llm, external Align, and corpus. A gate-eligible evaluation requires all three
+  EVALUATION-mode states to be `VERIFIED` with observed identities equal to the expected identities;
+  the checked-in gate separately validates its GATE-mode CI head and evaluated-commit ancestry.
+  `UNVERIFIED` remains a valid non-gate comparison. `PromptEvaluateRequest` owns the explicit source paths and expected
+  identities; `PromptGateManifest` owns the checked-in evidence
+  reference. The verifier validates the persisted workspace/snapshot/input-snapshot/attestation
+  trace and exact error prefix. Its C6c1 adapter uses Request 8/10-declared temporary record/scalar
+  construction only; no fixed-size workaround or duplicated scorer is allowed. C6c1p owns the
+  borrowed prefix validator, while C6c1 `aggregate` remains complete-row-only. Explicit verifier
+  roots are read-only external inputs with their own physical path exception; source states already
+  observed before an early error are preserved. Pre/post baseline drift is retained as explicit
+  terminal attestation state, and result/evidence pair finalization uses result-then-evidence
+  no-replace renames with reverse cleanup only for evaluator-owned paths and explicit owned-orphan
+  recovery; a competing destination is never removed. The source verifier and gate
+  validator reject repository-local replacement refs, grafts, and object alternates through the
+  resolved Git common directory. `PromptEvaluateRequest` includes the conditional
+  canonical FILE_SET manifest path; `EnvironmentIdentityCore` keeps the explicit expected
+  align-llm/Align claims even when a source root is unavailable or mismatching; `PromptVerifierTrust`
+  reachability is the independent proof state, and only all-`VERIFIED` evidence is gate-eligible.
+  The evaluator align-llm source proof uses exact `HEAD` equality; the checked-in gate uses a
+  manifest-owned relative source locator, runtime-derived clean tested-head equality, and
+  evaluated-commit ancestry through explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and
+  `C6_GATE_GIT_EXECUTABLE_PATH` revalidation. Both source and gate boundaries raw-scan `.git`,
+  `gitdir`, `commondir`, and local/worktree configuration before any Git child, allow only inert
+  ordinary-clone remote/branch metadata, reject command/hook/helper/filter/pager/path/promisor/
+  proxy/transport settings, use fixed direct Git argv and cleared environment, and enumerate
+  `refs/replace/` through loose, packed, and pinned ref-backend storage. Request 14 blocks C6f2
+  result/evidence publication until Align ships exclusive creation and no-replace rename at a named
+  commit and the align-llm adoption gate passes; no check-then-create, delete-before-rename, or
+  undeclared native workaround is allowed. The FILE_SET
+  manifest is bounded and canonical, with
+  checked raw-byte membership and no symlink/special entries. A post-row cleanup failure
+  retains a valid non-`ERROR` row and uses the verifier's `VALID_PREFIX` cleanup branch. C6c1p validates
+  every task-limit field before multiplication and returns `row_count: rows.len()`,
+  `expected_row_count: -1`, `error_index: -1`, and `error_code: 1` for invalid plans without
+  side effects.
 - Verification is evidence for coherent slices: use focused checks after implementation coherence
   and run full `make ci` only at the named adoption/integration gate. Keep one comprehensive review
   and one consolidated repair; a material redesign requires re-scoping and another review.
+- The C6c2 source verifier's fixed 60-second timeout is a contract constant rather than a policy
+  field; the explicit gate Git executable and cleared Git environment apply to every CI-head and
+  ancestry command. C6c2 cannot resume from Request 8/10 `ALIGN_MERGED` until its separate
+  `c6c2-request8-adoption` and `c6c2-request10-adoption` targets plus `make ci` pass.
+- C6c2 checked-capacity overflow is a recoverable invalid result before scratch allocation; runtime
+  allocator failure follows the declared Request 8/10 terminal nonzero process policy and has no
+  recoverable-result or cleanup-after-abort promise. Pair publication removes only evaluator-owned
+  temporary or finalized paths; a competing destination is never removed or reported as an orphan.
+  A pre-execution decoded-request `INVALID_INPUT` writes only the result; evidence is written only
+  after the evaluator reaches its paired-evidence boundary.
 - All source, diagnostics, developer documentation, commits, pull requests, and review records
   remain in English.
+- Intentional uncommitted files: none; preserve the clean tree and this corrected design/review
+  boundary.

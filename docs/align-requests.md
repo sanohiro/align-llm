@@ -2483,9 +2483,9 @@ product slice starts only after every other separately registered JSON prerequis
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C6f2 deterministic paired evaluator; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension
-Independent work that may continue: application designs, pure codecs, renderers, scorers, activation slices, Request 5, Request 6, Request 7, and any work that does not construct a runtime-sized declared-record array
-Resume condition: Request 8 must reach ALIGN_MERGED at a named Align commit before its recursive extension can start; after ALIGN_MERGED at a named Align commit, rebuild both the sibling release compiler and runtime, update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged, run the named C6f2 adoption target and `make ci`, and then resume only that consumer
+Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension, and C6c2 cannot adopt its runtime-sized declared-record result arrays until the capability is merged
+Independent work that may continue: C6c2 design and other application designs, pure codecs, renderers, scorers, activation slices, Request 5, Request 6, Request 7, and any implementation that does not construct a runtime-sized declared-record array
+Resume condition: Request 8 must reach ALIGN_MERGED at a named Align commit before its recursive extension can start; after ALIGN_MERGED at a named Align commit, rebuild both the sibling release compiler and runtime and update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged. The C6f2 consumer runs its named `c6f2-array-builder-adoption` target and `make ci`; the C6c2 enabling consumer independently runs the Request 8 subset of `c6c2-request8-adoption` and `make ci`, which may advance this request for C6c2 without requiring the later C6c2 verifier implementation or Request 10. C6c2 remains blocked on Request 10 until its separate adoption gate passes.
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -2857,15 +2857,20 @@ Before Align marks Request 8 `ALIGN_MERGED`, its focused tests must prove all of
     concrete consumer may mark this request `ALIGN_LLM_VERIFIED`, that consumer must name its exact
     record shapes, wire boundary, adoption fixture, and output checks in its own reviewed design;
     it must not assume a JSON DTO, a borrowed-view conversion, or a private collection abstraction.
-    Request 8 itself does not absorb any consumer's wire or persistence boundary.
+    Request 8 itself does not absorb any consumer's wire or persistence boundary. For the currently
+    named C6c2 consumer, `c6c2-request8-adoption` is that separate enabling fixture and is allowed
+    to verify this Request 8 base before the C6c2 verifier or Request 10 exists.
 
-The align-llm adoption slice is separate from the Align implementation. After `ALIGN_MERGED`, a
+The align-llm adoption slice is separate from the Align implementation. After `ALIGN_MERGED`, each
 named consumer adoption slice must rebuild the sibling release compiler and runtime from the named
-Align commit, update `.align-revision` to that exact commit, and add the consumer-specific target and
-fixture. The target must use the reviewed fresh-compiler topology and exact shipped pin, verify its
+Align commit, update `.align-revision` to that exact commit, and add its consumer-specific target and
+fixture. The targets must use the reviewed fresh-compiler topology and exact shipped pin, verify the
 declared record values and cleanup boundary, and reject panic, stale source use, and unexpected
-artifacts. Only that named adoption target plus `make ci` may advance Request 8 to
-`ALIGN_LLM_VERIFIED`; until a concrete consumer is selected, the adoption remains not started.
+artifacts. `c6c2-request8-adoption` is the first C6c2 enabling target and covers only the Request 8
+base graph; it may advance Request 8 to `ALIGN_LLM_VERIFIED` before C6c2's verifier implementation
+or Request 10 is available. The later `c6f2-array-builder-adoption` covers the paired evaluator
+consumer. Each target plus `make ci` is required for the consumer that names it; adoption does not
+silently inherit another consumer's fixture.
 
 ### References
 
@@ -3598,9 +3603,9 @@ updated to name this merged request.
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C6f2 deterministic paired evaluator; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension
-Independent work that may continue: C6a1 codec work that does not materialize recursive runtime arrays, C6b, C6c, C6d, Request 5, Request 6, Request 7, Request 8, Request 9, and all pure verification work
-Resume condition: Request 8 first reaches ALIGN_MERGED at a named Align commit; then Align merges this request at a named commit, the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, the C6f2 adoption target and `make ci` pass, and the original recursive-construction acceptance matrix passes in align-llm
+Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by this evaluator extension, and C6c2 cannot adopt its recursive runtime-sized result arrays until both requests are merged
+Independent work that may continue: C6c2 design, C6a1 codec work that does not materialize recursive runtime arrays, C6b, C6c, C6d, Request 5, Request 6, Request 7, Request 8, Request 9, and verification work that does not construct the blocked record graph
+Resume condition: Request 8 first reaches ALIGN_MERGED at a named Align commit; then Align merges this request at a named commit, the sibling release compiler and runtime are rebuilt, and `.align-revision` is updated after the common check-topology design and implementation are already merged. The C6f2 path runs `c6f2-array-builder-adoption` and `make ci`; the C6c2 path runs the Request 10 recursive subset of `c6c2-request10-adoption` and `make ci`, then the original recursive-construction acceptance matrix. The C6c2 target is a separate enabling adoption slice and does not require the later verifier implementation; only after both Request 8 and Request 10 adoption gates pass may C6c2 implementation resume.
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -3659,7 +3664,16 @@ separately from positional calls:
 5. allocation parity is measured against the ordinary declared-record representation, and no
    hidden arena or private collection is introduced; and
 6. C6f2 constructs and drops the named records through the shipped surface, then passes its
-   runtime-array, malformed-input, early-exit, and cleanup regressions through `make ci`.
+   runtime-array, malformed-input, early-exit, and cleanup regressions through `make ci`; the
+   C6c2 enabling consumer separately runs `c6c2-request10-adoption` for the recursive Request 10
+   subset before C6c2 implementation starts, without making Request 10 depend on the later verifier.
+
+The C6c2 enabling adoption is intentionally split from the verifier implementation. Its
+`c6c2-request10-adoption` target is allowed only after the named Request 8 and Request 10 Align
+commits are pinned; it constructs the exact recursive C6 record graph, exercises `Option.None`,
+`Option.Some`, nested arrays, reallocation, partial failure, and `Drop`, then runs `make ci`. This
+target supplies the C6c2-specific adoption evidence required by this request; the later
+`c6f2-array-builder-adoption` remains the paired-evaluator consumer evidence.
 
 ### References
 
@@ -3850,6 +3864,88 @@ The Align design and implementation must prove:
 - Request 9 — the flat direct-owned text prerequisite, whose ownership rules this request reuses.
 - Request 12 — bounded canonical encoding, which remains a separate prerequisite.
 - `docs/specs/c6-prompt-context-optimizer.md` §§1.2, 4.5, 6, and 10.1 — C6 ownership and vectors.
+
+---
+
+## Request 14 — `std.fs`: exclusive creation and no-replace publication
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6f2 deterministic paired evaluator result/evidence publication and any later C6 command that promises no-replace artifact finalization
+Independent work that may continue: C6c1p and C6c2 pure verification, prompt rendering, scoring, design work, and any implementation that does not publish a pair with exclusive creation and no-replace rename
+Resume condition: Align accepts and merges the reviewed exclusive-create and no-replace-publication design at a named commit; the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, `c6f2-request14-adoption` passes the exact publication race/cleanup matrix, and `make ci` passes
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation and current-state evidence
+
+C6f2 writes a result and an independently content-bound evidence sidecar. Its contract requires
+two sibling temporary files, exclusive creation, fixed result-then-evidence publication, and a
+no-replace finalization failure if another process creates either target between validation and
+publication. The pinned Align `std.fs` surface provides whole-file `write_file` and `remove`, plus
+the `fs.create` writer; `fs.create` opens with create/truncate semantics and can replace an existing
+path. It does not expose an exclusive-create operation or an atomic no-replace rename operation.
+The compiler/runtime's Rust cache publisher uses private `std::fs::rename`, but that is not an Align
+program API and cannot be used by an align-llm client. A check-then-write or delete-and-rename
+workaround would violate the stated race and no-replace contract.
+
+### Requested capability
+
+Extend `std.fs` with one explicit publication pair, or an equivalent reviewed API with the same
+semantics:
+
+```text
+fs.create_exclusive(path: str) -> Result<writer, Error>
+fs.rename_no_replace(source: str, destination: str) -> Result<(), Error>
+```
+
+The exact shipped names may follow Align's library naming, but the design must define that
+`create_exclusive` opens a new regular file without following a destination symlink and fails when
+the path already exists; it must not truncate or replace an existing entry. It must return an owned
+`writer`, preserve the existing explicit Move/drop behavior, and close the descriptor on every
+success, write failure, `?`, `map_err`, branch join, early return, and `Drop` path. The path is a
+bounded NUL-free `str` view consumed only for the call; the returned writer owns the descriptor and
+does not retain the view.
+
+`rename_no_replace` must publish a source path to an absent destination atomically on one filesystem,
+fail with a deterministic already-exists error when the destination is present, never replace or
+delete the destination, and define source/destination validation, cross-device failure, symlink and
+special-file behavior, same-directory behavior, and cleanup after every error. It must be a direct
+OS operation, not a shell command or a check-then-rename sequence. The API must state whether the
+source is consumed on success, and the caller must be able to remove a successfully published first
+target before retrying a failed second publication without the library hiding that cleanup.
+
+### Acceptance criteria
+
+The Align design and implementation must prove:
+
+1. ordinary and linked-worktree path handling, NUL/length/type validation, parent-directory errors,
+   destination symlink and special-file rejection, and exact error mapping;
+2. exclusive creation at an absent target and deterministic failure at an existing target, including
+   a competing creator between preflight and create, with no truncation or replacement;
+3. atomic no-replace rename at an absent destination and deterministic failure when a competing
+   creator wins, with the source and destination states specified for every failure;
+4. same-filesystem publication, cross-device failure, source disappearance, destination directory,
+   symlink, and special-file cases, with no hidden remove or overwrite;
+5. writer ownership, partial writes, `Drop`, `?`, `map_err`, branch/loop joins, allocation failure,
+   and cleanup after a failed pair publication, including the already-published-first-target case;
+6. repeated and concurrent independent calls, process interruption between staging and publication,
+   and the minimum declared filesystem/platform acceptance environment; and
+7. the align-llm `c6f2-request14-adoption` target uses the shipped operations for the exact result-then-
+   evidence pair contract, exercises the race/cleanup matrix, leaves no temporary artifact on
+   successful cleanup, and passes `make ci`. C6f2 must not use `write_file`, delete-before-rename,
+   a check-then-create workaround, or an undeclared native helper in place of this capability.
+
+### References
+
+- `../align/docs/guide/13-std-os.md` — current `std.fs` whole-file and writer APIs.
+- `../align/crates/align_runtime/src/lib.rs` — current `fs.create` create/truncate implementation
+  and owned writer/drop boundary.
+- `docs/specs/c6-prompt-context-optimizer.md` §§5.2, 6, 10, and 11 — result/evidence pair
+  publication, cleanup, ledger ownership, and C6f2 adoption gate.
 
 ---
 
