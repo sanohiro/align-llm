@@ -37,11 +37,14 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The next transition away from the currently pinned Align commit
-`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` has one repository-wide prerequisite. A reviewed
-`docs/specs/check-gate-topology.md` fresh-compiler design update and its dependent implementation
-must both merge before any request changes `.align-revision`, runs verification against a new
-compiler, or advances to `ALIGN_LLM_VERIFIED`. This augments every lifecycle entry below, including
-older requests whose local resume condition only names their feature-specific adoption gate.
+`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` has one Linux x86_64 repository-wide prerequisite. A
+reviewed `docs/specs/check-gate-topology.md` fresh-compiler design update and its dependent
+implementation must both merge before any Linux x86_64 request changes `.align-revision`, runs
+verification against a new compiler, or advances to `ALIGN_LLM_VERIFIED`. This augments every
+lifecycle entry below, including older requests whose local resume condition only names their
+feature-specific adoption gate. A consumer whose required acceptance environment is outside this
+profile must also name and merge a reviewed platform profile and implementation; the x86_64
+topology is not cross-platform evidence.
 
 A blocking request pauses only its dependent gate or slice. Record that pause and its resume
 condition in `HANDOFF.md`; continue independent work when it remains valid. Do not implement a
@@ -1414,7 +1417,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: Request 7 acceptance, implementation, and align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
 Independent work that may continue: the separate benchmark-evidence design and implementation, C6 design review, Request 5 bounded-response work, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
-Resume condition: Request 7 may enter ACCEPTED only after the separate benchmark-evidence design is reviewed and merged; it may enter IMPLEMENTING only after Request 6, decoded-owner cleanup, the benchmark-input slice, and that design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, the common fresh-compiler check-topology design plus its dependent implementation both merge, and the separate Request 7 topology update adding `c6-json-escape-adoption` merges, align-llm adoption pins the shipped Align release and passes that exact target plus `make ci`; this closes only the escape prerequisite
+Resume condition: Request 7 may enter ACCEPTED only after the separate benchmark-evidence design is reviewed and merged; it may enter IMPLEMENTING only after Request 6, decoded-owner cleanup, the benchmark-input slice, and that design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, the common Linux x86_64 fresh-compiler check-topology design plus its dependent implementation both merge, the separate Request 7 topology update adding `c6-json-escape-adoption` merges, and the required immutable Git 2.45.0 compatibility image/job passes, align-llm adoption pins the shipped Align release and passes that exact target plus `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform-profile designs and implementations before they can claim adoption; this closes only the escape prerequisite
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -1678,7 +1681,7 @@ The implementation closure ledger for the future Align design is:
 | Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
-| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | DEFERRED to a separately reviewed and merged `docs/specs/check-gate-topology.md` design update plus a dependent implementation slice; every pin-changing adoption is blocked because the bootstrap, cache, compiler-exec interposition, process, timeout, and cleanup surfaces are not yet designed or installed | that prerequisite plan must name exact unit, fault-injection, and local/hosted integration regressions for every closure class listed in the adoption gate, and its implementation must pass them before a later adoption changes the pin |
+| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | The Linux x86_64 design update is recorded in `docs/specs/check-gate-topology.md` and is undergoing its comprehensive review repair; its dependent implementation, fixed host image/manifest installation, identity-bound baseline refresh, and align-llm verification are still pending, so every pin-changing adoption remains blocked | the topology implementation must pass every named unit, fault-injection, local/hosted integration, baseline-ancestry, and cleanup regression before a later adoption changes the pin; aarch64 Linux/macOS consumers additionally require separate platform-profile designs and implementations |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -2238,13 +2241,16 @@ replaces
 the current hosted workflow's depth-one-only behavior only in the future adoption slice.
 
 An allowed ordinary root `target/` is treated only as unrelated prior output; no acceptance command
-may execute or link an artifact from it. Before the next adoption or verification that changes
-`.align-revision`, a separate reviewed design slice must update
+may execute or link an artifact from it. Before the next Linux x86_64 adoption or verification that
+changes `.align-revision`, a separate reviewed design slice must update
 `docs/specs/check-gate-topology.md` and merge, followed by a dependent implementation slice that
-makes canonical `make ci` consume the reviewed fresh-compiler path and passes its complete local
-and hosted acceptance matrix. This is a repository-wide pin-transition prerequisite, not a
-Request 7-only helper: Request 6, decoded-owner cleanup, Request 7, and any other request that would
-advance the pin or claim `ALIGN_LLM_VERIFIED` against a new compiler must wait for both slices.
+makes canonical `make ci` consume the reviewed fresh-compiler path, refreshes the identity-bound
+baseline after the Makefile change, and passes its complete local and hosted acceptance matrix.
+This is a repository-wide pin-transition prerequisite, not a Request 7-only helper: Request 6,
+decoded-owner cleanup, Request 7, and any other request that would advance the x86_64 pin or claim
+`ALIGN_LLM_VERIFIED` against a new compiler must wait for both slices. A request with an aarch64 or
+macOS acceptance environment must additionally wait for its named platform-profile design and
+implementation.
 The plan, rather than this request register, owns the exact public inputs, bootstrap, commands,
 statuses, timeout constants, process topology, cleanup algorithm, implementation modules, and
 regression names for building and using a fresh pinned compiler outside `ALIGN_REPO`.
@@ -2263,14 +2269,18 @@ cannot delete an unowned path or race a surviving writer. Its closure matrix mus
 every phase failure, timeout, exhaustion, and cleanup failure under both local `make ci` and the
 hosted serialized aggregate, and must name exact negative and integration tests for each cell.
 
-Four design choices are intentionally unresolved here and block that enabling slice: how a
-bootstrap is trusted before it can validate itself; whether additional bootstrap or tool-identity
-version probes exist beyond the required Git preflight above and, if so, how their own processes
-are owned; how an offline Cargo cache is materialized without nested symlink or rename escape; and
-how compiler identity is enforced inside aggregate-internal invocations. Request 7 does not name a
-controller, wrapper, environment variable, path, timeout, or PID mechanism ahead of that review.
-The topology implementation and every later adoption must consume the merged topology contract
-exactly and may not code against a proposed interface.
+The fresh-compiler design update resolves the four choices that were previously open: the fixed
+host bootstrap and authenticated manifest are the pre-self-validation trust root; the closed tool
+inventory and sequential owned probes cover every executable identity needed by the compiler and
+capable aggregate; offline Cargo cache entries are descriptor-scanned and copied with directory
+operations, an explicit configuration/wrapper allowlist, no-follow semantics, and post-copy
+identity checks; and `scripts/alignc` plus the controller-owned recursive Make boundary enforce the
+descriptor-selected compiler inside direct and aggregate-internal invocations. The common contract
+is now recorded in `docs/specs/check-gate-topology.md` but its dependent implementation, host image,
+baseline refresh, and align-llm verification remain pending. Request 7 must consume that merged
+contract exactly and may not code against an unmerged controller, manifest, wrapper, or platform
+profile. Its separate Git 2.45.0 image and C7 non-x86 platform profiles remain independent
+prerequisites rather than being silently folded into this x86_64 design.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
 ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves

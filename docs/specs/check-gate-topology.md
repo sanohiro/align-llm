@@ -730,20 +730,23 @@ records why this identity-coupled exception cannot be split safely.
 
 ## 8. Fresh compiler transition contract
 
-This revision is the repository-wide prerequisite for every future adoption that changes
+This revision is the repository-wide prerequisite for future Linux x86_64 adoption that changes
 `.align-revision` or claims `ALIGN_LLM_VERIFIED` against a newly built compiler. It is a design
 slice only; it does not change the current Makefile or compiler pin. A dependent implementation
-must merge this contract first and then implement it in a separate slice. No later consumer may
-introduce a narrower copy of this protocol.
+must merge this contract first and then implement it in a separate slice. No later Linux x86_64
+consumer may introduce a narrower copy of this protocol. This section deliberately does not claim
+the aarch64 Linux or aarch64 macOS C7 acceptance environments: each of those environments needs a
+separate reviewed platform profile that preserves this trust, identity, process, cache, and cleanup
+ledger before it can adopt a changed pin.
 
 ### 8.1 Decision, threat boundary, and prerequisites
 
-The final `make ci` path is controller-owned from source validation through the last capable check.
-It builds the pinned Align compiler in a private target outside `ALIGN_REPO`, keeps the private
-build root alive while it launches `capable-checks`, and removes that root only after the aggregate
-process has terminated and the compiler descriptor is no longer reachable. `align-build` is a
-diagnostic build-only entrypoint; it is not a prerequisite of the final `ci` path and its output
-must never be reused by `ci`.
+The final Linux x86_64 `make ci` path is controller-owned from source validation through the last
+capable check. It builds the pinned Align compiler in a private target outside `ALIGN_REPO`, keeps
+the private build root alive while it launches `capable-checks`, and removes that root only after
+the aggregate process has terminated and the compiler descriptor is no longer reachable.
+`align-build` is a diagnostic build-only entrypoint; it is not a prerequisite of the final `ci` path
+and its output must never be reused by `ci`.
 
 The trust boundary is explicit:
 
@@ -800,6 +803,16 @@ hosted aggregate does not build a compiler: it runs the fresh-controller self-te
 workflow's separately selected compiler for hosted-compatible product checks. Only the capable
 `make ci` acceptance proves a real fresh compiler build and its use by every capable check.
 
+The `ci` Make control plane is itself fixed before the bootstrap recipe can run. When `ci` is among
+the requested goals, the Makefile sets `override SHELL := /bin/sh` and
+`override .SHELLFLAGS := -eu -c`, clears and exports `MAKEOVERRIDES`, and clears
+`MAKEFLAGS`/`GNUMAKEFLAGS` on the worker recipe. A command-line or environment `SHELL`,
+`.SHELLFLAGS`, or `MAKEOVERRIDES` value cannot select the recipe shell or inject a recursive Make
+assignment. The implementation's parse-time negative fixtures prove that a marker shell and a
+`MAKEOVERRIDES=ALIGN_LLM_COMPILER_DESCRIPTOR=...` value are rejected or cleared before the
+bootstrap is launched. The documented `ALIGN_REPO` and manifest values are copied into explicit
+controller-owned environment assignments; they are not propagated through `MAKEOVERRIDES`.
+
 ### 8.2 Bootstrap and toolchain manifest
 
 The bootstrap reads one canonical UTF-8 JSON manifest from the explicit path. The schema version is
@@ -818,36 +831,116 @@ cargo_cache
 ```
 
 The canonical form is an object with those fields in that order, two-space indentation, UTF-8
-without an ASCII escape for ordinary printable characters, and one final LF. `controller` contains
-`path` equal to `scripts/fresh-align-compiler` and `sha256` as lowercase 64-hex. `bootstrap`
-contains the fixed path, lowercase 64-hex image digest, and `api` equal to `1`. `platform` contains
-`os` `linux`, `architecture` `x86_64`, `kernel_minimum` `6.8`, `python_minimum` `3.12`, and
-`make_minimum` `4.3`.
-
-`tools` is an ordered array with exactly these names and no duplicates:
+without an ASCII escape for ordinary printable characters, and one final LF. Every object and
+array has a fixed field or element order; a producer must not rely on a JSON map's implementation
+order. The complete nested order is:
 
 ```text
-git cargo rustc llvm-config cc cxx ar ranlib linker bwrap sh
+controller: path, sha256
+bootstrap: path, sha256, api
+platform: os, architecture, kernel_minimum, python_minimum, make_minimum
+tool: name, path, namespace_path, mode, sha256, argv, stdout, stderr
+runtime_binding: source, target, kind, manifest, manifest_sha256
+cache: root, manifest, manifest_sha256, entry_count
+cache_entry: path, kind, mode, size, sha256
+runtime_manifest_entry: path, kind, mode, size, sha256
 ```
+
+`controller` contains `path` equal to `scripts/fresh-align-compiler` and `sha256` as lowercase
+64-hex. `bootstrap` contains the fixed path, lowercase 64-hex image digest, and `api` equal to
+`1`. `platform` contains `os` `linux`, `architecture` `x86_64`, `kernel_minimum` `6.8`,
+`python_minimum` `3.12`, and `make_minimum` `4.3`.
+
+All strings are valid UTF-8, contain no NUL, and are at most 4,096 bytes except bounded probe
+streams, which are at most 65,536 bytes. Absolute paths use one leading `/`, contain no empty,
+`.` or `..` component, and are at most 4,096 bytes; relative manifest paths use raw-byte
+lexicographic components with the same component restrictions. Decimal integers are unsigned
+JSON integers with no leading zero and are at most 64 bits. Modes are four-octal-digit integers
+between `0000` and `0777`. `argv` has at most 32 elements and 4,096 total encoded bytes. The
+manifest has at most 128 tool records, 256 runtime bindings, a recursive digest manifest depth of
+64, 200,000 entries, and 64 MiB of serialized bytes. A cache regular file is at most 512 MiB and
+the complete materialized cache is at most 20 GiB. These limits are checked before allocation or
+side effects and are part of schema version 1.
+
+The format self-test owns this exact canonical wire vector (the final line terminator shown below
+is one LF). It is a syntax/serialization vector rather than a runnable toolchain because the empty
+`tools` array is intentionally rejected by the semantic inventory check; it fixes field order,
+indentation, integer spelling, and final-LF behavior independently of host paths:
+
+```json
+{
+  "schema_version": 1,
+  "controller": {
+    "path": "scripts/fresh-align-compiler",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "bootstrap": {
+    "path": "/usr/local/libexec/align-llm/fresh-bootstrap",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "api": 1
+  },
+  "platform": {
+    "os": "linux",
+    "architecture": "x86_64",
+    "kernel_minimum": "6.8",
+    "python_minimum": "3.12",
+    "make_minimum": "4.3"
+  },
+  "tools": [],
+  "runtime_bindings": [],
+  "cargo_cache": {
+    "root": "/cache",
+    "manifest": "/cache/manifest.json",
+    "manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "entry_count": 0
+  }
+}
+```
+
+The self-test compares bytes, not parsed values, and separately compares a complete synthetic
+manifest with the closed tool inventory, bounded runtime digest tree, and zero-entry cache. That
+second vector is the acceptance fixture `fresh-compiler-manifest-v1-complete`; it uses deterministic
+synthetic executable bytes and paths, so no platform path or mutable host digest is left unspecified
+by this design.
+
+`tools` is a closed, ordered inventory with no duplicates. It includes the following currently
+observed executable identities for the Align release build and the complete capable graph:
+
+```text
+git cargo rustc llvm-config cc cxx ar ranlib linker bwrap sh make python3 env bash prlimit
+clang strip objdump objcopy llvm-profdata llvm-bcanalyzer llvm-readobj llvm-nm ld ld.lld id
+```
+
+The implementation's source scan and trace must produce the same or a strictly expanded inventory
+before implementation acceptance; an executable name or absolute executable path not represented
+in this inventory is a `TOOL` error, never a host fallback. Versioned spellings such as
+`llvm-config-22`, `clang-22`, `llvm-profdata-22`, and `llvm-bcanalyzer-22` are represented by their
+own records when that is the actual argv spelling. The list is therefore closed by the checked
+manifest, not by `PATH` discovery.
 
 Each tool record contains `name`, absolute host `path`, absolute namespace `path`, `mode`, lowercase
 64-hex `sha256`, `argv`, `stdout`, and `stderr`. `argv` is a nonempty fixed argument vector whose
 first element is the absolute host path; `stdout` and `stderr` are bounded ASCII probe results with
 JSON escaping only where required by the JSON grammar. The controller opens each host path with
-no-follow semantics, requires the declared executable regular-file mode, hashes the complete bytes
-before execution, and then runs the exact vector with a cleared probe environment. The worker
-materializes or read-only-binds that same verified executable at its namespace path before bwrap
-starts. `git`'s expected output must report version 2.45 or newer; `cargo` and `rustc` must match the
-manifest's exact Rust 1.96 toolchain; `llvm-config` must report LLVM major 22; the remaining version
-and digest values are image-owned rather than inferred from `PATH`.
+no-follow semantics, requires the declared executable regular-file mode, and hashes the complete
+bytes before execution. It then copies the verified bytes into the private `tool-bin` staging
+directory with direct create-exclusive operations, hashes and scans the copy again, makes it
+read-only, and only then exposes that copy at its namespace path. The host path is never used after
+staging. `git`'s expected output must report version 2.45 or newer; `cargo` and `rustc` must match
+the manifest's exact Rust 1.96 toolchain; `llvm-config` must report LLVM major 22; the remaining
+version and digest values are image-owned rather than inferred from `PATH`.
 
 The manifest also contains `runtime_bindings` after `tools` and before `cargo_cache`. Each binding
-has `source`, `target`, `kind`, and a complete recursive digest manifest. Bindings are ordered,
-absolute, no-follow read-only mounts for dynamic libraries, Rust standard libraries, LLVM resources,
-and other non-executable files required by the declared tools. A binding cannot overlap `/src`,
-`/tools`, `/cargo`, or `/target`; its source and every descendant are validated before the build
-root exists. This makes the namespace paths usable without silently exposing a host `PATH` or an
-unverified tool-resource directory.
+has `source`, `target`, `kind`, a complete recursive digest manifest, and `manifest_sha256`.
+Bindings are ordered, absolute, no-follow host inputs for dynamic libraries, Rust standard
+libraries, LLVM resources, `/usr/bin/env`, and other non-executable or fixed-launcher files
+required by the declared tools. The worker validates each source descriptor, copies the complete
+tree into a private `runtime` staging directory with bounded direct operations, hashes the copy,
+and then uses only that read-only copy in bwrap. A binding cannot overlap `/src`, `/tools`,
+`/cargo`, or `/target`; its source and every descendant are validated before the build root exists.
+This gives runtime bindings the same hash-then-use rule as tools without exposing a host `PATH` or
+an unverified resource directory. The staged `/usr/bin/env` and `/bin/sh` launchers must have the
+same digests as the corresponding `env` and `sh` tool records.
 
 There are no unlisted identity probes. In particular, the controller does not run `command -v`,
 `which`, a shell, `rustup`, a Git hook, a Cargo config helper, or a version command whose path came
@@ -857,16 +950,29 @@ namespace launchers under `/tools`. `RUSTC`, `CARGO`, `LLVM_CONFIG`, `CC`, `CXX`
 and the target linker variable are all set to those namespace paths, whose executable bytes were
 checked against the absolute host paths before the namespace was built. Cargo configuration,
 rustup configuration, wrapper variables, proxy variables, credentials, and network configuration
-are cleared rather than inherited.
+are cleared rather than inherited. The capable aggregate receives `PATH=/tools`, `MAKE=/tools/make`,
+`ALIGN_LLM_BWRAP=/tools/bwrap`, and `ALIGN_LLM_PRLIMIT=/tools/prlimit`; all Python and shell
+shebangs therefore resolve to staged tool records. The implementation updates
+`eval/runners/run-coding-task.py` to honor both explicit fresh-mode paths, eliminating its current
+`/usr/bin/bwrap` and `/usr/bin/prlimit` fallbacks.
 
 `cargo_cache` contains `root`, `manifest`, `manifest_sha256`, and `entry_count`. Both paths are
 absolute and are opened before any owned output root is created. The cache manifest uses the same
 canonical JSON rules and lists every admitted relative path in raw-byte lexicographic order with
 `kind`, `mode`, `size`, and `sha256`. Only regular files and directories with the declared modes
-are admitted. Symlinks, hard links (`st_nlink != 1`), devices, FIFOs, sockets, whiteouts, absolute
-paths, `..`, duplicate paths, and entries outside the declared root reject. The manifest's digest
-is checked against the top-level record and the complete source cache is checked before copying;
-Cargo may not discover another cache through `HOME`, `RUSTUP_HOME`, `CARGO_HOME`, or a config file.
+are admitted. The hard-link check (`st_nlink == 1`) applies only to regular files; directory link
+counts are not interpreted as hard-link evidence. Symlinks, devices, FIFOs, sockets, whiteouts,
+absolute paths, `..`, duplicate paths, and entries outside the declared root reject. Cache entries
+named `config`, `config.toml`, `credentials`, `credentials.toml`, `rustc-wrapper`, or
+`rustc-workspace-wrapper`, any `.cargo` directory, and any path that could supply Cargo's
+`target-dir`, source replacement, registry credential, proxy, or wrapper configuration reject.
+Only the explicit registry and Git cache subtrees used by the locked offline build are admitted;
+the allowlist is part of the manifest version and is checked before copying. The manifest's digest
+is checked against the top-level record and the complete source cache is checked before copying.
+The tracked project `/src/.cargo/config.toml`, when present, is a reviewed source input and is the
+only project configuration Cargo may read; it is included in the source manifest. No CARGO_HOME,
+HOME, RUSTUP_HOME, environment, or cache file can add a second configuration source. Namespace
+root/output permissions make a source `target-dir` outside `/target` fail before a write.
 
 The bootstrap validates in this order and emits one bounded English line on failure: manifest
 argument and digest, manifest schema, fixed bootstrap identity, controller path/hash, platform,
@@ -936,43 +1042,73 @@ below it with `mkdirat(O_EXCL)`. The basename is `align-llm-fresh-<32 lowercase 
 descriptor, root descriptor, random basename, device/inode pair, and a private owner token. It
 never removes `/tmp`, the project root, `ALIGN_REPO`, the source cache, or an unowned path.
 
-The root owns exactly these children, created with fixed modes and no replacement or rename:
+The root owns exactly these children. `source`, `runtime`, and `tool-bin` are created mode `0700`
+for staging and are changed to mode `0555` only after their complete post-copy scans succeed; the
+other children retain their creation modes. No child is replaced or renamed:
 
 ```text
-source/       0555 source materialization
+source/       0700 -> 0555 source materialization
 cargo-home/   0700 private Cargo home
 cargo-target/ 0700 empty Cargo target
-tool-bin/     0555 copied declared tool launchers
+runtime/      0700 -> 0555 copied runtime bindings
+tool-bin/     0700 -> 0555 copied declared tools and compiler artifacts
 descriptor/   0700 compiler descriptor and cleanup journal
 ```
 
 The cache materializer walks the retained source-cache descriptor and copies each manifest entry
-directly into `cargo-home` with `openat(O_CREAT|O_EXCL|O_NOFOLLOW, 0600)`, bounded reads, a fresh
-SHA-256, `fsync`, and a final descriptor-relative enumeration. It never uses `cp -a`, a recursive
-rename, a symlink-following library walk, or a cache path as `CARGO_HOME`. A source cache mutation
-during a copy produces a digest or size mismatch; a destination collision, symlink, hard link,
-unexpected special file, or post-copy extra path produces a cache error. The source cache remains
-read-only and no network access is possible.
+directly into `cargo-home`: directory entries use `mkdirat` with mode `0700`, and regular files use
+`openat(O_CREAT|O_EXCL|O_NOFOLLOW, 0600)`, bounded reads, a fresh SHA-256, `fsync`, and a final
+descriptor-relative enumeration. The hard-link check applies to source regular files only, never
+to directories. It never uses `cp -a`, a recursive rename, a symlink-following library walk, or a
+cache path as `CARGO_HOME`. A source cache mutation during a copy produces a digest or size
+mismatch; a destination collision, symlink, hard link, unexpected special file, or post-copy extra
+path produces a cache error. The source cache remains read-only and no network access is possible.
 
-The build runs through the declared `bwrap` in a new session and PID namespace with
-`--die-with-parent`, `--unshare-net`, and read-only binds for the staged source, copied tool set,
-system dynamic libraries, and source cache. Only `cargo-home` and `cargo-target` are writable
-binds. The namespace has no host `HOME`, no host `/tmp`, no host Cargo target, and no original
-`ALIGN_REPO`; `/src`, `/tools`, `/cargo`, and `/target` are the only build paths. The exact build
-argv is:
+The build runs through the declared `bwrap` with the exact namespace construction below. The
+`--tmpfs /` operation creates an empty namespace root rather than retaining the host root mount;
+the subsequent explicit binds are the complete visible filesystem:
 
 ```text
-cargo build --manifest-path /src/Cargo.toml --locked --offline --release -p align_runtime -p align_driver
+bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net \
+  --tmpfs / --proc /proc --dev /dev \
+  --dir /src --dir /tools --dir /cargo --dir /target --dir /usr --dir /usr/bin --dir /bin \
+  --ro-bind <private>/source /src \
+  --ro-bind <private>/tool-bin /tools \
+  --bind <private>/cargo-home /cargo \
+  --bind <private>/cargo-target /target \
+  --ro-bind <private>/runtime/... <manifest target paths> \
+  --chmod 0555 / \
+  --setenv HOME /nonexistent --setenv TMPDIR /target/tmp --setenv PATH /tools \
+  --setenv MAKE /tools/make --setenv CARGO_HOME /cargo --setenv CARGO_TARGET_DIR /target \
+  --setenv CARGO_NET_OFFLINE true \
+  --setenv ALIGN_LLM_BWRAP /tools/bwrap --setenv ALIGN_LLM_PRLIMIT /tools/prlimit \
+  -- /tools/cargo build --manifest-path /src/Cargo.toml --locked --offline --release \
+     -p align_runtime -p align_driver
 ```
 
-The controller additionally sets `CARGO_NET_OFFLINE=true`, `CARGO_HOME=/cargo`,
-`CARGO_TARGET_DIR=/target`, fixed `PATH=/tools`, and the namespace tool variables from the
-manifest. The `cargo` argv element is `/tools/cargo`; its host path, digest, and required resource
-bindings were validated before that namespace path was exposed. The same rule applies to `rustc`,
-`llvm-config`, the C/C++ tools, linker, and `sh`.
-It rejects any Cargo output outside `/cargo` or `/target`, and after success requires the release
-compiler plus its adjacent runtime artifacts to be regular files with the declared build identity.
-The build is never allowed to reuse a pre-existing target or a mutable Cargo home.
+`<manifest target paths>` expands only to the ordered, digest-checked runtime bindings; it is not
+an unconstrained host-root bind. The `--dir` operations occur before the final root chmod, and
+`/cargo` and `/target` remain writable because their explicit binds are created with the caller's
+private-root ownership after the root mount is constructed. The namespace has no host `HOME`, no
+host `/tmp`, no host Cargo target, and no original `ALIGN_REPO`; only the declared runtime paths
+and `/src`, `/tools`, `/cargo`, and `/target` are visible. The required `--unshare-pid` is tested
+by the acceptance fixture with a double-forking child; absence of the PID namespace is a platform
+error. `TMPDIR` points into a pre-created directory below `/target`, so no additional writable host
+or namespace path is needed.
+
+The exact build argv is:
+
+```text
+/tools/cargo build --manifest-path /src/Cargo.toml --locked --offline --release -p align_runtime -p align_driver
+```
+
+The controller also sets the namespace tool variables from the manifest. The `cargo` argv element
+is `/tools/cargo`; its host path, digest, copied bytes, and required resource bindings were
+validated before that namespace path was exposed. The same rule applies to `rustc`, `llvm-config`,
+the C/C++ tools, linker, and `sh`. It rejects any Cargo output outside `/cargo` or `/target`, and
+after success requires the release compiler plus its adjacent runtime artifacts to be regular files
+with the declared build identity. The build is never allowed to reuse a pre-existing target or a
+mutable Cargo home.
 
 Cleanup has one owner: the worker that created the root. It first terminates and reaps every owned
 child, closes source/cache/output descriptors, then removes only known children in reverse order
@@ -989,9 +1125,13 @@ private `descriptor/` child. It has schema version `1`, exact field order
 `schema_version`, `align_revision`, `source_manifest_sha256`, `toolchain_manifest_sha256`,
 `compiler_path`, `compiler_sha256`, `runtime_paths`, and `launcher_policy`. It is UTF-8, two-space
 indented, has no unknown fields, and ends with one LF. `compiler_path` and each `runtime_paths`
-entry are descriptor-relative paths below the private root; the descriptor records no original
-`ALIGN_REPO` path. The compiler digest is over the complete regular executable bytes. The descriptor
-is not a persisted project artifact and is valid only while its owning worker holds the root.
+entry are descriptor-relative records `{path, mode, size, sha256}` below the private root; the
+descriptor records no original `ALIGN_REPO` path. The compiler digest and every runtime-artifact
+digest are over complete regular-file bytes. Before the descriptor is written, the worker verifies
+each artifact through a retained no-follow descriptor, changes all compiler/runtime files to
+read-only, and holds those descriptors until the aggregate exits. The descriptor and its selected
+files are therefore an immutable private snapshot, not path-only hints. The descriptor is not a
+persisted project artifact and is valid only while its owning worker holds the root.
 
 The worker launches the capable aggregate itself with this exact environment contract:
 
@@ -1002,12 +1142,23 @@ ALIGN_LLM_COMPILER_DESCRIPTOR=<private descriptor path>
 ALIGN_LLM_COMPILER_REVISION=<descriptor align_revision>
 ```
 
-`ALIGNC` and the three `ALIGN_LLM_*` values are exported through the recursive Make boundary.
+`ALIGNC` and the three `ALIGN_LLM_*` values are exported through the recursive Make boundary. The
+worker also exports the private `PATH=/private-root/tool-bin`, `MAKE=/private-root/tool-bin/make`,
+`ALIGN_LLM_BWRAP=/private-root/tool-bin/bwrap`, and
+`ALIGN_LLM_PRLIMIT=/private-root/tool-bin/prlimit` values for the host-side capable aggregate;
+the corresponding bwrap values are `/tools/...`.
 `Makefile`, every compiler-using script, and every nested runner must use the common
 `scripts/alignc` launcher; a raw `../align/target/**/alignc`, `alignc` from `PATH`, or sibling
 fallback is forbidden while `ALIGN_LLM_FRESH_COMPILER=1` is present. The implementation adds a
 static compiler-call-site check and a runtime negative fixture that places a marker-writing fake
 compiler at every old fallback path.
+
+The static inventory explicitly includes current non-Make consumers: `scripts/check-format`,
+`eval/runners/record-baseline.py`, the fixed-evaluation runners, and every prompt/evaluation smoke
+that invokes Align. In particular, `record-baseline.py` must not retain its current direct sibling
+release-compiler lookup; fresh mode passes the common launcher and descriptor through its explicit
+compiler input. A source scan fails if any fresh-capable path reads the sibling release/debug
+compiler, invokes bare `alignc`, or resolves an executable through the ambient `PATH`.
 
 In fresh mode `scripts/alignc` does not search `ALIGNC`, `PATH`, or `ALIGN_REPO`. It reads the
 descriptor with no-follow operations, verifies the four identity fields and all descriptor-relative
@@ -1019,13 +1170,15 @@ actual process boundary for `check`, `run`, `build`, `fmt`, every focused script
 Make child, and aggregate-internal invocations below Make.
 
 The child Make invocation is the only aggregate entrypoint admitted by the worker. It is a direct
-argument vector, not a shell string, with `MAKEFLAGS=` and `GNUMAKEFLAGS=` cleared and explicit
-`-j1 capable-checks`. It passes `ALIGNC` and the descriptor as environment values with their exact
-documented origin. The child cannot replace them with a caller command-line assignment because the
-worker rejects `ALIGNC` on the outer `ci` call and supplies the child values as the only accepted
-controller-owned command-line values. A synthetic child that deliberately ignores `ALIGNC` and a
-synthetic script that directly names the old sibling binary must both fail the fresh identity unit
-before their marker can run.
+argument vector, not a shell string, with `MAKEFLAGS=`, `GNUMAKEFLAGS=`, and `MAKEOVERRIDES=`
+cleared, fixed `SHELL=/bin/sh`, and explicit `--silent --no-print-directory -j1 capable-checks`.
+It passes `ALIGNC`, the descriptor, the private tool paths, and the source identity as
+controller-owned environment values with their exact documented origin. The child cannot replace
+them with a caller command-line assignment because the worker rejects `ALIGNC` on the outer `ci`
+call, clears recursive Make overrides, and supplies the child values as the only accepted
+controller-owned assignments. A synthetic child that deliberately ignores `ALIGNC`, a synthetic
+script that directly names the old sibling binary, and a marker injected through `MAKEOVERRIDES`
+must all fail the fresh identity unit before their marker can run.
 
 ### 8.6 Process topology and ownership
 
@@ -1034,7 +1187,10 @@ identity probe, and the recursive capable aggregate. It starts each with `close_
 session, binary stdout/stderr pipes, and a captured PID start-time and process-group ID. Output is
 drained concurrently in 8,192-byte chunks, retained to 64 KiB per stream, and marked overflow after
 the cap. No whole-output capture is allowed. Probe output is compared to the manifest before the
-next probe; compiler and aggregate output remains the owning command's diagnostic stream.
+next probe. Compiler and aggregate output is captured for bounded internal diagnostics but is never
+forwarded to the public controller streams; this is required for the exact status grammar in
+section 8.7. A failure reports only its category and checked-in phase identifier, never a child
+path, environment value, compiler diagnostic, or source byte.
 
 The worker enables Linux child-subreaper mode before the first child, records every descendant's
 `/proc/<pid>/stat` start-time and parent relation, and requires `/proc` process identity reads to be
@@ -1071,8 +1227,9 @@ fresh compiler and capable checks: PASS
 ```
 
 `build` success uses `fresh compiler: PASS`; `self-test` success uses
-`fresh compiler self-test: PASS`. A failure has exit `1`, empty stdout, one primary line, and at
-most one following cleanup line. The primary grammar is:
+`fresh compiler self-test: PASS`. A failure has exit `1`, empty stdout, exactly one primary line on
+stderr, and at most one following cleanup line on stderr. No child stdout/stderr is forwarded on
+success or failure. The primary grammar is:
 
 ```text
 fresh compiler: ERROR ARGUMENT|TRUST|PLATFORM|TOOL|SOURCE|CACHE|FILESYSTEM|BUILD|COMPILER|CHILD|INTERNAL
@@ -1107,27 +1264,30 @@ phase details are checked-in identifiers only.
 | --- | --- | --- | --- |
 | Bootstrap trust | host bootstrap and toolchain manifest | Fixed image executable, external manifest digest, retained worker fd; no repository code or child before controller hash | `fresh-compiler-bootstrap-trust-smoke` mutates the worker, manifest, bootstrap path, and manifest digest independently and requires rejection before root creation. |
 | Manifest wire format | bootstrap | Schema-1 canonical UTF-8 JSON, ordered fields, final LF, bounded fields, duplicate/unknown rejection | `fresh-compiler-manifest-format-smoke` covers every malformed field, order, UTF-8, NUL, width, and digest case. |
-| Tool identity | worker | No-follow executable open, full digest, exact version vector, sequential owned probe | `fresh-compiler-tool-identity-smoke` covers missing, symlink, replacement, version, stderr, timeout, overflow, and nonzero probes for every named tool. |
+| Tool identity | worker | No-follow executable open, full digest, exact version vector, copied private snapshot, sequential owned probe, closed executable inventory | `fresh-compiler-tool-identity-smoke` covers missing, symlink, replacement, version, stderr, timeout, overflow, unlisted executable, and nonzero probes for every named tool. |
+| Runtime binding identity | worker plus bwrap | Complete recursive source digest, private copied snapshot, post-copy scan, target-parent construction, read-only namespace bind | `fresh-compiler-runtime-binding-smoke` mutates a library/resource/env binding during validation and after staging, checks the copy digest, and proves the host path is never used by the namespace. |
 | Signal during setup | worker | Cancellation state before root ownership; no unowned deletion | `fresh-compiler-signal-setup-smoke` injects each supported signal after manifest, source, cache, `/tmp`, and child-owner transitions and verifies root absence or bounded cleanup error. |
 | Source revision and Git | worker | Raw revision grammar, retained worktree/Git/common/index/object descriptors, fixed Git environment | `fresh-compiler-source-revision-smoke` covers encoding, tags, shallow/promisor/alternate/graft/replace/config/hook/filter cases and exact error precedence. |
 | Raw source closure | worker | Tree/index and complete descriptor-relative worktree manifest; root `target/` is the only output exception | `fresh-compiler-source-tree-smoke` covers extra/ignored/empty/case-fold/prefix/special/symlink/assume-unchanged/skip-worktree/filter and mode/object mismatches without helper execution. |
 | Ancestor/root ABA | worker | Retained descriptors and post-materialization manifest equality; no later Git pathname lookup | `fresh-compiler-source-aba-smoke` swaps ancestors, root, `.git`, and common directory; a same-HEAD repository with an extra Rust input is rejected and no outside marker is read. |
 | Source materialization | worker | Direct no-follow create-exclusive copy, per-file digest, symlink target containment, private read-only source | `fresh-compiler-materialization-smoke` injects disappearing/replaced/type-changing files and proves no build starts and no outside path is opened. |
-| Cache trust | worker | Authenticated cache manifest, descriptor-relative source, regular-file/no-hardlink copy, size/digest/fsync/post-scan | `fresh-compiler-cache-smoke` covers missing/changed/extra/symlink/hardlink/special/rename/escape entries and confirms no network or source-cache mutation. |
-| Private root construction | worker | `/tmp` mode/identity, eight exclusive attempts, fixed child set, owner token and device/inode | `fresh-compiler-root-smoke` covers collision exhaustion, parent symlink/mode, child collision, root replacement, and ancestor rename. |
-| Build containment | worker plus bwrap | New session/PID/net namespace; only `/src`, `/tools`, `/cargo`, `/target`; exact locked offline argv | `fresh-compiler-build-namespace-smoke` places marker files in host cache, target, source, network, HOME, and sibling target paths and proves only owned outputs change. |
+| Cache trust | worker | Authenticated cache manifest, explicit Cargo-cache allowlist, descriptor-relative source, regular-file-only hard-link check, directory-aware copy, size/digest/fsync/post-scan | `fresh-compiler-cache-smoke` covers missing/changed/extra/symlink/hardlink/special/rename/escape/config/wrapper entries and confirms no network or source-cache mutation. |
+| Private root construction | worker | `/tmp` mode/identity, eight exclusive attempts, writable staging then read-only final modes, fixed child set, owner token and device/inode | `fresh-compiler-root-smoke` covers collision exhaustion, parent symlink/mode, child collision, staging-mode transition, root replacement, and ancestor rename. |
+| Build containment | worker plus bwrap | Empty `--tmpfs /` root, explicit read-only runtime/tool/source binds, writable only `/cargo` and `/target`, explicit user/PID/net namespaces, exact locked offline argv | `fresh-compiler-build-namespace-smoke` places marker files in host root/cache/target/source/network/HOME/sibling target paths and uses a double-forking child to prove only owned outputs change and the PID namespace is required. |
 | Private Cargo target | worker | Empty mode-0700 `cargo-target`, never `ALIGN_REPO/target`, no reuse or rename | `fresh-compiler-empty-target-smoke` seeds a stale target and symlinked target cases, requiring rejection or clean private build with no seed marker. |
 | Build failure/timeout | worker | One process owner, bounded deadline, group/tree termination, reap, reverse cleanup | `fresh-compiler-build-failure-smoke` covers Cargo nonzero, hanging build script, output overflow, signal, and descendant survival. |
-| Compiler descriptor | worker | Canonical schema-1 temp descriptor, exact source/tool/compiler digests and contained runtime paths | `fresh-compiler-descriptor-smoke` covers field order, digest, path, mode, runtime-artifact, and owner-root replacement cases. |
+| Compiler descriptor | worker | Canonical schema-1 temp descriptor, exact source/tool/compiler/runtime-artifact digests, retained descriptors, read-only snapshot, and contained runtime paths | `fresh-compiler-descriptor-smoke` covers field order, digest, path, mode, runtime-artifact mutation, descriptor replacement, and owner-root replacement cases. |
 | Direct compiler call | `scripts/alignc` | Fresh mode ignores fallback and PATH, hashes/open-execs the descriptor-selected binary | `fresh-compiler-direct-identity-smoke` replaces old sibling/debug/PATH compilers with marker writers and verifies the marker never runs. |
-| Internal Make/compiler call | Makefile, `scripts/alignc`, focused scripts | Exported descriptor and launcher survive recursive Make; all call sites use the common launcher | `fresh-compiler-internal-identity-smoke` exercises `$(ALIGNC)`, hardcoded helper calls, recursive Make, `fmt`, `check`, `build`, and every focused script; a bypass is rejected before its marker. |
+| Internal Make/compiler call | Makefile, `scripts/alignc`, focused scripts | Exported descriptor and launcher survive recursive Make; all call sites use the common launcher; `SHELL`, `.SHELLFLAGS`, `MAKEOVERRIDES`, and fallback tool paths cannot cross the boundary | `fresh-compiler-internal-identity-smoke` exercises `$(ALIGNC)`, hardcoded helper calls, recursive Make, `fmt`, `check`, `build`, every focused script, hostile shell values, and descriptor injection through `MAKEOVERRIDES`; a bypass is rejected before its marker. |
 | Aggregate ownership | worker plus Makefile | Worker launches exactly one option-cleared `-j1 capable-checks`; outer `ci` owns no second aggregate | `fresh-compiler-aggregate-topology-smoke` covers aggregate-plus-goal parse rejection, child variable origin, order, no jobserver, and compiler descriptor propagation. |
 | Aggregate timeout/early exit | worker | First failure stops later goals; controller kills/reaps all descendants and keeps descriptor root until exit | `fresh-compiler-aggregate-lifecycle-smoke` covers first focused failure, timeout, signal at each goal boundary, descendant escape, and cleanup ordering. |
 | Cleanup success | worker | Reverse known-child removal, parent identity proof, root absence before PASS | Every positive mode runs a final absence assertion; `fresh-compiler-cleanup-smoke` verifies no root, descriptor, target, cache copy, or marker remains. |
 | Cleanup failure | worker | Never delete an unowned/replaced name; append one cleanup line without masking primary | `fresh-compiler-cleanup-failure-smoke` injects close, unlink, parent replacement, live-child, and PID-reuse failures and checks exact primary/cleanup lines. |
 | Hosted topology unit | Makefile/workflow | Self-test only; no compiler build or network; hosted product checks use their explicit compiler | Ubuntu 24.04/GNU Make 4.3 runs `fresh-compiler-topology-unit` before the existing hosted list and records that it is not fresh-build evidence. |
 | Capable integration | worker/Makefile | Real pinned fresh build, descriptor interposition, complete capable graph, cleanup after aggregate | On the minimum capable Linux image, one `make ci` passes with the manifest, and the old sibling target/debug/PATH compilers are absent from all executed identities. |
+| Identity-bound baseline refresh | baseline owner plus implementation branch | Final Makefile state is the recorded source; two deterministic reference samples, oracle, finalization, digest, and strict ancestry are refreshed before capable evidence | `fresh-compiler-baseline-integration-smoke` runs the section-2.4 source/oracle/finalization chain, exact artifact manifest, pending-file, raw-object, merge-ancestry, and `baseline-check` regressions after the implementation changes the Makefile. |
 | Unsupported concurrent entrypoints | Makefile/worker | `ci` plus any aggregate/goal is parse-rejected; separate processes are unsupported and roots are never shared | `fresh-compiler-concurrency-smoke` enumerates every aggregate-plus-focused and aggregate-plus-aggregate order, plus two independent processes, and checks rejection/no shared deletion. |
+| Platform profile boundary | topology plan | This section claims only Linux x86_64; aarch64 Linux and aarch64 macOS require separate reviewed profiles before C7 adoption | `fresh-compiler-platform-profile-smoke` proves unsupported platform rejection and records the named extension gate; no non-x86 adoption may use the x86 profile as evidence. |
 | Align code/ownership parity | N/A | No Align source, public Align type, persisted result, or allocator is changed by this topology slice | N/A: compiler input and process artifacts are external to Align; the implementation review records this explicit exclusion. |
 
 The matrix is also the implementation-to-diff checklist. Every row must point to a concrete function
@@ -1137,19 +1297,25 @@ request register are not deferred here.
 
 ### 8.9 Constants, compatibility, and acceptance commands
 
-The minimum acceptance environment is Ubuntu 24.04 x86_64, Linux kernel 6.8 or newer, GNU Make
-4.3, CPython 3.12, Git 2.45 or newer, Rust/Cargo 1.96.0, LLVM 22, and the fixed bootstrap/bwrap
-image manifest. Tool versions newer than these are supplementary evidence only. The fresh build
-and capable aggregate require the namespace capability declared by `bwrap`; the ordinary hosted
-runner is not allowed to claim the capable result when its namespace probe fails.
+The minimum acceptance environment for this section is Ubuntu 24.04 x86_64, Linux kernel 6.8 or
+newer, GNU Make 4.3, CPython 3.12, Git 2.45 or newer, Rust/Cargo 1.96.0, LLVM 22, and the fixed
+bootstrap/bwrap image manifest. Tool versions newer than these are supplementary evidence only.
+The fresh build and capable aggregate require the namespace capability declared by `bwrap`; the
+ordinary hosted runner is not allowed to claim the capable result when its namespace probe fails.
+This section does not satisfy the separate Request 7 `git-2.45-compat` acceptance requirement for
+an immutable OCI image with `/usr/bin/git` exactly `2.45.0`; that image and job remain a named
+Request 7 prerequisite. Likewise, the C7-required `aarch64-unknown-linux-gnu` and
+`aarch64-apple-darwin` environments remain blocked on their own reviewed platform profiles and
+must not report this x86_64 check as compatibility evidence.
 
 The fixed monotonic deadlines are: each tool probe 5 seconds; manifest/source/cache validation
 120 seconds; source materialization 120 seconds; private-root construction 10 seconds; fresh Cargo
 build 1,800 seconds; compiler descriptor and identity probe 10 seconds; capable aggregate 1,800
 seconds; termination grace 1 second; escalation/reap 5 seconds; and final cleanup 30 seconds.
-Output caps are 64 KiB per phase stream and 1 MiB for the whole controller diagnostic stream. A
-timeout includes all children of the owned phase, not merely its direct process. These values are
-constants in the worker, not environment or Make inputs.
+Output caps are 64 KiB per phase stream and 1 MiB for the whole controller diagnostic stream. The
+controller retains those bytes only for bounded internal diagnostics and never forwards them to
+the public streams. A timeout includes all children of the owned phase, not merely its direct
+process. These values are constants in the worker, not environment or Make inputs.
 
 The design gate runs these docs-only checks before implementation:
 
@@ -1187,15 +1353,25 @@ The slices are ordered as follows:
 3. Implement the controller, source descriptor boundary, cache materializer, private build root,
    process owner, compiler launcher, Make export/interposition, and named unit tests as one
    dependent enabling slice. Do not update `.align-revision` in that slice.
-4. Run the local synthetic matrix, the Ubuntu 24.04 hosted topology unit, and one capable `make ci`
-   at the unchanged pinned revision. The old direct sibling compiler must not be used by the fresh
-   path, and the complete source-to-build-to-aggregate cleanup evidence must pass.
-5. Only after that implementation merges may a separate consumer adoption slice update
+4. Because the implementation changes `Makefile`, refresh the identity-bound C0 baseline in the
+   same enabling delivery: create the final clean implementation source commit, record the two
+   deterministic reference samples, commit the regenerated oracle, finalize the canonical baseline,
+   and run the complete section-2.4 structural and ancestry checks. The baseline source, oracle,
+   and finalization commits must be ancestors of the reviewed implementation head and its merge
+   result before `baseline-check` can be evidence. This is required even if the measured task
+   verdicts are unchanged.
+5. Run the local synthetic matrix, the Ubuntu 24.04 hosted topology unit, `baseline-check`, and
+   one capable `make ci` at the unchanged pinned revision. The old direct sibling compiler must
+   not be used by the fresh path, and the complete source-to-build-to-aggregate cleanup evidence
+   must pass. The capable result is not accepted until the refreshed baseline is valid.
+6. Only after that implementation merges may a separate consumer adoption slice update
    `.align-revision`, rebuild the sibling release/runtime if required, add its focused target, and
    run the original acceptance gate through the fresh `make ci` path.
 
-No Request 6, Request 7, Request 9, C7, or later consumer implementation may consume the controller,
-descriptor, cache, wrapper, or aggregate behavior before step 3 merges. A proposed API, unmerged
-bootstrap, host image, or hypothetical compiler binary is not an implementation input. The request
-register remains the lifecycle authority for each consumer; this section owns only the common
-fresh-compiler topology and its evidence.
+No Request 6, Request 7, Request 9, C7, or later Linux x86_64 consumer implementation may consume
+the controller, descriptor, cache, wrapper, or aggregate behavior before step 3 merges. A proposed
+API, unmerged bootstrap, host image, or hypothetical compiler binary is not an implementation
+input. C7's aarch64 Linux and aarch64 macOS consumers additionally require their platform-profile
+designs and implementations before adoption. The request register remains the lifecycle authority
+for each consumer; this section owns only the common Linux x86_64 fresh-compiler topology and its
+evidence.
