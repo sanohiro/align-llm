@@ -16,7 +16,7 @@ $(error verification aggregates must be requested alone)
 endif
 endif
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke baseline-check gate-topology-check hosted-checks capable-checks align-revision align-build ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke baseline-check gate-topology-check hosted-checks capable-checks align-revision align-build ci
 
 check:
 	$(ALIGNC) check-per-unit $(ENTRY)
@@ -68,6 +68,9 @@ prompt-model-smoke:
 
 prompt-score-smoke:
 	./scripts/run-prompt-score-smoke
+
+prompt-score-prefix-smoke:
+	./scripts/run-prompt-score-prefix-smoke
 
 baseline-check:
 	python3 ./eval/runners/verify-baseline.py

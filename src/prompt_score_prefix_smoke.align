@@ -1,0 +1,180 @@
+module prompt_score_prefix_smoke
+
+import core.json
+import prompt_score
+
+PrefixOutput {
+  case_name: str,
+  status: str,
+  error_code: i64,
+  error_index: i64,
+  row_count: i64,
+  expected_row_count: i64,
+}
+
+fn status_label(status: prompt_score.ScorePrefixStatus) -> str = match status {
+  ValidPrefix => "VALID_PREFIX",
+  TerminalError => "TERMINAL_ERROR",
+  InvalidInput => "INVALID_INPUT",
+}
+
+fn task_limit() -> prompt_score.ScoreTaskLimit {
+  return prompt_score.ScoreTaskLimit {
+    maximum_unrelated_diff_count: 1,
+    maximum_patch_size_bytes: 100,
+    maximum_public_api_change_count: 1,
+    maximum_repair_loops: 2,
+    maximum_benchmark_regression_ppm: None,
+  }
+}
+
+fn invalid_task_limit() -> prompt_score.ScoreTaskLimit {
+  return prompt_score.ScoreTaskLimit {
+    maximum_unrelated_diff_count: -1,
+    maximum_patch_size_bytes: 100,
+    maximum_public_api_change_count: 1,
+    maximum_repair_loops: 2,
+    maximum_benchmark_regression_ppm: None,
+  }
+}
+
+fn pass_row(task: i64, sample: i64, variant: prompt_score.ScoreVariant) -> prompt_score.ScoreRow {
+  return prompt_score.ScoreRow {
+    task_ordinal: task,
+    sample_index: sample,
+    variant: variant,
+    status: prompt_score.ScoreStatus.Pass,
+    failure_kind: prompt_score.ScoreFailureKind.None,
+    build_status: prompt_score.ScoreStage.Pass,
+    test_status: prompt_score.ScoreStage.Pass,
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 0,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    adapter_error: false,
+    prompt_preparation_ns: 10,
+    generation_to_passing_patch_ns: Some(10),
+    time_to_passing_patch_ns: Some(20),
+    benchmark_regression_ppm: None,
+  }
+}
+
+fn adapter_error_row(task: i64, sample: i64, variant: prompt_score.ScoreVariant) -> prompt_score.ScoreRow {
+  return prompt_score.ScoreRow {
+    task_ordinal: task,
+    sample_index: sample,
+    variant: variant,
+    status: prompt_score.ScoreStatus.Error,
+    failure_kind: prompt_score.ScoreFailureKind.Adapter,
+    build_status: prompt_score.ScoreStage.Pass,
+    test_status: prompt_score.ScoreStage.Pass,
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 0,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    adapter_error: true,
+    prompt_preparation_ns: 10,
+    generation_to_passing_patch_ns: None,
+    time_to_passing_patch_ns: None,
+    benchmark_regression_ppm: None,
+  }
+}
+
+fn invalid_state_row(task: i64, sample: i64, variant: prompt_score.ScoreVariant) -> prompt_score.ScoreRow {
+  return prompt_score.ScoreRow {
+    task_ordinal: task,
+    sample_index: sample,
+    variant: variant,
+    status: prompt_score.ScoreStatus.Pass,
+    failure_kind: prompt_score.ScoreFailureKind.Build,
+    build_status: prompt_score.ScoreStage.Pass,
+    test_status: prompt_score.ScoreStage.Pass,
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 0,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    adapter_error: false,
+    prompt_preparation_ns: 10,
+    generation_to_passing_patch_ns: Some(10),
+    time_to_passing_patch_ns: Some(20),
+    benchmark_regression_ppm: None,
+  }
+}
+
+fn emit_case(
+  case_name: str,
+  rows: slice<prompt_score.ScoreRow>,
+  task_limits: slice<prompt_score.ScoreTaskLimit>,
+  sample_count: i64,
+) {
+  result := prompt_score.validate_prefix(rows, task_limits, sample_count)
+  output := PrefixOutput {
+    case_name: case_name,
+    status: status_label(result.status),
+    error_code: result.error_code,
+    error_index: result.error_index,
+    row_count: result.row_count,
+    expected_row_count: result.expected_row_count,
+  }
+  print(json.encode(output))
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  valid_limits := [task_limit()]
+  invalid_limits := [invalid_task_limit()]
+  all_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent),
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent),
+  ]
+  emit_case("empty", all_rows[0..0], valid_limits, 2)
+  emit_case("strict-prefix", all_rows[0..3], valid_limits, 2)
+  emit_case("complete-prefix", all_rows, valid_limits, 2)
+
+  terminal_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent),
+    adapter_error_row(0, 1, prompt_score.ScoreVariant.Candidate),
+  ]
+  emit_case("terminal-error", terminal_rows, valid_limits, 2)
+
+  post_error_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent),
+    adapter_error_row(0, 1, prompt_score.ScoreVariant.Candidate),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate),
+  ]
+  emit_case("post-error", post_error_rows, valid_limits, 2)
+
+  invalid_order_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate),
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent),
+  ]
+  emit_case("invalid-order", invalid_order_rows, valid_limits, 2)
+
+  invalid_state_rows := [
+    invalid_state_row(0, 1, prompt_score.ScoreVariant.Parent),
+  ]
+  emit_case("invalid-state", invalid_state_rows, valid_limits, 2)
+
+  too_many_rows := [
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent),
+    pass_row(0, 1, prompt_score.ScoreVariant.Candidate),
+    pass_row(0, 2, prompt_score.ScoreVariant.Candidate),
+    pass_row(0, 2, prompt_score.ScoreVariant.Parent),
+    pass_row(0, 1, prompt_score.ScoreVariant.Parent),
+  ]
+  emit_case("too-many-rows", too_many_rows, valid_limits, 2)
+
+  emit_case("invalid-limit", all_rows[0..1], invalid_limits, 2)
+  emit_case("invalid-sample-count", all_rows[0..0], valid_limits, 1)
+  return Ok(())
+}
