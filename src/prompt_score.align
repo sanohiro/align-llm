@@ -98,6 +98,16 @@ pub ScoreResult {
   corpus: ScoreCorpusAggregate,
 }
 
+pub ScorePrefixStatus { ValidPrefix, TerminalError, InvalidInput }
+
+pub ScorePrefixResult {
+  status: ScorePrefixStatus,
+  error_code: i64,
+  error_index: i64,
+  row_count: i64,
+  expected_row_count: i64,
+}
+
 RowValidation { Valid, Invalid, EvaluationError }
 
 TimeMetrics {
@@ -152,6 +162,22 @@ fn result_with(
     output_kind: output_kind,
     required_output_count: required_output_count,
     corpus: empty,
+  }
+}
+
+fn prefix_result_with(
+  status: ScorePrefixStatus,
+  error_code: i64,
+  error_index: i64,
+  row_count: i64,
+  expected_row_count: i64,
+) -> ScorePrefixResult {
+  return ScorePrefixResult {
+    status: status,
+    error_code: error_code,
+    error_index: error_index,
+    row_count: row_count,
+    expected_row_count: expected_row_count,
   }
 }
 
@@ -1487,4 +1513,123 @@ pub fn aggregate(
     required_output_count: 0,
     corpus: corpus,
   }
+}
+
+pub fn validate_prefix(
+  rows: slice<ScoreRow>,
+  task_limits: slice<ScoreTaskLimit>,
+  sample_count: i64,
+) -> ScorePrefixResult {
+  row_count := rows.len()
+  task_count := task_limits.len()
+  if task_count < 1 || task_count > 64 || sample_count < 2 || sample_count > 16 {
+    return prefix_result_with(
+      ScorePrefixStatus.InvalidInput,
+      1,
+      -1,
+      row_count,
+      -1,
+    )
+  }
+
+  mut task := 0
+  loop {
+    if task >= task_count {
+      break
+    }
+    if !valid_task_limit(task_limits[task]) {
+      return prefix_result_with(
+        ScorePrefixStatus.InvalidInput,
+        1,
+        -1,
+        row_count,
+        -1,
+      )
+    }
+    task = task + 1
+  }
+
+  pair_width := sample_count * 2
+  if task_count > 2_048 / pair_width {
+    return prefix_result_with(
+      ScorePrefixStatus.InvalidInput,
+      1,
+      -1,
+      row_count,
+      -1,
+    )
+  }
+  expected_row_count := task_count * pair_width
+  if row_count > expected_row_count {
+    return prefix_result_with(
+      ScorePrefixStatus.InvalidInput,
+      2,
+      expected_row_count,
+      row_count,
+      expected_row_count,
+    )
+  }
+
+  mut row_index := 0
+  loop {
+    if row_index >= row_count {
+      break
+    }
+    task = row_index / pair_width
+    pair_offset := row_index % pair_width
+    sample := pair_offset / 2 + 1
+    variant_offset := pair_offset % 2
+    expected_variant := if sample % 2 == 1 {
+      if variant_offset == 0 { ScoreVariant.Parent } else { ScoreVariant.Candidate }
+    } else {
+      if variant_offset == 0 { ScoreVariant.Candidate } else { ScoreVariant.Parent }
+    }
+    row := rows[row_index]
+    if row.task_ordinal != task || row.sample_index != sample || !same_variant(row.variant, expected_variant) {
+      return prefix_result_with(
+        ScorePrefixStatus.InvalidInput,
+        2,
+        row_index,
+        row_count,
+        expected_row_count,
+      )
+    }
+    validation := validate_row(rows, row_index, task_limits[task])
+    if row_is_invalid(validation) {
+      return prefix_result_with(
+        ScorePrefixStatus.InvalidInput,
+        2,
+        row_index,
+        row_count,
+        expected_row_count,
+      )
+    }
+    if row_is_evaluation_error(validation) {
+      if row_index + 1 < row_count {
+        return prefix_result_with(
+          ScorePrefixStatus.InvalidInput,
+          2,
+          row_index + 1,
+          row_count,
+          expected_row_count,
+        )
+      }
+      return prefix_result_with(
+        ScorePrefixStatus.TerminalError,
+        0,
+        -1,
+        row_count,
+        expected_row_count,
+      )
+    }
+    row_index = row_index + 1
+  }
+
+  return prefix_result_with(
+    ScorePrefixStatus.ValidPrefix,
+    0,
+    -1,
+    row_count,
+    expected_row_count,
+  )
 }

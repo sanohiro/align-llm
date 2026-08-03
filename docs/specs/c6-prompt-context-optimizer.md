@@ -3432,7 +3432,7 @@ The C6c1 closure matrix is:
 | output ownership and early exit | `src/prompt_score.align` | undersized scalar-column output and invalid-input fixtures prove every caller buffer remains sentinel-filled |
 | incomplete-prefix validation | `src/prompt_score.align` in C6c1p | empty, strict-prefix, terminal-`ERROR`, out-of-order, post-error, complete-prefix, invalid task-limit plan, invalid-plan sentinel, and checked-count/overflow fixtures through `validate_prefix` |
 | cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
-| public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, and refreshed baseline sequence when the hosted list changes |
+| public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, `make prompt-score-prefix-smoke`, and refreshed baseline sequence when the hosted list changes |
 
 This ledger is intentionally limited to the C6c1 kernel. Artifact decoding, whole-document
 error-prefix retention, and runtime-sized result construction remain named owners in C6a1/C6a2/C6f2
@@ -3468,8 +3468,9 @@ Its validation order is:
    attempted. Otherwise compute the bounded expected count and validate that `rows.len()` is no
    greater than it.
 2. Validate every row in execution order using the merged C6c1 row-state rules.
-3. Reject any row after a structurally valid `ERROR`; return `TERMINAL_ERROR` only when that row is
-   the final supplied row, otherwise return `VALID_PREFIX` for a prefix with no terminal row.
+3. A structurally valid `ERROR` row is terminal only when it is the final supplied row; a later row
+   returns `INVALID_INPUT` at that later row's index. A prefix with no terminal row returns
+   `VALID_PREFIX`.
 4. Return the first invalid index without output mutation or any side effect.
 
 The C6c1p acceptance gate is `prompt-score-prefix-smoke` plus the existing `prompt-score-smoke`,

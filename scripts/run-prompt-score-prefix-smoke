@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+"${compiler}" run "${project_root}/src/prompt_score_prefix_smoke.align" >"${output_file}"
+
+python3 - "${output_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+actual = [
+    json.loads(line)
+    for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+]
+expected = [
+    {"case_name": "empty", "status": "VALID_PREFIX", "error_code": 0, "error_index": -1, "row_count": 0, "expected_row_count": 4},
+    {"case_name": "strict-prefix", "status": "VALID_PREFIX", "error_code": 0, "error_index": -1, "row_count": 3, "expected_row_count": 4},
+    {"case_name": "complete-prefix", "status": "VALID_PREFIX", "error_code": 0, "error_index": -1, "row_count": 4, "expected_row_count": 4},
+    {"case_name": "terminal-error", "status": "TERMINAL_ERROR", "error_code": 0, "error_index": -1, "row_count": 2, "expected_row_count": 4},
+    {"case_name": "post-error", "status": "INVALID_INPUT", "error_code": 2, "error_index": 2, "row_count": 3, "expected_row_count": 4},
+    {"case_name": "invalid-order", "status": "INVALID_INPUT", "error_code": 2, "error_index": 0, "row_count": 2, "expected_row_count": 4},
+    {"case_name": "invalid-state", "status": "INVALID_INPUT", "error_code": 2, "error_index": 0, "row_count": 1, "expected_row_count": 4},
+    {"case_name": "too-many-rows", "status": "INVALID_INPUT", "error_code": 2, "error_index": 4, "row_count": 5, "expected_row_count": 4},
+    {"case_name": "invalid-limit", "status": "INVALID_INPUT", "error_code": 1, "error_index": -1, "row_count": 1, "expected_row_count": -1},
+    {"case_name": "invalid-sample-count", "status": "INVALID_INPUT", "error_code": 1, "error_index": -1, "row_count": 0, "expected_row_count": -1},
+]
+
+if actual != expected:
+    raise SystemExit(f"unexpected prompt score prefix smoke output: {actual!r}")
+PY
+
+printf '%s\n' "prompt score prefix smoke: PASS"
