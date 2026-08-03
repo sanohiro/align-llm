@@ -5,17 +5,16 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/fresh-compiler-topology-redesign-v3`, based on main `32bfeba` (`Add C7 persisted-result design gate (#53)`). The latest committed design checkpoint is `bb9ad1f`; the current runtime-archive/symlink repair is uncommitted and will be recorded in the next design checkpoint. Historical checkpoints `d4c9060`, `4eb878b`, `5cab02f`, and `836b489` are retained and superseded.
+- Branch: `agent/fresh-compiler-topology-redesign-v3`, based on main `32bfeba` (`Add C7 persisted-result design gate (#53)`). The current design checkpoint is `1ce3f9e` (`Define compiler archive and symlink identity contract`); historical checkpoints `d4c9060`, `4eb878b`, `5cab02f`, `836b489`, and `bb9ad1f` are retained and superseded.
 - Active goal: finish this PR's successor Linux x86_64 fresh-compiler design review, record a clean checkpoint, and then complete the active goal; no dependent implementation or Align pin adoption may start.
 - Complete: `c6b58d4` records the prior coherent redesign with executable runtime modes, retained source post-copy proof, retained common-Git identity, sealed fd-7 handoff guard, namespace-owned no-symlink aggregate tmpfs, C7 platform-profile synchronization, cache bounds, and validation-before-copy ordering. `6b5dfaa` adds supported Ubuntu 24.04 bwrap inherited-fd handling, retained-descriptor tool probing, complete Git hardening/private object-copy rules, `io_uring` descriptor-operation denial, and explicit `ALIGNC_CACHE=off`. `5cab02f`/`836b489` add the preceding bwrap, runtime, source-mode, Python, utility, mount, and Cargo-cache redesign; the fresh review then identified the remaining source-tree, pin, baseline-Git, mode/cache-wire, status, and C7-contract gaps now being repaired together.
-- In progress: repair the latest fresh review's two P1 and one related P2 gaps, run focused documentation/wire checks, commit the coherent repair, and obtain one fresh comprehensive review. The review found that memfd-only execution hides the pinned Align compiler's adjacent `libalign_runtime.a`, that the tracked root `AGENTS.md -> CLAUDE.md` symlink was rejected, and that symlink mode bytes were unspecified. The repair stages and authenticates a read-only `/tools/alignc` plus `/tools/libalign_runtime.a` sibling bundle, retains fd 5 as the sealed compiler identity capsule, admits contained tracked symlinks, and encodes symlink `mode`/`staged_mode` as JSON `null` with a golden vector.
+- In progress: obtain one fresh comprehensive review of `1ce3f9e`. The latest review found that memfd-only execution hides the pinned Align compiler's adjacent `libalign_runtime.a`, that the tracked root `AGENTS.md -> CLAUDE.md` symlink was rejected, and that symlink mode bytes were unspecified. The committed repair stages and authenticates a read-only `/tools/alignc` plus `/tools/libalign_runtime.a` sibling bundle, retains fd 5 as the sealed compiler identity capsule, admits contained tracked symlinks, and encodes symlink `mode`/`staged_mode` as JSON `null` with a golden vector.
 - Not started: bootstrap/image installation, controller implementation, `eval` tool-path implementation, baseline refresh, hosted/capable acceptance, and any `.align-revision` change.
 
 ## Next steps
 
-1. Commit the current Section 9 repair and this handoff after the focused documentation checks pass.
-2. Run one fresh comprehensive review of that checkpoint; do not implement against it until the review is clean.
-3. If clean, record the final checkpoint and complete the active goal. Bootstrap/image installation, implementation, baseline refresh, and pin adoption remain future slices; do not push, open, or merge without user authorization.
+1. Run one fresh comprehensive review of `1ce3f9e`; do not implement against it until the review is clean.
+2. If clean, record the final checkpoint and complete the active goal. Bootstrap/image installation, implementation, baseline refresh, and pin adoption remain future slices; do not push, open, or merge without user authorization.
 
 ## Latest verification
 
