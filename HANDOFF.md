@@ -5,14 +5,14 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1p-score-prefix`, based on merged main commit `74601cda`
-  (`Merge PR #51: Rescope C6c2 after conditional final review`); the active content/design
-  checkpoint is the merged C6c2 design from PR #51.
-- Current source/design lineage: `727b5a4` (`Repair C6c2 review contract consistency`) after the
-  `733468b` rescope; PR #51 is merged and remains the authoritative C6c2 design checkpoint.
-- Active goal: implement the independently reviewable C6c1p `validate_prefix` slice on the merged
-  C6c1 scorer. PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired
-  in place. C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align adoption
+- Branch: `agent/c6c1p-score-prefix`, implementation checkpoint `aad17dc` (`Add C6c1p score prefix
+  validation`), based on merged main commit `74601cda` (`Merge PR #51: Rescope C6c2 after
+  conditional final review`).
+- Current source/design lineage: the merged C6c2 design from PR #51; `aad17dc` is the independently
+  reviewable C6c1p implementation checkpoint.
+- Active goal: complete the C6c1p `validate_prefix` slice through its pre-PR review, PR checks, and
+  merge. PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in
+  place. C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align adoption
   prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
@@ -69,8 +69,9 @@ request checks, reviews, and attestations.
   checkpoint distinct from the branch head, ensure each validation step only references already
   decoded inputs, and cross-check lifecycle wording against `docs/align-requests.md`; these are
   durable contract checks, not transient review state.
-- In progress: C6c1p adds only the borrowed `validate_prefix` API and its focused smoke; no C6c2
-  implementation or decoded-record workaround is in scope.
+- Complete: C6c1p adds only the borrowed `validate_prefix` API, reuses the merged row-state rules,
+  preserves the complete-row aggregate, and covers the declared prefix/error/plan matrix in its
+  focused smoke. No C6c2 implementation or decoded-record workaround is in scope.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -96,13 +97,11 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Implement C6c1p `validate_prefix` in `src/prompt_score.align`, add the exact focused smoke and
-   Make target required by the plan, and keep the public surface borrowed, Copy, allocation-free,
-   and complete-row-aggregate independent.
-2. Run the focused prefix smoke plus existing scorer smoke, `make check`, `make fmt`, format/static
-   checks, per-unit and whole-program compilation, and the allocation-parity fixture; then perform
-   the required author-side matrix-to-diff pass and independent code review before opening/merging
-   its PR.
+1. Perform the author-side C6c1p matrix-to-diff pass, run the required fresh adversarial preflight
+   review, push the branch, and open the independently reviewable PR with the exact verification
+   results and the required review attestation.
+2. Run the post-open independent review, apply only valid recorded findings in one repair, rerun
+   affected checks, wait for hosted checks, and merge C6c1p only after every finding is dispositioned.
 3. After C6c1p is merged, implement C6c2 only after C6a1/C6a2 provide content-validated decoded
    records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record the
    dependency blocker and continue only with safe independent roadmap work.
@@ -123,6 +122,11 @@ request checks, reviews, and attestations.
   executable contract boundary.
 - Post-merge refresh is PASS: `main` is fast-forwarded to merge commit `74601cda`; the working tree
   is clean before the C6c1p implementation branch.
+- C6c1p implementation verification is PASS at `aad17dc`: `make fmt`, `make format-check`,
+  `make check`, `make build`, `make prompt-score-smoke`, `make prompt-score-prefix-smoke`,
+  `./scripts/alignc check src/prompt_score_prefix_smoke.align`, and
+  `./scripts/alignc check-per-unit src/prompt_score_prefix_smoke.align` all passed. The compiler's
+  existing huge-struct-copy warnings remain non-fatal and are preserved as visible diagnostics.
 
 ## Constraints and decisions to preserve
 
