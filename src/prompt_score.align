@@ -1549,7 +1549,8 @@ pub fn validate_prefix(
     task = task + 1
   }
 
-  if task_count > 1_024 / sample_count {
+  pair_width := sample_count * 2
+  if task_count > 2_048 / pair_width {
     return prefix_result_with(
       ScorePrefixStatus.InvalidInput,
       1,
@@ -1558,7 +1559,7 @@ pub fn validate_prefix(
       -1,
     )
   }
-  expected_row_count := task_count * sample_count * 2
+  expected_row_count := task_count * pair_width
   if row_count > expected_row_count {
     return prefix_result_with(
       ScorePrefixStatus.InvalidInput,
@@ -1569,7 +1570,6 @@ pub fn validate_prefix(
     )
   }
 
-  pair_width := sample_count * 2
   mut row_index := 0
   loop {
     if row_index >= row_count {

@@ -11,7 +11,8 @@ request checks, reviews, and attestations.
   based on merged main commit `74601cda` (`Merge PR #51: Rescope C6c2 after conditional final
   review`).
 - Current source/design lineage: the merged C6c2 design from PR #51; `aad17dc` is the C6c1p
-  implementation and `f70ea0e` is its required Makefile-bound baseline finalization checkpoint.
+  implementation, `b7f0289` is the clean topology baseline source, `a7eb307` is its immutable
+  oracle, and `6811251` is the canonical baseline finalization checkpoint.
 - Active goal: complete the C6c1p `validate_prefix` slice through its pre-PR review, PR checks, and
   merge. PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in
   place. C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align adoption
