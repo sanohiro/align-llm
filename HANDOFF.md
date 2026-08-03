@@ -5,8 +5,8 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `6811251` (`Finalize C6c1p
-  topology baseline`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
+- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `4e15ad9` (`Repair C6c1p count
+  guard and handoff`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
   validation`), topology source checkpoint `b7f0289`, and immutable oracle checkpoint `a7eb307`,
   based on merged main commit `74601cda` (`Merge PR #51: Rescope C6c2 after conditional final
   review`).
@@ -78,6 +78,9 @@ request checks, reviews, and attestations.
 - Complete: the author-side C6c1p consistency pass corrected the validation-order prose so a row
   after a terminal `ERROR` is `INVALID_INPUT`, matching the public contract, implementation, and
   post-error smoke case.
+- Complete: the prefix count guard derives `pair_width` first and checks the declared 2,048-row
+  bound before multiplication, preserving valid plans above 1,024 rows and the invalid-plan
+  sentinel contract.
 - Complete: `prompt-score-prefix-smoke` is the final hosted target; the Makefile graph, topology
   oracle, C6c1p ledger, and topology design now agree that `make hosted-checks`, `make capable-checks`,
   and `make ci` execute the prefix acceptance smoke.
@@ -110,15 +113,12 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Rerun `PYTHONDONTWRITEBYTECODE=1 make ci` with the finalized baseline, complete the final
-  author-side matrix-to-diff assertions, push the branch, and open the independently reviewable PR
-  with exact verification results and the required review attestation.
-2. Run the post-open independent review, apply only valid recorded findings in one repair, rerun
-  affected checks, wait for hosted checks, and merge C6c1p only after every finding is dispositioned.
-3. After C6c1p is merged, implement C6c2 only after C6a1/C6a2 provide content-validated decoded
+1. Push repair commit `4e15ad9`, update the PR review evidence with its finding dispositions and
+  repair commit, wait for hosted checks, and merge C6c1p only after every finding is dispositioned.
+2. After C6c1p is merged, implement C6c2 only after C6a1/C6a2 provide content-validated decoded
   records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record the
   dependency blocker and continue only with safe independent roadmap work.
-4. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
+3. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
    merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
    `make ci` passes the original acceptance gate.
 
@@ -154,6 +154,9 @@ request checks, reviews, and attestations.
   passed the pinned Align build, topology, hosted and capable checks, prefix smoke, coding corpus,
   canonical baseline, and both baseline negative/failure smokes. Existing compiler warnings remain
   non-fatal diagnostics.
+- Review-repair aggregate verification is PASS at `4e15ad9`: `PYTHONDONTWRITEBYTECODE=1 make ci`
+  passed again after the 2,048-row count-guard repair; focused prefix/scorer smoke, format, check,
+  and baseline verification also passed.
 - C6c1p topology-repair verification is PASS at `fc596e1`: `python3 scripts/check-gate-topology
   --self-test`, `make gate-topology-check`, `make prompt-score-prefix-smoke`, and
   `PYTHONDONTWRITEBYTECODE=1 make hosted-checks` all passed; the aggregate log includes the new
