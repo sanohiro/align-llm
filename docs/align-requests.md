@@ -1681,7 +1681,7 @@ The implementation closure ledger for the future Align design is:
 | Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
-| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | Successor redesign is Section 9 of `docs/specs/check-gate-topology.md` on branch `agent/fresh-compiler-topology-redesign-v3`; its first review's six P1 gaps were repaired, and the fresh comprehensive review found four P1 and two P2 contract gaps, so the design is being re-scoped again before another review; implementation, fixed host image/manifest installation, baseline refresh, and align-llm verification remain pending and every pin-changing adoption remains blocked | Section 9 must close supported Ubuntu 24.04 bwrap inherited-fd handling without `--preserve-fd`, retained-source tool probing, complete Git hardening plus private object-copy isolation, synchronous and `io_uring` descriptor replacement denial, explicit `ALIGNC_CACHE=off`, and the already recorded runtime modes, source post-copy proof, common-Git identity, no-symlink aggregate tmpfs, C7 platform prerequisites, cache bounds, and validation/copy ordering; then it must pass one fresh comprehensive design review and every named unit, fault-injection, local/hosted integration, baseline-ancestry, and cleanup regression before a later adoption changes the pin; aarch64 Linux/macOS consumers additionally require separate platform-profile designs and implementations |
+| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | Successor redesign is Section 9 of `docs/specs/check-gate-topology.md` on branch `agent/fresh-compiler-topology-redesign-v3`; its first review's six P1 gaps were repaired, and the next fresh comprehensive review found five P1 and three P2 contract gaps, so the design is being re-scoped again before another review; implementation, fixed host image/manifest installation, baseline refresh, and align-llm verification remain pending and every pin-changing adoption remains blocked | Section 9 must authenticate and retain bwrap before capability probes; admit only the root `main` generated-output exception; define raw-to-staged source-mode mapping; include CPython standard-library and `lib-dynload` bindings; enumerate and probe the complete shell/Python utility closure; make descriptor runtime paths name ordinal staging objects; apply no-symlink protection only to namespace-owned `/target/tmp` while retaining contained source symlink behavior; and state `/cargo` as read-only, while preserving the earlier inherited-fd, retained-tool, Git hardening/private-object, synchronous and `io_uring` descriptor-denial, `ALIGNC_CACHE=off`, runtime-mode, source post-copy, common-Git identity, C7 platform-profile, cache-bound, and validation-order decisions; then it must pass one fresh comprehensive design review and every named unit, fault-injection, local/hosted integration, baseline-ancestry, and cleanup regression before a later adoption changes the pin; aarch64 Linux/macOS consumers additionally require separate platform-profile designs and implementations |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -2270,17 +2270,21 @@ every phase failure, timeout, exhaustion, and cleanup failure under both local `
 hosted serialized aggregate, and must name exact negative and integration tests for each cell.
 
 The fresh-compiler successor redesign is now drafted as Section 9 of
-`docs/specs/check-gate-topology.md`. Its first review's valid repairs remain, and the next re-scoped
-contract additionally requires bwrap's supported ordinary inherited-fd channel rather than
-`--preserve-fd`, retained-descriptor tool probing, complete Git hardening with copied private
-objects, `io_uring` denial in the handoff filter, explicit `ALIGNC_CACHE=off`, staged executable
-runtime modes, retained source descriptors with post-copy proofs, retained Git common-directory
-identity, a seccomp-protected compiler/descriptor/guard handoff, a no-symlink namespace-owned
-aggregate tmpfs, explicit cache bounds and validation ordering, and synchronized C7 platform
-prerequisites. It remains an unreviewed design slice on `agent/fresh-compiler-topology-redesign-v3`;
-no implementation, host image, baseline refresh, or align-llm verification may consume it. Request 7
-must consume the newly reviewed contract exactly; its separate Git 2.45.0 image and C7 non-x86
-platform profiles remain independent prerequisites.
+`docs/specs/check-gate-topology.md`. Its first review's valid repairs remain, and the latest
+re-scoped contract additionally authenticates bwrap before probing, admits the root `main` output
+exception, separates raw and staged source modes, stages the CPython standard library and native
+extensions, closes the shell/Python utility inventory, aligns descriptor paths with ordinal runtime
+staging, limits no-symlink mounting to `/target/tmp`, and declares `/cargo` read-only. It also
+retains bwrap's supported ordinary inherited-fd channel rather than `--preserve-fd`, retained-
+descriptor tool probing, complete Git hardening with copied private objects, `io_uring` denial in the
+handoff filter, explicit `ALIGNC_CACHE=off`, staged executable runtime modes, retained source
+descriptors with post-copy proofs, retained Git common-directory identity, a seccomp-protected
+compiler/descriptor/guard handoff, a namespace-owned aggregate tmpfs, explicit cache bounds and
+validation ordering, and synchronized C7 platform prerequisites. It remains an unreviewed design
+slice on `agent/fresh-compiler-topology-redesign-v3`; no implementation, host image, baseline
+refresh, or align-llm verification may consume it. Request 7 must consume the newly reviewed
+contract exactly; its separate Git 2.45.0 image and C7 non-x86 platform profiles remain independent
+prerequisites.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
 ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves
