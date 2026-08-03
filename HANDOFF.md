@@ -5,8 +5,8 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-final-review-rescope`, current head `bf26b74` (`Update C6c2 successor
-  handoff`), based on terminal PR #50 checkpoint `a1b328b` and merged `main` commit
+- Branch: `agent/c6c2-final-review-rescope`, current head `2defefc` (`Record C6c2 resume
+  checkpoint`), based on terminal PR #50 checkpoint `a1b328b` and merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
 - Current source checkpoint: `733468b` (`Rescope C6c2 after conditional final review`); the
   successor rescope is the active design change on this branch.
@@ -57,7 +57,7 @@ request checks, reviews, and attestations.
 - Complete: the Git source-verifier redesign, its initial review repair, and the durable Request 14
   prerequisite are retained in terminal PR #50; the successor branch carries the next closure-matrix
   rescope rather than changing that checkpoint in place.
-- Complete: the successor rescope reconciles scratch allocation failure with the shipped terminal
+- Complete: the successor rescope reconciles scratch allocation failure with the declared terminal
   Align allocator policy, makes pair cleanup ownership-safe under a competing publisher, and makes
   invalid-evaluation evidence output conditional on reaching the paired-evidence boundary. Review
   findings and attestations remain in GitHub; this handoff records only the durable design decisions
@@ -87,11 +87,10 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Resume at PR #51 (`https://github.com/sanohiro/align-llm/pull/51`) from head `bf26b74`: run the
-   required fresh comprehensive independent adversarial review, record the SHA-bound review
-   envelope in GitHub, wait for the hosted documentation/static check, and complete the PR's merge
-   requirements. Keep any transient review findings and attestations in GitHub rather than copying
-   them into this file.
+1. Push the consolidated repair for PR #51 (`https://github.com/sanohiro/align-llm/pull/51`), rerun
+   the documentation/static check, record the finding dispositions and repair commit in GitHub, and
+   complete the PR's merge requirements. Keep review findings and attestations in GitHub rather than
+   copying them into this file.
 2. After PR #51 is reviewed, its findings are disposed, and it is merged, refresh `main`, perform
    the bounded retrospective, and implement and merge C6c1p first; implement
    C6c2 only after C6a1/C6a2 provide content-validated
@@ -108,10 +107,10 @@ request checks, reviews, and attestations.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
 - Terminal PR #50 verification remains durable evidence: its documentation/static checks passed for
   the previous design checkpoint, while source tests and `make ci` were N/A for that docs-only slice.
-- Successor rescope verification is PASS: `git diff --check a1b328b..733468b`, changed-Markdown
+- Successor rescope verification is PASS: `git diff --check a1b328b..2defefc`, changed-Markdown
   fence counts (`c6-prompt-context-optimizer.md` 90, `align-requests.md` 86, `HANDOFF.md` 0),
-  targeted contract assertions for all four rows in `10.1b`, and the `HANDOFF.md` transient-review
-  scan all passed. PR #51 is the successor review boundary; its hosted documentation/static check
+  targeted contract assertions for all four rows in `10.1b` at source checkpoint `733468b`, and the
+  `HANDOFF.md` durable-state scan all passed. PR #51 is the successor review boundary; its hosted documentation/static check
   and review evidence are owned by GitHub. Source tests and `make ci` are N/A because this remains a
   docs-only slice with no executable contract-boundary change.
 
@@ -132,7 +131,7 @@ request checks, reviews, and attestations.
   `UNVERIFIED` remains a valid non-gate comparison. `PromptEvaluateRequest` owns the explicit source paths and expected
   identities; `PromptGateManifest` owns the checked-in evidence
   reference. The verifier validates the persisted workspace/snapshot/input-snapshot/attestation
-  trace and exact error prefix. Its C6c1 adapter uses Request 8/10-shipped temporary record/scalar
+  trace and exact error prefix. Its C6c1 adapter uses Request 8/10-declared temporary record/scalar
   construction only; no fixed-size workaround or duplicated scorer is allowed. C6c1p owns the
   borrowed prefix validator, while C6c1 `aggregate` remains complete-row-only. Explicit verifier
   roots are read-only external inputs with their own physical path exception; source states already
@@ -170,7 +169,7 @@ request checks, reviews, and attestations.
   ancestry command. C6c2 cannot resume from Request 8/10 `ALIGN_MERGED` until its separate
   `c6c2-request8-adoption` and `c6c2-request10-adoption` targets plus `make ci` pass.
 - C6c2 checked-capacity overflow is a recoverable invalid result before scratch allocation; runtime
-  allocator failure follows the shipped Request 8/10 terminal nonzero process policy and has no
+  allocator failure follows the declared Request 8/10 terminal nonzero process policy and has no
   recoverable-result or cleanup-after-abort promise. Pair publication removes only evaluator-owned
   temporary or finalized paths; a competing destination is never removed or reported as an orphan.
   A pre-execution decoded-request `INVALID_INPUT` writes only the result; evidence is written only

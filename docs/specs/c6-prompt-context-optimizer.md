@@ -64,7 +64,7 @@ hypothetical API part of C6:
 4. **Request 8 — runtime construction of evaluator record arrays.** The pinned `array_builder<T>`
    accepts only scalar elements and owned `string`, while C6f2 must construct runtime-sized arrays
    of declared records such as snapshot requests, task rows, aggregates, and regression reasons.
-   C6c2 also needs the shipped record-array and scalar-scratch construction path to adapt decoded
+   C6c2 also needs the declared record-array and scalar-scratch construction path to adapt decoded
    evaluation rows to the C6c1 scorer; a fixed-size local array or duplicated scorer is not allowed.
    Align must define a visible, ownership-safe construction path for the recursively Copy base
    record shapes, including partial push/build/drop behavior. Request 8 is registered and merged
@@ -1267,8 +1267,12 @@ All commands:
 - print the operation, terminal status, and output path in English;
 - return success only for the successful terminal statuses listed below.
 
-Malformed request JSON, an existing output path, or an unreadable output location returns
-`Error.Invalid` or the underlying filesystem error without overwriting any file.
+Malformed request JSON, an existing result output path, or an unreadable result output location
+returns `Error.Invalid` or the underlying filesystem error without overwriting any file. For
+`evaluate`, the request-declared evidence output path is validated after request decoding as a
+request field. A missing, malformed, existing, or physically aliased evidence path is
+`INVALID_INPUT` with `INVALID_PATH`; when the result output path passed its preflight, the command
+writes result-only and never creates an evidence sidecar.
 
 Opening or reading a referenced input is different from writing the result. A missing input,
 non-regular input, permission failure, read failure, or invalid UTF-8 is a decoded-request
@@ -1299,12 +1303,16 @@ work. Unknown JSON fields remain non-identity-bearing but cannot bypass these ra
 
 Validation and side-effect precedence is the same for every command:
 
-1. Validate CLI arity, require that the result output path and, for `evaluate`, the declared
-   evidence output path do not exist and are physically distinct, and decode the declared request.
-   Failure here produces no result artifact because there is no trusted result envelope.
-2. Validate request fields, directly readable artifact schemas/digests, scope, bounds, and
-   cross-record identities. A decoded invalid request writes `INVALID_INPUT` and performs no
-   provider, measurement-adapter, or snapshot-helper call.
+1. Validate CLI arity and decode the declared request. Failure here produces no result artifact
+   because there is no trusted result envelope.
+2. Validate the CLI result output path for bounded syntax, nonexistence, physical safety, and
+   writability before validating request fields. A result-output-path failure returns
+   `Error.Invalid` or the underlying filesystem error and produces no result artifact. Then validate
+   request fields, including the decoded `evaluate` evidence output path, directly readable artifact
+   schemas/digests, scope, bounds, and cross-record identities. A decoded invalid request writes
+   `INVALID_INPUT` and performs no provider, measurement-adapter, or snapshot-helper call; for
+   `evaluate`, it writes no evidence sidecar unless evaluation has established its identity and
+   reached the paired-evidence boundary.
 3. Perform the operation-specific external work: a proposal-provider call for `experiment`, or a
    pre-snapshot, paired measurement-adapter calls, and post-snapshot for `evaluate`. `accept` and
    `rollback` perform no external process or network work.
@@ -1338,7 +1346,7 @@ Within step 2, operation-specific precedence is:
 | Operation | Validation order before side effects |
 | --- | --- |
 | experiment | request bounds; parent activation envelope; scope and embedded prompt variant; opportunity artifact; proposal-provider kind/config; environment-key presence |
-| evaluate | request bounds and distinct result/evidence output paths; explicit verifier source paths and expected identities; experiment and parent; scope; corpus then task manifests in declared order; acceptance, generation, and provider-control policies; credential-name/value presence; empty workspace |
+| evaluate | result output-path preflight; request bounds and decoded evidence output path, including physical distinctness; explicit verifier source paths and expected identities; experiment and parent; scope; corpus then task manifests in declared order; acceptance, generation, and provider-control policies; credential-name/value presence; empty workspace |
 | accept | evaluation and evidence artifacts and all nested records; persisted pre/post identity equality; gate eligibility and `IMPROVED`; empty serious-regression array; supplied-parent validity; parent identity match |
 | rollback | current activation; target activation; ancestor paths in supplied order; digest links; scope match; target ancestry; effective-variant difference; bounded reason |
 
@@ -1530,8 +1538,12 @@ evaluation_evidence_path
 ```
 
 `evaluation_evidence_path` is the new output path for the independently produced
-`PromptEvaluationEvidence` sidecar. It must be a writable, non-existing path under the same project
-root and is validated before any snapshot, adapter, or other evaluator side effect. The evaluator
+`PromptEvaluationEvidence` sidecar. It is a required decoded request field and must be a writable,
+non-existing path under the same project root; its syntax, physical safety, nonexistence, and
+distinctness from the result path are validated before any snapshot, adapter, or other evaluator
+side effect. A missing, malformed, existing, or aliased evidence path is decoded-request
+`INVALID_INPUT`/`INVALID_PATH`: when the result output path passed preflight, the evaluator writes
+result-only and never creates the evidence sidecar. The evaluator
 writes the result at the CLI output path and the evidence at this explicit path as one logical pair;
 the evidence never points back to a path in the result. The pair has no cross-file atomicity promise,
 but its temporary and failure behavior is exact. C6f2 may implement this contract only after the
@@ -3017,9 +3029,9 @@ the final prose, ledger, and regression before it is reviewed.
 
 | Rescope invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
-| Scratch allocation failure | C6c2 `src/prompt_score.align`, Requests 8/10 | checked capacity overflow is recoverable `Err(Error.Invalid)` before allocation; runtime allocator failure follows the shipped terminal nonzero process policy and has no recoverable-result or cleanup-after-abort promise; normal successful/recoverable paths still drop scratch values | `prompt-c6c2-allocation-overflow-smoke`, `prompt-c6c2-allocation-terminal-failure-smoke`, `prompt-c6c2-scratch-drop-smoke` |
+| Scratch allocation failure | C6c2 `src/prompt_score.align`, Requests 8/10 | checked capacity overflow is recoverable `Err(Error.Invalid)` before allocation; runtime allocator failure follows the declared Request 8/10 terminal nonzero process policy and has no recoverable-result or cleanup-after-abort promise; normal successful/recoverable paths still drop scratch values | `prompt-c6c2-allocation-overflow-smoke`, `prompt-c6c2-allocation-terminal-failure-smoke`, `prompt-c6c2-scratch-drop-smoke` |
 | Pair publication ownership | C6f2 `src/prompt_evaluate.align`, Request 14 | evaluator-owned temporary and successfully published paths are the only removable paths; a competing final destination is a collision owned by another publisher, is never removed or reported as an orphan, and leaves `OUTPUT_WRITE` after clean owned cleanup | `prompt-evidence-pair-collision-ownership-smoke`, `prompt-evidence-pair-cleanup-ownership-smoke`, `prompt-evidence-pair-no-replace-smoke` |
-| Invalid-evaluation evidence boundary | CLI contract and `src/prompt_evaluate.align` | pre-execution decoded-request `INVALID_INPUT` writes result-only with no sidecar; only an evaluation that establishes identity and reaches the paired-evidence boundary writes evidence; every status/output combination is explicit | `prompt-evaluate-invalid-input-output-smoke`, `prompt-evaluate-evidence-boundary-smoke` |
+| Invalid-evaluation evidence boundary | CLI contract and `src/prompt_evaluate.align` | request decode or result-output preflight failure writes no artifact; a decoded evidence-path `INVALID_INPUT` writes result-only with no sidecar; only an evaluation that establishes identity and reaches the paired-evidence boundary writes evidence; every status/output combination is explicit | `prompt-evaluate-invalid-input-output-smoke`, `prompt-evaluate-evidence-boundary-smoke` |
 | Durable continuity state | `HANDOFF.md` and GitHub review records | HANDOFF records only branch/checkpoint, durable design decisions, blockers, verification, and next work; review IDs, finding lists, dispositions, and pending-review status remain in GitHub | `git diff --check`, Markdown fence checks, and the author-side HANDOFF durable-state assertion in the successor PR |
 
 The successor must not apply a narrow line edit that leaves the corresponding old wording in another
@@ -3104,7 +3116,7 @@ and must split again before coding if the estimate no longer holds.
    - after Requests 8 and 10 are adopted, adapt decoded rows through one bounded `array<ScoreRow>`
      and verifier-owned primitive C6c1 output columns; use C6c1p for incomplete prefixes and
      `aggregate` only for complete rows; checked arithmetic overflow is invalid input, while runtime
-     allocator failure follows the shipped terminal allocation policy; a fixed-size workaround or
+     allocator failure follows the declared Request 8/10 terminal allocation policy; a fixed-size workaround or
      duplicated scorer is out of scope;
    - use constructed Align values for fixtures only. Do not parse JSON, use escape-free JSON fixtures,
      canonical-encode values, read files, or walk repositories in this slice; those boundaries belong
@@ -3489,8 +3501,9 @@ pub fn verify_result(
 The caller owns both decoded records and keeps every borrowed string and nested array live for the
 call. `verify_result` borrows, does not move, replace, null, mutate, or retain either input. It
 returns one Copy status or `Err(Error.Invalid)` and performs no filesystem, JSON, canonical-encoding,
-process, network, global-state, or repository-reachability operation. After Requests 8 and 10 are
-shipped, it may construct one bounded temporary `array<ScoreRow>` and verifier-owned temporary
+process, network, global-state, or repository-reachability operation. After Requests 8 and 10 reach
+`ALIGN_MERGED` and the named `c6c2-request8-adoption` and `c6c2-request10-adoption` targets pass,
+it may construct one bounded temporary `array<ScoreRow>` and verifier-owned temporary
 primitive output columns passed to C6c1's `aggregate` call. For an incomplete result it passes the
 same borrowed scratch rows to C6c1p's `validate_prefix` and does not allocate aggregate/reason
 columns. The row scratch is bounded by the declared maximum of 2,048 retained task/sample/variant
@@ -3498,7 +3511,7 @@ rows; task columns are bounded by 64 tasks, and every primitive reason column is
 capacity `R_max = 9 * task_count * sample_count + task_count + 2`, at most 9,282, using the same
 checked arithmetic as C6c1. A checked-capacity overflow returns `Err(Error.Invalid)` before invoking
 C6c1 or writing output. A runtime allocator failure while constructing a bounded scratch array or
-column follows the shipped Request 8/10 terminal allocation policy: the process exits nonzero with
+column follows the declared Request 8/10 terminal allocation policy: the process exits nonzero with
 no recoverable result and no cleanup-after-abort promise. C6c2 never truncates reasons or retries
 with an unbounded or fixed-size substitute. On every recoverable return and successful completion,
 normally constructed scratch values are released before return and no scratch value becomes persisted
@@ -3600,7 +3613,7 @@ The C6c2 closure matrix is:
 | trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; policy/helper/Git identity, mode-specific EVALUATION/GATE observed-head semantics, separate derived gate-head ancestry, fixed argv/env/cap/timeout, bounded local-config isolation, complete replacement namespace rejection across loose/packed/ref-backend storage, common-directory replacement/graft/alternate rejection, raw-byte FILE_SET traversal, expected/observed-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
 | row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
 | malformed input and error precedence | `src/prompt_score.align` | status-specific error families including `ADAPTER_FAILED`, drift states, and `RESULT_TOO_LARGE`, invalid option/discriminator combinations, first failing validation, compact counter/digest/empty-shape checks, and no side effects |
-| allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; checked arithmetic overflow returns invalid before scorer call, while runtime allocator failure follows the shipped terminal child-process policy; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, normal-path drop checks, and terminal allocator-failure fixture |
+| allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; checked arithmetic overflow returns invalid before scorer call, while runtime allocator failure follows the declared Request 8/10 terminal child-process policy; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, normal-path drop checks, and terminal allocator-failure fixture |
 | JSON/document binding | C6a1/C6a2, deferred | N/A for C6c2; escaped-string round trips, canonical bytes, and content-digest recomputation require Request 7/12/13 acceptance before this verifier is called |
 
 The C6c2 metric is verifier correctness: every declared state, identity, evidence combination, and
