@@ -1432,7 +1432,7 @@ The final public contract is:
 | `ALIGN_REPO` | Optional project-root-relative default `../align`; Make expands it to an absolute path and the worker retains the sibling Align worktree descriptor before any Git or Cargo operation. Its exact pinned commit and clean raw source tree are mandatory build inputs. |
 | `ALIGN_LLM_TOOLCHAIN_MANIFEST` | Required absolute path to the externally installed canonical JSON manifest. There is no home-directory, PATH, shell, or cache default. |
 | `ALIGN_LLM_TOOLCHAIN_MANIFEST_SHA256` | Required lowercase 64-hex digest of the exact manifest bytes. The worker never hashes a mutable manifest and accepts that newly computed digest in the same invocation. |
-| `ALIGNC` on `ci` | Rejected before bootstrap dispatch. The worker supplies the compiler through sealed descriptor 5; caller compiler paths cannot cross the boundary. |
+| `ALIGNC` on `ci` | Rejected before bootstrap dispatch. The worker supplies a sealed fd-5 compiler identity capsule and the launcher-verified read-only `/tools/alignc` plus sibling `/tools/libalign_runtime.a` bundle; caller compiler paths cannot cross the boundary. |
 | caller Make options | `SHELL`, `.SHELLFLAGS`, `MAKEOVERRIDES`, `MAKEFLAGS`, `GNUMAKEFLAGS`, `-k`, `-i`, `-n`, `-q`, and extra goals are rejected or cleared before the worker phase. Only the controller-owned child vector is accepted as gate evidence. |
 | `ALIGN_LLM_WORK_PARENT`, cache, and timeout overrides | N/A. The parent is the fixed `/tmp` directory, the cache is named by the authenticated manifest, and all deadlines are worker constants. |
 | success bytes | `ci`: exit 0, empty stderr, and exactly `fresh compiler and capable checks: PASS\n`; `build`: exactly `fresh compiler: PASS\n`; `self-test`: exactly `fresh compiler self-test: PASS\n`. |
@@ -1796,7 +1796,9 @@ exception, or recursive build input added below it rejects. The project root has
 `target/` exception plus the exact root `main` exception: when absent `main` is allowed, and when
 present it must be a single-link regular file with mode `0644` or `0755`. That project `main` is
 recorded only as output metadata and is never read, hashed, copied, or made available to Cargo.
-A symlink, directory, device, hard link, or output name at any other path is not an exception.
+A tracked relative symlink whose complete target chain is non-cyclic and contained by the same
+source root is an ordinary source entry, not an output exception. An untracked, absolute, escaping,
+or cyclic symlink, directory, device, hard link, or output name at any other path rejects.
 
 For both roots, the worker rejects shallow or promisor repositories, alternates, grafts, replacement
 refs, fsmonitor, hooks, filters, bare repositories, `core.worktree`, and caller Git configuration
@@ -1833,13 +1835,15 @@ has the exact field order `path_hex`, `kind`, `mode`, `staged_mode`, `git_mode`,
 `size`, `sha256`, `symlink_target_hex`. `path_hex` and `symlink_target_hex` are lowercase hex
 encodings of the original non-NUL path bytes; `entries` are ordered by the original raw path bytes,
 not by decoded text. `kind` is `dir`, `file`, or `symlink`; `git_mode` is one of `040000`, `100644`,
-`100755`, or `120000`; a directory has `size: 0`, `sha256: null`, and `symlink_target_hex: null`;
-a regular file has its byte size and complete-byte SHA-256 with a null symlink target; and a
-symlink has the target-byte size and SHA-256 plus its target hex value. `exceptions` has the exact
-field order `target`, `main`; `target` is `root-directory-output` and `main` is
-`root-file-output` for `project-source` or `null` for `align-source`. No other field, encoding,
-path normalization, or exception is valid. The source-manifest digest stored in the compiler
-descriptor is SHA-256 of these exact canonical bytes.
+`100755`, or `120000`; a directory has four-digit octal `mode` and `staged_mode`, `size: 0`,
+`sha256: null`, and `symlink_target_hex: null`; a regular file has four-digit octal `mode` and
+`staged_mode`, its byte size, and complete-byte SHA-256 with a null symlink target; and a symlink has
+`mode: null`, `staged_mode: null`, the target-byte size and SHA-256, and its target hex value.
+`null` is the only representation of a symlink mode; the literal string `N/A`, an omitted field, or
+an octal mode for a symlink is invalid. `exceptions` has the exact field order `target`, `main`;
+`target` is `root-directory-output` and `main` is `root-file-output` for `project-source` or `null`
+for `align-source`. No other field, encoding, path normalization, or exception is valid. The
+source-manifest digest stored in the compiler descriptor is SHA-256 of these exact canonical bytes.
 
 The independent source-manifest golden vector `fresh-v2-source-manifest-golden` is:
 
@@ -1876,6 +1880,42 @@ Its canonical bytes hash to
 `79b97d58bf9d56a0982b6f524dbae1a902361fa0a9d7e1ae6735496f7058b93f`; the self-test compares the
 complete bytes and independently recomputes this digest before accepting either source root.
 
+The independent contained-symlink vector `fresh-v2-source-manifest-symlink-golden` is:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "project-source",
+  "revision": "0123456789abcdef0123456789abcdef01234567",
+  "tree_id": "1111111111111111111111111111111111111111",
+  "index_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "root_mode": "0755",
+  "root_staged_mode": "0700",
+  "entries": [
+    {
+      "path_hex": "4147454e54532e6d64",
+      "kind": "symlink",
+      "mode": null,
+      "staged_mode": null,
+      "git_mode": "120000",
+      "git_object": "4444444444444444444444444444444444444444",
+      "size": 9,
+      "sha256": "6ebdb617a8104a7756d0cf36578ab01103dc9f07e4dc6feb751296b9c402faf7",
+      "symlink_target_hex": "434c415544452e6d64"
+    }
+  ],
+  "exceptions": {
+    "target": "root-directory-output",
+    "main": "root-file-output"
+  }
+}
+```
+
+Its canonical bytes hash to
+`aa24c3c73d318b8466716082b269c8fbba8a63d688fa97489aeb6a90af060c91`. The vector models the
+tracked project `AGENTS.md -> CLAUDE.md` entry and proves that symlink modes are represented by
+`null`, while the target bytes remain identity-bearing.
+
 The final accepted enumeration for each root retains every source directory descriptor and opens
 every regular file relative to its retained parent with `O_RDONLY|O_NOFOLLOW|O_CLOEXEC` before any
 source copy starts. Symlink targets are read from the retained parent with `readlinkat`; no accepted
@@ -1893,10 +1933,11 @@ The accepted source manifests store raw source mode and a separate deterministic
 regular tracked file must have filesystem mode `0644` with Git mode `100644`, or filesystem mode
 `0755` with Git mode `100755`; its staged mode is respectively `0444` or `0555`. A source directory
 must provide owner read/write/execute and no set-ID or sticky bit; its raw mode remains in the
-manifest for the pre-copy repeat, while its private staged mode is always `0700`. Symlink mode is
-N/A and its contained target is the identity-bearing value. Destination comparison uses the staged
-mode, never the raw source mode, so ordinary `0644`/`0755` checkouts satisfy the contract without an
-unstated normalization. The aggregate lower tree is exposed through a read-only overlay lower
+manifest for the pre-copy repeat, while its private staged mode is always `0700`. A symlink has
+`mode: null` and `staged_mode: null`; its contained target is the identity-bearing value and its
+recreated link has no mode comparison. Destination comparison uses the staged mode for directories
+and regular files, never the raw source mode, so ordinary `0644`/`0755` checkouts satisfy the
+contract without an unstated normalization. The aggregate lower tree is exposed through a read-only overlay lower
 layer; its private upper layer, not the lower tree, is the only place aggregate writes can land. The
 immutable project copy is the aggregate identity reference, and the aggregate lower/upper trees are
 rescanned after every aggregate to prove that no source input changed and every generated output is
@@ -1924,7 +1965,7 @@ aggregate-output/0700; workspace-upper/0700 and empty workspace-work/0700 on one
                  sole writable aggregate overlay owner
 baseline-git/    0700; private read-only project Git view for baseline-check
 runtime/         0700; copied runtime files 0444/0555 by source execute mode; directories remain 0700
-tool-bin/        0700; copied executables 0555; directories remain 0700
+tool-bin/        0700; copied executables 0555 and the compiler runtime archive 0444; directories remain 0700
 descriptor/      0700; cleanup journal only; canonical descriptor is sealed fd 6
 ```
 
@@ -1979,19 +2020,23 @@ target, host PATH, and source cache. Only `/target` is writable; `/cargo` is a r
 and hidden path and requires only the declared outputs to change; a double-fork child proves that
 `--unshare-pid` is present.
 
-After Cargo succeeds, the worker requires `/target/release/alignc` to be the expected regular
-executable and checks its ELF interpreter and complete dynamic dependency closure against the
-authenticated runtime bindings. It copies the exact verified bytes to `tool-bin/alignc` with mode
-`0555`, hashes that copy, and then copies the same bytes to a sealed executable memfd. The descriptor
-therefore records `tool-bin/alignc` as provenance while fd 5 is the only execution handoff. A host
-path, pre-existing target, or mutable Cargo home is never reused.
+After Cargo succeeds, the worker requires `/target/release/alignc` and its adjacent
+`/target/release/libalign_runtime.a` to be regular files with the expected compiler/archive identity.
+It checks the compiler's ELF interpreter and complete dynamic dependency closure against the
+authenticated runtime bindings, hashes both build outputs, and copies the compiler to
+`tool-bin/alignc` with mode `0555` and the archive to `tool-bin/libalign_runtime.a` with mode `0444`.
+It hashes both private copies and then copies the compiler bytes to a sealed executable memfd for the
+fd-5 identity capsule. The compiler and archive are an inseparable private sibling bundle: the
+aggregate exposes them read-only as `/tools/alignc` and `/tools/libalign_runtime.a`. A host path,
+pre-existing target, or mutable Cargo home is never reused.
 
-### 9.6 Sealed compiler descriptor and mandatory interposition
+### 9.6 Sealed compiler identity and private executable bundle
 
-The descriptor is schema version 2 and is never consumed by pathname. The worker serializes it with
-the same canonical JSON rules, writes it to a memfd, applies all four seals, and passes the open
-descriptor as fixed fd 6. It copies the verified compiler to a sealed executable memfd passed as
-fixed fd 5. It also writes a schema-1 handoff guard to a sealed read-only memfd passed as fixed fd 7;
+The descriptor is schema version 3 and is never accepted from a mutable host pathname. The worker
+serializes it with the same canonical JSON rules, writes it to a memfd, applies all four seals, and
+passes the open descriptor as fixed fd 6. It copies the verified compiler bytes to a sealed
+executable identity memfd passed as fixed fd 5. It also writes a schema-1 handoff guard to a sealed
+read-only memfd passed as fixed fd 7;
 the guard contains the canonical descriptor-byte SHA-256 and compiler-byte SHA-256. The worker
 creates a controller-owned seccomp-BPF program on fd 8 and supplies it to bwrap with `--seccomp 8`;
 fd 8 is consumed by bwrap and is never a child handoff. The worker invokes that bwrap with
@@ -2007,8 +2052,15 @@ descriptors, or `ioctl(FIOCLEX)` on one of those descriptors. It also returns `E
 replacement cannot bypass the synchronous rules. bwrap loads the filter under `no_new_privs`; it
 cannot be removed or replaced by repository code.
 The launcher checks that the filter is active, verifies the sealed guard, and compares the guard to
-fds 5 and 6 before executing the compiler. A child can therefore neither close and reuse the
-worker's handoff descriptors nor replace both descriptor bytes with a self-consistent pair.
+fds 5 and 6 before opening the fixed `/tools/alignc` path with `O_RDONLY|O_NOFOLLOW`. It hashes that
+namespace-visible regular file and requires the exact mode, size, and bytes recorded by fd 5 and the
+descriptor. It then executes that already-open private file with `execveat(AT_EMPTY_PATH)`; it does
+not execute the fd-5 memfd. This deliberate private-path execution is required because the pinned
+Align compiler's current `runtime_archive()` uses `current_exe()` and searches beside the real
+executable. The read-only `/tools` bind and the worker-held private root make `/tools/alignc` and
+its sibling `/tools/libalign_runtime.a` immutable for the aggregate. A child can therefore neither
+close and reuse the worker's handoff descriptors nor replace the compiler bundle with a
+self-consistent pair.
 
 The descriptor's exact top-level order and nested order are:
 
@@ -2019,30 +2071,40 @@ project_source_manifest_sha256
 align_source_manifest_sha256
 toolchain_manifest_sha256
 compiler
+compiler_support
 runtime_paths
 launcher_policy
 
 compiler: path, mode, size, sha256
+compiler_support: runtime_archive
+runtime_archive: path, mode, size, sha256
 runtime_path: path, mode, size, sha256
-launcher_policy: kind, compiler_fd, descriptor_fd, guard_fd, preserve_fds, protected_fds, namespace
+launcher_policy: kind, compiler_fd, descriptor_fd, guard_fd, compiler_namespace_path, preserve_fds,
+protected_fds, namespace
 ```
 
-`schema_version` is `2`; `align_revision` is lowercase 40-hex; the three manifest digests are
+`schema_version` is `3`; `align_revision` is lowercase 40-hex; the three manifest digests are
 lowercase 64-hex; `compiler.path` and `runtime_path.path` are private-root-relative no-dot paths;
-all modes are four-character strings; all sizes are bounded unsigned integers; and every digest is
-lowercase 64-hex. `launcher_policy` is exactly `{kind:"sealed-fd", compiler_fd:5, descriptor_fd:6,
-guard_fd:7, preserve_fds:[5,6,7], protected_fds:[5,6,7], namespace:"fresh-aggregate-v2"}`. Unknown
-fields, duplicate fields, wrong order, path escapes, descriptor replacement, missing seals, inactive
-handoff filter, or an fd identity mismatch reject. Every `runtime_path.path` is exactly one
+all modes are four-character strings except the fixed compiler-support archive mode `0444`; all
+sizes are bounded unsigned integers; and every digest is lowercase 64-hex.
+`compiler_support.runtime_archive` is exactly
+`{path:"tool-bin/libalign_runtime.a", mode:"0444", size:<build-size>, sha256:<build-digest>}`.
+`launcher_policy` is exactly `{kind:"private-path-sealed-id", compiler_fd:5, descriptor_fd:6,
+guard_fd:7, compiler_namespace_path:"/tools/alignc", preserve_fds:[5,6,7], protected_fds:[5,6,7],
+namespace:"fresh-aggregate-v3"}`. Unknown fields, duplicate fields, wrong order, path escapes,
+descriptor replacement, missing seals, inactive handoff filter, or an fd/path identity mismatch
+reject. The launcher accepts no compiler pathname from the environment. `compiler.path` must be
+`tool-bin/alignc`, and the only namespace execution path derived from it is `/tools/alignc`; the
+archive must be its sibling at `/tools/libalign_runtime.a`. Every `runtime_path.path` is exactly one
 `runtime/runtime-<ordinal>` path from the authenticated runtime-binding array, and its mode, size,
 and digest must equal that copied object; a logical namespace target or an unlisted staging path is a
 `COMPILER` failure.
 
-The descriptor golden vector `fresh-compiler-descriptor-v2-golden` is:
+The descriptor golden vector `fresh-compiler-descriptor-v3-golden` is:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "align_revision": "0123456789abcdef0123456789abcdef01234567",
   "project_source_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "align_source_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -2053,6 +2115,14 @@ The descriptor golden vector `fresh-compiler-descriptor-v2-golden` is:
     "size": 3,
     "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
   },
+  "compiler_support": {
+    "runtime_archive": {
+      "path": "tool-bin/libalign_runtime.a",
+      "mode": "0444",
+      "size": 3,
+      "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    }
+  },
   "runtime_paths": [
     {
       "path": "runtime/runtime-000000",
@@ -2062,10 +2132,11 @@ The descriptor golden vector `fresh-compiler-descriptor-v2-golden` is:
     }
   ],
   "launcher_policy": {
-    "kind": "sealed-fd",
+    "kind": "private-path-sealed-id",
     "compiler_fd": 5,
     "descriptor_fd": 6,
     "guard_fd": 7,
+    "compiler_namespace_path": "/tools/alignc",
     "preserve_fds": [
       5,
       6,
@@ -2076,7 +2147,7 @@ The descriptor golden vector `fresh-compiler-descriptor-v2-golden` is:
       6,
       7
     ],
-    "namespace": "fresh-aggregate-v2"
+    "namespace": "fresh-aggregate-v3"
   }
 }
 ```
@@ -2089,12 +2160,15 @@ are in-memory handoff artifacts, not persisted project files and not path-only h
 
 Every fresh compiler consumer uses the common fresh launcher and fixed fd 5. In the aggregate
 namespace `ALIGNC` is `/tools/fresh-alignc`; the launcher requires `/proc/self/fd/5` to be a sealed
-executable regular file and executes it directly. It reads fd 6 to verify the descriptor's revision
-and compiler digest, reads fd 7 to verify the sealed handoff guard, recomputes the descriptor-byte
-and compiler-byte digests, and checks the inherited seccomp filter before execution. It never searches
-`ALIGNC`, PATH, `ALIGN_REPO`, sibling release/debug paths, or a mutable descriptor pathname. If fd 5,
-fd 6, or fd 7 is absent, closed, replaced, or fails the identity check, it returns a `COMPILER` error;
-it never falls back. The `ALIGN_LLM_FRESH_COMPILER`
+executable regular identity capsule. It reads fd 6 to verify the descriptor's revision and compiler
+bundle digests, reads fd 7 to verify the sealed handoff guard, recomputes the descriptor-byte and
+compiler-byte digests, checks the inherited seccomp filter, then opens exactly `/tools/alignc` with
+`O_RDONLY|O_NOFOLLOW`, verifies its bytes against fd 5 and the descriptor, and executes that opened
+namespace-visible file with `execveat(AT_EMPTY_PATH)`. The execution path is fixed and read-only so
+the pinned Align compiler's `current_exe()` resolves beside `/tools/libalign_runtime.a`. The launcher
+never searches `ALIGNC`, PATH, `ALIGN_REPO`, sibling release/debug paths, or a mutable descriptor
+pathname. If fd 5, fd 6, or fd 7 is absent, closed, replaced, or fails the identity check, it returns
+a `COMPILER` error; it never falls back. The `ALIGN_LLM_FRESH_COMPILER`
 environment marker is diagnostic only and is not the security gate. Clearing or changing that
 marker, `ALIGNC`, or the descriptor environment cannot enable a fallback because the aggregate
 namespace contains no old compiler and the launcher requires the fixed descriptors.
@@ -2105,10 +2179,13 @@ Before the aggregate namespace is built, the worker copies the reviewed source l
 ambient host tool record. The worker passes fd 5, fd 6, and fd 7 through bwrap with
 the ordinary inherited-fd channel; the direct Make child, shell, scripts, and nested validation
 processes inherit them without a bwrap fd-preservation option. The platform self-test and the
-aggregate regression verify that bwrap retains their device/inode identities. The static call-site check
+aggregate regression verify that bwrap retains their device/inode identities and that a compiler
+started through `/tools/alignc` links a tiny Align program using its sibling archive. The static
+call-site check
 requires `$(ALIGNC)` or the explicit fresh launcher for every compiler consumer, including
 `scripts/check-format`, prompt/evaluation runners, and `eval/runners/record-baseline.py`. No fresh
-path may resolve a compiler through a shebang, bare `alignc`, a sibling target, or ambient PATH.
+path may resolve a compiler through a shebang, bare `alignc`, a sibling target, or ambient PATH; the
+only permitted compiler execution path is the launcher-verified `/tools/alignc` bundle.
 
 ### 9.7 Exact aggregate namespace and interpreter boundary
 
@@ -2236,10 +2313,12 @@ can invoke `ALIGNC`, Make, a shell script, a nested bwrap, or a baseline runner 
 descriptor set. This rule applies to the shared `run()` helper and to direct `subprocess.run`
 calls in `run-coding-task.py` and `record-baseline.py`; relying on Python's default close-on-exec
 behavior is forbidden. The nested bwrap inherits the descriptors again through the ordinary
-channel, so fd 5, fd 6, and the guard fd 7 remain the only compiler handoff through every Python
-and sandbox layer. A fresh
+channel, so fd 5, fd 6, and guard fd 7 remain the only mutable-process identity handoff through every
+Python and sandbox layer; the executable path is only the fixed read-only `/tools/alignc` bundle.
+A fresh
 descriptor fixture invokes a compiler from a nested Python process, attempts close/reuse of all
-three protected fds, and proves both worker identity and absence of a pathname fallback.
+three protected fds, and proves both worker identity and absence of an old or mutable compiler-path
+fallback.
 
 Before the aggregate starts, the worker creates `baseline-git/` as a private read-only Git view of
 the project source. It copies, through retained project Git descriptors and no-follow operations,
@@ -2321,7 +2400,8 @@ The first applicable failure wins in this fixed order:
    cache descriptors; no destination copy;
 7. private root, project/Align source, runtime/tool/cache, and baseline-Git materialization from
    retained inputs, post-copy proofs, and aggregate-work construction;
-8. build namespace, Cargo result, ELF runtime closure, and compiler memfd;
+8. build namespace, Cargo result, ELF runtime closure, compiler/runtime-archive sibling bundle, and
+compiler identity memfd;
 9. descriptor seals/fds, launcher identity, aggregate namespace, child output, and aggregate result;
 10. reverse cleanup and final root-absence proof.
 
@@ -2348,7 +2428,7 @@ its validation, with no path, errno, or free-form subcategory appended to the pu
 | Bootstrap snapshot | fixed bootstrap | Hash worker, sealed memfd, fixed image interpreter, no repository child before snapshot | `fresh-v2-bootstrap-snapshot-smoke` overwrites/truncates worker after hash and requires the old bytes to execute. |
 | Manifest wire | bootstrap/worker | Schema 2 order, mode strings, bounds, duplicate/unknown rejection, external digest | `fresh-v2-manifest-format-smoke` covers every scalar, order, mode, UTF-8, NUL, size, and supplied-digest case. |
 | Digest tree and cache wire | worker | Exact file/dir schema with raw/staged modes, structural hash, canonical JSON hash, raw-byte order, and external cache-manifest schema | `fresh-v2-digest-tree-golden` checks the runtime `abc` vector; `fresh-v2-cache-manifest-golden` checks the nested `registry/a` bytes, both digests, mode mapping, count, total, and malformed cache manifests. |
-| Source-manifest wire | worker | Exact schema-1 source identity bytes, raw-byte path encoding/order, Git modes and objects, raw/staged modes, output exceptions, and descriptor digest | `fresh-v2-source-manifest-golden` checks the complete project vector and independently recomputes the source-manifest digest for both source kinds. |
+| Source-manifest wire | worker | Exact schema-1 source identity bytes, raw-byte path encoding/order, Git modes and objects, raw/staged modes including `null` symlink modes, output exceptions, and descriptor digest | `fresh-v2-source-manifest-golden` checks the complete project vector and independently recomputes the source-manifest digest for both source kinds; `fresh-v2-source-manifest-symlink-golden` checks the tracked `AGENTS.md -> CLAUDE.md` case and exact `null` mode bytes. |
 | Bwrap trust and capability probe | worker | Authenticate and retain bwrap before any bwrap execution; run every platform probe from that descriptor and reject mutable-path replacement | `fresh-v2-bwrap-trust-smoke` replaces the manifest path before and during namespace, overlay, seccomp, no-symlink, and inherited-fd probes and requires the retained bytes or a `TRUST`/`PLATFORM` rejection before private-root creation. |
 | Tool identity | worker | Canonical no-symlink host path, retained no-follow descriptor, full hash, probe from retained bytes, copied private bytes, exact probe | `fresh-v2-tool-identity-smoke` covers symlink aliases, replacement after open, version, timeout, overflow, unlisted names, retained-descriptor execution, and copied-byte mutation. |
 | Runtime/loader/Python identity | worker plus bwrap | Complete ELF interpreter/DT_NEEDED closure, actual ordinal staging paths, CPython stdlib and `lib-dynload` trees, executable runtime modes 0555 versus data modes 0444, no host loader or Python import | `fresh-v2-runtime-closure-smoke` replaces a library, interpreter, stdlib module, and native extension, checks build and aggregate, proves descriptor paths name the copied ordinal object, and proves host paths never execute. |
@@ -2358,9 +2438,9 @@ its validation, with no path, errno, or free-form subcategory appended to the pu
 | Aggregate temporary call sites | scripts and Align loop | Every temporary file, fixture, marker, and negative Git state is below the no-symlink `/target/tmp`; the loop no longer writes `eval/`, and no host temp directory is aggregate-visible | `fresh-v2-temp-root-callsite-smoke` runs loop, coding-task, invalid-baseline, and every `mktemp`/`TemporaryDirectory` caller, attempts a temp-to-workspace symlink, and proves no lower or upper source path changed. |
 | Aggregate publication | worker plus bwrap | Immutable `aggregate-work` lower layer, writable upper/work pair, compiler sibling staging, atomic rename, and final `/workspace/main` allowlist | `fresh-v2-aggregate-publication-smoke` runs the real compiler publication path, proves `.align-publish-*` is transient, rejects an upper entry outside `main`, and checks the post-unmount scan. |
 | Build namespace | worker plus bwrap | Empty root, authenticated pinned `/align-src` only, no project source or host `ALIGN_REPO`, user/PID/net namespaces, read-only authenticated `/cargo`, writable `/target` only | `fresh-v2-build-namespace-smoke` uses host-root/cache/HOME/network/project-source/sibling-target markers, attempts a Cargo-cache write, verifies `/align-src/Cargo.toml`, double fork, and runtime loader probes. |
-| Compiler descriptor | worker/launcher/seccomp | Canonical schema with separate project/Align source digests, sealed fd 5/6, sealed guard fd 7, protected handoff descriptors, synchronous and asynchronous close/replace denial, no pathname handoff, exact digest and revision | `fresh-v2-descriptor-fd-smoke` replaces the descriptor path, closes/reuses all protected fds, mutates memfds, attempts `dup2`/`close_range` and `io_uring_setup`/`io_uring_enter`/`io_uring_register`, checks the active filter, and checks exact golden bytes. |
-| Direct compiler call | fresh launcher | Fixed fd 5 required; no flag-controlled or PATH fallback | `fresh-v2-direct-interposition-smoke` clears every fresh marker and installs old sibling/PATH marker compilers; none may run. |
-| Internal compiler call | Makefile/scripts/Python runners | All consumers use fresh launcher/fds; staged tool paths and explicit `pass_fds=(5,6,7)` survive Python, shell, nested bwrap, and recursive Make; no bare compiler, sibling, or fallback path | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, and protected-fd replacement attempts, with marker compiler and descriptor-identity controls. |
+| Compiler descriptor | worker/launcher/seccomp | Canonical schema 3 with separate project/Align source digests, sealed fd-5 compiler identity, sealed fd 6 descriptor, sealed guard fd 7, authenticated compiler/archive sibling bundle at `/tools/alignc` and `/tools/libalign_runtime.a`, synchronous and asynchronous close/replace denial, fixed read-only execution path, exact digest and revision | `fresh-v2-descriptor-fd-smoke` replaces the descriptor path and staged compiler/archive names, closes/reuses all protected fds, mutates memfds, attempts `dup2`/`close_range` and `io_uring_setup`/`io_uring_enter`/`io_uring_register`, checks the active filter, compiles a tiny Align program through the namespace-visible compiler path, and checks exact descriptor-v3 golden bytes. |
+| Direct compiler call | fresh launcher | Fixed fd 5 identity required; execution is only the launcher-verified `/tools/alignc` path with its authenticated sibling archive; no flag-controlled, PATH, host, or old fallback | `fresh-v2-direct-interposition-smoke` clears every fresh marker and installs old sibling/PATH marker compilers, replaces the private bundle, and requires none to run while a tiny link proves `libalign_runtime.a` is found beside `current_exe()`. |
+| Internal compiler call | Makefile/scripts/Python runners | All consumers use fresh launcher/fds; staged tool paths and explicit `pass_fds=(5,6,7)` survive Python, shell, nested bwrap, and recursive Make; no bare compiler, sibling, mutable path, or fallback | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, and protected-fd replacement attempts, with marker compiler/archive and descriptor-identity controls. |
 | Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python plus stdlib/extension roots, Bash, `mount-guard`, `/tools`, no-symlink `/target/tmp` only, PATH, loader, and nested fd preservation | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools/modules, runs nested validation, attempts a temp-to-workspace symlink and a contained source symlink, and verifies staged identities, temp-root propagation, mount attributes, and fd 5/6/7. |
 | Aggregate topology | worker/Makefile | Exactly one bwrap aggregate, cleared options, ordinary inherited-fd propagation, explicit `ALIGNC_CACHE=off`, fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, hostile shell/overrides, bwrap inherited-fd identity, cache-off propagation, and fd propagation. |
 | Process ownership | worker | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, overflow, double fork, signal, PID reuse, and reader closure. |
