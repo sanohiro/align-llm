@@ -3468,8 +3468,9 @@ Its validation order is:
    attempted. Otherwise compute the bounded expected count and validate that `rows.len()` is no
    greater than it.
 2. Validate every row in execution order using the merged C6c1 row-state rules.
-3. Reject any row after a structurally valid `ERROR`; return `TERMINAL_ERROR` only when that row is
-   the final supplied row, otherwise return `VALID_PREFIX` for a prefix with no terminal row.
+3. A structurally valid `ERROR` row is terminal only when it is the final supplied row; a later row
+   returns `INVALID_INPUT` at that later row's index. A prefix with no terminal row returns
+   `VALID_PREFIX`.
 4. Return the first invalid index without output mutation or any side effect.
 
 The C6c1p acceptance gate is `prompt-score-prefix-smoke` plus the existing `prompt-score-smoke`,
