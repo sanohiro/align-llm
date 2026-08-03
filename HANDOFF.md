@@ -5,18 +5,14 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `4e15ad9` (`Repair C6c1p count
-  guard and handoff`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
-  validation`), topology source checkpoint `b7f0289`, and immutable oracle checkpoint `a7eb307`,
-  based on merged main commit `74601cda` (`Merge PR #51: Rescope C6c2 after conditional final
-  review`).
-- Current source/design lineage: the merged C6c2 design from PR #51; `aad17dc` is the C6c1p
-  implementation, `b7f0289` is the clean topology baseline source, `a7eb307` is its immutable
-  oracle, and `6811251` is the canonical baseline finalization checkpoint.
-- Active goal: complete the C6c1p `validate_prefix` slice through its pre-PR review, PR checks, and
-  merge. PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in
-  place. C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align adoption
-  prerequisites.
+- Branch: `agent/c7-persisted-result-design`, based on merged main commit `34eb2ad` (`Merge PR #52:
+  Add C6c1p score prefix validation`). The next content checkpoint is the C7 design plan; no C7
+  implementation has started.
+- Current source/design lineage: the merged C6c2 design from PR #51 and merged C6c1p implementation
+  from PR #52; C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align
+  adoption prerequisites.
+- Active goal: design the independent C7-PersistedResult consumer slice before implementation. PR
+  #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in place.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -88,6 +84,23 @@ request checks, reviews, and attestations.
   immutable oracle, and canonical finalization are recorded in separate commits; the evaluation
   contract and existing baseline checks remain unchanged. The topology repair's source, oracle, and
   finalization are `b7f0289`, `a7eb307`, and `6811251`; the earlier `f70ea0e` baseline is superseded.
+- Complete: PR #52 merged as `34eb2ad` after the required independent review, consolidated repair,
+  local pinned `make ci`, hosted checks, baseline verification, review disposition, and merge-method
+  ancestry checks. Detailed review and hosted records remain in GitHub; this file keeps only durable
+  project state.
+- Post-merge retrospective (2026-08-03):
+  - Reusable lesson queued: when a focused acceptance target is added, the same change must update
+    the authoritative Make graph, topology oracle, focused smoke, and any identity-bound baseline;
+    trigger the queued governance improvement before the next Make topology change. Existing
+    `docs/review-checklist.md` and `docs/specs/check-gate-topology.md` cover the policy, but the
+    cross-file contract is still a queued automation enhancement rather than a new product rule.
+  - Reusable lesson queued: public bounded arithmetic should name the contract bound in the code and
+    include a boundary fixture for any derived count; trigger this at the next bounded validator or
+    persisted-capacity slice. C6c1p's repair fixed the immediate guard; no retrospective-only patch
+    is opened.
+  - Existing baseline refresh and HANDOFF continuity rules were sufficient; no additional
+    governance change is required from the merge mechanics. Review-tool latency was one-off and is
+    not promoted into project policy.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -113,14 +126,16 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push repair commit `4e15ad9`, update the PR review evidence with its finding dispositions and
-  repair commit, wait for hosted checks, and merge C6c1p only after every finding is dispositioned.
-2. After C6c1p is merged, implement C6c2 only after C6a1/C6a2 provide content-validated decoded
-  records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record the
-  dependency blocker and continue only with safe independent roadmap work.
-3. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
-   merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
-   `make ci` passes the original acceptance gate.
+1. Read the C7-PersistedResult roadmap contract, current result/evaluation source, relevant Align
+  ownership/JSON guidance, and existing evaluation gates; record the exact source-of-truth choices.
+2. Write `docs/specs/c7-persisted-result.md` with the public-contract ledger, closure matrix,
+  persisted schema/identity, validation order, ownership/lifetime, malformed-input and cleanup
+  paths, compatibility floor, acceptance fixtures, and metric before any implementation.
+3. Perform the author-side ledger-to-prose and matrix-to-diff consistency pass, run one fresh
+  independent adversarial design review, and open/merge the independently reviewable C7 design PR.
+4. Do not implement C7-PersistedResult until its reviewed design is merged. Keep C6c2 paused until
+  C6a1/C6a2 and Requests 7/8/10/12/13 reach their named adoption conditions; continue only with
+  safe independent work.
 
 ## Latest verification
 
@@ -164,6 +179,11 @@ request checks, reviews, and attestations.
 - C6c1p author-side documentation verification is PASS at `fd3d811`: `git diff --check` passed;
   the correction changed no executable contract boundary, so the recorded source verification and
   baseline remain applicable.
+- Post-merge refresh is PASS: local `main` fast-forwarded to `34eb2ad`, the new C7 branch was based
+  from that exact commit, and the working tree is clean before design work.
+- Final C6c1p evidence remains PASS: `PYTHONDONTWRITEBYTECODE=1 make ci` passed at
+  `4e15ad9509f6048221e1852cfbbf1d8ec656d79d`; the final hosted PR check and baseline verification
+  also passed. The pinned Align revision remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 
 ## Constraints and decisions to preserve
 
