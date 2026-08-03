@@ -8,13 +8,14 @@ request checks, reviews, and attestations.
 - Branch: `agent/fresh-compiler-topology-redesign-v3`, based on main `32bfeba` (`Add C7 persisted-result design gate (#53)`). The current redesign checkpoint is `f620508` (`Rescope fresh compiler trust and product closure`); historical checkpoints `d4c9060`, `4eb878b`, `5cab02f`, `836b489`, `bb9ad1f`, `1ce3f9e`, `004af2e`, `0247c86`, and `9a48e6f` remain retained and superseded.
 - Active goal: finish this PR's successor Linux x86_64 fresh-compiler design review, record a clean checkpoint, and then complete the active goal; no dependent implementation or Align pin adoption may start.
 - Complete: the latest fresh review found four P1 and two P2 gaps. The consolidated redesign now binds the toolchain manifest to the fixed trusted runner image, derives authenticated linker/loader/pkg-config paths and checks the generated `main` ELF closure, disables Python bytecode writes in aggregate and nested environments, corrects the cache golden count/digest, leaves unprovable roots untouched after an uncatchable death, and defines the raw Git index digest preimage and semantic vector. It retains the prior fixes for inherited compiler identity fds, private project Git views, root `.git` control, both `target` exceptions, canonical sibling-root opening, Cargo prefixes/configuration, and the read-only `/tools/alignc` plus `/tools/libalign_runtime.a` bundle with write-once handoff files.
-- In progress: obtain one new comprehensive review of `f620508`. The prior review is not being treated as clean evidence.
+- In progress: obtain one new comprehensive review of `f620508`. The prior review is not being treated as clean evidence. The 2026-08-04 review attempt was stopped after an extended wall-clock run without a verdict; this is incomplete evidence, not a clean review.
 - Not started: bootstrap/image installation, controller implementation, `eval` tool-path implementation, baseline refresh, hosted/capable acceptance, and any `.align-revision` change.
 
 ## Next steps
 
-1. Run one fresh comprehensive review of `f620508`; do not implement against it until the review is clean.
-2. If clean, record the final checkpoint and complete the active goal. Bootstrap/image installation, implementation, baseline refresh, and pin adoption remain future slices; do not push, open, or merge without user authorization.
+1. Before any review rerun, set an explicit wall-clock budget and inspect progress at least once per minute; terminate and record `INCOMPLETE` when the budget expires or no new review evidence is produced. Do not give an ETA without evidence.
+2. Run one fresh comprehensive review of `f620508`; do not implement against it until the review is clean.
+3. If clean, record the final checkpoint and complete the active goal. Bootstrap/image installation, implementation, baseline refresh, and pin adoption remain future slices; do not push, open, or merge without user authorization.
 
 ## Latest verification
 
@@ -26,6 +27,7 @@ request checks, reviews, and attestations.
 - Section 9 claims only Ubuntu/Linux x86_64; C7's required aarch64 Linux and aarch64 macOS environments need separate reviewed platform profiles and implementations.
 - Request 7's exact Git 2.45.0 immutable OCI image/job remains a separate prerequisite; do not invent its digest.
 - The dependent slice remains blocked on a clean review of `f620508`. It must preserve the separately authenticated align-llm and sibling Align source roots, canonical `ALIGN_REPO` opening, exact raw source/index/worktree identities, root `.git` and both `target` exceptions, contained symlink modes, private Git views for every project call, schema-2 cache wire and five prefixes, tracked Cargo configuration, fixed image-attested manifest, derived linker/loader paths and generated-output closure, bytecode-disabled aggregate, read-only compiler/archive bundle, catchable-only cleanup, and exact status grammar before implementation or pin adoption.
+- Review execution guard: the repository rules already require one comprehensive review, per-minute progress inspection, bounded redirection on actual stalls, and no unsupported completion claim. A review that continues issuing exploratory commands without a verdict is stopped at its budget and recorded as `INCOMPLETE`; repeated full reviews require a new design or explicitly recorded finding, not open-ended rechecking.
 - Do not consume `6b5dfaa`, `bb9ad1f`, or the current unreviewed redesign as an implementation contract until the successor design is reviewed clean. Preserve the valid decisions—no host pathname/compiler fallback, staged `/usr/bin/env`/`/bin/sh`/loader closure, overlay publication, staged `/tools`, private Git refs, exact cleanup-failure bytes/status, read-only compiler/archive sibling bundle, and empty descriptor propagation—until the fresh review completes.
 - The sibling Align checkout is the language source of truth. Do not code against hypothetical Align APIs or update the pin from this design branch.
 - Intentional uncommitted files: none in this worktree. Main's separate uncommitted `HANDOFF.md` is intentional and must not be discarded.
