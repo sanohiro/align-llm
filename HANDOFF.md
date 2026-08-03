@@ -112,7 +112,7 @@ request checks, reviews, and attestations.
     not promoted into project policy.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
-- Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
+- Plan of record: `docs/specs/c7-persisted-result.md`; C6 plans remain historical context only.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 
 ## C6c1 implementation boundary
