@@ -5,16 +5,16 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/fresh-compiler-topology-redesign-v3`, based on main `32bfeba` (`Add C7 persisted-result design gate (#53)`). The redesign is currently uncommitted on top of `004af2e` (`Update fresh compiler review handoff`); historical checkpoints `d4c9060`, `4eb878b`, `5cab02f`, `836b489`, `bb9ad1f`, and `1ce3f9e` remain retained and superseded.
+- Branch: `agent/fresh-compiler-topology-redesign-v3`, based on main `32bfeba` (`Add C7 persisted-result design gate (#53)`). The current redesign checkpoint is `0247c86` (`Rescope fresh compiler handoff and source boundaries`); historical checkpoints `d4c9060`, `4eb878b`, `5cab02f`, `836b489`, `bb9ad1f`, `1ce3f9e`, and `004af2e` remain retained and superseded.
 - Active goal: finish this PR's successor Linux x86_64 fresh-compiler design review, record a clean checkpoint, and then complete the active goal; no dependent implementation or Align pin adoption may start.
 - Complete: the latest fresh review found three P1 and four P2 gaps. The consolidated redesign now removes inherited compiler identity fds and the conflicting child-close filter, routes every normal project Git call through `/baseline-git`, records root `.git` control and both `target` exceptions in the source wire, canonicalizes the sibling root before no-follow opening, defines the schema-2 five-prefix Cargo cache manifest, accepts only the pinned tracked `.cargo/config.toml` digest/key set, and distinguishes catchable cleanup from next-invocation orphan reclamation. The compiler/archive bundle remains at read-only `/tools/alignc` and `/tools/libalign_runtime.a`, with write-once `/tools/fresh-descriptor` and `/tools/fresh-guard` handoff files.
-- In progress: focused checks and commit of this redesign, followed by one new comprehensive review. The prior review is not being treated as clean evidence.
+- In progress: obtain one new comprehensive review of `0247c86`. The prior review is not being treated as clean evidence.
 - Not started: bootstrap/image installation, controller implementation, `eval` tool-path implementation, baseline refresh, hosted/capable acceptance, and any `.align-revision` change.
 
 ## Next steps
 
-1. Finish the focused documentation and wire checks, commit the redesign, and update this handoff with the exact commit.
-2. Run one fresh comprehensive review of that commit; if it is clean, record the final checkpoint and complete the active goal. Bootstrap/image installation, implementation, baseline refresh, and pin adoption remain future slices; do not push, open, or merge without user authorization.
+1. Run one fresh comprehensive review of `0247c86`; do not implement against it until the review is clean.
+2. If clean, record the final checkpoint and complete the active goal. Bootstrap/image installation, implementation, baseline refresh, and pin adoption remain future slices; do not push, open, or merge without user authorization.
 
 ## Latest verification
 
@@ -28,4 +28,4 @@ request checks, reviews, and attestations.
 - The dependent slice remains blocked on a reviewed design that separately authenticates the align-llm project and sibling Align source roots, canonicalizes `ALIGN_REPO` before no-follow opening, proves `ALIGN_REPO` HEAD/tree/index/cleanliness against `.align-revision`, stages `/align-src`, defines exact source-manifest wire bytes including root `.git`, both `target` exceptions, and contained symlink `null` modes, provides normal and negative private baseline-Git views for all project Git calls, defines raw-to-staged modes and the schema-2 five-prefix external cache wire, accepts the pinned tracked Cargo config only, authenticates the read-only compiler/archive bundle and write-once handoff files, fixes catchable/uncatchable cleanup and status grammar, and synchronizes C7's fresh `make ci`, together with retained-tool, bwrap-before-probe, cache-off, runtime-mode, source post-copy, common-Git identity, aggregate overlay/tmpfs, C7 platform-profile, cache-bound, and validation-order decisions.
 - Do not consume `6b5dfaa`, `bb9ad1f`, or the current unreviewed redesign as an implementation contract until the successor design is reviewed clean. Preserve the valid decisions—no host pathname/compiler fallback, staged `/usr/bin/env`/`/bin/sh`/loader closure, overlay publication, staged `/tools`, private Git refs, exact cleanup-failure bytes/status, read-only compiler/archive sibling bundle, and empty descriptor propagation—until the fresh review completes.
 - The sibling Align checkout is the language source of truth. Do not code against hypothetical Align APIs or update the pin from this design branch.
-- Intentional uncommitted files: `HANDOFF.md`, `docs/align-requests.md`, `docs/specs/c7-persisted-result.md`, and `docs/specs/check-gate-topology.md` are the consolidated redesign to be committed together. Main's separate uncommitted `HANDOFF.md` is intentional and must not be discarded.
+- Intentional uncommitted files: none in this worktree. Main's separate uncommitted `HANDOFF.md` is intentional and must not be discarded.
