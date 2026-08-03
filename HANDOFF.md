@@ -5,15 +5,15 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-final-review-rescope`, current content checkpoint `727b5a4` (`Repair C6c2
-  review contract consistency`), based on terminal PR #50 checkpoint `a1b328b` and merged `main` commit
-  `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source/design lineage: `733468b` (`Rescope C6c2 after conditional final review`), with
-  the recorded review repair in content checkpoint `727b5a4`.
-- Active goal: continue the C6 roadmap through completion, beginning by finishing the independently
-  reviewable successor to the terminal C6c2 design checkpoint in PR #51. PR #49 and PR #50 remain
-  unmerged historical checkpoints and are not to be repaired in place. Implementation is not started
-  and must wait for this design plus the C6a1/C6a2 decoded-record and Align adoption prerequisites.
+- Branch: `agent/c6c1p-score-prefix`, based on merged main commit `74601cda`
+  (`Merge PR #51: Rescope C6c2 after conditional final review`); the active content/design
+  checkpoint is the merged C6c2 design from PR #51.
+- Current source/design lineage: `727b5a4` (`Repair C6c2 review contract consistency`) after the
+  `733468b` rescope; PR #51 is merged and remains the authoritative C6c2 design checkpoint.
+- Active goal: implement the independently reviewable C6c1p `validate_prefix` slice on the merged
+  C6c1 scorer. PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired
+  in place. C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align adoption
+  prerequisites.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -62,6 +62,15 @@ request checks, reviews, and attestations.
   invalid-evaluation evidence output conditional on reaching the paired-evidence boundary. Review
   findings and attestations remain in GitHub; this handoff records only the durable design decisions
   and blockers needed to continue.
+- Complete: PR #51 passed its fresh independent adversarial review, all three recorded findings were
+  repaired and dispositioned in GitHub, the hosted documentation/static check passed, and the PR was
+  merged with merge commit `74601cda`.
+- Retrospective decision: the next C6c1p author-side matrix-to-diff pass must keep HANDOFF's content
+  checkpoint distinct from the branch head, ensure each validation step only references already
+  decoded inputs, and cross-check lifecycle wording against `docs/align-requests.md`; these are
+  durable contract checks, not transient review state.
+- In progress: C6c1p adds only the borrowed `validate_prefix` API and its focused smoke; no C6c2
+  implementation or decoded-record workaround is in scope.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -87,16 +96,17 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push the consolidated repair and this HANDOFF checkpoint for PR #51
-   (`https://github.com/sanohiro/align-llm/pull/51`), rerun the documentation/static check, record
-   the finding dispositions and repair commit in GitHub, and complete the PR's merge requirements.
-   Keep review findings and attestations in GitHub rather than copying them into this file.
-2. After PR #51 is reviewed, its findings are disposed, and it is merged, refresh `main`, perform
-   the bounded retrospective, and implement and merge C6c1p first; implement
-   C6c2 only after C6a1/C6a2 provide content-validated
-   decoded records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record
-   the dependency blocker and continue only with safe independent roadmap work.
-3. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
+1. Implement C6c1p `validate_prefix` in `src/prompt_score.align`, add the exact focused smoke and
+   Make target required by the plan, and keep the public surface borrowed, Copy, allocation-free,
+   and complete-row-aggregate independent.
+2. Run the focused prefix smoke plus existing scorer smoke, `make check`, `make fmt`, format/static
+   checks, per-unit and whole-program compilation, and the allocation-parity fixture; then perform
+   the required author-side matrix-to-diff pass and independent code review before opening/merging
+   its PR.
+3. After C6c1p is merged, implement C6c2 only after C6a1/C6a2 provide content-validated decoded
+   records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record the
+   dependency blocker and continue only with safe independent roadmap work.
+4. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
    merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
    `make ci` passes the original acceptance gate.
 
@@ -107,12 +117,12 @@ request checks, reviews, and attestations.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
 - Terminal PR #50 verification remains durable evidence: its documentation/static checks passed for
   the previous design checkpoint, while source tests and `make ci` were N/A for that docs-only slice.
-- Successor rescope verification is PASS: `git diff --check a1b328b..727b5a4`, changed-Markdown
-  fence counts (`c6-prompt-context-optimizer.md` 90, `align-requests.md` 86, `HANDOFF.md` 0),
-  targeted contract assertions for all four rows in `10.1b` at content checkpoint `727b5a4`, and the
-  `HANDOFF.md` durable-state scan all passed. PR #51 is the successor review boundary; its hosted documentation/static check
-  and review evidence are owned by GitHub. Source tests and `make ci` are N/A because this remains a
-  docs-only slice with no executable contract-boundary change.
+- Successor rescope verification is PASS at merged PR #51: local documentation assertions and
+  `git diff --check a1b328b..f770c9d` passed; hosted run `30780277801`, job `91583421617`, passed
+  the documentation/static check. Source tests and `make ci` were N/A because that slice changed no
+  executable contract boundary.
+- Post-merge refresh is PASS: `main` is fast-forwarded to merge commit `74601cda`; the working tree
+  is clean before the C6c1p implementation branch.
 
 ## Constraints and decisions to preserve
 
