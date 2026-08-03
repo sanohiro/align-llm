@@ -3432,7 +3432,7 @@ The C6c1 closure matrix is:
 | output ownership and early exit | `src/prompt_score.align` | undersized scalar-column output and invalid-input fixtures prove every caller buffer remains sentinel-filled |
 | incomplete-prefix validation | `src/prompt_score.align` in C6c1p | empty, strict-prefix, terminal-`ERROR`, out-of-order, post-error, complete-prefix, invalid task-limit plan, invalid-plan sentinel, and checked-count/overflow fixtures through `validate_prefix` |
 | cleanup/allocation | N/A: pure borrowed scalar kernel | `scripts/check-format`, `make check`, and no owned fields or retained views in the declared types |
-| public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, and refreshed baseline sequence when the hosted list changes |
+| public topology | `Makefile`, topology oracle, smoke script | `make gate-topology-check`, `make prompt-score-smoke`, `make prompt-score-prefix-smoke`, and refreshed baseline sequence when the hosted list changes |
 
 This ledger is intentionally limited to the C6c1 kernel. Artifact decoding, whole-document
 error-prefix retention, and runtime-sized result construction remain named owners in C6a1/C6a2/C6f2
