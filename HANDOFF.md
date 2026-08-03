@@ -5,10 +5,10 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `f70ea0e` (`Finalize C6c1p
-  evaluation baseline`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
-  validation`), based on merged main commit `74601cda` (`Merge PR #51: Rescope C6c2 after
-  conditional final review`).
+- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `fd3d811` (`Clarify C6c1p
+  terminal prefix contract`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
+  validation`) and baseline finalization checkpoint `f70ea0e`, based on merged main commit
+  `74601cda` (`Merge PR #51: Rescope C6c2 after conditional final review`).
 - Current source/design lineage: the merged C6c2 design from PR #51; `aad17dc` is the C6c1p
   implementation and `f70ea0e` is its required Makefile-bound baseline finalization checkpoint.
 - Active goal: complete the C6c1p `validate_prefix` slice through its pre-PR review, PR checks, and
@@ -73,6 +73,9 @@ request checks, reviews, and attestations.
 - Complete: C6c1p adds only the borrowed `validate_prefix` API, reuses the merged row-state rules,
   preserves the complete-row aggregate, and covers the declared prefix/error/plan matrix in its
   focused smoke. No C6c2 implementation or decoded-record workaround is in scope.
+- Complete: the author-side C6c1p consistency pass corrected the validation-order prose so a row
+  after a terminal `ERROR` is `INVALID_INPUT`, matching the public contract, implementation, and
+  post-error smoke case.
 - Complete: because C6c1p adds a Make target, the required clean-source baseline measurement,
   immutable oracle, and canonical finalization are recorded in separate commits; the evaluation
   contract and existing baseline checks remain unchanged.
@@ -136,6 +139,9 @@ request checks, reviews, and attestations.
   `PYTHONDONTWRITEBYTECODE=1 make ci` all passed. The pinned Align revision is
   `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; the ordinary sibling checkout's ignored local
   settings file was preserved, so baseline recording used the clean `align-clean-672` worktree.
+- C6c1p author-side documentation verification is PASS at `fd3d811`: `git diff --check` passed;
+  the correction changed no executable contract boundary, so the recorded source verification and
+  baseline remain applicable.
 
 ## Constraints and decisions to preserve
 
