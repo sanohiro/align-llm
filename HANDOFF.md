@@ -149,6 +149,10 @@ request checks, reviews, and attestations.
   revision remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; the ordinary sibling checkout's
   ignored local settings file was preserved, so baseline recording used the clean
   `align-clean-672` worktree.
+- Final C6c1p aggregate verification is PASS at `63543f5`: `PYTHONDONTWRITEBYTECODE=1 make ci`
+  passed the pinned Align build, topology, hosted and capable checks, prefix smoke, coding corpus,
+  canonical baseline, and both baseline negative/failure smokes. Existing compiler warnings remain
+  non-fatal diagnostics.
 - C6c1p topology-repair verification is PASS at `fc596e1`: `python3 scripts/check-gate-topology
   --self-test`, `make gate-topology-check`, `make prompt-score-prefix-smoke`, and
   `PYTHONDONTWRITEBYTECODE=1 make hosted-checks` all passed; the aggregate log includes the new
