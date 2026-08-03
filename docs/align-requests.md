@@ -1681,7 +1681,7 @@ The implementation closure ledger for the future Align design is:
 | Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
-| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | The Linux x86_64 design update is recorded at reviewed checkpoint `4eb878b`, but its conditional final review found substantive snapshot, host-runtime, wire-schema, namespace, and cleanup gaps; a re-scoped design is required before implementation, fixed host image/manifest installation, baseline refresh, or align-llm verification, so every pin-changing adoption remains blocked | the re-scoped topology must pass its own comprehensive design review and then every named unit, fault-injection, local/hosted integration, baseline-ancestry, and cleanup regression before a later adoption changes the pin; aarch64 Linux/macOS consumers additionally require separate platform-profile designs and implementations |
+| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | Successor redesign is drafted as Section 9 of `docs/specs/check-gate-topology.md` on branch `agent/fresh-compiler-topology-redesign-v3`; it is not reviewed or merged, so implementation, fixed host image/manifest installation, baseline refresh, and align-llm verification remain pending and every pin-changing adoption remains blocked | Section 9 must pass its own comprehensive design review, then every named unit, fault-injection, local/hosted integration, baseline-ancestry, and cleanup regression before a later adoption changes the pin; aarch64 Linux/macOS consumers additionally require separate platform-profile designs and implementations |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -2269,15 +2269,14 @@ cannot delete an unowned path or race a surviving writer. Its closure matrix mus
 every phase failure, timeout, exhaustion, and cleanup failure under both local `make ci` and the
 hosted serialized aggregate, and must name exact negative and integration tests for each cell.
 
-The fresh-compiler design update resolved the four previously open direction choices, but its
-conditional final review found substantive gaps in immutable worker/compiler snapshots, host-side
-interpreter and loader identity, cleanup authority, namespace construction, and canonical wire
-schemas. The reviewed checkpoint `4eb878b` is therefore a re-scope input, not an implementation
-contract. Its dependent implementation, host image, baseline refresh, and align-llm verification
-remain pending. Request 7 must consume a newly reviewed contract exactly and may not code against the
-current controller, manifest, wrapper, or platform profile. Its separate Git 2.45.0 image and C7
-non-x86 platform profiles remain independent prerequisites rather than being silently folded into
-this x86_64 redesign.
+The fresh-compiler successor redesign is now drafted as Section 9 of
+`docs/specs/check-gate-topology.md`. It closes the prior review classes with sealed worker/compiler
+snapshots, mandatory fd-based interposition, staged host interpreters and ELF loader closure, two
+empty-root namespaces, writable cleanup authority, explicit `/target/tmp`, and canonical schema-2
+digest/descriptor vectors. It remains an unreviewed design slice on
+`agent/fresh-compiler-topology-redesign-v3`; no implementation, host image, baseline refresh, or
+align-llm verification may consume it. Request 7 must consume the newly reviewed contract exactly;
+its separate Git 2.45.0 image and C7 non-x86 platform profiles remain independent prerequisites.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
 ambient Git configuration, requires raw commit objects rather than peelable tags, and then proves
