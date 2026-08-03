@@ -5,11 +5,11 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c2-final-review-rescope`, current head `2defefc` (`Record C6c2 resume
-  checkpoint`), based on terminal PR #50 checkpoint `a1b328b` and merged `main` commit
+- Branch: `agent/c6c2-final-review-rescope`, current content checkpoint `727b5a4` (`Repair C6c2
+  review contract consistency`), based on terminal PR #50 checkpoint `a1b328b` and merged `main` commit
   `67f36ebaaaf0ae5d7ec644c607b51a77c3fc5dcf`.
-- Current source checkpoint: `733468b` (`Rescope C6c2 after conditional final review`); the
-  successor rescope is the active design change on this branch.
+- Current source/design lineage: `733468b` (`Rescope C6c2 after conditional final review`), with
+  the recorded review repair in content checkpoint `727b5a4`.
 - Active goal: continue the C6 roadmap through completion, beginning by finishing the independently
   reviewable successor to the terminal C6c2 design checkpoint in PR #51. PR #49 and PR #50 remain
   unmerged historical checkpoints and are not to be repaired in place. Implementation is not started
@@ -87,10 +87,10 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push the consolidated repair for PR #51 (`https://github.com/sanohiro/align-llm/pull/51`), rerun
-   the documentation/static check, record the finding dispositions and repair commit in GitHub, and
-   complete the PR's merge requirements. Keep review findings and attestations in GitHub rather than
-   copying them into this file.
+1. Push the consolidated repair and this HANDOFF checkpoint for PR #51
+   (`https://github.com/sanohiro/align-llm/pull/51`), rerun the documentation/static check, record
+   the finding dispositions and repair commit in GitHub, and complete the PR's merge requirements.
+   Keep review findings and attestations in GitHub rather than copying them into this file.
 2. After PR #51 is reviewed, its findings are disposed, and it is merged, refresh `main`, perform
    the bounded retrospective, and implement and merge C6c1p first; implement
    C6c2 only after C6a1/C6a2 provide content-validated
@@ -107,9 +107,9 @@ request checks, reviews, and attestations.
 - The previous C6c2 design branches are terminal, unmerged checkpoints; do not repair or merge them.
 - Terminal PR #50 verification remains durable evidence: its documentation/static checks passed for
   the previous design checkpoint, while source tests and `make ci` were N/A for that docs-only slice.
-- Successor rescope verification is PASS: `git diff --check a1b328b..2defefc`, changed-Markdown
+- Successor rescope verification is PASS: `git diff --check a1b328b..727b5a4`, changed-Markdown
   fence counts (`c6-prompt-context-optimizer.md` 90, `align-requests.md` 86, `HANDOFF.md` 0),
-  targeted contract assertions for all four rows in `10.1b` at source checkpoint `733468b`, and the
+  targeted contract assertions for all four rows in `10.1b` at content checkpoint `727b5a4`, and the
   `HANDOFF.md` durable-state scan all passed. PR #51 is the successor review boundary; its hosted documentation/static check
   and review evidence are owned by GitHub. Source tests and `make ci` are N/A because this remains a
   docs-only slice with no executable contract-boundary change.
