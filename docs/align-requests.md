@@ -2919,17 +2919,17 @@ silently inherit another consumer's fixture.
 ```text
 Status: PROPOSED
 Priority: high
-Blocking: no
-Blocked gate or slice: C7's named `C7-PersistedResult` persisted verification-result slice (the first expected consumer; its detailed contract is not yet designed); the first Align implementation of this request is also gated on Request 7's named `ALIGN_MERGED` escape-grammar commit and a reviewed Align memory-model/spec update that defines explicit free-standing JSON materialization inside an arena, and C6 remains independent
+Blocking: yes
+Blocked gate or slice: C7's named `C7-PersistedResult` persisted verification-result implementation and adoption slice; the reviewed consumer design is `docs/specs/c7-persisted-result.md`; the first Align implementation of this request remains gated on Request 7's named `ALIGN_MERGED` escape-grammar commit and a reviewed Align memory-model/spec update that defines explicit free-standing JSON materialization inside an arena; C6 remains independent
 Independent work that may continue: Request 5, Request 6, Request 7, application designs, and any consumer that does not require this direct owned JSON shape
-Resume condition: Request 9 remains non-blocking until the named `C7-PersistedResult` design names this capability as its prerequisite; then reclassify it as blocking for that named slice. Request 9's Align implementation may start only after Request 7 reaches `ALIGN_MERGED` at a named Align commit that supplies the authoritative escape grammar/vector and the reviewed Align memory-model/spec update authorizes this JSON terminal's explicit free-standing allocation inside an arena; Request 9 reuses that grammar but owns its separate free-standing materialization contract. After Request 9 reaches ALIGN_MERGED at a named Align commit, a separately reviewed consumer adoption slice must rebuild the sibling release compiler and runtime, update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged, run its named adoption target and `make ci`, and resume only that named consumer
+Resume condition: Request 9's Align implementation may start only after Request 7 reaches `ALIGN_MERGED` at a named Align commit that supplies the authoritative escape grammar/vector and the reviewed Align memory-model/spec update authorizes this JSON terminal's explicit free-standing allocation inside an arena; Request 9 reuses that grammar but owns its separate free-standing materialization contract. After Request 9 reaches `ALIGN_MERGED` at a named Align commit, the C7 consumer adoption slice must rebuild the sibling release compiler and runtime, update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged, run the named C7 adoption target and `make ci`, and resume only after the original C7 lifetime and artifact gate passes.
 Align commit or pull request: pending
 align-llm verification: pending
 ```
 
 ### Motivation
 
-`C7 Algorithm Verification`'s named `C7-PersistedResult` slice may need to retain a declared record after its input document and
+`C7 Algorithm Verification`'s named `C7-PersistedResult` slice now requires retaining a declared record after its input document and
 borrowed `str` views have expired. The pinned `core.json` decoder accepts `str` and `array<str>` fields whose
 elements borrow the input, but it rejects the direct `string`/`array<string>` field shape required
 for an explicitly owned record. An application-side JSON value tree, private encoder, or reparse
@@ -3454,7 +3454,7 @@ implementation.
 | Same-process and process concurrency policy | per-call parser, destination, temporary-owner, and output-builder state in `../align/crates/align_runtime/src/lib.rs`; immutable descriptor tables may be shared; no process-global mutable codec state or codec-instance API is added | `m5_owned_json.rs::owned_json_same_process_entrypoint_matrix` runs the full 91-pair unordered `J × J` matrix, including diagonal and existing-only pairs (`BD + AD`, `DOC + SCAN`, `FE + UE`) and every target variant named in item 9; every pair is supported concurrently, not serialized or pre-rejected; `cache_parallel.rs::owned_json_two_processes` confirms independent processes have the same no-shared-state policy |
 | Existing borrowed and shipped Move JSON compatibility | `../align/crates/align_sema/src/lib.rs` target-specific predicates plus existing runtime template/descriptor/union paths | `m5.rs::json_decode_struct_array_len`, `json_decode_struct_array_malformed_errors`, existing `owned_tagged_payloads.rs::retained_result_with_recursive_move_payload_is_supported`, `m5_owned_json.rs::owned_json_record_array_preserves_shipped_move_aos`, `owned_json_fixed_struct_array_encode_route_unchanged`, `owned_json_union_encode_route_unchanged`, and Request 7's escaped-view tests remain green; no new `OwnedJsonDescV1` route is used |
 | Metric / benchmark decision | Request 9 public contract item 11; allocation instrumentation in `../align/crates/align_runtime/src/lib.rs` and whole-program/per-unit test harness | `m5_owned_json.rs::owned_json_whole_program_per_unit_allocation_parity` is the required correctness measurement; no performance benchmark or threshold is claimed because this is a correctness prerequisite, and a later optimization must register its own workload and baseline |
-| First expected consumer and lifecycle | `docs/specs/roadmap.md` named `C7-PersistedResult` slice and Request 9 lifecycle metadata | N/A until the `C7-PersistedResult` detailed consumer design names the accepted record shapes; the named roadmap slice is the first consumer, Request 9 remains non-blocking until that design gate, and the consumer must reclassify this request before implementation/adoption |
+| First expected consumer and lifecycle | `docs/specs/roadmap.md` named `C7-PersistedResult` slice, `docs/specs/c7-persisted-result.md`, and Request 9 lifecycle metadata | The C7 design names direct `string` and direct `Option<string>` records and reclassifies Request 9 as blocking for C7 implementation/adoption; Request 9 remains independently implementable only in Align, while C7 waits for its named Align commit and real-client gate |
 | Target ABI baseline and target-local descriptor exchange | `../align/crates/align_driver/src/lib.rs` target-triple/interface identity, `../align/crates/align_codegen_llvm/src/lib.rs` natural layout, and `../align/docs/impl/11-release-distribution.md` supported release environments | `interface_param_modes.rs::owned_json_target_abi_descriptor_matches_target` runs the required `x86_64-unknown-linux-gnu` baseline and the `aarch64-unknown-linux-gnu`/`aarch64-apple-darwin` release-target acceptance environments; `interface_param_modes.rs::owned_json_target_abi_mismatch_rejected` rejects a target/ABI mismatch before code generation |
 | Normative syntax and baseline declaration | `../align/crates/align_fmt` parser/formatter for the proposed source fixture; no product path consumes it | `docs/examples/request9-owned-json-syntax.align` passes the pinned `alignc fmt` parser-only check; declarations and positional calls are shown as separate blocks in this register. The required platform baseline and release-target environments are the target-ABI tests above; parser formatting remains a separate syntax check |
 | CLI/build and option/environment boundaries | N/A: Request 9 adds no CLI flag, build setting, profile, artifact-selection input, option state, environment variable, or persistent boundary; only source declarations and explicit function arguments are inputs, and no ambient configuration may affect the route | N/A by design; there is no new accepted/rejected state to isolate or preserve across a configuration boundary, while the pinned compiler/runtime revision remains a development prerequisite rather than a runtime option |
@@ -3560,11 +3560,11 @@ Before Align marks Request 9 `ALIGN_MERGED`, focused tests must prove:
     parsing, encoding, or cleanup. The closure matrix records both dimensions as N/A with these
     reasons, and the pinned compiler/runtime revision is not treated as a runtime option.
 
-The adoption target is separate from Align implementation. After `ALIGN_MERGED`, the named consumer
-slice rebuilds the sibling release compiler and runtime from the named commit, updates
-`.align-revision`, creates its exact bytewise fixture, and runs it through the common fresh-compiler
-topology. No later consumer dependency is asserted until that consumer's design is durable and
-updated to name this merged request.
+The adoption target is separate from Align implementation. For the first named consumer, the C7
+slice in `docs/specs/c7-persisted-result.md` rebuilds the sibling release compiler and runtime from
+the `ALIGN_MERGED` commit, updates `.align-revision`, creates its exact bytewise fixture, and runs it
+through the common fresh-compiler topology. Other consumers must name their own accepted graph and
+adoption evidence before they become dependent on this request.
 
 ### References
 

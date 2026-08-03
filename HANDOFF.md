@@ -5,18 +5,23 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `4e15ad9` (`Repair C6c1p count
-  guard and handoff`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
-  validation`), topology source checkpoint `b7f0289`, and immutable oracle checkpoint `a7eb307`,
-  based on merged main commit `74601cda` (`Merge PR #51: Rescope C6c2 after conditional final
-  review`).
-- Current source/design lineage: the merged C6c2 design from PR #51; `aad17dc` is the C6c1p
-  implementation, `b7f0289` is the clean topology baseline source, `a7eb307` is its immutable
-  oracle, and `6811251` is the canonical baseline finalization checkpoint.
-- Active goal: complete the C6c1p `validate_prefix` slice through its pre-PR review, PR checks, and
-  merge. PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in
-  place. C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align adoption
-  prerequisites.
+- Branch: `agent/c7-persisted-result-design`, based on merged main commit `34eb2ad` (`Merge PR #52:
+  Add C6c1p score prefix validation`). The C7-D content is committed at `bc72b8d` (design
+  `0de8470` plus synchronized Request 9 lifecycle metadata); no C7 implementation has started.
+- In progress: `docs/specs/c7-persisted-result.md` now defines the C7-D design gate, its direct
+  owned `string`/`Option<string>` records, explicit Request 9 `canonical.clone()` persistence
+  boundary, canonical artifact/digest contract, `bounded-bucket-v1` boundary algorithm,
+  ownership/cleanup matrix, deterministic differential/mutation gate, exact CLI/process rules,
+  three-target acceptance environment, and future Make/topology adoption. `docs/align-requests.md`
+  reclassifies Request 9 as blocking for C7 implementation/adoption; no implementation or Make
+  topology change is present.
+- Working tree is clean at the C7-D checkpoint; no generated binaries, model weights, credentials,
+  or machine-specific paths are present.
+- Current source/design lineage: the merged C6c2 design from PR #51 and merged C6c1p implementation
+  from PR #52; C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align
+  adoption prerequisites.
+- Active goal: design the independent C7-PersistedResult consumer slice before implementation. PR
+  #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in place.
 - Complete: C6c1 implementation, review repair, hosted checks, merge, and the bounded retrospective.
 - Complete: the superseded C6c2 design checkpoints are retained as unmerged historical checkpoints
   and are not merge-ready; this branch contains the next corrected design instead.
@@ -88,9 +93,26 @@ request checks, reviews, and attestations.
   immutable oracle, and canonical finalization are recorded in separate commits; the evaluation
   contract and existing baseline checks remain unchanged. The topology repair's source, oracle, and
   finalization are `b7f0289`, `a7eb307`, and `6811251`; the earlier `f70ea0e` baseline is superseded.
+- Complete: PR #52 merged as `34eb2ad` after the required independent review, consolidated repair,
+  local pinned `make ci`, hosted checks, baseline verification, review disposition, and merge-method
+  ancestry checks. Detailed review and hosted records remain in GitHub; this file keeps only durable
+  project state.
+- Post-merge retrospective (2026-08-03):
+  - Reusable lesson queued: when a focused acceptance target is added, the same change must update
+    the authoritative Make graph, topology oracle, focused smoke, and any identity-bound baseline;
+    trigger the queued governance improvement before the next Make topology change. Existing
+    `docs/review-checklist.md` and `docs/specs/check-gate-topology.md` cover the policy, but the
+    cross-file contract is still a queued automation enhancement rather than a new product rule.
+  - Reusable lesson queued: public bounded arithmetic should name the contract bound in the code and
+    include a boundary fixture for any derived count; trigger this at the next bounded validator or
+    persisted-capacity slice. C6c1p's repair fixed the immediate guard; no retrospective-only patch
+    is opened.
+  - Existing baseline refresh and HANDOFF continuity rules were sufficient; no additional
+    governance change is required from the merge mechanics. Review-tool latency was one-off and is
+    not promoted into project policy.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
-- Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
+- Plan of record: `docs/specs/c7-persisted-result.md`; C6 plans remain historical context only.
 - Pinned Align revision: `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672).
 
 ## C6c1 implementation boundary
@@ -113,14 +135,13 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Push repair commit `4e15ad9`, update the PR review evidence with its finding dispositions and
-  repair commit, wait for hosted checks, and merge C6c1p only after every finding is dispositioned.
-2. After C6c1p is merged, implement C6c2 only after C6a1/C6a2 provide content-validated decoded
-  records and Requests 7/8/10/12/13 are adopted at named Align revisions. Otherwise record the
-  dependency blocker and continue only with safe independent roadmap work.
-3. Do not start JSON/document binding or failure-memory JSONL adoption until Request 7 is accepted,
-   merged at a named Align commit, the pinned release is rebuilt, `.align-revision` is updated, and
-   `make ci` passes the original acceptance gate.
+1. Open/merge the independently reviewable docs-only C7-D design PR and preserve the Request 9
+   blocker and no-implementation boundary.
+2. After that design merge, wait for Request 9 to reach `ALIGN_MERGED`; do not start C7-A or C7-I1
+   against a proposed Align surface.
+3. Do not implement C7-PersistedResult until the reviewed design is merged and Request 9 reaches
+   `ALIGN_MERGED` with the sibling release rebuild, `.align-revision` update, and original
+   align-llm adoption gate. Keep C6c2 paused; continue only with safe independent work.
 
 ## Latest verification
 
@@ -157,6 +178,11 @@ request checks, reviews, and attestations.
 - Review-repair aggregate verification is PASS at `4e15ad9`: `PYTHONDONTWRITEBYTECODE=1 make ci`
   passed again after the 2,048-row count-guard repair; focused prefix/scorer smoke, format, check,
   and baseline verification also passed.
+- C7-D author verification is PASS at content commits `0de8470` and `bc72b8d`: `git diff --check`,
+  balanced Markdown/NUL/trailing-space checks, exact golden-vector SHA-256 checks,
+  stale-algorithm/reference checks, and synchronized Request 9 lifecycle assertions all passed
+  after the consolidated repair. Markdownlint is N/A because it is not installed; source tests,
+  `make check`, `make build`, and `make ci` are N/A for this docs-only design gate.
 - C6c1p topology-repair verification is PASS at `fc596e1`: `python3 scripts/check-gate-topology
   --self-test`, `make gate-topology-check`, `make prompt-score-prefix-smoke`, and
   `PYTHONDONTWRITEBYTECODE=1 make hosted-checks` all passed; the aggregate log includes the new
@@ -164,6 +190,11 @@ request checks, reviews, and attestations.
 - C6c1p author-side documentation verification is PASS at `fd3d811`: `git diff --check` passed;
   the correction changed no executable contract boundary, so the recorded source verification and
   baseline remain applicable.
+- Post-merge refresh is PASS: local `main` fast-forwarded to `34eb2ad`, the new C7 branch was based
+  from that exact commit, and the working tree is clean before design work.
+- Final C6c1p evidence remains PASS: `PYTHONDONTWRITEBYTECODE=1 make ci` passed at
+  `4e15ad9509f6048221e1852cfbbf1d8ec656d79d`; the final hosted PR check and baseline verification
+  also passed. The pinned Align revision remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 
 ## Constraints and decisions to preserve
 
