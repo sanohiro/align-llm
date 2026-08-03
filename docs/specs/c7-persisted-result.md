@@ -632,12 +632,12 @@ allowed to rediscover a compiler from the temporary tree. A failed resolution is
 before any temporary source or product child starts.
 
 When this hosted-compatible target runs inside the Section 9 capable aggregate, that ordinary
-selection is replaced by the controller-owned `/tools/fresh-alignc` launcher. The runner must keep
-the inherited fresh descriptors and start every compiler-capable child with
-`close_fds=True, pass_fds=(5,6,7)`; it must not resolve a sibling pathname, `sys.executable`, or a
-host compiler from the temporary root. The mutation cases still pass the staged launcher as the
-explicit compiler argv element, and the launcher consumes the sealed compiler on fd 5. The
-non-fresh hosted profile retains the explicit real-path rule above.
+selection is replaced by the controller-owned `/tools/fresh-alignc` launcher. The runner must start
+every child with `close_fds=True, pass_fds=()`; it must not resolve a sibling pathname, `sys.executable`,
+or a host compiler from the temporary root. The mutation cases still pass the staged launcher as the
+explicit compiler argv element, and the launcher opens the authenticated read-only
+`/tools/fresh-descriptor`, `/tools/fresh-guard`, and compiler/archive bundle. The non-fresh hosted
+profile retains the explicit real-path rule above.
 
 For each mutation case the runner creates one `mkdtemp` root and preserves the repository source
 layout below it: `<temporary-root>/src/main.align`, the reachable `src/*.align` modules, and the
@@ -646,7 +646,7 @@ byte pattern in `<temporary-root>/src/persisted_result.align` (`else if raw < up
 `else if raw <= upper_bound`), and invokes the compiler with the exact vector
 `<selected-compiler> build <temporary-root>/src/main.align` and `cwd=<temporary-root>`; the
 non-fresh profile substitutes the absolute real compiler path, while the Section 9 capable profile
-uses `/tools/fresh-alignc` with the inherited descriptor fds.
+uses `/tools/fresh-alignc` with the fixed read-only handoff files.
 It then invokes the temporary executable with exactly `--persist-result <input> <result>` and
 `--verify-result <result>`, one operation per child. The normal corpus invokes the already-built
 absolute product path with the same two exact vectors and `cwd=<temporary-root>`.
