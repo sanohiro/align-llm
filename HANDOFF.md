@@ -5,11 +5,12 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/c6c1p-score-prefix`, implementation checkpoint `aad17dc` (`Add C6c1p score prefix
+- Branch: `agent/c6c1p-score-prefix`, current content checkpoint `f70ea0e` (`Finalize C6c1p
+  evaluation baseline`), with implementation checkpoint `aad17dc` (`Add C6c1p score prefix
   validation`), based on merged main commit `74601cda` (`Merge PR #51: Rescope C6c2 after
   conditional final review`).
-- Current source/design lineage: the merged C6c2 design from PR #51; `aad17dc` is the independently
-  reviewable C6c1p implementation checkpoint.
+- Current source/design lineage: the merged C6c2 design from PR #51; `aad17dc` is the C6c1p
+  implementation and `f70ea0e` is its required Makefile-bound baseline finalization checkpoint.
 - Active goal: complete the C6c1p `validate_prefix` slice through its pre-PR review, PR checks, and
   merge. PR #49 and PR #50 remain unmerged historical checkpoints and are not to be repaired in
   place. C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align adoption
@@ -72,6 +73,9 @@ request checks, reviews, and attestations.
 - Complete: C6c1p adds only the borrowed `validate_prefix` API, reuses the merged row-state rules,
   preserves the complete-row aggregate, and covers the declared prefix/error/plan matrix in its
   focused smoke. No C6c2 implementation or decoded-record workaround is in scope.
+- Complete: because C6c1p adds a Make target, the required clean-source baseline measurement,
+  immutable oracle, and canonical finalization are recorded in separate commits; the evaluation
+  contract and existing baseline checks remain unchanged.
 - Working tree must be clean at the next checkpoint; no generated binaries, model weights,
   credentials, or machine-specific paths may be committed.
 - Plan of record: `docs/specs/c6-prompt-context-optimizer.md`.
@@ -127,6 +131,11 @@ request checks, reviews, and attestations.
   `./scripts/alignc check src/prompt_score_prefix_smoke.align`, and
   `./scripts/alignc check-per-unit src/prompt_score_prefix_smoke.align` all passed. The compiler's
   existing huge-struct-copy warnings remain non-fatal and are preserved as visible diagnostics.
+- C6c1p baseline verification is PASS: clean-source measurement at `60f6033`, immutable oracle
+  commit `1c54151`, canonical finalization `f70ea0e`, `verify-baseline.py`, and
+  `PYTHONDONTWRITEBYTECODE=1 make ci` all passed. The pinned Align revision is
+  `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; the ordinary sibling checkout's ignored local
+  settings file was preserved, so baseline recording used the clean `align-clean-672` worktree.
 
 ## Constraints and decisions to preserve
 
