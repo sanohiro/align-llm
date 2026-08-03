@@ -1394,9 +1394,10 @@ an older Section 8 rule by implication.
 
 The profile in this section claims only Ubuntu/Linux x86_64 with kernel 6.8 or newer, GNU Make 4.3,
 CPython 3.12, Git 2.45 or newer, Rust/Cargo 1.96.0, LLVM 22, and a bubblewrap installation that
-passes the namespace self-test. C7's aarch64 Linux and aarch64 macOS environments require separate
-platform profiles. Request 7's immutable image whose `/usr/bin/git` is exactly Git 2.45.0 remains a
-separate prerequisite.
+passes the namespace and overlayfs self-tests. The bwrap build must support `--overlay-src` and
+`--overlay`, and the kernel must permit the owner-only upper/work pair used below. C7's aarch64
+Linux and aarch64 macOS environments require separate platform profiles. Request 7's immutable
+image whose `/usr/bin/git` is exactly Git 2.45.0 remains a separate prerequisite.
 
 The trust root is the runner-installed ELF bootstrap
 `/usr/local/libexec/align-llm/fresh-bootstrap`. Its path, mode `0755`, digest, and interpreter
@@ -1651,10 +1652,14 @@ The comparison repeats immediately before materialization; any ancestor/root/Git
 replacement, disappearing entry, type/mode/byte change, or extra recursively consumed input rejects.
 
 The worker copies the accepted source into `source` using no-follow, create-exclusive operations,
-and separately copies it into `aggregate-work` for the capable namespace. Source files in both copies
-are mode `0444`; the aggregate copy's output allowlist is the only writable part. The immutable
-`source` copy is the identity reference, and the aggregate copy is rescanned after every aggregate
-to prove that no source input changed and that every generated output is an allowed private artifact.
+and separately copies it into `aggregate-work` for the capable namespace. Regular source files have
+all write bits cleared while retaining the repository's executable contract: Git mode `100644`
+stages as `0444`, and Git mode `100755` stages as `0555`; no other regular-file mode is accepted.
+This is required because checked-in scripts are executed directly by Make and the shell. The
+aggregate lower tree is exposed through a read-only overlay lower layer; its private upper layer,
+not the lower tree, is the only place aggregate writes can land. The immutable `source` copy is the
+identity reference, and the aggregate lower/upper trees are rescanned after every aggregate to
+prove that no source input changed and that every generated output is an allowed private artifact.
 The original project root, its target, and its caches are never visible inside either namespace.
 
 ### 9.4 Private root and build identity
@@ -1669,11 +1674,12 @@ cannot prove.
 The private root owns exactly these children, all created with `mkdirat` and no replacement:
 
 ```text
-source/          0700; source files 0444; retained identity copy
-aggregate-work/  0700; input files 0444; private check workspace and output allowlist
+source/          0700; source files 0444/0555; retained identity copy
+aggregate-work/  0700; input files 0444/0555; immutable aggregate lower tree
 cargo-home/      0700; copied offline registry/Git cache
 cargo-target/    0700; private build output and pre-created tmp/
-aggregate-output/0700; main 0600; sole writable workspace output mount
+aggregate-output/0700; workspace-upper/0700 and empty workspace-work/0700 on one filesystem;
+                 sole writable aggregate overlay owner
 runtime/         0700; copied runtime files 0444; directories remain 0700
 tool-bin/        0700; copied executables 0555; directories remain 0700
 descriptor/      0700; cleanup journal only; canonical descriptor is sealed fd 6
@@ -1685,7 +1691,9 @@ construction and empty-target fixture both require this directory to exist and c
 entry. Staging directories deliberately remain writable by the worker owner. Read-only files and
 read-only namespace binds prevent child writes, while retaining directory write authority allows
 the owner to unlink staged files during cleanup. The worker never changes staging directories to
-`0555` before cleanup.
+`0555` before cleanup. It verifies that `workspace-upper` and `workspace-work` have the same
+device, are empty at creation, and remain owner-only before passing them to bwrap; a cross-device
+pair or pre-existing overlay entry is a `FILESYSTEM` error before the aggregate child starts.
 
 ### 9.5 Exact build namespace
 
@@ -1828,32 +1836,43 @@ path may resolve a compiler through a shebang, bare `alignc`, a sibling target, 
 
 The capable aggregate is not a host-side process. It runs in a second bwrap namespace so its shell,
 Python, `env`, nested bwrap, loader, and compiler all use the authenticated staged copies. The worker
-first creates `aggregate-work` from the immutable source copy and creates a zero-length `main`
-mount-point placeholder there when the source tree does not contain that path. It is mounted
-read-only. The only
-writable workspace mount is the pre-created private output file `/workspace/main`; all current smoke
-scripts must direct temporary fixtures, invalid task files, markers, and baseline scratch files to
-`/target/tmp` before this implementation slice can pass its call-site audit. The exact workspace
-output allowlist is therefore:
+first creates `aggregate-work` from the immutable source copy, then creates two owner-only directories
+`aggregate-output/workspace-upper` and `aggregate-output/workspace-work` on the same filesystem. The
+second directory is empty before the mount and is used only as the overlayfs work directory. bwrap
+mounts `aggregate-work` as the immutable lower layer and the two aggregate-output directories as the
+overlay upper/work pair at `/workspace`. There is no standalone `/workspace/main` file bind: the
+writable parent directory is intentional because the Align compiler stages `.align-publish-*`
+beside `main` and atomically renames the staged executable into place. The upper layer, not the
+lower source copy, receives that publication. All current smoke scripts must direct temporary
+fixtures, invalid task files, markers, and baseline scratch files to `/target/tmp` before this
+implementation slice can pass its call-site audit. The exact workspace output allowlist is therefore:
 
 ```text
 /workspace/main                         one regular compiler output file
 /target/tmp/**                          bounded temporary files and directories
 ```
 
-No `eval/`, `scripts/`, `src/`, `tests/`, `Makefile`, or source-control path is writable. The worker
-rescans the read-only workspace, output file, and target temporary tree after the aggregate and
-rejects any source mutation, output outside this two-entry allowlist, surviving temporary file, or
-unbounded temporary growth.
+No `eval/`, `scripts/`, `src/`, `tests/`, `Makefile`, or source-control path is writable in the
+lower tree. The worker waits for bwrap to unmount the overlay, then rescans the lower tree, the
+overlay upper tree, the overlay work directory, and the target temporary tree. The upper tree may
+contain no entry when publication never started, or exactly the final regular `main` output when
+publication occurred; a successful aggregate requires exactly that one `main`. Compiler staging
+names such as `.align-publish-*` must be absent after a successful aggregate. The work directory
+must contain no user-created entry, and any overlayfs-internal cleanup entry is handled only by the
+worker's known overlay cleanup routine. Any lower-tree mutation, upper entry other than `main`,
+source-control write, surviving temporary file, or unbounded temporary growth rejects. A failed
+aggregate is still rescanned and cleaned with the same allowlist; it is not granted a wider write
+set because it failed.
 
 The implementation's call-site migration is explicit. Before the fresh aggregate is accepted, these
 existing workspace-temp paths must be changed to the worker-provided temporary root:
 
 | Existing call site | Required fresh behavior |
 | --- | --- |
+| `scripts/run-loop-smoke` and the loop marker in `src/main.align` | The script's output file and marker use `$ALIGN_LLM_TEMP_ROOT`; the Align loop obtains that existing environment value through `std.env` and writes, tests, and removes `<root>/loop-smoke-marker`. No `eval/.loop-smoke-marker` path remains. |
 | `scripts/run-coding-task-timeout-smoke` | Its `.timeout.XXXXXX.json`, `.normal.XXXXXX.json`, and markers use `$ALIGN_LLM_TEMP_ROOT` below `/target/tmp`; no `project_root` temp path remains. |
 | `scripts/run-coding-task-invalid-smoke` | Its host marker, task fixtures, ignored fixture directories, and whitespace fixtures use `$ALIGN_LLM_TEMP_ROOT`; its subprocess fixture roots remain beneath that root. |
-| `scripts/run-baseline-invalid-smoke` | The invalid baseline temp file uses `$ALIGN_LLM_TEMP_ROOT`; it never writes `eval/baselines/.invalid.*` in the workspace. |
+| `scripts/run-baseline-invalid-smoke` | The invalid baseline temp file and its private Git fixture use `$ALIGN_LLM_TEMP_ROOT`; it never writes `eval/baselines/.invalid.*` or any ref below `/workspace/.git`. |
 | All other `mktemp`/`TemporaryDirectory` callers | The static fresh-call-site check proves the default resolves below `/target/tmp` and rejects an explicit project-root destination. |
 
 The worker sets `ALIGN_LLM_TEMP_ROOT=/target/tmp` and the aggregate namespace rejects any alternate
@@ -1867,8 +1886,9 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /tools --dir /cargo --dir /target --dir /target/tmp \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
-  --ro-bind <root>/aggregate-work /workspace \
-  --bind <root>/aggregate-output/main /workspace/main \
+  --overlay-src <root>/aggregate-work \
+  --overlay <root>/aggregate-output/workspace-upper \
+            <root>/aggregate-output/workspace-work /workspace \
   --ro-bind <root>/tool-bin /tools \
   --ro-bind <root>/cargo-home /cargo \
   --ro-bind <root>/cargo-target /target \
@@ -1877,6 +1897,7 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --chmod 0555 / \
   --setenv HOME /nonexistent --setenv TMPDIR /target/tmp --setenv PATH /tools \
   --setenv ALIGN_LLM_TEMP_ROOT /target/tmp \
+  --setenv ALIGN_LLM_TOOL_ROOT /tools --setenv ALIGN_LLM_PYTHON /tools/python3 \
   --setenv SHELL /bin/sh --setenv MAKE /tools/make \
   --setenv ALIGNC /tools/fresh-alignc --setenv ALIGN_LLM_BWRAP /tools/bwrap \
   --setenv ALIGN_LLM_PRLIMIT /tools/prlimit \
@@ -1891,9 +1912,44 @@ and `/bin/bash`, so `#!/usr/bin/env python3`, `#!/usr/bin/env bash`, and Make's 
 cannot reach a host interpreter. `PATH=/tools` contains only the closed staged launchers. The
 implementation must update `eval/runners/run-coding-task.py` so both `ALIGN_LLM_BWRAP` and
 `ALIGN_LLM_PRLIMIT` are explicit fresh inputs; its current `/usr/bin/bwrap` and `/usr/bin/prlimit`
-fallbacks are forbidden in the aggregate. A nested bwrap or prlimit operation uses the staged paths
-and the same runtime identity rules. No host `/tmp`, HOME, loader cache, source root, or target is
-visible.
+fallbacks are forbidden in the aggregate. Fresh mode also supplies `ALIGN_LLM_TOOL_ROOT=/tools`
+and `ALIGN_LLM_PYTHON=/tools/python3`; `fixture_environment()` must set `PATH=/tools`,
+`TMPDIR=/target/tmp`, and the worker-owned HOME contract rather than restoring `/usr/bin:/bin`
+and `/tmp`. `validation_command()` must resolve a `python3` task command to the staged
+`/tools/python3`, never to `sys.executable` or a host pathname.
+
+A nested validation sandbox must make the staged execution boundary visible explicitly. Its bwrap
+argv includes `--dir /tools --ro-bind /tools /tools`, `--bind /target/tmp /target/tmp`,
+`--setenv PATH /tools`, `--setenv TMPDIR /target/tmp`, and the same authenticated runtime mounts
+needed by the staged tools. It invokes `/tools/prlimit` and `/tools/python3` by explicit path and
+includes `--preserve-fd 5 --preserve-fd 6` before its command separator. The outer Python process
+starts that bwrap with `pass_fds=(5,6)`. The sandbox capability probe uses the same staged bwrap
+and Python paths and an explicit descriptor policy; it may close the descriptors only when the
+probe is proven not to launch a compiler. No host `/tmp`, HOME, loader cache, source root, or
+target is visible.
+
+Every fresh Python subprocess boundary declares descriptor handling explicitly. A subprocess that
+can invoke `ALIGNC`, Make, a shell script, a nested bwrap, or a baseline runner is started with
+`close_fds=True, pass_fds=(5,6)`; a helper that cannot reach a compiler declares an explicit empty
+descriptor set. This rule applies to the shared `run()` helper and to direct `subprocess.run`
+calls in `run-coding-task.py` and `record-baseline.py`; relying on Python's default close-on-exec
+behavior is forbidden. The nested bwrap then preserves the descriptors again, so fd 5 and fd 6
+remain the only compiler and descriptor handoff through every Python and sandbox layer. A fresh
+descriptor fixture invokes a compiler from a nested Python process and proves both descriptor
+identity and absence of a pathname fallback.
+
+`baseline-check`'s negative Git smoke uses a worker-owned private Git fixture under
+`/target/tmp`, with a private `GIT_DIR`/`GIT_COMMON_DIR`, `GIT_WORK_TREE=/workspace`, copied
+`HEAD`/refs, and an authenticated read-only object store supplied by the worker. The fixture's
+object store may be a no-follow copy or a read-only alternate created by the worker, but it must
+not be discovered from the host or the original linked-worktree metadata. The smoke script,
+`eval/runners/verify-baseline.py`, and `eval/runners/record-baseline.py` receive that explicit
+environment before any `git update-ref`; their `git_environment()` helpers clear ambient `GIT_*`
+values and then re-add only the worker-owned `GIT_DIR`, `GIT_COMMON_DIR`, and `GIT_WORK_TREE`.
+The replacement ref therefore exists only below `/target/tmp`. `GIT_NAMESPACE` alone is
+insufficient because it would still mutate a shared common directory. The worker postscan proves
+that `/workspace/.git` and every source-control path remain unchanged and that the private Git
+fixture is removed during cleanup. No host baseline or sibling Align repository is visible.
 
 The child Make vector clears `MAKEFLAGS`, `GNUMAKEFLAGS`, and `MAKEOVERRIDES`, supplies
 `SHELL=/bin/sh`, and passes only the ordered `capable-checks` goal. The worker owns one aggregate
@@ -1913,8 +1969,11 @@ worker uses monotonic deadlines of 5 seconds per probe, 120 seconds for validati
 cleanup. Signal handlers convert `SIGINT`, `SIGTERM`, and `SIGHUP` to one cancellation path.
 
 On every exit the worker terminates owned descendants, waits for pid start time and process-group
-identity, closes readers and sealed descriptors, rescans the private root, and removes only known
-children with descriptor-relative no-follow operations. Before removing the random root name it
+identity, waits for the aggregate bwrap to release its overlay mount, closes readers and sealed
+descriptors, rescans the private root, and removes only known children with descriptor-relative
+no-follow operations. The overlay upper and work directories are inspected before removal: the
+worker accepts only the declared final `main` output and known overlayfs cleanup state, and never
+recursively deletes an upper entry it cannot classify. Before removing the random root name it
 rechecks the parent descriptor, root device/inode, owner token, and empty child set. It restores
 staging directory write authority (which remains `0700` throughout) and unlinks files before
 directories. An unexpected entry, replacement, live child, PID reuse, parent change, or close/unlink
@@ -1934,7 +1993,7 @@ The first applicable failure wins in this fixed order:
 
 1. bootstrap mode, required input names, and ASCII/UTF-8 encoding;
 2. external manifest bytes, supplied digest, schema, canonical order, and bounds;
-3. fixed bootstrap, Python, Linux, architecture, `/proc`, timer, and bwrap capability;
+3. fixed bootstrap, Python, Linux, architecture, `/proc`, timer, bwrap namespace, and overlay capability;
 4. controller snapshot and every tool path, digest, mode, version, and probe output;
 5. `.align-revision`, retained Git descriptors, Git policy, tree/index, and raw worktree manifest;
 6. cache root, external cache manifest, digest tree, allowlist, and copy;
@@ -1959,17 +2018,20 @@ output, credentials, or source bytes. No later phase overwrites a primary catego
 | Runtime/loader identity | worker plus bwrap | Complete ELF interpreter/DT_NEEDED closure, staged exact target paths, no host loader | `fresh-v2-runtime-closure-smoke` replaces a library and interpreter, checks build and aggregate, and proves host paths never execute. |
 | Cache placement/copy | worker | Manifest outside root, allowlist, directory-aware no-follow copy, postscan | `fresh-v2-cache-smoke` covers manifest-in-root, config/wrapper, symlink, special, hardlink, rename, size, digest, and offline cases. |
 | Git/source identity | worker | Retained descriptors, raw tree/index/worktree equality, no helper/config/filter, exact revision | `fresh-v2-source-identity-smoke` covers linked worktrees, ancestor ABA, replacement refs, hidden inputs, symlinks, and same-HEAD extra Rust input. |
-| Private staging | worker | 0700 dirs, read-only files, pre-created `/target/tmp`, aggregate-work output allowlist | `fresh-v2-root-staging-smoke` covers collisions, modes, target seed, tmp absence, output escape, and cleanup unlink authority. |
+| Private staging | worker | 0700 owner-only staging, source modes 0444/0555, pre-created `/target/tmp`, same-filesystem overlay upper/work, and descriptor-relative cleanup | `fresh-v2-root-staging-smoke` covers collisions, executable-bit preservation, modes, target seed, tmp absence, upper/work ownership, output escape, overlay unmount, and cleanup unlink authority. |
+| Aggregate temporary call sites | scripts and Align loop | Every temporary file, fixture, marker, and negative Git state is below `/target/tmp`; the loop no longer writes `eval/` | `fresh-v2-temp-root-callsite-smoke` runs loop, coding-task, invalid-baseline, and every `mktemp`/`TemporaryDirectory` caller, then proves no lower or upper source path changed. |
+| Aggregate publication | worker plus bwrap | Immutable `aggregate-work` lower layer, writable upper/work pair, compiler sibling staging, atomic rename, and final `/workspace/main` allowlist | `fresh-v2-aggregate-publication-smoke` runs the real compiler publication path, proves `.align-publish-*` is transient, rejects an upper entry outside `main`, and checks the post-unmount scan. |
 | Build namespace | worker plus bwrap | Empty root, only declared binds, user/PID/net namespaces, writable `/cargo`/`/target` only | `fresh-v2-build-namespace-smoke` uses host-root/cache/HOME/network markers, double fork, and runtime loader probes. |
 | Compiler descriptor | worker/launcher | Canonical schema, sealed fd 5/6, no pathname handoff, exact digest and revision | `fresh-v2-descriptor-fd-smoke` replaces the descriptor path, closes/reuses fds, mutates memfds, and checks exact golden bytes. |
 | Direct compiler call | fresh launcher | Fixed fd 5 required; no flag-controlled or PATH fallback | `fresh-v2-direct-interposition-smoke` clears every fresh marker and installs old sibling/PATH marker compilers; none may run. |
-| Internal compiler call | Makefile/scripts | All consumers use fresh launcher/fds; no bare compiler, shebang, sibling, or fallback path | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, and recursive Make. |
-| Aggregate interpreter boundary | aggregate bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python, Bash, PATH, and loader | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters and verifies staged identities run. |
+| Internal compiler call | Makefile/scripts/Python runners | All consumers use fresh launcher/fds; staged tool paths and explicit `pass_fds=(5,6)` survive Python, shell, nested bwrap, and recursive Make; no bare compiler, sibling, or fallback path | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, and recursive Make, with marker compiler and descriptor-identity controls. |
+| Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python, Bash, `/tools`, `/target/tmp`, PATH, loader, and nested fd preservation | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools, runs nested validation, and verifies staged identities, temp-root propagation, and fd 5/6. |
 | Aggregate topology | worker/Makefile | Exactly one bwrap aggregate, cleared options, fd preservation, fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, hostile shell/overrides, and fd propagation. |
 | Process ownership | worker | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, overflow, double fork, signal, PID reuse, and reader closure. |
 | Cleanup success | worker | Reverse descriptor-relative removal, parent/root identity, root absent before PASS | `fresh-v2-cleanup-smoke` proves no private root, sealed descriptor, cache copy, target, marker, or child remains. |
 | Cleanup failure | worker | Never delete replacement/unowned path; exact primary/cleanup precedence | `fresh-v2-cleanup-failure-smoke` injects close, unlink, parent replacement, live child, signal, and successful-phase cleanup failures. |
-| Baseline identity | baseline owner | Final Makefile source, two samples, oracle, finalization, ancestry, unchanged pin | `fresh-v2-baseline-integration-smoke` runs the Section 2.4 chain before capable evidence. |
+| Baseline scratch identity | baseline smoke/worker | Invalid corpus and replacement refs use a private `/target/tmp` Git fixture; shared `/workspace/.git` and host common dirs remain unchanged | `fresh-v2-baseline-scratch-smoke` runs every invalid-baseline mutation with private `GIT_DIR`, checks object resolution and replacement rejection, and compares source-control manifests before/after. |
+| Baseline identity | baseline owner | Final Makefile source, two samples, oracle, finalization, ancestry, unchanged pin, and explicit compiler descriptors through recorder subprocesses | `fresh-v2-baseline-integration-smoke` runs the Section 2.4 chain before capable evidence and asserts recorder Python children preserve fd 5/6 in fresh mode. |
 | Platform boundary | topology plan | x86-only claim; non-x86 requires separate profile | `fresh-v2-platform-profile-smoke` rejects unsupported environments and prevents C7 non-x86 evidence reuse. |
 
 ### 9.11 Compatibility, verification, and delivery order
@@ -1985,8 +2047,10 @@ The dependent delivery order is:
    8 checkpoint is not an implementation dependency.
 2. Install and attest the fixed bootstrap, Python runtime, bwrap image, canonical schema-2 manifest,
    and complete runtime/loader bindings on the minimum hosted and capable images.
-3. Implement the worker, sealed snapshots, digest/cache/source boundaries, two bwrap namespaces,
-   fd-preserving launcher, Make interposition, and every named closure test as one enabling slice.
+3. Implement the worker, sealed snapshots, digest/cache/source boundaries, two bwrap namespaces
+   with the writable aggregate overlay, staged nested tools, fd-preserving launcher and Python
+   subprocess policy, Make interposition, isolated baseline Git scratch, and every named closure
+   test as one enabling slice.
 4. Because the implementation changes the Makefile and compiler consumers, refresh the identity-bound
    C0 baseline using the Section 2.4 source, oracle, finalization, and merge-ancestry sequence.
 5. Run all synthetic tests, the hosted topology unit, `baseline-check`, and one fresh capable
