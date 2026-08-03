@@ -1394,10 +1394,15 @@ an older Section 8 rule by implication.
 
 The profile in this section claims only Ubuntu/Linux x86_64 with kernel 6.8 or newer, GNU Make 4.3,
 CPython 3.12, Git 2.45 or newer, Rust/Cargo 1.96.0, LLVM 22, and a bubblewrap installation that
-passes the namespace, overlayfs, seccomp, and no-symlink-mount self-tests. The bwrap build must
-support `--overlay-src`, `--overlay`, `--seccomp`, and `--preserve-fd`; the kernel must permit the
+passes the namespace, overlayfs, seccomp, no-symlink-mount, and inherited-fd self-tests. The bwrap
+build must support `--overlay-src`, `--overlay`, and `--seccomp`; the kernel must permit the
 owner-only upper/work pair and `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` in the sandbox user
-namespace. C7's aarch64 Linux and aarch64 macOS environments require separate platform profiles.
+namespace. The controller supplies handoff descriptors through the ordinary inherited-fd channel
+(`close_fds=True, pass_fds=(5,6,7,8)` for the outer bwrap and `(5,6,7)` for nested bwrap), not a
+nonstandard fd-preservation option. The inherited-fd self-test opens sentinels at 5, 6, and 7,
+passes them to a minimal bwrap child without an fd-preservation argument, and requires the child to
+observe the same device/inode identities; a mismatch is a `PLATFORM` failure before private-root
+creation. C7's aarch64 Linux and aarch64 macOS environments require separate platform profiles.
 Request 7's immutable image whose `/usr/bin/git` is exactly Git 2.45.0 remains a separate
 prerequisite.
 
@@ -1493,9 +1498,12 @@ must be a canonical no-symlink regular executable path and `tool.mode` is exactl
 `0755` mode. The image manifest generator resolves and authenticates any installation symlink before
 writing the manifest; a symlink path is never accepted as a worker input. The worker opens every
 component with no-follow operations from retained image and parent descriptors, requires the
-declared mode and regular-file type, hashes all bytes before execution, and copies the bytes into
-private `tool-bin` with create-exclusive operations at derived mode `0555`. The copy is hashed again
-and exposed read-only; no host tool path is used after staging. `namespace_path` is `/tools/<name>`
+declared mode and regular-file type, hashes all bytes, and retains the descriptor through the
+identity probe. The probe executes `/proc/self/fd/<retained-tool-fd>` with an explicit inherited-fd
+list and compares its bounded output to the manifest; it never executes the mutable host pathname.
+The worker later copies the same retained bytes into private `tool-bin` with create-exclusive
+operations at derived mode `0555`, hashes the copy again, and exposes it read-only; no host tool path
+is used after staging. `namespace_path` is `/tools/<name>`
 and is the only executable path visible through the aggregate PATH. Runtime regular files use a
 separate derived read-only mode: a source mode with any execute bit stages as `0555`, and a source
 mode without an execute bit stages as `0444`; runtime directories stage as `0700`. The worker never
@@ -1662,11 +1670,14 @@ worktree, `.git` entry, Git directory, common directory, index, HEAD, object sto
 worktree metadata. Every Git child receives the retained worktree descriptor as `cwd`,
 `GIT_WORK_TREE=/proc/self/fd/<worktree-fd>`, `GIT_DIR=/proc/self/fd/<git-dir-fd>`, and
 `GIT_COMMON_DIR=/proc/self/fd/<common-dir-fd>`; these descriptors are explicitly inherited by that
-child. The empty fixed environment disables replacement objects and ambient configuration. Git must
-therefore resolve linked-worktree refs, objects, and metadata through the retained common-directory
-identity rather than through a pathname in a `commondir` file. The worker rechecks every retained
-Git descriptor after each child and rejects any identity change. No source Git child runs after
-materialization.
+child. The fixed environment clears ambient `GIT_*` values and then adds exactly the retained
+descriptor variables plus `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE=/dev/null`,
+`GIT_NO_LAZY_FETCH=1`, `GIT_OPTIONAL_LOCKS=0`, `XDG_CONFIG_HOME=/dev/null`, and `LC_ALL=C`.
+No alternate-object variable is accepted for source validation. Git must therefore resolve
+linked-worktree refs, objects, and metadata through the retained common-directory identity rather
+than through a pathname in a `commondir` file. The worker rechecks every retained Git descriptor
+after each child and rejects any identity change. No source Git child runs after materialization.
 
 The source manifest compares the raw Git tree and index with a complete descriptor-relative raw
 filesystem enumeration. It includes path bytes, type, mode, Git object identity, raw bytes, the
@@ -1797,9 +1808,10 @@ The handoff filter is installed before the aggregate command starts and is inher
 descendant, including nested bwrap validation. It returns `EPERM` for `close(5)`, `close(6)`,
 `close(7)`, any `close_range` interval that includes one of those descriptors, `dup2`/`dup3` whose
 destination is 5, 6, or 7, and `fcntl(F_SETFD)` that would set `FD_CLOEXEC` on one of those
-descriptors, or `ioctl(FIOCLEX)` on one of those descriptors. bwrap loads the filter under
-`no_new_privs`; it cannot be removed or replaced by
-repository code.
+descriptors, or `ioctl(FIOCLEX)` on one of those descriptors. It also returns `EPERM` for
+`io_uring_setup`, `io_uring_enter`, and `io_uring_register`, so an asynchronous close or descriptor
+replacement cannot bypass the synchronous rules. bwrap loads the filter under `no_new_privs`; it
+cannot be removed or replaced by repository code.
 The launcher checks that the filter is active, verifies the sealed guard, and compares the guard to
 fds 5 and 6 before executing the compiler. A child can therefore neither close and reuse the
 worker's handoff descriptors nor replace both descriptor bytes with a self-consistent pair.
@@ -1892,8 +1904,9 @@ Before the aggregate namespace is built, the worker copies the reviewed source l
 `scripts/fresh-alignc` into `tool-bin/fresh-alignc` with mode `0555` and binds it as
 `/tools/fresh-alignc`; its bytes are covered by the source manifest and post-copy digest, not by an
 ambient host tool record. The worker passes fd 5, fd 6, and fd 7 through bwrap with
-`--preserve-fd 5 --preserve-fd 6 --preserve-fd 7`; the direct Make child, shell, scripts, and nested
-validation processes inherit them. The static call-site check
+the ordinary inherited-fd channel; the direct Make child, shell, scripts, and nested validation
+processes inherit them without a bwrap fd-preservation option. The platform self-test and the
+aggregate regression verify that bwrap retains their device/inode identities. The static call-site check
 requires `$(ALIGNC)` or the explicit fresh launcher for every compiler consumer, including
 `scripts/check-format`, prompt/evaluation runners, and `eval/runners/record-baseline.py`. No fresh
 path may resolve a compiler through a shebang, bare `alignc`, a sibling target, or ambient PATH.
@@ -1956,7 +1969,7 @@ The exact aggregate argv shape is:
 
 ```text
 bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net \
-  --preserve-fd 5 --preserve-fd 6 --preserve-fd 7 --seccomp 8 \
+  --seccomp 8 \
   --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /tools --dir /cargo --dir /target \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
@@ -1969,6 +1982,7 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --size 268435456 --tmpfs /target/tmp \
   <same ordered runtime binding operations> \
   --setenv HOME /nonexistent --setenv TMPDIR /target/tmp --setenv PATH /tools \
+  --setenv ALIGNC_CACHE off \
   --setenv ALIGN_LLM_TEMP_ROOT /target/tmp \
   --setenv ALIGN_LLM_TOOL_ROOT /tools --setenv ALIGN_LLM_PYTHON /tools/python3 \
   --setenv SHELL /bin/sh --setenv MAKE /tools/make \
@@ -1985,6 +1999,8 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
 The runtime bindings include regular staged copies at `/usr/bin/env`, `/usr/bin/python3`, `/bin/sh`,
 and `/bin/bash`, so `#!/usr/bin/env python3`, `#!/usr/bin/env bash`, and Make's `SHELL=/bin/sh`
 cannot reach a host interpreter. `PATH=/tools` contains only the closed staged launchers. The
+aggregate always sets `ALIGNC_CACHE=off`; the compiler code-generation cache is not an implicit
+aggregate input and cannot create an unbounded cache under `/nonexistent`.
 implementation must update `eval/runners/run-coding-task.py` so both `ALIGN_LLM_BWRAP` and
 `ALIGN_LLM_PRLIMIT` are explicit fresh inputs; its current `/usr/bin/bwrap` and `/usr/bin/prlimit`
 fallbacks are forbidden in the aggregate. Fresh mode also supplies `ALIGN_LLM_TOOL_ROOT=/tools`
@@ -1995,15 +2011,15 @@ and `/tmp`. `validation_command()` must resolve a `python3` task command to the 
 
 A nested validation sandbox must make the staged execution boundary visible explicitly. Its bwrap
 argv includes `--dir /tools --ro-bind /tools /tools`, `--bind /target/tmp /target/tmp`,
-`--setenv PATH /tools`, `--setenv TMPDIR /target/tmp`, and the same authenticated runtime mounts
+`--setenv PATH /tools`, `--setenv TMPDIR /target/tmp`, `--setenv ALIGNC_CACHE off`, and the same authenticated runtime mounts
 needed by the staged tools. The source of that bind is the outer namespace tmpfs, never a host
 directory; the nested sandbox's staged `mount-guard` reapplies `MOUNT_ATTR_NOSYMFOLLOW` to its
 `/target/tmp` mount before the task starts. It invokes `/tools/prlimit` and `/tools/python3` by
-explicit path and includes `--preserve-fd 5 --preserve-fd 6 --preserve-fd 7` before its command
-separator. The outer Python process starts that bwrap with `pass_fds=(5,6,7)`. The sandbox
+explicit path. The outer Python process starts that bwrap with `close_fds=True, pass_fds=(5,6,7)`;
+the ordinary inherited-fd channel carries the protected descriptors into the nested child. The sandbox
 capability probe uses the same staged bwrap, Python, and mount-guard paths and an explicit
 descriptor policy; it may close the compiler descriptors only when the probe is proven not to
-launch a compiler, but it still preserves the guard while the fresh boundary is active. No host
+launch a compiler, but it still inherits the guard while the fresh boundary is active. No host
 `/tmp`, HOME, loader cache, source root, or target is visible.
 
 Every fresh Python subprocess boundary declares descriptor handling explicitly. A subprocess that
@@ -2011,19 +2027,23 @@ can invoke `ALIGNC`, Make, a shell script, a nested bwrap, or a baseline runner 
 `close_fds=True, pass_fds=(5,6,7)`; a helper that cannot reach a compiler declares an explicit empty
 descriptor set. This rule applies to the shared `run()` helper and to direct `subprocess.run`
 calls in `run-coding-task.py` and `record-baseline.py`; relying on Python's default close-on-exec
-behavior is forbidden. The nested bwrap then preserves the descriptors again, so fd 5, fd 6, and
-the guard fd 7 remain the only compiler handoff through every Python and sandbox layer. A fresh
+behavior is forbidden. The nested bwrap inherits the descriptors again through the ordinary
+channel, so fd 5, fd 6, and the guard fd 7 remain the only compiler handoff through every Python
+and sandbox layer. A fresh
 descriptor fixture invokes a compiler from a nested Python process, attempts close/reuse of all
 three protected fds, and proves both worker identity and absence of a pathname fallback.
 
 `baseline-check`'s negative Git smoke uses a worker-owned private Git fixture under
 `/target/tmp`, with a private `GIT_DIR`/`GIT_COMMON_DIR`, `GIT_WORK_TREE=/workspace`, copied
-`HEAD`/refs, and an authenticated read-only object store supplied by the worker. The fixture's
-object store may be a no-follow copy or a read-only alternate created by the worker, but it must
-not be discovered from the host or the original linked-worktree metadata. The smoke script,
-`eval/runners/verify-baseline.py`, and `eval/runners/record-baseline.py` receive that explicit
-environment before any `git update-ref`; their `git_environment()` helpers clear ambient `GIT_*`
-values and then re-add only the worker-owned `GIT_DIR`, `GIT_COMMON_DIR`, and `GIT_WORK_TREE`.
+`HEAD`/refs, and an authenticated no-follow copy of the required object store inside that private
+common directory. `GIT_ALTERNATE_OBJECT_DIRECTORIES` and every other alternate-object channel are
+prohibited; the fixture never depends on a host or original linked-worktree object path. The smoke
+script, `eval/runners/verify-baseline.py`, and `eval/runners/record-baseline.py` receive that
+explicit environment before any `git update-ref`; their `git_environment()` helpers clear ambient
+`GIT_*` values and then re-add the worker-owned `GIT_DIR`, `GIT_COMMON_DIR`, and `GIT_WORK_TREE`
+alongside the fixed `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE=/dev/null`, `GIT_NO_LAZY_FETCH=1`, and
+`GIT_OPTIONAL_LOCKS=0` hardening values. `XDG_CONFIG_HOME=/dev/null` and `LC_ALL=C` remain fixed.
 The replacement ref therefore exists only below `/target/tmp`. `GIT_NAMESPACE` alone is
 insufficient because it would still mutate a shared common directory. The worker postscan proves
 that `/workspace/.git` and every source-control path remain unchanged and that the private Git
@@ -2073,7 +2093,7 @@ The first applicable failure wins in this fixed order:
 2. external manifest bytes, supplied digest, schema, canonical order, and bounds;
 3. fixed bootstrap, Python, Linux, architecture, `/proc`, timer, bwrap namespace, overlay, seccomp,
    and no-symlink-mount capabilities;
-4. controller snapshot and every tool path, digest, mode, version, and probe output;
+4. controller snapshot and every retained tool descriptor, digest, mode, version, and probe output;
 5. `.align-revision`, retained Git descriptors, Git policy, tree/index, and raw worktree manifest;
 6. cache root, external cache manifest, digest tree, allowlist, count/size bounds, and retained
    cache descriptors; no destination copy;
@@ -2095,7 +2115,7 @@ output, credentials, or source bytes. No later phase overwrites a primary catego
 | Bootstrap snapshot | fixed bootstrap | Hash worker, sealed memfd, fixed image interpreter, no repository child before snapshot | `fresh-v2-bootstrap-snapshot-smoke` overwrites/truncates worker after hash and requires the old bytes to execute. |
 | Manifest wire | bootstrap/worker | Schema 2 order, mode strings, bounds, duplicate/unknown rejection, external digest | `fresh-v2-manifest-format-smoke` covers every scalar, order, mode, UTF-8, NUL, size, and supplied-digest case. |
 | Digest tree | worker | Exact file/dir schema, structural hash, canonical JSON hash, raw-byte order | `fresh-v2-digest-tree-golden` checks the `abc` vector, nested dirs, empty dirs, and malformed children. |
-| Tool identity | worker | Canonical no-symlink host path, no-follow open, full hash, copied private bytes, exact probe | `fresh-v2-tool-identity-smoke` covers symlink aliases, replacement, version, timeout, overflow, unlisted names, and copied-byte mutation. |
+| Tool identity | worker | Canonical no-symlink host path, retained no-follow descriptor, full hash, probe from retained bytes, copied private bytes, exact probe | `fresh-v2-tool-identity-smoke` covers symlink aliases, replacement after open, version, timeout, overflow, unlisted names, retained-descriptor execution, and copied-byte mutation. |
 | Runtime/loader identity | worker plus bwrap | Complete ELF interpreter/DT_NEEDED closure, staged exact target paths, executable runtime modes 0555 versus data modes 0444, no host loader | `fresh-v2-runtime-closure-smoke` replaces a library and interpreter, checks build and aggregate, proves executable bits survive staging, and proves host paths never execute. |
 | Cache placement/copy | worker | Manifest outside root, allowlist, pre-copy per-file/total bounds, retained source descriptors, directory-aware no-follow copy, postscan | `fresh-v2-cache-smoke` covers manifest-in-root, config/wrapper, symlink, special, hardlink, rename, 512-MiB file and 20-GiB total limits, digest, and offline cases. |
 | Git/source identity | worker | Retained worktree/Git/common descriptors, raw tree/index/worktree equality, descriptor-relative source copy with post-copy proof, no helper/config/filter, exact revision | `fresh-v2-source-identity-smoke` covers linked worktrees, common-directory replacement, ancestor ABA, source replacement during copy, replacement refs, hidden inputs, symlinks, and same-HEAD extra Rust input. |
@@ -2103,17 +2123,17 @@ output, credentials, or source bytes. No later phase overwrites a primary catego
 | Aggregate temporary call sites | scripts and Align loop | Every temporary file, fixture, marker, and negative Git state is below the no-symlink `/target/tmp`; the loop no longer writes `eval/`, and no host temp directory is aggregate-visible | `fresh-v2-temp-root-callsite-smoke` runs loop, coding-task, invalid-baseline, and every `mktemp`/`TemporaryDirectory` caller, attempts a temp-to-workspace symlink, and proves no lower or upper source path changed. |
 | Aggregate publication | worker plus bwrap | Immutable `aggregate-work` lower layer, writable upper/work pair, compiler sibling staging, atomic rename, and final `/workspace/main` allowlist | `fresh-v2-aggregate-publication-smoke` runs the real compiler publication path, proves `.align-publish-*` is transient, rejects an upper entry outside `main`, and checks the post-unmount scan. |
 | Build namespace | worker plus bwrap | Empty root, only declared binds, user/PID/net namespaces, writable `/cargo`/`/target` only | `fresh-v2-build-namespace-smoke` uses host-root/cache/HOME/network markers, double fork, and runtime loader probes. |
-| Compiler descriptor | worker/launcher/seccomp | Canonical schema, sealed fd 5/6, sealed guard fd 7, protected handoff descriptors, no pathname handoff, exact digest and revision | `fresh-v2-descriptor-fd-smoke` replaces the descriptor path, closes/reuses all protected fds, mutates memfds, attempts `dup2`/`close_range`, checks the active filter, and checks exact golden bytes. |
+| Compiler descriptor | worker/launcher/seccomp | Canonical schema, sealed fd 5/6, sealed guard fd 7, protected handoff descriptors, synchronous and asynchronous close/replace denial, no pathname handoff, exact digest and revision | `fresh-v2-descriptor-fd-smoke` replaces the descriptor path, closes/reuses all protected fds, mutates memfds, attempts `dup2`/`close_range` and `io_uring_setup`/`io_uring_enter`/`io_uring_register`, checks the active filter, and checks exact golden bytes. |
 | Direct compiler call | fresh launcher | Fixed fd 5 required; no flag-controlled or PATH fallback | `fresh-v2-direct-interposition-smoke` clears every fresh marker and installs old sibling/PATH marker compilers; none may run. |
 | Internal compiler call | Makefile/scripts/Python runners | All consumers use fresh launcher/fds; staged tool paths and explicit `pass_fds=(5,6,7)` survive Python, shell, nested bwrap, and recursive Make; no bare compiler, sibling, or fallback path | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, and protected-fd replacement attempts, with marker compiler and descriptor-identity controls. |
 | Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python, Bash, `mount-guard`, `/tools`, no-symlink `/target/tmp`, PATH, loader, and nested fd preservation | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools, runs nested validation, attempts a temp-to-workspace symlink, and verifies staged identities, temp-root propagation, mount attributes, and fd 5/6/7. |
-| Aggregate topology | worker/Makefile | Exactly one bwrap aggregate, cleared options, fd preservation, fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, hostile shell/overrides, and fd propagation. |
+| Aggregate topology | worker/Makefile | Exactly one bwrap aggregate, cleared options, ordinary inherited-fd propagation, explicit `ALIGNC_CACHE=off`, fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, hostile shell/overrides, bwrap inherited-fd identity, cache-off propagation, and fd propagation. |
 | Process ownership | worker | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, overflow, double fork, signal, PID reuse, and reader closure. |
 | Cleanup success | worker | Reverse descriptor-relative removal, parent/root identity, root absent before PASS | `fresh-v2-cleanup-smoke` proves no private root, sealed descriptor, cache copy, target, marker, or child remains. |
 | Cleanup failure | worker | Never delete replacement/unowned path; exact primary/cleanup precedence | `fresh-v2-cleanup-failure-smoke` injects close, unlink, parent replacement, live child, signal, and successful-phase cleanup failures. |
-| Baseline scratch identity | baseline smoke/worker | Invalid corpus and replacement refs use a private `/target/tmp` Git fixture with explicit private `GIT_DIR` and `GIT_COMMON_DIR`; shared `/workspace/.git` and source common dirs remain unchanged | `fresh-v2-baseline-scratch-smoke` runs every invalid-baseline mutation with private `GIT_DIR`/`GIT_COMMON_DIR`, checks object resolution and replacement rejection, and compares source-control manifests before/after. |
+| Baseline scratch identity | baseline smoke/worker | Invalid corpus and replacement refs use a private `/target/tmp` Git fixture with explicit private `GIT_DIR` and `GIT_COMMON_DIR`, copied private objects, and fixed Git hardening variables; shared `/workspace/.git` and source common dirs remain unchanged | `fresh-v2-baseline-scratch-smoke` runs every invalid-baseline mutation with private `GIT_DIR`/`GIT_COMMON_DIR`, checks private-object resolution, hardening-variable preservation, alternate rejection, replacement rejection, and compares source-control manifests before/after. |
 | Baseline identity | baseline owner | Final Makefile source, two samples, oracle, finalization, ancestry, unchanged pin, and explicit compiler/guard descriptors through recorder subprocesses | `fresh-v2-baseline-integration-smoke` runs the Section 2.4 chain before capable evidence and asserts recorder Python children preserve fd 5/6/7 in fresh mode. |
-| Platform boundary | topology plan | x86-only claim; non-x86 requires separate profile | `fresh-v2-platform-profile-smoke` rejects unsupported environments and prevents C7 non-x86 evidence reuse. |
+| Platform boundary | topology plan | x86-only claim; bwrap namespace/overlay/seccomp/no-symlink/inherited-fd self-tests; non-x86 requires separate profile | `fresh-v2-platform-profile-smoke` rejects unsupported environments, exercises inherited descriptors without a bwrap preservation option, and prevents C7 non-x86 evidence reuse. |
 
 ### 9.11 Compatibility, verification, and delivery order
 
