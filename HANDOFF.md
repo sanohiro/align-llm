@@ -6,8 +6,8 @@ request checks, reviews, and attestations.
 ## Current state
 
 - Branch: `agent/c7-persisted-result-design`, based on merged main commit `34eb2ad` (`Merge PR #52:
-  Add C6c1p score prefix validation`). The C7 design checkpoint is committed at `0de8470`; no C7
-  implementation has started.
+  Add C6c1p score prefix validation`). The C7-D content is committed at `bc72b8d` (design
+  `0de8470` plus synchronized Request 9 lifecycle metadata); no C7 implementation has started.
 - In progress: `docs/specs/c7-persisted-result.md` now defines the C7-D design gate, its direct
   owned `string`/`Option<string>` records, explicit Request 9 `canonical.clone()` persistence
   boundary, canonical artifact/digest contract, `bounded-bucket-v1` boundary algorithm,
@@ -15,8 +15,8 @@ request checks, reviews, and attestations.
   three-target acceptance environment, and future Make/topology adoption. `docs/align-requests.md`
   reclassifies Request 9 as blocking for C7 implementation/adoption; no implementation or Make
   topology change is present.
-- Intentional uncommitted lifecycle files: the Request 9 metadata edit in `docs/align-requests.md`
-  and this HANDOFF update. Preserve them until the synchronized C7-D lifecycle commit is made.
+- Working tree is clean at the C7-D checkpoint; no generated binaries, model weights, credentials,
+  or machine-specific paths are present.
 - Current source/design lineage: the merged C6c2 design from PR #51 and merged C6c1p implementation
   from PR #52; C6c2 implementation remains blocked on C6a1/C6a2 decoded records and the Align
   adoption prerequisites.
@@ -135,10 +135,10 @@ request checks, reviews, and attestations.
 
 ## Exact next steps
 
-1. Commit the docs-only C7-D design checkpoint after the completed consolidated repair and
-   author-side documentation checks; no further review loop is planned for this design checkpoint.
-2. Open/merge its independently reviewable design PR,
-   and preserve the Request 9 blocker and no-implementation boundary.
+1. Open/merge the independently reviewable docs-only C7-D design PR and preserve the Request 9
+   blocker and no-implementation boundary.
+2. After that design merge, wait for Request 9 to reach `ALIGN_MERGED`; do not start C7-A or C7-I1
+   against a proposed Align surface.
 3. Do not implement C7-PersistedResult until the reviewed design is merged and Request 9 reaches
    `ALIGN_MERGED` with the sibling release rebuild, `.align-revision` update, and original
    align-llm adoption gate. Keep C6c2 paused; continue only with safe independent work.
@@ -178,11 +178,11 @@ request checks, reviews, and attestations.
 - Review-repair aggregate verification is PASS at `4e15ad9`: `PYTHONDONTWRITEBYTECODE=1 make ci`
   passed again after the 2,048-row count-guard repair; focused prefix/scorer smoke, format, check,
   and baseline verification also passed.
-- C7 design author verification is PASS: `git diff --check`, balanced Markdown/NUL/trailing-space
-  checks, exact golden-vector SHA-256 checks, stale-algorithm/reference checks, and synchronized
-  Request 9 lifecycle assertions all passed after the consolidated design repair. Markdownlint is
-  N/A because it is not installed; source tests, `make check`, `make build`, and `make ci` are N/A
-  for this docs-only design gate.
+- C7-D author verification is PASS at content commits `0de8470` and `bc72b8d`: `git diff --check`,
+  balanced Markdown/NUL/trailing-space checks, exact golden-vector SHA-256 checks,
+  stale-algorithm/reference checks, and synchronized Request 9 lifecycle assertions all passed
+  after the consolidated repair. Markdownlint is N/A because it is not installed; source tests,
+  `make check`, `make build`, and `make ci` are N/A for this docs-only design gate.
 - C6c1p topology-repair verification is PASS at `fc596e1`: `python3 scripts/check-gate-topology
   --self-test`, `make gate-topology-check`, `make prompt-score-prefix-smoke`, and
   `PYTHONDONTWRITEBYTECODE=1 make hosted-checks` all passed; the aggregate log includes the new
@@ -192,11 +192,6 @@ request checks, reviews, and attestations.
   baseline remain applicable.
 - Post-merge refresh is PASS: local `main` fast-forwarded to `34eb2ad`, the new C7 branch was based
   from that exact commit, and the working tree is clean before design work.
-- C7-D author checks are PASS so far: `git diff --check`, balanced Markdown fences/reference-file
-  checks, and independent SHA-256 verification of the normative input/preimage/result byte vectors.
-  `markdownlint` is N/A because it is not installed; no source tests or Make aggregate apply to this
-  docs/spec-only checkpoint. The design changed only `docs/specs/c7-persisted-result.md` and the
-  Request 9 metadata in `docs/align-requests.md`; its working-tree changes are intentional.
 - Final C6c1p evidence remains PASS: `PYTHONDONTWRITEBYTECODE=1 make ci` passed at
   `4e15ad9509f6048221e1852cfbbf1d8ec656d79d`; the final hosted PR check and baseline verification
   also passed. The pinned Align revision remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
