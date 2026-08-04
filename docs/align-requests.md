@@ -1373,18 +1373,26 @@ The fixture directory contains:
   pinned compiler rejects that schema, the fixture instead expects the decoded-owner cleanup
   request's exact canonical schema diagnostic with empty stdout.
 
-For `owned-direct.align`, `owned-nested.align`, and `owned-union.align`, the script invokes
-`ALIGNC_CACHE=<fresh-cache> <pinned-alignc> check <file>` in that fixed filename order, requires a
-nonzero status, requires empty stdout, and matches exactly once:
+The adoption script has two explicit execution profiles. In the ordinary adoption profile,
+`owned-direct.align`, `owned-nested.align`, and `owned-union.align` use
+`ALIGNC_CACHE=<fresh-cache> <pinned-alignc> check <file>` in that fixed filename order. In the
+Section 9 fresh-capable profile, the same calls use the controller-owned fixed vector
+`ALIGNC_CACHE=off /tools/fresh-alignc check <file>`; `/tools/fresh-alignc` opens the authenticated
+handoff files and cannot be replaced by a caller-selected compiler. Both profiles require a
+nonzero status, require empty stdout, and match exactly once:
 
 ```text
 `json.scan` row type 'OwnedRow' must be Copy; Move rows need per-row Drop before the scanner can reuse its row slot
 ```
 
-It rejects a panic, backtrace, or any unexpected file under the fresh cache. It checks
+It rejects a panic, backtrace, or any unexpected file under the selected cache. It checks
 `owned-option.align` against the outcome selected by the adoption slice that installed the active
 `.align-revision`, then invokes `<pinned-alignc> run copy-row.align` and
-`<pinned-alignc> run decode-owned.align` in that order with the same fresh cache. It runs
+`<pinned-alignc> run decode-owned.align` in that order with the same named cache in the ordinary
+profile. In the Section 9 fresh-capable profile, those exact vectors are
+`ALIGNC_CACHE=off /tools/fresh-alignc run copy-row.align` and
+`ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned.align`; the worker's `ALIGNC_CACHE=off`
+setting is fixed and caller cache overrides are rejected. It runs
 `decode-owned-option.align` only for the admitted outcome; for the rejected outcome it checks the
 fixture and exact decoded-owner cleanup diagnostic instead. The initial Request 6 adoption records
 the outcome of its active compiler. If a later decoded-owner cleanup changes that outcome, the
