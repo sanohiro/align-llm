@@ -5,21 +5,23 @@ request checks, reviews, and attestations.
 
 ## Current state
 
-- Branch: `agent/fresh-compiler-topology-redesign-v4`, based on main `32bfeba55e358d249bab62623e9ea7d5f2cf7c63` (`Add C7 persisted-result design gate (#53)`). The current commit before the re-scoped design edit is `b8bf9aff06352e1bd58f3b42974bb911ff40263`; the re-scoped design is not committed yet.
+- Branch: `agent/fresh-compiler-topology-redesign-v4`, current commit `bd5dd878ef1eebf4b959dd12997d06878da7605b` (`docs: re-scope fresh compiler trust boundary`), based on main `32bfeba55e358d249bab62623e9ea7d5f2cf7c63` (`Add C7 persisted-result design gate (#53)`).
 - Active goal: finish the re-scoped common fresh-compiler topology design, merge it, implement the reviewed topology slice, and consume it for Request 6 adoption. No dependent implementation or Align pin adoption may start until the design and implementation slices merge.
 - Durable design state: Section 9 is the only normative fresh-compiler contract. The v4 slice separates the image-owned supervisor/bootstrap plane from the per-reviewed-head repository worker; the fixed image manifest authenticates image tools/runtime only, while a signed run capsule binds the checked-out head and worker digest. It defines the env-scrubbed supervisor boundary, sealed attestation/worker snapshots, descriptor-relative source roots, canonical source/cache/attestation wires, one-root admission lock, fail-closed orphan handling, executable `/tmp`, fixed resource/cardinality limits, complete Make option rejection, phase-5 Cargo configuration ownership, private Git views, read-only compiler/archive bundle, aggregate overlay, output closure, and exact status/cleanup grammar.
 - Not started: bootstrap/image installation, controller implementation, baseline refresh, hosted/capable acceptance, and any `.align-revision` change.
 
 ## Next steps
 
-1. Complete the v4 closure-matrix consistency pass and golden-vector/static checks, then commit the re-scoped design and continuity update as one scoped design checkpoint.
-2. Publish the new design slice as its own PR and run one comprehensive review for this re-scoped head; record the SHA-bound review externally.
-3. If clean, merge the design slice; install/attest the fixed image supervisor and bootstrap, then create the separate repository implementation slice without changing `.align-revision`.
-4. Refresh the identity-bound baseline after the implementation changes Make behavior, run the fresh topology matrix and capable `make ci`, then create the separate Request 6 adoption slice.
+1. Publish this v4 design slice as its own PR and run one comprehensive review for this re-scoped head; record the SHA-bound review externally.
+2. If clean, merge the design slice; install/attest the fixed image supervisor and bootstrap, then create the separate repository implementation slice without changing `.align-revision`.
+3. Refresh the identity-bound baseline after the implementation changes Make behavior, run the fresh topology matrix and capable `make ci`, then create the separate Request 6 adoption slice.
 
 ## Latest verification
 
-- Before the v4 re-scope, `git diff --check main...b8bf9aff06352e1bd58f3b42974bb911ff40263`: PASS; Section 9 JSON/golden-vector/static consistency checks: PASS. The v4 edits are not yet committed or fully rechecked; run the exact author checks before handoff.
+- `git diff --check main...bd5dd878ef1eebf4b959dd12997d06878da7605b`: PASS.
+- `python3` author verifier: PASS — 11 JSON fenced blocks parse; attestation predicate hashes `211475753df48fa9f8e6ae47b37c516be156ebebf6220433a0585cca723bd6d6` and `2b61df38636af38d36c13f9c6c38265fdd76bb0ad15db2ec0f5ca2f0c0d98e69`; cache/source/object-format vectors match their recorded hashes; v4 trust, fd, lock, bounds, noexec, Make-option, and Cargo-phase markers are present.
+- `awk '/^```/ { count++ } END { if (count % 2 != 0) exit 1 }' HANDOFF.md docs/align-requests.md docs/specs/c7-persisted-result.md docs/specs/check-gate-topology.md`: PASS — 172 fences.
+- Source tests, `make check`, `make build`, `make ci`, hosted checks, and benchmarks are N/A because this remains a documentation/specification-only design slice with no executable contract change.
 
 ## Blockers and decisions
 
@@ -29,4 +31,4 @@ request checks, reviews, and attestations.
 - The dependent slice remains blocked until the v4 design is merged, then the implementation passes its complete review/check gate. Preserve the run-capsule/image-manifest split, exact supervisor argv and environment scrub, fd 5/6 attestation handoff, one-root lock and fail-closed orphan policy, source identity and bounds, private Git views, fixed Cargo configuration, read-only bundle, and exact status grammar.
 - Do not consume `6b5dfaa`, `bb9ad1f`, or any unreviewed topology implementation as an implementation contract until this successor design and its dependent implementation merge. Preserve the no-host-fallback, staged interpreter/loader closure, overlay publication, private Git refs, and empty descriptor propagation decisions.
 - The sibling Align checkout is the language source of truth. Do not code against hypothetical Align APIs or update the pin from this design branch.
-- Intentional uncommitted files: the v4 design edits and this HANDOFF update in this worktree. Main's separate uncommitted `HANDOFF.md` is intentional and must not be discarded.
+- Intentional uncommitted files: none in this worktree. Main's separate uncommitted `HANDOFF.md` is intentional and must not be discarded.
