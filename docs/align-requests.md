@@ -1392,9 +1392,12 @@ It rejects a panic, backtrace, or any unexpected file under the selected cache. 
 profile. In the Section 9 fresh-capable profile, those exact vectors are
 `ALIGNC_CACHE=off /tools/fresh-alignc run copy-row.align` and
 `ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned.align`; the worker's `ALIGNC_CACHE=off`
-setting is fixed and caller cache overrides are rejected. It runs
-`decode-owned-option.align` only for the admitted outcome; for the rejected outcome it checks the
-fixture and exact decoded-owner cleanup diagnostic instead. The initial Request 6 adoption records
+setting is fixed and caller cache overrides are rejected. It then invokes
+`decode-owned-option.align` with `ALIGNC_CACHE=<fresh-cache> <pinned-alignc> run decode-owned-option.align`
+in the ordinary profile, or with
+`ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned-option.align` in the Section 9 fresh-capable
+profile. The selected profile vector is used in both the admitted and rejected outcome branches;
+only the expected status and diagnostic differ. The initial Request 6 adoption records
 the outcome of its active compiler. If a later decoded-owner cleanup changes that outcome, the
 align-llm adoption slice that first pins the changed compiler must update both optional-fixture
 expectations and this script in the same pull request before `.align-revision` advances. Thus the
