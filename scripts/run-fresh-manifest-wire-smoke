@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""Exercise Section 9 digest-tree, cache, and schema-2 manifest wires."""
+
+from __future__ import annotations
+
+import hashlib
+import sys
+from collections import OrderedDict
+from copy import deepcopy
+
+from fresh_attestation import WireError, canonical_json_bytes, parse_canonical_json
+from fresh_manifest import (
+    ALLOWED_CACHE_PREFIXES,
+    BOOTSTRAP_PATH,
+    CONTROLLER_PATH,
+    ManifestError,
+    TOOL_INVENTORY,
+    parse_cache_manifest_bytes,
+    parse_manifest_bytes,
+    serialized_digest,
+    structural_digest,
+    validate_cache_manifest,
+    validate_cache_manifest_bytes,
+    validate_digest_tree,
+    validate_manifest,
+    validate_manifest_bytes,
+)
+
+
+def file_node(
+    name: str, digest: str, *, mode: str = "0644", staged: str = "0600"
+) -> OrderedDict[str, object]:
+    return OrderedDict(
+        [
+            ("name", name),
+            ("kind", "file"),
+            ("mode", mode),
+            ("staged_mode", staged),
+            ("size", 3),
+            ("sha256", digest),
+            ("entries", []),
+        ]
+    )
+
+
+def dir_node(
+    entries: list[OrderedDict[str, object]],
+    digest: str,
+    *,
+    mode: str = "0755",
+    staged: str = "0700",
+) -> OrderedDict[str, object]:
+    return OrderedDict(
+        [
+            ("kind", "dir"),
+            ("mode", mode),
+            ("staged_mode", staged),
+            ("size", 0),
+            ("sha256", digest),
+            ("entries", entries),
+        ]
+    )
+
+
+def cache_tree() -> OrderedDict[str, object]:
+    leaf = file_node(
+        "a",
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    )
+    index = dir_node(
+        [leaf],
+        "ef0e4496a41340e438a6ef7390fdd720e180081ff7349f80d23e4fa846e53717",
+    )
+    registry_entry = OrderedDict(
+        [
+            ("name", "index"),
+            ("kind", "dir"),
+            ("mode", "0755"),
+            ("staged_mode", "0700"),
+            ("size", 0),
+            ("sha256", index["sha256"]),
+            ("entries", index["entries"]),
+        ]
+    )
+    registry = dir_node(
+        [registry_entry],
+        "417987180d0d1a99b46745be018da4bd141a40de9e855385f5784c1ecf30ef18",
+    )
+    root_entry = OrderedDict(
+        [
+            ("name", "registry"),
+            ("kind", "dir"),
+            ("mode", "0755"),
+            ("staged_mode", "0700"),
+            ("size", 0),
+            ("sha256", registry["sha256"]),
+            ("entries", registry["entries"]),
+        ]
+    )
+    return dir_node(
+        [root_entry],
+        "63f8236beb76d3197aad440b166958a92516cc6bd2b4d17c70264e0efce79509",
+    )
+
+
+def cache_manifest() -> OrderedDict[str, object]:
+    return OrderedDict(
+        [
+            ("schema_version", 2),
+            ("allowed_prefixes", list(ALLOWED_CACHE_PREFIXES)),
+            ("root", cache_tree()),
+            ("entry_count", 3),
+            ("total_size", 3),
+        ]
+    )
+
+
+def manifest(tool_stdout: str = "") -> OrderedDict[str, object]:
+    tools = []
+    for name in TOOL_INVENTORY:
+        path = f"/usr/bin/{name}"
+        tools.append(
+            OrderedDict(
+                [
+                    ("name", name),
+                    ("path", path),
+                    ("namespace_path", f"/tools/{name}"),
+                    ("mode", "0755"),
+                    ("sha256", "0" * 64),
+                    ("argv", [path, "--version"]),
+                    ("stdout", tool_stdout if name == TOOL_INVENTORY[0] else ""),
+                    ("stderr", ""),
+                ]
+            )
+        )
+    return OrderedDict(
+        [
+            ("schema_version", 2),
+            ("controller", OrderedDict([("path", CONTROLLER_PATH), ("api", 1)])),
+            (
+                "bootstrap",
+                OrderedDict([("path", BOOTSTRAP_PATH), ("sha256", "1" * 64), ("api", 1)]),
+            ),
+            (
+                "platform",
+                OrderedDict(
+                    [
+                        ("os", "linux"),
+                        ("architecture", "x86_64"),
+                        ("kernel_minimum", "6.8"),
+                        ("python_minimum", "3.12"),
+                        ("make_minimum", "4.3"),
+                    ]
+                ),
+            ),
+            ("tools", tools),
+            ("runtime_bindings", []),
+            (
+                "cargo_cache",
+                OrderedDict(
+                    [
+                        ("root", "/cache"),
+                        ("manifest", "/descriptor/cache-manifest.json"),
+                        ("manifest_sha256", "2" * 64),
+                        ("entry_count", 0),
+                    ]
+                ),
+            ),
+        ]
+    )
+
+
+def require_rejected(name: str, callback: object) -> None:
+    try:
+        callback()  # type: ignore[operator]
+    except (ManifestError, WireError):
+        return
+    raise AssertionError(f"case {name} was accepted")
+
+
+def main() -> int:
+    digest_root = dir_node(
+        [
+            file_node(
+                "a",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                mode="0644",
+                staged="0444",
+            )
+        ],
+        "595f8a4c893a5e141d751b0c1e00d709790a5c7632edacf7fe26442a91c509be",
+        staged="0700",
+    )
+    assert structural_digest(digest_root) == digest_root["sha256"]
+    assert validate_digest_tree(digest_root).entry_count == 1
+    assert serialized_digest(digest_root) == (
+        "ecdbd9d189a098fd0e50450448102da644a672fe43264761c3982324025c66f5"
+    )
+
+    cache = cache_manifest()
+    assert validate_cache_manifest(cache).entry_count == 3
+    assert validate_cache_manifest(cache).total_size == 3
+    cache_bytes = canonical_json_bytes(cache)
+    assert hashlib.sha256(cache_bytes).hexdigest() == (
+        "44a98ed3b3adf920e6e02a770d83dd6784e4c16fadcb19ec0f78cde1335261a0"
+    )
+    assert parse_cache_manifest_bytes(cache_bytes)["entry_count"] == 3
+    assert validate_cache_manifest_bytes(cache_bytes)["entry_count"] == 3
+
+    control = manifest()
+    control_bytes = canonical_json_bytes(control)
+    validate_manifest(control)
+    assert parse_manifest_bytes(control_bytes)["schema_version"] == 2
+    assert validate_manifest_bytes(control_bytes)["schema_version"] == 2
+    syntax_only = deepcopy(control)
+    syntax_only["tools"] = []
+    assert parse_canonical_json(canonical_json_bytes(syntax_only))["tools"] == []
+    require_rejected("empty tools semantic inventory", lambda: validate_manifest(syntax_only))
+
+    file_manifest = deepcopy(control)
+    file_entry = file_node(
+        "runtime.bin",
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        mode="0644",
+        staged="0444",
+    )
+    file_root = dir_node([], "0" * 64)
+    file_root["kind"] = "file"
+    file_root["mode"] = "0644"
+    file_root["staged_mode"] = "0444"
+    file_root["size"] = 3
+    file_root["sha256"] = file_entry["sha256"]
+    assert validate_digest_tree(file_root).entry_count == 0
+    file_manifest["runtime_bindings"] = [
+        OrderedDict(
+            [
+                ("source", "/runtime/source.bin"),
+                ("target", "/runtime/runtime-000000"),
+                ("kind", "file"),
+                ("manifest", file_root),
+                ("manifest_sha256", serialized_digest(file_root)),
+            ]
+        )
+    ]
+    validate_manifest(file_manifest)
+
+    exact_probe = deepcopy(control)
+    exact_probe["tools"][0]["stdout"] = "00" * 65_536
+    validate_manifest(exact_probe)
+    over_probe = deepcopy(control)
+    over_probe["tools"][0]["stdout"] = "00" * 65_537
+    require_rejected("probe cap plus one", lambda: validate_manifest(over_probe))
+
+    bad_cache = deepcopy(cache)
+    bad_cache["allowed_prefixes"] = ["registry/config"]
+    require_rejected("cache prefix allowlist", lambda: validate_cache_manifest(bad_cache))
+    bad_cache = deepcopy(cache)
+    bad_cache["entry_count"] = 2
+    require_rejected("cache entry count", lambda: validate_cache_manifest(bad_cache))
+    bad_cache = deepcopy(cache)
+    bad_registry_entry = bad_cache["root"]["entries"][0]["entries"][0]
+    bad_registry_entry["kind"] = "file"
+    bad_registry_entry["mode"] = "0644"
+    bad_registry_entry["staged_mode"] = "0600"
+    bad_registry_entry["size"] = 3
+    bad_registry_entry["sha256"] = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    bad_registry_entry["entries"] = []
+    bad_root_entry = bad_cache["root"]["entries"][0]
+    bad_root_entry["sha256"] = structural_digest(bad_root_entry)
+    bad_cache["root"]["sha256"] = structural_digest(bad_cache["root"])
+    require_rejected("cache file at prefix root", lambda: validate_cache_manifest(bad_cache))
+    bad_tree = deepcopy(digest_root)
+    bad_tree["sha256"] = "0" * 64
+    require_rejected("digest tree mismatch", lambda: validate_digest_tree(bad_tree))
+    bad_manifest = deepcopy(control)
+    bad_manifest["unknown"] = 1
+    require_rejected("unknown manifest field", lambda: validate_manifest(bad_manifest))
+    bad_manifest = deepcopy(control)
+    bad_manifest["tools"][0]["name"] = "unknown-tool"
+    require_rejected("unknown tool inventory", lambda: validate_manifest(bad_manifest))
+    bad_manifest = deepcopy(control)
+    bad_manifest["runtime_bindings"] = [
+        OrderedDict(
+            [
+                ("source", "/runtime/source.bin"),
+                ("target", "/tools/python3"),
+                ("kind", "file"),
+                ("manifest", file_root),
+                ("manifest_sha256", serialized_digest(file_root)),
+            ]
+        )
+    ]
+    require_rejected("reserved runtime target", lambda: validate_manifest(bad_manifest))
+    print("fresh manifest wire: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
