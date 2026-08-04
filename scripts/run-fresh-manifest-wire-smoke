@@ -13,6 +13,8 @@ from fresh_manifest import (
     ALLOWED_CACHE_PREFIXES,
     BOOTSTRAP_PATH,
     CONTROLLER_PATH,
+    MAX_ENTRIES,
+    MAX_FILE_BYTES,
     ManifestError,
     TOOL_INVENTORY,
     parse_cache_manifest_bytes,
@@ -258,6 +260,10 @@ def main() -> int:
     bad_cache["entry_count"] = 2
     require_rejected("cache entry count", lambda: validate_cache_manifest(bad_cache))
     bad_cache = deepcopy(cache)
+    bad_cache["root"]["mode"] = "0000"
+    bad_cache["root"]["sha256"] = structural_digest(bad_cache["root"])
+    require_rejected("cache directory owner mode", lambda: validate_cache_manifest(bad_cache))
+    bad_cache = deepcopy(cache)
     bad_registry_entry = bad_cache["root"]["entries"][0]["entries"][0]
     bad_registry_entry["kind"] = "file"
     bad_registry_entry["mode"] = "0644"
@@ -276,6 +282,9 @@ def main() -> int:
     bad_manifest["unknown"] = 1
     require_rejected("unknown manifest field", lambda: validate_manifest(bad_manifest))
     bad_manifest = deepcopy(control)
+    bad_manifest["cargo_cache"]["entry_count"] = MAX_ENTRIES + 1
+    require_rejected("manifest cache entry bound", lambda: validate_manifest(bad_manifest))
+    bad_manifest = deepcopy(control)
     bad_manifest["tools"][0]["name"] = "unknown-tool"
     require_rejected("unknown tool inventory", lambda: validate_manifest(bad_manifest))
     bad_manifest = deepcopy(control)
@@ -291,6 +300,24 @@ def main() -> int:
         )
     ]
     require_rejected("reserved runtime target", lambda: validate_manifest(bad_manifest))
+    large_root = deepcopy(file_root)
+    large_root["size"] = MAX_FILE_BYTES
+    large_bindings = []
+    for ordinal in range(41):
+        large_bindings.append(
+            OrderedDict(
+                [
+                    ("source", f"/runtime/source-{ordinal}"),
+                    ("target", f"/runtime/runtime-{ordinal:06d}"),
+                    ("kind", "file"),
+                    ("manifest", large_root),
+                    ("manifest_sha256", serialized_digest(large_root)),
+                ]
+            )
+        )
+    bad_manifest = deepcopy(control)
+    bad_manifest["runtime_bindings"] = large_bindings
+    require_rejected("runtime aggregate byte bound", lambda: validate_manifest(bad_manifest))
     print("fresh manifest wire: PASS")
     return 0
 

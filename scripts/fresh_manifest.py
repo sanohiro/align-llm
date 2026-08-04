@@ -381,7 +381,7 @@ def _validate_cache_modes(node: Mapping[str, Any]) -> None:
     mode = int(node["mode"], 8)
     staged = node["staged_mode"]
     if node["kind"] == "dir":
-        if mode & 0o7000 or staged != "0700":
+        if mode & 0o7000 or mode & 0o700 != 0o700 or staged != "0700":
             raise ManifestError("cache directory mode mapping is invalid")
     elif mode & 0o7111 or mode & 0o400 == 0 or staged != "0600":
         raise ManifestError("cache file mode mapping is invalid")
@@ -440,7 +440,7 @@ def _validate_runtime_tree_modes(node: Mapping[str, Any]) -> None:
         _validate_runtime_tree_modes(child)
 
 
-def _validate_runtime(value: Any, index: int) -> None:
+def _validate_runtime(value: Any, index: int) -> TreeSummary:
     if not isinstance(value, Mapping):
         raise ManifestError(f"runtime_binding[{index}] is not an object")
     _fields(value, RUNTIME_FIELDS, f"runtime_binding[{index}]")
@@ -449,7 +449,7 @@ def _validate_runtime(value: Any, index: int) -> None:
     kind = _string(value["kind"], f"runtime_binding[{index}].kind")
     if kind not in ("file", "tree"):
         raise ManifestError("runtime binding kind is invalid")
-    validate_digest_tree(value["manifest"], root_kind="file" if kind == "file" else "dir")
+    summary = validate_digest_tree(value["manifest"], root_kind="file" if kind == "file" else "dir")
     _validate_runtime_tree_modes(value["manifest"])
     if _hex64(value["manifest_sha256"], f"runtime_binding[{index}].manifest_sha256") != serialized_digest(
         value["manifest"]
@@ -458,6 +458,7 @@ def _validate_runtime(value: Any, index: int) -> None:
     reserved = ("/align-src", "/workspace", "/tools", "/cargo", "/target")
     if any(target == path or target.startswith(path + "/") for path in reserved):
         raise ManifestError("runtime target overlaps a reserved namespace")
+    return summary
 
 
 def validate_manifest(value: Mapping[str, Any]) -> None:
@@ -514,9 +515,15 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
     if not isinstance(bindings, list) or len(bindings) > MAX_RUNTIME_BINDINGS:
         raise ManifestError("runtime binding inventory is too large")
     targets: list[str] = []
+    runtime_entry_count = 0
+    runtime_total_size = 0
     for index, binding in enumerate(bindings):
-        _validate_runtime(binding, index)
+        summary = _validate_runtime(binding, index)
         targets.append(binding["target"])
+        runtime_entry_count += summary.entry_count
+        runtime_total_size += summary.total_size
+        if runtime_entry_count > MAX_ENTRIES or runtime_total_size > MAX_CACHE_BYTES:
+            raise ManifestError("runtime bindings exceed their aggregate bounds")
     for index, target in enumerate(targets):
         for other in targets[index + 1 :]:
             if target == other or target.startswith(other + "/") or other.startswith(target + "/"):
@@ -531,7 +538,9 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
     if cache_manifest_path == cache_root or cache_manifest_path.startswith(cache_root + "/"):
         raise ManifestError("cargo cache manifest is inside its cache root")
     _hex64(cache["manifest_sha256"], "cargo_cache.manifest_sha256")
-    _uint(cache["entry_count"], "cargo_cache.entry_count")
+    cache_entry_count = _uint(cache["entry_count"], "cargo_cache.entry_count")
+    if cache_entry_count > MAX_ENTRIES:
+        raise ManifestError("cargo_cache.entry_count exceeds its bound")
 
 
 def parse_manifest_bytes(raw: bytes) -> Mapping[str, Any]:
