@@ -169,6 +169,8 @@ def main() -> int:
         "invalid UTF-8",
         lambda: parse_canonical_json(image_bytes[:-1] + b"\xff\n"),
     )
+    deep_json = b'{"x":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}\n"
+    require_rejected("deep JSON nesting", lambda: parse_canonical_json(deep_json))
     require_rejected(
         "non-canonical string escape",
         lambda: parse_canonical_json(
@@ -207,6 +209,40 @@ def main() -> int:
         "padded payload",
         lambda: verify_envelope(
             canonical_json_bytes(padded),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    invalid_base64 = deepcopy(
+        OrderedDict(
+            [
+                ("payloadType", IMAGE_PREDICATE_TYPE),
+                ("payload", "_x"),
+                (
+                    "signatures",
+                    [OrderedDict([("keyid", IMAGE_KEY_ID), ("sig", IMAGE_SIGNATURE)])],
+                ),
+            ]
+        )
+    )
+    require_rejected(
+        "non-canonical base64 bits",
+        lambda: verify_envelope(
+            canonical_json_bytes(invalid_base64),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    invalid_character = deepcopy(invalid_base64)
+    invalid_character["payload"] = "!"
+    require_rejected(
+        "invalid base64 character",
+        lambda: verify_envelope(
+            canonical_json_bytes(invalid_character),
             expected_payload_type=IMAGE_PREDICATE_TYPE,
             expected_key_id=IMAGE_KEY_ID,
             public_key=PUBLIC_KEY,
@@ -252,6 +288,76 @@ def main() -> int:
         "padded signature",
         lambda: verify_envelope(
             canonical_json_bytes(padded_signature),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    unknown_envelope = OrderedDict(
+        [
+            ("payloadType", IMAGE_PREDICATE_TYPE),
+            (
+                "payload",
+                base64.urlsafe_b64encode(image_bytes).rstrip(b"=").decode("ascii"),
+            ),
+            ("signatures", [OrderedDict([("keyid", IMAGE_KEY_ID), ("sig", IMAGE_SIGNATURE)])]),
+            ("unknown", 1),
+        ]
+    )
+    require_rejected(
+        "unknown envelope field",
+        lambda: verify_envelope(
+            canonical_json_bytes(unknown_envelope),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    multiple_signatures = OrderedDict(
+        [
+            ("payloadType", IMAGE_PREDICATE_TYPE),
+            (
+                "payload",
+                base64.urlsafe_b64encode(image_bytes).rstrip(b"=").decode("ascii"),
+            ),
+            (
+                "signatures",
+                [
+                    OrderedDict([("keyid", IMAGE_KEY_ID), ("sig", IMAGE_SIGNATURE)]),
+                    OrderedDict([("keyid", IMAGE_KEY_ID), ("sig", IMAGE_SIGNATURE)]),
+                ],
+            ),
+        ]
+    )
+    require_rejected(
+        "multiple signatures",
+        lambda: verify_envelope(
+            canonical_json_bytes(multiple_signatures),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    short_signature = OrderedDict(
+        [
+            ("payloadType", IMAGE_PREDICATE_TYPE),
+            (
+                "payload",
+                base64.urlsafe_b64encode(image_bytes).rstrip(b"=").decode("ascii"),
+            ),
+            (
+                "signatures",
+                [OrderedDict([("keyid", IMAGE_KEY_ID), ("sig", "AA")])],
+            ),
+        ]
+    )
+    require_rejected(
+        "short signature",
+        lambda: verify_envelope(
+            canonical_json_bytes(short_signature),
             expected_payload_type=IMAGE_PREDICATE_TYPE,
             expected_key_id=IMAGE_KEY_ID,
             public_key=PUBLIC_KEY,

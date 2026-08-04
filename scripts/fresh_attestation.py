@@ -138,11 +138,14 @@ def parse_canonical_json(raw: bytes, *, limit: int = MAX_PREDICATE_BYTES) -> Ord
             parse_constant=_reject_constant,
             parse_float=lambda _: (_ for _ in ()).throw(WireError("floating number")),
         )
+        if not isinstance(value, OrderedDict):
+            raise WireError("JSON root is not an object")
+        canonical = canonical_json_bytes(value)
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
         raise WireError("invalid UTF-8 JSON") from error
-    if not isinstance(value, OrderedDict):
-        raise WireError("JSON root is not an object")
-    if canonical_json_bytes(value) != raw:
+    except RecursionError as error:
+        raise WireError("JSON nesting exceeds its bounded parser depth") from error
+    if canonical != raw:
         raise WireError("JSON is not canonical")
     return value
 
