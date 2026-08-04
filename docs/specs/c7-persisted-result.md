@@ -620,7 +620,7 @@ user-supplied arguments:
 ```text
 persisted-result-smoke: build
   -> resolve the selected compiler at the repository root
-  -> ./scripts/run-persisted-result-smoke "<absolute-real-compiler>" "<absolute-project-root>/main"
+  -> ./scripts/run-persisted-result-smoke "<selected-compiler>" "<absolute-project-root>/main"
 ```
 
 The resolution step follows the existing repository selection order at the repository root:
@@ -631,12 +631,22 @@ selector only; it is never passed to a child whose working directory changes, an
 allowed to rediscover a compiler from the temporary tree. A failed resolution is a harness error
 before any temporary source or product child starts.
 
+When this hosted-compatible target runs inside the Section 9 capable aggregate, that ordinary
+selection is replaced by the controller-owned `/tools/fresh-alignc` launcher. The runner must start
+every child with `close_fds=True, pass_fds=()`; it must not resolve a sibling pathname, `sys.executable`,
+or a host compiler from the temporary root. The mutation cases still pass the staged launcher as the
+explicit compiler argv element, and the launcher opens the authenticated read-only
+`/tools/fresh-descriptor`, `/tools/fresh-guard`, and compiler/archive bundle. The non-fresh hosted
+profile retains the explicit real-path rule above.
+
 For each mutation case the runner creates one `mkdtemp` root and preserves the repository source
 layout below it: `<temporary-root>/src/main.align`, the reachable `src/*.align` modules, and the
 temporary output remain in their corresponding relative locations. It replaces exactly one UTF-8
 byte pattern in `<temporary-root>/src/persisted_result.align` (`else if raw < upper_bound` to
 `else if raw <= upper_bound`), and invokes the compiler with the exact vector
-`<absolute-real-compiler> build <temporary-root>/src/main.align` and `cwd=<temporary-root>`.
+`<selected-compiler> build <temporary-root>/src/main.align` and `cwd=<temporary-root>`; the
+non-fresh profile substitutes the absolute real compiler path, while the Section 9 capable profile
+uses `/tools/fresh-alignc` with the fixed read-only handoff files.
 It then invokes the temporary executable with exactly `--persist-result <input> <result>` and
 `--verify-result <result>`, one operation per child. The normal corpus invokes the already-built
 absolute product path with the same two exact vectors and `cwd=<temporary-root>`.
@@ -768,14 +778,18 @@ The minimum C7 acceptance environment is the repository's pinned Align environme
 - the exact Align revision recorded in `.align-revision`, rebuilt as the sibling release compiler and
   runtime before adoption.
 
-The sibling Align release targets `aarch64-unknown-linux-gnu` on Ubuntu 24.04-arm and
-`aarch64-apple-darwin` on macOS 15 are required C7 acceptance environments, not supplementary
-evidence, because Request 9 makes target-local natural ownership/layout behavior part of its
-contract. The three native environments must each run the C7 focused target against a compiler
-and runtime rebuilt at the exact pinned revision. A newer compiler, host, or generic OpenSSL 3.0
-installation is not a substitute for the named build configurations. The C7 artifact itself
-contains no target or ABI field; the adoption result is bound externally to the tested compiler
-revision and environment.
+The common fresh-compiler topology in Section 9 of `docs/specs/check-gate-topology.md` is only the
+Linux x86_64 platform profile. The sibling Align release targets `aarch64-unknown-linux-gnu` on
+Ubuntu 24.04-arm and `aarch64-apple-darwin` on macOS 15 are required C7 acceptance environments,
+not supplementary evidence, because Request 9 makes target-local natural ownership/layout behavior
+part of its contract. Before either non-x86 environment can enter C7 adoption or provide C7 evidence,
+it needs its own reviewed platform-profile design and implementation, including the compiler/runtime
+construction, namespace or process boundary, toolchain inputs, and exact acceptance commands. The
+x86_64 Section 9 profile is not evidence for either target. Each native environment must run the C7
+focused target against a compiler and runtime rebuilt at the exact pinned revision after its own
+profile passes. A newer compiler, host, or generic OpenSSL 3.0 installation is not a substitute for
+the named build configurations. The C7 artifact itself contains no target or ABI field; the adoption
+result is bound externally to the tested compiler revision, platform profile, and environment.
 
 The target-local nature of Request 9's owned descriptor is Align's contract. C7 does not invent a
 portable binary layout or compare compiler descriptors. Per-unit and whole-program checks must
@@ -789,17 +803,26 @@ The following order prevents a later slice from being consumed prematurely:
 1. **C7-D — this design gate.** Merge this document and the synchronized Request 9 lifecycle
    update after the ledger/prose/matrix consistency pass and one fresh independent adversarial
    design review. No source or Make behavior changes.
-2. **C7-A — Align Request 9 adoption.** After Align Request 9 reaches `ALIGN_MERGED`, rebuild the
-   sibling release compiler/runtime, update `.align-revision`, add the exact owned-record syntax
-   and lifetime adoption fixture, and run the Request 9 named gate plus `make ci`. If that gate
-   fails, C7 implementation remains paused.
-3. **C7-I1 — owned records and pure verifier.** Add `src/persisted_result.align` with the exact
+2. **C7-P — target platform profiles.** Before any C7 evidence is claimed on aarch64 Linux or
+   aarch64 macOS, merge that target's reviewed platform-profile design and implementation, rebuild
+   the sibling compiler/runtime at the pinned revision, and pass the target-local profile gate. The
+   x86_64 Section 9 design and its checks cannot satisfy this slice by substitution.
+3. **C7-A — Align Request 9 adoption.** After Align Request 9 reaches `ALIGN_MERGED`, and after the
+   applicable platform profile has reached its named merged state, rebuild the sibling release
+   compiler/runtime, update `.align-revision`, add the exact owned-record syntax and lifetime
+   adoption fixture, and run the Request 9 named gate plus the Section 9 fresh `make ci` command
+   inside the image-owned supervisor. The fixed image-attested toolchain manifest is selected by
+   the image, while the supervisor-signed run capsule binds the checked-out head and worker digest;
+   caller-supplied manifest, digest, or run-capsule overrides are rejected. `ci` must invoke the
+   fixed bootstrap and must not be replaced by a direct `align-build` or sibling compiler path. If
+   that gate fails, C7 implementation remains paused.
+4. **C7-I1 — owned records and pure verifier.** Add `src/persisted_result.align` with the exact
    record declarations, decode/encode lifetime boundary, digest identity, algorithm, and
    `persist_file`/`verify_file`. Add focused module and per-unit checks. This slice must not add
    property generation or Make topology yet unless the acceptance fixture is already coherent.
-4. **C7-I2 — CLI vertical integration.** Add the two `main` dispatch branches, exact summary output,
+5. **C7-I2 — CLI vertical integration.** Add the two `main` dispatch branches, exact summary output,
    and CLI/error smoke. Keep provider and existing result formats unchanged.
-5. **C7-I3 — algorithm-testing adoption.** Add the independent runner, fixed boundary/malformed/
+6. **C7-I3 — algorithm-testing adoption.** Add the independent runner, fixed boundary/malformed/
    mutation fixtures, deterministic generated corpus, and the `persisted-result-smoke` Make target.
    The post-C7 topology is exact: `HOSTED_CHECK_TARGETS` is
    `gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke
@@ -810,11 +833,14 @@ The following order prevents a later slice from being consumed prematurely:
    final hosted focused target, with the exact Make prerequisite `persisted-result-smoke: build`.
    `hosted-checks` runs the hosted list after filtering
    `gate-topology-check` in one option-cleared `-j1` child Make; `capable-checks` runs that same
-   hosted list followed by the two capable-only targets in one such child; `ci` runs `align-build`
-   and then only `capable-checks` with the pinned release compiler. The topology oracle, aggregate
-   graph, focused target list, and any identity-bound baseline are updated together.
-6. **C7-G — named adoption gate.** Run `make persisted-result-smoke`, `make check`, `make build`,
-   `make hosted-checks`, `make capable-checks`, and the full pinned `make ci`; repeat the focused
+   hosted list followed by the two capable-only targets in one such child; the supervisor-owned
+   `make ci` child invokes the fixed Section 9 bootstrap with the image attestation and per-head run
+   capsule, builds and stages the pinned compiler from the separately validated sibling Align tree,
+   and then runs only `capable-checks` through the fresh descriptor boundary. The topology oracle,
+   aggregate graph, focused target list, and any identity-bound baseline are updated together.
+7. **C7-G — named adoption gate.** Run `make persisted-result-smoke`, `make check`, `make build`,
+   `make hosted-checks`, `make capable-checks`, and the full Section 9 supervisor-attested `make ci`
+   with its image and per-head run identities; repeat the focused
    adoption target on all three required native Align environments; record the final
    head/base/merge-base/integration identity and all results in the pull request and HANDOFF.
 
