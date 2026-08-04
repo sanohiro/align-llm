@@ -222,6 +222,9 @@ def main() -> int:
     align["kind"] = "align-source"
     align["exceptions"]["main"] = None  # type: ignore[index]
     assert validate_source_manifest(align) == SourceSummary(1, 3, 1, 1)
+    bad = deepcopy(align)
+    bad["entries"] = [file_entry(b"main")]  # type: ignore[index]
+    require_rejected("Align main exception entry", lambda: validate_source_manifest(bad))
     align_sha256 = deepcopy(sha256_vector)
     align_sha256["kind"] = "align-source"
     align_sha256["exceptions"]["main"] = None  # type: ignore[index]
@@ -235,6 +238,10 @@ def main() -> int:
     require_rejected(
         "non-canonical source bytes",
         lambda: parse_source_manifest_bytes(canonical_json_bytes(simple)[:-1]),
+    )
+    require_rejected(
+        "oversized JSON integer",
+        lambda: parse_source_manifest_bytes(b'{"schema_version":' + b"1" * 5000 + b"}\n"),
     )
 
     reordered_items = list(simple.items())
@@ -286,8 +293,11 @@ def main() -> int:
     bad["entries"][0]["staged_mode"] = "0555"  # type: ignore[index]
     require_rejected("file staged mode mapping", lambda: validate_source_manifest(bad))
     bad = deepcopy(sha1_vector)
-    bad["entries"][0]["mode"] = "0777"  # type: ignore[index]
+    bad["entries"][0]["mode"] = "0675"  # type: ignore[index]
     require_rejected("directory mode", lambda: validate_source_manifest(bad))
+    valid_group_write = deepcopy(sha1_vector)
+    valid_group_write["entries"][0]["mode"] = "0775"  # type: ignore[index]
+    assert validate_source_manifest(valid_group_write) == SourceSummary(3, 3, 2, 14)
     bad = deepcopy(simple)
     bad["entries"][0]["git_object"] = "3" * 39  # type: ignore[index]
     require_rejected("Git object width", lambda: validate_source_manifest(bad))

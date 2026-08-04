@@ -151,7 +151,7 @@ def _relative_path(value: Any, label: str) -> tuple[bytes, tuple[bytes, ...]]:
 def _root_mode(value: Any, label: str) -> str:
     value = _mode(value, label)
     mode = int(value, 8)
-    if mode & 0o7000 or mode & 0o700 != 0o700 or mode & 0o022:
+    if mode & 0o7000 or mode & 0o700 != 0o700:
         raise SourceManifestError(f"{label} does not provide the required source-root mode")
     return value
 
@@ -278,9 +278,7 @@ def validate_source_manifest(value: Mapping[str, Any]) -> SourceSummary:
             prior_path=prior_path,
             prior_paths=prior_paths,
         )
-        if components[0] == b"target" or (
-            kind == "project-source" and components[0] == b"main"
-        ):
+        if components[0] in (b"target", b"main"):
             raise SourceManifestError("source output exception leaked into entries")
         prior_path = path
         prior_paths[path] = entry["kind"]
