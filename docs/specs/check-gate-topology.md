@@ -1446,12 +1446,15 @@ whose repository head/worker digest does not match the retained checkout is reje
 execution and before private-root creation.
 
 The accepted pre-bootstrap entrypoint is the image-owned `fresh-supervise`, not a repository shell.
-It validates the image envelope before any repository-controlled child, rejects all loader and
-interpreter injection variables (including `LD_PRELOAD`, `LD_LIBRARY_PATH`, `PYTHONPATH`, and
-`PYTHONHOME`), then runs `env -i` with only the fixed image environment, `LC_ALL=C`, the retained
-project-root descriptor, and descriptors 5 and 6. Its only child vector is
-`/usr/bin/make --no-print-directory ci` with `cwd` equal to the retained project root and
-`close_fds=True, pass_fds=(5,6)`. It rejects every other command, option, assignment, and inherited
+It opens the retained project root as descriptor `4` with
+`O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, validates the image envelope on descriptor `6` and the
+run capsule on descriptor `5`, and clears `FD_CLOEXEC` only on descriptors `4`, `5`, and `6` for its
+one child. It rejects all loader and interpreter injection variables (including `LD_PRELOAD`,
+`LD_LIBRARY_PATH`, `PYTHONPATH`, and `PYTHONHOME`), then runs `env -i` with exactly
+`PATH=/usr/bin:/bin`, `LC_ALL=C`, `LANG=C`, `HOME=/nonexistent`, and `TMPDIR=/tmp`; no Make, Git,
+Cargo, compiler, loader, Python, or `ALIGN_REPO` override variable is present. Its only child vector
+is `/usr/bin/make --no-print-directory ci` with `cwd=/proc/self/fd/4` and
+`close_fds=True, pass_fds=(4,5,6)`. It rejects every other command, option, assignment, and inherited
 `MAKEFLAGS` value before dispatch. The supervisor maps a failed image or run-capsule check to exit
 1, empty stdout, and exactly `fresh compiler: ERROR TRUST supervisor\n`; no repository worker or
 private root exists on that path. A direct host invocation of `make ci` without this supervisor is
@@ -1461,7 +1464,10 @@ sole child gate inside the image-owned supervisor.
 The bootstrap verifies descriptor `6` as a sealed memfd with the four required seals, reads and
 validates the image envelope, verifies descriptor `5` as a separately sealed run capsule, and
 cross-checks both signatures and their fixed image/repository tuple before creating any
-repository-controlled child. The `fresh-v2-image-trust-smoke` runs the same image path with a
+repository-controlled child. The worker then re-verifies the sealed run capsule on descriptor `9`
+and compares its `repository_head` and `repository_object_format` with the project descriptors
+before accepting the source manifest; the worker never treats an observed `HEAD` as sufficient.
+The `fresh-v2-image-trust-smoke` runs the same image path with a
 mutable overlay, a replaced supervisor/bootstrap, a replaced manifest, a replayed image envelope,
 a replayed run capsule, and missing descriptors; each case is rejected by the
 supervisor/bootstrap boundary before worker execution and before private-root creation. The trusted
@@ -1472,16 +1478,22 @@ command, network access, or repository-controlled child launch before both attes
 image-owned manifest snapshot are authenticated.
 
 The bootstrap opens the fixed image manifest through retained no-follow descriptors, verifies its
-image-attested digest, and copies its bounded bytes into a sealed `memfd_create` object. It opens the
-repository worker relative to a retained project-root descriptor, hashes the complete bytes against
-the run capsule's `controller_sha256`, and copies those bytes into a second sealed object. It also
-copies the verified run capsule into a third sealed object. All three objects use `MFD_ALLOW_SEALING`
-and require `F_SEAL_WRITE|F_SEAL_GROW|F_SEAL_SHRINK|F_SEAL_SEAL`; failure to obtain any snapshot is
-a `TRUST` error. It clears `FD_CLOEXEC` on worker descriptor 7, image-manifest descriptor 8, and
-run-capsule descriptor 9, then executes the fixed image `/usr/bin/python3` with `-I -B` and
-`/proc/self/fd/7 --image-manifest-fd 8 --run-attestation-fd 9`, passing no repository path as the
-worker source. The bootstrap's Python interpreter, image runtime, manifest path, image attestation,
-and run-capsule signer are image inputs; the worker bytes are a sealed, per-reviewed-head repository
+image-attested digest, and copies its bounded bytes into a sealed `memfd_create` object. It retains
+the supervisor-owned project-root descriptor `4`, opens the repository worker relative to that
+descriptor, hashes the complete bytes against the run capsule's `controller_sha256`, and copies
+those bytes into a second sealed object. It also copies the verified run capsule into a third sealed
+object. All three objects use `MFD_ALLOW_SEALING` and require
+`F_SEAL_WRITE|F_SEAL_GROW|F_SEAL_SHRINK|F_SEAL_SEAL`; failure to obtain any snapshot is a `TRUST`
+error. The fixed fd map is: `4` retained project root, `5` sealed run capsule input, `6` sealed image
+attestation input, `7` sealed worker snapshot, `8` sealed image-manifest snapshot, and `9` sealed
+run-capsule snapshot. The bootstrap clears `FD_CLOEXEC` only on `4`, `7`, `8`, and `9` for the fixed
+image `/usr/bin/python3 -I -B` vector
+`/proc/self/fd/7 --project-root-fd 4 --image-manifest-fd 8 --run-attestation-fd 9`, with
+`close_fds=True, pass_fds=(4,7,8,9)` and a fixed worker environment of
+`PATH=/usr/bin:/bin`, `LC_ALL=C`, `HOME=/nonexistent`, `TMPDIR=/tmp`, `PYTHONHOME=/usr`,
+`PYTHONNOUSERSITE=1`, and `PYTHONDONTWRITEBYTECODE=1`. Descriptors `5` and `6` never reach the
+worker. The bootstrap's Python interpreter, image runtime, manifest path, image attestation, and
+run-capsule signer are image inputs; the worker bytes are a sealed, per-reviewed-head repository
 input. An in-place overwrite of the checked-out worker after hashing therefore cannot change the
 bytes executed by the worker, and a worker edit does not require a fixed image-manifest edit.
 
@@ -1489,7 +1501,7 @@ The final public contract is:
 
 | Surface | Exact contract |
 | --- | --- |
-| `fresh-supervise` | Image-owned pre-bootstrap entrypoint. It accepts only the checked-out project root and the fixed `make ci` child vector, authenticates image and run attestations, scrubs the environment, and passes only descriptors 5 and 6 to the child. |
+| `fresh-supervise` | Image-owned pre-bootstrap entrypoint. It opens the project root as fd 4, authenticates the run/image attestations on fds 5/6, scrubs to the five-variable environment allowlist, and passes only fds 4/5/6 to the fixed `make --no-print-directory ci` child. |
 | `make ci` | The sole complete-gate command, accepted only as the supervisor-owned child. Its `ci` recipe invokes the fixed bootstrap with `--mode ci`; it does not invoke Cargo or a sibling compiler directly. A direct unsupervised invocation is non-evidence and fails before private-root creation. |
 | run capsule | A supervisor-signed `runner-invocation/v1` DSSE envelope on descriptor 5. It binds the current repository head, object format, `scripts/fresh-align-compiler` relative path and SHA-256, image-attestation digest, and image-manifest digest to this invocation. |
 | `fresh-bootstrap --mode build` | Image-supervisor-only diagnostic invocation with both sealed image/run attestation descriptors and fixed repository inputs as `ci`; it builds and authenticates the private compiler bundle, performs cleanup, and never launches `capable-checks` or claims consumer adoption. Its success bytes are exactly `fresh compiler: PASS\n`. |
@@ -1498,21 +1510,34 @@ The final public contract is:
 | `ALIGN_LLM_TOOLCHAIN_MANIFEST` | Rejected before bootstrap dispatch. The fixed trusted runner image selects `/usr/local/share/align-llm/fresh-toolchain.json`; callers cannot select a manifest path. |
 | `ALIGN_LLM_TOOLCHAIN_MANIFEST_SHA256` | Rejected before bootstrap dispatch. The image attestation supplies the exact manifest digest; callers cannot authenticate a different manifest by supplying a different digest. |
 | `ALIGNC` on `ci` | Rejected before bootstrap dispatch. The worker supplies launcher-verified read-only `/tools/fresh-descriptor`, `/tools/fresh-guard`, `/tools/alignc`, and sibling `/tools/libalign_runtime.a` files; caller compiler paths cannot cross the boundary. |
-| caller Make options | The supervisor accepts exactly `make --no-print-directory ci` with no assignments and an empty `MAKEFLAGS`/`GNUMAKEFLAGS`/`MAKEOVERRIDES`. It rejects every other GNU Make 4.3 option or alias, including `-B`, `-r`, `-R`, `--eval`, `--file`, `--debug`, `--trace`, `-C`, `-f`, `-o`, `-W`, `-j`, `-k`, `-i`, `-n`, `-q`, `-s`, `-t`, `-p`, and `-w`, plus every unknown option, assignment, alternate goal, and alternate makefile. The Makefile guard repeats this policy for inherited state; a direct `-n`/`-q` invocation that returns zero is still non-evidence because it did not pass the supervisor's exact argv check. |
+| caller Make options | The supervisor accepts exactly `make --no-print-directory ci` with no assignments and an empty `MAKEFLAGS`/`GNUMAKEFLAGS`/`MAKEOVERRIDES`. Its normalized GNU Make 4.3 rejection matrix covers `-b/-m`, `-B/--always-make`, `-C/--directory=`, `-d/--debug[=]`, `-e/--environment-overrides`, `-E/--eval=`, `-f/--file=/--makefile=`, `-h/--help`, `-i/--ignore-errors`, `-I/--include-dir=`, `-j/--jobs[=]`, `-k/--keep-going`, `-l/--load-average[=]/--max-load[=]`, `-L/--check-symlink-times`, `-n/--just-print/--dry-run/--recon`, `-o/--old-file=/--assume-old=`, `-O[TYPE]/--output-sync[=]`, `-p/--print-data-base`, `-q/--question`, `-r/--no-builtin-rules`, `-R/--no-builtin-variables`, `-s/--silent/--quiet`, `--no-silent`, `-S/--no-keep-going/--stop`, `-t/--touch`, `-v/--version`, `-w/--print-directory`, `--no-print-directory`, `-W/--what-if=/--new-file=/--assume-new=`, `--warn-undefined-variables`, and `--trace`, including separated and attached arguments and every long `--name=value` form. The newer/unsupported `--jobserver-style=` and `--shuffle[=]` spellings are explicit rejection rows even on a newer host. It rejects every unknown option, assignment, alternate goal, and alternate makefile. The Makefile guard repeats this policy for inherited state; a direct `-n`/`-q` invocation that returns zero is still non-evidence because it did not pass the supervisor's exact argv check. |
 | `ALIGN_LLM_WORK_PARENT`, cache, and timeout overrides | N/A. The parent is the fixed `/tmp` directory, the cache is named by the authenticated manifest, and all deadlines are worker constants. |
 | success bytes | `ci`: exit 0, empty stderr, and exactly `fresh compiler and capable checks: PASS\n`; `build`: exactly `fresh compiler: PASS\n`; `self-test`: exactly `fresh compiler self-test: PASS\n`. |
 | failure bytes | Exit 1, empty stdout, one primary `fresh compiler: ERROR <CATEGORY> <PHASE>\n` (or the cleanup line alone when the phase itself succeeded), and optionally one `fresh compiler: ERROR CLEANUP cleanup\n`; no child bytes are forwarded. |
 
-The worker is the sole owner of the private root, every build and aggregate process, compiler and
-descriptor file descriptor, cache copy, and cleanup decision. `make ci` plus any aggregate or focused
-goal is rejected before side effects. Independent concurrent invocations are rejected before root
-creation: the supervisor takes an exclusive descriptor-relative `flock` on a fixed `/tmp` lock, and
-the bootstrap fails with `fresh compiler: ERROR PLATFORM concurrency\n` if the lock is held. A
-second admission also fails closed if any name matching the private-root grammar exists, without
-classifying, reading, or deleting that candidate. The concurrency smoke enumerates two simultaneous
-`ci`, `build`, and `self-test` admissions, proves the first owns at most one root, and proves the
-second has no root or cleanup authority. Concurrent independent processes are therefore explicitly
-rejected rather than unsupported evidence.
+Within the caller-option matrix, `--no-print-directory` is the sole accepted option and only with
+the exact `ci` goal; every other option row is rejected. The newer/unsupported `--jobserver-style=`
+and `--shuffle[=]` rows remain explicit rejections even on a newer host.
+
+The worker is the sole owner of the private root, the admission lock, every build and aggregate
+process, compiler and descriptor file descriptor, cache copy, and cleanup decision. `make ci` plus
+any aggregate or focused goal is rejected before side effects. Independent concurrent invocations are
+rejected before root creation: the worker opens the protected lock parent
+`/run/user/<uid>/align-llm-fresh` component-by-component with no-follow operations, verifies
+`/run` and `/run/user` as the fixed root-owned mode-`0755` ancestors, and verifies
+`/run/user/<uid>` and the lock-parent component for the expected device/inode, effective-uid
+ownership, and mode `0700`; it opens `lock` with `O_NOFOLLOW|O_CLOEXEC` mode `0600`,
+fstats it as a single-link regular file owned by the effective uid with mode `0600`, and takes
+`flock(LOCK_EX|LOCK_NB)` on its local descriptor `10`. The lock parent is outside `/tmp`
+and is a fixed image/profile prerequisite; a missing, replaced, world-writable, or wrong-owner parent
+is a `PLATFORM` failure. A held lock returns `fresh compiler: ERROR PLATFORM concurrency\n`. With
+the lock held, the worker scans `/tmp` only for bounded raw name existence, considering any name with
+the private-root prefix `align-llm-fresh-` a candidate and never inspecting candidate contents: at
+most 65,536 directory entries and one second, with cap-plus-one, read, or deadline failure returning
+`fresh compiler: ERROR FILESYSTEM filesystem\n`; it never reads, classifies, or removes a candidate.
+The concurrency smoke enumerates two simultaneous `ci`, `build`, and `self-test` admissions, proves
+the first owns at most one root, and proves the second has no root or cleanup authority. Concurrent
+independent processes are therefore explicitly rejected rather than unsupported evidence.
 
 There are two source roots and they are never interchangeable. The controller project root is the
 checked-out `align-llm` worktree from which the bootstrap was launched; its private copy is the
@@ -1538,6 +1563,15 @@ return zero. The worker's child Make vector clears `MAKEFLAGS`, `GNUMAKEFLAGS`, 
 supplies `SHELL=/bin/sh`, and contains only the ordered `capable-checks` goal. A marker shell,
 descriptor assignment, alternate makefile, or extra goal must fail before the bootstrap or any
 private root is created.
+
+The matrix includes the GNU Make 4.3 compatibility option `-m` alongside `-b`, every displayed
+short-option alias and long alias (`--makefile`, `--assume-old`, `--assume-new`, `--max-load`,
+`--dry-run`, and `--recon`), `--no-silent`, and `--stop`. It has explicit unsupported/newer rows for
+`--jobserver-style` and `--shuffle`; neither may cross the exact supervisor boundary even when the
+host Make accepts it. It tests each option with its separated argument, attached argument, and
+`--name=value` spelling where the minimum version accepts one. The supervisor regression stores the
+normalized option table and requires one rejection case per row, plus an unknown option, assignment,
+alternate goal, and alternate makefile.
 
 ### 9.2 Authenticated manifest and canonical wire grammar
 
@@ -1586,9 +1620,11 @@ manifest_sha256
 ```
 
 `schema_version` is the unsigned integer `1`; image, provenance, key, supervisor, bootstrap, and
-manifest digests are SHA-256 strings in the form `sha256:<64 lowercase hex>` except the three
-`*_sha256` fields, which are exactly 64 lowercase hex; `image_name` is an immutable OCI reference
-whose digest is separately bound by `image_digest`; the version is ASCII `major.minor.patch`; and
+manifest digests are SHA-256 strings in the form `sha256:<64 lowercase hex>` except the four
+`*_sha256` fields, which are exactly 64 lowercase hex; there are four such fields
+(`verifier_key_sha256`, `supervisor_sha256`, `bootstrap_sha256`, and `manifest_sha256`).
+`image_name` is a non-authoritative OCI registry/name label; it cannot select or authenticate an
+image, and the immutable identity is `image_digest`. The version is ASCII `major.minor.patch`; and
 the three paths are absolute canonical no-symlink paths. The invocation predicate has schema version
 `1` and this exact field order:
 
@@ -2008,7 +2044,7 @@ the following cache placement, proving that the control manifest is outside the 
   "schema_version": 2,
   "controller": {
     "path": "scripts/fresh-align-compiler",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "api": 1
   },
   "bootstrap": {
     "path": "/usr/local/libexec/align-llm/fresh-bootstrap",
@@ -2043,11 +2079,14 @@ rule.
 The controller reads the project root's `.align-revision` as raw bytes and accepts exactly one
 lowercase 40-hex Align commit ID plus one LF. It rejects NUL, tags, uppercase, whitespace variants,
 and extra bytes before asking Git for either repository object. The project root is the checked-out
-`align-llm` worktree from which the bootstrap was launched. Its current `HEAD`, tree ID, index
-digest, and complete non-control raw worktree manifest are captured as the project-source identity;
-unlike the Align pin, the project `HEAD` is an observed input rather than a second externally
-supplied revision. The project root must be clean apart from the reserved root `.git` control entry
-and the two output exceptions below.
+`align-llm` worktree from which the bootstrap was launched. Its current `HEAD`, object format, tree
+ID, index digest, and complete non-control raw worktree manifest are captured as the project-source
+identity. The current `HEAD` and object format must equal the signed run capsule's `repository_head`
+and `repository_object_format` exactly before the project source manifest is accepted; the run capsule
+is therefore an externally bound input, not a record of an untrusted observation. A HEAD replacement,
+object-format change, or mutation between supervisor signing and worker validation is a `SOURCE`
+failure before materialization. The project root must be clean apart from the reserved root `.git`
+control entry and the two output exceptions below.
 
 `ALIGN_REPO` is validated independently as the sibling Align worktree. Make first resolves the
 project-relative input to a lexical absolute component sequence without following a symlink. The
@@ -2061,17 +2100,25 @@ This keeps the local linked-worktree `.git` file support separate from root-path
 Its raw `HEAD` object must
 be a commit whose exact lowercase ID equals the bytes read from the project `.align-revision`; its
 tree ID, index digest, and complete raw worktree manifest are captured as the Align-source identity.
-An absent root `target/` is allowed, and a present root `target/` must be one ordinary directory that
-is never read, hashed, copied, or passed to Cargo. The project root has the same root `target/`
-exception plus the exact root `main` exception: when absent `main` is allowed, and when present it
-must be a single-link regular file with mode `0644` or `0755`. That project `main` is recorded only
-as output metadata and is never read, hashed, copied, or made available to Cargo. No root `main`
-exception exists in `ALIGN_REPO`. Any dirty tracked input, staged index change, ignored or untracked
-entry outside the root `.git`, root `target/`, and project root `main` exceptions rejects. The root
-`.git` entry is reserved Git control metadata: it may be either the ordinary-clone directory or the
-linked-worktree `gitdir` file, is validated only through the retained Git descriptors, and is omitted
-from source entries and source bytes. A nested `.git` entry, a second control directory, or a Git
-control file outside the root entry rejects.
+An absent root `target/` is allowed. A present root `target/` must be one untracked ordinary directory
+whose owner permission bits are exactly read/write/execute, whose group/other write bits are clear,
+and whose set-ID and sticky bits are clear; the worker records only its presence and raw mode in the
+output-exception check, never descends into it, and never reads, hashes, copies, or passes it to Cargo.
+The project root has the same root `target/` exception plus the exact root
+`main` exception: `main` must be absent or untracked; when present it must be a single-link regular
+file with mode `0644` or `0755`. The worker records only its presence, type, link count, and raw mode
+as output metadata and never reads, hashes, copies, or makes it available to Cargo. No root `main`
+exception exists in `ALIGN_REPO`. A tracked `target` or `main`, a second output name outside the
+whole untracked `target/` subtree, or a mode/type/link-count mismatch rejects. Untracked descendants
+of an accepted root `target/` are part of that output exception and are never enumerated. The
+source-manifest `exceptions` object contains the
+fixed `git`, `target`, and `main` labels; the separate exception check binds their absent/present
+state and raw metadata without adding output bytes to `entries`. Any dirty tracked input, staged index
+change, ignored or untracked entry outside the root `.git`, root `target/`, and project root `main`
+exceptions rejects. The root `.git` entry is reserved Git control metadata: it may be either the
+ordinary-clone directory or the linked-worktree `gitdir` file, is validated only through the retained
+Git descriptors, and is omitted from source entries and source bytes. A nested `.git` entry, a second
+control directory, or a Git control file outside the root entry rejects.
 A tracked relative symlink whose complete target chain is non-cyclic and contained by the same
 source root is an ordinary source entry, not an output exception. An untracked, absolute, escaping,
 or cyclic symlink, directory, device, hard link, or output name at any other path rejects.
@@ -2087,12 +2134,14 @@ values and then adds exactly the retained descriptor variables plus `GIT_CONFIG_
 `GIT_ATTR_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_NO_REPLACE_OBJECTS=1`,
 `GIT_GRAFT_FILE=/dev/null`, `GIT_NO_LAZY_FETCH=1`, `GIT_OPTIONAL_LOCKS=0`,
 `XDG_CONFIG_HOME=/dev/null`, and `LC_ALL=C`. No alternate-object variable is accepted. The worker
-compares the Align `HEAD` and tree/index values to the pinned revision before any Cargo operation,
+compares the project `HEAD` and object format to the run capsule before accepting the project source
+manifest, and compares the Align `HEAD` and tree/index values to the pinned revision before any Cargo operation,
 rechecks every retained descriptor after each Git child, and rejects any identity change. No source
 Git child runs after either source materialization starts.
 
 Each source manifest compares its raw Git tree and index with a complete descriptor-relative raw
-filesystem enumeration excluding only the reserved root `.git` control entry. It includes raw path
+filesystem enumeration excluding the reserved root `.git` control entry and the declared output
+exceptions (`target/` for both roots and project `main`). It includes raw path
 bytes, type, raw source mode, deterministic staged
 mode, Git mode, Git object identity, raw bytes, symlink target bytes, its observed commit or pinned
 revision, tree ID, index digest, and output-exception metadata. Ignored, empty,
@@ -2100,7 +2149,24 @@ case-fold-colliding, assume-unchanged, skip-worktree, filter-hidden, special, an
 inputs reject. A permitted symlink is recorded as a relative link and recreated only inside the
 corresponding private tree after its target is proven tracked, non-cyclic, and contained. A
 same-HEAD repository with an additional recursively consumed Rust or build input is rejected for
-either source root, before any helper or compiler starts.
+either source root, before any helper or compiler starts. The
+`fresh-v2-source-manifest-output-exception-golden` regression covers absent and present untracked
+`target/` for both roots, absent and present untracked project `main`, tracked-output rejection,
+output-name rejection outside the exception roots, and exact type/mode/link-count metadata while proving that no exception bytes
+enter `entries` or the source digest.
+
+Its exception-metadata vector is separate from the canonical source bytes and has these exact rows;
+`present=false` uses `type=null`, `mode=null`, and `link_count=null`, while `bytes_consumed` is
+always `false`:
+
+| Source kind | Label | Present | Type | Mode | Link count | Bytes consumed |
+| --- | --- | --- | --- | --- | --- | --- |
+| `project-source` | `git` | always | `directory` or linked-worktree `regular` file | retained-descriptor policy | N/A | false |
+| `project-source` | `target` | absent or present | `null` or `directory` | `null` or owner-rwx/no-other-write/no-special | `null` or observed | false |
+| `project-source` | `main` | absent or present | `null` or `regular` | `null` or `0644`/`0755` | `null` or `1` | false |
+| `align-source` | `git` | always | `directory` or linked-worktree `regular` file | retained-descriptor policy | N/A | false |
+| `align-source` | `target` | absent or present | `null` or `directory` | `null` or owner-rwx/no-other-write/no-special | `null` or observed | false |
+| `align-source` | `main` | always absent | `null` | `null` | `null` | false |
 
 The source-manifest value has schema version `1` and is serialized with the canonical JSON grammar
 from section 9.2, including the final LF. Its exact top-level field order is
@@ -2331,27 +2397,34 @@ self-test serializes both complete vectors and verifies directory tree IDs, blob
 bytes, object-ID widths, and the two independent canonical digests; it does not infer object format
 from an ID's length.
 
-The final accepted enumeration for each root retains every source directory descriptor and opens
-every regular file relative to its retained parent with `O_RDONLY|O_NOFOLLOW|O_CLOEXEC` before any
-source copy starts. It also retains each directory descriptor and each accepted symlink's parent
-descriptor, entry device/inode, link bytes, and target-chain descriptor sequence. Symlink targets are
-read from the retained parent with `readlinkat`; no accepted source pathname is reopened during
-materialization. Before copying and after the final private enumeration, every retained directory
-is `fstat`-checked for the same device/inode/type/mode and enumerated descriptor-relatively; every
-symlink is `fstatat(AT_SYMLINK_NOFOLLOW)`-checked for the same device/inode/type and read again with
-`readlinkat`, with identical target bytes and contained target-chain identities. A directory entry
-replacement, removed/added child, mode change, symlink replacement, target change, or target-chain
-change rejects before Cargo or the aggregate starts.
+The final accepted enumeration for each root retains the root descriptor, the current traversal
+stack (at most the declared depth), and only the parent descriptors needed by the current batch. It
+opens regular files, source directories, and symlink targets relative to retained parents with
+no-follow operations in deterministic active batches of at most
+`fresh_source_fd_window = 2048` total source descriptors. It records every accepted directory and
+symlink identity as bounded metadata, but does not retain one descriptor per directory or entry.
+Symlink targets are read from retained parents with `readlinkat`; no source pathname is used without
+a retained parent and an identity check. After each batch closes its active source descriptors, the
+worker reopens the affected parent chains descriptor-relatively from the retained root, compares
+entry device/inode/type/mode/link bytes to the accepted manifest, and checks every ancestor identity
+before opening the next batch. Before copying and after the final private enumeration, every opened
+directory is `fstat`-checked for the recorded device/inode/type/mode and enumerated
+descriptor-relatively; every symlink is `fstatat(AT_SYMLINK_NOFOLLOW)`-checked for the recorded
+device/inode/type and read again with `readlinkat`, with identical target bytes and contained
+target-chain identities. A directory entry replacement, removed/added child, mode change, symlink
+replacement, target change, or target-chain change rejects before Cargo or the aggregate starts.
 
-For each retained regular-file descriptor, the worker records its accepted device/inode/type/mode/
-size, reads the complete bytes from that descriptor, computes the accepted digest while copying,
-and checks the descriptor again after the read. A changed descriptor identity, mode, size, or
-accepted digest rejects. Each destination is then rehashed and its type/mode/size/digest is compared
-to the corresponding accepted manifest before the next phase. The final private `project-source`
-and `align-source` enumerations must equal their respective manifests. `aggregate-work` is copied
-only from the verified `project-source` tree and is independently rehashed; it never reopens the
-original project or Align path. The private `align-source` is copied separately and is the only source
-bound at `/align-src` for Cargo.
+For each active regular-file descriptor, the worker records its accepted device/inode/type/mode/size,
+reads the complete bytes from that descriptor, computes the accepted digest while copying, and checks
+the descriptor again after the read. A changed descriptor identity, mode, size, or accepted digest
+rejects. Each destination is then rehashed and its type/mode/size/digest is compared to the
+corresponding accepted manifest before the next batch. The final private `project-source` and
+`align-source` enumerations must equal their respective manifests. `aggregate-work` is copied only
+from the verified `project-source` tree and is independently rehashed; it never reopens the original
+project or Align path. The private `align-source` is copied separately and is the only source bound
+at `/align-src` for Cargo. The fd-window regression drives more than 200,000 mixed files and
+directories and asserts that the worker never exceeds the 2,048 active source window, the declared
+depth, or the 4,096 total fd cap.
 
 The fixed source/resource limits are: at most 200,000 non-root entries per source root, depth 64,
 64 MiB of raw path and link bytes, 512 MiB per regular source file, 4 GiB total source bytes, 512
@@ -2395,16 +2468,24 @@ configuration. A future pinned Align revision must update the reviewed contract 
 After manifest, tool, Git, source, and cache validation, the worker opens `/tmp` with
 `O_DIRECTORY|O_NOFOLLOW`, requires mode `01777`, and verifies from `/proc/self/mountinfo` that the
 mount has no `MS_NOEXEC` flag. A `noexec` or ambiguous `/tmp` mount is a `PLATFORM` failure before
-root creation. The supervisor/worker pair opens a fixed lock entry
-`align-llm-fresh.lock` descriptor-relatively with `O_CREAT|O_NOFOLLOW|O_CLOEXEC`, mode `0600`, and
-takes `flock(LOCK_EX|LOCK_NB)` before scanning for any name matching
-`align-llm-fresh-<32 lowercase random hex>`. A held lock or any matching name is a fail-closed
-`FILESYSTEM`/`concurrency` admission failure; the scan only decides whether admission is blocked and
-never reads, classifies, or removes the candidate. With the lock held and no candidate present, it
-creates one `align-llm-fresh-<32 lowercase random hex>` with `mkdirat(O_EXCL,0700)`. It retries
-exactly eight collisions and records parent device/inode, root device/inode, owner token, and root
-descriptor. It never removes `/tmp`, the project root, `ALIGN_REPO`, either source cache, or a path
-whose parent/name identity it cannot prove.
+root creation. Before scanning or creating a root, it opens the protected lock parent
+`/run/user/<uid>/align-llm-fresh` component-by-component with
+`O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, verifies `/run` and `/run/user` as fixed root-owned
+mode-`0755` ancestors and verifies the device/inode, owner uid, and mode `0700` of
+`/run/user/<uid>` and the lock-parent component, opens `lock` with
+`O_CREAT|O_NOFOLLOW|O_CLOEXEC` mode `0600`, fstats it as a single-link regular file owned by the
+effective uid with mode `0600`, and takes
+`flock(LOCK_EX|LOCK_NB)` on descriptor `10`. The parent is outside `/tmp`, is created by the
+image/profile installation, and is never replaceable by a process that lacks the effective uid;
+replacement, unlink/recreate, wrong-owner, or wrong-mode detection is a `PLATFORM` failure. With
+the worker-owned lock held, it scans `/tmp` only for bounded raw name existence, considering any name
+with the private-root prefix `align-llm-fresh-` a candidate and never inspecting candidate contents:
+at most 65,536 directory entries and one second, with cap-plus-one or ambiguous read/deadline failure returning
+`fresh compiler: ERROR FILESYSTEM filesystem\n`. It never reads, classifies, or removes a candidate.
+With no candidate present, it creates one `align-llm-fresh-<32 lowercase random hex>` with
+`mkdirat(O_EXCL,0700)`. It retries exactly eight collisions and records parent device/inode, root
+device/inode, owner token, and root descriptor. It never removes `/tmp`, the project root,
+`ALIGN_REPO`, either source cache, or a path whose parent/name identity it cannot prove.
 
 The private root owns exactly these children, all created with `mkdirat` and no replacement:
 
@@ -2425,9 +2506,10 @@ descriptor/      0700; cleanup journal only
 The admission and execution bounds are fixed worker constants and are enforced rather than merely
 reported: `fresh_root_max_bytes = 68719476736` (64 GiB), `fresh_private_entry_max = 400000`,
 `fresh_git_object_max = 1000000` per retained Git view, `fresh_aggregate_tmp_entry_max = 65536`,
-`fresh_process_max = 512` descendants per child tree, and `fresh_open_fd_max = 4096` descriptors
-per worker/child. Source, manifest, cache, runtime, tool, and generated-output bounds in the other
-subsections are strict sub-bounds of the root limit. The Git object scanner counts loose objects and
+`fresh_process_max = 512` descendants per child tree, `fresh_source_fd_window = 2048` active source
+descriptors per batch, and `fresh_open_fd_max = 4096` descriptors per worker/child. Source, manifest,
+cache, runtime, tool, and generated-output bounds in the other subsections are strict sub-bounds of
+the root limit. The Git object scanner counts loose objects and
 pack-index entries from retained descriptors before private-root creation; every private-tree scan
 counts directory entries with checked overflow and fails at the cap-plus-one. The worker samples
 its own and each child tree's `/proc/<pid>/fd` count, applies `RLIMIT_NOFILE=4096` and
@@ -2866,8 +2948,8 @@ unowned path.
 
 An uncatchable worker death—`SIGKILL`, an OOM kill, kernel termination, or equivalent loss of the
 worker before its cleanup path runs—is an explicit `UNOBSERVED_EXIT` exception: the killed process
-cannot emit status, reap descendants, rescan, or remove its private root. The exclusive `/tmp` lock
-is released by the kernel, but the private-root grammar and the admission scan make the resource
+cannot emit status, reap descendants, rescan, or remove its private root. The worker-owned protected
+lock descriptor is released by the kernel, but the private-root grammar and the admission scan make the resource
 policy fail closed: a later invocation performs only a bounded name-existence scan, returns
 `fresh compiler: ERROR FILESYSTEM filesystem\n`, and creates no second root while any candidate
 exists. It must never classify, read, or delete a candidate based only on a token or worker identity
@@ -2941,8 +3023,8 @@ the public line.
 | Path | Owner | Required invariant | Exact regression |
 | --- | --- | --- | --- |
 | Runner-image trust boundary | image supervisor plus fixed bootstrap | Verify the signed image DSSE predicate against the pinned raw Ed25519 key, bind the immutable OCI digest to supervisor/bootstrap/manifest digests, pass the sealed image attestation at fd 6, and reject before any repository child | `fresh-v2-image-trust-smoke` mutates/replays the image, supervisor, bootstrap, manifest, attestation, and descriptor presence; the supervisor/bootstrap boundary rejects before private-root creation and records the complete image/verifier tuple. |
-| Per-invocation trust boundary | image supervisor plus fixed bootstrap | Generate and verify a distinct signed run-capsule DSSE predicate for the retained repository head and current worker digest; bind its image/manifest digests; pass it at fd 5; reject before worker execution on mismatch | `fresh-v2-run-attestation-smoke` changes the checkout head, worker bytes, object format, run signature, key ID, image-attestation digest, and manifest digest; every mismatch rejects before root creation. |
-| Bootstrap snapshot | fixed bootstrap | Hash the image-attested manifest, run capsule, and repository worker into sealed memfds, fixed image interpreter, reject caller manifest overrides, and start no repository child before all snapshots | `fresh-v2-bootstrap-snapshot-smoke` overwrites/truncates the worker, mutates the fixed manifest, changes the run capsule, injects both manifest environment overrides, and proves descriptors 7/8/9 retain the authenticated bytes. |
+| Per-invocation trust boundary | image supervisor plus fixed bootstrap and worker | Generate and verify a distinct signed run-capsule DSSE predicate for the retained repository head and current worker digest; bind its image/manifest digests; pass it at fd 5, snapshot it at fd 9, and require the worker's observed head/object format to equal the capsule before source acceptance | `fresh-v2-run-attestation-smoke` changes the checkout head, worker bytes, object format, run signature, key ID, image-attestation digest, and manifest digest; every mismatch rejects before root creation and before the source manifest is accepted. |
+| Bootstrap snapshot | fixed bootstrap | Exact fd map: supervisor passes project root/run/image at 4/5/6; bootstrap seals worker/manifest/run snapshots at 7/8/9, clears only 4/7/8/9, uses the fixed Python vector, and starts no repository child before all snapshots | `fresh-v2-bootstrap-snapshot-smoke` overwrites/truncates the worker, mutates the fixed manifest, changes the run capsule, injects both manifest environment overrides, and proves descriptors 4/7/8/9 retain the authenticated bytes while 5/6 never reach the worker. |
 | Attestation wire | image supervisor plus verifier | Exact DSSE envelope/predicate field order, schema/types/digest algorithms, Ed25519 key-id and key-digest policy, PAE lengths, base64url form, and independent golden bytes | `fresh-v2-attestation-wire-golden` checks both predicate and PAE hashes, payload decoding, key selection, signature verification, duplicate/unknown/padded input rejection, and deployment-key separation. |
 | Manifest wire | bootstrap/worker | Schema 2 order, mode strings, ordinary and probe-byte string bounds, duplicate/unknown rejection, fixed image paths, and image-attested digest; controller path/API only, with worker digest owned by the run capsule | `fresh-v2-manifest-format-smoke` covers every scalar, order, mode, UTF-8, NUL, ordinary-string size, empty/binary/exact-cap/cap-plus-one probe streams, fixed-path replacement, and rejected caller-digest case. |
 | Digest tree and cache wire | worker | Exact file/dir schema with raw/staged modes, structural hash, canonical JSON hash, raw-byte order, schema-2 cache manifest, and the five fixed Cargo prefixes | `fresh-v2-digest-tree-golden` checks the runtime `abc` vector; `fresh-v2-cache-manifest-golden` checks the nested `registry/index/a` bytes, allowed-prefix array, all digests, mode mapping, count, total, and malformed or out-of-prefix cache manifests. |
@@ -2951,8 +3033,8 @@ the public line.
 | Tool identity | worker | Canonical no-symlink host path, retained no-follow descriptor, full hash, probe from retained bytes, copied private bytes, exact probe | `fresh-v2-tool-identity-smoke` covers symlink aliases, replacement after open, version, timeout, overflow, unlisted names, retained-descriptor execution, and copied-byte mutation. |
 | Runtime/loader/Python identity | worker plus bwrap | Complete ELF interpreter/DT_NEEDED closure for staged tools and generated `main`, authenticated derived linker/loader/pkg-config paths, actual ordinal staging paths, CPython stdlib and `lib-dynload` trees, executable runtime modes 0555 versus data modes 0444, and no Python bytecode writes or host import | `fresh-v2-runtime-closure-smoke` replaces a library, interpreter, stdlib module, native extension, and product dependency, checks build and aggregate, proves derived paths and final-output closure, proves descriptor paths name the copied ordinal object, and proves no `__pycache__` or host path appears. |
 | Cache placement/copy | worker | External manifest outside root with canonical schema-2 digest, exact five-prefix allowlist, semantically correct non-root count, pre-copy per-file/total bounds, retained source descriptors, directory-aware no-follow copy, raw/staged mode proof, postscan | `fresh-v2-cache-smoke` covers manifest-in-root, malformed wire, the corrected three-node `registry/index/a` golden, every out-of-prefix config/wrapper case, symlink, special, hardlink, rename, 512-MiB file and 20-GiB total limits, raw/staged mode mismatch, digest, and offline cases. |
-| Git/source identity | worker | Separate retained project and `ALIGN_REPO` worktree/Git/common descriptors, exact Align pin HEAD/tree/index/clean-worktree proof, explicit root `.git` control exclusion, both raw manifests and exceptions, raw-to-staged mode mapping, descriptor-relative copies with post-copy proof, fixed tracked Cargo config policy, no helper/config/filter | `fresh-v2-source-identity-smoke` covers ordinary and linked-worktree roots, root `.git` file/directory handling, common-directory replacement, ancestor ABA, sibling pin mismatch/dirty tree, source replacement during copy, replacement refs, hidden inputs, contained symlinks, project `main`, both root `target` exceptions, exact `.cargo/config.toml`, mode normalization, and same-HEAD extra Rust input. |
-| Private staging | worker plus admission lock | 0700 owner-only `project-source`, `align-source`, and baseline Git view; fixed source/tool/runtime/Git byte, entry, depth, inode, object, descriptor, process, root-byte, and overflow bounds; source directory/symlink identity rechecks; pre-created build `/target/tmp`, namespace-owned aggregate tmpfs, same-filesystem overlay upper/work, descriptor-relative cleanup, and one-root global admission | `fresh-v2-root-staging-smoke` covers collisions, executable-bit preservation, every cap and cap-plus-one/overflow case, directory replacement, symlink target replacement, both source copies, baseline Git copy, modes, target seed, aggregate tmpfs/no-follow mount, upper/work ownership, output escape, overlay unmount, and cleanup unlink authority. |
+| Git/source identity | worker | Separate retained project and `ALIGN_REPO` worktree/Git/common descriptors, project `HEAD`/object-format equality with the signed run capsule before source acceptance, exact Align pin HEAD/tree/index/clean-worktree proof, explicit root `.git` control exclusion, both raw manifests and exception metadata, raw-to-staged mode mapping, descriptor-relative copies with post-copy proof, fixed tracked Cargo config policy, no helper/config/filter | `fresh-v2-source-identity-smoke` covers ordinary and linked-worktree roots, root `.git` file/directory handling, common-directory replacement, ancestor ABA, project run-capsule-head mismatch, sibling pin mismatch/dirty tree, source replacement during copy, replacement refs, hidden inputs, contained symlinks, project `main`, both root `target` exceptions, exact `.cargo/config.toml`, mode normalization, and same-HEAD extra Rust input. The separate `fresh-v2-source-manifest-output-exception-golden` covers exception metadata and proves no exception bytes enter `entries`. |
+| Private staging | worker plus admission lock | 0700 owner-only `project-source`, `align-source`, and baseline Git view; fixed source/tool/runtime/Git byte, entry, depth, inode, object, descriptor, process, root-byte, and overflow bounds; bounded source descriptor window with re-opened parent identity checks; pre-created build `/target/tmp`, namespace-owned aggregate tmpfs, same-filesystem overlay upper/work, descriptor-relative cleanup, and one-root global admission | `fresh-v2-root-staging-smoke` covers collisions, executable-bit preservation, every cap and cap-plus-one/overflow case, mixed 200,000-entry source fd-window exhaustion, directory replacement, symlink target replacement, both source copies, baseline Git copy, modes, target seed, aggregate tmpfs/no-follow mount, upper/work ownership, output escape, overlay unmount, and cleanup unlink authority. |
 | Aggregate temporary call sites | scripts and Align loop | Every temporary file, fixture, marker, and negative Git state is below the no-symlink `/target/tmp`; the loop no longer writes `eval/`, and no host temp directory is aggregate-visible | `fresh-v2-temp-root-callsite-smoke` runs loop, coding-task, invalid-baseline, and every `mktemp`/`TemporaryDirectory` caller, attempts a temp-to-workspace symlink, and proves no lower or upper source path changed. |
 | Aggregate publication | worker plus bwrap | Immutable `aggregate-work` lower layer, writable upper/work pair, atomic rename, exact regular `main` mode/link-count/size/ELF/byte identity, generated-output and dependency-graph bounds, and final `/workspace/main` allowlist | `fresh-v2-aggregate-publication-smoke` runs the real compiler publication path, proves `.align-publish-*` is transient, rejects an upper entry outside `main`, mutates a declared product dependency, injects mode/link/size/hash changes after unmount, and checks the post-unmount output closure and scan. |
 | Build namespace | worker plus bwrap | Empty root, authenticated pinned `/align-src` only, no project source or host `ALIGN_REPO`, user/PID/net namespaces, read-only authenticated `/cargo`, tracked Cargo config policy, derived linker/loader/pkg-config paths, compiler closure, and writable `/target` only | `fresh-v2-build-namespace-smoke` uses host-root/cache/HOME/network/project-source/sibling-target markers, attempts a Cargo-cache write, verifies `/align-src/Cargo.toml` and the exact `.cargo/config.toml` digest/key set, checks derived OpenSSL/linker paths and compiler closure, double fork, and runtime loader probes. |
@@ -2960,22 +3042,24 @@ the public line.
 | Direct compiler call | fresh launcher | Execution is only the launcher-verified `/tools/alignc` path with its authenticated descriptor/guard and sibling archive; no flag-controlled, PATH, host, or old fallback | `fresh-v2-direct-interposition-smoke` clears every fresh marker and installs old sibling/PATH marker compilers, replaces the private handoff files and bundle, and requires none to run while a tiny link proves `libalign_runtime.a` is found beside `current_exe()`. |
 | Internal compiler call | Makefile/scripts/Python runners | All consumers use the fresh launcher and fixed read-only handoff paths; every Python boundary uses `close_fds=True, pass_fds=()` and the fresh environment disables bytecode writes; no bare compiler, sibling, mutable path, or fallback | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, handoff-file replacement, workspace `__pycache__` prevention, and absence of worker identity fds. |
 | Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python plus stdlib/extension roots, Bash, `mount-guard`, `/tools`, no-symlink `/target/tmp` only, derived linker/loader paths, `PYTHONDONTWRITEBYTECODE=1`, PATH, and empty descriptor propagation | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools/modules, runs nested validation, attempts a temp-to-workspace symlink and a contained source symlink, creates an importable runner module, and verifies staged identities, temp-root propagation, mount attributes, no `__pycache__`, and no worker identity fd. |
-| Aggregate topology | supervisor/worker/Makefile | Exactly one bwrap aggregate, closed executable inventory including `seq`, supervisor exact argv/env acceptance, complete GNU Make 4.3 option rejection including `-B`/`-r`/`-R`/`--eval`/`--file`/`--debug`/`--trace`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/assignment, supervisor bypass and loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, and empty descriptor propagation. |
-| Process ownership | worker plus cgroup/rlimit boundary | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap, `pids.max=512`, `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and bounded worker fd scans | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, stream overflow, double fork, signal, PID reuse, reader closure, process cap-plus-one, fd cap-plus-one, and missing cgroup delegation. |
+| Aggregate topology | supervisor/worker/Makefile | Exactly one bwrap aggregate, closed executable inventory including `seq`, supervisor exact argv/env/fd-4/5/6 acceptance, complete normalized GNU Make 4.3 option/alias matrix including `-b/-m`, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, newer-option rejection, supervisor bypass and loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation. |
+| Process ownership | worker plus cgroup/rlimit boundary | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap, `pids.max=512`, `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, source active-window accounting, and bounded worker fd scans | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, stream overflow, double fork, signal, PID reuse, reader closure, process cap-plus-one, source-window cap-plus-one, total-fd cap-plus-one, and missing cgroup delegation. |
 | Cleanup success | worker | Reverse descriptor-relative removal, parent/root identity, root absent before PASS | `fresh-v2-cleanup-smoke` proves no private root, handoff file, cache copy, target, marker, or child remains. |
 | Cleanup failure | worker plus admission lock | Never delete replacement/unowned path; exact primary/cleanup precedence; uncatchable death leaves one bounded root, releases only the kernel lock, and makes the next invocation fail closed before root creation | `fresh-v2-cleanup-failure-smoke` injects close, unlink, parent replacement, live child, catchable signal, successful-phase cleanup failures, worker `SIGKILL`, repeated death attempts, and later invocations that must leave the unprovable root untouched and refuse a second root. |
 | Baseline Git identity | worker plus baseline runners | Normal baseline and project Git calls use a worker-copied read-only `/baseline-git` view; negative replacement fixtures use a separate `/target/tmp` private view; explicit `GIT_DIR`/`GIT_COMMON_DIR`/`GIT_WORK_TREE`, copied objects, and fixed hardening variables never resolve the hidden workspace or source common dir | `fresh-v2-baseline-scratch-smoke` runs normal, eval, loop, and invalid-baseline paths, checks linked-worktree object resolution, private-object replacement, hardening-variable preservation, alternate rejection, fixture-variable clearing, and unchanged project source-control state. |
 | Status and error grammar | worker | Exact PASS bytes and `fresh compiler: ERROR <CATEGORY> <PHASE>\n` primary / `fresh compiler: ERROR CLEANUP cleanup\n` cleanup lines, with closed category/phase sets and fixed precedence | `fresh-v2-status-grammar-smoke` asserts every phase's first failure, successful-phase cleanup failure, primary-plus-cleanup failure, empty stdout, and no child bytes. |
 | Baseline identity | baseline owner | Final Makefile source, two samples, oracle, finalization, ancestry, unchanged pin, and explicit read-only descriptor/guard paths through recorder subprocesses | `fresh-v2-baseline-integration-smoke` runs the Section 2.4 chain before capable evidence and asserts recorder Python children use the empty descriptor set and fixed handoff files in fresh mode. |
-| Concurrent independent invocations | supervisor/worker | A descriptor-relative global lock and bounded existence scan reject a second `ci`, `build`, or `self-test` before private-root creation; no process classifies or deletes another root | `fresh-v2-concurrency-smoke` runs every pair of simultaneous modes, checks exact `PLATFORM concurrency`/`FILESYSTEM filesystem` status, proves only one root can exist, and injects cross-root replacement/deletion attempts. |
+| Concurrent independent invocations | worker and image/profile lock parent | The worker owns a descriptor-relative `flock` on `/run/user/<uid>/align-llm-fresh/lock`, validates every protected parent component and `0600` lock identity, then performs a bounded `/tmp` candidate-name scan; a second `ci`, `build`, or `self-test` is rejected before private-root creation and no process classifies or deletes another root | `fresh-v2-concurrency-smoke` runs every pair of simultaneous modes, checks exact `PLATFORM concurrency`/`FILESYSTEM filesystem` status, replaces or weakens each lock-parent component, proves only one root can exist, exercises the 65,536-entry/one-second fail-closed scan, and injects cross-root replacement/deletion attempts. |
 | Platform boundary | topology plan | x86-only claim; executable `/tmp`; authenticated-retained-bwrap namespace/overlay/read-only-tools and `/target/tmp`-only no-symlink self-tests; delegated cgroup limits; non-x86 requires separate profile | `fresh-v2-platform-profile-smoke` rejects unsupported or `noexec` `/tmp`, missing cgroup delegation, replaces the mutable bwrap pathname and tool staging source, proves the read-only bundle survives replacement, checks a contained source symlink remains usable, and prevents C7 non-x86 evidence reuse. |
 
 ### 9.11 Compatibility, verification, and delivery order
 
 The design gate runs only `git diff --check`, the balanced Markdown fence check, the digest-tree,
-source-manifest (including both object formats), and external cache-manifest golden-vector checks,
-the descriptor/guard-vector checks, the image-attestation and Make-option precedence assertions,
-the source-pin and error-grammar assertions, and targeted static consistency checks. Source tests,
+source-manifest (including both object formats and the output-exception golden), and external
+cache-manifest golden-vector checks, the descriptor/guard-vector checks, the image-attestation and
+run-capsule golden checks, the supervisor fd-map and complete Make-option precedence assertions, the
+source-head/object-format and source-fd-window assertions, the protected-lock/concurrency and
+error-grammar assertions, and targeted static consistency checks. Source tests,
 `make check`,
 `make build`, `make ci`, hosted checks, and benchmarks are N/A until executable implementation or an
 executable contract boundary exists.
