@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""Exercise the Section 9 schema-1 source-manifest wire contract."""
+
+from __future__ import annotations
+
+import hashlib
+import sys
+from collections import OrderedDict
+from copy import deepcopy
+
+from fresh_attestation import WireError, canonical_json_bytes
+from fresh_source import (
+    MAX_ENTRIES,
+    MAX_FILE_BYTES,
+    MAX_PATH_BYTES,
+    MAX_RAW_PATH_LINK_BYTES,
+    MAX_TOTAL_SOURCE_BYTES,
+    SourceManifestError,
+    SourceSummary,
+    canonical_source_manifest_bytes,
+    parse_source_manifest_bytes,
+    serialized_source_manifest_digest,
+    validate_source_manifest,
+    validate_source_manifest_bytes,
+)
+
+
+INDEX_BYTES = bytes.fromhex(
+    "44495243000000020000000039d890139ee5356c7ef572216cebcd27aa41f9df"
+)
+INDEX_SHA256 = "79dc0d556c3c637aad3efa1d3a1906e5abea7aa1ffdbb3d3ed9932eec3bf6954"
+ABC_SHA256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+LINK_SHA256 = "fad5c4fc5b83ba1a282f0559f868876c78bb6e293a977c5a083935ccb0bbb34e"
+SYMLINK_SHA256 = "6ebdb617a8104a7756d0cf36578ab01103dc9f07e4dc6feb751296b9c402faf7"
+
+
+def file_entry(
+    path: bytes,
+    *,
+    git_object: str = "3" * 40,
+    size: int = 3,
+    digest: str = ABC_SHA256,
+    mode: str = "0644",
+    staged_mode: str = "0444",
+) -> OrderedDict[str, object]:
+    git_mode = "100755" if mode == "0755" else "100644"
+    return OrderedDict(
+        [
+            ("path_hex", path.hex()),
+            ("kind", "file"),
+            ("mode", mode),
+            ("staged_mode", staged_mode),
+            ("git_mode", git_mode),
+            ("git_object", git_object),
+            ("size", size),
+            ("sha256", digest),
+            ("symlink_target_hex", None),
+        ]
+    )
+
+
+def directory_entry(
+    path: bytes, *, git_object: str = "2" * 40, mode: str = "0755"
+) -> OrderedDict[str, object]:
+    return OrderedDict(
+        [
+            ("path_hex", path.hex()),
+            ("kind", "dir"),
+            ("mode", mode),
+            ("staged_mode", "0700"),
+            ("git_mode", "040000"),
+            ("git_object", git_object),
+            ("size", 0),
+            ("sha256", None),
+            ("symlink_target_hex", None),
+        ]
+    )
+
+
+def symlink_entry(
+    path: bytes,
+    target: bytes,
+    *,
+    git_object: str = "4" * 40,
+    digest: str | None = None,
+) -> OrderedDict[str, object]:
+    return OrderedDict(
+        [
+            ("path_hex", path.hex()),
+            ("kind", "symlink"),
+            ("mode", None),
+            ("staged_mode", None),
+            ("git_mode", "120000"),
+            ("git_object", git_object),
+            ("size", len(target)),
+            ("sha256", digest or hashlib.sha256(target).hexdigest()),
+            ("symlink_target_hex", target.hex()),
+        ]
+    )
+
+
+def source_manifest(
+    entries: list[OrderedDict[str, object]],
+    *,
+    kind: str = "project-source",
+    object_format: str = "sha1",
+    revision: str | None = None,
+    tree_id: str | None = None,
+) -> OrderedDict[str, object]:
+    width = 40 if object_format == "sha1" else 64
+    if revision is None:
+        revision = "0" * width
+    if tree_id is None:
+        tree_id = "1" * width
+    return OrderedDict(
+        [
+            ("schema_version", 1),
+            ("kind", kind),
+            ("revision", revision),
+            ("tree_id", tree_id),
+            ("object_format", object_format),
+            ("index_sha256", INDEX_SHA256),
+            ("root_mode", "0755"),
+            ("root_staged_mode", "0700"),
+            ("entries", entries),
+            (
+                "exceptions",
+                OrderedDict(
+                    [
+                        ("git", "root-git-control"),
+                        ("target", "root-directory-output"),
+                        (
+                            "main",
+                            "root-file-output" if kind == "project-source" else None,
+                        ),
+                    ]
+                ),
+            ),
+        ]
+    )
+
+
+def require_rejected(name: str, callback: object) -> None:
+    try:
+        callback()  # type: ignore[operator]
+    except (SourceManifestError, WireError):
+        return
+    raise AssertionError(f"case {name} was accepted")
+
+
+def assert_golden(
+    value: OrderedDict[str, object], expected: SourceSummary, digest: str
+) -> None:
+    assert validate_source_manifest(value) == expected
+    raw = canonical_source_manifest_bytes(value)
+    assert raw == canonical_json_bytes(value)
+    assert hashlib.sha256(INDEX_BYTES).hexdigest() == INDEX_SHA256
+    assert hashlib.sha256(raw).hexdigest() == digest
+    assert serialized_source_manifest_digest(value) == digest
+    assert parse_source_manifest_bytes(raw) == value
+    assert validate_source_manifest_bytes(raw) == value
+
+
+def object_format_vector(object_format: str) -> OrderedDict[str, object]:
+    width = 40 if object_format == "sha1" else 64
+    return source_manifest(
+        [
+            directory_entry(b"dir", git_object="2" * width),
+            file_entry(b"dir/f", git_object="3" * width),
+            symlink_entry(b"l", b"dir/f", git_object="4" * width, digest=LINK_SHA256),
+        ],
+        object_format=object_format,
+        revision=(
+            "0123456789abcdef0123456789abcdef01234567"
+            if object_format == "sha1"
+            else "0" * width
+        ),
+        tree_id="1" * width,
+    )
+
+
+def main() -> int:
+    simple = source_manifest(
+        [file_entry(b"a", git_object="3" * 40)],
+        revision="0123456789abcdef0123456789abcdef01234567",
+        tree_id="1" * 40,
+    )
+    assert_golden(simple, SourceSummary(1, 3, 1, 1), "f5da8d8bbe02e4a7d32154ebeadd0e73beea213a4c036a08a34b313586007e23")
+
+    contained_symlink = source_manifest(
+        [
+            symlink_entry(
+                b"AGENTS.md",
+                b"CLAUDE.md",
+                git_object="4" * 40,
+                digest=SYMLINK_SHA256,
+            )
+        ],
+        revision="0123456789abcdef0123456789abcdef01234567",
+        tree_id="1" * 40,
+    )
+    assert_golden(
+        contained_symlink,
+        SourceSummary(1, 0, 1, 18),
+        "14902048674d7363379f6427d8b4b305654794827e9481a3d831b244f0dc77ea",
+    )
+
+    sha1_vector = object_format_vector("sha1")
+    assert_golden(
+        sha1_vector,
+        SourceSummary(3, 3, 2, 14),
+        "5dc22d576eb870679a1867a89d0b2a5f71c7465d1a5bd3586443105eec64c437",
+    )
+    sha256_vector = object_format_vector("sha256")
+    assert_golden(
+        sha256_vector,
+        SourceSummary(3, 3, 2, 14),
+        "f071ae8704196869192b8afe934b667046e0713e658ee909812da0781e874872",
+    )
+
+    align = deepcopy(simple)
+    align["kind"] = "align-source"
+    align["exceptions"]["main"] = None  # type: ignore[index]
+    assert validate_source_manifest(align) == SourceSummary(1, 3, 1, 1)
+    align_sha256 = deepcopy(sha256_vector)
+    align_sha256["kind"] = "align-source"
+    align_sha256["exceptions"]["main"] = None  # type: ignore[index]
+    require_rejected("SHA-256 Align source", lambda: validate_source_manifest(align_sha256))
+
+    syntax_only = deepcopy(simple)
+    syntax_only["unknown"] = 1
+    syntax_bytes = canonical_json_bytes(syntax_only)
+    assert parse_source_manifest_bytes(syntax_bytes)["unknown"] == 1
+    require_rejected("unknown source field", lambda: validate_source_manifest(syntax_only))
+    require_rejected(
+        "non-canonical source bytes",
+        lambda: parse_source_manifest_bytes(canonical_json_bytes(simple)[:-1]),
+    )
+
+    reordered_items = list(simple.items())
+    reordered_items[0], reordered_items[1] = reordered_items[1], reordered_items[0]
+    reordered = OrderedDict(reordered_items)
+    require_rejected("source field order", lambda: validate_source_manifest(reordered))
+
+    bad = deepcopy(simple)
+    bad["entries"][0]["path_hex"] = "6A"  # type: ignore[index]
+    require_rejected("uppercase path hex", lambda: validate_source_manifest(bad))
+    bad = deepcopy(simple)
+    bad["entries"][0]["path_hex"] = "7800"  # type: ignore[index]
+    require_rejected("NUL path byte", lambda: validate_source_manifest(bad))
+    bad = deepcopy(simple)
+    bad["entries"][0]["path_hex"] = b"/x".hex()  # type: ignore[index]
+    require_rejected("absolute path", lambda: validate_source_manifest(bad))
+    bad = deepcopy(simple)
+    bad["entries"][0]["path_hex"] = b"x/./y".hex()  # type: ignore[index]
+    require_rejected("dot path component", lambda: validate_source_manifest(bad))
+    bad = deepcopy(simple)
+    bad["entries"][0]["path_hex"] = b".git/config".hex()  # type: ignore[index]
+    require_rejected("nested Git control path", lambda: validate_source_manifest(bad))
+
+    bad = deepcopy(sha1_vector)
+    bad["entries"][0], bad["entries"][1] = bad["entries"][1], bad["entries"][0]  # type: ignore[index]
+    require_rejected("raw path order", lambda: validate_source_manifest(bad))
+    bad = deepcopy(simple)
+    bad["entries"].append(deepcopy(bad["entries"][0]))  # type: ignore[index]
+    require_rejected("duplicate source path", lambda: validate_source_manifest(bad))
+    bad = source_manifest([file_entry(b"dir/f")])
+    require_rejected("missing parent directory", lambda: validate_source_manifest(bad))
+    bad = source_manifest([file_entry(b"dir"), file_entry(b"dir/f")])
+    require_rejected("file ancestor", lambda: validate_source_manifest(bad))
+
+    bad = source_manifest([file_entry(b"target")])
+    require_rejected("target exception entry", lambda: validate_source_manifest(bad))
+    bad = source_manifest([file_entry(b"main")])
+    require_rejected("project main exception entry", lambda: validate_source_manifest(bad))
+    bad = source_manifest([directory_entry(b"main"), file_entry(b"main/a")])
+    require_rejected("project main descendant", lambda: validate_source_manifest(bad))
+
+    bad = deepcopy(contained_symlink)
+    bad["entries"][0]["sha256"] = "0" * 64  # type: ignore[index]
+    require_rejected("symlink digest mismatch", lambda: validate_source_manifest(bad))
+    bad = deepcopy(contained_symlink)
+    bad["entries"][0]["mode"] = "0644"  # type: ignore[index]
+    require_rejected("symlink mode", lambda: validate_source_manifest(bad))
+    bad = deepcopy(simple)
+    bad["entries"][0]["staged_mode"] = "0555"  # type: ignore[index]
+    require_rejected("file staged mode mapping", lambda: validate_source_manifest(bad))
+    bad = deepcopy(sha1_vector)
+    bad["entries"][0]["mode"] = "0777"  # type: ignore[index]
+    require_rejected("directory mode", lambda: validate_source_manifest(bad))
+    bad = deepcopy(simple)
+    bad["entries"][0]["git_object"] = "3" * 39  # type: ignore[index]
+    require_rejected("Git object width", lambda: validate_source_manifest(bad))
+    bad = deepcopy(sha256_vector)
+    bad["revision"] = "0" * 40
+    require_rejected("SHA-256 revision width", lambda: validate_source_manifest(bad))
+
+    bad = deepcopy(simple)
+    bad["entries"][0]["size"] = MAX_FILE_BYTES + 1  # type: ignore[index]
+    require_rejected("regular file bound", lambda: validate_source_manifest(bad))
+    large_entries = [
+        file_entry(f"file-{ordinal:02d}".encode(), size=MAX_FILE_BYTES)
+        for ordinal in range(9)
+    ]
+    require_rejected(
+        "total source byte bound",
+        lambda: validate_source_manifest(source_manifest(large_entries)),
+    )
+    too_many = deepcopy(simple)
+    too_many["entries"] = [deepcopy(simple["entries"][0])] * (MAX_ENTRIES + 1)  # type: ignore[index]
+    require_rejected("source entry count bound", lambda: validate_source_manifest(too_many))
+    deep_path = b"/".join([b"x"] * 65)
+    require_rejected(
+        "source depth bound",
+        lambda: validate_source_manifest(source_manifest([file_entry(deep_path)])),
+    )
+
+    raw_path_entries = [
+        file_entry(
+            f"{ordinal:05d}".encode() + b"x" * (MAX_PATH_BYTES - 5),
+            size=0,
+        )
+        for ordinal in range(MAX_RAW_PATH_LINK_BYTES // MAX_PATH_BYTES + 1)
+    ]
+    require_rejected(
+        "raw path byte bound",
+        lambda: validate_source_manifest(source_manifest(raw_path_entries)),
+    )
+    assert MAX_TOTAL_SOURCE_BYTES == 4 * 1024 * 1024 * 1024
+    print("fresh source manifest wire: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
