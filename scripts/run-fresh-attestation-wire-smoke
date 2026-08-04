@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Exercise the Section 9 DSSE and predicate wire contract."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import sys
+from collections import OrderedDict
+from copy import deepcopy
+
+from fresh_attestation import (
+    IMAGE_KEY_ID,
+    IMAGE_PREDICATE_TYPE,
+    INVOCATION_PREDICATE_TYPE,
+    RUN_KEY_ID,
+    WireError,
+    canonical_json_bytes,
+    dsse_pae,
+    parse_canonical_json,
+    sha256_hex,
+    validate_image_predicate,
+    validate_invocation_predicate,
+    verify_ed25519,
+    verify_envelope,
+)
+
+
+PUBLIC_KEY = bytes.fromhex(
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+)
+IMAGE_SIGNATURE = (
+    "tHJXg9c4HtOMDHpYypQfQ1EU58QcfwWyjz1GxXv6yBQ-4iS9g8Nt_pBNkaezOh3BiTvvOfXgY9gJR2Q8pp24Aw"
+)
+INVOCATION_SIGNATURE = (
+    "qFRoBeZ5m6X01sJvVRwHZ6Jil7J0a_zwERToRsmavMSaYTl7JLEl4Eb4lCz3YaLq6bT9PeSwzgYV7EQXTOAHDQ"
+)
+
+
+def image_predicate() -> OrderedDict[str, object]:
+    return OrderedDict(
+        [
+            ("schema_version", 1),
+            ("image_digest", "sha256:" + "0" * 63 + "1"),
+            ("image_name", "oci://registry.example/align-llm-runner"),
+            ("provenance_digest", "sha256:" + "0" * 63 + "2"),
+            ("verifier_identity", IMAGE_KEY_ID),
+            ("verifier_version", "1.0.0"),
+            ("verifier_key_id", IMAGE_KEY_ID),
+            ("verifier_key_sha256", "0" * 63 + "3"),
+            ("supervisor_path", "/usr/local/libexec/align-llm/fresh-supervise"),
+            ("supervisor_sha256", "0" * 63 + "4"),
+            ("bootstrap_path", "/usr/local/libexec/align-llm/fresh-bootstrap"),
+            ("bootstrap_sha256", "0" * 63 + "5"),
+            ("manifest_path", "/usr/local/share/align-llm/fresh-toolchain.json"),
+            ("manifest_sha256", "0" * 63 + "6"),
+        ]
+    )
+
+
+def invocation_predicate() -> OrderedDict[str, object]:
+    return OrderedDict(
+        [
+            ("schema_version", 1),
+            ("image_attestation_sha256", "0" * 63 + "7"),
+            ("manifest_sha256", "0" * 63 + "6"),
+            ("repository_object_format", "sha1"),
+            ("repository_head", "1" * 40),
+            ("align_repo_relative", "../align"),
+            ("controller_path", "scripts/fresh-align-compiler"),
+            ("controller_sha256", "0" * 63 + "8"),
+            ("supervisor_identity", IMAGE_KEY_ID),
+            ("supervisor_version", "1.0.0"),
+            ("supervisor_key_id", RUN_KEY_ID),
+            ("supervisor_key_sha256", "0" * 63 + "9"),
+        ]
+    )
+
+
+def envelope(payload_type: str, predicate: bytes, key_id: str, signature: str) -> bytes:
+    return canonical_json_bytes(
+        OrderedDict(
+            [
+                ("payloadType", payload_type),
+                (
+                    "payload",
+                    base64.urlsafe_b64encode(predicate).rstrip(b"=").decode("ascii"),
+                ),
+                (
+                    "signatures",
+                    [OrderedDict([("keyid", key_id), ("sig", signature)])],
+                ),
+            ]
+        )
+    )
+
+
+def require_rejected(name: str, callback: object) -> None:
+    try:
+        callback()  # type: ignore[operator]
+    except WireError:
+        return
+    raise AssertionError(f"case {name} was accepted")
+
+
+def main() -> int:
+    image = image_predicate()
+    invocation = invocation_predicate()
+    image_bytes = canonical_json_bytes(image)
+    invocation_bytes = canonical_json_bytes(invocation)
+
+    assert sha256_hex(image_bytes) == (
+        "211475753df48fa9f8e6ae47b37c516be156ebebf6220433a0585cca723bd6d6"
+    )
+    assert sha256_hex(invocation_bytes) == (
+        "d09c3bd18106fad2dbe0beddf5aae360edf88f94bc98eafde5bdb5d04ab1a73d"
+    )
+    assert sha256_hex(dsse_pae(IMAGE_PREDICATE_TYPE, image_bytes)) == (
+        "c130bba24eafa371426e68a8267928d903ea7807764ad3c9d9fe7910b58bb1bd"
+    )
+    assert sha256_hex(dsse_pae(INVOCATION_PREDICATE_TYPE, invocation_bytes)) == (
+        "67d8b36f4d899a991eb5aa6620ff273aaf9b97d24d751537123f9748ae315037"
+    )
+    validate_image_predicate(image)
+    validate_invocation_predicate(invocation)
+
+    image_envelope = envelope(
+        IMAGE_PREDICATE_TYPE,
+        image_bytes,
+        IMAGE_KEY_ID,
+        IMAGE_SIGNATURE,
+    )
+    invocation_envelope = envelope(
+        INVOCATION_PREDICATE_TYPE,
+        invocation_bytes,
+        RUN_KEY_ID,
+        INVOCATION_SIGNATURE,
+    )
+    verified_image = verify_envelope(
+        image_envelope,
+        expected_payload_type=IMAGE_PREDICATE_TYPE,
+        expected_key_id=IMAGE_KEY_ID,
+        public_key=PUBLIC_KEY,
+        predicate_validator=validate_image_predicate,
+    )
+    verified_invocation = verify_envelope(
+        invocation_envelope,
+        expected_payload_type=INVOCATION_PREDICATE_TYPE,
+        expected_key_id=RUN_KEY_ID,
+        public_key=PUBLIC_KEY,
+        predicate_validator=validate_invocation_predicate,
+    )
+    assert verified_image.predicate_bytes == image_bytes
+    assert verified_invocation.predicate_bytes == invocation_bytes
+
+    # RFC 8032 test vector 1 proves the point arithmetic independently of the
+    # repository-specific DSSE fixtures.
+    assert verify_ed25519(
+        PUBLIC_KEY,
+        b"",
+        bytes.fromhex(
+            "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+            "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+        ),
+    )
+
+    require_rejected("missing final LF", lambda: parse_canonical_json(image_bytes[:-1]))
+    require_rejected(
+        "invalid UTF-8",
+        lambda: parse_canonical_json(image_bytes[:-1] + b"\xff\n"),
+    )
+    require_rejected(
+        "non-canonical string escape",
+        lambda: parse_canonical_json(
+            image_bytes.replace(
+                b"oci://registry.example/align-llm-runner",
+                b"oci:\\/\\/registry.example/align-llm-runner",
+            )
+        ),
+    )
+    require_rejected(
+        "duplicate envelope field",
+        lambda: parse_canonical_json(
+            image_envelope.replace(
+                b'"payloadType": "https://align-llm.dev/attestations/runner-image/v1",\n',
+                b'"payloadType": "https://align-llm.dev/attestations/runner-image/v1",\n'
+                b'  "payloadType": "https://align-llm.dev/attestations/runner-image/v1",\n',
+            )
+        ),
+    )
+    padded = deepcopy(
+        OrderedDict(
+            [
+                ("payloadType", IMAGE_PREDICATE_TYPE),
+                (
+                    "payload",
+                    base64.urlsafe_b64encode(image_bytes).decode("ascii") + "=",
+                ),
+                (
+                    "signatures",
+                    [OrderedDict([("keyid", IMAGE_KEY_ID), ("sig", IMAGE_SIGNATURE)])],
+                ),
+            ]
+        )
+    )
+    require_rejected(
+        "padded payload",
+        lambda: verify_envelope(
+            canonical_json_bytes(padded),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    reordered_envelope = OrderedDict(
+        [
+            ("payload", base64.urlsafe_b64encode(image_bytes).rstrip(b"=").decode("ascii")),
+            ("payloadType", IMAGE_PREDICATE_TYPE),
+            (
+                "signatures",
+                [OrderedDict([("keyid", IMAGE_KEY_ID), ("sig", IMAGE_SIGNATURE)])],
+            ),
+        ]
+    )
+    require_rejected(
+        "reordered envelope fields",
+        lambda: verify_envelope(
+            canonical_json_bytes(reordered_envelope),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    padded_signature = deepcopy(
+        OrderedDict(
+            [
+                ("payloadType", IMAGE_PREDICATE_TYPE),
+                (
+                    "payload",
+                    base64.urlsafe_b64encode(image_bytes).rstrip(b"=").decode("ascii"),
+                ),
+                (
+                    "signatures",
+                    [OrderedDict([("keyid", IMAGE_KEY_ID), ("sig", IMAGE_SIGNATURE + "=")])],
+                ),
+            ]
+        )
+    )
+    require_rejected(
+        "padded signature",
+        lambda: verify_envelope(
+            canonical_json_bytes(padded_signature),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    wrong_key = image_envelope.replace(IMAGE_KEY_ID.encode(), b"wrong-key")
+    require_rejected(
+        "wrong key id",
+        lambda: verify_envelope(
+            wrong_key,
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    wrong_signature = image_envelope.replace(b"tHJX", b"uHJX", 1)
+    require_rejected(
+        "wrong signature",
+        lambda: verify_envelope(
+            wrong_signature,
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    unknown_predicate = deepcopy(image)
+    unknown_predicate["unknown"] = 1
+    require_rejected(
+        "unknown predicate field",
+        lambda: verify_envelope(
+            envelope(
+                IMAGE_PREDICATE_TYPE,
+                canonical_json_bytes(unknown_predicate),
+                IMAGE_KEY_ID,
+                IMAGE_SIGNATURE,
+            ),
+            expected_payload_type=IMAGE_PREDICATE_TYPE,
+            expected_key_id=IMAGE_KEY_ID,
+            public_key=PUBLIC_KEY,
+            predicate_validator=validate_image_predicate,
+        ),
+    )
+    bad_head = deepcopy(invocation)
+    bad_head["repository_head"] = "A" * 40
+    require_rejected("uppercase repository head", lambda: validate_invocation_predicate(bad_head))
+    bad_controller = deepcopy(invocation)
+    bad_controller["controller_path"] = "scripts/other"
+    require_rejected("alternate controller", lambda: validate_invocation_predicate(bad_controller))
+    print("fresh attestation wire: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
