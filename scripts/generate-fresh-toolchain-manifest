@@ -23,6 +23,7 @@ from fresh_manifest import (  # noqa: E402
     serialized_digest,
     structural_digest,
     validate_cache_manifest,
+    validate_digest_tree,
     validate_manifest,
 )
 
@@ -145,13 +146,14 @@ def runtime_record(source: Path, target: str) -> OrderedDict[str, object]:
 
 def empty_cache_manifest(cache_root: Path) -> OrderedDict[str, object]:
     tree = digest_tree(cache_root, cache=True)
+    summary = validate_digest_tree(tree, root_kind="dir")
     return OrderedDict(
         [
             ("schema_version", 2),
             ("allowed_prefixes", list(ALLOWED_CACHE_PREFIXES)),
             ("root", tree),
-            ("entry_count", 0),
-            ("total_size", 0),
+            ("entry_count", summary.entry_count),
+            ("total_size", summary.total_size),
         ]
     )
 
@@ -226,7 +228,7 @@ def main() -> int:
                         ("root", str(arguments.cache_root)),
                         ("manifest", str(arguments.cache_manifest)),
                         ("manifest_sha256", sha256_hex(cache_raw)),
-                        ("entry_count", 0),
+                        ("entry_count", cache["entry_count"]),
                     ]
                 ),
             ),

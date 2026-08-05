@@ -21,7 +21,8 @@ request checks, reviews, findings, and attestations.
   writable overlay in a second namespace. Make and evaluation consumers use the fresh launcher,
   namespace-owned temporary root, nested staged tools, and private baseline Git view. The installed
   image now seeds the authenticated Cargo cache at the pinned Align revision, and its profile smoke
-  contains the real no-network aggregate path. Review repair additionally rejects local Git helpers
+  contains the real no-network aggregate path. The cache manifest derives its cardinality and byte
+  totals from that populated seed. Review repair additionally rejects local Git helpers
   before source queries, retains and rechecks Git/common/ref/index/object identity, streams source
   and child output under bounds, kills and reaps the complete cgroup, and makes staging and cleanup
   descriptor-relative so a replacement root is never deleted.
@@ -44,19 +45,20 @@ request checks, reviews, findings, and attestations.
 ## Latest verification
 
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS, batching the
-  attestation/image-control owners, worker unit cases, topology oracle, and the complete Section 9.10
-  focused-case inventory. Worker cases include forged signatures, supervisor replay, Git helper and
-  alternate rejection, packed/linked Git identity, source/common-dir replacement, bounded streams,
-  and replacement-root cleanup authority.
+  attestation/manifest/image-control owners, worker unit cases, topology oracle, and the complete
+  Section 9.10 focused-case inventory. Manifest cases include a populated generated Cargo-cache
+  tree. Worker cases include forged signatures, supervisor replay, Git helper and alternate
+  rejection, packed/linked Git identity, source/common-dir replacement, bounded streams, and
+  replacement-root cleanup authority.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-gate-topology --self-test`: PASS.
 - `ALIGNC=../align/target/release/alignc PYTHONDONTWRITEBYTECODE=1 make hosted-checks`: PASS.
 - `ALIGNC=../align/target/release/alignc PYTHONDONTWRITEBYTECODE=1 make eval-coding`: PASS, including
   invalid, Git-configuration, timeout, namespace, resource, mutation, and descendant cleanup smokes.
 - `git diff --check`: PASS.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
-  unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input and the
-  seeded Cargo cache's raw-mode normalization. The dedicated hosted profile check must supply fresh
-  installed-platform evidence after push.
+  unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
+  normalization, and populated-tree count derivation. The dedicated hosted profile check must supply
+  fresh installed-platform evidence after push.
 
 ## Blockers and decisions
 

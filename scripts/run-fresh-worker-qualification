@@ -101,6 +101,7 @@ def verify_contract_inventory() -> None:
 def main() -> int:
     verify_contract_inventory()
     run(sys.executable, "scripts/run-fresh-attestation-wire-smoke")
+    run(sys.executable, "scripts/run-fresh-manifest-wire-smoke")
     run(sys.executable, "scripts/run-fresh-image-control-smoke")
     run(sys.executable, "scripts/run-fresh-worker-unit-smoke")
     run(sys.executable, "scripts/check-gate-topology", "--self-test")
