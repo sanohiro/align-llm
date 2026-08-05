@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""Build and exercise the installed Ubuntu 24.04 FRESH-IMAGE profile."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPOSITORY / "scripts"))
+
+from fresh_attestation import ed25519_public_key  # noqa: E402
+
+
+PROVENANCE_SCRIPTS = (
+    "build-fresh-image-control",
+    "fresh_attestation.py",
+    "fresh_manifest.py",
+    "generate-fresh-toolchain-manifest",
+    "materialize-fresh-tree",
+)
+TEST_UID = 12345
+
+
+def docker_cgroup_driver(info: bytes) -> str:
+    for line in info.splitlines():
+        name, separator, value = line.strip().partition(b":")
+        if separator and name == b"Cgroup Driver":
+            driver = value.strip().decode("ascii", "strict")
+            if driver in ("cgroupfs", "systemd"):
+                return driver
+            raise RuntimeError(f"unsupported Docker cgroup driver: {driver}")
+    raise RuntimeError("Docker cgroup driver is unavailable")
+
+
+def source_provenance() -> str:
+    paths = list((REPOSITORY / "image" / "fresh").rglob("*"))
+    paths.extend(REPOSITORY / "scripts" / name for name in PROVENANCE_SCRIPTS)
+    hasher = hashlib.sha256(b"align-llm-fresh-image-source-v1\0")
+    for path in sorted(
+        (path for path in paths if path.is_file() and not path.is_symlink()),
+        key=lambda value: os.fsencode(value.relative_to(REPOSITORY).as_posix()),
+    ):
+        relative = path.relative_to(REPOSITORY).as_posix().encode("utf-8")
+        raw = path.read_bytes()
+        mode = path.stat(follow_symlinks=False).st_mode & 0o7777
+        hasher.update(len(relative).to_bytes(4, "big"))
+        hasher.update(relative)
+        hasher.update(f"{mode:04o}".encode("ascii"))
+        hasher.update(len(raw).to_bytes(8, "big"))
+        hasher.update(raw)
+    return "sha256:" + hasher.hexdigest()
+
+
+def run(
+    arguments: list[str],
+    *,
+    check: bool = True,
+    stdout: int | None = subprocess.PIPE,
+    stderr: int | None = subprocess.PIPE,
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        arguments,
+        cwd=REPOSITORY,
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "LC_ALL": "C",
+            "DOCKER_BUILDKIT": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        stdin=subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+        check=check,
+        timeout=1800,
+    )
+
+
+def copy_from_image(image: str, source: str, target: Path) -> None:
+    container = run(["docker", "create", image], check=True).stdout.decode("ascii").strip()
+    try:
+        run(["docker", "cp", f"{container}:{source}", str(target)])
+    finally:
+        run(["docker", "rm", "-f", container], check=False)
+
+
+def populate_volume(image: str, volume: str, source: Path) -> None:
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "/bin/sh",
+            "--mount",
+            f"type=bind,src={source},dst=/input,readonly",
+            "--mount",
+            f"type=volume,src={volume},dst=/output",
+            image,
+            "-eu",
+            "-c",
+            "cp /input/image-attestation.dsse /output/image-attestation.dsse; "
+            "cp /input/run-signing-seed /output/run-signing-seed; "
+            "cp /input/image-digest /output/image-digest; "
+            "cp /input/provenance-digest /output/provenance-digest; "
+            "chmod 0444 /output/image-attestation.dsse /output/image-digest /output/provenance-digest; "
+            f"chown {TEST_UID}:{TEST_UID} /output/run-signing-seed; "
+            "chmod 0400 /output/run-signing-seed",
+        ]
+    )
+
+
+def profile_run(
+    image: str,
+    volume: str,
+    runtime_volume: str,
+    cgroup_driver: str,
+    *,
+    replacements: tuple[tuple[Path, str], ...] = (),
+) -> subprocess.CompletedProcess[bytes]:
+    replacement_arguments: list[str] = []
+    for source, target in replacements:
+        replacement_arguments.extend(
+            ["--mount", f"type=bind,src={source},dst={target},readonly"]
+        )
+    arguments = [
+        "docker",
+        "run",
+        "--rm",
+        "--privileged",
+        "--cgroupns=host",
+        "--network=none",
+    ]
+    command = [image, "--mode", "self-test"]
+    if cgroup_driver == "cgroupfs":
+        arguments.extend(
+            [
+                "--cgroup-parent",
+                f"/align-llm-fresh/{TEST_UID}",
+                "--user",
+                f"{TEST_UID}:{TEST_UID}",
+            ]
+        )
+    elif cgroup_driver == "systemd":
+        # Docker's systemd driver only accepts slice names and cannot express the
+        # profile's fixed cgroup-v2 path. A privileged parent creates and later
+        # removes a leaf there; only its child enters that leaf, drops to the
+        # repository uid, and becomes the native supervisor. Keeping the
+        # delegated parent free of processes lets the worker create limit leaves.
+        launcher = f"""\
+import os
+parent = '/sys/fs/cgroup/align-llm-fresh/{TEST_UID}'
+leaf = parent + '/docker-self-test-' + str(os.getpid())
+os.mkdir(leaf, 0o700)
+child = os.fork()
+if child == 0:
+    try:
+        with open(leaf + '/cgroup.procs', 'w', encoding='ascii') as target:
+            target.write('0\\n')
+        os.setgroups([])
+        os.setgid({TEST_UID})
+        os.setuid({TEST_UID})
+        os.execve('/usr/local/libexec/align-llm/fresh-supervise', ['fresh-supervise', '--mode', 'self-test'], {{}})
+    except BaseException:
+        os._exit(127)
+try:
+    _, status = os.waitpid(child, 0)
+finally:
+    os.rmdir(leaf)
+if os.WIFEXITED(status):
+    os._exit(os.WEXITSTATUS(status))
+os._exit(128 + os.WTERMSIG(status))
+"""
+        arguments.extend(
+            [
+                "--user",
+                "0:0",
+                "--entrypoint",
+                "/usr/bin/python3.12",
+            ]
+        )
+        command = [image, "-I", "-c", launcher]
+    else:
+        raise RuntimeError(f"unsupported Docker cgroup driver: {cgroup_driver}")
+    arguments.extend(
+        [
+            "--mount",
+            f"type=volume,src={volume},dst=/run/align-llm-fresh,readonly",
+            "--mount",
+            f"type=volume,src={runtime_volume},dst=/run/user",
+            *replacement_arguments,
+            *command,
+        ]
+    )
+    return run(arguments, check=False)
+
+
+def require_rejection(
+    result: subprocess.CompletedProcess[bytes], name: str, expected: bytes
+) -> None:
+    if (
+        result.returncode != 1
+        or result.stdout
+        or result.stderr != expected
+    ):
+        raise RuntimeError(
+            f"{name} was not rejected canonically: returncode={result.returncode}, "
+            f"stdout={result.stdout!r}, stderr={result.stderr!r}"
+        )
+
+
+def require_trust_rejection(result: subprocess.CompletedProcess[bytes], name: str) -> None:
+    require_rejection(result, name, b"fresh compiler: ERROR TRUST supervisor\n")
+
+
+def deployment_copy(source: Path, target: Path) -> None:
+    target.mkdir()
+    for name in (
+        "image-attestation.dsse",
+        "run-signing-seed",
+        "image-digest",
+        "provenance-digest",
+    ):
+        shutil.copyfile(source / name, target / name)
+
+
+def main() -> int:
+    availability = run(["docker", "info"], check=False)
+    if availability.returncode != 0:
+        print("fresh image profile smoke: SKIP (Docker daemon unavailable)")
+        return 77
+    cgroup_driver = docker_cgroup_driver(availability.stdout)
+
+    unique = secrets.token_hex(8)
+    image = f"align-llm-fresh-test:{unique}"
+    volume = f"align-llm-fresh-secrets-{unique}"
+    runtime_volume = f"align-llm-fresh-runtime-{unique}"
+    cgroup_ready = False
+    with tempfile.TemporaryDirectory(prefix="fresh-image-profile-") as temporary_name:
+        temporary = Path(temporary_name)
+        image_seed = temporary / "image-signing-seed"
+        run_seed = temporary / "run-signing-seed"
+        image_seed.write_bytes(os.urandom(32))
+        run_seed.write_bytes(os.urandom(32))
+        image_seed.chmod(0o400)
+        run_seed.chmod(0o400)
+        image_public = ed25519_public_key(image_seed.read_bytes()).hex()
+        run_public = ed25519_public_key(run_seed.read_bytes()).hex()
+        try:
+            build = run(
+                [
+                    "docker",
+                    "build",
+                    "--pull",
+                    "--build-arg",
+                    f"IMAGE_PUBLIC_KEY_HEX={image_public}",
+                    "--build-arg",
+                    f"RUN_PUBLIC_KEY_HEX={run_public}",
+                    "-f",
+                    "image/fresh/Dockerfile",
+                    "-t",
+                    image,
+                    ".",
+                ],
+                check=False,
+                stdout=None,
+                stderr=None,
+            )
+            if build.returncode != 0:
+                raise RuntimeError("FRESH-IMAGE build failed")
+            image_digest = run(
+                ["docker", "image", "inspect", "--format", "{{.Id}}", image]
+            ).stdout.decode("ascii").strip()
+            if not image_digest.startswith("sha256:"):
+                raise RuntimeError("Docker image identity is not sha256")
+            provenance = source_provenance()
+            supervisor = temporary / "fresh-supervise"
+            bootstrap = temporary / "fresh-bootstrap"
+            manifest = temporary / "fresh-toolchain.json"
+            copy_from_image(image, "/usr/local/libexec/align-llm/fresh-supervise", supervisor)
+            copy_from_image(image, "/usr/local/libexec/align-llm/fresh-bootstrap", bootstrap)
+            copy_from_image(image, "/usr/local/share/align-llm/fresh-toolchain.json", manifest)
+            attestation = temporary / "image-attestation.dsse"
+            run(
+                [
+                    sys.executable,
+                    "scripts/fresh-image-attest",
+                    "--image-digest",
+                    image_digest,
+                    "--provenance-digest",
+                    provenance,
+                    "--supervisor",
+                    str(supervisor),
+                    "--bootstrap",
+                    str(bootstrap),
+                    "--manifest",
+                    str(manifest),
+                    "--image-signing-seed",
+                    str(image_seed),
+                    "--output",
+                    str(attestation),
+                ]
+            )
+            (temporary / "image-digest").write_text(image_digest + "\n", encoding="ascii")
+            (temporary / "provenance-digest").write_text(provenance + "\n", encoding="ascii")
+            (temporary / "image-digest").chmod(0o444)
+            (temporary / "provenance-digest").chmod(0o444)
+            run(["docker", "volume", "create", volume])
+            run(["docker", "volume", "create", runtime_volume])
+            populate_volume(image, volume, temporary)
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--privileged",
+                    "--cgroupns=host",
+                    "--entrypoint",
+                    "/usr/local/libexec/align-llm/fresh-profile",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "setup",
+                    str(TEST_UID),
+                ]
+            )
+            cgroup_ready = True
+            duplicate_setup = run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--privileged",
+                    "--cgroupns=host",
+                    "--entrypoint",
+                    "/usr/local/libexec/align-llm/fresh-profile",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "setup",
+                    str(TEST_UID),
+                ],
+                check=False,
+            )
+            if duplicate_setup.returncode == 0:
+                raise RuntimeError("duplicate profile setup was accepted")
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--entrypoint",
+                    "/bin/sh",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "-eu",
+                    "-c",
+                    f"touch /run/user/{TEST_UID}/align-llm-fresh/roots/orphan",
+                ]
+            )
+            refused_cleanup = run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--privileged",
+                    "--cgroupns=host",
+                    "--entrypoint",
+                    "/usr/local/libexec/align-llm/fresh-profile",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "cleanup",
+                    str(TEST_UID),
+                ],
+                check=False,
+            )
+            if refused_cleanup.returncode == 0:
+                raise RuntimeError("nonempty profile cleanup was accepted")
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--entrypoint",
+                    "/bin/sh",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "-eu",
+                    "-c",
+                    f"test -f /run/user/{TEST_UID}/align-llm-fresh/lock; "
+                    f"test -f /run/user/{TEST_UID}/align-llm-fresh/roots/orphan; "
+                    f"rm /run/user/{TEST_UID}/align-llm-fresh/roots/orphan",
+                ]
+            )
+            result = profile_run(image, volume, runtime_volume, cgroup_driver)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    "profile self-test failed:\n"
+                    + result.stdout.decode("utf-8", "replace")
+                    + result.stderr.decode("utf-8", "replace")
+                )
+            if result.stdout != b"fresh compiler self-test: PASS\n" or result.stderr:
+                raise RuntimeError("profile self-test output is not canonical")
+
+            mutations = []
+            corrupt = temporary / "corrupt-attestation"
+            deployment_copy(temporary, corrupt)
+            raw = bytearray((corrupt / "image-attestation.dsse").read_bytes())
+            raw[len(raw) // 2] ^= 1
+            (corrupt / "image-attestation.dsse").write_bytes(raw)
+            mutations.append(("corrupt attestation", corrupt))
+
+            wrong_digest = temporary / "wrong-image-digest"
+            deployment_copy(temporary, wrong_digest)
+            (wrong_digest / "image-digest").write_text(
+                "sha256:" + "0" * 64 + "\n", encoding="ascii"
+            )
+            mutations.append(("image digest mismatch", wrong_digest))
+
+            wrong_run_key = temporary / "wrong-run-key"
+            deployment_copy(temporary, wrong_run_key)
+            (wrong_run_key / "run-signing-seed").write_bytes(b"\x00" * 32)
+            mutations.append(("run signing key mismatch", wrong_run_key))
+
+            for index, (name, source) in enumerate(mutations):
+                mutated_volume = f"{volume}-mutation-{index}"
+                run(["docker", "volume", "create", mutated_volume])
+                try:
+                    populate_volume(image, mutated_volume, source)
+                    require_trust_rejection(
+                        profile_run(image, mutated_volume, runtime_volume, cgroup_driver), name
+                    )
+                finally:
+                    run(["docker", "volume", "rm", "-f", mutated_volume], check=False)
+
+            missing_volume = volume + "-missing"
+            run(["docker", "volume", "create", missing_volume])
+            try:
+                require_trust_rejection(
+                    profile_run(image, missing_volume, runtime_volume, cgroup_driver),
+                    "missing image attestation",
+                )
+            finally:
+                run(["docker", "volume", "rm", "-f", missing_volume], check=False)
+
+            replaced_bootstrap = temporary / "replaced-bootstrap"
+            replaced_bootstrap.write_bytes(bootstrap.read_bytes() + b"\x00")
+            replaced_bootstrap.chmod(0o755)
+            replaced_manifest = temporary / "replaced-manifest"
+            replaced_manifest.write_bytes(manifest.read_bytes() + b" ")
+            replaced_manifest.chmod(0o444)
+            for name, source, target in (
+                (
+                    "replaced bootstrap",
+                    replaced_bootstrap,
+                    "/usr/local/libexec/align-llm/fresh-bootstrap",
+                ),
+                (
+                    "replaced manifest",
+                    replaced_manifest,
+                    "/usr/local/share/align-llm/fresh-toolchain.json",
+                ),
+            ):
+                require_trust_rejection(
+                    profile_run(
+                        image,
+                        volume,
+                        runtime_volume,
+                        cgroup_driver,
+                        replacements=((source, target),),
+                    ),
+                    name,
+                )
+            runtime_replacement = temporary / "runtime-replacement"
+            runtime_replacement.write_bytes(b"not the installed runtime\n")
+            runtime_replacement.chmod(0o444)
+            tool_replacement = temporary / "tool-replacement"
+            tool_replacement.write_bytes(bootstrap.read_bytes())
+            tool_replacement.chmod(0o755)
+            for name, source, target in (
+                (
+                    "replaced runtime backend",
+                    runtime_replacement,
+                    "/runtime/system/ld-linux-x86-64.so.2",
+                ),
+                (
+                    "replaced retained tool",
+                    tool_replacement,
+                    "/opt/align-llm/tool-bin/bwrap",
+                ),
+            ):
+                require_rejection(
+                    profile_run(
+                        image,
+                        volume,
+                        runtime_volume,
+                        cgroup_driver,
+                        replacements=((source, target),),
+                    ),
+                    name,
+                    b"fresh compiler: ERROR TOOL tools\n",
+                )
+        finally:
+            if cgroup_ready:
+                run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--privileged",
+                        "--cgroupns=host",
+                        "--entrypoint",
+                        "/usr/local/libexec/align-llm/fresh-profile",
+                        "--mount",
+                        f"type=volume,src={runtime_volume},dst=/run/user",
+                        image,
+                        "cleanup",
+                        str(TEST_UID),
+                    ],
+                    check=False,
+                )
+            run(["docker", "volume", "rm", "-f", volume], check=False)
+            run(["docker", "volume", "rm", "-f", runtime_volume], check=False)
+            run(["docker", "image", "rm", "-f", image], check=False)
+    print("fresh image profile smoke: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

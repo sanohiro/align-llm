@@ -1,0 +1,58 @@
+#!/usr/bin/python3
+"""Image-owned synthetic worker used only by FRESH-IMAGE self-test."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import os
+
+
+REQUIRED_SEALS = (
+    fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--mode", choices=("self-test",), required=True)
+    parser.add_argument("--project-root-fd", type=int, required=True)
+    parser.add_argument("--image-manifest-fd", type=int, required=True)
+    parser.add_argument("--run-attestation-fd", type=int, required=True)
+    arguments = parser.parse_args()
+    assert arguments.project_root_fd == 4
+    assert arguments.image_manifest_fd == 8
+    assert arguments.run_attestation_fd == 9
+    assert fcntl.fcntl(8, fcntl.F_GET_SEALS) == REQUIRED_SEALS
+    assert fcntl.fcntl(9, fcntl.F_GET_SEALS) == REQUIRED_SEALS
+    for closed in (5, 6, 10, 11):
+        try:
+            os.fstat(closed)
+        except OSError:
+            continue
+        raise AssertionError(f"descriptor {closed} reached the worker")
+    open_descriptors = set()
+    for name in os.listdir("/proc/self/fd"):
+        descriptor = int(name)
+        try:
+            os.fstat(descriptor)
+        except OSError:
+            continue
+        open_descriptors.add(descriptor)
+    assert open_descriptors == {0, 1, 2, 4, 7, 8, 9}
+    expected_environment = {
+        "PATH": "/usr/bin:/bin",
+        "LC_ALL": "C",
+        "HOME": "/nonexistent",
+        "TMPDIR": "/tmp",
+        "PYTHONHOME": "/usr",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    assert dict(os.environ) == expected_environment
+    os.write(1, b"fresh compiler self-test: PASS\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

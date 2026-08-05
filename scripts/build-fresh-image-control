@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Build deterministic FRESH-IMAGE supervisor and bootstrap ELF launchers."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import stat
+import subprocess
+import tempfile
+import zipfile
+from pathlib import Path
+
+
+FIXED_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def zip_entry(name: str, data: bytes, *, executable: bool = False) -> tuple[zipfile.ZipInfo, bytes]:
+    info = zipfile.ZipInfo(name, FIXED_TIME)
+    info.compress_type = zipfile.ZIP_STORED
+    info.create_system = 3
+    mode = 0o755 if executable else 0o644
+    info.external_attr = (stat.S_IFREG | mode) << 16
+    return info, data
+
+
+def build_bundle(output: Path, *, main: Path, modules: list[tuple[str, Path]]) -> None:
+    with zipfile.ZipFile(output, "w", allowZip64=False) as archive:
+        entries = [("__main__.py", main, True)] + [
+            (name, path, False) for name, path in modules
+        ]
+        for name, path, executable in sorted(entries, key=lambda item: item[0].encode("utf-8")):
+            info, raw = zip_entry(name, path.read_bytes(), executable=executable)
+            archive.writestr(info, raw)
+
+
+def write_header(path: Path, *, symbol: str, raw: bytes) -> None:
+    lines = [f"static const unsigned char {symbol}[] = {{"]
+    for offset in range(0, len(raw), 16):
+        part = raw[offset : offset + 16]
+        lines.append("    " + ", ".join(f"0x{byte:02x}" for byte in part) + ",")
+    lines.append("};")
+    lines.append(f"static const size_t {symbol}_len = sizeof({symbol});")
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="ascii", newline="\n")
+
+
+def compile_launcher(
+    *, compiler: str, source: Path, include_dir: Path, output: Path, static: bool = False
+) -> None:
+    environment = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LC_ALL": "C",
+        "SOURCE_DATE_EPOCH": "0",
+    }
+    position_independent = ["-static-pie"] if static else ["-fPIE", "-pie"]
+    subprocess.run(
+        [
+            compiler,
+            "-std=c11",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            *position_independent,
+            "-Wl,-z,relro,-z,now",
+            "-Wl,--build-id=none",
+            "-I",
+            str(include_dir),
+            "-o",
+            str(output),
+            str(source),
+        ],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        check=True,
+    )
+    output.chmod(0o755)
+    if output.read_bytes()[:4] != b"\x7fELF":
+        raise RuntimeError(f"launcher is not ELF: {output}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--cc", default=os.environ.get("CC", "clang"))
+    parser.add_argument("--keep-bundles", action="store_true")
+    arguments = parser.parse_args()
+
+    repository = Path(__file__).resolve().parent.parent
+    control = repository / "image" / "fresh" / "control"
+    modules = [
+        ("fresh_attestation.py", repository / "scripts" / "fresh_attestation.py"),
+        ("fresh_manifest.py", repository / "scripts" / "fresh_manifest.py"),
+        ("fresh_image_control.py", control / "fresh_image_control.py"),
+    ]
+    arguments.output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fresh-image-control-") as temporary:
+        build = Path(temporary)
+        supervisor_bundle = build / "supervisor.pyz"
+        bootstrap_bundle = build / "bootstrap.pyz"
+        build_bundle(
+            supervisor_bundle,
+            main=control / "supervisor_main.py",
+            modules=modules,
+        )
+        build_bundle(
+            bootstrap_bundle,
+            main=control / "bootstrap_main.py",
+            modules=modules,
+        )
+        write_header(
+            build / "supervisor_payload.inc",
+            symbol="supervisor_payload",
+            raw=supervisor_bundle.read_bytes(),
+        )
+        write_header(
+            build / "bootstrap_payload.inc",
+            symbol="bootstrap_payload",
+            raw=bootstrap_bundle.read_bytes(),
+        )
+        compile_launcher(
+            compiler=arguments.cc,
+            source=repository / "image" / "fresh" / "fresh-supervise.c",
+            include_dir=build,
+            output=arguments.output_dir / "fresh-supervise",
+            static=True,
+        )
+        compile_launcher(
+            compiler=arguments.cc,
+            source=repository / "image" / "fresh" / "fresh-bootstrap.c",
+            include_dir=build,
+            output=arguments.output_dir / "fresh-bootstrap",
+        )
+        if arguments.keep_bundles:
+            (arguments.output_dir / "fresh-supervise.pyz").write_bytes(
+                supervisor_bundle.read_bytes()
+            )
+            (arguments.output_dir / "fresh-bootstrap.pyz").write_bytes(
+                bootstrap_bundle.read_bytes()
+            )
+
+    for name in ("fresh-supervise", "fresh-bootstrap"):
+        raw = (arguments.output_dir / name).read_bytes()
+        print(f"{hashlib.sha256(raw).hexdigest()}  {name}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
