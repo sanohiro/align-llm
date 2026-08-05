@@ -31,7 +31,9 @@ request checks, reviews, findings, and attestations.
   remain valid if Git closes inherited nonstandard descriptors, and normalizes Git tree records to
   raw-path byte order before manifest construction. Runtime-tree validation accepts stable
   distribution hardlinks under full before/after identity and byte-digest checks, while Cargo-cache
-  regular files retain their separate single-link requirement.
+  regular files retain their separate single-link requirement. Private build/aggregate paths use
+  worker-owned `/proc/<worker-pid>/fd/...` names so descriptor-free children can resolve them, and
+  cleanup distinguishes stable root identity from normal owned-directory metadata changes.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -77,6 +79,9 @@ request checks, reviews, findings, and attestations.
   admission then exposed a policy leak in the next phase: the cache single-link rule was also being
   applied to installed runtime trees containing legitimate distribution hardlinks. Runtime reads
   now preserve and compare link count without requiring one; cache reads still reject hardlinks.
+  Private staging then exposed the same child-owned procfs-path assumption for bwrap and an
+  over-strict cleanup comparison that treated normal directory timestamp changes as replacement;
+  both now use the retained worker identity contract.
   The dedicated hosted profile check must supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions

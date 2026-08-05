@@ -1941,7 +1941,7 @@ def admit_root() -> Admission:
             root_fd,
             root_identity,
             root_name,
-            Path(f"/proc/self/fd/{root_fd}"),
+            Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
         )
         success = True
         return result
@@ -2948,7 +2948,7 @@ def require_parent_entry(admission: Admission) -> None:
     except OSError as error:
         raise CleanupError("private root parent entry is missing") from error
     try:
-        if snapshot_fd(current) != admission.root_identity:
+        if not same_owned_directory(current, admission.root_identity):
             raise CleanupError("private root parent entry was replaced")
     finally:
         os.close(current)

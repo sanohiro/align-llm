@@ -264,6 +264,33 @@ def run_attestation_cases(module) -> None:
             raise AssertionError(f"invalid invocation tuple accepted: {field}")
 
 
+def cleanup_success_case(module, temporary: Path) -> None:
+    roots = temporary / "success-roots"
+    roots.mkdir(mode=0o700)
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    roots_identity = module.snapshot_fd(roots_fd)
+    root_name = module.ROOT_PREFIX + "success"
+    admitted = roots / root_name
+    admitted.mkdir(mode=0o700)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_identity = module.snapshot_fd(root_fd)
+    (admitted / "owned").write_bytes(b"owned")
+    lock = temporary / "success-lock"
+    lock.write_bytes(b"")
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        roots_identity,
+        root_fd,
+        root_identity,
+        root_name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    module.cleanup(admission)
+    require(not admitted.exists(), "owned private root remained after cleanup")
+
+
 def cleanup_replacement_case(module, temporary: Path) -> None:
     roots = temporary / "roots"
     roots.mkdir(mode=0o700)
@@ -283,7 +310,7 @@ def cleanup_replacement_case(module, temporary: Path) -> None:
         root_fd,
         module.snapshot_fd(root_fd),
         root_name,
-        Path(f"/proc/self/fd/{root_fd}"),
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
     )
     moved = roots / "moved-admitted-root"
     admitted.rename(moved)
@@ -535,6 +562,7 @@ def main() -> int:
         digest_golden(module, temporary)
         cache_cases(module, temporary)
         source_identity_cases(module, temporary)
+        cleanup_success_case(module, temporary)
         cleanup_replacement_case(module, temporary)
     public_error_cases(module)
     print("fresh worker unit smoke: PASS")
