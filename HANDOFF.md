@@ -59,8 +59,10 @@ request checks, reviews, findings, and attestations.
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
   normalization, populated-tree count derivation, and the installed job's incorrect assumption that
   a sibling Align checkout exists. The profile now obtains the pinned Align source from its canonical
-  repository before entering the no-network worker boundary. The dedicated hosted profile check must
-  supply fresh installed-platform evidence after push.
+  repository before entering the no-network worker boundary. Installed diagnostics also showed that
+  Git could not reopen an inherited config memfd through its procfs view; admission now feeds the
+  already retained config bytes through Git's documented stdin path. The dedicated hosted profile
+  check must supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions
 

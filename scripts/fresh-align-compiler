@@ -955,32 +955,30 @@ def read_regular_at(parent_fd: int, name: bytes, limit: int) -> tuple[int, bytes
 
 def parse_local_git_config(raw: bytes, tool_fd: int) -> None:
     # Parse through Git's configuration grammar, but only from the retained
-    # config descriptor and with includes disabled. The config subcommand does
-    # not consult worktree helpers; no repository operation has run yet.
-    with os.fdopen(os.memfd_create("fresh-git-config", os.MFD_CLOEXEC), "w+b") as copy:
-        copy.write(raw)
-        copy.flush()
-        copy.seek(0)
-        result = subprocess.run(
-            [
-                "git",
-                "config",
-                "--file",
-                f"/proc/self/fd/{copy.fileno()}",
-                "--no-includes",
-                "--null",
-                "--list",
-            ],
-            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
-            executable=f"/proc/self/fd/{tool_fd}",
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            pass_fds=(copy.fileno(), tool_fd),
-            close_fds=True,
-            timeout=VALIDATION_TIMEOUT,
-            check=False,
-        )
+    # config descriptor and with includes disabled. Feed those retained bytes
+    # through Git's documented stdin path: an inherited memfd pathname is not
+    # guaranteed to survive into Git's view of procfs. The config subcommand
+    # does not consult worktree helpers; no repository operation has run yet.
+    result = subprocess.run(
+        [
+            "git",
+            "config",
+            "--file",
+            "-",
+            "--no-includes",
+            "--null",
+            "--list",
+        ],
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+        executable=f"/proc/self/fd/{tool_fd}",
+        input=raw,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        pass_fds=(tool_fd,),
+        close_fds=True,
+        timeout=VALIDATION_TIMEOUT,
+        check=False,
+    )
     if result.returncode != 0 or len(result.stdout) > 4 * 1024 * 1024 or result.stderr:
         raise ValueError("Git configuration rejected")
     for record in result.stdout.split(b"\0"):
