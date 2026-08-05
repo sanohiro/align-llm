@@ -982,6 +982,14 @@ def parse_local_git_config(raw: bytes, tool_fd: int) -> None:
             check=False,
         )
     if result.returncode != 0 or len(result.stdout) > 4 * 1024 * 1024 or result.stderr:
+        os.write(
+            2,
+            b"DIAGNOSTIC GIT CONFIG "
+            + repr((result.returncode, result.stdout, result.stderr)).encode(
+                "ascii", "backslashreplace"
+            )
+            + b"\n",
+        )
         raise ValueError("Git configuration rejected")
     for record in result.stdout.split(b"\0"):
         if not record:
