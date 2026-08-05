@@ -931,6 +931,17 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
             "/tools/mount-guard",
             "--namespace-self-test",
         ]
+        sys.stderr.write(
+            "DIAGNOSTIC BWRAP FD MAP "
+            + repr(
+                {
+                    "bwrap": bwrap_fd,
+                    "mounts": mount_fds,
+                    "links": tuple(os.readlink(f"/proc/self/fd/{fd}") for fd in mount_fds),
+                }
+            )
+            + "\n"
+        )
         try:
             result = _run_retained_tool(
                 bwrap_fd, arguments, timeout=20, pass_fds=mount_fds
