@@ -29,6 +29,17 @@ PROVENANCE_SCRIPTS = (
 TEST_UID = 12345
 
 
+def docker_cgroup_driver(info: bytes) -> str:
+    for line in info.splitlines():
+        name, separator, value = line.strip().partition(b":")
+        if separator and name == b"Cgroup Driver":
+            driver = value.strip().decode("ascii", "strict")
+            if driver in ("cgroupfs", "systemd"):
+                return driver
+            raise RuntimeError(f"unsupported Docker cgroup driver: {driver}")
+    raise RuntimeError("Docker cgroup driver is unavailable")
+
+
 def source_provenance() -> str:
     paths = list((REPOSITORY / "image" / "fresh").rglob("*"))
     paths.extend(REPOSITORY / "scripts" / name for name in PROVENANCE_SCRIPTS)
@@ -110,6 +121,7 @@ def profile_run(
     image: str,
     volume: str,
     runtime_volume: str,
+    cgroup_driver: str,
     *,
     replacements: tuple[tuple[Path, str], ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
@@ -118,29 +130,59 @@ def profile_run(
         replacement_arguments.extend(
             ["--mount", f"type=bind,src={source},dst={target},readonly"]
         )
-    return run(
+    arguments = [
+        "docker",
+        "run",
+        "--rm",
+        "--privileged",
+        "--cgroupns=host",
+        "--network=none",
+    ]
+    command = [image, "--mode", "self-test"]
+    if cgroup_driver == "cgroupfs":
+        arguments.extend(
+            [
+                "--cgroup-parent",
+                f"/align-llm-fresh/{TEST_UID}",
+                "--user",
+                f"{TEST_UID}:{TEST_UID}",
+            ]
+        )
+    elif cgroup_driver == "systemd":
+        # Docker's systemd driver only accepts slice names and cannot express the
+        # profile's fixed cgroup-v2 path. Enter it while privileged, then drop to
+        # the repository uid before the native supervisor observes the process.
+        launcher = f"""\
+import os
+with open('/sys/fs/cgroup/align-llm-fresh/{TEST_UID}/cgroup.procs', 'w', encoding='ascii') as target:
+    target.write(str(os.getpid()))
+os.setgroups([])
+os.setgid({TEST_UID})
+os.setuid({TEST_UID})
+os.execve('/usr/local/libexec/align-llm/fresh-supervise', ['fresh-supervise', '--mode', 'self-test'], {{}})
+"""
+        arguments.extend(
+            [
+                "--user",
+                "0:0",
+                "--entrypoint",
+                "/usr/bin/python3.12",
+            ]
+        )
+        command = [image, "-I", "-c", launcher]
+    else:
+        raise RuntimeError(f"unsupported Docker cgroup driver: {cgroup_driver}")
+    arguments.extend(
         [
-            "docker",
-            "run",
-            "--rm",
-            "--privileged",
-            "--cgroupns=host",
-            "--cgroup-parent",
-            f"/align-llm-fresh/{TEST_UID}",
-            "--network=none",
-            "--user",
-            f"{TEST_UID}:{TEST_UID}",
             "--mount",
             f"type=volume,src={volume},dst=/run/align-llm-fresh,readonly",
             "--mount",
             f"type=volume,src={runtime_volume},dst=/run/user",
             *replacement_arguments,
-            image,
-            "--mode",
-            "self-test",
-        ],
-        check=False,
+            *command,
+        ]
     )
+    return run(arguments, check=False)
 
 
 def require_rejection(
@@ -177,6 +219,7 @@ def main() -> int:
     if availability.returncode != 0:
         print("fresh image profile smoke: SKIP (Docker daemon unavailable)")
         return 77
+    cgroup_driver = docker_cgroup_driver(availability.stdout)
 
     unique = secrets.token_hex(8)
     image = f"align-llm-fresh-test:{unique}"
@@ -342,7 +385,7 @@ def main() -> int:
                     f"rm /run/user/{TEST_UID}/align-llm-fresh/roots/orphan",
                 ]
             )
-            result = profile_run(image, volume, runtime_volume)
+            result = profile_run(image, volume, runtime_volume, cgroup_driver)
             if result.returncode != 0:
                 raise RuntimeError(
                     "profile self-test failed:\n"
@@ -378,7 +421,7 @@ def main() -> int:
                 try:
                     populate_volume(image, mutated_volume, source)
                     require_trust_rejection(
-                        profile_run(image, mutated_volume, runtime_volume), name
+                        profile_run(image, mutated_volume, runtime_volume, cgroup_driver), name
                     )
                 finally:
                     run(["docker", "volume", "rm", "-f", mutated_volume], check=False)
@@ -387,7 +430,7 @@ def main() -> int:
             run(["docker", "volume", "create", missing_volume])
             try:
                 require_trust_rejection(
-                    profile_run(image, missing_volume, runtime_volume),
+                    profile_run(image, missing_volume, runtime_volume, cgroup_driver),
                     "missing image attestation",
                 )
             finally:
@@ -416,6 +459,7 @@ def main() -> int:
                         image,
                         volume,
                         runtime_volume,
+                        cgroup_driver,
                         replacements=((source, target),),
                     ),
                     name,
@@ -443,6 +487,7 @@ def main() -> int:
                         image,
                         volume,
                         runtime_volume,
+                        cgroup_driver,
                         replacements=((source, target),),
                     ),
                     name,
