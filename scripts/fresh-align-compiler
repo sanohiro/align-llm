@@ -1180,18 +1180,19 @@ def open_git_view(tool_fd: int, root_fd: int) -> GitView:
 
 def git(view: GitView, arguments: Sequence[str], *, output_limit: int = 192 * 1024 * 1024) -> bytes:
     assert_git_view(view)
+    retained = f"/proc/{os.getpid()}/fd"
     environment = dict(GIT_ENVIRONMENT)
     environment.update(
         {
-            "GIT_WORK_TREE": f"/proc/self/fd/{view.root_fd}",
-            "GIT_DIR": f"/proc/self/fd/{view.git_fd}",
-            "GIT_COMMON_DIR": f"/proc/self/fd/{view.common_fd}",
+            "GIT_WORK_TREE": f"{retained}/{view.root_fd}",
+            "GIT_DIR": f"{retained}/{view.git_fd}",
+            "GIT_COMMON_DIR": f"{retained}/{view.common_fd}",
         }
     )
     process = subprocess.Popen(
         ["git", *arguments],
         executable=f"/proc/self/fd/{view.tool_fd}",
-        cwd=f"/proc/self/fd/{view.root_fd}",
+        cwd=f"{retained}/{view.root_fd}",
         env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
