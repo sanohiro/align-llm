@@ -1402,13 +1402,17 @@ def source_identity_from_view(
         raise ValueError("source worktree is not clean")
     retained_index_digest = index_digest(view)
     listing = git(view, ("ls-tree", "-rz", "-r", "-t", revision))
+    listing_records: list[tuple[bytes, bytes]] = []
+    for record in listing.split(b"\0"):
+        if record:
+            _, path = record.split(b"\t", 1)
+            listing_records.append((path, record))
+    listing_records.sort(key=lambda item: item[0])
     entries: list[SourceEntry] = []
     total = 0
     prior: bytes | None = None
     manifest_entries: list[OrderedDict[str, Any]] = []
-    for record in listing.split(b"\0"):
-        if not record:
-            continue
+    for path, record in listing_records:
         header, path = record.split(b"\t", 1)
         mode_raw, type_raw, oid_raw = header.split(b" ", 2)
         mode_text = mode_raw.decode("ascii")
