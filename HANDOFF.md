@@ -34,8 +34,8 @@ request checks, reviews, findings, and attestations.
   regular files retain their separate single-link requirement. Private build/aggregate mount
   sources are opened relative to the retained private-root descriptor. Ordinary mounts use bwrap
   `--bind-fd`/`--ro-bind-fd`; the three overlay operands use only the bwrap process's own
-  `/proc/self/fd/...` view because bwrap has no overlay-fd option. Post-overlay fd-bind operations
-  retain those descriptors through setup and a tmpfs hides their holding mounts before the payload.
+  `/proc/self/fd/...` view because bwrap has no overlay-fd option. The image pins bwrap v0.11.0,
+  whose namespace setup preserves and resolves those sources correctly.
   Payloads still inherit no worker descriptors. Cleanup distinguishes stable root identity from normal owned-directory metadata
   changes.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
@@ -91,10 +91,11 @@ request checks, reviews, findings, and attestations.
   timestamp changes as replacement; cleanup now uses the retained worker identity contract. The
   next installed diagnostic proved that a new bwrap user namespace cannot traverse the parent
   worker's procfs descriptor paths. Mount sources now cross that boundary as retained descriptors.
-  A first descriptor repair reached the image self-test but showed that bwrap closes descriptors not
-  registered in its operation table before overlay setup. The revised ordering registers each
-  overlay descriptor with a post-overlay read-only fd-bind and hides the holding mounts before the
-  payload; fresh hosted evidence for that repair is pending.
+  A first descriptor repair reached the image self-test but showed that the previously pinned bwrap
+  commit lost procfs access to inherited mount descriptors during namespace setup. Exec-boundary
+  diagnostics proved every descriptor present immediately before bwrap. The image now pins bwrap
+  v0.11.0 commit `9ca3b05ec787acfb4b17bed37db5719fa777834f`, whose corrected setup passes
+  the same descriptor-bind and overlay sequence locally; fresh hosted evidence is pending.
   The dedicated hosted profile check must supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions

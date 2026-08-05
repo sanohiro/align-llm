@@ -1417,9 +1417,9 @@ mutable input to image deployment and cannot create a manifest-update cycle.
 The profile in this section claims only Ubuntu/Linux x86_64 with kernel 6.8 or newer, GNU Make 4.3,
 CPython 3.12, Git 2.45 or newer, Rust/Cargo 1.96.0, LLVM 22, and a bubblewrap installation that
 passes the namespace, overlayfs, and namespace-owned `/target/tmp` no-symlink-mount self-tests. The
-bwrap build must support `--bind-fd`, `--ro-bind-fd`, `--overlay-src`, and `--overlay`; the kernel
-must permit the owner-only upper/work pair and `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` in the
-sandbox user namespace. Compiler
+bwrap build is pinned to v0.11.0 commit `9ca3b05ec787acfb4b17bed37db5719fa777834f` and must support
+`--bind-fd`, `--ro-bind-fd`, `--overlay-src`, and `--overlay`; the kernel must permit the owner-only
+upper/work pair and `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` in the sandbox user namespace. Compiler
 identity is carried by authenticated read-only handoff files inside the `/tools` bind; no worker
 handoff descriptor is inherited by the aggregate or nested bwrap, so no nonstandard fd-preservation
 option or protected-fd seccomp filter is part of this profile. The platform self-test instead proves
@@ -2600,11 +2600,10 @@ with `O_PATH|O_NOFOLLOW|O_CLOEXEC`, verifies its type and effective-uid ownershi
 those exact descriptors to the outer bwrap setup. The bwrap argv consumes each descriptor through
 `--bind-fd` or `--ro-bind-fd`. Because bwrap has no descriptor form of its overlay operation, its
 three retained overlay descriptors are named only as `/proc/self/fd/<fd>` in that bwrap's own argv.
-Read-only fd-bind operations for the same descriptors follow the overlay operation so bwrap retains
-them through setup; those operations consume the descriptors into `/fd-hold`, and an immediately
-following tmpfs hides that holding tree before the payload starts. The child never asks the new user
-namespace to traverse the parent worker's procfs descriptor path. The worker retains its copies of
-the descriptors until bwrap exits and closes them before cleanup.
+The v0.11.0 setup retains those inherited descriptors while resolving the overlay and restores
+dumpable procfs ownership before descriptor-backed source resolution. The child never asks the new
+user namespace to traverse the parent worker's procfs descriptor path. The worker retains its copies
+of the descriptors until bwrap exits and closes them before cleanup.
 It never removes shared `/tmp`, the profile root parent, the project root,
 `ALIGN_REPO`, either source cache, or a path whose parent/name identity it cannot prove.
 
@@ -2722,9 +2721,8 @@ descriptor or construction memfd crosses the aggregate boundary.
 
 The build and aggregate bwrap setup processes are invoked with `close_fds=True` and only their
 verified private mount-source descriptors in `pass_fds`; ordinary descriptors are consumed by a
-`--bind-fd` or `--ro-bind-fd` operation. The aggregate overlay descriptors are registered by
-post-overlay read-only fd-bind operations so they survive until bwrap's overlay setup resolves its
-own `/proc/self/fd` view, then the holding mounts are hidden by tmpfs before the payload starts. Every
+`--bind-fd` or `--ro-bind-fd` operation, while the three aggregate overlay descriptors are consumed
+by v0.11.0's overlay setup through its own `/proc/self/fd` view before the payload starts. Every
 aggregate payload and nested bwrap starts with an empty inherited descriptor set. No compiler
 identity descriptor is inherited by Make, a shell, Python, a fixture, or a nested validation child,
 so those helpers may close, mark, or replace their ordinary descriptors without affecting the worker
@@ -2942,13 +2940,9 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /baseline-git --dir /tools --dir /cargo --dir /target \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
-  --dir /fd-hold --dir /fd-hold/lower --dir /fd-hold/upper --dir /fd-hold/work \
   --overlay-src /proc/self/fd/<aggregate-work-fd> \
   --overlay /proc/self/fd/<workspace-upper-fd> \
             /proc/self/fd/<workspace-work-fd> /workspace \
-  --ro-bind-fd <aggregate-work-fd> /fd-hold/lower \
-  --ro-bind-fd <workspace-upper-fd> /fd-hold/upper \
-  --ro-bind-fd <workspace-work-fd> /fd-hold/work --tmpfs /fd-hold \
   --ro-bind-fd <tool-bin-fd> /tools \
   --ro-bind-fd <cargo-home-fd> /cargo \
   --ro-bind-fd <cargo-target-fd> /target \

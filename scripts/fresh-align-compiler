@@ -2366,17 +2366,6 @@ def overlay_arguments(descriptors: Sequence[int]) -> list[str]:
         f"/proc/self/fd/{upper}",
         f"/proc/self/fd/{work}",
         "/workspace",
-        "--ro-bind-fd",
-        str(lower),
-        "/fd-hold/lower",
-        "--ro-bind-fd",
-        str(upper),
-        "/fd-hold/upper",
-        "--ro-bind-fd",
-        str(work),
-        "/fd-hold/work",
-        "--tmpfs",
-        "/fd-hold",
     ]
 
 
@@ -2954,18 +2943,6 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
     ]
     for directory in directories:
         arguments.extend(("--dir", directory))
-    arguments.extend(
-        (
-            "--dir",
-            "/fd-hold",
-            "--dir",
-            "/fd-hold/lower",
-            "--dir",
-            "/fd-hold/upper",
-            "--dir",
-            "/fd-hold/work",
-        )
-    )
     arguments.extend(
         (
             *overlay_arguments(overlay_descriptors),

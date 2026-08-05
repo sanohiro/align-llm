@@ -3,7 +3,7 @@ FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_COMMIT=f94b90ad6e49cc7f15c4171c5a434aa459e82d2d
-ARG BWRAP_COMMIT=1b80120ef26a28e065e67f89bfef873f13bdd317
+ARG BWRAP_COMMIT=9ca3b05ec787acfb4b17bed37db5719fa777834f
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget gnupg xz-utils git make build-essential pkg-config \
