@@ -9,7 +9,7 @@ request checks, reviews, findings, and attestations.
   `1e759732fb7d5737c744b35691ea2fb9900c9065` (PR #59).
 - Active goal: merge the reviewed consumer-complete FRESH-IMAGE capability, then start
   FRESH-WORKER without splitting it into helper-only pull requests.
-- Complete implementation checkpoint: `bf5c127877fadfe3ccd8f464ae4a00d81bc0265f` installs the Ubuntu
+- Complete implementation checkpoint: `ea51532a4f7a16d1d3492b1d17d2cbcd1ec53bf1` installs the Ubuntu
   24.04 image, static supervisor and fixed bootstrap, schema-2 manifest, external image and run
   signing boundaries, protected runtime/cgroup profile, and a hosted installed-image qualification.
   Its consolidated review repair closes FIFO deadline, non-root ownership, installed-platform
@@ -41,7 +41,8 @@ request checks, reviews, findings, and attestations.
   an actually limited cgroup child, cleanup refusal without partial mutation, external distinct
   Ed25519 keys, and canonical trust/runtime/tool mutation rejection.
 - Static cgroup-driver parsing and launch-argument checks: PASS for both cgroupfs and systemd; the
-  full local profile passed on cgroupfs.
+  full local profile passed both its detected cgroupfs path and the forced systemd-style
+  launcher/temporary-leaf path.
 - `PYTHONDONTWRITEBYTECODE=1 make ALIGN_REPO=<detached pinned Align worktree> ci`: PASS at Align
   revision `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 - `actionlint` and `shellcheck`: N/A because neither command is installed. The changed workflow was
