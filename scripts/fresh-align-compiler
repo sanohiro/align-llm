@@ -230,7 +230,7 @@ def read_fd(fd: int, limit: int, *, rewind: bool = True) -> bytes:
         raise
 
 
-def read_path(path: str, limit: int) -> bytes:
+def read_path(path: str, limit: int, *, single_link: bool = True) -> bytes:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(fd)
@@ -254,7 +254,7 @@ def read_path(path: str, limit: int) -> bytes:
             after.st_size,
             after.st_mtime_ns,
             after.st_ctime_ns,
-        ) or before.st_nlink != 1:
+        ) or (single_link and before.st_nlink != 1):
             raise OSError(errno.EPERM, "unstable regular file")
         return raw
     finally:
@@ -1791,7 +1791,7 @@ def validate_tree_manifest(
     if kind == "file":
         if not stat.S_ISREG(value.st_mode) or entries or value.st_size != size or stat.S_IMODE(value.st_mode) != int(mode, 8):
             raise ValueError("runtime file identity rejected")
-        raw = read_path(source, MAX_FILE_BYTES)
+        raw = read_path(source, MAX_FILE_BYTES, single_link=policy == "cache")
         if sha256(raw) != digest:
             raise ValueError("runtime file digest rejected")
         return 1, len(raw)
@@ -2087,10 +2087,19 @@ def copy_source(identity: SourceIdentity, destination: Path) -> None:
     assert_git_view(identity.view)
 
 
-def copy_tree_manifest(node: Mapping[str, Any], source: Path, destination: Path, *, root: bool = True) -> tuple[int, int]:
+def copy_tree_manifest(
+    node: Mapping[str, Any],
+    source: Path,
+    destination: Path,
+    *,
+    root: bool = True,
+    policy: str = "runtime",
+) -> tuple[int, int]:
     kind = node["kind"]
     if kind == "file":
-        raw = read_path(str(source), MAX_FILE_BYTES)
+        raw = read_path(
+            str(source), MAX_FILE_BYTES, single_link=policy == "cache"
+        )
         if len(raw) != node["size"] or sha256(raw) != node["sha256"]:
             raise OSError(errno.EIO, "manifest file changed")
         descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, int(node["staged_mode"], 8))
@@ -2115,7 +2124,11 @@ def copy_tree_manifest(node: Mapping[str, Any], source: Path, destination: Path,
     total = 0
     for child in node["entries"]:
         child_count, child_total = copy_tree_manifest(
-            child, source / child["name"], destination / child["name"], root=False
+            child,
+            source / child["name"],
+            destination / child["name"],
+            root=False,
+            policy=policy,
         )
         count += child_count
         total += child_total
@@ -2160,7 +2173,12 @@ def copy_runtime(manifest: Mapping[str, Any], destination: Path) -> list[Runtime
 
 
 def copy_cache(manifest: Mapping[str, Any], cache_manifest: Mapping[str, Any], destination: Path) -> None:
-    copy_tree_manifest(cache_manifest["root"], Path(manifest["cargo_cache"]["root"]), destination)
+    copy_tree_manifest(
+        cache_manifest["root"],
+        Path(manifest["cargo_cache"]["root"]),
+        destination,
+        policy="cache",
+    )
 
 
 def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
