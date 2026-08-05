@@ -166,7 +166,9 @@ RUN ALIGN_REVISION="$(tr -d '\n' </build/align-llm/.align-revision)" && \
     find /var/cache/align-llm/cargo/git -mindepth 1 -maxdepth 1 \
       ! -name checkouts ! -name db -exec rm -rf -- {} + && \
     find /var/cache/align-llm/cargo/registry -mindepth 1 -maxdepth 1 \
-      ! -name cache ! -name index ! -name src -exec rm -rf -- {} +
+      ! -name cache ! -name index ! -name src -exec rm -rf -- {} + && \
+    find /var/cache/align-llm/cargo -type d -exec chmod 0755 {} + && \
+    find /var/cache/align-llm/cargo -type f -exec chmod 0644 {} +
 
 RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --bootstrap /usr/local/libexec/align-llm/fresh-bootstrap \

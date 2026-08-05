@@ -7,10 +7,10 @@ request checks, reviews, findings, and attestations.
 
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
-- Relevant implementation checkpoint: consolidated FRESH-WORKER review repair
-  `366dc3d02452c1775b2b97d307ebcdeba155c586`. Later commits on this branch are its immutable
-  baseline oracle/finalization descendants or durable checkpoint corrections; use the latest valid
-  descendant tuple recorded by the pull request before merge.
+- Relevant review-repair checkpoint: `366dc3d02452c1775b2b97d307ebcdeba155c586`. Subsequent
+  non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
+  the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
+  the pull request before merge.
 - Active goal: complete, review, and merge the consumer-complete FRESH-WORKER capability, then move
   to the next eligible roadmap capability without another helper-only split.
 - In progress: the repository worker now cryptographically re-verifies the sealed Ed25519/DSSE
@@ -54,9 +54,9 @@ request checks, reviews, findings, and attestations.
   invalid, Git-configuration, timeout, namespace, resource, mutation, and descendant cleanup smokes.
 - `git diff --check`: PASS.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
-  unavailable. The first hosted repair-base attempt reached the cache-seed step and found a missing
-  explicit `RUSTC`; the current Dockerfile fixes that invocation. The dedicated hosted profile check
-  must supply fresh installed-platform evidence after push.
+  unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input and the
+  seeded Cargo cache's raw-mode normalization. The dedicated hosted profile check must supply fresh
+  installed-platform evidence after push.
 
 ## Blockers and decisions
 
