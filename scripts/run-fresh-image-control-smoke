@@ -69,6 +69,73 @@ def has_elf_interpreter(path: Path) -> bool:
     )
 
 
+def forwarder_descriptor_case(temporary: Path) -> None:
+    helper = temporary / "forwarder-helper"
+    helper.write_text(
+        "#!/usr/bin/python3\n"
+        "import os\n"
+        "for value in os.environ['EXPECTED_OPEN'].split(','):\n"
+        "    os.fstat(int(value))\n"
+        "for value in os.environ['EXPECTED_CLOSED'].split(','):\n"
+        "    try:\n"
+        "        os.fstat(int(value))\n"
+        "    except OSError:\n"
+        "        continue\n"
+        "    raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    forwarder = temporary / "bwrap-forwarder"
+    compiler = os.environ.get("CC", "cc")
+    subprocess.run(
+        [
+            compiler,
+            "-std=c11",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f'-DTOOL_TARGET="{helper}"',
+            "-DTOOL_BWRAP_FORWARDER=1",
+            "-o",
+            str(forwarder),
+            str(REPOSITORY / "image" / "fresh" / "tool-forwarder.c"),
+        ],
+        check=True,
+    )
+    opened = [os.open(temporary, os.O_PATH | os.O_CLOEXEC) for _ in range(4)]
+    try:
+        bind_fd, lower_fd, upper_fd, rejected_fd = opened
+        environment = {
+            "EXPECTED_OPEN": ",".join(str(value) for value in opened[:3]),
+            "EXPECTED_CLOSED": str(rejected_fd),
+        }
+        result = subprocess.run(
+            [
+                str(forwarder),
+                "--bind-fd",
+                str(bind_fd),
+                "/bind",
+                "--overlay-src",
+                f"/proc/self/fd/{lower_fd}",
+                "--overlay",
+                f"/proc/self/fd/{upper_fd}",
+                str(temporary),
+                "/workspace",
+                "--",
+                f"/proc/self/fd/{rejected_fd}",
+            ],
+            env=environment,
+            pass_fds=tuple(opened),
+            close_fds=True,
+            check=False,
+        )
+        assert result.returncode == 0
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
 def main() -> int:
     assert _normalize_relative("../align") == "../align"
     assert _normalize_relative("a/./b/../c") == "a/c"
@@ -106,6 +173,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="fresh-image-build-b-") as second_name:
             first = Path(first_name)
             second = Path(second_name)
+            forwarder_descriptor_case(first)
             assert build(first) == build(second)
             for name in ("fresh-supervise", "fresh-bootstrap"):
                 assert (first / name).read_bytes() == (second / name).read_bytes()

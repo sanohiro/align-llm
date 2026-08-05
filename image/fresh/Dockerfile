@@ -3,7 +3,7 @@ FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_COMMIT=f94b90ad6e49cc7f15c4171c5a434aa459e82d2d
-ARG BWRAP_COMMIT=9ca3b05ec787acfb4b17bed37db5719fa777834f
+ARG BWRAP_COMMIT=1b80120ef26a28e065e67f89bfef873f13bdd317
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget gnupg xz-utils git make build-essential pkg-config \
@@ -135,9 +135,12 @@ system = {
     "touch": "/usr/bin/touch", "tr": "/usr/bin/tr", "wc": "/usr/bin/wc",
 }
 for name, target in forwarders.items():
+    definitions = [f'-DTOOL_TARGET="{target}"']
+    if name == "bwrap":
+        definitions.append("-DTOOL_BWRAP_FORWARDER=1")
     subprocess.run([
         cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIE", "-pie",
-        "-Wl,-z,relro,-z,now", "-Wl,--build-id=none", f'-DTOOL_TARGET="{target}"',
+        "-Wl,-z,relro,-z,now", "-Wl,--build-id=none", *definitions,
         "-o", str(root / name), str(source),
     ], check=True)
 for name, path in system.items():

@@ -34,8 +34,9 @@ request checks, reviews, findings, and attestations.
   regular files retain their separate single-link requirement. Private build/aggregate mount
   sources are opened relative to the retained private-root descriptor. Ordinary mounts use bwrap
   `--bind-fd`/`--ro-bind-fd`; the three overlay operands use only the bwrap process's own
-  `/proc/self/fd/...` view because bwrap has no overlay-fd option. The image pins bwrap v0.11.0,
-  whose namespace setup preserves and resolves those sources correctly.
+  `/proc/self/fd/...` view because bwrap has no overlay-fd option. The bwrap-only forwarder preserves
+  only mount descriptors named by setup options; post-overlay fd-bind operations make bwrap consume
+  the three overlay descriptors, and a tmpfs hides their holding mounts before the payload.
   Payloads still inherit no worker descriptors. Cleanup distinguishes stable root identity from normal owned-directory metadata
   changes.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
@@ -74,6 +75,9 @@ request checks, reviews, findings, and attestations.
 - Local bubblewrap 0.11.0 descriptor-bind smoke: PASS. A direct aggregate-shaped overlay smoke using
   retained lower/upper/work descriptors through bwrap's own `/proc/self/fd` view read the lower tree
   and published the expected upper-layer file.
+- `python3 scripts/run-fresh-image-control-smoke`: PASS, including compilation and execution of the
+  bwrap-only forwarder with three recognized mount descriptors preserved and an unrecognized
+  descriptor after `--` closed at target exec.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
   normalization, populated-tree count derivation, and the installed job's incorrect assumption that
@@ -91,11 +95,14 @@ request checks, reviews, findings, and attestations.
   timestamp changes as replacement; cleanup now uses the retained worker identity contract. The
   next installed diagnostic proved that a new bwrap user namespace cannot traverse the parent
   worker's procfs descriptor paths. Mount sources now cross that boundary as retained descriptors.
-  A first descriptor repair reached the image self-test but showed that the previously pinned bwrap
-  commit lost procfs access to inherited mount descriptors during namespace setup. Exec-boundary
-  diagnostics proved every descriptor present immediately before bwrap. The image now pins bwrap
-  v0.11.0 commit `9ca3b05ec787acfb4b17bed37db5719fa777834f`, whose corrected setup passes
-  the same descriptor-bind and overlay sequence locally; fresh hosted evidence is pending.
+  Descriptor diagnostics proved every mount fd present immediately before the authenticated tool
+  forwarder, then missing in bwrap. The forwarder was closing all nonstandard descriptors before
+  executing its target. Its bwrap-only mode now marks all such descriptors close-on-exec, parses the
+  fixed setup argv before `--`, and clears the flag only for recognized bind and overlay mount fds;
+  the bwrap setup then consumes every preserved descriptor before the payload. The image retains its
+  v0.11.2 pin `1b80120ef26a28e065e67f89bfef873f13bdd317`. Hosted run `31020180770`
+  reproduced the opaque failure and diagnostic run `31020913056` exposed the forwarder close; fresh
+  hosted evidence for the repair is pending.
   The dedicated hosted profile check must supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions

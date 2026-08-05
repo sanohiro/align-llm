@@ -348,8 +348,19 @@ def private_mount_case(module, temporary: Path) -> None:
                 "/proc/self/fd/19",
                 "/proc/self/fd/23",
                 "/workspace",
+                "--ro-bind-fd",
+                "17",
+                "/fd-hold/lower",
+                "--ro-bind-fd",
+                "19",
+                "/fd-hold/upper",
+                "--ro-bind-fd",
+                "23",
+                "/fd-hold/work",
+                "--tmpfs",
+                "/fd-hold",
             ],
-            "overlay descriptor argv changed",
+            "overlay descriptor-retention argv changed",
         )
         try:
             module.open_private_mount(
