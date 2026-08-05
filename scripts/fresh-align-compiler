@@ -28,6 +28,7 @@ import struct
 import subprocess
 import sys
 import time
+import traceback
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -3032,9 +3033,12 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
         except Exception as error:
             os.write(
                 2,
-                ("DIAGNOSTIC PROJECT SOURCE " + repr(error) + "\n").encode(
-                    "utf-8", "backslashreplace"
-                ),
+                (
+                    "DIAGNOSTIC PROJECT SOURCE "
+                    + repr(error)
+                    + "\n"
+                    + traceback.format_exc()
+                ).encode("utf-8", "backslashreplace"),
             )
             fail("SOURCE", "project-source")
         try:
