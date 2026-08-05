@@ -15,6 +15,14 @@ import tempfile
 from collections import OrderedDict
 from pathlib import Path
 
+from fresh_attestation import (
+    IMAGE_KEY_ID,
+    INVOCATION_PREDICATE_TYPE,
+    RUN_KEY_ID,
+    ed25519_public_key,
+    signed_envelope,
+)
+
 
 REPOSITORY = Path(__file__).resolve().parent.parent
 WORKER = REPOSITORY / "scripts/fresh-align-compiler"
@@ -168,6 +176,133 @@ def public_error_cases(module) -> None:
     require(module.ROOT_CHILDREN[-1] == "descriptor", "private-root layout changed")
 
 
+def run_attestation_cases(module) -> None:
+    seed = bytes(range(32))
+    public_key = ed25519_public_key(seed)
+    manifest_raw = module.canonical_json(OrderedDict((('schema_version', 2),)))
+    predicate = OrderedDict(
+        (
+            ("schema_version", 1),
+            ("image_attestation_sha256", "1" * 64),
+            ("manifest_sha256", module.sha256(manifest_raw)),
+            ("repository_object_format", "sha1"),
+            ("repository_head", "2" * 40),
+            ("align_repo_relative", "../align"),
+            ("controller_path", module.CONTROLLER_PATH),
+            ("controller_sha256", "3" * 64),
+            ("supervisor_identity", IMAGE_KEY_ID),
+            ("supervisor_version", module.SUPERVISOR_VERSION),
+            ("supervisor_key_id", RUN_KEY_ID),
+            ("supervisor_key_sha256", module.sha256(public_key)),
+        )
+    )
+
+    def envelope(value):
+        return signed_envelope(
+            value,
+            payload_type=INVOCATION_PREDICATE_TYPE,
+            key_id=RUN_KEY_ID,
+            seed=seed,
+        )
+
+    accepted = module.invocation_predicate(envelope(predicate), manifest_raw, public_key)
+    require(accepted == predicate, "signed invocation predicate changed")
+
+    invalid_signature = bytearray(envelope(predicate))
+    offset = invalid_signature.index(b'"sig": "') + len(b'"sig": "')
+    invalid_signature[offset] = ord("A") if invalid_signature[offset] != ord("A") else ord("B")
+    for raw, key in (
+        (bytes(invalid_signature), public_key),
+        (envelope(predicate), b"\0" * 32),
+    ):
+        try:
+            module.invocation_predicate(raw, manifest_raw, key)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid invocation signature accepted")
+
+    for field, value in (
+        ("image_attestation_sha256", "not-a-digest"),
+        ("supervisor_identity", "replayed-supervisor"),
+        ("supervisor_version", "2.0.0"),
+        ("supervisor_key_id", "wrong-key"),
+    ):
+        changed = OrderedDict(predicate)
+        changed[field] = value
+        try:
+            module.invocation_predicate(envelope(changed), manifest_raw, public_key)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid invocation tuple accepted: {field}")
+
+
+def cleanup_replacement_case(module, temporary: Path) -> None:
+    roots = temporary / "roots"
+    roots.mkdir(mode=0o700)
+    root_name = module.ROOT_PREFIX + "replacement"
+    admitted = roots / root_name
+    admitted.mkdir(mode=0o700)
+    (admitted / "owned").write_bytes(b"owned")
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    lock = temporary / "lock"
+    lock.write_bytes(b"")
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        module.snapshot_fd(roots_fd),
+        root_fd,
+        module.snapshot_fd(root_fd),
+        root_name,
+        Path(f"/proc/self/fd/{root_fd}"),
+    )
+    moved = roots / "moved-admitted-root"
+    admitted.rename(moved)
+    admitted.mkdir(mode=0o700)
+    marker = admitted / "replacement-marker"
+    marker.write_bytes(b"replacement")
+    try:
+        module.cleanup(admission)
+    except module.CleanupError:
+        pass
+    else:
+        raise AssertionError("replacement private root was accepted for cleanup")
+    require(marker.read_bytes() == b"replacement", "cleanup deleted a replacement root")
+    require((moved / "owned").read_bytes() == b"owned", "cleanup changed the admitted root on mismatch")
+    for descriptor in (root_fd, roots_fd, lock_fd):
+        os.close(descriptor)
+
+
+def bounded_tool_cases(module) -> None:
+    python_fd = os.open("/usr/bin/python3", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        try:
+            module.run_tool(
+                python_fd,
+                ("python3", "-c", f"import os; os.write(1, b'x' * {module.MAX_STREAM_BYTES + 1})"),
+                timeout=5,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("tool stream cap-plus-one was buffered or accepted")
+        try:
+            module.run_tool(
+                python_fd,
+                ("python3", "-c", "import time; time.sleep(5)"),
+                timeout=1,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError("tool deadline was not enforced")
+    finally:
+        os.close(python_fd)
+
+
 def source_identity_cases(module, temporary: Path) -> None:
     git_path = Path("/usr/bin/git")
     require(git_path.is_file(), "Git fixture executable is unavailable")
@@ -223,7 +358,7 @@ def source_identity_cases(module, temporary: Path) -> None:
                     linked_identity = module.source_identity("project-source", linked_fd, git_fd)
                     view = temporary / "baseline-view"
                     view.mkdir(mode=0o700)
-                    module.copy_git_view(linked_fd, git_fd, view)
+                    module.copy_git_view(linked_identity, view)
                 finally:
                     os.close(linked_fd)
                 require(linked_identity.revision == identity.revision, "linked source identity changed")
@@ -235,6 +370,123 @@ def source_identity_cases(module, temporary: Path) -> None:
                     text=True,
                 ).stdout.strip()
                 require(resolved == identity.revision, "linked baseline view changed")
+                admitted_git = root / ".git-admitted"
+                (root / ".git").rename(admitted_git)
+                (root / ".git").mkdir(mode=0o700)
+                try:
+                    try:
+                        module.assert_git_view(linked_identity.view)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError("linked common-directory replacement was accepted")
+                finally:
+                    (root / ".git").rmdir()
+                    admitted_git.rename(root / ".git")
+                module.close_git_view(linked_identity.view)
+            module.close_git_view(identity.view)
+
+            subprocess.run(
+                [str(git_path), "pack-refs", "--all"], cwd=root, env=environment, check=True
+            )
+            packed_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                packed_identity = module.source_identity("project-source", packed_fd, git_fd)
+            finally:
+                os.close(packed_fd)
+            require(packed_identity.revision, "packed Git ref identity was not retained")
+            module.close_git_view(packed_identity.view)
+
+            mutation_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                mutation_identity = module.source_identity("project-source", mutation_fd, git_fd)
+            finally:
+                os.close(mutation_fd)
+            (root / "dir/file").write_bytes(b"changed after capture\n")
+            rejected_copy = temporary / f"rejected-copy-{object_format}"
+            rejected_copy.mkdir(mode=0o700)
+            try:
+                module.copy_source(mutation_identity, rejected_copy)
+            except (OSError, ValueError):
+                pass
+            else:
+                raise AssertionError("source mutation during copy was accepted")
+            module.close_git_view(mutation_identity.view)
+            subprocess.run(
+                [str(git_path), "checkout", "--", "dir/file"], cwd=root, env=environment, check=True
+            )
+
+            marker = temporary / f"fsmonitor-{object_format}"
+            helper = temporary / f"fsmonitor-{object_format}.sh"
+            helper.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 0\n", encoding="utf-8")
+            helper.chmod(0o755)
+            subprocess.run(
+                [str(git_path), "config", "core.fsmonitor", str(helper)],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+            rejected_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                try:
+                    module.source_identity("project-source", rejected_fd, git_fd)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("local core.fsmonitor configuration was accepted")
+            finally:
+                os.close(rejected_fd)
+            require(not marker.exists(), "local core.fsmonitor executed before source admission")
+            subprocess.run(
+                [str(git_path), "config", "--unset", "core.fsmonitor"],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+
+            filter_marker = temporary / f"filter-{object_format}"
+            subprocess.run(
+                [
+                    str(git_path),
+                    "config",
+                    "filter.evil.clean",
+                    f"sh -c 'touch {filter_marker}'",
+                ],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+            filter_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                try:
+                    module.source_identity("project-source", filter_fd, git_fd)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("local filter configuration was accepted")
+            finally:
+                os.close(filter_fd)
+            require(not filter_marker.exists(), "local filter executed before source admission")
+            subprocess.run(
+                [str(git_path), "config", "--unset", "filter.evil.clean"],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+
+            alternates = root / ".git/objects/info/alternates"
+            alternates.write_text("/tmp\n", encoding="utf-8")
+            alternate_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                try:
+                    module.source_identity("project-source", alternate_fd, git_fd)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Git object alternate was accepted")
+            finally:
+                os.close(alternate_fd)
+                alternates.unlink()
     finally:
         os.close(git_fd)
 
@@ -244,11 +496,14 @@ def main() -> int:
     require(WORKER.stat().st_size <= 4_194_304, "worker exceeds bootstrap bound")
     module = load_worker()
     canonical_wire_cases(module)
+    run_attestation_cases(module)
+    bounded_tool_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:
         temporary = Path(name)
         digest_golden(module, temporary)
         cache_cases(module, temporary)
         source_identity_cases(module, temporary)
+        cleanup_replacement_case(module, temporary)
     public_error_cases(module)
     print("fresh worker unit smoke: PASS")
     return 0

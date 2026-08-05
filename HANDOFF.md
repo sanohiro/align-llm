@@ -7,42 +7,54 @@ request checks, reviews, findings, and attestations.
 
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
+- Relevant committed checkpoint: reviewed FRESH-WORKER finalization
+  `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`; the current uncommitted tree is the consolidated
+  repair of that review and must become the replacement implementation-source commit.
 - Active goal: complete, review, and merge the consumer-complete FRESH-WORKER capability, then move
   to the next eligible roadmap capability without another helper-only split.
-- In progress: the repository worker now authenticates the sealed invocation and image manifest,
+- In progress: the repository worker now cryptographically re-verifies the sealed Ed25519/DSSE
+  invocation and image-manifest tuple,
   captures separate project/Align Git identities, admits one protected private root, materializes
   source/tool/runtime/offline-cache inputs, builds the pinned compiler in a first bwrap namespace,
   installs a descriptor/guard/compiler/archive bundle, and launches `capable-checks` through a
   writable overlay in a second namespace. Make and evaluation consumers use the fresh launcher,
   namespace-owned temporary root, nested staged tools, and private baseline Git view. The installed
   image now seeds the authenticated Cargo cache at the pinned Align revision, and its profile smoke
-  contains the real no-network aggregate path.
-- The implementation source/oracle/finalization baseline history has not started. Any further change
-  to a recorded input must precede that three-commit sequence.
+  contains the real no-network aggregate path. Review repair additionally rejects local Git helpers
+  before source queries, retains and rechecks Git/common/ref/index/object identity, streams source
+  and child output under bounds, kills and reaps the complete cgroup, and makes staging and cleanup
+  descriptor-relative so a replacement root is never deleted.
+- The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
+  `4510138117e1fd612295256ba91f21361b84c3c5`, and
+  `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs, so it must
+  be followed by a replacement three-commit baseline sequence before merge.
 
 ## Next actions
 
-1. Finish focused worker qualification and static checks, remove generated `main`, update this
-   checkpoint if the durable state changes, and commit the final implementation source.
+1. Commit the consolidated review repair as the replacement implementation source.
 2. Run the Section 2.4 pending measurement, commit only the projected immutable oracle, finalize
    the canonical baseline against that full oracle commit, remove the pending file, and commit only
    the canonical baseline and digest.
-3. Push a pull request, obtain installed Ubuntu 24.04 FRESH-IMAGE/FRESH-WORKER evidence, run one fresh
-   independent comprehensive review, consolidate valid repairs, restart the baseline sequence if a
-   recorded input changes, rerun affected checks, and merge with a merge commit only.
+3. Push the replacement history to the existing capability pull request, record finding
+   dispositions, obtain fresh installed Ubuntu 24.04 FRESH-IMAGE/FRESH-WORKER evidence, and merge
+   with a merge commit only after every required check passes.
 
 ## Latest verification
 
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS, including canonical
-  JSON, structural runtime/cache digests, staged modes, cache policy, SHA-1/SHA-256 source identity,
-  linked-worktree source identity, private baseline Git materialization, and public error invariants.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS, batching the
+  attestation/image-control owners, worker unit cases, topology oracle, and the complete Section 9.10
+  focused-case inventory. Worker cases include forged signatures, supervisor replay, Git helper and
+  alternate rejection, packed/linked Git identity, source/common-dir replacement, bounded streams,
+  and replacement-root cleanup authority.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-gate-topology --self-test`: PASS.
 - `ALIGNC=../align/target/release/alignc PYTHONDONTWRITEBYTECODE=1 make hosted-checks`: PASS.
 - `ALIGNC=../align/target/release/alignc PYTHONDONTWRITEBYTECODE=1 make eval-coding`: PASS, including
   invalid, Git-configuration, timeout, namespace, resource, mutation, and descendant cleanup smokes.
 - `git diff --check`: PASS.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
-  unavailable. The dedicated hosted profile check is the required installed-platform evidence.
+  unavailable. The first hosted repair-base attempt reached the cache-seed step and found a missing
+  explicit `RUSTC`; the current Dockerfile fixes that invocation. The dedicated hosted profile check
+  must supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions
 

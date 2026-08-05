@@ -152,6 +152,7 @@ RUN ALIGN_REVISION="$(tr -d '\n' </build/align-llm/.align-revision)" && \
     git -C /tmp/align-cache-source checkout --detach "$ALIGN_REVISION" && \
     test "$(git -C /tmp/align-cache-source rev-parse HEAD)" = "$ALIGN_REVISION" && \
     CARGO_HOME=/var/cache/align-llm/cargo \
+      RUSTC=/runtime/rust/bin/rustc \
       /runtime/rust/bin/cargo fetch --locked \
         --manifest-path /tmp/align-cache-source/Cargo.toml && \
     rm -rf /tmp/align-cache-source && \

@@ -21,6 +21,7 @@ import posixpath
 import re
 import resource
 import secrets
+import selectors
 import signal
 import stat
 import struct
@@ -178,8 +179,14 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 MODE = re.compile(r"^[0-7]{4}$")
 INVOCATION_TYPE = "https://align-llm.dev/attestations/runner-invocation/v1"
+RUN_KEY_ID = "align-llm-run-v1"
+IMAGE_KEY_ID = "align-llm-runner-image-v1"
+RUN_PUBLIC_KEY_PATH = "/usr/local/share/align-llm/run-verifier.pub"
+SUPERVISOR_VERSION = "1.0.0"
 CONTROLLER_PATH = "scripts/fresh-align-compiler"
 ALIGN_REVISION_FILE = ".align-revision"
+MAX_PATH_BYTES = 4096
+MAX_SOURCE_DEPTH = 64
 
 
 class WorkerError(Exception):
@@ -360,15 +367,156 @@ def exact_fields(value: Mapping[str, Any], fields: Sequence[str]) -> None:
 
 
 def decode_base64url(value: Any, limit: int) -> bytes:
-    if not isinstance(value, str) or "=" in value or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+    if (
+        not isinstance(value, str)
+        or not value
+        or "=" in value
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", value)
+        or len(value) % 4 == 1
+    ):
         raise ValueError("invalid base64url")
-    raw = base64.urlsafe_b64decode(value + "=" * ((4 - len(value) % 4) % 4))
+    encoded = value.encode("ascii")
+    raw = base64.urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4))
     if len(raw) > limit:
         raise ValueError("decoded value exceeds bound")
+    if base64.urlsafe_b64encode(raw).rstrip(b"=") != encoded:
+        raise ValueError("non-canonical base64url")
     return raw
 
 
-def invocation_predicate(raw: bytes, manifest_raw: bytes) -> OrderedDict[str, Any]:
+def dsse_pae(payload_type: str, payload: bytes) -> bytes:
+    encoded_type = payload_type.encode("utf-8", "strict")
+    return (
+        b"DSSEv1 "
+        + str(len(encoded_type)).encode("ascii")
+        + b" "
+        + encoded_type
+        + b" "
+        + str(len(payload)).encode("ascii")
+        + b" "
+        + payload
+    )
+
+
+ED25519_Q = 2**255 - 19
+ED25519_L = 2**252 + 27742317777372353535851937790883648493
+ED25519_D = (-121665 * pow(121666, ED25519_Q - 2, ED25519_Q)) % ED25519_Q
+ED25519_I = pow(2, (ED25519_Q - 1) // 4, ED25519_Q)
+
+
+def ed25519_xrecover(y: int) -> int:
+    xx = ((y * y - 1) * pow(ED25519_D * y * y + 1, ED25519_Q - 2, ED25519_Q)) % ED25519_Q
+    value = pow(xx, (ED25519_Q + 3) // 8, ED25519_Q)
+    if (value * value - xx) % ED25519_Q != 0:
+        value = value * ED25519_I % ED25519_Q
+    if (value * value - xx) % ED25519_Q != 0:
+        raise ValueError("invalid Ed25519 point")
+    return ED25519_Q - value if value & 1 else value
+
+
+ED25519_BASE_Y = 4 * pow(5, ED25519_Q - 2, ED25519_Q) % ED25519_Q
+ED25519_BASE = (ed25519_xrecover(ED25519_BASE_Y), ED25519_BASE_Y)
+ED25519_IDENTITY = (0, 1)
+
+
+def ed25519_add(left: tuple[int, int], right: tuple[int, int]) -> tuple[int, int]:
+    x1, y1 = left
+    x2, y2 = right
+    product = ED25519_D * x1 * x2 * y1 * y2 % ED25519_Q
+    return (
+        (x1 * y2 + x2 * y1) * pow(1 + product, ED25519_Q - 2, ED25519_Q) % ED25519_Q,
+        (y1 * y2 + x1 * x2) * pow(1 - product, ED25519_Q - 2, ED25519_Q) % ED25519_Q,
+    )
+
+
+def ed25519_multiply(point: tuple[int, int], scalar: int) -> tuple[int, int]:
+    result = ED25519_IDENTITY
+    addend = point
+    while scalar:
+        if scalar & 1:
+            result = ed25519_add(result, addend)
+        addend = ed25519_add(addend, addend)
+        scalar >>= 1
+    return result
+
+
+def ed25519_decode(encoded: bytes) -> tuple[int, int]:
+    if len(encoded) != 32:
+        raise ValueError("wrong Ed25519 point size")
+    scalar = int.from_bytes(encoded, "little")
+    sign = scalar >> 255
+    y = scalar & ((1 << 255) - 1)
+    if y >= ED25519_Q:
+        raise ValueError("non-canonical Ed25519 point")
+    x = ed25519_xrecover(y)
+    if x & 1 != sign:
+        x = ED25519_Q - x
+    if (-x * x + y * y - 1 - ED25519_D * x * x * y * y) % ED25519_Q:
+        raise ValueError("invalid Ed25519 point")
+    return x, y
+
+
+def ed25519_encode(point: tuple[int, int]) -> bytes:
+    x, y = point
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def verify_ed25519(public_key: bytes, message: bytes, signature: bytes) -> bool:
+    if len(public_key) != 32 or len(signature) != 64:
+        return False
+    try:
+        public_point = ed25519_decode(public_key)
+        encoded_r = signature[:32]
+        point_r = ed25519_decode(encoded_r)
+        scalar = int.from_bytes(signature[32:], "little")
+        if scalar >= ED25519_L:
+            return False
+        challenge = int.from_bytes(
+            hashlib.sha512(encoded_r + public_key + message).digest(), "little"
+        ) % ED25519_L
+        return ed25519_encode(ed25519_multiply(ED25519_BASE, scalar)) == ed25519_encode(
+            ed25519_add(point_r, ed25519_multiply(public_point, challenge))
+        )
+    except (ValueError, OverflowError):
+        return False
+
+
+def read_run_public_key() -> bytes:
+    descriptor = os.open(
+        RUN_PUBLIC_KEY_PATH,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != 0o444
+            or before.st_uid != 0
+            or before.st_nlink != 1
+            or before.st_size != 32
+        ):
+            raise ValueError("run verifier identity rejected")
+        raw = read_fd(descriptor, 32)
+        after = os.fstat(descriptor)
+        if snapshot_fd(descriptor) != Snapshot(
+            before.st_dev,
+            before.st_ino,
+            stat.S_IFMT(before.st_mode),
+            stat.S_IMODE(before.st_mode),
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) or after.st_size != 32:
+            raise ValueError("run verifier changed")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def invocation_predicate(
+    raw: bytes, manifest_raw: bytes, public_key: bytes
+) -> OrderedDict[str, Any]:
     envelope = parse_canonical(raw, MAX_ATTESTATION_BYTES)
     exact_fields(envelope, ("payloadType", "payload", "signatures"))
     if envelope["payloadType"] != INVOCATION_TYPE:
@@ -394,6 +542,14 @@ def invocation_predicate(raw: bytes, manifest_raw: bytes) -> OrderedDict[str, An
     )
     if predicate["schema_version"] != 1 or predicate["controller_path"] != CONTROLLER_PATH:
         raise ValueError("wrong invocation identity")
+    for name in (
+        "image_attestation_sha256",
+        "manifest_sha256",
+        "controller_sha256",
+        "supervisor_key_sha256",
+    ):
+        if not isinstance(predicate[name], str) or not HEX64.fullmatch(predicate[name]):
+            raise ValueError("wrong invocation digest")
     if predicate["manifest_sha256"] != sha256(manifest_raw):
         raise ValueError("manifest digest mismatch")
     object_format = predicate["repository_object_format"]
@@ -404,8 +560,13 @@ def invocation_predicate(raw: bytes, manifest_raw: bytes) -> OrderedDict[str, An
         object_format == "sha256" and not HEX64.fullmatch(head)
     ):
         raise ValueError("wrong project head")
-    if not HEX64.fullmatch(predicate["controller_sha256"]):
-        raise ValueError("wrong controller digest")
+    if (
+        predicate["supervisor_identity"] != IMAGE_KEY_ID
+        or predicate["supervisor_version"] != SUPERVISOR_VERSION
+        or predicate["supervisor_key_id"] != RUN_KEY_ID
+        or predicate["supervisor_key_sha256"] != sha256(public_key)
+    ):
+        raise ValueError("wrong supervisor tuple")
     relative = predicate["align_repo_relative"]
     if not isinstance(relative, str) or not relative or relative.startswith("/") or "\x00" in relative:
         raise ValueError("wrong Align relative path")
@@ -415,6 +576,17 @@ def invocation_predicate(raw: bytes, manifest_raw: bytes) -> OrderedDict[str, An
     signatures = envelope["signatures"]
     if not isinstance(signatures, list) or len(signatures) != 1:
         raise ValueError("wrong invocation signature set")
+    signature = signatures[0]
+    if not isinstance(signature, Mapping):
+        raise ValueError("wrong invocation signature")
+    exact_fields(signature, ("keyid", "sig"))
+    if signature["keyid"] != RUN_KEY_ID:
+        raise ValueError("wrong invocation key id")
+    signature_raw = decode_base64url(signature["sig"], 64)
+    if len(signature_raw) != 64 or not verify_ed25519(
+        public_key, dsse_pae(INVOCATION_TYPE, predicate_raw), signature_raw
+    ):
+        raise ValueError("invocation signature rejected")
     return predicate
 
 
@@ -495,6 +667,10 @@ class Snapshot:
 
 def snapshot_fd(fd: int) -> Snapshot:
     value = os.fstat(fd)
+    return snapshot_from_stat(value)
+
+
+def snapshot_from_stat(value: os.stat_result) -> Snapshot:
     return Snapshot(
         value.st_dev,
         value.st_ino,
@@ -562,7 +738,7 @@ def run_tool(
     environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     pass_fds = (descriptor,) if cwd_fd is None else (descriptor, cwd_fd)
-    return subprocess.run(
+    process = subprocess.Popen(
         list(arguments),
         executable=f"/proc/self/fd/{descriptor}",
         cwd=None if cwd_fd is None else f"/proc/self/fd/{cwd_fd}",
@@ -572,8 +748,37 @@ def run_tool(
         stderr=subprocess.PIPE,
         pass_fds=pass_fds,
         close_fds=True,
-        timeout=timeout,
-        check=False,
+    )
+    assert process.stdout is not None and process.stderr is not None
+    streams = selectors.DefaultSelector()
+    captures = {"stdout": bytearray(), "stderr": bytearray()}
+    for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+        os.set_blocking(stream.fileno(), False)
+        streams.register(stream, selectors.EVENT_READ, label)
+    deadline = time.monotonic() + timeout
+    try:
+        while streams.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(arguments, timeout)
+            for key, _ in streams.select(min(remaining, 0.25)):
+                block = os.read(key.fileobj.fileno(), READ_CHUNK)
+                if not block:
+                    streams.unregister(key.fileobj)
+                    continue
+                target = captures[key.data]
+                if len(target) + len(block) > MAX_STREAM_BYTES:
+                    raise ValueError("tool probe output exceeds bound")
+                target.extend(block)
+        return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+    except Exception:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        streams.close()
+    return subprocess.CompletedProcess(
+        list(arguments), return_code, bytes(captures["stdout"]), bytes(captures["stderr"])
     )
 
 
@@ -631,27 +836,397 @@ GIT_ENVIRONMENT = {
     "GIT_NO_LAZY_FETCH": "1",
     "GIT_OPTIONAL_LOCKS": "0",
     "XDG_CONFIG_HOME": "/dev/null",
+    "GIT_CONFIG_COUNT": "5",
+    "GIT_CONFIG_KEY_0": "core.fsmonitor",
+    "GIT_CONFIG_VALUE_0": "",
+    "GIT_CONFIG_KEY_1": "core.hooksPath",
+    "GIT_CONFIG_VALUE_1": "/dev/null",
+    "GIT_CONFIG_KEY_2": "core.attributesFile",
+    "GIT_CONFIG_VALUE_2": "/dev/null",
+    "GIT_CONFIG_KEY_3": "protocol.ext.allow",
+    "GIT_CONFIG_VALUE_3": "never",
+    "GIT_CONFIG_KEY_4": "advice.graftFileDeprecated",
+    "GIT_CONFIG_VALUE_4": "false",
 }
 
 
-def git(tool_fd: int, root_fd: int, arguments: Sequence[str], *, input_bytes: bytes | None = None) -> bytes:
-    result = subprocess.run(
+@dataclass
+class GitView:
+    tool_fd: int
+    root_fd: int
+    git_fd: int
+    common_fd: int
+    index_fd: int
+    objects_fd: int
+    head_fd: int
+    revision: str
+    retained: list[tuple[int, Snapshot]]
+    entry_checks: list[tuple[int, bytes, Snapshot]]
+
+
+def assert_snapshot(descriptor: int, accepted: Snapshot) -> None:
+    current = snapshot_fd(descriptor)
+    if accepted.file_type == stat.S_IFDIR:
+        stable = (
+            current.device,
+            current.inode,
+            current.file_type,
+            current.mode,
+        ) == (
+            accepted.device,
+            accepted.inode,
+            accepted.file_type,
+            accepted.mode,
+        )
+    else:
+        stable = current == accepted
+    if not stable:
+        raise ValueError("retained descriptor changed")
+
+
+def assert_git_view(view: GitView) -> None:
+    for descriptor, accepted in view.retained:
+        assert_snapshot(descriptor, accepted)
+    for parent_fd, name, accepted in view.entry_checks:
+        current = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+        try:
+            assert_snapshot(current, accepted)
+        finally:
+            os.close(current)
+
+
+def close_git_view(view: GitView) -> None:
+    close_retained(view.retained)
+
+
+def open_directory_path(
+    start_fd: int, raw: bytes
+) -> tuple[int, list[tuple[int, Snapshot]], list[tuple[int, bytes, Snapshot]]]:
+    if not raw or b"\x00" in raw or len(raw) > MAX_PATH_BYTES:
+        raise ValueError("Git directory path rejected")
+    retained: list[tuple[int, Snapshot]] = []
+    entry_checks: list[tuple[int, bytes, Snapshot]] = []
+    current = os.open(
+        b"/" if raw.startswith(b"/") else b".",
+        os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=None if raw.startswith(b"/") else start_fd,
+    )
+    retained.append((current, snapshot_fd(current)))
+    components = raw.lstrip(b"/").split(b"/")
+    if len(components) > MAX_SOURCE_DEPTH or any(part in (b"", b".") for part in components):
+        close_retained(retained)
+        raise ValueError("Git directory path components rejected")
+    try:
+        for part in components:
+            parent = current
+            next_fd = os.open(
+                part,
+                os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=current,
+            )
+            retained.append((next_fd, snapshot_fd(next_fd)))
+            entry_checks.append((parent, part, retained[-1][1]))
+            current = next_fd
+        for descriptor, accepted in retained:
+            assert_snapshot(descriptor, accepted)
+        return current, retained, entry_checks
+    except Exception:
+        close_retained(retained)
+        raise
+
+
+def read_regular_at(parent_fd: int, name: bytes, limit: int) -> tuple[int, bytes, Snapshot]:
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=parent_fd,
+    )
+    try:
+        accepted = snapshot_fd(descriptor)
+        if accepted.file_type != stat.S_IFREG or accepted.links != 1 or accepted.size > limit:
+            raise ValueError("retained regular file rejected")
+        raw = read_fd(descriptor, limit)
+        assert_snapshot(descriptor, accepted)
+        return descriptor, raw, accepted
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def parse_local_git_config(raw: bytes, tool_fd: int) -> None:
+    # Parse through Git's configuration grammar, but only from the retained
+    # config descriptor and with includes disabled. The config subcommand does
+    # not consult worktree helpers; no repository operation has run yet.
+    with os.fdopen(os.memfd_create("fresh-git-config", os.MFD_CLOEXEC), "w+b") as copy:
+        copy.write(raw)
+        copy.flush()
+        copy.seek(0)
+        result = subprocess.run(
+            [
+                "git",
+                "config",
+                "--file",
+                f"/proc/self/fd/{copy.fileno()}",
+                "--no-includes",
+                "--null",
+                "--list",
+            ],
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+            executable=f"/proc/self/fd/{tool_fd}",
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=(copy.fileno(), tool_fd),
+            close_fds=True,
+            timeout=VALIDATION_TIMEOUT,
+            check=False,
+        )
+    if result.returncode != 0 or len(result.stdout) > 4 * 1024 * 1024 or result.stderr:
+        raise ValueError("Git configuration rejected")
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        key, separator, value = record.partition(b"\n")
+        if not separator:
+            raise ValueError("Git configuration record rejected")
+        lowered = key.lower()
+        truth = value.strip().lower()
+        if (
+            lowered in (b"core.worktree", b"core.fsmonitor", b"core.hookspath")
+            or lowered.startswith((b"filter.", b"include.", b"includeif."))
+            or lowered == b"extensions.partialclone"
+            or lowered == b"extensions.worktreeconfig"
+            or (lowered == b"core.bare" and truth in (b"true", b"yes", b"on", b"1"))
+            or (lowered.endswith(b".promisor") and truth in (b"true", b"yes", b"on", b"1"))
+        ):
+            raise ValueError("Git configuration policy rejected")
+
+
+def reject_git_metadata(parent_fd: int, relative: bytes) -> None:
+    current = os.dup(parent_fd)
+    opened = [current]
+    try:
+        for part in relative.split(b"/"):
+            try:
+                next_fd = os.open(
+                    part,
+                    os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=current,
+                )
+            except FileNotFoundError:
+                return
+            opened.append(next_fd)
+            current = next_fd
+        raise ValueError("prohibited Git metadata present")
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
+def open_git_view(tool_fd: int, root_fd: int) -> GitView:
+    retained: list[tuple[int, Snapshot]] = []
+    entry_checks: list[tuple[int, bytes, Snapshot]] = []
+    try:
+        retained_root = os.dup(root_fd)
+        retained.append((retained_root, snapshot_fd(retained_root)))
+        root_git = os.open(
+            b".git", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained_root
+        )
+        retained.append((root_git, snapshot_fd(root_git)))
+        entry_checks.append((retained_root, b".git", retained[-1][1]))
+        root_git_identity = retained[-1][1]
+        if root_git_identity.file_type == stat.S_IFDIR:
+            git_fd = os.open(
+                b".", os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_git
+            )
+            git_chain = [(git_fd, snapshot_fd(git_fd))]
+        elif root_git_identity.file_type == stat.S_IFREG and root_git_identity.links == 1:
+            raw = read_fd(root_git, 4096)
+            if not raw.startswith(b"gitdir: ") or not raw.endswith(b"\n") or b"\n" in raw[:-1]:
+                raise ValueError("linked Git control rejected")
+            git_fd, git_chain, git_checks = open_directory_path(retained_root, raw[8:-1])
+            entry_checks.extend(git_checks)
+        else:
+            raise ValueError("root Git control rejected")
+        retained.extend(git_chain)
+
+        try:
+            commondir_fd, commondir_raw, commondir_identity = read_regular_at(
+                git_fd, b"commondir", 4096
+            )
+        except FileNotFoundError:
+            common_fd = os.dup(git_fd)
+            common_chain = [(common_fd, snapshot_fd(common_fd))]
+        else:
+            retained.append((commondir_fd, commondir_identity))
+            if (
+                not commondir_raw.endswith(b"\n")
+                or b"\n" in commondir_raw[:-1]
+                or commondir_raw[:-1].startswith(b"/")
+            ):
+                raise ValueError("Git commondir rejected")
+            common_fd, common_chain, common_checks = open_directory_path(git_fd, commondir_raw[:-1])
+            entry_checks.extend(common_checks)
+        retained.extend(common_chain)
+
+        config_fd, config_raw, config_identity = read_regular_at(common_fd, b"config", 4 * 1024 * 1024)
+        retained.append((config_fd, config_identity))
+        entry_checks.append((common_fd, b"config", config_identity))
+        parse_local_git_config(config_raw, tool_fd)
+        for directory, name in (
+            (git_fd, b"shallow"),
+            (common_fd, b"shallow"),
+            (git_fd, b"info/grafts"),
+            (common_fd, b"info/grafts"),
+            (common_fd, b"objects/info/alternates"),
+            (common_fd, b"refs/replace"),
+        ):
+            reject_git_metadata(directory, name)
+
+        head_fd, head_raw, head_identity = read_regular_at(git_fd, b"HEAD", 128)
+        retained.append((head_fd, head_identity))
+        entry_checks.append((git_fd, b"HEAD", head_identity))
+        head_value = head_raw.rstrip(b"\n")
+        if head_raw != head_value + b"\n":
+            raise ValueError("Git HEAD rejected")
+        if head_value.startswith(b"ref: "):
+            ref = head_value[5:]
+            parts = ref.split(b"/")
+            if not ref.startswith(b"refs/") or len(parts) > MAX_SOURCE_DEPTH or any(
+                part in (b"", b".", b"..") for part in parts
+            ):
+                raise ValueError("Git HEAD ref rejected")
+            current = os.dup(common_fd)
+            retained.append((current, snapshot_fd(current)))
+            for part in parts[:-1]:
+                parent = current
+                current = os.open(
+                    part,
+                    os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=current,
+                )
+                retained.append((current, snapshot_fd(current)))
+                entry_checks.append((parent, part, retained[-1][1]))
+            try:
+                ref_fd, ref_raw, ref_identity = read_regular_at(current, parts[-1], 128)
+            except FileNotFoundError:
+                packed_fd, packed_raw, packed_identity = read_regular_at(
+                    common_fd, b"packed-refs", 64 * 1024 * 1024
+                )
+                retained.append((packed_fd, packed_identity))
+                entry_checks.append((common_fd, b"packed-refs", packed_identity))
+                matches = []
+                for line in packed_raw.splitlines():
+                    if not line or line.startswith((b"#", b"^")):
+                        continue
+                    object_id, separator, name = line.partition(b" ")
+                    if separator and name == ref:
+                        matches.append(object_id)
+                if len(matches) != 1:
+                    raise ValueError("packed Git ref rejected")
+                revision_raw = matches[0]
+            else:
+                retained.append((ref_fd, ref_identity))
+                entry_checks.append((current, parts[-1], ref_identity))
+                revision_raw = ref_raw.rstrip(b"\n")
+                if ref_raw != revision_raw + b"\n":
+                    raise ValueError("Git ref rejected")
+        else:
+            revision_raw = head_value
+        if not re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", revision_raw):
+            raise ValueError("Git revision rejected")
+
+        index_fd = os.open(
+            b"index", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=git_fd
+        )
+        retained.append((index_fd, snapshot_fd(index_fd)))
+        entry_checks.append((git_fd, b"index", retained[-1][1]))
+        if retained[-1][1].file_type != stat.S_IFREG or retained[-1][1].links != 1:
+            raise ValueError("Git index rejected")
+        objects_fd = os.open(
+            b"objects", os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=common_fd
+        )
+        retained.append((objects_fd, snapshot_fd(objects_fd)))
+        entry_checks.append((common_fd, b"objects", retained[-1][1]))
+        assert_git_view(
+            GitView(tool_fd, retained_root, git_fd, common_fd, index_fd, objects_fd, head_fd, revision_raw.decode("ascii"), retained, entry_checks)
+        )
+        return GitView(
+            tool_fd,
+            retained_root,
+            git_fd,
+            common_fd,
+            index_fd,
+            objects_fd,
+            head_fd,
+            revision_raw.decode("ascii"),
+            retained,
+            entry_checks,
+        )
+    except Exception:
+        if retained:
+            try:
+                close_retained(retained)
+            except CleanupError:
+                pass
+        raise
+
+
+def git(view: GitView, arguments: Sequence[str], *, output_limit: int = 192 * 1024 * 1024) -> bytes:
+    assert_git_view(view)
+    environment = dict(GIT_ENVIRONMENT)
+    environment.update(
+        {
+            "GIT_WORK_TREE": f"/proc/self/fd/{view.root_fd}",
+            "GIT_DIR": f"/proc/self/fd/{view.git_fd}",
+            "GIT_COMMON_DIR": f"/proc/self/fd/{view.common_fd}",
+        }
+    )
+    process = subprocess.Popen(
         ["git", *arguments],
-        executable=f"/proc/self/fd/{tool_fd}",
-        cwd=f"/proc/self/fd/{root_fd}",
-        env=GIT_ENVIRONMENT,
-        input=input_bytes,
-        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        executable=f"/proc/self/fd/{view.tool_fd}",
+        cwd=f"/proc/self/fd/{view.root_fd}",
+        env=environment,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        pass_fds=(tool_fd, root_fd),
+        pass_fds=tuple({view.tool_fd, *(fd for fd, _ in view.retained)}),
         close_fds=True,
-        timeout=VALIDATION_TIMEOUT,
-        check=False,
     )
-    if result.returncode != 0 or len(result.stdout) > 192 * 1024 * 1024 or len(result.stderr) > MAX_STREAM_BYTES:
+    assert process.stdout is not None and process.stderr is not None
+    streams = selectors.DefaultSelector()
+    stdout = bytearray()
+    stderr = bytearray()
+    for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+        os.set_blocking(stream.fileno(), False)
+        streams.register(stream, selectors.EVENT_READ, label)
+    deadline = time.monotonic() + VALIDATION_TIMEOUT
+    try:
+        while streams.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            for key, _ in streams.select(min(remaining, 0.25)):
+                block = os.read(key.fileobj.fileno(), READ_CHUNK)
+                if not block:
+                    streams.unregister(key.fileobj)
+                    continue
+                target = stdout if key.data == "stdout" else stderr
+                target.extend(block)
+                limit = output_limit if key.data == "stdout" else MAX_STREAM_BYTES
+                if len(target) > limit:
+                    raise ValueError("Git output exceeds bound")
+        return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+    except Exception:
+        process.kill()
+        process.wait()
+        raise ValueError("Git identity command rejected") from None
+    finally:
+        streams.close()
+    assert_git_view(view)
+    if return_code != 0 or stderr:
         raise ValueError("Git identity command rejected")
-    return result.stdout
+    return bytes(stdout)
 
 
 @dataclass(frozen=True)
@@ -661,14 +1236,15 @@ class SourceEntry:
     raw_mode: int | None
     staged_mode: int | None
     object_id: str
-    raw: bytes | None
+    source_snapshot: Snapshot
+    symlink_target: bytes | None
     digest: str | None
 
 
 @dataclass
 class SourceIdentity:
     kind: str
-    root_fd: int
+    view: GitView
     revision: str
     tree: str
     object_format: str
@@ -678,33 +1254,132 @@ class SourceIdentity:
     manifest_digest: str
 
 
-def read_at(root_fd: int, path: bytes, limit: int) -> tuple[bytes, Snapshot]:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd)
+def open_source_parent(root_fd: int, path: bytes) -> tuple[int, bytes, list[tuple[int, Snapshot]]]:
+    if (
+        not path
+        or len(path) > MAX_PATH_BYTES
+        or path.startswith(b"/")
+        or b"\x00" in path
+    ):
+        raise ValueError("source path rejected")
+    parts = path.split(b"/")
+    if len(parts) > MAX_SOURCE_DEPTH or any(part in (b"", b".", b"..") for part in parts):
+        raise ValueError("source path depth rejected")
+    current = os.dup(root_fd)
+    retained = [(current, snapshot_fd(current))]
     try:
-        before = snapshot_fd(fd)
-        if before.file_type != stat.S_IFREG or before.links != 1 or before.size > limit:
-            raise OSError(errno.EPERM, "source file identity rejected")
-        raw = read_fd(fd, limit)
-        if snapshot_fd(fd) != before:
-            raise OSError(errno.ESTALE, "source file changed")
-        return raw, before
+        for part in parts[:-1]:
+            current = os.open(
+                part,
+                os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=current,
+            )
+            retained.append((current, snapshot_fd(current)))
+        for descriptor, accepted in retained:
+            assert_snapshot(descriptor, accepted)
+        return current, parts[-1], retained
+    except Exception:
+        close_retained(retained)
+        raise
+
+
+def open_source_entry(root_fd: int, path: bytes, flags: int) -> tuple[int, Snapshot, list[tuple[int, Snapshot]]]:
+    parent, name, retained = open_source_parent(root_fd, path)
+    try:
+        descriptor = os.open(name, flags | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        accepted = snapshot_fd(descriptor)
+        retained.append((descriptor, accepted))
+        for current, snapshot in retained:
+            assert_snapshot(current, snapshot)
+        return descriptor, accepted, retained
+    except Exception:
+        close_retained(retained)
+        raise
+
+
+def hash_source_file(root_fd: int, path: bytes, object_format: str) -> tuple[Snapshot, str, str]:
+    descriptor, accepted, retained = open_source_entry(root_fd, path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if accepted.file_type != stat.S_IFREG or accepted.links != 1 or accepted.size > MAX_FILE_BYTES:
+            raise ValueError("source file identity rejected")
+        ordinary = hashlib.sha256()
+        git_object = hashlib.sha1() if object_format == "sha1" else hashlib.sha256()
+        git_object.update(b"blob " + str(accepted.size).encode("ascii") + b"\0")
+        offset = 0
+        while offset < accepted.size:
+            block = os.pread(descriptor, min(READ_CHUNK, accepted.size - offset), offset)
+            if not block:
+                raise ValueError("source file changed")
+            ordinary.update(block)
+            git_object.update(block)
+            offset += len(block)
+        for current, snapshot in retained:
+            assert_snapshot(current, snapshot)
+        return accepted, ordinary.hexdigest(), git_object.hexdigest()
     finally:
-        os.close(fd)
+        close_retained(retained)
 
 
-def source_identity(
+def read_source_entry(identity: SourceIdentity, entry: SourceEntry, limit: int) -> bytes:
+    if entry.kind == "symlink":
+        assert entry.symlink_target is not None
+        return entry.symlink_target
+    descriptor, accepted, retained = open_source_entry(
+        identity.view.root_fd, entry.path, os.O_RDONLY | os.O_NONBLOCK
+    )
+    try:
+        if accepted != entry.source_snapshot or accepted.size > limit:
+            raise ValueError("source entry changed")
+        raw = read_fd(descriptor, limit)
+        for current, snapshot in retained:
+            assert_snapshot(current, snapshot)
+        if sha256(raw) != entry.digest:
+            raise ValueError("source entry digest changed")
+        return raw
+    finally:
+        close_retained(retained)
+
+
+def index_digest(view: GitView) -> str:
+    accepted = snapshot_fd(view.index_fd)
+    if accepted.size < 12 or accepted.size > MAX_SOURCE_BYTES:
+        raise ValueError("Git index size rejected")
+    digest = hashlib.sha256()
+    header = bytearray()
+    offset = 0
+    while offset < accepted.size:
+        block = os.pread(view.index_fd, min(READ_CHUNK, accepted.size - offset), offset)
+        if not block:
+            raise ValueError("Git index changed")
+        if len(header) < 12:
+            header.extend(block[: 12 - len(header)])
+        digest.update(block)
+        offset += len(block)
+    assert_snapshot(view.index_fd, accepted)
+    if not bytes(header).startswith(b"DIRC"):
+        raise ValueError("Git index header rejected")
+    return digest.hexdigest()
+
+
+def source_identity_from_view(
     kind: str,
-    root_fd: int,
-    git_fd: int,
+    view: GitView,
     *,
     expected_head: str | None = None,
     expected_format: str | None = None,
 ) -> SourceIdentity:
-    object_format = git(git_fd, root_fd, ("rev-parse", "--show-object-format")).decode("ascii").strip()
-    revision = git(git_fd, root_fd, ("rev-parse", "--verify", "HEAD")).decode("ascii").strip()
-    tree = git(git_fd, root_fd, ("rev-parse", "HEAD^{tree}")).decode("ascii").strip()
+    root_fd = view.root_fd
+    object_format = git(view, ("rev-parse", "--show-object-format")).decode("ascii").strip()
+    revision = view.revision
+    verified_revision = git(view, ("rev-parse", "--verify", revision)).decode("ascii").strip()
+    tree = git(view, ("rev-parse", f"{revision}^{{tree}}")).decode("ascii").strip()
     pattern = HEX40 if object_format == "sha1" else HEX64 if object_format == "sha256" else None
-    if pattern is None or not pattern.fullmatch(revision) or not pattern.fullmatch(tree):
+    if (
+        pattern is None
+        or not pattern.fullmatch(revision)
+        or verified_revision != revision
+        or not pattern.fullmatch(tree)
+    ):
         raise ValueError("source Git identity rejected")
     if expected_head is not None and revision != expected_head:
         raise ValueError("source HEAD does not match run capsule")
@@ -712,20 +1387,14 @@ def source_identity(
         raise ValueError("source object format does not match run capsule")
     if kind == "align-source" and object_format != "sha1":
         raise ValueError("Align source object format is not SHA-1")
-    status_raw = git(git_fd, root_fd, ("status", "--porcelain=v1", "-z", "--untracked-files=normal"))
+    status_raw = git(view, ("status", "--porcelain=v1", "-z", "--untracked-files=normal"))
     allowed_status = {b"?? target/"}
     if kind == "project-source":
         allowed_status.add(b"?? main")
     if any(record not in allowed_status for record in status_raw.split(b"\0") if record):
         raise ValueError("source worktree is not clean")
-    index_path = git(
-        git_fd, root_fd, ("rev-parse", "--path-format=absolute", "--git-path", "index")
-    ).decode("utf-8", "strict").strip()
-    index_raw = read_path(index_path, 4 * 1024 * 1024 * 1024)
-    index_value = os.stat(index_path, follow_symlinks=False)
-    if not stat.S_ISREG(index_value.st_mode) or index_value.st_nlink != 1:
-        raise ValueError("source index is not regular")
-    listing = git(git_fd, root_fd, ("ls-tree", "-rz", "-r", "-t", "HEAD"))
+    retained_index_digest = index_digest(view)
+    listing = git(view, ("ls-tree", "-rz", "-r", "-t", revision))
     entries: list[SourceEntry] = []
     total = 0
     prior: bytes | None = None
@@ -737,7 +1406,15 @@ def source_identity(
         mode_raw, type_raw, oid_raw = header.split(b" ", 2)
         mode_text = mode_raw.decode("ascii")
         object_id = oid_raw.decode("ascii")
-        if not path or b"\x00" in path or path.startswith(b"/") or b"/.git/" in b"/" + path + b"/":
+        if (
+            not path
+            or len(path) > MAX_PATH_BYTES
+            or len(path.split(b"/")) > MAX_SOURCE_DEPTH
+            or b"\x00" in path
+            or path.startswith(b"/")
+            or any(part in (b"", b".", b"..") for part in path.split(b"/"))
+            or b"/.git/" in b"/" + path + b"/"
+        ):
             raise ValueError("source path rejected")
         if prior is not None and path <= prior:
             raise ValueError("source paths are not ordered")
@@ -745,47 +1422,64 @@ def source_identity(
         if path.split(b"/", 1)[0] in (b"target", b"main"):
             raise ValueError("tracked source uses reserved output path")
         if type_raw == b"tree":
-            value = os.stat(path, dir_fd=root_fd, follow_symlinks=False)
-            raw_mode = stat.S_IMODE(value.st_mode)
-            if not stat.S_ISDIR(value.st_mode) or raw_mode & 0o700 != 0o700 or raw_mode & 0o7000:
-                raise ValueError("source directory mode rejected")
-            entry = SourceEntry(path, "dir", raw_mode, 0o700, object_id, None, None)
+            _, snapshot, retained_directory = open_source_entry(
+                view.root_fd, path, os.O_PATH | os.O_DIRECTORY
+            )
+            try:
+                raw_mode = snapshot.mode
+                if snapshot.file_type != stat.S_IFDIR or raw_mode & 0o700 != 0o700 or raw_mode & 0o7000:
+                    raise ValueError("source directory mode rejected")
+            finally:
+                close_retained(retained_directory)
+            entry = SourceEntry(path, "dir", raw_mode, 0o700, object_id, snapshot, None, None)
             mode_value: str | None = f"{raw_mode:04o}"
             staged_value: str | None = "0700"
             digest: str | None = None
             size = 0
             target_hex: str | None = None
         elif mode_text in ("100644", "100755") and type_raw == b"blob":
-            raw, value = read_at(root_fd, path, MAX_FILE_BYTES)
+            value, digest, observed_object_id = hash_source_file(view.root_fd, path, object_format)
             raw_mode = value.mode
             expected_mode = 0o644 if mode_text == "100644" else 0o755
             if raw_mode != expected_mode:
                 raise ValueError("source file mode rejected")
-            git_blob = git(git_fd, root_fd, ("cat-file", "blob", object_id))
-            if raw != git_blob:
+            if observed_object_id != object_id:
                 raise ValueError("source bytes differ from Git object")
             staged_mode = 0o444 if raw_mode == 0o644 else 0o555
-            digest = sha256(raw)
-            size = len(raw)
+            size = value.size
             total += size
-            entry = SourceEntry(path, "file", raw_mode, staged_mode, object_id, raw, digest)
+            entry = SourceEntry(path, "file", raw_mode, staged_mode, object_id, value, None, digest)
             mode_value = f"{raw_mode:04o}"
             staged_value = f"{staged_mode:04o}"
             target_hex = None
         elif mode_text == "120000" and type_raw == b"blob":
-            value = os.stat(path, dir_fd=root_fd, follow_symlinks=False)
-            if not stat.S_ISLNK(value.st_mode):
-                raise ValueError("source symlink type rejected")
-            target = os.readlink(path, dir_fd=root_fd)
-            target_raw = os.fsencode(target)
+            symlink_parent, symlink_name, symlink_retained = open_source_parent(
+                view.root_fd, path
+            )
+            try:
+                value = os.stat(symlink_name, dir_fd=symlink_parent, follow_symlinks=False)
+                snapshot = snapshot_from_stat(value)
+                if snapshot.file_type != stat.S_IFLNK:
+                    raise ValueError("source symlink type rejected")
+                target_raw = os.fsencode(os.readlink(symlink_name, dir_fd=symlink_parent))
+                if snapshot_from_stat(
+                    os.stat(symlink_name, dir_fd=symlink_parent, follow_symlinks=False)
+                ) != snapshot:
+                    raise ValueError("source symlink changed")
+                for descriptor, accepted in symlink_retained:
+                    assert_snapshot(descriptor, accepted)
+            finally:
+                close_retained(symlink_retained)
             if not target_raw or len(target_raw) > 2_048 or target_raw.startswith(b"/"):
                 raise ValueError("source symlink target rejected")
-            git_blob = git(git_fd, root_fd, ("cat-file", "blob", object_id))
-            if target_raw != git_blob:
+            git_object = hashlib.sha1() if object_format == "sha1" else hashlib.sha256()
+            git_object.update(b"blob " + str(len(target_raw)).encode("ascii") + b"\0" + target_raw)
+            if git_object.hexdigest() != object_id:
                 raise ValueError("source symlink differs from Git object")
             digest = sha256(target_raw)
             size = len(target_raw)
-            entry = SourceEntry(path, "symlink", None, None, object_id, target_raw, digest)
+            total += size
+            entry = SourceEntry(path, "symlink", None, None, object_id, snapshot, target_raw, digest)
             mode_value = None
             staged_value = None
             target_hex = target_raw.hex()
@@ -811,7 +1505,7 @@ def source_identity(
             raise ValueError("source bounds exceeded")
 
     indexed: dict[bytes, tuple[str, str]] = {}
-    for record in git(git_fd, root_fd, ("ls-files", "--stage", "-z")).split(b"\0"):
+    for record in git(view, ("ls-files", "--stage", "-z")).split(b"\0"):
         if not record:
             continue
         header, path = record.split(b"\t", 1)
@@ -829,13 +1523,15 @@ def source_identity(
     }
     if indexed != expected_index:
         raise ValueError("source index differs from HEAD")
-    for record in git(git_fd, root_fd, ("ls-files", "-t", "-v", "-z")).split(b"\0"):
+    for record in git(view, ("ls-files", "-t", "-v", "-z")).split(b"\0"):
         if record and not record.startswith(b"H "):
             raise ValueError("source index flags hide worktree state")
 
     observed: dict[bytes, tuple[str, int | None, int | None]] = {}
 
-    def enumerate_worktree(directory_fd: int, prefix: bytes = b"") -> None:
+    def enumerate_worktree(directory_fd: int, prefix: bytes = b"", depth: int = 0) -> None:
+        if depth > MAX_SOURCE_DEPTH:
+            raise ValueError("source worktree depth exceeded")
         names = sorted(os.listdir(directory_fd), key=os.fsencode)
         for name in names:
             raw_name = os.fsencode(name)
@@ -867,7 +1563,7 @@ def source_identity(
                     dir_fd=directory_fd,
                 )
                 try:
-                    enumerate_worktree(child, path)
+                    enumerate_worktree(child, path, depth + 1)
                 finally:
                     os.close(child)
             elif stat.S_ISREG(value.st_mode):
@@ -906,10 +1602,12 @@ def source_identity(
                 raise ValueError("source symlink target is not tracked")
             if target_entry.kind != "symlink":
                 break
-            if current in seen or target_entry.raw is None:
+            if current in seen or target_entry.symlink_target is None:
                 raise ValueError("source symlink cycle rejected")
             seen.add(current)
-            candidate = posixpath.normpath(posixpath.join(posixpath.dirname(current), target_entry.raw))
+            candidate = posixpath.normpath(
+                posixpath.join(posixpath.dirname(current), target_entry.symlink_target)
+            )
             if candidate in (b"", b"..") or candidate.startswith(b"../") or candidate.startswith(b"/"):
                 raise ValueError("source symlink escapes the root")
             current = candidate
@@ -926,7 +1624,7 @@ def source_identity(
             ("revision", revision),
             ("tree_id", tree),
             ("object_format", object_format),
-            ("index_sha256", sha256(index_raw)),
+            ("index_sha256", retained_index_digest),
             ("root_mode", f"{root_mode:04o}"),
             ("root_staged_mode", "0700"),
             ("entries", manifest_entries),
@@ -943,15 +1641,47 @@ def source_identity(
         )
     )
     manifest_raw = canonical_json(manifest)
-    return SourceIdentity(kind, root_fd, revision, tree, object_format, sha256(index_raw), entries, manifest_raw, sha256(manifest_raw))
+    assert_git_view(view)
+    return SourceIdentity(
+        kind,
+        view,
+        revision,
+        tree,
+        object_format,
+        retained_index_digest,
+        entries,
+        manifest_raw,
+        sha256(manifest_raw),
+    )
+
+
+def source_identity(
+    kind: str,
+    root_fd: int,
+    git_fd: int,
+    *,
+    expected_head: str | None = None,
+    expected_format: str | None = None,
+) -> SourceIdentity:
+    view = open_git_view(git_fd, root_fd)
+    try:
+        return source_identity_from_view(
+            kind,
+            view,
+            expected_head=expected_head,
+            expected_format=expected_format,
+        )
+    except Exception:
+        close_git_view(view)
+        raise
 
 
 def verify_align_pin(project: SourceIdentity, align: SourceIdentity) -> None:
     pin_entry = next((entry for entry in project.entries if entry.path == os.fsencode(ALIGN_REVISION_FILE)), None)
-    if pin_entry is None or pin_entry.kind != "file" or pin_entry.raw is None:
+    if pin_entry is None or pin_entry.kind != "file":
         raise ValueError("Align revision file is missing")
     try:
-        pin_raw = pin_entry.raw.decode("ascii")
+        pin_raw = read_source_entry(project, pin_entry, 128).decode("ascii")
     except UnicodeDecodeError as error:
         raise ValueError("Align revision is not ASCII") from error
     if not pin_raw.endswith("\n") or pin_raw.count("\n") != 1:
@@ -962,7 +1692,9 @@ def verify_align_pin(project: SourceIdentity, align: SourceIdentity) -> None:
     config = next((entry for entry in align.entries if entry.path == b".cargo/config.toml"), None)
     if config is None or config.digest != "65016e7a451dc056597b68e7b83ce989560aabf62f2a265d37ca61ddda0c1be3":
         raise ValueError("Align Cargo configuration changed")
-    if config.raw is None or b'[env]\nLLVM_SYS_221_PREFER_DYNAMIC = "1"\n' not in config.raw:
+    if b'[env]\nLLVM_SYS_221_PREFER_DYNAMIC = "1"\n' not in read_source_entry(
+        align, config, 64 * 1024
+    ):
         raise ValueError("Align Cargo configuration contract changed")
 
 
@@ -1199,7 +1931,7 @@ def admit_root() -> Admission:
             root_fd,
             root_identity,
             root_name,
-            Path(f"/proc/self/fd/{roots_fd}") / root_name,
+            Path(f"/proc/self/fd/{root_fd}"),
         )
         success = True
         return result
@@ -1264,30 +1996,79 @@ def copy_source(identity: SourceIdentity, destination: Path) -> None:
     for entry in identity.entries:
         path = destination / os.fsdecode(entry.path)
         if entry.kind == "dir":
+            descriptor, accepted, retained = open_source_entry(
+                identity.view.root_fd,
+                entry.path,
+                os.O_PATH | os.O_DIRECTORY,
+            )
+            try:
+                if accepted != entry.source_snapshot:
+                    raise OSError(errno.ESTALE, "source directory changed")
+            finally:
+                close_retained(retained)
             path.mkdir(mode=entry.staged_mode or 0o700)
             continue
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if entry.kind == "symlink":
-            assert entry.raw is not None
-            os.symlink(os.fsdecode(entry.raw), path)
-            if os.fsencode(os.readlink(path)) != entry.raw:
+            assert entry.symlink_target is not None
+            parent_fd, name, retained = open_source_parent(identity.view.root_fd, entry.path)
+            try:
+                current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                target = os.fsencode(os.readlink(name, dir_fd=parent_fd))
+                if (
+                    snapshot_from_stat(current) != entry.source_snapshot
+                    or target != entry.symlink_target
+                    or snapshot_from_stat(
+                        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                    )
+                    != entry.source_snapshot
+                ):
+                    raise OSError(errno.ESTALE, "source symlink changed")
+                for descriptor, accepted in retained:
+                    assert_snapshot(descriptor, accepted)
+            finally:
+                close_retained(retained)
+            os.symlink(os.fsdecode(entry.symlink_target), path)
+            if os.fsencode(os.readlink(path)) != entry.symlink_target:
                 raise OSError(errno.EIO, "staged symlink changed")
             continue
-        assert entry.raw is not None and entry.staged_mode is not None and entry.digest is not None
+        assert entry.staged_mode is not None and entry.digest is not None
+        source, accepted, retained = open_source_entry(
+            identity.view.root_fd,
+            entry.path,
+            os.O_RDONLY | os.O_NONBLOCK,
+        )
+        if accepted != entry.source_snapshot:
+            close_retained(retained)
+            raise OSError(errno.ESTALE, "source file changed")
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, entry.staged_mode)
         try:
-            view = memoryview(entry.raw)
-            while view:
-                count = os.write(descriptor, view)
-                if count <= 0:
-                    raise OSError(errno.EIO, "short source write")
-                view = view[count:]
+            digest = hashlib.sha256()
+            offset = 0
+            while offset < accepted.size:
+                block = os.pread(source, min(READ_CHUNK, accepted.size - offset), offset)
+                if not block:
+                    raise OSError(errno.EIO, "short source read")
+                digest.update(block)
+                view = memoryview(block)
+                while view:
+                    count = os.write(descriptor, view)
+                    if count <= 0:
+                        raise OSError(errno.EIO, "short source write")
+                    view = view[count:]
+                offset += len(block)
+            for current, snapshot in retained:
+                assert_snapshot(current, snapshot)
+            if digest.hexdigest() != entry.digest:
+                raise OSError(errno.ESTALE, "source digest changed")
             os.fchmod(descriptor, entry.staged_mode)
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+            close_retained(retained)
         if sha256(read_path(str(path), MAX_FILE_BYTES)) != entry.digest or stat.S_IMODE(path.stat().st_mode) != entry.staged_mode:
             raise OSError(errno.EIO, "staged source verification failed")
+    assert_git_view(identity.view)
 
 
 def copy_tree_manifest(node: Mapping[str, Any], source: Path, destination: Path, *, root: bool = True) -> tuple[int, int]:
@@ -1366,86 +2147,99 @@ def copy_cache(manifest: Mapping[str, Any], cache_manifest: Mapping[str, Any], d
     copy_tree_manifest(cache_manifest["root"], Path(manifest["cargo_cache"]["root"]), destination)
 
 
-def copy_git_view(project_fd: int, git_fd: int, destination: Path) -> None:
-    git_directory = Path(
-        git(git_fd, project_fd, ("rev-parse", "--path-format=absolute", "--absolute-git-dir"))
-        .decode("utf-8", "strict")
-        .strip()
-    )
-    common_directory = Path(
-        git(git_fd, project_fd, ("rev-parse", "--path-format=absolute", "--git-common-dir"))
-        .decode("utf-8", "strict")
-        .strip()
-    )
+def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
+    view = identity.view
+    assert_git_view(view)
 
-    def recurse(source: int, target: Path, depth: int = 0, *, replace: bool = False) -> None:
-        if depth > 64:
+    def copy_regular(source: int, name: bytes, target: Path, *, replace: bool = False) -> None:
+        input_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=source,
+        )
+        accepted = snapshot_fd(input_fd)
+        if accepted.file_type != stat.S_IFREG or accepted.links != 1 or accepted.size > MAX_FILE_BYTES:
+            os.close(input_fd)
+            raise OSError(errno.EPERM, "Git view file rejected")
+        if replace:
+            try:
+                target.unlink()
+            except FileNotFoundError:
+                pass
+        output = os.open(
+            target,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o444,
+        )
+        try:
+            offset = 0
+            while offset < accepted.size:
+                block = os.pread(input_fd, min(READ_CHUNK, accepted.size - offset), offset)
+                if not block:
+                    raise OSError(errno.EIO, "short Git view read")
+                output_view = memoryview(block)
+                while output_view:
+                    written = os.write(output, output_view)
+                    if written <= 0:
+                        raise OSError(errno.EIO, "short Git view write")
+                    output_view = output_view[written:]
+                offset += len(block)
+            assert_snapshot(input_fd, accepted)
+            os.fchmod(output, 0o444)
+        finally:
+            os.close(output)
+            os.close(input_fd)
+
+    def recurse(source: int, target: Path, depth: int = 0) -> None:
+        if depth > MAX_SOURCE_DEPTH:
             raise OSError(errno.ELOOP, "Git view depth exceeded")
-        names = sorted(os.listdir(source), key=os.fsencode)
-        for name in names:
+        for name in sorted(os.listdir(source), key=os.fsencode):
             raw_name = os.fsencode(name)
             value = os.stat(raw_name, dir_fd=source, follow_symlinks=False)
             path = target / name
             if stat.S_ISDIR(value.st_mode):
-                path.mkdir(mode=0o700, exist_ok=replace)
-                child = os.open(raw_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=source)
-                try:
-                    recurse(child, path, depth + 1, replace=replace)
-                finally:
-                    os.close(child)
-            elif stat.S_ISREG(value.st_mode) and value.st_nlink == 1 and value.st_size <= MAX_FILE_BYTES:
-                raw, _ = read_at(source, raw_name, MAX_FILE_BYTES)
-                if replace and path.exists():
-                    path.unlink()
-                output = os.open(
-                    path,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    0o444,
+                path.mkdir(mode=0o700)
+                child = os.open(
+                    raw_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=source,
                 )
                 try:
-                    view = memoryview(raw)
-                    while view:
-                        written = os.write(output, view)
-                        if written <= 0:
-                            raise OSError(errno.EIO, "short Git view write")
-                        view = view[written:]
-                    os.fchmod(output, 0o444)
+                    recurse(child, path, depth + 1)
                 finally:
-                    os.close(output)
+                    os.close(child)
+            elif stat.S_ISREG(value.st_mode):
+                copy_regular(source, raw_name, path)
             else:
                 raise OSError(errno.EPERM, "Git view entry rejected")
 
     source_fd = os.open(
-        common_directory,
+        b".",
         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=view.common_fd,
     )
     try:
         recurse(source_fd, destination)
     finally:
         os.close(source_fd)
-    if git_directory != common_directory:
+    if snapshot_fd(view.git_fd) != snapshot_fd(view.common_fd):
         linked_fd = os.open(
-            git_directory,
+            b".",
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=view.git_fd,
         )
         try:
-            for name in ("HEAD", "index"):
-                source, _ = read_at(linked_fd, os.fsencode(name), MAX_FILE_BYTES)
-                target = destination / name
-                if target.exists():
-                    target.unlink()
-                output = os.open(
-                    target,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    0o444,
-                )
-                try:
-                    os.write(output, source)
-                    os.fchmod(output, 0o444)
-                finally:
-                    os.close(output)
+            for name in (b"HEAD", b"index"):
+                copy_regular(linked_fd, name, destination / os.fsdecode(name), replace=True)
         finally:
             os.close(linked_fd)
+    for root, directories, files in os.walk(destination):
+        for name in directories:
+            (Path(root) / name).chmod(0o500)
+        for name in files:
+            (Path(root) / name).chmod(0o444)
+    destination.chmod(0o500)
+    assert_git_view(view)
 
 
 def namespace_directories(runtime: Sequence[RuntimeBinding]) -> list[str]:
@@ -1568,6 +2362,51 @@ def child_preexec(leaf: Path) -> None:
     os.setsid()
 
 
+def set_subreaper() -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER failed")
+
+
+def pid_start_time(pid: int) -> str:
+    raw = read_bounded_stream(f"/proc/{pid}/stat", 4096)
+    close = raw.rfind(b")")
+    fields = raw[close + 2 :].split()
+    if close < 0 or len(fields) < 20:
+        raise OSError(errno.EINVAL, "process identity rejected")
+    return fields[19].decode("ascii")
+
+
+def cgroup_populated(leaf: Path) -> bool:
+    raw = (leaf / "cgroup.events").read_text(encoding="ascii")
+    values = dict(line.split(" ", 1) for line in raw.splitlines() if " " in line)
+    if values.get("populated") not in ("0", "1"):
+        raise CleanupError("child cgroup events rejected")
+    return values["populated"] == "1"
+
+
+def kill_cgroup(leaf: Path) -> None:
+    try:
+        (leaf / "cgroup.kill").write_text("1\n", encoding="ascii")
+    except OSError as error:
+        raise CleanupError("child cgroup kill failed") from error
+
+
+def reap_descendants(deadline: float) -> None:
+    while time.monotonic() < deadline:
+        reaped = False
+        while True:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return
+            if pid == 0:
+                break
+            reaped = True
+        if not reaped:
+            time.sleep(0.01)
+
+
 def run_owned(
     arguments: Sequence[str],
     *,
@@ -1588,7 +2427,10 @@ def run_owned(
             pass
     if leaf is None:
         fail("PLATFORM", "platform")
+    process: subprocess.Popen[bytes] | None = None
+    primary_failure = False
     try:
+        set_subreaper()
         (leaf / "pids.max").write_text("512\n", encoding="ascii")
         process = subprocess.Popen(
             list(arguments),
@@ -1600,33 +2442,74 @@ def run_owned(
             pass_fds=(),
             preexec_fn=lambda: child_preexec(leaf),
         )
+        accepted_start = pid_start_time(process.pid)
+        assert process.stdout is not None and process.stderr is not None
+        streams = selectors.DefaultSelector()
+        captures = {"stdout": bytearray(), "stderr": bytearray()}
+        for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+            os.set_blocking(stream.fileno(), False)
+            streams.register(stream, selectors.EVENT_READ, label)
+        deadline = time.monotonic() + timeout
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
+            while streams.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    primary_failure = True
+                    break
+                for key, _ in streams.select(min(remaining, 0.25)):
+                    block = os.read(key.fileobj.fileno(), READ_CHUNK)
+                    if not block:
+                        streams.unregister(key.fileobj)
+                        continue
+                    target = captures[key.data]
+                    if len(target) + len(block) > MAX_STREAM_BYTES:
+                        primary_failure = True
+                        break
+                    target.extend(block)
+                if primary_failure:
+                    break
+            if not primary_failure:
+                try:
+                    process.wait(timeout=max(0.1, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    primary_failure = True
+                else:
+                    primary_failure = process.returncode != 0
+        finally:
+            streams.close()
+
+        if process.poll() is None or cgroup_populated(leaf):
+            primary_failure = True
+            # A PID-directed signal is allowed only while the retained start
+            # time still identifies the admitted leader. The cgroup kill owns
+            # escaped sessions and double-fork descendants.
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                if process.poll() is None and pid_start_time(process.pid) == accepted_start:
+                    os.killpg(process.pid, signal.SIGTERM)
             except OSError:
                 pass
-            try:
-                stdout, stderr = process.communicate(timeout=1)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except OSError:
-                    pass
-                stdout, stderr = process.communicate(timeout=5)
-            fail(category, phase)
-        if len(stdout) > MAX_STREAM_BYTES or len(stderr) > MAX_STREAM_BYTES or process.returncode != 0:
-            fail(category, phase)
-        if (leaf / "cgroup.procs").read_text(encoding="ascii").strip() or (
-            leaf / "cgroup.threads"
-        ).read_text(encoding="ascii").strip():
+            kill_cgroup(leaf)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            raise CleanupError("owned child did not exit") from error
+        cleanup_deadline = time.monotonic() + 5
+        reap_descendants(cleanup_deadline)
+        while cgroup_populated(leaf) and time.monotonic() < cleanup_deadline:
+            time.sleep(0.01)
+        if cgroup_populated(leaf):
             raise CleanupError("child cgroup remained populated")
+        if primary_failure:
+            fail(category, phase)
     finally:
+        active = sys.exc_info()[1]
         try:
             leaf.rmdir()
         except OSError as error:
-            raise CleanupError("child cgroup cleanup failed") from error
+            if isinstance(active, WorkerError):
+                active.cleanup_failed = True
+            else:
+                raise CleanupError("child cgroup cleanup failed") from error
 
 
 def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> tuple[Path, Path]:
@@ -1987,24 +2870,33 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         fail("CHILD", "aggregate")
 
 
-def scan_private(root: Path) -> tuple[int, int]:
-    count = 0
-    total = 0
-    stack = [root]
-    while stack:
-        path = stack.pop()
-        for entry in os.scandir(path):
-            value = entry.stat(follow_symlinks=False)
+def scan_private_fd(root_fd: int) -> tuple[int, int]:
+    def visit(directory_fd: int, depth: int, count: int, total: int) -> tuple[int, int]:
+        if depth > MAX_SOURCE_DEPTH:
+            raise CleanupError("private tree exceeds depth bound")
+        for name in os.listdir(directory_fd):
+            raw_name = os.fsencode(name)
+            value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
             count += 1
             if stat.S_ISDIR(value.st_mode):
-                stack.append(Path(entry.path))
+                child = os.open(
+                    raw_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    count, total = visit(child, depth + 1, count, total)
+                finally:
+                    os.close(child)
             elif stat.S_ISREG(value.st_mode):
                 total += value.st_size
             elif not stat.S_ISLNK(value.st_mode):
                 raise CleanupError("private tree contains special entry")
             if count > MAX_PRIVATE_ENTRIES or total > MAX_ROOT_BYTES:
                 raise CleanupError("private tree exceeds cleanup bound")
-    return count, total
+        return count, total
+
+    return visit(root_fd, 0, 0, 0)
 
 
 def same_owned_directory(fd: int, accepted: Snapshot) -> bool:
@@ -2018,33 +2910,64 @@ def same_owned_directory(fd: int, accepted: Snapshot) -> bool:
     )
 
 
-def remove_tree_fd(parent_fd: int, name: str) -> None:
-    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+def require_parent_entry(admission: Admission) -> None:
     try:
-        for child in sorted(os.listdir(fd), key=os.fsencode, reverse=True):
-            value = os.stat(child, dir_fd=fd, follow_symlinks=False)
-            if stat.S_ISDIR(value.st_mode):
-                remove_tree_fd(fd, child)
-            elif stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode):
-                os.unlink(child, dir_fd=fd)
-            else:
-                raise CleanupError("cleanup refused special entry")
+        current = os.open(
+            admission.root_name,
+            os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=admission.roots_fd,
+        )
+    except OSError as error:
+        raise CleanupError("private root parent entry is missing") from error
+    try:
+        if snapshot_fd(current) != admission.root_identity:
+            raise CleanupError("private root parent entry was replaced")
     finally:
-        os.close(fd)
-    os.rmdir(name, dir_fd=parent_fd)
+        os.close(current)
+
+
+def remove_contents_fd(directory_fd: int, depth: int = 0) -> None:
+    if depth > MAX_SOURCE_DEPTH:
+        raise CleanupError("cleanup depth exceeded")
+    for child in sorted(os.listdir(directory_fd), key=os.fsencode, reverse=True):
+        raw_child = os.fsencode(child)
+        value = os.stat(raw_child, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(value.st_mode):
+            child_fd = os.open(
+                raw_child,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                remove_contents_fd(child_fd, depth + 1)
+            finally:
+                os.close(child_fd)
+            os.rmdir(raw_child, dir_fd=directory_fd)
+        elif stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode):
+            os.unlink(raw_child, dir_fd=directory_fd)
+        else:
+            raise CleanupError("cleanup refused special entry")
 
 
 def cleanup(admission: Admission | None) -> None:
     if admission is None:
         return
-    scan_private(admission.root_path)
     if not same_owned_directory(admission.roots_fd, admission.roots_identity) or not same_owned_directory(
         admission.root_fd, admission.root_identity
     ):
         raise CleanupError("private root identity changed")
+    require_parent_entry(admission)
+    scan_private_fd(admission.root_fd)
+    require_parent_entry(admission)
+    remove_contents_fd(admission.root_fd)
+    require_parent_entry(admission)
     os.close(admission.root_fd)
-    remove_tree_fd(admission.roots_fd, admission.root_name)
-    if admission.root_name in os.listdir(admission.roots_fd):
+    os.rmdir(admission.root_name, dir_fd=admission.roots_fd)
+    try:
+        os.stat(admission.root_name, dir_fd=admission.roots_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
         raise CleanupError("private root remains")
     os.close(admission.roots_fd)
     fcntl.flock(admission.lock_fd, fcntl.LOCK_UN)
@@ -2061,7 +2984,8 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
         manifest_raw = verify_sealed(manifest_fd, MAX_MANIFEST_BYTES)
         manifest = validate_manifest(manifest_raw)
         run_raw = verify_sealed(run_fd, MAX_ATTESTATION_BYTES)
-        predicate = invocation_predicate(run_raw, manifest_raw)
+        run_public_key = read_run_public_key()
+        predicate = invocation_predicate(run_raw, manifest_raw, run_public_key)
         worker_raw = read_fd(7, MAX_WORKER_BYTES)
         if predicate["controller_sha256"] != sha256(worker_raw):
             raise ValueError("worker digest differs from run capsule")
@@ -2104,7 +3028,7 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
             admission = admit_root()
             make_root_children(admission)
             root = admission.root_path
-            copy_git_view(project_fd, tools["git"], root / "baseline-git")
+            copy_git_view(project, root / "baseline-git")
             copy_source(project, root / "project-source")
             copy_source(align, root / "align-source")
             copy_source(project, root / "aggregate-work")
@@ -2130,6 +3054,12 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
         if cleanup_failure is not None:
             raise cleanup_failure
     finally:
+        for identity in (locals().get("align"), locals().get("project")):
+            if isinstance(identity, SourceIdentity):
+                try:
+                    close_git_view(identity.view)
+                except CleanupError:
+                    pass
         for descriptor in tools.values():
             try:
                 os.close(descriptor)

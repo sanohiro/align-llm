@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Run the batched, non-aggregate FRESH-WORKER closure qualification."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+SPECIFICATION = REPOSITORY / "docs/specs/check-gate-topology.md"
+WORKER = REPOSITORY / "scripts/fresh-align-compiler"
+
+EXPECTED_CASES = {
+    "fresh-v2-image-trust-smoke",
+    "fresh-v2-run-attestation-smoke",
+    "fresh-v2-pre-dispatch-source-smoke",
+    "fresh-v2-bootstrap-snapshot-smoke",
+    "fresh-v2-attestation-wire-golden",
+    "fresh-v2-manifest-format-smoke",
+    "fresh-v2-digest-tree-golden",
+    "fresh-v2-cache-manifest-golden",
+    "fresh-v2-source-manifest-golden",
+    "fresh-v2-source-manifest-symlink-golden",
+    "fresh-v2-source-manifest-object-format-golden",
+    "fresh-v2-source-identity-smoke",
+    "fresh-v2-bwrap-trust-smoke",
+    "fresh-v2-tool-identity-smoke",
+    "fresh-v2-runtime-closure-smoke",
+    "fresh-v2-cache-smoke",
+    "fresh-v2-source-manifest-output-exception-golden",
+    "fresh-v2-root-staging-smoke",
+    "fresh-v2-temp-root-callsite-smoke",
+    "fresh-v2-aggregate-publication-smoke",
+    "fresh-v2-build-namespace-smoke",
+    "fresh-v2-descriptor-file-smoke",
+    "fresh-v2-direct-interposition-smoke",
+    "fresh-v2-callsite-smoke",
+    "fresh-v2-interpreter-boundary-smoke",
+    "fresh-v2-aggregate-topology-smoke",
+    "fresh-v2-process-lifecycle-smoke",
+    "fresh-v2-cleanup-smoke",
+    "fresh-v2-cleanup-failure-smoke",
+    "fresh-v2-baseline-scratch-smoke",
+    "fresh-v2-status-grammar-smoke",
+    "fresh-v2-baseline-integration-smoke",
+    "fresh-v2-concurrency-smoke",
+    "fresh-v2-platform-profile-smoke",
+}
+
+
+def run(*arguments: str) -> None:
+    subprocess.run(
+        arguments,
+        cwd=REPOSITORY,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "HOME": "/nonexistent",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        check=True,
+    )
+
+
+def verify_contract_inventory() -> None:
+    specification = SPECIFICATION.read_text(encoding="utf-8")
+    closure = specification[specification.index("### 9.10 Closure matrix") :]
+    observed = set(re.findall(r"`(fresh-v2-[a-z0-9-]+)`", closure))
+    if observed != EXPECTED_CASES:
+        missing = sorted(EXPECTED_CASES - observed)
+        unexpected = sorted(observed - EXPECTED_CASES)
+        raise RuntimeError(
+            f"FRESH-WORKER qualification inventory changed: missing={missing}, unexpected={unexpected}"
+        )
+
+    worker = WORKER.read_text(encoding="utf-8")
+    forbidden = {
+        ".communicate(": "unbounded child collection returned",
+        'Path(f"/proc/self/fd/{roots_fd}") / root_name': "mutable private-root pathname returned",
+        '("rev-parse", "--verify", "HEAD")': "mutable HEAD query returned",
+    }
+    for token, message in forbidden.items():
+        if token in worker:
+            raise RuntimeError(message)
+    required = (
+        "verify_ed25519(",
+        "assert_git_view(",
+        "require_parent_entry(",
+        "kill_cgroup(",
+        "set_subreaper(",
+        "MAX_SOURCE_DEPTH",
+    )
+    for token in required:
+        if token not in worker:
+            raise RuntimeError(f"worker closure owner is missing: {token}")
+
+
+def main() -> int:
+    verify_contract_inventory()
+    run(sys.executable, "scripts/run-fresh-attestation-wire-smoke")
+    run(sys.executable, "scripts/run-fresh-image-control-smoke")
+    run(sys.executable, "scripts/run-fresh-worker-unit-smoke")
+    run(sys.executable, "scripts/check-gate-topology", "--self-test")
+    print("fresh worker focused qualification: PASS")
+    for name in sorted(EXPECTED_CASES):
+        print(f"  {name}: covered by the batched owner checks; installed cases remain hosted")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
