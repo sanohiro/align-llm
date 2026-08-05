@@ -7,9 +7,10 @@ request checks, reviews, findings, and attestations.
 
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
-- Relevant committed checkpoint: reviewed FRESH-WORKER finalization
-  `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`; the current uncommitted tree is the consolidated
-  repair of that review and must become the replacement implementation-source commit.
+- Relevant implementation checkpoint: consolidated FRESH-WORKER review repair
+  `366dc3d02452c1775b2b97d307ebcdeba155c586`. Later commits on this branch are its immutable
+  baseline oracle/finalization descendants or durable checkpoint corrections; use the latest valid
+  descendant tuple recorded by the pull request before merge.
 - Active goal: complete, review, and merge the consumer-complete FRESH-WORKER capability, then move
   to the next eligible roadmap capability without another helper-only split.
 - In progress: the repository worker now cryptographically re-verifies the sealed Ed25519/DSSE
@@ -26,18 +27,19 @@ request checks, reviews, findings, and attestations.
   descriptor-relative so a replacement root is never deleted.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
-  `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs, so it must
-  be followed by a replacement three-commit baseline sequence before merge.
+  `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
+  from a head whose latest non-evaluation source/checkpoint commit is followed by an oracle-only
+  commit and a finalizer-only commit; older tuples remain historical ancestors, not merge evidence.
 
 ## Next actions
 
-1. Commit the consolidated review repair as the replacement implementation source.
-2. Run the Section 2.4 pending measurement, commit only the projected immutable oracle, finalize
-   the canonical baseline against that full oracle commit, remove the pending file, and commit only
-   the canonical baseline and digest.
-3. Push the replacement history to the existing capability pull request, record finding
+1. If the current source/checkpoint commit does not yet have its final oracle-only and
+   finalizer-only descendants, run the Section 2.4 pending measurement and create them. Otherwise,
+   do not repeat the measurement.
+2. Push the replacement history to the existing capability pull request, record finding
    dispositions, obtain fresh installed Ubuntu 24.04 FRESH-IMAGE/FRESH-WORKER evidence, and merge
    with a merge commit only after every required check passes.
+3. After merge, perform the bounded retrospective and begin the next eligible consumer capability.
 
 ## Latest verification
 
