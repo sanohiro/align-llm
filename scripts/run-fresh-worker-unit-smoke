@@ -339,6 +339,29 @@ def private_mount_case(module, temporary: Path) -> None:
             and stat.S_ISREG(os.fstat(descriptors[1]).st_mode),
             "private mount descriptors did not retain source identity",
         )
+        require(
+            module.overlay_arguments((17, 19, 23))
+            == [
+                "--overlay-src",
+                "/proc/self/fd/17",
+                "--overlay",
+                "/proc/self/fd/19",
+                "/proc/self/fd/23",
+                "/workspace",
+                "--ro-bind-fd",
+                "17",
+                "/fd-hold/lower",
+                "--ro-bind-fd",
+                "19",
+                "/fd-hold/upper",
+                "--ro-bind-fd",
+                "23",
+                "/fd-hold/work",
+                "--tmpfs",
+                "/fd-hold",
+            ],
+            "overlay descriptor-retention argv changed",
+        )
         try:
             module.open_private_mount(
                 admission, admission.root_path.parent / "escape", "dir"

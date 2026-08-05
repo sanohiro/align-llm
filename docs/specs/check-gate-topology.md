@@ -2599,9 +2599,12 @@ The worker resolves every private mount source relative to the retained root des
 with `O_PATH|O_NOFOLLOW|O_CLOEXEC`, verifies its type and effective-uid ownership, and passes only
 those exact descriptors to the outer bwrap setup. The bwrap argv consumes each descriptor through
 `--bind-fd` or `--ro-bind-fd`. Because bwrap has no descriptor form of its overlay operation, its
-three retained overlay descriptors are named only as `/proc/self/fd/<fd>` in that bwrap's own argv;
-it never asks the new user namespace to traverse the parent worker's procfs descriptor path. The
-worker retains the descriptors until bwrap exits and closes them before cleanup.
+three retained overlay descriptors are named only as `/proc/self/fd/<fd>` in that bwrap's own argv.
+Read-only fd-bind operations for the same descriptors follow the overlay operation so bwrap retains
+them through setup; those operations consume the descriptors into `/fd-hold`, and an immediately
+following tmpfs hides that holding tree before the payload starts. The child never asks the new user
+namespace to traverse the parent worker's procfs descriptor path. The worker retains its copies of
+the descriptors until bwrap exits and closes them before cleanup.
 It never removes shared `/tmp`, the profile root parent, the project root,
 `ALIGN_REPO`, either source cache, or a path whose parent/name identity it cannot prove.
 
@@ -2719,8 +2722,9 @@ descriptor or construction memfd crosses the aggregate boundary.
 
 The build and aggregate bwrap setup processes are invoked with `close_fds=True` and only their
 verified private mount-source descriptors in `pass_fds`; ordinary descriptors are consumed by a
-`--bind-fd` or `--ro-bind-fd` operation, while the three aggregate overlay descriptors are consumed
-by bwrap's overlay setup through its own `/proc/self/fd` view before the payload starts. Every
+`--bind-fd` or `--ro-bind-fd` operation. The aggregate overlay descriptors are registered by
+post-overlay read-only fd-bind operations so they survive until bwrap's overlay setup resolves its
+own `/proc/self/fd` view, then the holding mounts are hidden by tmpfs before the payload starts. Every
 aggregate payload and nested bwrap starts with an empty inherited descriptor set. No compiler
 identity descriptor is inherited by Make, a shell, Python, a fixture, or a nested validation child,
 so those helpers may close, mark, or replace their ordinary descriptors without affecting the worker
@@ -2938,9 +2942,13 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /baseline-git --dir /tools --dir /cargo --dir /target \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
+  --dir /fd-hold --dir /fd-hold/lower --dir /fd-hold/upper --dir /fd-hold/work \
   --overlay-src /proc/self/fd/<aggregate-work-fd> \
   --overlay /proc/self/fd/<workspace-upper-fd> \
             /proc/self/fd/<workspace-work-fd> /workspace \
+  --ro-bind-fd <aggregate-work-fd> /fd-hold/lower \
+  --ro-bind-fd <workspace-upper-fd> /fd-hold/upper \
+  --ro-bind-fd <workspace-work-fd> /fd-hold/work --tmpfs /fd-hold \
   --ro-bind-fd <tool-bin-fd> /tools \
   --ro-bind-fd <cargo-home-fd> /cargo \
   --ro-bind-fd <cargo-target-fd> /target \

@@ -2355,6 +2355,31 @@ def close_private_mounts(descriptors: Sequence[int]) -> None:
         os.close(descriptor)
 
 
+def overlay_arguments(descriptors: Sequence[int]) -> list[str]:
+    if len(descriptors) != 3:
+        raise ValueError("overlay descriptor set rejected")
+    lower, upper, work = descriptors
+    return [
+        "--overlay-src",
+        f"/proc/self/fd/{lower}",
+        "--overlay",
+        f"/proc/self/fd/{upper}",
+        f"/proc/self/fd/{work}",
+        "/workspace",
+        "--ro-bind-fd",
+        str(lower),
+        "/fd-hold/lower",
+        "--ro-bind-fd",
+        str(upper),
+        "/fd-hold/upper",
+        "--ro-bind-fd",
+        str(work),
+        "/fd-hold/work",
+        "--tmpfs",
+        "/fd-hold",
+    ]
+
+
 def derived_paths(runtime: Sequence[RuntimeBinding]) -> tuple[str, str, str]:
     libraries: list[str] = []
     loaders: list[str] = []
@@ -2931,12 +2956,19 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         arguments.extend(("--dir", directory))
     arguments.extend(
         (
-            "--overlay-src",
-            f"/proc/self/fd/{overlay_descriptors[0]}",
-            "--overlay",
-            f"/proc/self/fd/{overlay_descriptors[1]}",
-            f"/proc/self/fd/{overlay_descriptors[2]}",
-            "/workspace",
+            "--dir",
+            "/fd-hold",
+            "--dir",
+            "/fd-hold/lower",
+            "--dir",
+            "/fd-hold/upper",
+            "--dir",
+            "/fd-hold/work",
+        )
+    )
+    arguments.extend(
+        (
+            *overlay_arguments(overlay_descriptors),
             *bind_arguments,
             "--size",
             "268435456",
