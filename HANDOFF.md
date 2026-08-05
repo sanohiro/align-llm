@@ -8,7 +8,7 @@ request checks, reviews, findings, and attestations.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
 - Open pull request: #61 (`agent/fresh-worker-capability`), current head
-  `8921d4d3d1fee4c454a1514027a3c620a66bc447`; it is not merged and must remain merge-commit-only.
+  `a8e5429aee5b009ffe8e4041cca71f016b917e6c`; it is not merged and must remain merge-commit-only.
 - Current baseline tuple for this head: source/checkpoint
   `ccb42a79f2392328725c8125aa0662c3825432a5`, oracle
   `36e087c67004dfda54c16f64f236221357c341b1`, finalization
