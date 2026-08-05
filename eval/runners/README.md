@@ -28,10 +28,12 @@ clamped to the validation command's absolute deadline, so a later monitor poll c
 phase budgets past the command timeout. A worktree scan skips only entries that
 disappear between enumeration and metadata inspection and already-observed descendant directories
 that disappear before their queued scan; a missing checkout root and iterator, metadata, or
-cleanup errors still fail closed. `scripts/run-coding-task-resource-scan-smoke` exercises those races,
-deadline precedence, iterator cleanup, exact file and byte ceilings, and root-only `.git` exclusion
-against the runner's exact source bytes. Directory modes are snapshotted before validation and
-rejected if a candidate or validator changes them, including the checkout root.
+cleanup errors still fail closed. `scripts/run-coding-task-resource-scan-smoke` is the focused
+resource-monitor qualification and exercises those races, deadline precedence, iterator cleanup,
+exact file and byte ceilings, and root-only `.git` exclusion against the runner's exact source
+bytes. It runs when this monitor or its policy changes and is intentionally not a transitive part of
+ordinary `eval-coding`. Directory modes are snapshotted before validation and rejected if a
+candidate or validator changes them, including the checkout root.
 Temporary checkout cleanup is automatic. The CI gate
 also supplies a patch that changes a forbidden test file
 and a passing patch that writes and stages a forbidden file during validation; both must be rejected

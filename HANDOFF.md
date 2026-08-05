@@ -1,53 +1,53 @@
 # Session handoff
 
-Read `CLAUDE.md` first. This file records durable execution state; GitHub owns transient pull
-request checks, reviews, and attestations.
+Read `CLAUDE.md` first. This file records durable capability state; GitHub owns transient pull
+request checks, reviews, findings, and attestations.
 
 ## Current state
 
-- Branch: `agent/fresh-source-identity-implementation`, based on PR #57 merge commit `1697f161574797d1990f44f6d92c816458894780` and design commit `00d1e59fa6c739743eed338061dcbb15cf2c93ff`.
-- Active goal: implement and verify the Section 9 Linux x86_64 descriptor-relative source identity gate. This branch owns source-root resolution, fixed Git-view policy, raw worktree/Git identity capture, and manifest comparison; it does not claim private-root admission, source/cache materialization, the full worker, or adoption behavior.
-- Durable design state: Section 9 is the only normative fresh-compiler contract. The v4 slice separates the image-owned supervisor/bootstrap plane from the per-reviewed-head repository worker; the fixed image manifest authenticates image tools/runtime only, while a signed run capsule binds the checked-out head, object format, canonical `ALIGN_REPO` relative path, and worker digest. It defines the exact supervisor fd-4/5/6 boundary, sealed worker/manifest/run snapshots at fd-7/8/9, descriptor-relative source roots with a bounded active descriptor window, canonical source/cache/attestation wires, a worker-owned protected `/run/user/<uid>/align-llm-fresh/lock`, fail-closed orphan handling, executable `/tmp`, fixed resource/cardinality limits, complete Make option rejection, fixed internal `-f /workspace/Makefile` selection, explicit root output-exception metadata, phase-5 Cargo configuration ownership, private Git views, read-only compiler/archive bundle, aggregate overlay, nested coding-task `/tmp` and `/dev/shm` 64 MiB quotas, Request 6 fresh launcher/cache vectors, output closure, and exact status/cleanup grammar.
-- Complete: PR #54 merged the Section 9 design, PR #55 merged the attestation-wire foundation, PR #56 merged the schema-2 manifest/digest wire foundation, and PR #57 merged the schema-1 source-manifest wire at `1697f161574797d1990f44f6d92c816458894780`. The design's image/bootstrap trust plane, repository worker contract, closure matrix, platform limits, and adoption ordering are authoritative. `scripts/fresh_attestation.py`, `scripts/fresh_manifest.py`, and `scripts/fresh_source.py` retain their merged wire-only boundaries. Source-identity content commit `36322035fe200709f052cfa677ece5ccfa8ec8ba`, reviewed checkpoint `f826e6046d9606f7088d0c2a271b82139bdee773`, and the consolidated repair co-committed with this handoff add descriptor resolution/lifetime, a bounded fixed Git view, retained loose/packed symbolic-ref identity, accepted-OID-pinned Git queries, repository-policy rejection, streaming index identity, SHA-1/SHA-256 object semantics, raw enumeration, output exceptions, canonical manifest construction, sanitized public errors, complete handle recheck, exact-source smoke loading, and focused ordinary/linked, project/Align, policy, mutation, ref-race, symlink, bound, and failure-cleanup coverage. The author-side closure audit and affected verification pass. Not started: private-root admission, source/cache materialization, image installation/attestation, process/cleanup boundary, Make integration, baseline refresh, fresh capable acceptance, and any `.align-revision` change.
+- Branch: `agent/streamline-development-workflow`, based on `origin/main` merge commit
+  `552e8bd20524a7a0ae51eda929023ce46c56d145` (PR #58).
+- Active goal: make delivery capability-oriented and keep routine verification bounded without
+  reducing the C6, C7, or fresh-compiler contracts.
+- Complete foundation: PRs #54-#58 merged the Section 9 fresh-compiler design, wire formats, and
+  descriptor-relative source identity. They are internal foundations of FRESH-WORKER, not future
+  helper-only pull request boundaries.
+- Complete on this branch: governance, roadmap, Align-request adoption, C6/C7 delivery boundaries,
+  check-topology policy, developer guidance, and coding-task resource qualification ownership are
+  synchronized as one workflow capability. The resource/race qualification remains available as a
+  direct focused command but is no longer a transitive child of every `eval-coding` run.
 
-## Next steps
+## Next actions
 
-1. Merge the current source-identity gate after its final external integration evidence is green.
-2. Stop after this merge as requested. The next eligible roadmap work begins with the separate private-root and source/cache materialization slices; process ownership and Make integration remain later slices.
+1. Publish one workflow pull request, obtain the required comprehensive adversarial review, apply
+   any valid findings in one repair, and merge after required checks pass.
+2. After merge, begin FRESH-WORKER as one consumer-complete capability: private-root admission,
+   source/cache materialization, compiler bundle, process ownership, cleanup, Make integration, and
+   core end-to-end functional smoke. FRESH-IMAGE remains a separate operational failure domain.
 
 ## Latest verification
 
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-attestation-wire-smoke`: PASS — both Section 9 attestation golden vectors, PAE hashes, Ed25519 verification, and negative wire cases.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-manifest-wire-smoke`: PASS — schema-2 syntax/semantic separation, standalone and cache digest golden vectors, complete 58-tool inventory, runtime/cache bounds and mode mapping, exact 65,536-byte probe cap, aggregate runtime/count bounds, and negative cases.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-source-manifest-wire-smoke`: PASS — four source golden vectors, canonical bytes/digests, raw empty-index digest, SHA-1/SHA-256 object-id widths, Align SHA-256 and root-`main` rejection, parent/order/exception/mode/symlink checks, source aggregate bounds, and oversized-integer rejection.
-- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile scripts/fresh_attestation.py scripts/fresh_manifest.py scripts/run-fresh-manifest-wire-smoke`: PASS; generated bytecode was removed immediately after the check.
-- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile scripts/fresh_source.py scripts/run-fresh-source-manifest-wire-smoke`: PASS; generated bytecode was removed immediately after the check.
-- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile scripts/fresh_attestation.py scripts/fresh_manifest.py scripts/fresh_source.py scripts/run-fresh-manifest-wire-smoke scripts/run-fresh-source-manifest-wire-smoke`: PASS after `ae84b22`; generated bytecode was removed immediately after the check.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-manifest-wire-smoke`: PASS after the shared canonical-JSON parser repair.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-attestation-wire-smoke`: PASS after the shared canonical-JSON parser repair.
-- `git diff --check bb2fb0a^..bb2fb0a`: PASS.
-- `git diff --check 0c5f559..1e20408`: PASS.
-- `git diff --check`: PASS at the PR #56 merge head.
-- `git diff --check 3c4802e..294606e`: PASS; the consolidated repair closes bounded deep-JSON, unknown-envelope, multiple-signature, noncanonical-base64, and malformed-signature cases.
-- `git diff --check`: PASS.
-- PR #55 hosted check `Pinned Align compiler and supported checks`: PASS at merge.
-- `make check`, `make build`, `make ci`, hosted checks, baseline refresh, and benchmarks: N/A for this focused wire-only slice; it does not alter the Make graph, compiler pin, or integration behavior.
-- `git diff --check 1c599ae..38b5bb5`: PASS.
-- Source-identity focused verification is PASS after the consolidated repair: exact-byte Python `compile()`, the public-surface AST assertion, `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-source-identity-smoke`, `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-source-manifest-wire-smoke`, the changed-Markdown fence check, `test ! -e scripts/__pycache__`, and `git diff --check`. The source-identity smoke covers exact-source loading and cache preservation, ordinary/linked/packed ref races, missing-control failure cleanup, streamed index reading, public-error sanitization, and the declared source/Git bounds. `PYTHONDONTWRITEBYTECODE=1 make ci` passes on the repaired content tree, including the pinned Align build, topology, hosted/capable graph, coding corpus, and canonical baseline.
+- `git diff --check`, `bash -n scripts/run-coding-task-invalid-smoke`, and the balanced Markdown
+  fence assertion: PASS.
+- `python3 scripts/check-gate-topology --self-test` and `make gate-topology-check`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-coding-task-resource-scan-smoke`: PASS as the
+  focused resource/race qualification.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-coding-task-invalid-smoke`: PASS without invoking the
+  resource qualification.
+- `PYTHONDONTWRITEBYTECODE=1 make eval-coding`: PASS in 21.751 seconds of shell-reported real time.
+- `PYTHONDONTWRITEBYTECODE=1 make ci`: PASS at pinned Align revision
+  `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 
 ## Blockers and decisions
 
-- `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; no adoption or compiler pin change is permitted yet.
-- Section 9 claims only Ubuntu/Linux x86_64 with executable `/tmp`, delegated cgroup limits, and the named minimum toolchain. C7's required aarch64 Linux and aarch64 macOS environments need separate reviewed platform profiles and implementations.
-- Request 7's exact Git 2.45.0 immutable OCI image/job remains a separate prerequisite; do not invent its digest.
-- Post-merge retrospective (PR #54): the final review found one stale shared-`/tmp` ledger phrase; it was corrected in the same design checkpoint before merge. The hosted pinned-compiler check passed, merge state was clean, and no new governance rule was needed. The reusable implementation lesson is to keep the Section 9 closure matrix and request-register summary synchronized in every worker-boundary slice.
-- Post-merge retrospective (PR #55): the review found one parser-boundary bug and one negative-coverage gap; both were repaired in one consolidated implementation repair, the focused smoke and hosted check passed, and no new governance rule was needed. The reusable implementation lesson is to test malformed bounded inputs at the parser's exception boundary, not only valid golden vectors.
-- Post-merge retrospective (PR #56): the review found three aggregate-validation gaps—runtime total bytes, cache-directory owner mode, and advertised cache entry count. All were repaired in one consolidated commit and covered by focused negatives; the hosted check passed, no merge or worktree friction remained, and no new governance rule was needed. The reusable lesson is to enforce aggregate limits at the owning validator and test cap-plus-one values before materialization.
-- Post-merge retrospective (PR #57): the review found three source-wire boundary gaps—Align root `main`, source-directory mode semantics, and oversized JSON integers. All were repaired in one consolidated commit and covered by focused negatives; the hosted check passed and merge was clean. Reusable lessons are to keep root-output policy distinct from source-directory policy and to test runtime-specific parser bounds; no new governance rule is needed.
-- Source-identity review lesson: any Git query sequence that begins from a mutable token must retain the complete loose/packed ref resolution source and pin every later object/tree/index query to the accepted object ID. Every acquired descriptor must enter its cleanup owner before the next fallible operation, and Python acceptance smoke must compile the reviewed source bytes directly while proving caller bytecode-cache state is unchanged.
-- Source-identity slice decision: the worker must retain descriptor identities and use fixed Git environment variables before any object lookup; filesystem enumeration, Git tree/index identity, and canonical manifest comparison are one source gate, while private-root creation and copying remain later phases.
-- Current source-wire decision: the pure validator checks canonical schema, raw path ordering, explicit parent-directory entries, both root output-name exclusions, symlink target size/digest, source-directory owner mode requirements, and all source-wire aggregate bounds; Git object-store semantic lookup and descriptor-relative filesystem identity remain worker responsibilities and are intentionally not inferred from wire width alone.
-- Preserve the run-capsule/image-manifest split, bounded supervisor and bootstrap worker snapshots, exact supervisor logical request and direct-bootstrap argv, environment scrub, fd 4/5/6 supervisor handoff with worker fd 4/7/8/9 snapshot map, protected per-user `roots` namespace and worker-owned lock, unique delegated cgroup leaves with exact rlimits, SHA-1-only Align pin in this Linux profile, encoded symlink bound, authenticated `ALIGN_REPO` selection, fail-closed orphan policy, source identity and bounds, private Git views, fixed Cargo configuration, self-contained `/runtime/cc-suite` compiler closure, read-only `/tools/alignc`/archive bundle, authoritative internal `Makefile` selection, nested coding-task `/tmp` and `/dev/shm` quotas, Request 6 fresh launcher/cache/conditional-fixture vectors, and exact status grammar.
-- Do not consume `6b5dfaa`, `bb9ad1f`, or any unreviewed topology implementation as an implementation contract until this successor design and its dependent implementation merge. Preserve the no-host-fallback, staged interpreter/loader closure, overlay publication, private Git refs, and empty descriptor propagation decisions.
-- The sibling Align checkout is the language source of truth. Do not code against hypothetical Align APIs or update the pin from this design branch.
-- No intentional uncommitted files remain in this worktree after the consolidated repair commit. Generated `scripts/__pycache__` is absent. The main worktree's separate uncommitted `HANDOFF.md` is intentional and must not be discarded.
+- `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this workflow change
+  does not adopt a compiler or proposed Align surface.
+- Specification scope is unchanged. C6/C7 labels and closure rows remain acceptance ownership cells,
+  while branches and pull requests are grouped by consumer-complete capability.
+- Core aggregates contain bounded functional integration. Security, resource, race, fuzz, stress,
+  mutation, platform, and benchmark qualification run through named owner commands when their
+  boundary changes or an explicit audit requires them.
+- Time and line counts are diagnostic expectations, not gates or quotas. Lack of progress triggers
+  a cost and boundary audit; it does not automatically trigger a smaller pull request.
+- The separate primary worktree has an intentional uncommitted `HANDOFF.md`; do not discard or
+  overwrite it while this clean worktree is active.

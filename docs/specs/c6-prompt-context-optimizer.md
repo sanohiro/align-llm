@@ -1,10 +1,10 @@
 # C6 Prompt and Context Optimizer
 
-Status: design plan of record; the independently mergeable C6b renderer-core implementation and
-C6c1 row validation/aggregation kernel are merged. C6c2 is in a re-scoped design-review slice as a
-pure verifier over already-decoded records; JSON/document binding remains deferred to C6a1/C6a2 and
-their Align prerequisites. C6a0-C6a2, C6b artifact binding, and later product slices have not
-started.
+Status: design plan of record; the C6b renderer core, C6c1 row validation/aggregation kernel, and
+C6c1p prefix validator are merged foundations. The remaining contract is delivered through the consumer-complete capability
+waves in Section 11. Historical C6a-C6g labels identify acceptance and ownership cells, not required
+branch or pull request boundaries. JSON/document binding remains dependent on its named Align
+prerequisites; no code may target a proposed surface.
 
 This document refines C6 from `docs/specs/roadmap.md` and the Prompt Optimizer contract in
 `docs/specs/align-llm.md`. If this document conflicts with either parent specification, the parent
@@ -40,7 +40,7 @@ The C6 gate is complete only when all of the following are true:
 A deterministic lifecycle smoke proves state transitions, validation, and scoring, but does not by
 itself satisfy item 6.
 
-### 1.1 Align prerequisites and blocked slices
+### 1.1 Align prerequisites and blocked capability cells
 
 The reviewed contract depends on capabilities whose shipped adoption gates are not complete. They
 are recorded as separate requests in `docs/align-requests.md`; this design does not make any
@@ -54,9 +54,9 @@ hypothetical API part of C6:
    rows; this request is an independent prerequisite for the later JSON escape acceptance matrix.
 3. **Request 7 — escaped strings in declared-record JSON.** Typed `json.decode` must decode every
    JSON escape accepted by `json.encode` into declared `str` fields and `array<str>` elements,
-   including nested records and options. This blocks C6a and the JSON-dependent C6 product slices.
-   The current C6b renderer core deliberately does not decode failure-memory JSONL, so it remains
-   independently mergeable. Escape-free fixtures, `json.doc`, and an application-specific base64
+   including nested records and options. This blocks C6a and the JSON-dependent C6 product cells.
+   The merged C6b renderer core deliberately does not decode failure-memory JSONL, so it remains a
+   valid foundation while the consumer is blocked. Escape-free fixtures, `json.doc`, and an application-specific base64
    wire format are not substitutes for the declared-record round trip. Request 7 is already
    registered and remains `PROPOSED` until its recorded benchmark and decoded-owner prerequisites
    are satisfied. C6c2 does not bypass this request: its pure verifier consumes only records that
@@ -80,7 +80,7 @@ hypothetical API part of C6:
    dynamic `array<T>` fields inside those records. Request 8 explicitly excludes them, so Request
    10 owns the separately reviewed recursive `DropPlan`, reallocation, and partial-construction
    extension. C6f2 and the C6c2 decoded-record implementation are blocked on both Requests 8 and
-   10; neither slice consumes a proposed surface.
+   10; neither dependent cell consumes a proposed surface.
 7. **Request 11 — bounded child-process capture.** The current `std.process.run()` captures
    stdout/stderr without a receiver-selected limit. C6f1, C6f2, and C6g1 must wait for a shipped
    cap that kills/reaps over-limit children before claiming their helper and adapter bounds.
@@ -94,19 +94,20 @@ hypothetical API part of C6:
    delete-before-rename, or undeclared native workaround.
 10. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
    adoption gate remains pending. C6e and C6g1 cannot claim the provider timeout gate until that
-   original acceptance target passes, whether it is completed by Request 2's adoption slice or by
-   the combined Request 5 adoption slice.
+   original acceptance target passes, whether it is completed in the C6 prerequisite wave or an
+   earlier consumer adoption capability.
 
-Before a blocked slice starts, every named request must reach `ALIGN_MERGED`; build that named Align
-revision in release mode, update `.align-revision`, and pass `make ci`. Do not write C6 declarations
-against an unpinned newer checkout. The slice resumes only after each original align-llm acceptance
-test also passes. Requests 6 and 9 remain independent of C6; Request 13 is the named C6a1/C6a2
-dependency because no C6 artifact may rely on a borrowed JSON view after its input buffer expires.
+Before a blocked consumer cell starts, every named request must reach `ALIGN_MERGED`. Batch the
+requests needed by that consumer into one release build and `.align-revision` update, then pass each
+original align-llm acceptance target and one final `make ci`. Do not write C6 declarations against
+an unpinned newer checkout. Requests 6 and 9 remain independent of C6; Request 13 is the named
+C6a1/C6a2 dependency because no C6 artifact may rely on a borrowed JSON view after its input buffer
+expires.
 
 ### 1.2 Review-closure contract
 
 The following decisions close the design-review dimensions that are easy to lose between the
-schemas, command prose, and implementation slices. They are normative for C6 and take precedence
+schemas, command prose, and implementation checkpoints. They are normative for C6 and take precedence
 over any earlier shorthand such as “bounded output” or “owning record” when the shorthand is less
 specific.
 
@@ -266,7 +267,7 @@ field of `EnvironmentIdentityCore`. No producer is allowed to choose, omit, or h
 identity.
 
 The following closure table is part of the C6 design review, not an implementation backlog. Each
-row names the exact acceptance fixture that the first owning slice must add; a slice cannot claim
+row names the exact acceptance fixture that the first owning capability must add; a capability cannot claim
 completion by adding only the prose or only a fixture that does not exercise the named boundary.
 
 | Previous review class | Contract decision | First owner and exact acceptance fixture |
@@ -383,7 +384,8 @@ C6 does not:
 The full C6 context surface is deliberately limited to optional information already owned by the
 verification loop: failure-memory events, patch-evaluation context, and bounded captured
 diagnostics. The current C6b core starts with patch-evaluation context and diagnostics; adding
-failure-memory adoption requires the later reviewed C6b-memory slice described below.
+failure-memory adoption requires the later C6b-memory checkpoint inside C6-LIFECYCLE described
+below.
 
 ## 3. Prompt hierarchy and ownership
 
@@ -411,11 +413,12 @@ The renderer always emits the first three sections. A learned candidate cannot d
 substitute them. Empty learned text is allowed only when the candidate changes at least one context
 policy field.
 
-The full C6 target includes all optional context sections shown below. The independently mergeable
-C6b renderer core implements the fixed hierarchy, learned append, bounded patch-evaluation context,
+The full C6 target includes all optional context sections shown below. The merged C6b renderer core
+implements the fixed hierarchy, learned append, bounded patch-evaluation context,
 and bounded diagnostics. It emits the failure-memory heading as `(omitted)` but does not accept,
-decode, or select failure-memory JSONL. Failure-memory adoption is a separate C6b-memory slice that
-may start only after Request 7 reaches `ALIGN_MERGED` and its align-llm acceptance gate passes.
+decode, or select failure-memory JSONL. Failure-memory adoption is a C6b-memory checkpoint within
+C6-LIFECYCLE and may start only after Request 7 reaches `ALIGN_MERGED` and its align-llm acceptance
+gate passes.
 
 The exact rendering order and delimiters are stable:
 
@@ -1422,7 +1425,7 @@ Proposal endpoints follow the same no-userinfo/no-credential-query rule as evalu
 The 262,144-byte response limit is enforced while receiving, before an owning response body can
 grow past the cap. The current pinned `std.http` client buffers up to its much larger runtime cap
 before `provider_http.post_json` returns, so it cannot implement this promise. C6's
-provider-proposal slice is blocked on Align Request 5 (bounded HTTP response bodies). No C6 code
+provider-proposal cell is blocked on Align Request 5 (bounded HTTP response bodies). No C6 code
 may call the current unbounded provider boundary and then pretend that a post-allocation length
 check satisfies this contract. Artifact, renderer, pure scoring, activation, and deterministic
 evaluator work may continue independently.
@@ -2987,12 +2990,13 @@ explicitly reviewed deferral.
 | Physical workspace containment and raw entry closure | trusted snapshot helper, `src/prompt_evaluate.align` | symlink root/component, physical escape, non-UTF-8 extra entry, mutation, and cleanup regressions |
 | Fixed-corpus provider quality gate | evaluation adapter and `eval/tasks/prompt-v1/` | at least 2 tasks x 2 samples; improvement and zero serious regressions |
 | Canonical acceptance and rollback chain | gate manifest and validator | source-bundle locator/policy/helper/tool, derived tested-head ancestry, explicit root/FILE_SET-manifest revalidation plus real improved evaluation + matching evidence -> accepted activation -> rollback, with every wrong/missing digest or evidence reference rejected |
-| Regression integration | `Makefile`, `.github/workflows/ci.yml`, smoke script | `make ci` and hosted supported check |
+| Regression integration | `Makefile`, `.github/workflows/ci.yml`, smoke scripts | bounded functional owners in the routine graph; complete qualification commands at the owning capability gate; one final `make ci` per integrated wave |
 
 ### 10.1 Implementation closure matrix
 
-Each named regression is introduced in the slice that first owns the cell. Before review of that
-slice, the matrix-to-diff pass replaces the planned owner with the actual file/test location.
+Each named regression is introduced by the capability that first owns the cell. Before review of
+that capability, the matrix-to-diff pass replaces the planned owner with the actual file/test
+location.
 
 | Path | Model/codec | Renderer/memory | Scorer/state | Evaluator/provider | Exact planned regression |
 | --- | --- | --- | --- | --- | --- |
@@ -3011,7 +3015,7 @@ slice, the matrix-to-diff pass replaces the planned owner with the actual file/t
 ### 10.1a Final-review redesign closure
 
 The terminal review reopened these cells rather than authorizing another local repair loop. The
-redesigned slice is not implementation-ready until every row below has an actual owner and passing
+redesigned capability is not implementation-ready until every row below has an actual owner and passing
 fixture in the diff.
 
 | Final-review invariant | Contract owner | Required design decision | Exact regression |
@@ -3024,7 +3028,7 @@ fixture in the diff.
 
 The conditional final review found two implementation-level ownership contradictions, one output
 state contradiction, and one continuity-boundary violation. This section reopens those cells before
-any successor repair. PR #50 is a terminal review checkpoint; a successor must map each row below to
+any successor repair. PR #50 is a historical terminal review checkpoint; the capability must map each row below to
 the final prose, ledger, and regression before it is reviewed.
 
 | Rescope invariant | Contract owner | Required design decision | Exact regression |
@@ -3061,128 +3065,54 @@ Applicability decisions:
 | Performance | provider quality uses time to passing patch; lifecycle overhead is secondary and not a gate claim |
 | Security/credentials | API-key values are environment-only, passed only to the allowlisted adapter child, and must not enter artifacts or diagnostics |
 
-## 11. Delivery slices
+## 11. Capability waves and acceptance ownership
 
-Implementation starts only after this design is independently reviewed and merged. Every slice
-targets at most roughly 1,000 changed hand-written lines; its pull request records the actual count
-and must split again before coding if the estimate no longer holds.
+The labels C6a0-C6g2 below remain stable references for dependencies, closure-matrix ownership, and
+focused acceptance. They are not a required sequence of branches or pull requests. A capability
+branch may contain several labeled checkpoints as scoped commits and must include the production
+consumer that makes its new foundations useful. A line-count estimate is planning information only;
+large coherent behavior is made reviewable with commit structure, owner tests, and risk-partitioned
+review rather than helper-only pull requests.
 
-1. **C6a0 — Align adoption (blocked on Request 7)**
-   - after Request 7 reaches `ALIGN_MERGED`, build the named Align revision, advance
-     `.align-revision`, update the request lifecycle and pinned-era ownership comments, and pass
-     `make ci`;
-   - no C6 product declaration or behavior;
-   - estimated review surface: pin/request/docs integration below 300 hand-written lines.
-2. **C6a1 — canonical codec and prompt foundations (blocked on Requests 7, 12, and 13)**
-   - SHA-256/lowercase-hex helpers, bounded JSON reader, canonical digest validation, universal
-     labels/bounds, prompt/context/scope/policy records, and their semantic-to-byte and
-     byte-to-semantic golden vectors;
-   - after Request 12 is adopted, use its bounded canonical encoder for every capped artifact;
-   - no evaluator/result schemas, renderer, process, provider, lifecycle, or CLI mutation;
-   - estimated review surface: one module plus fixtures below 900 hand-written lines.
-3. **C6a2 — evaluation and activation artifact declarations (blocked on Requests 12 and 13)**
-   - declared snapshot, measurement, evaluation, activation, gate-manifest, and operation-envelope
-     records plus field-specific validators and all remaining golden vectors;
-   - no scoring, rendering, process, provider, lifecycle, or CLI mutation;
-   - estimated review surface: declarations/validators and fixture generator below 1,000
-     hand-written lines.
-4. **C6b — pure prompt/context renderer**
-   - fixed hierarchy, learned append, bounded patch/diagnostic contexts, and `PromptRender`; the
-     first independently mergeable core slice does not persist artifacts or adopt failure-memory
-     JSONL;
-   - the Request 7-dependent failure-memory selection is a later C6b-memory slice with its own
-     acceptance gate;
-   - rendered-prompt artifact binding follows after the C6a1/C6a2 artifact declarations and their
-     blocked Align prerequisites are available;
-   - pure golden inputs plus C5 legacy no-activation regression;
-   - no accept, rollback, provider, or adapter execution.
-   - estimated review surface below 700 hand-written lines.
-5. **C6c1 — pure row validation and aggregation**
-   - exhaustive measurement/row state validation, checked timing/count math, task/corpus
-     aggregation, medians, and regression-reason construction;
-   - no decoded-result verifier, process, provider, activation, or CLI mutation;
-   - estimated review surface below 900 hand-written lines.
-6. **C6c1p — public incomplete-prefix validator**
-   - extend the merged C6c1 module with the borrowed `validate_prefix` API;
-   - validate empty, strict-prefix, terminal-`ERROR`, and complete row sequences without
-     aggregation, persistence, JSON, process, provider, or evaluator behavior;
-   - estimated review surface below 350 hand-written lines.
-7. **C6c2 — pure decoded evaluation verifier (blocked on C6c1p, C6a1/C6a2, Requests 7, 8, 10, 12, and 13, and the named `c6c2-request8-adoption` and `c6c2-request10-adoption` targets)**
-   - consume already-decoded, content-validated `PromptEvaluationResult` and
-     `PromptEvaluationEvidence` records through the borrowed `verify_result` API;
-   - validate embedded experiment/parent records, cross-field identities, independent expected-input
-     rows, C6c1 aggregates/reasons, status/error families, and the three-repository reachability
-     policy, reusing C6c1;
-   - after Requests 8 and 10 are adopted, adapt decoded rows through one bounded `array<ScoreRow>`
-     and verifier-owned primitive C6c1 output columns; use C6c1p for incomplete prefixes and
-     `aggregate` only for complete rows; checked arithmetic overflow is invalid input, while runtime
-     allocator failure follows the declared Request 8/10 terminal allocation policy; a fixed-size workaround or
-     duplicated scorer is out of scope;
-   - use constructed Align values for fixtures only. Do not parse JSON, use escape-free JSON fixtures,
-     canonical-encode values, read files, or walk repositories in this slice; those boundaries belong
-     to C6a1/C6a2 after the named Align requests are adopted;
-   - no process, provider, activation construction, or CLI mutation;
-   - estimated review surface below 800 hand-written lines.
-8. **C6d1 — immutable activation model**
-   - fixture-only baseline and pure accept/rollback construction/lineage validation;
-   - uses in-memory declared values only; it does not write or decode a canonical JSON artifact,
-     so it does not bypass Requests 12 or 13;
-   - every fixture evaluation first passes the shared pure verifier; status-only and aggregate
-     tampering cannot reach activation construction;
-   - no public CLI or canonical provider-quality claim;
-   - estimated review surface below 700 hand-written lines.
-9. **C6d2 — activation CLI (blocked on Requests 12 and 13)**
-   - `prompt accept` and `prompt rollback`, bounded request/result persistence, and stable summaries;
-   - fixtures exercise eligibility, parent mismatch, branching, ancestry, reason, scope, and
-     no-overwrite behavior;
-   - no provider-quality claim.
-   - estimated review surface below 700 hand-written lines.
-10. **C6e — provider proposal (blocked on Requests 2, 5, 12, and 13)**
-   - after both request adoption gates reach `ALIGN_LLM_VERIFIED`, `prompt experiment`, the bounded provider boundary,
-     declared proposal decoding, and secret redaction;
-   - deterministic provider fixture, transport-size limit, and provider-error coverage;
-   - do not implement against the current whole-body provider call.
-   - estimated review surface below 900 hand-written lines.
-11. **C6f1 — trusted snapshot/workspace boundary (blocked on Requests 11, 12, and 13)**
-    - snapshot helper protocol, physical workspace preflight, raw-byte tree/entry closure,
-      per-invocation input snapshots, environment identity, and cleanup primitives;
-    - content-bound source-verifier policy/helper protocol, explicit Git-tool boundary, raw-byte
-      FILE_SET manifest traversal, source reachability records, fixed argv/environment/caps, and
-      gate-head ancestry proof;
-    - after Request 11 is adopted, use cap-aware child capture, explicit `env_clear`/allowlist,
-      physical path checks, environment identity, and cleanup primitives;
-    - no paired evaluation loop or scoring decision;
-    - estimated review surface below 1,000 hand-written lines.
-12. **C6f2 — deterministic paired evaluator (blocked on Requests 8, 10, 11, 12, 13, and 14)**
-   - after Requests 8, 10, 11, 12, 13, and 14 reach `ALIGN_LLM_VERIFIED` and are adopted, `prompt evaluate`, alternating samples,
-      checked construction of runtime-sized record arrays, C6c reuse, and deterministic corpus;
-   - may proceed while C6e is blocked because its fixed adapter does not call a model provider;
-   - result/evidence pair publication uses Request 14's shipped exclusive-create and no-replace
-     rename operations; no delete-before-rename or undeclared native helper is allowed;
-   - estimated review surface below 1,000 hand-written lines.
-13. **C6g1 — real consumer and frozen gate assets (blocked on Requests 2, 5, 11, 12, and 13)**
-   - starts only after C6a0, C6a1, C6a2, C6b, C6c1, C6c1p, C6c2, C6d1, C6e, C6f1, and C6f2
-     have completed their own acceptance gates; those C6 slice dependencies are not replaced by
-     the Align-request prerequisites in this heading;
-   - have the fixed adapter consume evaluator-produced `RenderedPromptArtifact`, generate through the
-     bound provider policy, and verify the patch through the existing contained task runner;
-   - finalize and review the at-least-two-task corpus, provider control, generation policy,
-     acceptance policy, base/repo prompts, and canonical baseline activation without yet claiming
-     improvement;
-   - estimated review surface below 1,000 hand-written lines.
-14. **C6g2 — measured gate, acceptance, rollback, and CI**
-   - record a real parent/candidate provider comparison;
-   - accept only if section 8 passes, create the linked rollback, check in the canonical gate
-     manifest/evidence set, and make `make ci` reject every missing or mismatched link;
-   - estimated review surface below 900 hand-written lines, excluding measured generated evidence.
+1. **C6-LIFECYCLE — offline prompt lifecycle.** Adopt the merged Align prerequisites needed by this
+   consumer in one pin wave, then complete C6a1/C6a2 artifact declarations and codecs, C6b artifact
+   binding and failure-memory selection, C6c2 verification using the merged C6c1/C6c1p surface,
+   and C6d1/C6d2 activation and CLI.
+   Requests 7, 8, 10, 12, and 13 retain their individual lifecycle and acceptance evidence. The
+   capability is not complete until a deterministic caller can load a candidate from declared
+   inputs, render and score it, validate its result, persist it, accept it, and roll it back. The
+   already merged C6b renderer, C6c1 scorer, and C6c1p prefix validator are foundations consumed
+   here, not separate delivery milestones. The pure checkpoints use constructed values until their
+   required codec surface is adopted; no code targets a proposed Align API.
+2. **C6-EVALUATION — deterministic contained comparison.** Complete C6f1 and C6f2 together with the
+   fixed adapter, workspace/source preflight, input snapshots, process and cleanup ownership,
+   alternating paired execution, result/evidence publication, and deterministic corpus. Adopt the
+   needed Requests 8, 10, 11, 12, 13, and 14 in the same consumer prerequisite wave when they are
+   merged. This capability may proceed without C6e because its fixed adapter does not call a model
+   provider. It is complete only when the lifecycle consumes an evaluator-produced artifact through
+   the existing contained task runner.
+3. **C6-MEASURED — provider proposal and measured acceptance.** Complete C6e, C6g1, and C6g2 after
+   Requests 2 and 5 and the shared persistence/process prerequisites are adopted. Deliver the
+   bounded provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
+   policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and linked
+   rollback. This is the only wave that claims provider quality or prompt improvement, so its pull
+   request owns the reproducible baseline and time-to-passing-patch measurement.
 
-Each slice uses its own branch and pull request. If implementation discovers a missing Align
-language or standard-library capability, record it through `docs/align-requests.md` and pause only
-the dependent slice. Do not replace immutable artifacts with a fragile local compatibility layer.
+Within each wave, every existing ledger row and closure-matrix cell still needs its exact owner and
+passing focused regression before review. Core functional checks join the aggregate only when they
+protect ordinary integration for every future change. Security, resource, race, mutation, stress,
+platform, and benchmark qualification remain named owner commands unless their contract explicitly
+requires universal execution. Run the full aggregate once at the completed integration/adoption
+gate, not after each labeled checkpoint.
+
+If implementation discovers a missing Align language or standard-library capability, record it
+through `docs/align-requests.md` and pause only the dependent capability. Continue an independent
+wave when it does not pre-commit the blocked design. Do not replace immutable artifacts with a
+fragile local compatibility layer.
 
 ### 11.1 C6c1 public-contract ledger
 
-C6c1 is the first post-C6b implementation slice. It is a pure scoring kernel and deliberately does
+C6c1 is a merged scoring-kernel checkpoint. It deliberately does
 not declare the persisted C6 artifact records owned by C6a1/C6a2. Its contract is complete here so
 the implementation does not discover row semantics through test fixtures or a later decoded-record
 verifier.
@@ -3442,10 +3372,10 @@ ordinals to their declared task IDs, but it does not move or persist the artifac
 
 ### 11.1a C6c1p public-contract ledger
 
-C6c1p is a small enabling slice on the merged C6c1 scorer. It adds only `validate_prefix`; it does
+C6c1p is a merged checkpoint on the C6c1 scorer. It adds only `validate_prefix`; it does
 not change the complete-row `aggregate` contract, persisted schemas, JSON boundary, or evaluator
-ownership. C6c2 cannot start implementation until this slice is independently implemented, checked,
-reviewed, and merged.
+ownership. C6c2 consumes this merged surface. If future capability work changes the prefix boundary,
+its owner checks must pass on that capability branch; it does not require a separate pull request.
 
 The exact C6c1p surface is the `ScorePrefixStatus`, `ScorePrefixResult`, and
 `validate_prefix` declaration above. Its result fields have these values on every return:
@@ -3483,7 +3413,7 @@ whether the surrounding persisted result is complete, incomplete, or malformed.
 C6c2 is the pure decoded evaluation verifier. It is not a JSON reader or a file-backed document
 validator. C6a1/C6a2 must first provide the declared records and validate their canonical content
 digests at the shipped Align revision, and C6c1p must first provide the merged public prefix validator.
-The C6c2 implementation is therefore blocked on C6c1p, those codec slices, Requests 7, 8, 10, 12,
+The C6c2 implementation is therefore blocked on C6c1p, those codec cells, Requests 7, 8, 10, 12,
 and 13, and the named C6c2 enabling adoption targets `c6c2-request8-adoption` and
 `c6c2-request10-adoption`. No C6c2 fixture may be an
 escape-free JSON document; fixtures construct the declared values directly after the codec gate.

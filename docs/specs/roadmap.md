@@ -18,6 +18,48 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 5. 巨大モデル最適化
 ```
 
+## 2. Capability delivery model
+
+Roadmap gates define acceptance, not pull request count. Deliver work as consumer-complete
+capabilities. Ledger rows, closure-matrix cells, helper layers, and historical slice labels remain
+useful for implementation and test ownership, but they are internal checkpoints unless they have an
+independent consumer or a distinct operational failure domain. Do not reduce the product contract
+to make a larger capability fit; combine the pieces needed to exercise it end to end.
+
+The current forward delivery order is:
+
+1. **FRESH-WORKER — usable fresh-compiler repository worker.** Treat the merged Section 9 design,
+   attestation wire, manifest wire, source-manifest wire, and source-identity work as foundations of
+   one capability, not as a precedent for more helper-only pull requests. The next repository
+   capability combines private-root admission, source/cache materialization, compiler bundle,
+   process ownership, cleanup, Make integration, and the core end-to-end functional smoke.
+2. **FRESH-IMAGE — installable minimum-platform profile.** Image provisioning, keys, supervisor
+   installation, cgroup delegation, and platform attestation are a separate operational failure
+   domain. They may progress independently of FRESH-WORKER, but fresh adoption requires both.
+3. **ALIGN-ADOPTION — one real-client prerequisite wave.** Batch merged Align requests needed by
+   the next consumer into one compiler-pin update and one fresh-client verification. Preserve each
+   request's lifecycle evidence without opening one align-llm pull request per request row.
+4. **C6-LIFECYCLE — usable offline prompt lifecycle.** Complete the artifact, renderer, scorer,
+   verifier, activation, persistence, and CLI path required to load, inspect, accept, and roll
+   back a deterministic candidate. Existing C6a/C6b/C6c/C6d labels are acceptance and ownership
+   cells inside this capability.
+5. **C6-EVALUATION — deterministic end-to-end comparison.** Combine the trusted workspace/source
+   boundary, paired evaluator, fixed adapter, result/evidence publication, and functional corpus so
+   the lifecycle is exercised by a real contained task.
+6. **C6-MEASURED — provider proposal and measured gate.** Add the bounded provider proposal, real
+   consumer, checked-in measurement evidence, acceptance, and rollback proof. Performance and
+   provider-quality checks run here because this capability makes those claims.
+7. **C7-PERSISTED-RESULT — owned-result verification consumer.** After its platform and Align
+   prerequisites are adopted, deliver records, codec, algorithm, CLI, persistence, and core
+   functional verification as one vertical capability. Keep generated differential, mutation,
+   fuzz, stress, and benchmark work in focused qualification commands unless a later core contract
+   specifically requires it.
+
+Only design the next eligible capability in implementation detail; later ledger entries may retain
+their accepted contracts but must not generate speculative implementation pull requests. The
+roughly eight-hour checkpoint and 24-hour substantial-progress expectations in `CLAUDE.md` are
+diagnostics for workflow problems, not split thresholds or delivery quotas.
+
 ---
 
 # Track A: align-coder
