@@ -9,13 +9,15 @@ request checks, reviews, findings, and attestations.
   `1e759732fb7d5737c744b35691ea2fb9900c9065` (PR #59).
 - Active goal: merge the reviewed consumer-complete FRESH-IMAGE capability, then start
   FRESH-WORKER without splitting it into helper-only pull requests.
-- Complete implementation checkpoint: `ea51532a4f7a16d1d3492b1d17d2cbcd1ec53bf1` installs the Ubuntu
+- Complete implementation checkpoint: `e17160948908e0a21238976e6417ff4ed23108ae` installs the Ubuntu
   24.04 image, static supervisor and fixed bootstrap, schema-2 manifest, external image and run
   signing boundaries, protected runtime/cgroup profile, and a hosted installed-image qualification.
   Its consolidated review repair closes FIFO deadline, non-root ownership, installed-platform
   coverage, native environment/descriptor isolation, and atomic cleanup findings. The hosted
   qualification also handles both cgroupfs and systemd Docker drivers while entering the same fixed
-  delegated cgroup before the native supervisor runs as the repository uid.
+  delegated cgroup before the native supervisor runs as the repository uid. Its hosted capable
+  environment enables nested user namespaces only for the qualification and restores the runner's
+  original AppArmor restriction afterward.
 - FRESH-IMAGE has not merged yet. FRESH-WORKER implementation has not started.
 
 ## Next actions
@@ -43,6 +45,8 @@ request checks, reviews, findings, and attestations.
 - Static cgroup-driver parsing and launch-argument checks: PASS for both cgroupfs and systemd; the
   full local profile passed both its detected cgroupfs path and the forced systemd-style
   launcher/temporary-leaf path.
+- Workflow YAML parsing and shell syntax checks for the nested-user-namespace setup and restoration:
+  PASS; a local nested user namespace probe also passed without changing host policy.
 - `PYTHONDONTWRITEBYTECODE=1 make ALIGN_REPO=<detached pinned Align worktree> ci`: PASS at Align
   revision `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
 - `actionlint` and `shellcheck`: N/A because neither command is installed. The changed workflow was
