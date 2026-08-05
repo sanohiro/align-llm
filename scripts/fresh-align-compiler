@@ -3055,7 +3055,16 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
             cache_manifest = validate_cache(manifest)
             for binding in manifest["runtime_bindings"]:
                 validate_tree_manifest(binding["manifest"], binding["source"])
-        except Exception:
+        except Exception as error:
+            os.write(
+                2,
+                (
+                    "DIAGNOSTIC CACHE "
+                    + repr(error)
+                    + "\n"
+                    + traceback.format_exc()
+                ).encode("utf-8", "backslashreplace"),
+            )
             fail("CACHE", "cache")
         admission: Admission | None = None
         primary: WorkerError | None = None
