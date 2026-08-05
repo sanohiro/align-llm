@@ -3104,12 +3104,30 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
                 run_aggregate(admission, runtime)
         except WorkerError as error:
             primary = error
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            os.write(
+                2,
+                (
+                    "DIAGNOSTIC FILESYSTEM "
+                    + repr(error)
+                    + "\n"
+                    + traceback.format_exc()
+                ).encode("utf-8", "backslashreplace"),
+            )
             primary = WorkerError("FILESYSTEM", "filesystem")
         finally:
             try:
                 cleanup(admission)
             except CleanupError as error:
+                os.write(
+                    2,
+                    (
+                        "DIAGNOSTIC CLEANUP "
+                        + repr(error)
+                        + "\n"
+                        + traceback.format_exc()
+                    ).encode("utf-8", "backslashreplace"),
+                )
                 cleanup_failure = error
         if primary is not None:
             primary.cleanup_failed = cleanup_failure is not None
