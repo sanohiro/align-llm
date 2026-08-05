@@ -41,8 +41,26 @@ def git_environment() -> dict[str, str]:
     environment["GIT_ATTR_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment["GIT_GRAFT_FILE"] = os.devnull
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     environment["XDG_CONFIG_HOME"] = os.devnull
     environment["LC_ALL"] = "C"
+    fresh_names = (
+        "ALIGN_LLM_BASELINE_GIT_DIR",
+        "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+        "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+    )
+    fresh = [os.environ.get(name) for name in fresh_names]
+    if any(value is not None for value in fresh):
+        if any(not value for value in fresh):
+            raise BaselineError("fresh baseline Git identity is incomplete")
+        assert all(value is not None for value in fresh)
+        expected = dict(zip(("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"), fresh))
+        for name, value in expected.items():
+            if os.environ.get(name) != value:
+                raise BaselineError("fresh baseline Git identity differs from the worker")
+        environment.update(expected)
     return environment
 
 

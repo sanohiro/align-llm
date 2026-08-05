@@ -13,6 +13,7 @@ import verification_loop
 import result
 import std.env
 import std.fs
+import std.path
 import std.time
 
 // Keep the bootstrap entry point dependency-free while Align's package layer is still evolving.
@@ -308,7 +309,11 @@ fn repair_from_stdout(stdout: str, stderr: str, code: i64) -> bool {
   if code != 23 {
     return false
   }
-  return match fs.write_file("eval/.loop-smoke-marker", "fixed") {
+  marker := match env.get("ALIGN_LLM_TEMP_ROOT") {
+    Some(root) => path.join(root, "loop-smoke-marker"),
+    None => "/tmp/loop-smoke-marker".clone(),
+  }
+  return match fs.write_file(marker, "fixed") {
     Ok(_) => true,
     Err(_) => false,
   }
@@ -323,6 +328,10 @@ fn accept_without_change(stdout: str, stderr: str, code: i64) -> bool {
 // Exercise the provider-independent coding loop (repair.drive) as a real client against git, with
 // the declining provider. Prints each scenario's outcome label and iteration count.
 fn loop_demo() {
+  marker := match env.get("ALIGN_LLM_TEMP_ROOT") {
+    Some(root) => path.join(root, "loop-smoke-marker"),
+    None => "/tmp/loop-smoke-marker".clone(),
+  }
   r1 := repair.drive(decline_repair, "git", ["git", "rev-parse", "--verify", "HEAD"].to_array(), ".", 30_000_000_000, 0, 3)
   print("loop: already-passing")
   print(repair.outcome_label(r1.outcome))
@@ -334,7 +343,7 @@ fn loop_demo() {
   r3 := repair.drive(
     repair_from_stdout,
     "sh",
-    ["sh", "-c", "if test -f eval/.loop-smoke-marker; then exit 0; else printf FIX_ME; printf DETAILS 1>&2; exit 23; fi"].to_array(),
+    ["sh", "-c", "if test -f \"${ALIGN_LLM_TEMP_ROOT:-/tmp}/loop-smoke-marker\"; then exit 0; else printf FIX_ME; printf DETAILS 1>&2; exit 23; fi"].to_array(),
     ".",
     30_000_000_000,
     0,
@@ -343,7 +352,7 @@ fn loop_demo() {
   print("loop: stdout-repair")
   print(repair.outcome_label(r3.outcome))
   print(r3.iterations)
-  match fs.remove("eval/.loop-smoke-marker") {
+  match fs.remove(marker) {
     Ok(_) => {},
     Err(_) => {},
   }

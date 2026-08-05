@@ -29,8 +29,26 @@ def git_environment() -> dict[str, str]:
     environment["GIT_ATTR_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment["GIT_GRAFT_FILE"] = os.devnull
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     environment["XDG_CONFIG_HOME"] = os.devnull
     environment["LC_ALL"] = "C"
+    fresh_names = (
+        "ALIGN_LLM_BASELINE_GIT_DIR",
+        "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+        "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+    )
+    fresh = [os.environ.get(name) for name in fresh_names]
+    if any(value is not None for value in fresh):
+        if any(not value for value in fresh):
+            raise BaselineError("fresh baseline Git identity is incomplete")
+        assert all(value is not None for value in fresh)
+        expected = dict(zip(("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"), fresh))
+        for name, value in expected.items():
+            if os.environ.get(name) != value:
+                raise BaselineError("fresh baseline Git identity differs from the worker")
+        environment.update(expected)
     return environment
 
 
@@ -570,16 +588,25 @@ def verify_baseline(path: Path, project_root: Path) -> None:
 
 def main() -> int:
     project_root = Path(__file__).resolve().parents[2]
+    temporary = os.environ.get("ALIGN_LLM_TEMP_ROOT")
+    temporary_root = Path(temporary).resolve() if temporary else None
     paths = sys.argv[1:] or ["eval/baselines/coding-v1-reference.json"]
     try:
         for raw_path in paths:
             path = (project_root / raw_path).resolve()
-            try:
-                path.relative_to(project_root)
-            except ValueError as error:
-                raise BaselineError("baseline path escapes the project root") from error
+            if not (
+                path == project_root
+                or path.is_relative_to(project_root)
+                or temporary_root is not None
+                and (path == temporary_root or path.is_relative_to(temporary_root))
+            ):
+                raise BaselineError("baseline path escapes the project and temporary roots")
             verify_baseline(path, project_root)
-            print(f"baseline valid: {path.relative_to(project_root)}")
+            try:
+                label = path.relative_to(project_root)
+            except ValueError:
+                label = path
+            print(f"baseline valid: {label}")
     except (BaselineError, OSError) as error:
         print(f"baseline error: {error}", file=sys.stderr)
         return 1

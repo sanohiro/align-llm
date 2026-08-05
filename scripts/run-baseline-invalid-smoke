@@ -4,11 +4,26 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 baseline="${project_root}/eval/baselines/coding-v1-reference.json"
-invalid_baseline="$(mktemp "${project_root}/eval/baselines/.invalid.XXXXXX.json")"
-output_file="$(mktemp)"
+scratch_root="${ALIGN_LLM_TEMP_ROOT:-${TMPDIR:-/tmp}}"
+export ALIGN_LLM_TEMP_ROOT="${scratch_root}"
+invalid_baseline="$(mktemp "${scratch_root}/invalid-baseline.XXXXXX.json")"
+output_file="$(mktemp "${scratch_root}/baseline-output.XXXXXX")"
 replacement_namespace="refs/align-llm-smoke/replace-${BASHPID}"
 replacement_ref=""
-git_common_dir="$(git -C "${project_root}" rev-parse --path-format=absolute --git-common-dir)"
+scratch_git=""
+if [[ "${ALIGN_LLM_FRESH_COMPILER:-}" == "1" ]]; then
+  scratch_git="$(mktemp -d "${scratch_root}/baseline-git.XXXXXX")"
+  cp -a "${ALIGN_LLM_BASELINE_GIT_DIR}/." "${scratch_git}/"
+  export ALIGN_LLM_BASELINE_GIT_DIR="${scratch_git}"
+  export ALIGN_LLM_BASELINE_GIT_COMMON_DIR="${scratch_git}"
+  export ALIGN_LLM_BASELINE_GIT_WORK_TREE="${project_root}"
+  export GIT_DIR="${scratch_git}"
+  export GIT_COMMON_DIR="${scratch_git}"
+  export GIT_WORK_TREE="${project_root}"
+  git_common_dir="${scratch_git}"
+else
+  git_common_dir="$(git -C "${project_root}" rev-parse --path-format=absolute --git-common-dir)"
+fi
 cleanup() {
   status=$?
   rm -f "${invalid_baseline}" "${output_file}"
@@ -16,6 +31,9 @@ cleanup() {
     git -C "${project_root}" update-ref -d "${replacement_ref}" || true
   fi
   rmdir "${git_common_dir}/${replacement_namespace}" 2>/dev/null || true
+  if [[ -n "${scratch_git}" ]]; then
+    rm -r "${scratch_git}"
+  fi
   # Keep the shared parent: another concurrent smoke invocation may be using it.
   exit "${status}"
 }
@@ -297,6 +315,16 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+for name in (
+    "ALIGN_LLM_BASELINE_GIT_DIR",
+    "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+    "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_WORK_TREE",
+):
+    os.environ.pop(name, None)
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True

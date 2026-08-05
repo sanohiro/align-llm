@@ -5,7 +5,10 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 align_repo="${ALIGN_REPO:-${project_root}/../align}"
 
-if [[ -n "${ALIGNC:-}" ]]; then
+if [[ "${ALIGN_LLM_FRESH_COMPILER:-}" == "1" && -z "${ALIGNC:-}" ]]; then
+  printf '%s\n' "fresh compiler launcher is missing" >&2
+  exit 1
+elif [[ -n "${ALIGNC:-}" ]]; then
   compiler="${ALIGNC}"
 elif [[ -x "${align_repo}/target/release/alignc" ]]; then
   compiler="${align_repo}/target/release/alignc"

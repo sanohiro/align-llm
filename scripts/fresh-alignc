@@ -1,0 +1,195 @@
+#!/tools/python3
+"""Verify and execute the private FRESH-WORKER compiler bundle."""
+
+from __future__ import annotations
+
+import ctypes
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from collections import OrderedDict
+
+
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+MODE = re.compile(r"^[0-7]{4}$")
+MAX_DESCRIPTOR_BYTES = 4 * 1024 * 1024
+MAX_BUNDLE_BYTES = 512 * 1024 * 1024
+
+
+def reject() -> None:
+    raise SystemExit(1)
+
+
+def unique_pairs(pairs: list[tuple[str, object]]) -> OrderedDict[str, object]:
+    value: OrderedDict[str, object] = OrderedDict()
+    for name, child in pairs:
+        if name in value:
+            reject()
+        value[name] = child
+    return value
+
+
+def read_regular(path: str, mode: int, limit: int) -> tuple[int, bytes, os.stat_result]:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    value = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(value.st_mode)
+        or stat.S_IMODE(value.st_mode) != mode
+        or value.st_nlink != 1
+        or value.st_size < 0
+        or value.st_size > limit
+    ):
+        reject()
+    blocks: list[bytes] = []
+    offset = 0
+    while offset < value.st_size:
+        block = os.pread(descriptor, min(1024 * 1024, value.st_size - offset), offset)
+        if not block:
+            reject()
+        blocks.append(block)
+        offset += len(block)
+    after = os.fstat(descriptor)
+    if (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_nlink,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ):
+        reject()
+    return descriptor, b"".join(blocks), value
+
+
+def fields(value: object, expected: tuple[str, ...]) -> OrderedDict[str, object]:
+    if not isinstance(value, OrderedDict) or tuple(value) != expected:
+        reject()
+    return value
+
+
+def file_record(value: object, path: str, mode: str, size: int, digest: str) -> None:
+    record = fields(value, ("path", "mode", "size", "sha256"))
+    if record != OrderedDict((("path", path), ("mode", mode), ("size", size), ("sha256", digest))):
+        reject()
+
+
+descriptor_fd, descriptor_raw, descriptor_stat = read_regular(
+    "/tools/fresh-descriptor", 0o444, MAX_DESCRIPTOR_BYTES
+)
+guard_fd, guard_raw, guard_stat = read_regular("/tools/fresh-guard", 0o444, MAX_DESCRIPTOR_BYTES)
+compiler_fd, compiler_raw, compiler_stat = read_regular("/tools/alignc", 0o555, MAX_BUNDLE_BYTES)
+archive_fd, archive_raw, archive_stat = read_regular(
+    "/tools/libalign_runtime.a", 0o444, MAX_BUNDLE_BYTES
+)
+tools_stat = os.stat("/tools", follow_symlinks=False)
+if not stat.S_ISDIR(tools_stat.st_mode) or any(
+    value.st_dev != tools_stat.st_dev
+    for value in (descriptor_stat, guard_stat, compiler_stat, archive_stat)
+):
+    reject()
+
+try:
+    descriptor = json.loads(
+        descriptor_raw.decode("utf-8", "strict"), object_pairs_hook=unique_pairs
+    )
+    guard = json.loads(guard_raw.decode("utf-8", "strict"), object_pairs_hook=unique_pairs)
+except (UnicodeDecodeError, json.JSONDecodeError):
+    reject()
+
+descriptor = fields(
+    descriptor,
+    (
+        "schema_version",
+        "align_revision",
+        "project_source_manifest_sha256",
+        "align_source_manifest_sha256",
+        "toolchain_manifest_sha256",
+        "compiler",
+        "compiler_support",
+        "runtime_paths",
+        "launcher_policy",
+    ),
+)
+compiler_digest = hashlib.sha256(compiler_raw).hexdigest()
+archive_digest = hashlib.sha256(archive_raw).hexdigest()
+if descriptor["schema_version"] != 4 or not HEX40.fullmatch(descriptor["align_revision"]):
+    reject()
+for name in (
+    "project_source_manifest_sha256",
+    "align_source_manifest_sha256",
+    "toolchain_manifest_sha256",
+):
+    if not isinstance(descriptor[name], str) or not HEX64.fullmatch(descriptor[name]):
+        reject()
+file_record(descriptor["compiler"], "tool-bin/alignc", "0555", compiler_stat.st_size, compiler_digest)
+support = fields(descriptor["compiler_support"], ("runtime_archive",))
+file_record(
+    support["runtime_archive"],
+    "tool-bin/libalign_runtime.a",
+    "0444",
+    archive_stat.st_size,
+    archive_digest,
+)
+runtime_paths = descriptor["runtime_paths"]
+if not isinstance(runtime_paths, list):
+    reject()
+for index, item in enumerate(runtime_paths):
+    record = fields(item, ("path", "mode", "size", "sha256"))
+    if record["path"] != f"runtime/runtime-{index:06d}":
+        reject()
+    if not isinstance(record["mode"], str) or not MODE.fullmatch(record["mode"]):
+        reject()
+    if not isinstance(record["size"], int) or isinstance(record["size"], bool) or record["size"] < 0:
+        reject()
+    if not isinstance(record["sha256"], str) or not HEX64.fullmatch(record["sha256"]):
+        reject()
+policy = fields(
+    descriptor["launcher_policy"],
+    (
+        "kind",
+        "descriptor_namespace_path",
+        "guard_namespace_path",
+        "compiler_namespace_path",
+        "namespace",
+    ),
+)
+if policy != OrderedDict(
+    (
+        ("kind", "private-path-readonly-id"),
+        ("descriptor_namespace_path", "/tools/fresh-descriptor"),
+        ("guard_namespace_path", "/tools/fresh-guard"),
+        ("compiler_namespace_path", "/tools/alignc"),
+        ("namespace", "fresh-aggregate-v4"),
+    )
+):
+    reject()
+guard = fields(guard, ("schema_version", "descriptor_sha256", "compiler_sha256"))
+if guard != OrderedDict(
+    (
+        ("schema_version", 1),
+        ("descriptor_sha256", hashlib.sha256(descriptor_raw).hexdigest()),
+        ("compiler_sha256", compiler_digest),
+    )
+):
+    reject()
+
+arguments = [b"/tools/alignc", *[os.fsencode(value) for value in sys.argv[1:]]]
+argv = (ctypes.c_char_p * (len(arguments) + 1))(*arguments, None)
+environment = [os.fsencode(name + "=" + value) for name, value in os.environ.items()]
+envp = (ctypes.c_char_p * (len(environment) + 1))(*environment, None)
+libc = ctypes.CDLL(None, use_errno=True)
+result = libc.syscall(322, compiler_fd, ctypes.c_char_p(b""), argv, envp, 0x1000)
+raise SystemExit(ctypes.get_errno() if result < 0 else 1)

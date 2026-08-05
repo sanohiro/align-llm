@@ -1,0 +1,2189 @@
+#!/usr/bin/python3
+"""Authenticated repository worker for the Section 9 fresh compiler profile.
+
+The image-owned bootstrap executes these reviewed bytes from a sealed memfd.
+This file deliberately imports only the Python standard library: no repository
+module is read before both source roots have been authenticated and copied into
+the worker-owned private root.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import ctypes
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import posixpath
+import re
+import resource
+import secrets
+import signal
+import stat
+import struct
+import subprocess
+import sys
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+
+REQUIRED_SEALS = (
+    fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+)
+EXPECTED_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin",
+    "LC_ALL": "C",
+    "HOME": "/nonexistent",
+    "TMPDIR": "/tmp",
+    "PYTHONHOME": "/usr",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+}
+PUBLIC_CATEGORIES = frozenset(
+    {
+        "ARGUMENT",
+        "TRUST",
+        "PLATFORM",
+        "TOOL",
+        "SOURCE",
+        "CACHE",
+        "FILESYSTEM",
+        "BUILD",
+        "COMPILER",
+        "CHILD",
+        "INTERNAL",
+    }
+)
+PUBLIC_PHASES = frozenset(
+    {
+        "input",
+        "manifest",
+        "platform",
+        "bwrap",
+        "tools",
+        "project-source",
+        "align-source",
+        "cache",
+        "concurrency",
+        "filesystem",
+        "build",
+        "compiler",
+        "aggregate",
+        "internal",
+    }
+)
+TOOL_NAMES = (
+    "git",
+    "cargo",
+    "rustc",
+    "llvm-config",
+    "llvm-config-22",
+    "cc",
+    "cxx",
+    "ar",
+    "ranlib",
+    "linker",
+    "bwrap",
+    "sh",
+    "make",
+    "python3",
+    "env",
+    "bash",
+    "prlimit",
+    "clang",
+    "clang++",
+    "strip",
+    "objdump",
+    "objcopy",
+    "llvm-profdata",
+    "llvm-profdata-22",
+    "llvm-bcanalyzer",
+    "llvm-bcanalyzer-22",
+    "llvm-readobj",
+    "llvm-nm",
+    "ld",
+    "ld.lld",
+    "id",
+    "mount-guard",
+    "basename",
+    "cat",
+    "chmod",
+    "cmp",
+    "cp",
+    "diff",
+    "dirname",
+    "find",
+    "grep",
+    "head",
+    "mkdir",
+    "mktemp",
+    "mv",
+    "readlink",
+    "realpath",
+    "rm",
+    "rmdir",
+    "sed",
+    "seq",
+    "sleep",
+    "stat",
+    "tail",
+    "tee",
+    "touch",
+    "tr",
+    "wc",
+)
+ALLOWED_CACHE_PREFIXES = (
+    "git/checkouts",
+    "git/db",
+    "registry/cache",
+    "registry/index",
+    "registry/src",
+)
+ROOT_CHILDREN = (
+    "project-source",
+    "align-source",
+    "aggregate-work",
+    "cargo-home",
+    "cargo-target",
+    "aggregate-output",
+    "baseline-git",
+    "runtime",
+    "tool-bin",
+    "descriptor",
+)
+ROOT_PREFIX = "align-llm-fresh-"
+MAX_WORKER_BYTES = 4_194_304
+MAX_MANIFEST_BYTES = 67_108_864
+MAX_ATTESTATION_BYTES = 262_144
+MAX_SOURCE_ENTRIES = 200_000
+MAX_SOURCE_BYTES = 4_294_967_296
+MAX_FILE_BYTES = 536_870_912
+MAX_RUNTIME_BYTES = 21_474_836_480
+MAX_PRIVATE_ENTRIES = 400_000
+MAX_ROOT_BYTES = 68_719_476_736
+MAX_CANDIDATES = 65_536
+MAX_STREAM_BYTES = 65_536
+MAX_OPEN_FDS = 4_096
+BUILD_TIMEOUT = 1_800
+AGGREGATE_TIMEOUT = 1_800
+VALIDATION_TIMEOUT = 120
+READ_CHUNK = 1_048_576
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+MODE = re.compile(r"^[0-7]{4}$")
+INVOCATION_TYPE = "https://align-llm.dev/attestations/runner-invocation/v1"
+CONTROLLER_PATH = "scripts/fresh-align-compiler"
+ALIGN_REVISION_FILE = ".align-revision"
+
+
+class WorkerError(Exception):
+    def __init__(self, category: str, phase: str) -> None:
+        super().__init__(f"{category} {phase}")
+        self.category = category
+        self.phase = phase
+        self.cleanup_failed = False
+
+
+class CleanupError(Exception):
+    pass
+
+
+def fail(category: str, phase: str) -> None:
+    raise WorkerError(category, phase)
+
+
+def sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def read_fd(fd: int, limit: int, *, rewind: bool = True) -> bytes:
+    try:
+        value = os.fstat(fd)
+        if not stat.S_ISREG(value.st_mode) or value.st_size < 0 or value.st_size > limit:
+            raise OSError(errno.EFBIG, "bounded regular descriptor required")
+        offset = 0
+        chunks: list[bytes] = []
+        while offset < value.st_size:
+            block = os.pread(fd, min(READ_CHUNK, value.st_size - offset), offset)
+            if not block:
+                raise OSError(errno.EIO, "short descriptor read")
+            chunks.append(block)
+            offset += len(block)
+        if rewind:
+            os.lseek(fd, 0, os.SEEK_SET)
+        return b"".join(chunks)
+    except OSError:
+        raise
+
+
+def read_path(path: str, limit: int) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        before = os.fstat(fd)
+        raw = read_fd(fd, limit)
+        after = os.fstat(fd)
+        if (
+            before.st_dev,
+            before.st_ino,
+            stat.S_IFMT(before.st_mode),
+            stat.S_IMODE(before.st_mode),
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            stat.S_IFMT(after.st_mode),
+            stat.S_IMODE(after.st_mode),
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) or before.st_nlink != 1:
+            raise OSError(errno.EPERM, "unstable regular file")
+        return raw
+    finally:
+        os.close(fd)
+
+
+def read_bounded_stream(path: str, limit: int) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            block = os.read(fd, min(READ_CHUNK, limit + 1 - total))
+            if not block:
+                return b"".join(chunks)
+            chunks.append(block)
+            total += len(block)
+            if total > limit:
+                raise OSError(errno.EFBIG, "stream exceeds bound")
+    finally:
+        os.close(fd)
+
+
+def duplicate_pairs(pairs: list[tuple[str, Any]]) -> OrderedDict[str, Any]:
+    value: OrderedDict[str, Any] = OrderedDict()
+    for name, child in pairs:
+        if name in value:
+            raise ValueError("duplicate JSON field")
+        value[name] = child
+    return value
+
+
+def render_string(value: str) -> str:
+    pieces = ['"']
+    for character in value:
+        codepoint = ord(character)
+        if character == '"':
+            pieces.append('\\"')
+        elif character == "\\":
+            pieces.append("\\\\")
+        elif character == "\b":
+            pieces.append("\\b")
+        elif character == "\f":
+            pieces.append("\\f")
+        elif character == "\n":
+            pieces.append("\\n")
+        elif character == "\r":
+            pieces.append("\\r")
+        elif character == "\t":
+            pieces.append("\\t")
+        elif 0 < codepoint < 0x20:
+            pieces.append(f"\\u00{codepoint:02X}")
+        else:
+            pieces.append(character)
+    pieces.append('"')
+    return "".join(pieces)
+
+
+def render_json(value: Any, level: int = 0) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return str(value)
+    if isinstance(value, str):
+        return render_string(value)
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        indent = " " * (2 * (level + 1))
+        close = " " * (2 * level)
+        return "[\n" + ",\n".join(indent + render_json(item, level + 1) for item in value) + "\n" + close + "]"
+    if isinstance(value, Mapping):
+        if not value:
+            return "{}"
+        indent = " " * (2 * (level + 1))
+        close = " " * (2 * level)
+        rows = []
+        for name, child in value.items():
+            if not isinstance(name, str):
+                raise ValueError("non-string JSON key")
+            rows.append(indent + render_string(name) + ": " + render_json(child, level + 1))
+        return "{\n" + ",\n".join(rows) + "\n" + close + "}"
+    raise ValueError("unsupported canonical JSON value")
+
+
+def canonical_json(value: Mapping[str, Any]) -> bytes:
+    return (render_json(value) + "\n").encode("utf-8", "strict")
+
+
+def parse_canonical(raw: bytes, limit: int) -> OrderedDict[str, Any]:
+    if len(raw) > limit:
+        raise ValueError("canonical JSON exceeds bound")
+    value = json.loads(
+        raw.decode("utf-8", "strict"),
+        object_pairs_hook=duplicate_pairs,
+        parse_constant=lambda _: (_ for _ in ()).throw(ValueError("JSON constant")),
+        parse_float=lambda _: (_ for _ in ()).throw(ValueError("JSON float")),
+    )
+    if not isinstance(value, OrderedDict) or canonical_json(value) != raw:
+        raise ValueError("non-canonical JSON")
+    return value
+
+
+def exact_fields(value: Mapping[str, Any], fields: Sequence[str]) -> None:
+    if tuple(value) != tuple(fields):
+        raise ValueError("wrong field set or order")
+
+
+def decode_base64url(value: Any, limit: int) -> bytes:
+    if not isinstance(value, str) or "=" in value or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError("invalid base64url")
+    raw = base64.urlsafe_b64decode(value + "=" * ((4 - len(value) % 4) % 4))
+    if len(raw) > limit:
+        raise ValueError("decoded value exceeds bound")
+    return raw
+
+
+def invocation_predicate(raw: bytes, manifest_raw: bytes) -> OrderedDict[str, Any]:
+    envelope = parse_canonical(raw, MAX_ATTESTATION_BYTES)
+    exact_fields(envelope, ("payloadType", "payload", "signatures"))
+    if envelope["payloadType"] != INVOCATION_TYPE:
+        raise ValueError("wrong invocation predicate type")
+    predicate_raw = decode_base64url(envelope["payload"], MAX_ATTESTATION_BYTES)
+    predicate = parse_canonical(predicate_raw, MAX_ATTESTATION_BYTES)
+    exact_fields(
+        predicate,
+        (
+            "schema_version",
+            "image_attestation_sha256",
+            "manifest_sha256",
+            "repository_object_format",
+            "repository_head",
+            "align_repo_relative",
+            "controller_path",
+            "controller_sha256",
+            "supervisor_identity",
+            "supervisor_version",
+            "supervisor_key_id",
+            "supervisor_key_sha256",
+        ),
+    )
+    if predicate["schema_version"] != 1 or predicate["controller_path"] != CONTROLLER_PATH:
+        raise ValueError("wrong invocation identity")
+    if predicate["manifest_sha256"] != sha256(manifest_raw):
+        raise ValueError("manifest digest mismatch")
+    object_format = predicate["repository_object_format"]
+    head = predicate["repository_head"]
+    if object_format not in ("sha1", "sha256"):
+        raise ValueError("wrong project object format")
+    if (object_format == "sha1" and not HEX40.fullmatch(head)) or (
+        object_format == "sha256" and not HEX64.fullmatch(head)
+    ):
+        raise ValueError("wrong project head")
+    if not HEX64.fullmatch(predicate["controller_sha256"]):
+        raise ValueError("wrong controller digest")
+    relative = predicate["align_repo_relative"]
+    if not isinstance(relative, str) or not relative or relative.startswith("/") or "\x00" in relative:
+        raise ValueError("wrong Align relative path")
+    components = relative.split("/")
+    if any(not component or component == "." for component in components):
+        raise ValueError("non-canonical Align relative path")
+    signatures = envelope["signatures"]
+    if not isinstance(signatures, list) or len(signatures) != 1:
+        raise ValueError("wrong invocation signature set")
+    return predicate
+
+
+def verify_sealed(fd: int, limit: int) -> bytes:
+    if fcntl.fcntl(fd, fcntl.F_GET_SEALS) != REQUIRED_SEALS:
+        raise ValueError("descriptor is not sealed")
+    return read_fd(fd, limit)
+
+
+def validate_manifest(raw: bytes) -> OrderedDict[str, Any]:
+    manifest = parse_canonical(raw, MAX_MANIFEST_BYTES)
+    exact_fields(
+        manifest,
+        ("schema_version", "controller", "bootstrap", "platform", "tools", "runtime_bindings", "cargo_cache"),
+    )
+    if manifest["schema_version"] != 2:
+        raise ValueError("wrong manifest schema")
+    controller = manifest["controller"]
+    if tuple(controller.items()) != (("path", CONTROLLER_PATH), ("api", 1)):
+        raise ValueError("wrong controller contract")
+    tools = manifest["tools"]
+    if not isinstance(tools, list) or tuple(tool.get("name") for tool in tools) != TOOL_NAMES:
+        raise ValueError("wrong tool inventory")
+    bindings = manifest["runtime_bindings"]
+    if not isinstance(bindings, list) or len(bindings) > 256:
+        raise ValueError("wrong runtime inventory")
+    targets: list[str] = []
+    for binding in bindings:
+        exact_fields(binding, ("source", "target", "kind", "manifest", "manifest_sha256"))
+        if binding["kind"] not in ("file", "tree"):
+            raise ValueError("wrong runtime kind")
+        for name in ("source", "target"):
+            path = binding[name]
+            if not isinstance(path, str) or not path.startswith("/") or path.endswith("/") or "/../" in path:
+                raise ValueError("wrong runtime path")
+        if not HEX64.fullmatch(binding["manifest_sha256"]):
+            raise ValueError("wrong runtime digest")
+        if sha256(canonical_json(binding["manifest"])) != binding["manifest_sha256"]:
+            raise ValueError("runtime serialized digest rejected")
+        targets.append(binding["target"])
+    for index, target in enumerate(targets):
+        for other in targets[index + 1 :]:
+            if target == other or target.startswith(other + "/") or other.startswith(target + "/"):
+                raise ValueError("overlapping runtime targets")
+    cache = manifest["cargo_cache"]
+    exact_fields(cache, ("root", "manifest", "manifest_sha256", "entry_count"))
+    if not HEX64.fullmatch(cache["manifest_sha256"]):
+        raise ValueError("wrong cache digest")
+    return manifest
+
+
+def expected_descriptor_set() -> None:
+    descriptors: set[int] = set()
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            descriptor = int(name)
+            os.fstat(descriptor)
+            descriptors.add(descriptor)
+        except (OSError, ValueError):
+            pass
+    if descriptors != {0, 1, 2, 4, 7, 8, 9}:
+        fail("TRUST", "input")
+    if len(descriptors) > MAX_OPEN_FDS:
+        fail("FILESYSTEM", "filesystem")
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    device: int
+    inode: int
+    file_type: int
+    mode: int
+    links: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+def snapshot_fd(fd: int) -> Snapshot:
+    value = os.fstat(fd)
+    return Snapshot(
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        stat.S_IMODE(value.st_mode),
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def open_relative_directory(root_fd: int, relative: str) -> tuple[int, list[tuple[int, Snapshot]]]:
+    current = os.dup(root_fd)
+    retained: list[tuple[int, Snapshot]] = [(current, snapshot_fd(current))]
+    try:
+        for component in relative.split("/"):
+            if component == "..":
+                next_fd = os.open(
+                    b"..", os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=current
+                )
+                if os.fstat(next_fd).st_ino == os.fstat(current).st_ino:
+                    os.close(next_fd)
+                    raise OSError(errno.EPERM, "relative path escaped")
+            else:
+                if component in ("", "."):
+                    raise OSError(errno.EINVAL, "invalid relative component")
+                next_fd = os.open(
+                    os.fsencode(component),
+                    os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=current,
+                )
+            current = next_fd
+            retained.append((current, snapshot_fd(current)))
+        for descriptor, accepted in retained:
+            if snapshot_fd(descriptor) != accepted:
+                raise OSError(errno.ESTALE, "relative ancestor changed")
+        return current, retained
+    except Exception:
+        for descriptor, _ in reversed(retained):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+
+
+def close_retained(retained: Iterable[tuple[int, Snapshot]]) -> None:
+    failure = False
+    for descriptor, _ in reversed(tuple(retained)):
+        try:
+            os.close(descriptor)
+        except OSError:
+            failure = True
+    if failure:
+        raise CleanupError("descriptor close failed")
+
+
+def run_tool(
+    descriptor: int,
+    arguments: Sequence[str],
+    *,
+    cwd_fd: int | None = None,
+    timeout: int = VALIDATION_TIMEOUT,
+    environment: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    pass_fds = (descriptor,) if cwd_fd is None else (descriptor, cwd_fd)
+    return subprocess.run(
+        list(arguments),
+        executable=f"/proc/self/fd/{descriptor}",
+        cwd=None if cwd_fd is None else f"/proc/self/fd/{cwd_fd}",
+        env=dict(environment or {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"}),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        pass_fds=pass_fds,
+        close_fds=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def authenticate_tools(manifest: Mapping[str, Any]) -> dict[str, int]:
+    retained: dict[str, int] = {}
+    try:
+        for tool in manifest["tools"]:
+            exact_fields(tool, ("name", "path", "namespace_path", "mode", "sha256", "argv", "stdout", "stderr"))
+            name = tool["name"]
+            if tool["namespace_path"] != f"/tools/{name}" or tool["mode"] != "0755":
+                raise ValueError("tool path contract changed")
+            fd = os.open(tool["path"], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+            value = os.fstat(fd)
+            if (
+                not stat.S_ISREG(value.st_mode)
+                or stat.S_IMODE(value.st_mode) != 0o755
+                or value.st_uid != 0
+                or value.st_nlink != 1
+                or value.st_size > MAX_FILE_BYTES
+            ):
+                os.close(fd)
+                raise ValueError("tool identity rejected")
+            raw = read_fd(fd, MAX_FILE_BYTES)
+            if sha256(raw) != tool["sha256"]:
+                os.close(fd)
+                raise ValueError("tool digest rejected")
+            result = run_tool(fd, tool["argv"], timeout=10)
+            if (
+                result.returncode != 0
+                or result.stdout.hex() != tool["stdout"]
+                or result.stderr.hex() != tool["stderr"]
+            ):
+                os.close(fd)
+                raise ValueError("tool probe rejected")
+            retained[name] = fd
+        return retained
+    except Exception:
+        for descriptor in retained.values():
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+
+
+GIT_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin",
+    "LC_ALL": "C",
+    "HOME": "/nonexistent",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_GRAFT_FILE": "/dev/null",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "XDG_CONFIG_HOME": "/dev/null",
+}
+
+
+def git(tool_fd: int, root_fd: int, arguments: Sequence[str], *, input_bytes: bytes | None = None) -> bytes:
+    result = subprocess.run(
+        ["git", *arguments],
+        executable=f"/proc/self/fd/{tool_fd}",
+        cwd=f"/proc/self/fd/{root_fd}",
+        env=GIT_ENVIRONMENT,
+        input=input_bytes,
+        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        pass_fds=(tool_fd, root_fd),
+        close_fds=True,
+        timeout=VALIDATION_TIMEOUT,
+        check=False,
+    )
+    if result.returncode != 0 or len(result.stdout) > 192 * 1024 * 1024 or len(result.stderr) > MAX_STREAM_BYTES:
+        raise ValueError("Git identity command rejected")
+    return result.stdout
+
+
+@dataclass(frozen=True)
+class SourceEntry:
+    path: bytes
+    kind: str
+    raw_mode: int | None
+    staged_mode: int | None
+    object_id: str
+    raw: bytes | None
+    digest: str | None
+
+
+@dataclass
+class SourceIdentity:
+    kind: str
+    root_fd: int
+    revision: str
+    tree: str
+    object_format: str
+    index_digest: str
+    entries: list[SourceEntry]
+    manifest_raw: bytes
+    manifest_digest: str
+
+
+def read_at(root_fd: int, path: bytes, limit: int) -> tuple[bytes, Snapshot]:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd)
+    try:
+        before = snapshot_fd(fd)
+        if before.file_type != stat.S_IFREG or before.links != 1 or before.size > limit:
+            raise OSError(errno.EPERM, "source file identity rejected")
+        raw = read_fd(fd, limit)
+        if snapshot_fd(fd) != before:
+            raise OSError(errno.ESTALE, "source file changed")
+        return raw, before
+    finally:
+        os.close(fd)
+
+
+def source_identity(
+    kind: str,
+    root_fd: int,
+    git_fd: int,
+    *,
+    expected_head: str | None = None,
+    expected_format: str | None = None,
+) -> SourceIdentity:
+    object_format = git(git_fd, root_fd, ("rev-parse", "--show-object-format")).decode("ascii").strip()
+    revision = git(git_fd, root_fd, ("rev-parse", "--verify", "HEAD")).decode("ascii").strip()
+    tree = git(git_fd, root_fd, ("rev-parse", "HEAD^{tree}")).decode("ascii").strip()
+    pattern = HEX40 if object_format == "sha1" else HEX64 if object_format == "sha256" else None
+    if pattern is None or not pattern.fullmatch(revision) or not pattern.fullmatch(tree):
+        raise ValueError("source Git identity rejected")
+    if expected_head is not None and revision != expected_head:
+        raise ValueError("source HEAD does not match run capsule")
+    if expected_format is not None and object_format != expected_format:
+        raise ValueError("source object format does not match run capsule")
+    if kind == "align-source" and object_format != "sha1":
+        raise ValueError("Align source object format is not SHA-1")
+    status_raw = git(git_fd, root_fd, ("status", "--porcelain=v1", "-z", "--untracked-files=normal"))
+    allowed_status = {b"?? target/"}
+    if kind == "project-source":
+        allowed_status.add(b"?? main")
+    if any(record not in allowed_status for record in status_raw.split(b"\0") if record):
+        raise ValueError("source worktree is not clean")
+    index_path = git(
+        git_fd, root_fd, ("rev-parse", "--path-format=absolute", "--git-path", "index")
+    ).decode("utf-8", "strict").strip()
+    index_raw = read_path(index_path, 4 * 1024 * 1024 * 1024)
+    index_value = os.stat(index_path, follow_symlinks=False)
+    if not stat.S_ISREG(index_value.st_mode) or index_value.st_nlink != 1:
+        raise ValueError("source index is not regular")
+    listing = git(git_fd, root_fd, ("ls-tree", "-rz", "-r", "-t", "HEAD"))
+    entries: list[SourceEntry] = []
+    total = 0
+    prior: bytes | None = None
+    manifest_entries: list[OrderedDict[str, Any]] = []
+    for record in listing.split(b"\0"):
+        if not record:
+            continue
+        header, path = record.split(b"\t", 1)
+        mode_raw, type_raw, oid_raw = header.split(b" ", 2)
+        mode_text = mode_raw.decode("ascii")
+        object_id = oid_raw.decode("ascii")
+        if not path or b"\x00" in path or path.startswith(b"/") or b"/.git/" in b"/" + path + b"/":
+            raise ValueError("source path rejected")
+        if prior is not None and path <= prior:
+            raise ValueError("source paths are not ordered")
+        prior = path
+        if path.split(b"/", 1)[0] in (b"target", b"main"):
+            raise ValueError("tracked source uses reserved output path")
+        if type_raw == b"tree":
+            value = os.stat(path, dir_fd=root_fd, follow_symlinks=False)
+            raw_mode = stat.S_IMODE(value.st_mode)
+            if not stat.S_ISDIR(value.st_mode) or raw_mode & 0o700 != 0o700 or raw_mode & 0o7000:
+                raise ValueError("source directory mode rejected")
+            entry = SourceEntry(path, "dir", raw_mode, 0o700, object_id, None, None)
+            mode_value: str | None = f"{raw_mode:04o}"
+            staged_value: str | None = "0700"
+            digest: str | None = None
+            size = 0
+            target_hex: str | None = None
+        elif mode_text in ("100644", "100755") and type_raw == b"blob":
+            raw, value = read_at(root_fd, path, MAX_FILE_BYTES)
+            raw_mode = value.mode
+            expected_mode = 0o644 if mode_text == "100644" else 0o755
+            if raw_mode != expected_mode:
+                raise ValueError("source file mode rejected")
+            git_blob = git(git_fd, root_fd, ("cat-file", "blob", object_id))
+            if raw != git_blob:
+                raise ValueError("source bytes differ from Git object")
+            staged_mode = 0o444 if raw_mode == 0o644 else 0o555
+            digest = sha256(raw)
+            size = len(raw)
+            total += size
+            entry = SourceEntry(path, "file", raw_mode, staged_mode, object_id, raw, digest)
+            mode_value = f"{raw_mode:04o}"
+            staged_value = f"{staged_mode:04o}"
+            target_hex = None
+        elif mode_text == "120000" and type_raw == b"blob":
+            value = os.stat(path, dir_fd=root_fd, follow_symlinks=False)
+            if not stat.S_ISLNK(value.st_mode):
+                raise ValueError("source symlink type rejected")
+            target = os.readlink(path, dir_fd=root_fd)
+            target_raw = os.fsencode(target)
+            if not target_raw or len(target_raw) > 2_048 or target_raw.startswith(b"/"):
+                raise ValueError("source symlink target rejected")
+            git_blob = git(git_fd, root_fd, ("cat-file", "blob", object_id))
+            if target_raw != git_blob:
+                raise ValueError("source symlink differs from Git object")
+            digest = sha256(target_raw)
+            size = len(target_raw)
+            entry = SourceEntry(path, "symlink", None, None, object_id, target_raw, digest)
+            mode_value = None
+            staged_value = None
+            target_hex = target_raw.hex()
+        else:
+            raise ValueError("unsupported tracked source entry")
+        entries.append(entry)
+        manifest_entries.append(
+            OrderedDict(
+                (
+                    ("path_hex", path.hex()),
+                    ("kind", entry.kind),
+                    ("mode", mode_value),
+                    ("staged_mode", staged_value),
+                    ("git_mode", mode_text),
+                    ("git_object", object_id),
+                    ("size", size),
+                    ("sha256", digest),
+                    ("symlink_target_hex", target_hex),
+                )
+            )
+        )
+        if len(entries) > MAX_SOURCE_ENTRIES or total > MAX_SOURCE_BYTES:
+            raise ValueError("source bounds exceeded")
+
+    indexed: dict[bytes, tuple[str, str]] = {}
+    for record in git(git_fd, root_fd, ("ls-files", "--stage", "-z")).split(b"\0"):
+        if not record:
+            continue
+        header, path = record.split(b"\t", 1)
+        mode_raw, oid_raw, stage = header.split(b" ", 2)
+        if stage != b"0" or path in indexed:
+            raise ValueError("source index contains an unsupported stage")
+        indexed[path] = (mode_raw.decode("ascii"), oid_raw.decode("ascii"))
+    expected_index = {
+        entry.path: (
+            "120000" if entry.kind == "symlink" else f"100{entry.raw_mode & 0o111 and '755' or '644'}",
+            entry.object_id,
+        )
+        for entry in entries
+        if entry.kind != "dir"
+    }
+    if indexed != expected_index:
+        raise ValueError("source index differs from HEAD")
+    for record in git(git_fd, root_fd, ("ls-files", "-t", "-v", "-z")).split(b"\0"):
+        if record and not record.startswith(b"H "):
+            raise ValueError("source index flags hide worktree state")
+
+    observed: dict[bytes, tuple[str, int | None, int | None]] = {}
+
+    def enumerate_worktree(directory_fd: int, prefix: bytes = b"") -> None:
+        names = sorted(os.listdir(directory_fd), key=os.fsencode)
+        for name in names:
+            raw_name = os.fsencode(name)
+            path = raw_name if not prefix else prefix + b"/" + raw_name
+            value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
+            if not prefix and raw_name == b".git":
+                if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+                    raise ValueError("root Git control has the wrong type")
+                continue
+            if not prefix and raw_name == b"target":
+                mode = stat.S_IMODE(value.st_mode)
+                if (
+                    not stat.S_ISDIR(value.st_mode)
+                    or mode & 0o700 != 0o700
+                    or mode & 0o022
+                    or mode & 0o7000
+                ):
+                    raise ValueError("source target exception rejected")
+                continue
+            if not prefix and raw_name == b"main":
+                if kind != "project-source" or not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or stat.S_IMODE(value.st_mode) not in (0o644, 0o755):
+                    raise ValueError("source main exception rejected")
+                continue
+            if stat.S_ISDIR(value.st_mode):
+                observed[path] = ("dir", stat.S_IMODE(value.st_mode), value.st_nlink)
+                child = os.open(
+                    raw_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    enumerate_worktree(child, path)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(value.st_mode):
+                observed[path] = ("file", stat.S_IMODE(value.st_mode), value.st_nlink)
+            elif stat.S_ISLNK(value.st_mode):
+                observed[path] = ("symlink", None, value.st_nlink)
+            else:
+                raise ValueError("source worktree contains a special entry")
+            if len(observed) > MAX_SOURCE_ENTRIES:
+                raise ValueError("source worktree exceeds its entry bound")
+
+    enumerate_worktree(root_fd)
+    expected_observed = {
+        entry.path: (entry.kind, entry.raw_mode, 1 if entry.kind != "dir" else observed.get(entry.path, (None, None, None))[2])
+        for entry in entries
+    }
+    if observed != expected_observed:
+        raise ValueError("source filesystem differs from the tracked tree")
+    folded: set[bytes] = set()
+    for path in observed:
+        value = path.lower()
+        if value in folded:
+            raise ValueError("source paths collide under case folding")
+        folded.add(value)
+    by_path = {entry.path: entry for entry in entries}
+    for entry in entries:
+        if entry.kind != "symlink":
+            continue
+        current = entry.path
+        seen: set[bytes] = set()
+        for _ in range(64):
+            target_entry = by_path.get(current)
+            if target_entry is None:
+                if any(path.startswith(current + b"/") for path in by_path):
+                    break
+                raise ValueError("source symlink target is not tracked")
+            if target_entry.kind != "symlink":
+                break
+            if current in seen or target_entry.raw is None:
+                raise ValueError("source symlink cycle rejected")
+            seen.add(current)
+            candidate = posixpath.normpath(posixpath.join(posixpath.dirname(current), target_entry.raw))
+            if candidate in (b"", b"..") or candidate.startswith(b"../") or candidate.startswith(b"/"):
+                raise ValueError("source symlink escapes the root")
+            current = candidate
+        else:
+            raise ValueError("source symlink chain exceeds its bound")
+    root_value = os.fstat(root_fd)
+    root_mode = stat.S_IMODE(root_value.st_mode)
+    if not stat.S_ISDIR(root_value.st_mode) or root_mode & 0o700 != 0o700:
+        raise ValueError("source root mode rejected")
+    manifest = OrderedDict(
+        (
+            ("schema_version", 1),
+            ("kind", kind),
+            ("revision", revision),
+            ("tree_id", tree),
+            ("object_format", object_format),
+            ("index_sha256", sha256(index_raw)),
+            ("root_mode", f"{root_mode:04o}"),
+            ("root_staged_mode", "0700"),
+            ("entries", manifest_entries),
+            (
+                "exceptions",
+                OrderedDict(
+                    (
+                        ("git", "root-git-control"),
+                        ("target", "root-directory-output"),
+                        ("main", "root-file-output" if kind == "project-source" else None),
+                    )
+                ),
+            ),
+        )
+    )
+    manifest_raw = canonical_json(manifest)
+    return SourceIdentity(kind, root_fd, revision, tree, object_format, sha256(index_raw), entries, manifest_raw, sha256(manifest_raw))
+
+
+def verify_align_pin(project: SourceIdentity, align: SourceIdentity) -> None:
+    pin_entry = next((entry for entry in project.entries if entry.path == os.fsencode(ALIGN_REVISION_FILE)), None)
+    if pin_entry is None or pin_entry.kind != "file" or pin_entry.raw is None:
+        raise ValueError("Align revision file is missing")
+    try:
+        pin_raw = pin_entry.raw.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise ValueError("Align revision is not ASCII") from error
+    if not pin_raw.endswith("\n") or pin_raw.count("\n") != 1:
+        raise ValueError("Align revision is not canonical")
+    pin = pin_raw[:-1]
+    if pin != align.revision or not HEX40.fullmatch(pin):
+        raise ValueError("Align source is not the pinned revision")
+    config = next((entry for entry in align.entries if entry.path == b".cargo/config.toml"), None)
+    if config is None or config.digest != "65016e7a451dc056597b68e7b83ce989560aabf62f2a265d37ca61ddda0c1be3":
+        raise ValueError("Align Cargo configuration changed")
+    if config.raw is None or b'[env]\nLLVM_SYS_221_PREFER_DYNAMIC = "1"\n' not in config.raw:
+        raise ValueError("Align Cargo configuration contract changed")
+
+
+def digest_tree_preimage(node: Mapping[str, Any]) -> bytes:
+    value = (
+        b"align-llm-digest-tree-v2"
+        + b"\0"
+        + node["mode"].encode("ascii")
+        + node["staged_mode"].encode("ascii")
+        + struct.pack(">Q", node["size"])
+    )
+    for child in node["entries"]:
+        name = child["name"].encode("utf-8")
+        value += (
+            (b"\x01" if child["kind"] == "file" else b"\x02")
+            + struct.pack(">I", len(name))
+            + name
+            + child["mode"].encode("ascii")
+            + child["staged_mode"].encode("ascii")
+            + struct.pack(">Q", child["size"])
+            + bytes.fromhex(child["sha256"])
+        )
+    return value
+
+
+def validate_tree_manifest(
+    node: Mapping[str, Any],
+    source: str,
+    *,
+    root: bool = True,
+    depth: int = 0,
+    policy: str = "runtime",
+) -> tuple[int, int]:
+    exact_fields(
+        node,
+        ("kind", "mode", "staged_mode", "size", "sha256", "entries")
+        if root
+        else ("name", "kind", "mode", "staged_mode", "size", "sha256", "entries"),
+    )
+    if depth > 64:
+        raise ValueError("runtime tree depth exceeded")
+    kind = node.get("kind")
+    if kind not in ("file", "dir"):
+        raise ValueError("runtime node kind rejected")
+    mode = node.get("mode")
+    staged_mode = node.get("staged_mode")
+    if not isinstance(mode, str) or not MODE.fullmatch(mode) or not isinstance(staged_mode, str) or not MODE.fullmatch(staged_mode):
+        raise ValueError("runtime node mode rejected")
+    size = node.get("size")
+    digest = node.get("sha256")
+    entries = node.get("entries")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0 or size > MAX_FILE_BYTES:
+        raise ValueError("runtime node size rejected")
+    if not isinstance(digest, str) or not HEX64.fullmatch(digest) or not isinstance(entries, list):
+        raise ValueError("runtime node digest rejected")
+    raw_mode = int(mode, 8)
+    if policy == "runtime":
+        expected_staged = "0700" if kind == "dir" else "0555" if raw_mode & 0o111 else "0444"
+    elif policy == "cache":
+        if kind == "dir":
+            if raw_mode & 0o7000 or raw_mode & 0o700 != 0o700:
+                raise ValueError("cache directory mode rejected")
+            expected_staged = "0700"
+        else:
+            if raw_mode & 0o7111 or raw_mode & 0o400 == 0:
+                raise ValueError("cache file mode rejected")
+            expected_staged = "0600"
+    else:
+        raise ValueError("unknown digest-tree policy")
+    if staged_mode != expected_staged:
+        raise ValueError("runtime staged mode rejected")
+    if not root:
+        name = node["name"]
+        if not isinstance(name, str) or not name or name in (".", "..") or "/" in name or "\x00" in name:
+            raise ValueError("runtime entry name rejected")
+    path = Path(source)
+    value = path.lstat()
+    if kind == "file":
+        if not stat.S_ISREG(value.st_mode) or entries or value.st_size != size or stat.S_IMODE(value.st_mode) != int(mode, 8):
+            raise ValueError("runtime file identity rejected")
+        raw = read_path(source, MAX_FILE_BYTES)
+        if sha256(raw) != digest:
+            raise ValueError("runtime file digest rejected")
+        return 1, len(raw)
+    if not stat.S_ISDIR(value.st_mode) or size != 0 or stat.S_IMODE(value.st_mode) != int(mode, 8):
+        raise ValueError("runtime directory identity rejected")
+    expected_names = [entry.get("name") for entry in entries]
+    if any(not isinstance(name, str) for name in expected_names) or expected_names != sorted(
+        expected_names, key=lambda name: name.encode("utf-8")
+    ) or len(set(expected_names)) != len(expected_names):
+        raise ValueError("runtime directory entry order rejected")
+    actual_names = sorted(os.listdir(source), key=os.fsencode)
+    if expected_names != actual_names:
+        raise ValueError("runtime directory entries changed")
+    count = 1
+    total = 0
+    for entry in entries:
+        name = entry["name"]
+        child_count, child_total = validate_tree_manifest(
+            entry,
+            str(path / name),
+            root=False,
+            depth=depth + 1,
+            policy=policy,
+        )
+        count += child_count
+        total += child_total
+        if count > MAX_SOURCE_ENTRIES or total > MAX_RUNTIME_BYTES:
+            raise ValueError("runtime tree bounds exceeded")
+    if sha256(digest_tree_preimage(node)) != digest:
+        raise ValueError("runtime structural digest rejected")
+    return count, total
+
+
+def validate_cache(manifest: Mapping[str, Any]) -> OrderedDict[str, Any]:
+    cache = manifest["cargo_cache"]
+    raw = read_path(cache["manifest"], MAX_MANIFEST_BYTES)
+    if sha256(raw) != cache["manifest_sha256"]:
+        raise ValueError("cache manifest digest rejected")
+    value = parse_canonical(raw, MAX_MANIFEST_BYTES)
+    exact_fields(value, ("schema_version", "allowed_prefixes", "root", "entry_count", "total_size"))
+    if value["schema_version"] != 2 or tuple(value["allowed_prefixes"]) != ALLOWED_CACHE_PREFIXES:
+        raise ValueError("cache manifest policy rejected")
+    if value["entry_count"] != cache["entry_count"]:
+        raise ValueError("cache entry count rejected")
+    count, total = validate_tree_manifest(value["root"], cache["root"], policy="cache")
+    if count - 1 != value["entry_count"] or total != value["total_size"]:
+        raise ValueError("cache tree summary rejected")
+
+    prefixes = tuple(tuple(value.split("/")) for value in ALLOWED_CACHE_PREFIXES)
+
+    def validate_paths(node: Mapping[str, Any], path: tuple[str, ...] = ()) -> None:
+        for child in node["entries"]:
+            child_path = (*path, child["name"])
+            ancestor = any(prefix[: len(child_path)] == child_path for prefix in prefixes)
+            below = any(
+                len(child_path) > len(prefix) and child_path[: len(prefix)] == prefix
+                for prefix in prefixes
+            )
+            exact = child_path in prefixes
+            if child["kind"] == "file":
+                if not below:
+                    raise ValueError("cache file outside allowed prefix")
+            elif not (ancestor or below or exact):
+                raise ValueError("cache directory outside allowed prefix")
+            validate_paths(child, child_path)
+
+    validate_paths(value["root"])
+    return value
+
+
+@dataclass
+class Admission:
+    lock_fd: int
+    roots_fd: int
+    roots_identity: Snapshot
+    root_fd: int
+    root_identity: Snapshot
+    root_name: str
+    root_path: Path
+
+
+def require_directory(parent_fd: int, name: str, owner: int, mode: int) -> int:
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=parent_fd,
+    )
+    value = os.fstat(fd)
+    if not stat.S_ISDIR(value.st_mode) or value.st_uid != owner or stat.S_IMODE(value.st_mode) != mode:
+        os.close(fd)
+        raise OSError(errno.EPERM, "directory identity rejected")
+    return fd
+
+
+def admit_root() -> Admission:
+    uid = os.geteuid()
+    retained: list[int] = []
+    lock_fd = -1
+    roots_fd = -1
+    root_fd = -1
+    root_name = ""
+    success = False
+    try:
+        slash_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        retained.append(slash_fd)
+        run_fd = require_directory(slash_fd, "run", 0, 0o755)
+        retained.append(run_fd)
+        user_parent_fd = require_directory(run_fd, "user", 0, 0o755)
+        retained.append(user_parent_fd)
+        user_fd = require_directory(user_parent_fd, str(uid), uid, 0o700)
+        retained.append(user_fd)
+        profile_fd = require_directory(user_fd, "align-llm-fresh", uid, 0o700)
+        retained.append(profile_fd)
+        lock_fd = os.open(
+            "lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=profile_fd
+        )
+        lock = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock.st_mode) or lock.st_uid != uid or lock.st_nlink != 1 or stat.S_IMODE(lock.st_mode) != 0o600:
+            raise OSError(errno.EPERM, "lock identity rejected")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail("PLATFORM", "concurrency")
+        roots_fd = os.open("roots", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=profile_fd)
+        roots_identity = snapshot_fd(roots_fd)
+        if roots_identity.mode != 0o700 or os.fstat(roots_fd).st_uid != uid:
+            raise OSError(errno.EPERM, "root parent identity rejected")
+        deadline = time.monotonic() + 1.0
+        count = 0
+        with os.scandir(roots_fd) as candidates:
+            for entry in candidates:
+                count += 1
+                if count > MAX_CANDIDATES or time.monotonic() > deadline:
+                    fail("FILESYSTEM", "filesystem")
+                if os.fsencode(entry.name).startswith(os.fsencode(ROOT_PREFIX)):
+                    fail("FILESYSTEM", "filesystem")
+        for _ in range(8):
+            candidate = ROOT_PREFIX + secrets.token_hex(16)
+            try:
+                os.mkdir(candidate, 0o700, dir_fd=roots_fd)
+                root_name = candidate
+                break
+            except FileExistsError:
+                pass
+        if not root_name:
+            fail("FILESYSTEM", "filesystem")
+        root_fd = os.open(root_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=roots_fd)
+        root_identity = snapshot_fd(root_fd)
+        result = Admission(
+            lock_fd,
+            roots_fd,
+            roots_identity,
+            root_fd,
+            root_identity,
+            root_name,
+            Path(f"/proc/self/fd/{roots_fd}") / root_name,
+        )
+        success = True
+        return result
+    except WorkerError:
+        raise
+    except OSError:
+        fail("PLATFORM", "platform")
+    finally:
+        for descriptor in reversed(retained):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if not success:
+            if root_fd >= 0:
+                try:
+                    os.close(root_fd)
+                except OSError:
+                    pass
+            if root_name and roots_fd >= 0:
+                try:
+                    os.rmdir(root_name, dir_fd=roots_fd)
+                except OSError:
+                    pass
+            if roots_fd >= 0:
+                try:
+                    os.close(roots_fd)
+                except OSError:
+                    pass
+            if lock_fd >= 0:
+                try:
+                    os.close(lock_fd)
+                except OSError:
+                    pass
+
+
+def make_root_children(admission: Admission) -> None:
+    for name in ROOT_CHILDREN:
+        os.mkdir(name, 0o700, dir_fd=admission.root_fd)
+    target_fd = os.open(
+        "cargo-target",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=admission.root_fd,
+    )
+    try:
+        os.mkdir("tmp", 0o700, dir_fd=target_fd)
+    finally:
+        os.close(target_fd)
+    aggregate_fd = os.open("aggregate-output", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=admission.root_fd)
+    try:
+        os.mkdir("workspace-upper", 0o700, dir_fd=aggregate_fd)
+        os.mkdir("workspace-work", 0o700, dir_fd=aggregate_fd)
+    finally:
+        os.close(aggregate_fd)
+
+
+def destination_path(admission: Admission, relative: str) -> Path:
+    return admission.root_path / relative
+
+
+def copy_source(identity: SourceIdentity, destination: Path) -> None:
+    for entry in identity.entries:
+        path = destination / os.fsdecode(entry.path)
+        if entry.kind == "dir":
+            path.mkdir(mode=entry.staged_mode or 0o700)
+            continue
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if entry.kind == "symlink":
+            assert entry.raw is not None
+            os.symlink(os.fsdecode(entry.raw), path)
+            if os.fsencode(os.readlink(path)) != entry.raw:
+                raise OSError(errno.EIO, "staged symlink changed")
+            continue
+        assert entry.raw is not None and entry.staged_mode is not None and entry.digest is not None
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, entry.staged_mode)
+        try:
+            view = memoryview(entry.raw)
+            while view:
+                count = os.write(descriptor, view)
+                if count <= 0:
+                    raise OSError(errno.EIO, "short source write")
+                view = view[count:]
+            os.fchmod(descriptor, entry.staged_mode)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if sha256(read_path(str(path), MAX_FILE_BYTES)) != entry.digest or stat.S_IMODE(path.stat().st_mode) != entry.staged_mode:
+            raise OSError(errno.EIO, "staged source verification failed")
+
+
+def copy_tree_manifest(node: Mapping[str, Any], source: Path, destination: Path, *, root: bool = True) -> tuple[int, int]:
+    kind = node["kind"]
+    if kind == "file":
+        raw = read_path(str(source), MAX_FILE_BYTES)
+        if len(raw) != node["size"] or sha256(raw) != node["sha256"]:
+            raise OSError(errno.EIO, "manifest file changed")
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, int(node["staged_mode"], 8))
+        try:
+            view = memoryview(raw)
+            while view:
+                count = os.write(descriptor, view)
+                if count <= 0:
+                    raise OSError(errno.EIO, "short manifest copy")
+                view = view[count:]
+            os.fchmod(descriptor, int(node["staged_mode"], 8))
+        finally:
+            os.close(descriptor)
+        return 1, len(raw)
+    if root and destination.exists():
+        value = destination.lstat()
+        if not stat.S_ISDIR(value.st_mode) or os.listdir(destination):
+            raise OSError(errno.ENOTEMPTY, "manifest destination is not empty")
+    else:
+        destination.mkdir(mode=0o700)
+    count = 1
+    total = 0
+    for child in node["entries"]:
+        child_count, child_total = copy_tree_manifest(
+            child, source / child["name"], destination / child["name"], root=False
+        )
+        count += child_count
+        total += child_total
+    return count, total
+
+
+def copy_tools(tools: Mapping[str, int], destination: Path) -> None:
+    for name, descriptor in tools.items():
+        raw = read_fd(descriptor, MAX_FILE_BYTES)
+        path = destination / name
+        output = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o555)
+        try:
+            view = memoryview(raw)
+            while view:
+                count = os.write(output, view)
+                if count <= 0:
+                    raise OSError(errno.EIO, "short tool copy")
+                view = view[count:]
+            os.fchmod(output, 0o555)
+        finally:
+            os.close(output)
+        if sha256(read_path(str(path), MAX_FILE_BYTES)) != sha256(raw):
+            raise OSError(errno.EIO, "private tool changed")
+
+
+RuntimeBinding = tuple[Path, str, str, Mapping[str, Any]]
+
+
+def copy_runtime(manifest: Mapping[str, Any], destination: Path) -> list[RuntimeBinding]:
+    result: list[RuntimeBinding] = []
+    total = 0
+    for index, binding in enumerate(manifest["runtime_bindings"]):
+        source = Path(binding["source"])
+        target = destination / f"runtime-{index:06d}"
+        validate_tree_manifest(binding["manifest"], str(source))
+        _, copied = copy_tree_manifest(binding["manifest"], source, target)
+        total += copied
+        if total > MAX_RUNTIME_BYTES:
+            raise OSError(errno.EFBIG, "private runtime exceeds bound")
+        result.append((target, binding["target"], binding["kind"], binding["manifest"]))
+    return result
+
+
+def copy_cache(manifest: Mapping[str, Any], cache_manifest: Mapping[str, Any], destination: Path) -> None:
+    copy_tree_manifest(cache_manifest["root"], Path(manifest["cargo_cache"]["root"]), destination)
+
+
+def copy_git_view(project_fd: int, git_fd: int, destination: Path) -> None:
+    git_directory = Path(
+        git(git_fd, project_fd, ("rev-parse", "--path-format=absolute", "--absolute-git-dir"))
+        .decode("utf-8", "strict")
+        .strip()
+    )
+    common_directory = Path(
+        git(git_fd, project_fd, ("rev-parse", "--path-format=absolute", "--git-common-dir"))
+        .decode("utf-8", "strict")
+        .strip()
+    )
+
+    def recurse(source: int, target: Path, depth: int = 0, *, replace: bool = False) -> None:
+        if depth > 64:
+            raise OSError(errno.ELOOP, "Git view depth exceeded")
+        names = sorted(os.listdir(source), key=os.fsencode)
+        for name in names:
+            raw_name = os.fsencode(name)
+            value = os.stat(raw_name, dir_fd=source, follow_symlinks=False)
+            path = target / name
+            if stat.S_ISDIR(value.st_mode):
+                path.mkdir(mode=0o700, exist_ok=replace)
+                child = os.open(raw_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=source)
+                try:
+                    recurse(child, path, depth + 1, replace=replace)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(value.st_mode) and value.st_nlink == 1 and value.st_size <= MAX_FILE_BYTES:
+                raw, _ = read_at(source, raw_name, MAX_FILE_BYTES)
+                if replace and path.exists():
+                    path.unlink()
+                output = os.open(
+                    path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o444,
+                )
+                try:
+                    view = memoryview(raw)
+                    while view:
+                        written = os.write(output, view)
+                        if written <= 0:
+                            raise OSError(errno.EIO, "short Git view write")
+                        view = view[written:]
+                    os.fchmod(output, 0o444)
+                finally:
+                    os.close(output)
+            else:
+                raise OSError(errno.EPERM, "Git view entry rejected")
+
+    source_fd = os.open(
+        common_directory,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        recurse(source_fd, destination)
+    finally:
+        os.close(source_fd)
+    if git_directory != common_directory:
+        linked_fd = os.open(
+            git_directory,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        try:
+            for name in ("HEAD", "index"):
+                source, _ = read_at(linked_fd, os.fsencode(name), MAX_FILE_BYTES)
+                target = destination / name
+                if target.exists():
+                    target.unlink()
+                output = os.open(
+                    target,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o444,
+                )
+                try:
+                    os.write(output, source)
+                    os.fchmod(output, 0o444)
+                finally:
+                    os.close(output)
+        finally:
+            os.close(linked_fd)
+
+
+def namespace_directories(runtime: Sequence[RuntimeBinding]) -> list[str]:
+    fixed = [
+        "/align-src",
+        "/workspace",
+        "/baseline-git",
+        "/tools",
+        "/runtime",
+        "/cargo",
+        "/target",
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/usr",
+        "/usr/bin",
+        "/usr/lib",
+    ]
+    seen = set(fixed)
+    result = list(fixed)
+    for _, target, _, _ in runtime:
+        parent = str(Path(target).parent)
+        ancestors: list[str] = []
+        while parent not in ("/", "."):
+            ancestors.append(parent)
+            parent = str(Path(parent).parent)
+        for value in reversed(ancestors):
+            if value not in seen:
+                seen.add(value)
+                result.append(value)
+    return result
+
+
+def runtime_arguments(runtime: Sequence[RuntimeBinding]) -> list[str]:
+    arguments: list[str] = []
+    for source, target, _, _ in runtime:
+        arguments.extend(("--ro-bind", str(source), target))
+    return arguments
+
+
+def derived_paths(runtime: Sequence[RuntimeBinding]) -> tuple[str, str, str]:
+    libraries: list[str] = []
+    loaders: list[str] = []
+    pkgconfig: list[str] = []
+
+    def add(values: list[str], value: str) -> None:
+        if value not in values:
+            values.append(value)
+
+    def visit(node: Mapping[str, Any], namespace: Path) -> None:
+        if node["kind"] == "file":
+            name = namespace.name
+            directory = str(namespace.parent)
+            if name.endswith(".a") or name.endswith(".so") or ".so." in name:
+                add(libraries, directory)
+            if name.endswith(".so") or ".so." in name:
+                add(loaders, directory)
+            if name.endswith(".pc"):
+                add(pkgconfig, directory)
+            return
+        for child in node["entries"]:
+            visit(child, namespace / child["name"])
+
+    for _, target, _, node in runtime:
+        visit(node, Path(target))
+    return ":".join(libraries), ":".join(loaders), ":".join(pkgconfig)
+
+
+def cgroup_parent() -> Path:
+    path = Path(f"/sys/fs/cgroup/align-llm-fresh/{os.geteuid()}")
+    value = path.stat()
+    if not stat.S_ISDIR(value.st_mode) or value.st_uid != os.geteuid() or stat.S_IMODE(value.st_mode) != 0o700:
+        fail("PLATFORM", "platform")
+    if "pids" not in (path / "cgroup.controllers").read_text(encoding="ascii").split():
+        fail("PLATFORM", "platform")
+    return path
+
+
+def verify_platform() -> None:
+    release = os.uname().release.split("-", 1)[0].split(".")
+    try:
+        version = tuple(int(value) for value in release[:2])
+    except ValueError:
+        fail("PLATFORM", "platform")
+    if (
+        os.uname().sysname != "Linux"
+        or os.uname().machine != "x86_64"
+        or version < (6, 8)
+        or sys.version_info[:2] != (3, 12)
+    ):
+        fail("PLATFORM", "platform")
+    temporary = os.stat("/tmp", follow_symlinks=False)
+    if not stat.S_ISDIR(temporary.st_mode) or stat.S_IMODE(temporary.st_mode) != 0o1777:
+        fail("PLATFORM", "platform")
+    raw = read_bounded_stream("/proc/self/mountinfo", 4 * 1024 * 1024)
+    selected: tuple[int, set[bytes]] | None = None
+    for line in raw.splitlines():
+        before, separator, after = line.partition(b" - ")
+        fields = before.split()
+        tail = after.split()
+        if not separator or len(fields) < 6 or len(tail) < 3:
+            fail("PLATFORM", "platform")
+        mount = fields[4].replace(b"\\040", b" ").replace(b"\\011", b"\t").replace(b"\\134", b"\\")
+        if not (b"/tmp" == mount or b"/tmp".startswith(mount.rstrip(b"/") + b"/")):
+            continue
+        options = set(fields[5].split(b",")) | set(tail[2].split(b","))
+        candidate = (len(mount), options)
+        if selected is None or candidate[0] > selected[0]:
+            selected = candidate
+    if selected is None or b"noexec" in selected[1]:
+        fail("PLATFORM", "platform")
+    cgroup_parent()
+
+
+def child_preexec(leaf: Path) -> None:
+    resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (MAX_OPEN_FDS, MAX_OPEN_FDS))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_FILE_BYTES, MAX_FILE_BYTES))
+    (leaf / "cgroup.procs").write_text("0\n", encoding="ascii")
+    os.setsid()
+
+
+def run_owned(
+    arguments: Sequence[str],
+    *,
+    category: str,
+    phase: str,
+    timeout: int,
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    parent = cgroup_parent()
+    leaf: Path | None = None
+    for _ in range(8):
+        candidate = parent / (ROOT_PREFIX + secrets.token_hex(16))
+        try:
+            candidate.mkdir(mode=0o700)
+            leaf = candidate
+            break
+        except FileExistsError:
+            pass
+    if leaf is None:
+        fail("PLATFORM", "platform")
+    try:
+        (leaf / "pids.max").write_text("512\n", encoding="ascii")
+        process = subprocess.Popen(
+            list(arguments),
+            env=dict(environment or {}),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(),
+            preexec_fn=lambda: child_preexec(leaf),
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                stdout, stderr = process.communicate(timeout=5)
+            fail(category, phase)
+        if len(stdout) > MAX_STREAM_BYTES or len(stderr) > MAX_STREAM_BYTES or process.returncode != 0:
+            fail(category, phase)
+        if (leaf / "cgroup.procs").read_text(encoding="ascii").strip() or (
+            leaf / "cgroup.threads"
+        ).read_text(encoding="ascii").strip():
+            raise CleanupError("child cgroup remained populated")
+    finally:
+        try:
+            leaf.rmdir()
+        except OSError as error:
+            raise CleanupError("child cgroup cleanup failed") from error
+
+
+def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> tuple[Path, Path]:
+    root = admission.root_path
+    tool_bin = root / "tool-bin"
+    directories = namespace_directories(runtime)
+    library_path, loader_path, pkg_path = derived_paths(runtime)
+    arguments = [
+        str(tool_bin / "bwrap"),
+        "--clearenv",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--tmpfs",
+        "/",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+    for directory in directories:
+        arguments.extend(("--dir", directory))
+    arguments.extend(
+        (
+            "--dir",
+            "/target/tmp",
+            "--ro-bind",
+            str(root / "align-source"),
+            "/align-src",
+            "--ro-bind",
+            str(tool_bin),
+            "/tools",
+            "--ro-bind",
+            str(root / "cargo-home"),
+            "/cargo",
+            "--bind",
+            str(root / "cargo-target"),
+            "/target",
+            *runtime_arguments(runtime),
+            "--setenv",
+            "HOME",
+            "/nonexistent",
+            "--setenv",
+            "TMPDIR",
+            "/target/tmp",
+            "--setenv",
+            "PATH",
+            "/tools",
+            "--setenv",
+            "PYTHONDONTWRITEBYTECODE",
+            "1",
+            "--setenv",
+            "LIBRARY_PATH",
+            library_path,
+            "--setenv",
+            "LD_LIBRARY_PATH",
+            loader_path,
+            "--setenv",
+            "PKG_CONFIG_PATH",
+            pkg_path,
+            "--setenv",
+            "CARGO_HOME",
+            "/cargo",
+            "--setenv",
+            "CARGO_TARGET_DIR",
+            "/target",
+            "--setenv",
+            "CARGO_NET_OFFLINE",
+            "true",
+            "--setenv",
+            "MAKE",
+            "/tools/make",
+            "--setenv",
+            "RUSTC",
+            "/tools/rustc",
+            "--setenv",
+            "CARGO",
+            "/tools/cargo",
+            "--setenv",
+            "LLVM_CONFIG",
+            "/tools/llvm-config-22",
+            "--setenv",
+            "CC",
+            "/tools/cc",
+            "--setenv",
+            "CXX",
+            "/tools/cxx",
+            "--setenv",
+            "AR",
+            "/tools/ar",
+            "--setenv",
+            "RANLIB",
+            "/tools/ranlib",
+            "--setenv",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+            "/tools/linker",
+            "--chdir",
+            "/align-src",
+            "--",
+            "/tools/cargo",
+            "build",
+            "--manifest-path",
+            "/align-src/Cargo.toml",
+            "--locked",
+            "--offline",
+            "--release",
+            "-p",
+            "align_runtime",
+            "-p",
+            "align_driver",
+        )
+    )
+    run_owned(arguments, category="BUILD", phase="build", timeout=BUILD_TIMEOUT)
+    compiler = root / "cargo-target/release/alignc"
+    archive = root / "cargo-target/release/libalign_runtime.a"
+    for path in (compiler, archive):
+        value = path.lstat()
+        if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or value.st_size <= 0 or value.st_size > MAX_FILE_BYTES:
+            fail("COMPILER", "compiler")
+    return compiler, archive
+
+
+def install_file(source: Path, target: Path, mode: int) -> tuple[int, str]:
+    raw = read_path(str(source), MAX_FILE_BYTES)
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    try:
+        view = memoryview(raw)
+        while view:
+            count = os.write(fd, view)
+            if count <= 0:
+                raise OSError(errno.EIO, "short compiler copy")
+            view = view[count:]
+        os.fchmod(fd, mode)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return len(raw), sha256(raw)
+
+
+def install_bundle(
+    admission: Admission,
+    compiler_source: Path,
+    archive_source: Path,
+    project: SourceIdentity,
+    align: SourceIdentity,
+    manifest_raw: bytes,
+    runtime: Sequence[RuntimeBinding],
+) -> None:
+    tool_bin = admission.root_path / "tool-bin"
+    compiler_size, compiler_digest = install_file(compiler_source, tool_bin / "alignc", 0o555)
+    archive_size, archive_digest = install_file(archive_source, tool_bin / "libalign_runtime.a", 0o444)
+    descriptor = OrderedDict(
+        (
+            ("schema_version", 4),
+            ("align_revision", align.revision),
+            ("project_source_manifest_sha256", project.manifest_digest),
+            ("align_source_manifest_sha256", align.manifest_digest),
+            ("toolchain_manifest_sha256", sha256(manifest_raw)),
+            (
+                "compiler",
+                OrderedDict(
+                    (
+                        ("path", "tool-bin/alignc"),
+                        ("mode", "0555"),
+                        ("size", compiler_size),
+                        ("sha256", compiler_digest),
+                    )
+                ),
+            ),
+            (
+                "compiler_support",
+                OrderedDict(
+                    (
+                        (
+                            "runtime_archive",
+                            OrderedDict(
+                                (
+                                    ("path", "tool-bin/libalign_runtime.a"),
+                                    ("mode", "0444"),
+                                    ("size", archive_size),
+                                    ("sha256", archive_digest),
+                                )
+                            ),
+                        ),
+                    )
+                ),
+            ),
+            (
+                "runtime_paths",
+                [
+                    OrderedDict(
+                        (
+                            ("path", f"runtime/runtime-{index:06d}"),
+                            ("mode", node["staged_mode"]),
+                            ("size", node["size"]),
+                            ("sha256", node["sha256"]),
+                        )
+                    )
+                    for index, (_, _, _, node) in enumerate(runtime)
+                ],
+            ),
+            (
+                "launcher_policy",
+                OrderedDict(
+                    (
+                        ("kind", "private-path-readonly-id"),
+                        ("descriptor_namespace_path", "/tools/fresh-descriptor"),
+                        ("guard_namespace_path", "/tools/fresh-guard"),
+                        ("compiler_namespace_path", "/tools/alignc"),
+                        ("namespace", "fresh-aggregate-v4"),
+                    )
+                ),
+            ),
+        )
+    )
+    descriptor_raw = canonical_json(descriptor)
+    guard_raw = canonical_json(
+        OrderedDict(
+            (
+                ("schema_version", 1),
+                ("descriptor_sha256", sha256(descriptor_raw)),
+                ("compiler_sha256", compiler_digest),
+            )
+        )
+    )
+    for name, raw in (("fresh-descriptor", descriptor_raw), ("fresh-guard", guard_raw)):
+        path = tool_bin / name
+        path.write_bytes(raw)
+        path.chmod(0o444)
+    install_file(
+        admission.root_path / "project-source/scripts/fresh-alignc",
+        tool_bin / "fresh-alignc",
+        0o555,
+    )
+
+
+def aggregate_environment(runtime: Sequence[RuntimeBinding]) -> list[str]:
+    library_path, loader_path, pkg_path = derived_paths(runtime)
+    values = OrderedDict(
+        (
+            ("HOME", "/nonexistent"),
+            ("TMPDIR", "/target/tmp"),
+            ("PATH", "/tools"),
+            ("PYTHONHOME", "/usr"),
+            ("PYTHONNOUSERSITE", "1"),
+            ("PYTHONDONTWRITEBYTECODE", "1"),
+            ("LIBRARY_PATH", library_path),
+            ("LD_LIBRARY_PATH", loader_path),
+            ("PKG_CONFIG_PATH", pkg_path),
+            ("ALIGNC_CACHE", "off"),
+            ("ALIGN_LLM_TEMP_ROOT", "/target/tmp"),
+            ("ALIGN_LLM_TOOL_ROOT", "/tools"),
+            ("ALIGN_LLM_PYTHON", "/tools/python3"),
+            ("ALIGN_LLM_BASELINE_GIT_DIR", "/baseline-git"),
+            ("ALIGN_LLM_BASELINE_GIT_COMMON_DIR", "/baseline-git"),
+            ("ALIGN_LLM_BASELINE_GIT_WORK_TREE", "/workspace"),
+            ("GIT_DIR", "/baseline-git"),
+            ("GIT_COMMON_DIR", "/baseline-git"),
+            ("GIT_WORK_TREE", "/workspace"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+            ("GIT_ATTR_NOSYSTEM", "1"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_NO_REPLACE_OBJECTS", "1"),
+            ("GIT_GRAFT_FILE", "/dev/null"),
+            ("GIT_NO_LAZY_FETCH", "1"),
+            ("GIT_OPTIONAL_LOCKS", "0"),
+            ("XDG_CONFIG_HOME", "/dev/null"),
+            ("LC_ALL", "C"),
+            ("SHELL", "/bin/sh"),
+            ("MAKE", "/tools/make"),
+            ("ALIGNC", "/tools/fresh-alignc"),
+            ("ALIGN_LLM_BWRAP", "/tools/bwrap"),
+            ("ALIGN_LLM_PRLIMIT", "/tools/prlimit"),
+            ("ALIGN_LLM_FRESH_COMPILER", "1"),
+        )
+    )
+    result: list[str] = []
+    for name, value in values.items():
+        result.extend(("--setenv", name, value))
+    return result
+
+
+def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> None:
+    root = admission.root_path
+    directories = namespace_directories(runtime)
+    arguments = [
+        str(root / "tool-bin/bwrap"),
+        "--clearenv",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--tmpfs",
+        "/",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+    for directory in directories:
+        arguments.extend(("--dir", directory))
+    arguments.extend(
+        (
+            "--overlay-src",
+            str(root / "aggregate-work"),
+            "--overlay",
+            str(root / "aggregate-output/workspace-upper"),
+            str(root / "aggregate-output/workspace-work"),
+            "/workspace",
+            "--ro-bind",
+            str(root / "tool-bin"),
+            "/tools",
+            "--ro-bind",
+            str(root / "cargo-home"),
+            "/cargo",
+            "--ro-bind",
+            str(root / "cargo-target"),
+            "/target",
+            "--ro-bind",
+            str(root / "baseline-git"),
+            "/baseline-git",
+            "--size",
+            "268435456",
+            "--tmpfs",
+            "/target/tmp",
+            *runtime_arguments(runtime),
+            *aggregate_environment(runtime),
+            "--chdir",
+            "/workspace",
+            "--",
+            "/tools/mount-guard",
+            "--no-symlink-follow",
+            "/target/tmp",
+            "--",
+            "/tools/make",
+            "--silent",
+            "--no-print-directory",
+            "-j1",
+            "-f",
+            "/workspace/Makefile",
+            "capable-checks",
+        )
+    )
+    run_owned(arguments, category="CHILD", phase="aggregate", timeout=AGGREGATE_TIMEOUT)
+    upper = root / "aggregate-output/workspace-upper"
+    names = sorted(os.listdir(upper), key=os.fsencode)
+    if any(name != "main" for name in names):
+        fail("CHILD", "aggregate")
+    output = upper / "main"
+    value = output.lstat()
+    if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or stat.S_IMODE(value.st_mode) != 0o755 or value.st_size > MAX_FILE_BYTES:
+        fail("CHILD", "aggregate")
+    raw = read_path(str(output), MAX_FILE_BYTES)
+    if not raw.startswith(b"\x7fELF"):
+        fail("CHILD", "aggregate")
+
+
+def scan_private(root: Path) -> tuple[int, int]:
+    count = 0
+    total = 0
+    stack = [root]
+    while stack:
+        path = stack.pop()
+        for entry in os.scandir(path):
+            value = entry.stat(follow_symlinks=False)
+            count += 1
+            if stat.S_ISDIR(value.st_mode):
+                stack.append(Path(entry.path))
+            elif stat.S_ISREG(value.st_mode):
+                total += value.st_size
+            elif not stat.S_ISLNK(value.st_mode):
+                raise CleanupError("private tree contains special entry")
+            if count > MAX_PRIVATE_ENTRIES or total > MAX_ROOT_BYTES:
+                raise CleanupError("private tree exceeds cleanup bound")
+    return count, total
+
+
+def same_owned_directory(fd: int, accepted: Snapshot) -> bool:
+    value = os.fstat(fd)
+    return (
+        value.st_dev == accepted.device
+        and value.st_ino == accepted.inode
+        and stat.S_ISDIR(value.st_mode)
+        and stat.S_IMODE(value.st_mode) == accepted.mode
+        and value.st_uid == os.geteuid()
+    )
+
+
+def remove_tree_fd(parent_fd: int, name: str) -> None:
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+    try:
+        for child in sorted(os.listdir(fd), key=os.fsencode, reverse=True):
+            value = os.stat(child, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISDIR(value.st_mode):
+                remove_tree_fd(fd, child)
+            elif stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode):
+                os.unlink(child, dir_fd=fd)
+            else:
+                raise CleanupError("cleanup refused special entry")
+    finally:
+        os.close(fd)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
+def cleanup(admission: Admission | None) -> None:
+    if admission is None:
+        return
+    scan_private(admission.root_path)
+    if not same_owned_directory(admission.roots_fd, admission.roots_identity) or not same_owned_directory(
+        admission.root_fd, admission.root_identity
+    ):
+        raise CleanupError("private root identity changed")
+    os.close(admission.root_fd)
+    remove_tree_fd(admission.roots_fd, admission.root_name)
+    if admission.root_name in os.listdir(admission.roots_fd):
+        raise CleanupError("private root remains")
+    os.close(admission.roots_fd)
+    fcntl.flock(admission.lock_fd, fcntl.LOCK_UN)
+    os.close(admission.lock_fd)
+
+
+def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
+    if mode not in ("ci", "build") or (project_fd, manifest_fd, run_fd) != (4, 8, 9):
+        fail("ARGUMENT", "input")
+    if dict(os.environ) != EXPECTED_ENVIRONMENT:
+        fail("ARGUMENT", "input")
+    expected_descriptor_set()
+    try:
+        manifest_raw = verify_sealed(manifest_fd, MAX_MANIFEST_BYTES)
+        manifest = validate_manifest(manifest_raw)
+        run_raw = verify_sealed(run_fd, MAX_ATTESTATION_BYTES)
+        predicate = invocation_predicate(run_raw, manifest_raw)
+        worker_raw = read_fd(7, MAX_WORKER_BYTES)
+        if predicate["controller_sha256"] != sha256(worker_raw):
+            raise ValueError("worker digest differs from run capsule")
+    except (OSError, ValueError, UnicodeError):
+        fail("TRUST", "manifest")
+    verify_platform()
+    try:
+        tools = authenticate_tools(manifest)
+    except Exception:
+        fail("TOOL", "tools")
+    align_retained: list[tuple[int, Snapshot]] = []
+    align_fd = -1
+    try:
+        try:
+            project = source_identity(
+                "project-source",
+                project_fd,
+                tools["git"],
+                expected_head=predicate["repository_head"],
+                expected_format=predicate["repository_object_format"],
+            )
+        except Exception:
+            fail("SOURCE", "project-source")
+        try:
+            align_fd, align_retained = open_relative_directory(project_fd, predicate["align_repo_relative"])
+            align = source_identity("align-source", align_fd, tools["git"])
+            verify_align_pin(project, align)
+        except Exception:
+            fail("SOURCE", "align-source")
+        try:
+            cache_manifest = validate_cache(manifest)
+            for binding in manifest["runtime_bindings"]:
+                validate_tree_manifest(binding["manifest"], binding["source"])
+        except Exception:
+            fail("CACHE", "cache")
+        admission: Admission | None = None
+        primary: WorkerError | None = None
+        cleanup_failure: CleanupError | None = None
+        try:
+            admission = admit_root()
+            make_root_children(admission)
+            root = admission.root_path
+            copy_git_view(project_fd, tools["git"], root / "baseline-git")
+            copy_source(project, root / "project-source")
+            copy_source(align, root / "align-source")
+            copy_source(project, root / "aggregate-work")
+            copy_tools(tools, root / "tool-bin")
+            runtime = copy_runtime(manifest, root / "runtime")
+            copy_cache(manifest, cache_manifest, root / "cargo-home")
+            compiler, archive = build_compiler(admission, runtime)
+            install_bundle(admission, compiler, archive, project, align, manifest_raw, runtime)
+            if mode == "ci":
+                run_aggregate(admission, runtime)
+        except WorkerError as error:
+            primary = error
+        except (OSError, ValueError, subprocess.SubprocessError):
+            primary = WorkerError("FILESYSTEM", "filesystem")
+        finally:
+            try:
+                cleanup(admission)
+            except CleanupError as error:
+                cleanup_failure = error
+        if primary is not None:
+            primary.cleanup_failed = cleanup_failure is not None
+            raise primary
+        if cleanup_failure is not None:
+            raise cleanup_failure
+    finally:
+        for descriptor in tools.values():
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if align_retained:
+            try:
+                close_retained(align_retained)
+            except CleanupError:
+                pass
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--mode", required=True)
+    parser.add_argument("--project-root-fd", type=int, required=True)
+    parser.add_argument("--image-manifest-fd", type=int, required=True)
+    parser.add_argument("--run-attestation-fd", type=int, required=True)
+    try:
+        value = parser.parse_args(list(sys.argv[1:] if arguments is None else arguments))
+    except SystemExit:
+        os.write(2, b"fresh compiler: ERROR ARGUMENT input\n")
+        return 1
+    primary: WorkerError | None = None
+    cleanup_failure = False
+    try:
+        worker(value.mode, value.project_root_fd, value.image_manifest_fd, value.run_attestation_fd)
+    except WorkerError as error:
+        primary = error
+        cleanup_failure = error.cleanup_failed
+    except CleanupError:
+        cleanup_failure = True
+    except Exception:
+        primary = WorkerError("INTERNAL", "internal")
+    if primary is not None:
+        category = primary.category if primary.category in PUBLIC_CATEGORIES else "INTERNAL"
+        phase = primary.phase if primary.phase in PUBLIC_PHASES else "internal"
+        os.write(2, f"fresh compiler: ERROR {category} {phase}\n".encode("ascii"))
+        if cleanup_failure:
+            os.write(2, b"fresh compiler: ERROR CLEANUP cleanup\n")
+        return 1
+    if cleanup_failure:
+        os.write(2, b"fresh compiler: ERROR CLEANUP cleanup\n")
+        return 1
+    expected = {
+        "ci": b"fresh compiler and capable checks: PASS\n",
+        "build": b"fresh compiler: PASS\n",
+    }.get(value.mode)
+    if expected is None:
+        os.write(2, b"fresh compiler: ERROR ARGUMENT input\n")
+        return 1
+    os.write(1, expected)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

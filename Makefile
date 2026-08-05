@@ -1,5 +1,7 @@
 ALIGNC ?= ./scripts/alignc
 ALIGN_REPO ?= ../align
+override SHELL := /bin/sh
+override .SHELLFLAGS := -eu -c
 override PINNED_ALIGNC := $(abspath $(ALIGN_REPO)/target/release/alignc)
 ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
@@ -13,6 +15,14 @@ override REQUESTED_SERIAL_CHECK_AGGREGATES := \
 ifneq ($(REQUESTED_SERIAL_CHECK_AGGREGATES),)
 ifneq ($(words $(MAKECMDGOALS)),1)
 $(error verification aggregates must be requested alone)
+endif
+endif
+ifeq ($(MAKECMDGOALS),ci)
+$(error fresh compiler: ERROR TRUST supervisor)
+endif
+ifeq ($(MAKECMDGOALS),capable-checks)
+ifneq ($(ALIGN_LLM_FRESH_COMPILER),1)
+$(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
@@ -99,7 +109,5 @@ align-build: align-revision
 	cargo build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
 		-p align_runtime -p align_driver
 
-ci: align-build
-	@test -x "$(PINNED_ALIGNC)" || { echo "pinned Align compiler was not built at $(PINNED_ALIGNC)" >&2; exit 1; }
-	+MAKEFLAGS= GNUMAKEFLAGS= $(MAKE) --no-print-directory -j1 \
-	  ALIGNC="$(PINNED_ALIGNC)" capable-checks
+ci:
+	@exit 1

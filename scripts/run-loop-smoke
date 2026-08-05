@@ -6,7 +6,9 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 binary="${ALIGN_LLM_BIN:-${project_root}/main}"
 expected="${project_root}/eval/expected/loop-smoke.txt"
 output_file="$(mktemp)"
-marker="${project_root}/eval/.loop-smoke-marker"
+temp_root="${ALIGN_LLM_TEMP_ROOT:-${TMPDIR:-/tmp}}"
+marker="${temp_root}/loop-smoke-marker"
+export ALIGN_LLM_TEMP_ROOT="${temp_root}"
 trap 'rm -f "${output_file}" "${marker}"' EXIT
 rm -f "${marker}"
 

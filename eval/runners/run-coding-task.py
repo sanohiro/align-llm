@@ -26,8 +26,27 @@ FIXTURE_GIT_ENV = {
     "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
 }
 PR_SET_CHILD_SUBREAPER = 36
-BWRAP_EXECUTABLE = Path(os.environ.get("ALIGN_LLM_BWRAP", "/usr/bin/bwrap"))
-PRLIMIT_EXECUTABLE = Path("/usr/bin/prlimit")
+FRESH_MODE = os.environ.get("ALIGN_LLM_FRESH_COMPILER") == "1"
+BWRAP_EXECUTABLE = (
+    Path(os.environ["ALIGN_LLM_BWRAP"])
+    if FRESH_MODE
+    else Path(os.environ.get("ALIGN_LLM_BWRAP", "/usr/bin/bwrap"))
+)
+PRLIMIT_EXECUTABLE = (
+    Path(os.environ["ALIGN_LLM_PRLIMIT"])
+    if FRESH_MODE
+    else Path(os.environ.get("ALIGN_LLM_PRLIMIT", "/usr/bin/prlimit"))
+)
+TOOL_ROOT = (
+    Path(os.environ["ALIGN_LLM_TOOL_ROOT"])
+    if FRESH_MODE
+    else Path(os.environ.get("ALIGN_LLM_TOOL_ROOT", "/usr/bin"))
+)
+PYTHON_EXECUTABLE = Path(
+    os.environ["ALIGN_LLM_PYTHON"]
+    if FRESH_MODE
+    else os.environ.get("ALIGN_LLM_PYTHON", sys.executable)
+).resolve()
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 COMMAND_OUTPUT_TRUNCATION_MARKER = b"\n[output truncated]"
 MAX_VALIDATION_TMPFS_BYTES = 64 * 1024 * 1024
@@ -397,10 +416,12 @@ def is_string_list(value: Any) -> bool:
 
 def resolve_inside(root: Path, relative: str, label: str) -> Path:
     candidate = (root / relative).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as error:
-        raise TaskError(f"{label} escapes the project root") from error
+    allowed = [root]
+    temporary = os.environ.get("ALIGN_LLM_TEMP_ROOT")
+    if temporary:
+        allowed.append(Path(temporary).resolve())
+    if not any(candidate == parent or candidate.is_relative_to(parent) for parent in allowed):
+        raise TaskError(f"{label} escapes the project and temporary roots")
     return candidate
 
 
@@ -423,6 +444,8 @@ def run(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            close_fds=True,
+            pass_fds=(),
         )
     except OSError as error:
         raise TaskError(f"command failed to run: {display_name}: {error}") from error
@@ -461,11 +484,23 @@ def run(
 
 
 def fixture_environment() -> dict[str, str]:
-    environment = {
-        "HOME": "/tmp/home",
-        "PATH": "/usr/bin:/bin",
-        "TMPDIR": "/tmp",
-    }
+    if FRESH_MODE:
+        environment = {
+            "HOME": "/nonexistent",
+            "PATH": "/tools",
+            "TMPDIR": "/target/tmp",
+            "PYTHONHOME": "/usr",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        for name in ("LIBRARY_PATH", "LD_LIBRARY_PATH", "PKG_CONFIG_PATH"):
+            environment[name] = os.environ.get(name, "")
+    else:
+        environment = {
+            "HOME": "/tmp/home",
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": "/tmp",
+        }
     environment.update(FIXTURE_GIT_ENV)
     environment["GIT_CONFIG_NOSYSTEM"] = "1"
     environment["GIT_ATTR_NOSYSTEM"] = "1"
@@ -484,11 +519,80 @@ def validation_environment() -> dict[str, str]:
 
 def validation_command(argv: list[str]) -> list[str]:
     if argv[0] == "python3":
-        return [str(Path(sys.executable).resolve()), *argv[1:]]
+        return [str(PYTHON_EXECUTABLE), *argv[1:]]
     return argv
 
 
+def fresh_namespace_prefix() -> list[str]:
+    arguments = [
+        str(BWRAP_EXECUTABLE),
+        "--clearenv",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-all",
+        "--uid",
+        str(os.getuid()),
+        "--gid",
+        str(os.getgid()),
+        "--cap-drop",
+        "ALL",
+        "--tmpfs",
+        "/",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+    for directory in (
+        "/tools",
+        "/target",
+        "/usr",
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/runtime",
+        "/tmp",
+        "/dev/shm",
+    ):
+        arguments.extend(("--dir", directory))
+    for path in ("/tools", "/usr", "/bin", "/lib", "/lib64", "/runtime"):
+        if Path(path).exists():
+            arguments.extend(("--ro-bind", path, path))
+    arguments.extend(
+        (
+            "--bind",
+            "/target/tmp",
+            "/target/tmp",
+            "--size",
+            str(MAX_VALIDATION_TMPFS_BYTES),
+            "--tmpfs",
+            "/tmp",
+            "--size",
+            str(MAX_VALIDATION_TMPFS_BYTES),
+            "--tmpfs",
+            "/dev/shm",
+        )
+    )
+    for name, value in validation_environment().items():
+        arguments.extend(("--setenv", name, value))
+    return arguments
+
+
 def sandbox_probe_command() -> list[str]:
+    if FRESH_MODE:
+        return [
+            *fresh_namespace_prefix(),
+            "--",
+            "/tools/mount-guard",
+            "--no-symlink-follow",
+            "/target/tmp",
+            "/tmp",
+            "/dev/shm",
+            "--",
+            str(PYTHON_EXECUTABLE),
+            "-c",
+            "pass",
+        ]
     return [
         str(BWRAP_EXECUTABLE),
         "--die-with-parent",
@@ -543,6 +647,8 @@ def require_sandbox_capability() -> None:
             check=False,
             capture_output=True,
             timeout=BWRAP_PROBE_TIMEOUT_SECONDS,
+            close_fds=True,
+            pass_fds=(),
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise TaskError(
@@ -599,6 +705,24 @@ def validation_sandbox_command(
     require_sandbox_capability()
 
     resolved = validation_command(argv)
+    if FRESH_MODE:
+        return [
+            *fresh_namespace_prefix(),
+            "--ro-bind",
+            str(checkout / ".git"),
+            str(checkout / ".git"),
+            "--chdir",
+            str(checkout),
+            "--",
+            "/tools/mount-guard",
+            "--no-symlink-follow",
+            "/target/tmp",
+            "/tmp",
+            "/dev/shm",
+            "--",
+            *validation_resource_limits(timeout_seconds),
+            *resolved,
+        ]
     executable = Path(resolved[0]).resolve()
     system_root = Path("/usr")
     python_root = Path(sys.base_prefix).resolve()
