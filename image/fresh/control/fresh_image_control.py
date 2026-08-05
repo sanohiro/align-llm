@@ -817,7 +817,11 @@ def _runtime_tree(path: str, *, root: bool = True) -> OrderedDict[str, object]:
 
 
 def _run_retained_tool(
-    descriptor: int, arguments: Sequence[str], *, timeout: int = 10
+    descriptor: int,
+    arguments: Sequence[str],
+    *,
+    timeout: int = 10,
+    pass_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         list(arguments),
@@ -826,7 +830,7 @@ def _run_retained_tool(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        pass_fds=(descriptor,),
+        pass_fds=tuple(dict.fromkeys((descriptor, *pass_fds))),
         close_fds=True,
         timeout=timeout,
         check=False,
@@ -841,6 +845,8 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
         os.mkdir(lower, 0o700)
         os.mkdir(upper, 0o700)
         os.mkdir(work, 0o700)
+        writable = os.path.join(name, "writable")
+        os.mkdir(writable, 0o700)
         os.mkdir(os.path.join(lower, "tmp"), 0o700)
         marker = os.open(
             os.path.join(lower, "lower-marker"),
@@ -848,6 +854,17 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
             0o600,
         )
         os.close(marker)
+        opened_mount_fds: list[int] = []
+        try:
+            for path in (lower, upper, work, "/opt/align-llm/tool-bin", writable):
+                opened_mount_fds.append(
+                    os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+                )
+        except Exception:
+            for descriptor in reversed(opened_mount_fds):
+                os.close(descriptor)
+            raise
+        mount_fds = tuple(opened_mount_fds)
         arguments = [
             bwrap_argv0,
             "--unshare-user",
@@ -867,16 +884,21 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
             "/",
             "--dir",
             "/target",
+            "--dir",
+            "/writable",
+            "--bind-fd",
+            str(mount_fds[4]),
+            "/writable",
             "--overlay-src",
-            lower,
+            f"/proc/self/fd/{mount_fds[0]}",
             "--overlay",
-            upper,
-            work,
+            f"/proc/self/fd/{mount_fds[1]}",
+            f"/proc/self/fd/{mount_fds[2]}",
             "/target",
             "--tmpfs",
             "/target/tmp",
-            "--ro-bind",
-            "/opt/align-llm/tool-bin",
+            "--ro-bind-fd",
+            str(mount_fds[3]),
             "/tools",
             "--proc",
             "/proc",
@@ -891,10 +913,25 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
             "--namespace-self-test",
         ]
         try:
-            result = _run_retained_tool(bwrap_fd, arguments, timeout=20)
+            result = _run_retained_tool(
+                bwrap_fd, arguments, timeout=20, pass_fds=mount_fds
+            )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ControlError("TRUST", "bwrap", "bubblewrap namespace probe failed") from error
+        finally:
+            for descriptor in reversed(mount_fds):
+                os.close(descriptor)
         if result.returncode != 0 or result.stdout or result.stderr:
+            sys.stderr.buffer.write(
+                b"DIAGNOSTIC BWRAP SELF-TEST\n"
+                + b"return="
+                + str(result.returncode).encode("ascii")
+                + b"\nstdout="
+                + result.stdout
+                + b"\nstderr="
+                + result.stderr
+                + b"\n"
+            )
             raise ControlError("TRUST", "bwrap", "bubblewrap namespace probe rejected")
 
 
@@ -970,9 +1007,15 @@ def _platform_self_test(manifest_raw: bytes) -> None:
             raise ControlError("TRUST", "bwrap", "bubblewrap probe failed") from error
         if help_result.returncode != 0 or not all(
             option in help_result.stdout + help_result.stderr
-            for option in (b"--overlay-src", b"--overlay")
+            for option in (
+                b"--overlay-src",
+                b"--overlay",
+                b"--bind-fd",
+                b"--ro-bind-fd",
+            )
         ):
-            raise ControlError("TRUST", "bwrap", "bubblewrap overlay support is missing")
+            sys.stderr.buffer.write(b"DIAGNOSTIC BWRAP HELP MISSING\n" + help_result.stdout + help_result.stderr)
+            raise ControlError("TRUST", "bwrap", "bubblewrap mount support is missing")
         _namespace_self_test(bwrap_fd, bwrap_argv0)
     finally:
         os.close(bwrap_fd)
