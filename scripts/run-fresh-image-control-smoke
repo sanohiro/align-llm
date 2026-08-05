@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Exercise FRESH-IMAGE crypto, admission, sealed-fd, and ELF build ownership."""
+
+from __future__ import annotations
+
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPOSITORY / "scripts"))
+sys.path.insert(0, str(REPOSITORY / "image" / "fresh" / "control"))
+
+from fresh_image_control import (  # noqa: E402
+    ControlError,
+    _mode_from_arguments,
+    _normalize_relative,
+    _read_sealed,
+    _reject_environment,
+    _sealed_memfd,
+)
+
+
+def rejected(callback: object) -> None:
+    try:
+        callback()  # type: ignore[operator]
+    except ControlError:
+        return
+    raise AssertionError("case was accepted")
+
+
+def build(output: Path) -> dict[str, str]:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPOSITORY / "scripts" / "build-fresh-image-control"),
+            "--output-dir",
+            str(output),
+        ],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    values = {}
+    for line in result.stdout.decode("ascii").splitlines():
+        digest, name = line.split("  ", 1)
+        values[name] = digest
+    return values
+
+
+def has_elf_interpreter(path: Path) -> bool:
+    raw = path.read_bytes()
+    if raw[:6] != b"\x7fELF\x02\x01":
+        raise AssertionError("launcher is not ELF64 little-endian")
+    program_offset = struct.unpack_from("<Q", raw, 32)[0]
+    entry_size = struct.unpack_from("<H", raw, 54)[0]
+    entry_count = struct.unpack_from("<H", raw, 56)[0]
+    return any(
+        struct.unpack_from("<I", raw, program_offset + index * entry_size)[0] == 3
+        for index in range(entry_count)
+    )
+
+
+def main() -> int:
+    assert _normalize_relative("../align") == "../align"
+    assert _normalize_relative("a/./b/../c") == "a/c"
+    for invalid in ("", "/align", ".", "a/..", "\x00"):
+        rejected(lambda value=invalid: _normalize_relative(value))
+    assert _mode_from_arguments(["make", "--no-print-directory", "ci"]) == "ci"
+    assert _mode_from_arguments(["--mode", "build"]) == "build"
+    assert _mode_from_arguments(["--mode", "self-test"]) == "self-test"
+    for invalid in (
+        [],
+        ["make", "ci"],
+        ["make", "--no-print-directory", "ci", "extra"],
+        ["--mode", "ci"],
+    ):
+        rejected(lambda value=invalid: _mode_from_arguments(value))
+    assert _reject_environment({}, mode="ci") == "../align"
+    rejected(lambda: _reject_environment({"ALIGNC": "/tmp/alignc"}, mode="ci"))
+    rejected(lambda: _reject_environment({"MAKEFLAGS": "-n"}, mode="ci"))
+    rejected(
+        lambda: _reject_environment({"ALIGN_REPO": "../align"}, mode="self-test")
+    )
+
+    original = os.dup(31) if _fd_open(31) else None
+    try:
+        _sealed_memfd("fresh-image-test", b"abc", 31)
+        assert _read_sealed(31, limit=3) == b"abc"
+        rejected(lambda: _read_sealed(31, limit=2))
+    finally:
+        os.close(31)
+        if original is not None:
+            os.dup2(original, 31)
+            os.close(original)
+
+    with tempfile.TemporaryDirectory(prefix="fresh-image-build-a-") as first_name:
+        with tempfile.TemporaryDirectory(prefix="fresh-image-build-b-") as second_name:
+            first = Path(first_name)
+            second = Path(second_name)
+            assert build(first) == build(second)
+            for name in ("fresh-supervise", "fresh-bootstrap"):
+                assert (first / name).read_bytes() == (second / name).read_bytes()
+                assert (first / name).read_bytes().startswith(b"\x7fELF")
+            assert not has_elf_interpreter(first / "fresh-supervise")
+            injected = subprocess.run(
+                [str(first / "fresh-supervise")],
+                env={"LD_PRELOAD": "/nonexistent/fresh-image-injection.so"},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            assert injected.returncode == 1
+            assert injected.stdout == b""
+            assert injected.stderr == b"fresh compiler: ERROR ARGUMENT input\n"
+            injected_option = subprocess.run(
+                [
+                    str(first / "fresh-supervise"),
+                    "--embedded-self-fd",
+                    "10",
+                    "--mode",
+                    "self-test",
+                ],
+                env={},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            assert injected_option.returncode == 1
+            assert injected_option.stdout == b""
+            assert injected_option.stderr == b"fresh compiler: ERROR ARGUMENT input\n"
+            result = subprocess.run(
+                [str(first / "fresh-supervise"), "--mode", "self-test"],
+                env={},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            assert result.returncode == 1
+            assert result.stdout == b""
+            assert result.stderr == b"fresh compiler: ERROR TRUST supervisor\n"
+
+    print("fresh image control smoke: PASS")
+    return 0
+
+
+def _fd_open(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+        return True
+    except OSError:
+        return False
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

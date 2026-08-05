@@ -419,6 +419,82 @@ def verify_ed25519(public_key: bytes, message: bytes, signature: bytes) -> bool:
         return False
 
 
+def ed25519_public_key(seed: bytes) -> bytes:
+    """Derive the canonical Ed25519 public key for one 32-byte private seed."""
+
+    if not isinstance(seed, bytes) or len(seed) != 32:
+        raise WireError("Ed25519 private seed has the wrong size")
+    digest = hashlib.sha512(seed).digest()
+    scalar_bytes = bytearray(digest[:32])
+    scalar_bytes[0] &= 248
+    scalar_bytes[31] &= 63
+    scalar_bytes[31] |= 64
+    scalar = int.from_bytes(scalar_bytes, "little")
+    return _encode_point(_scalar_mult(_BASE, scalar))
+
+
+def sign_ed25519(seed: bytes, message: bytes) -> bytes:
+    """Create a deterministic RFC 8032 Ed25519 signature from a private seed."""
+
+    if not isinstance(message, bytes):
+        raise WireError("Ed25519 message is not bytes")
+    public_key = ed25519_public_key(seed)
+    digest = hashlib.sha512(seed).digest()
+    scalar_bytes = bytearray(digest[:32])
+    scalar_bytes[0] &= 248
+    scalar_bytes[31] &= 63
+    scalar_bytes[31] |= 64
+    scalar = int.from_bytes(scalar_bytes, "little")
+    nonce = int.from_bytes(hashlib.sha512(digest[32:] + message).digest(), "little") % _L
+    encoded_r = _encode_point(_scalar_mult(_BASE, nonce))
+    challenge = int.from_bytes(
+        hashlib.sha512(encoded_r + public_key + message).digest(), "little"
+    ) % _L
+    encoded_s = ((nonce + challenge * scalar) % _L).to_bytes(32, "little")
+    signature = encoded_r + encoded_s
+    if not verify_ed25519(public_key, message, signature):
+        raise WireError("Ed25519 self-check failed")
+    return signature
+
+
+def signed_envelope(
+    predicate: Mapping[str, Any], *, payload_type: str, key_id: str, seed: bytes
+) -> bytes:
+    """Serialize and sign one canonical single-signature DSSE envelope."""
+
+    predicate_bytes = canonical_json_bytes(predicate)
+    signature = sign_ed25519(seed, dsse_pae(payload_type, predicate_bytes))
+    return canonical_json_bytes(
+        OrderedDict(
+            [
+                ("payloadType", payload_type),
+                (
+                    "payload",
+                    base64.urlsafe_b64encode(predicate_bytes)
+                    .rstrip(b"=")
+                    .decode("ascii"),
+                ),
+                (
+                    "signatures",
+                    [
+                        OrderedDict(
+                            [
+                                ("keyid", key_id),
+                                (
+                                    "sig",
+                                    base64.urlsafe_b64encode(signature)
+                                    .rstrip(b"=")
+                                    .decode("ascii"),
+                                ),
+                            ]
+                        )
+                    ],
+                ),
+            ]
+        )
+    )
+
+
 @dataclass(frozen=True)
 class VerifiedEnvelope:
     payload_type: str

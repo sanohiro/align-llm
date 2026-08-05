@@ -17,8 +17,11 @@ from fresh_attestation import (
     WireError,
     canonical_json_bytes,
     dsse_pae,
+    ed25519_public_key,
     parse_canonical_json,
     sha256_hex,
+    sign_ed25519,
+    signed_envelope,
     validate_image_predicate,
     validate_invocation_predicate,
     verify_ed25519,
@@ -163,6 +166,28 @@ def main() -> int:
             "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
         ),
     )
+    rfc_seed = bytes.fromhex(
+        "9d61b19deffd5a60ba844af492ec2cc4"
+        "4449c5697b326919703bac031cae7f60"
+    )
+    assert ed25519_public_key(rfc_seed) == PUBLIC_KEY
+    assert sign_ed25519(rfc_seed, b"") == bytes.fromhex(
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+        "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    )
+    generated_envelope = signed_envelope(
+        image,
+        payload_type=IMAGE_PREDICATE_TYPE,
+        key_id=IMAGE_KEY_ID,
+        seed=rfc_seed,
+    )
+    assert verify_envelope(
+        generated_envelope,
+        expected_payload_type=IMAGE_PREDICATE_TYPE,
+        expected_key_id=IMAGE_KEY_ID,
+        public_key=PUBLIC_KEY,
+        predicate_validator=validate_image_predicate,
+    ).predicate_bytes == image_bytes
 
     require_rejected("missing final LF", lambda: parse_canonical_json(image_bytes[:-1]))
     require_rejected(

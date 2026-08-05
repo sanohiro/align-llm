@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Create one external FRESH-IMAGE DSSE attestation from installed artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import stat
+import sys
+from collections import OrderedDict
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPOSITORY / "scripts"))
+
+from fresh_attestation import (  # noqa: E402
+    IMAGE_KEY_ID,
+    IMAGE_PREDICATE_TYPE,
+    ed25519_public_key,
+    sha256_hex,
+    signed_envelope,
+    validate_image_predicate,
+)
+
+
+IMAGE_NAME = "oci://ghcr.io/sanohiro/align-llm-fresh"
+
+
+def seed(path: Path) -> bytes:
+    return snapshot(path, mode=0o400, limit=32, label="image signing seed")
+
+
+def snapshot(path: Path, *, mode: int, limit: int, label: str) -> bytes:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as error:
+        raise SystemExit(f"cannot open {label}") from error
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) != mode
+            or before.st_size < 0
+            or before.st_size > limit
+        ):
+            raise SystemExit(f"{label} identity is invalid")
+        raw = bytearray()
+        while len(raw) <= limit:
+            block = os.read(descriptor, min(65_536, limit + 1 - len(raw)))
+            if not block:
+                break
+            raw.extend(block)
+        after = os.fstat(descriptor)
+        if len(raw) != before.st_size or (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_nlink,
+            before.st_size,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_nlink,
+            after.st_size,
+        ):
+            raise SystemExit(f"{label} changed during snapshot")
+        return bytes(raw)
+    finally:
+        os.close(descriptor)
+
+
+def write_output(path: Path, raw: bytes) -> None:
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o444,
+        )
+    except OSError as error:
+        raise SystemExit("cannot create image attestation output") from error
+    try:
+        os.fchmod(descriptor, 0o444)
+        view = memoryview(raw)
+        while view:
+            count = os.write(descriptor, view)
+            if count <= 0:
+                raise SystemExit("short image attestation write")
+            view = view[count:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def tagged_digest(value: str, name: str) -> str:
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+        raise SystemExit(f"{name} is not a tagged SHA-256 digest")
+    return value
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image-digest", required=True)
+    parser.add_argument("--provenance-digest", required=True)
+    parser.add_argument("--supervisor", required=True, type=Path)
+    parser.add_argument("--bootstrap", required=True, type=Path)
+    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--image-signing-seed", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    arguments = parser.parse_args()
+    private_seed = seed(arguments.image_signing_seed)
+    if len(private_seed) != 32:
+        raise SystemExit("image signing seed has the wrong size")
+    supervisor_raw = snapshot(
+        arguments.supervisor, mode=0o755, limit=4_194_304, label="supervisor"
+    )
+    bootstrap_raw = snapshot(
+        arguments.bootstrap, mode=0o755, limit=4_194_304, label="bootstrap"
+    )
+    manifest_raw = snapshot(
+        arguments.manifest, mode=0o444, limit=67_108_864, label="manifest"
+    )
+    public_key = ed25519_public_key(private_seed)
+    predicate = OrderedDict(
+        [
+            ("schema_version", 1),
+            ("image_digest", tagged_digest(arguments.image_digest, "image digest")),
+            ("image_name", IMAGE_NAME),
+            (
+                "provenance_digest",
+                tagged_digest(arguments.provenance_digest, "provenance digest"),
+            ),
+            ("verifier_identity", IMAGE_KEY_ID),
+            ("verifier_version", "1.0.0"),
+            ("verifier_key_id", IMAGE_KEY_ID),
+            ("verifier_key_sha256", sha256_hex(public_key)),
+            ("supervisor_path", "/usr/local/libexec/align-llm/fresh-supervise"),
+            ("supervisor_sha256", sha256_hex(supervisor_raw)),
+            ("bootstrap_path", "/usr/local/libexec/align-llm/fresh-bootstrap"),
+            ("bootstrap_sha256", sha256_hex(bootstrap_raw)),
+            ("manifest_path", "/usr/local/share/align-llm/fresh-toolchain.json"),
+            ("manifest_sha256", sha256_hex(manifest_raw)),
+        ]
+    )
+    validate_image_predicate(predicate)
+    raw = signed_envelope(
+        predicate,
+        payload_type=IMAGE_PREDICATE_TYPE,
+        key_id=IMAGE_KEY_ID,
+        seed=private_seed,
+    )
+    write_output(arguments.output, raw)
+    print(sha256_hex(raw))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -149,3 +149,72 @@ jobs:
           test -x "$ALIGN_REPO/target/release/alignc"
           python3 scripts/check-gate-topology --self-test
           make -j8 ALIGNC="$ALIGN_REPO/target/release/alignc" hosted-checks
+
+  fresh-image-profile:
+    name: Installed Ubuntu 24.04 fresh-image profile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify FRESH-IMAGE ownership
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          owned=false
+          base_sha="$BASE_SHA"
+          head_sha="$HEAD_SHA"
+          case "$EVENT_NAME" in
+            pull_request)
+              ;;
+            push)
+              base_sha="$PUSH_BEFORE_SHA"
+              head_sha="$PUSH_HEAD_SHA"
+              ;;
+            *)
+              owned=true
+              ;;
+          esac
+          if [[ "$owned" == "false" ]]; then
+            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+              owned=true
+            else
+              while IFS= read -r path; do
+                case "$path" in
+                  image/fresh/*|scripts/build-fresh-image-control|scripts/fresh-image-attest|scripts/fresh_attestation.py|scripts/fresh_manifest.py|scripts/generate-fresh-toolchain-manifest|scripts/materialize-fresh-tree|scripts/run-fresh-attestation-wire-smoke|scripts/run-fresh-image-control-smoke|scripts/run-fresh-image-profile-smoke|.github/workflows/ci.yml)
+                    owned=true
+                    break
+                    ;;
+                esac
+              done < <(git diff --no-renames --name-only "$base_sha" "$head_sha")
+            fi
+          fi
+          echo "owned=$owned" >> "$GITHUB_OUTPUT"
+
+      - name: Run deterministic control-plane checks
+        if: steps.scope.outputs.owned == 'true'
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 scripts/run-fresh-attestation-wire-smoke
+          python3 scripts/run-fresh-image-control-smoke
+
+      - name: Build and attest installed image profile
+        if: steps.scope.outputs.owned == 'true'
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 scripts/run-fresh-image-profile-smoke
+
+      - name: Report unaffected image profile
+        if: steps.scope.outputs.owned != 'true'
+        run: echo "FRESH-IMAGE owners are unchanged; focused profile qualification is N/A."

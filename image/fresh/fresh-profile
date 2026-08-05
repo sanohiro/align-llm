@@ -1,0 +1,226 @@
+#!/usr/bin/python3
+"""Provision the FRESH-IMAGE runtime roots and delegated cgroup."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import stat
+from pathlib import Path
+
+
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+CGROUP_PROFILE = CGROUP_ROOT / "align-llm-fresh"
+RUN_USER_ROOT = Path("/run/user")
+
+
+def enable_pids(parent: Path) -> None:
+    controllers = (parent / "cgroup.controllers").read_text(encoding="ascii").split()
+    if "pids" not in controllers:
+        raise RuntimeError(f"pids controller unavailable at {parent}")
+    enabled = (parent / "cgroup.subtree_control").read_text(encoding="ascii").split()
+    if "pids" not in enabled:
+        (parent / "cgroup.subtree_control").write_text("+pids\n", encoding="ascii")
+
+
+def require_directory(path: Path, *, uid: int, mode: int) -> None:
+    value = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(value.st_mode)
+        or value.st_uid != uid
+        or stat.S_IMODE(value.st_mode) != mode
+    ):
+        raise RuntimeError(f"profile directory identity mismatch: {path}")
+
+
+def require_directory_fd(descriptor: int, *, uid: int, mode: int) -> os.stat_result:
+    value = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(value.st_mode)
+        or value.st_uid != uid
+        or stat.S_IMODE(value.st_mode) != mode
+    ):
+        raise RuntimeError("profile directory descriptor identity mismatch")
+    return value
+
+
+def open_directory(path: str | Path, *, dir_fd: int | None = None) -> int:
+    return os.open(
+        path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=dir_fd,
+    )
+
+
+def require_entry_identity(parent: int, name: str, descriptor: int) -> None:
+    entry = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    opened = os.fstat(descriptor)
+    if (entry.st_dev, entry.st_ino) != (opened.st_dev, opened.st_ino):
+        raise RuntimeError("profile directory entry changed during setup")
+
+
+def setup_runtime(uid: int) -> bool:
+    require_directory(RUN_USER_ROOT, uid=0, mode=0o755)
+    user = RUN_USER_ROOT / str(uid)
+    user_created = False
+    if user.exists(follow_symlinks=False):
+        require_directory(user, uid=uid, mode=0o700)
+    else:
+        user.mkdir(mode=0o700)
+        user_created = True
+        try:
+            os.chown(user, uid, uid, follow_symlinks=False)
+        except Exception:
+            user.rmdir()
+            raise
+    user_fd = open_directory(user)
+    require_directory_fd(user_fd, uid=uid, mode=0o700)
+    profile_fd = -1
+    try:
+        os.mkdir("align-llm-fresh", mode=0o700, dir_fd=user_fd)
+        profile_fd = open_directory("align-llm-fresh", dir_fd=user_fd)
+        require_directory_fd(profile_fd, uid=0, mode=0o700)
+        os.mkdir("roots", mode=0o700, dir_fd=profile_fd)
+        roots_fd = open_directory("roots", dir_fd=profile_fd)
+        try:
+            require_directory_fd(roots_fd, uid=0, mode=0o700)
+            os.fchown(roots_fd, uid, uid)
+            os.fchmod(roots_fd, 0o700)
+        finally:
+            os.close(roots_fd)
+        descriptor = os.open(
+            "lock",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=profile_fd,
+        )
+        try:
+            os.fchown(descriptor, uid, uid)
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
+        require_entry_identity(user_fd, "align-llm-fresh", profile_fd)
+        os.fchown(profile_fd, uid, uid)
+        os.fchmod(profile_fd, 0o700)
+    except Exception:
+        if profile_fd >= 0:
+            try:
+                os.unlink("lock", dir_fd=profile_fd)
+            except (OSError, RuntimeError):
+                pass
+            try:
+                os.rmdir("roots", dir_fd=profile_fd)
+            except OSError:
+                pass
+            try:
+                require_entry_identity(user_fd, "align-llm-fresh", profile_fd)
+                os.rmdir("align-llm-fresh", dir_fd=user_fd)
+            except OSError:
+                pass
+        if user_created:
+            try:
+                user.rmdir()
+            except OSError:
+                pass
+        raise
+    finally:
+        if profile_fd >= 0:
+            os.close(profile_fd)
+        os.close(user_fd)
+    return user_created
+
+
+def setup_cgroup(uid: int) -> None:
+    enable_pids(CGROUP_ROOT)
+    CGROUP_PROFILE.mkdir(mode=0o755, exist_ok=True)
+    require_directory(CGROUP_PROFILE, uid=0, mode=0o755)
+    enable_pids(CGROUP_PROFILE)
+    user = CGROUP_PROFILE / str(uid)
+    user_created = False
+    try:
+        user.mkdir(mode=0o700, exist_ok=False)
+        user_created = True
+        os.chown(user, uid, uid, follow_symlinks=False)
+        os.chmod(user, 0o700)
+        enable_pids(user)
+    except Exception:
+        if not user_created:
+            raise
+        try:
+            user.rmdir()
+        except OSError:
+            pass
+        raise
+
+
+def setup(uid: int) -> None:
+    if os.geteuid() != 0:
+        raise RuntimeError("profile provisioning requires root")
+    user_created = setup_runtime(uid)
+    try:
+        setup_cgroup(uid)
+    except Exception:
+        cleanup_runtime(uid)
+        if user_created:
+            try:
+                (RUN_USER_ROOT / str(uid)).rmdir()
+            except OSError:
+                pass
+        raise
+
+
+def validate_runtime(uid: int) -> tuple[Path, Path]:
+    user = RUN_USER_ROOT / str(uid)
+    profile = user / "align-llm-fresh"
+    require_directory(profile, uid=uid, mode=0o700)
+    require_directory(profile / "roots", uid=uid, mode=0o700)
+    lock = (profile / "lock").stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(lock.st_mode)
+        or lock.st_uid != uid
+        or lock.st_nlink != 1
+        or stat.S_IMODE(lock.st_mode) != 0o600
+        or lock.st_size != 0
+    ):
+        raise RuntimeError("profile lock identity mismatch")
+    return profile, profile / "roots"
+
+
+def cleanup_runtime(uid: int) -> None:
+    profile, roots = validate_runtime(uid)
+    (profile / "lock").unlink()
+    roots.rmdir()
+    profile.rmdir()
+
+
+def cleanup(uid: int) -> None:
+    if os.geteuid() != 0:
+        raise RuntimeError("profile cleanup requires root")
+    validate_runtime(uid)
+    user = CGROUP_PROFILE / str(uid)
+    require_directory(CGROUP_PROFILE, uid=0, mode=0o755)
+    require_directory(user, uid=uid, mode=0o700)
+    user.rmdir()
+    try:
+        CGROUP_PROFILE.rmdir()
+    except OSError:
+        pass
+    cleanup_runtime(uid)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("operation", choices=("setup", "cleanup"))
+    parser.add_argument("uid", type=int)
+    arguments = parser.parse_args()
+    if arguments.uid < 0 or arguments.uid > 2**31 - 1:
+        raise SystemExit("uid is outside the supported range")
+    if arguments.operation == "setup":
+        setup(arguments.uid)
+    else:
+        cleanup(arguments.uid)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
