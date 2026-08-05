@@ -11,8 +11,8 @@ request checks, reviews, findings, and attestations.
   non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
   the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
   the pull request before merge.
-- Active goal: complete, review, and merge the consumer-complete FRESH-WORKER capability, then move
-  to the next eligible roadmap capability without another helper-only split.
+- Active goal: complete, review, and merge the consumer-complete FRESH-WORKER capability. The user
+  requested that execution stop after this pull request merges; do not start the next roadmap item.
 - In progress: the repository worker now cryptographically re-verifies the sealed Ed25519/DSSE
   invocation and image-manifest tuple,
   captures separate project/Align Git identities, admits one protected private root, materializes
@@ -26,6 +26,10 @@ request checks, reviews, findings, and attestations.
   before source queries, retains and rechecks Git/common/ref/index/object identity, streams source
   and child output under bounds, kills and reaps the complete cgroup, and makes staging and cleanup
   descriptor-relative so a replacement root is never deleted.
+  Installed-profile source admission now reopens the supervisor's retained `O_PATH` project root as
+  a no-follow scan-capable descriptor, gives Git worker-owned `/proc/<worker-pid>/fd/...` paths that
+  remain valid if Git closes inherited nonstandard descriptors, and normalizes Git tree records to
+  raw-path byte order before manifest construction.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -40,7 +44,8 @@ request checks, reviews, findings, and attestations.
 2. Push the replacement history to the existing capability pull request, record finding
    dispositions, obtain fresh installed Ubuntu 24.04 FRESH-IMAGE/FRESH-WORKER evidence, and merge
    with a merge commit only after every required check passes.
-3. After merge, perform the bounded retrospective and begin the next eligible consumer capability.
+3. After merge, perform the bounded retrospective, remove the temporary diagnostic branch/worktree,
+   and stop. Leave the next eligible roadmap capability unstarted.
 
 ## Latest verification
 
@@ -55,14 +60,19 @@ request checks, reviews, findings, and attestations.
 - `ALIGNC=../align/target/release/alignc PYTHONDONTWRITEBYTECODE=1 make eval-coding`: PASS, including
   invalid, Git-configuration, timeout, namespace, resource, mutation, and descendant cleanup smokes.
 - `git diff --check`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after exercising the
+  supervisor-equivalent `O_PATH` root and a Git-tree/raw-byte ordering inversion.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
   normalization, populated-tree count derivation, and the installed job's incorrect assumption that
   a sibling Align checkout exists. The profile now obtains the pinned Align source from its canonical
   repository before entering the no-network worker boundary. Installed diagnostics also showed that
   Git could not reopen an inherited config memfd through its procfs view; admission now feeds the
-  already retained config bytes through Git's documented stdin path. The dedicated hosted profile
-  check must supply fresh installed-platform evidence after push.
+  already retained config bytes through Git's documented stdin path. A later installed run showed
+  that Git closes inherited nonstandard descriptors before repository lookup and that the admitted
+  root is intentionally `O_PATH`; the worker now supplies worker-owned descriptor paths, reopens a
+  scan-capable root without pathname resolution, and raw-byte sorts Git tree records. The dedicated
+  hosted profile check must supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions
 

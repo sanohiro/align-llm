@@ -331,19 +331,25 @@ def source_identity_cases(module, temporary: Path) -> None:
             (root / "dir").mkdir(mode=0o755)
             (root / "dir/file").write_bytes(b"source\n")
             (root / "dir/file").chmod(0o644)
+            (root / "dir.file").write_bytes(b"source sibling\n")
+            (root / "dir.file").chmod(0o644)
             os.symlink("dir/file", root / "link")
             subprocess.run([str(git_path), "add", "--all"], cwd=root, env=environment, check=True)
             subprocess.run([str(git_path), "commit", "-q", "-m", "fixture"], cwd=root, env=environment, check=True)
             (root / "target").mkdir(mode=0o700)
             (root / "main").write_bytes(b"output")
             (root / "main").chmod(0o755)
-            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            root_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
             try:
                 identity = module.source_identity("project-source", root_fd, git_fd)
             finally:
                 os.close(root_fd)
             require(identity.object_format == object_format, "source object format changed")
-            require([entry.path for entry in identity.entries] == [b"dir", b"dir/file", b"link"], "source entry closure changed")
+            require(
+                [entry.path for entry in identity.entries]
+                == [b"dir", b"dir.file", b"dir/file", b"link"],
+                "source entry raw-byte order changed",
+            )
             require(identity.manifest_digest == module.sha256(identity.manifest_raw), "source manifest digest changed")
             if object_format == "sha1":
                 linked = temporary / "source-linked"
@@ -353,7 +359,7 @@ def source_identity_cases(module, temporary: Path) -> None:
                     env=environment,
                     check=True,
                 )
-                linked_fd = os.open(linked, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                linked_fd = os.open(linked, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
                 try:
                     linked_identity = module.source_identity("project-source", linked_fd, git_fd)
                     view = temporary / "baseline-view"
@@ -389,7 +395,7 @@ def source_identity_cases(module, temporary: Path) -> None:
             subprocess.run(
                 [str(git_path), "pack-refs", "--all"], cwd=root, env=environment, check=True
             )
-            packed_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            packed_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
             try:
                 packed_identity = module.source_identity("project-source", packed_fd, git_fd)
             finally:
@@ -397,7 +403,7 @@ def source_identity_cases(module, temporary: Path) -> None:
             require(packed_identity.revision, "packed Git ref identity was not retained")
             module.close_git_view(packed_identity.view)
 
-            mutation_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            mutation_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
             try:
                 mutation_identity = module.source_identity("project-source", mutation_fd, git_fd)
             finally:
@@ -426,7 +432,7 @@ def source_identity_cases(module, temporary: Path) -> None:
                 env=environment,
                 check=True,
             )
-            rejected_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            rejected_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
             try:
                 try:
                     module.source_identity("project-source", rejected_fd, git_fd)
@@ -456,7 +462,7 @@ def source_identity_cases(module, temporary: Path) -> None:
                 env=environment,
                 check=True,
             )
-            filter_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            filter_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
             try:
                 try:
                     module.source_identity("project-source", filter_fd, git_fd)
@@ -476,7 +482,7 @@ def source_identity_cases(module, temporary: Path) -> None:
 
             alternates = root / ".git/objects/info/alternates"
             alternates.write_text("/tmp\n", encoding="utf-8")
-            alternate_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            alternate_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
             try:
                 try:
                     module.source_identity("project-source", alternate_fd, git_fd)
