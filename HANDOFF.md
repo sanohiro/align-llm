@@ -5,55 +5,54 @@ request checks, reviews, findings, and attestations.
 
 ## Current state
 
-- Branch: `agent/streamline-development-workflow`, based on `origin/main` merge commit
-  `552e8bd20524a7a0ae51eda929023ce46c56d145` (PR #58). The exact independently reviewed content
-  checkpoint is `8e15f5849de425771a032bc1f2ea534ad1132a2d`; consolidated repair metadata remains in GitHub.
-- Active goal: make delivery capability-oriented and keep routine verification bounded without
-  reducing the C6, C7, or fresh-compiler contracts.
-- Complete foundation: PRs #54-#58 merged the Section 9 fresh-compiler design, wire formats, and
-  descriptor-relative source identity. They are internal foundations of FRESH-WORKER, not future
-  helper-only pull request boundaries.
-- Complete on this branch: governance, roadmap, Align-request adoption, C6/C7 delivery boundaries,
-  check-topology policy, developer guidance, and coding-task resource qualification ownership are
-  synchronized as one workflow capability. The resource/race qualification remains available as a
-  direct focused command but is no longer a transitive child of every `eval-coding` run.
+- Branch: `agent/fresh-image-capability`, based on `origin/main` merge commit
+  `1e759732fb7d5737c744b35691ea2fb9900c9065` (PR #59).
+- Active goal: review and merge the consumer-complete FRESH-IMAGE capability, then start
+  FRESH-WORKER without splitting it into helper-only pull requests.
+- Complete implementation checkpoint: `03daa89edd0c581a9cd1ab38686fcf5896a706cd` installs the Ubuntu
+  24.04 image, static supervisor and fixed bootstrap, schema-2 manifest, external image and run
+  signing boundaries, protected runtime/cgroup profile, and a hosted installed-image qualification.
+- FRESH-IMAGE has not merged yet. FRESH-WORKER implementation has not started.
 
 ## Next actions
 
-1. Merge this workflow capability only when its external review finding dispositions and required
-   check evidence satisfy `CLAUDE.md`; GitHub owns those records and their transient status.
-2. After merge, complete FRESH-IMAGE installation and attestation as the trust root for capable
-   worker evidence. Repository-worker development may proceed in parallel when safe.
-3. Deliver FRESH-WORKER as one consumer-complete capability: private-root admission, source/cache
-   materialization, compiler bundle, process ownership, cleanup, Make integration, and core
-   end-to-end functional smoke. Do not accept or merge it before FRESH-IMAGE is available.
+1. Open the FRESH-IMAGE pull request from this stable candidate and run one fresh independent
+   comprehensive adversarial review over the complete diff using `docs/review-checklist.md`.
+2. Record the SHA-bound review envelope and all finding dispositions in GitHub. Apply any valid
+   findings in one consolidated repair commit, rerun only affected checks, and merge after final
+   integration evidence is green.
+3. Refresh `main`, perform the bounded post-merge retrospective, and start FRESH-WORKER as the next
+   consumer-complete capability. Its core end-to-end smoke must use the installed FRESH-IMAGE trust
+   root; focused security, race, resource, mutation, and failure-injection qualification stays out
+   of routine `make ci`.
 
 ## Latest verification
 
-- `git diff --check`, `bash -n scripts/run-coding-task-invalid-smoke`, and the balanced Markdown
-  fence assertion: PASS.
-- `python3 scripts/check-gate-topology --self-test` and `make gate-topology-check`: PASS.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-coding-task-resource-scan-smoke`: PASS as the
-  focused resource/race qualification.
-- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-coding-task-invalid-smoke`: PASS without invoking the
-  resource qualification.
-- `PYTHONDONTWRITEBYTECODE=1 make eval-coding`: PASS in 21.751 seconds of shell-reported real time.
-- `PYTHONDONTWRITEBYTECODE=1 make ci`: PASS at pinned Align revision
-  `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
-- Consolidated review repair: `git diff --check`, balanced Markdown fences, stale-workflow-term
-  rejection, and FRESH-IMAGE-before-worker acceptance-order assertions: PASS. Source reruns are N/A
-  because the repair changes documentation only; the reviewed executable delta is unchanged.
+- `git diff --check`, Python AST parsing for changed Python owners, and Ruby YAML parsing for
+  `.github/workflows/ci.yml`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-attestation-wire-smoke`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-image-control-smoke`: PASS, including
+  deterministic ELF construction, static supervisor identity, sealed descriptors, exact argument
+  admission, and loader-variable rejection.
+- `PYTHONDONTWRITEBYTECODE=1 scripts/run-fresh-image-profile-smoke`: PASS on Docker/Ubuntu 24.04,
+  including external distinct Ed25519 keys, installed self-test, uid 0 and uid 12345 profile
+  lifecycle, duplicate setup rejection, and canonical attestation/bootstrap/manifest mutation
+  rejection.
+- `PYTHONDONTWRITEBYTECODE=1 make ALIGN_REPO=<detached pinned Align worktree> ci`: PASS at Align
+  revision `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
+- `actionlint` and `shellcheck`: N/A because neither command is installed. The changed workflow was
+  parsed as YAML, its shell blocks ran through the installed profile path where applicable, and the
+  repository's own aggregate topology check passed.
 
 ## Blockers and decisions
 
-- `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this workflow change
-  does not adopt a compiler or proposed Align surface.
-- Specification scope is unchanged. C6/C7 labels and closure rows remain acceptance ownership cells,
-  while branches and pull requests are grouped by consumer-complete capability.
-- Core aggregates contain bounded functional integration. Security, resource, race, fuzz, stress,
-  mutation, platform, and benchmark qualification run through named owner commands when their
-  boundary changes or an explicit audit requires them.
-- Time and line counts are diagnostic expectations, not gates or quotas. Lack of progress triggers
-  a cost and boundary audit; it does not automatically trigger a smaller pull request.
-- The separate primary worktree has an intentional uncommitted `HANDOFF.md`; do not discard or
-  overwrite it while this clean worktree is active.
+- No implementation blocker is known. `.align-revision` remains
+  `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; FRESH-IMAGE does not adopt a new Align surface.
+- The 3,215-added-line implementation remains one capability because the supervisor, bootstrap,
+  manifest, deployment signer, runtime provisioner, installed image, and external profile smoke
+  form one signed trust tuple. Splitting them would create unusable intermediate contracts and
+  repeat the same expensive image qualification.
+- The installed image profile is a focused hosted job, not a permanent transitive child of routine
+  `make ci`.
+- The separate primary worktree has intentional uncommitted state, including `HANDOFF.md`; do not
+  discard or overwrite it while this clean worktree is active.
