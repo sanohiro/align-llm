@@ -7,6 +7,12 @@ request checks, reviews, findings, and attestations.
 
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
+- Open pull request: #61 (`agent/fresh-worker-capability`), current head
+  `8921d4d3d1fee4c454a1514027a3c620a66bc447`; it is not merged and must remain merge-commit-only.
+- Current baseline tuple for this head: source/checkpoint
+  `ccb42a79f2392328725c8125aa0662c3825432a5`, oracle
+  `36e087c67004dfda54c16f64f236221357c341b1`, finalization
+  `8921d4d3d1fee4c454a1514027a3c620a66bc447`.
 - Relevant review-repair checkpoint: `366dc3d02452c1775b2b97d307ebcdeba155c586`. Subsequent
   non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
   the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
@@ -47,14 +53,21 @@ request checks, reviews, findings, and attestations.
 
 ## Next actions
 
-1. If the current source/checkpoint commit does not yet have its final oracle-only and
-   finalizer-only descendants, run the Section 2.4 pending measurement and create them. Otherwise,
-   do not repeat the measurement.
-2. Push the replacement history to the existing capability pull request, record finding
-   dispositions, obtain fresh installed Ubuntu 24.04 FRESH-IMAGE/FRESH-WORKER evidence, and merge
-   with a merge commit only after every required check passes.
-3. After merge, perform the bounded retrospective, remove the temporary diagnostic branch/worktree,
-   and stop. Leave the next eligible roadmap capability unstarted.
+1. Use the retained diagnostic worktree `/tmp/align-llm-fresh-aggregate-diagnostic` and branch
+   `agent/fresh-worker-aggregate-diagnostic`. Its current uncommitted file
+   `image/fresh/control/fresh_image_control.py` emits the worker's bounded stdout/stderr before
+   canonical-result rejection; commit/push it and dispatch CI to obtain the aggregate's actual
+   failure. The prior diagnostic run `31022815776` still ended at generic `ERROR CHILD aggregate`
+   because this upper-control diagnostic was not yet present.
+2. Apply the evidence-backed aggregate repair to `agent/fresh-worker-capability`, run the focused
+   qualification and topology checks, then refresh the Section 2.4 baseline tuple from the new
+   source commit (source -> oracle-only -> finalizer-only). Push to PR #61.
+3. Obtain fresh installed Ubuntu 24.04 FRESH-IMAGE/FRESH-WORKER evidence, record the required
+   comprehensive and conditional final review envelopes and finding dispositions, and merge with a
+   merge commit only after all checks pass. Do not start the next roadmap item; the user asked to
+   stop after this PR.
+4. After merge, perform the bounded retrospective, remove the temporary diagnostic branches and
+   worktrees, update the merged-branch handoff as appropriate, and stop.
 
 ## Latest verification
 
@@ -78,6 +91,14 @@ request checks, reviews, findings, and attestations.
 - `python3 scripts/run-fresh-image-control-smoke`: PASS, including compilation and execution of the
   bwrap-only forwarder with three recognized mount descriptors preserved and an unrecognized
   descriptor after `--` closed at target exec.
+- Hosted PR run `31021997154`: Pinned Align job `92361333668` PASS. Its initial Installed job
+  `92360777058` failed on a Docker Hub Ubuntu manifest `502`; rerun Installed job `92361332327`
+  built and attested the image, passed the bwrap self-test, and failed only at the real worker
+  aggregate with `fresh compiler: ERROR CHILD aggregate`.
+- Diagnostic run `31022815776`: Pinned checks PASS and Installed image build/self-test reached the
+  same aggregate failure. The worker-level diagnostic output was captured internally, but the
+  upper image-control canonical-result check still suppressed it; the retained uncommitted control
+  patch is the next diagnostic action.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
   normalization, populated-tree count derivation, and the installed job's incorrect assumption that
@@ -109,6 +130,8 @@ request checks, reviews, findings, and attestations.
 
 - No implementation blocker is known. Local Docker unavailability is an execution condition, not a
   design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
+- The current functional blocker is the unexplained installed aggregate failure after bwrap self-test;
+  do not guess a repair before the retained upper-control diagnostic exposes the bounded child output.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
   not adopt a new Align surface.
 - FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
@@ -116,5 +139,10 @@ request checks, reviews, findings, and attestations.
   reviewable as independently shipped helper surfaces.
 - The pull request must use a merge commit so the implementation source, immutable oracle, and
   canonical finalization commits remain ancestors of the exact merged head.
+- The diagnostic branch/worktree `agent/fresh-worker-aggregate-diagnostic` /
+  `/tmp/align-llm-fresh-aggregate-diagnostic` is intentionally retained. It has one intentional
+  uncommitted file: `image/fresh/control/fresh_image_control.py` with the upper-control diagnostic
+  output patch. The older `agent/fresh-worker-diagnostic` worktree is also intentionally retained
+  for historical FD-boundary evidence until the PR is resolved.
 - The separate primary worktree has intentional uncommitted state; do not discard or overwrite it
   while this clean worktree is active.
