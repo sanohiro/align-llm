@@ -28,32 +28,36 @@ to make a larger capability fit; combine the pieces needed to exercise it end to
 
 The current forward delivery order is:
 
-1. **FRESH-WORKER — usable fresh-compiler repository worker.** Treat the merged Section 9 design,
-   attestation wire, manifest wire, source-manifest wire, and source-identity work as foundations of
-   one capability, not as a precedent for more helper-only pull requests. The next repository
-   capability combines private-root admission, source/cache materialization, compiler bundle,
-   process ownership, cleanup, Make integration, and the core end-to-end functional smoke.
-2. **FRESH-IMAGE — installable minimum-platform profile.** Image provisioning, keys, supervisor
+1. **FRESH-IMAGE — installable minimum-platform profile.** Image provisioning, keys, supervisor
    installation, cgroup delegation, and platform attestation are a separate operational failure
-   domain. They may progress independently of FRESH-WORKER, but fresh adoption requires both.
-3. **ALIGN-ADOPTION — one real-client prerequisite wave.** Batch merged Align requests needed by
-   the next consumer into one compiler-pin update and one fresh-client verification. Preserve each
-   request's lifecycle evidence without opening one align-llm pull request per request row.
-4. **C6-LIFECYCLE — usable offline prompt lifecycle.** Complete the artifact, renderer, scorer,
+   domain and the trust root for capable worker evidence. FRESH-WORKER development may progress in
+   parallel, but its capable acceptance and merge require this installed and attested profile.
+2. **FRESH-WORKER — usable fresh-compiler repository worker.** Treat the merged Section 9 design,
+   attestation wire, manifest wire, source-manifest wire, and source-identity work as foundations of
+   one capability, not as a precedent for more helper-only pull requests. Combine private-root
+   admission, source/cache materialization, compiler bundle, process ownership, cleanup, Make
+   integration, and the core end-to-end functional smoke. Do not merge it with synthetic or direct
+   host evidence while FRESH-IMAGE is unavailable.
+3. **C6-LIFECYCLE — usable offline prompt lifecycle.** Complete the artifact, renderer, scorer,
    verifier, activation, persistence, and CLI path required to load, inspect, accept, and roll
    back a deterministic candidate. Existing C6a/C6b/C6c/C6d labels are acceptance and ownership
    cells inside this capability.
-5. **C6-EVALUATION — deterministic end-to-end comparison.** Combine the trusted workspace/source
+4. **C6-EVALUATION — deterministic end-to-end comparison.** Combine the trusted workspace/source
    boundary, paired evaluator, fixed adapter, result/evidence publication, and functional corpus so
    the lifecycle is exercised by a real contained task.
-6. **C6-MEASURED — provider proposal and measured gate.** Add the bounded provider proposal, real
+5. **C6-MEASURED — provider proposal and measured gate.** Add the bounded provider proposal, real
    consumer, checked-in measurement evidence, acceptance, and rollback proof. Performance and
    provider-quality checks run here because this capability makes those claims.
-7. **C7-PERSISTED-RESULT — owned-result verification consumer.** After its platform and Align
+6. **C7-PERSISTED-RESULT — owned-result verification consumer.** After its platform and Align
    prerequisites are adopted, deliver records, codec, algorithm, CLI, persistence, and core
    functional verification as one vertical capability. Keep generated differential, mutation,
    fuzz, stress, and benchmark work in focused qualification commands unless a later core contract
    specifically requires it.
+
+**ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
+next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
+focused real-client acceptance target, and then run one final fresh `make ci`. Preserve each
+request's lifecycle evidence without opening a pin-only pull request.
 
 Only design the next eligible capability in implementation detail; later ledger entries may retain
 their accepted contracts but must not generate speculative implementation pull requests. The

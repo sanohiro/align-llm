@@ -191,7 +191,8 @@ PROPOSED
   its hypothetical surface.
 - `ALIGN_MERGED` means the capability is available at a named Align commit. Run the required Align
   release build, update `.align-revision`, and adopt the shipped surface.
-- `ALIGN_LLM_VERIFIED` means the original acceptance gate passes in align-llm with `make ci`.
+- `ALIGN_LLM_VERIFIED` means every original named focused acceptance target and one final `make ci`
+  pass against the same pinned Align revision and final align-llm integration head.
 - `CLOSED` means the Align response, ownership model, limits, shipped commit or pull requests, and
   align-llm verification evidence are recorded in the request register.
 
@@ -206,9 +207,10 @@ consumer is reached before the request is `ALIGN_MERGED`, reclassify the request
 pause that dependent consumer.
 
 Resume a blocked consumer only after the capability is merged at a named Align commit, the sibling
-release compiler and runtime are rebuilt, `.align-revision` is updated, and the original
-acceptance gate passes through `make ci`. A passing Align test alone does not close the request;
-align-llm must verify the capability as the real client.
+release compiler and runtime are rebuilt, `.align-revision` is updated, every original named
+focused acceptance target passes, and one final `make ci` passes against that same pin and
+integration head. A passing Align test or `make ci` alone does not close the request; align-llm must
+verify the capability as the real client.
 
 When several merged Align requests are prerequisites for the same next consumer, adopt them in one
 pin update and one real-client verification capability. Request lifecycle entries remain separately

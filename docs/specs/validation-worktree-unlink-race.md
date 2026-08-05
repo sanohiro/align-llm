@@ -400,6 +400,7 @@ integrate main and record its own later Makefile-bound baseline.
 
 For current development, `python3 scripts/run-coding-task-resource-scan-smoke` is a focused
 qualification, not a transitive child of `scripts/run-coding-task-invalid-smoke` or `make
-eval-coding`. Removing that transitive call changes no runner behavior or acceptance semantics; it
+eval-coding`. Removing that transitive call changes no product-runner behavior and preserves the
+qualification's own acceptance semantics, while intentionally narrowing aggregate coverage. It
 prevents the full race/resource/failure-injection matrix from running once for every ordinary coding
-corpus check.
+corpus check; `make ci` alone is no longer evidence that this qualification ran.

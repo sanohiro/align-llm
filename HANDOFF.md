@@ -6,7 +6,8 @@ request checks, reviews, findings, and attestations.
 ## Current state
 
 - Branch: `agent/streamline-development-workflow`, based on `origin/main` merge commit
-  `552e8bd20524a7a0ae51eda929023ce46c56d145` (PR #58).
+  `552e8bd20524a7a0ae51eda929023ce46c56d145` (PR #58). The exact independently reviewed content
+  checkpoint is `8e15f5849de425771a032bc1f2ea534ad1132a2d`; consolidated repair metadata remains in GitHub.
 - Active goal: make delivery capability-oriented and keep routine verification bounded without
   reducing the C6, C7, or fresh-compiler contracts.
 - Complete foundation: PRs #54-#58 merged the Section 9 fresh-compiler design, wire formats, and
@@ -19,11 +20,13 @@ request checks, reviews, findings, and attestations.
 
 ## Next actions
 
-1. Publish one workflow pull request, obtain the required comprehensive adversarial review, apply
-   any valid findings in one repair, and merge after required checks pass.
-2. After merge, begin FRESH-WORKER as one consumer-complete capability: private-root admission,
-   source/cache materialization, compiler bundle, process ownership, cleanup, Make integration, and
-   core end-to-end functional smoke. FRESH-IMAGE remains a separate operational failure domain.
+1. Merge this workflow capability only when its external review finding dispositions and required
+   check evidence satisfy `CLAUDE.md`; GitHub owns those records and their transient status.
+2. After merge, complete FRESH-IMAGE installation and attestation as the trust root for capable
+   worker evidence. Repository-worker development may proceed in parallel when safe.
+3. Deliver FRESH-WORKER as one consumer-complete capability: private-root admission, source/cache
+   materialization, compiler bundle, process ownership, cleanup, Make integration, and core
+   end-to-end functional smoke. Do not accept or merge it before FRESH-IMAGE is available.
 
 ## Latest verification
 
@@ -37,6 +40,9 @@ request checks, reviews, findings, and attestations.
 - `PYTHONDONTWRITEBYTECODE=1 make eval-coding`: PASS in 21.751 seconds of shell-reported real time.
 - `PYTHONDONTWRITEBYTECODE=1 make ci`: PASS at pinned Align revision
   `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`.
+- Consolidated review repair: `git diff --check`, balanced Markdown fences, stale-workflow-term
+  rejection, and FRESH-IMAGE-before-worker acceptance-order assertions: PASS. Source reruns are N/A
+  because the repair changes documentation only; the reviewed executable delta is unchanged.
 
 ## Blockers and decisions
 

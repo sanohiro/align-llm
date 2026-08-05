@@ -615,8 +615,8 @@ commits. If Request 4 ships first, Request 5 owns that same combined gate. The r
 first need not be reopened; the second request's lifecycle record must name both Align commits and
 the combined align-llm verification. If both capabilities ship in one Align commit or pull request,
 or both register entries advance to `ALIGN_MERGED` together, Request 5's bounded-response adoption
-slice owns the combined gate; neither request may reach `ALIGN_LLM_VERIFIED` until that slice names
-the joint delivery and records the combined verification.
+checkpoint owns the combined gate; neither request may reach `ALIGN_LLM_VERIFIED` until that
+checkpoint names the joint delivery and records the combined verification.
 
 ### Current align-llm evidence
 
@@ -1349,14 +1349,14 @@ second owner for scanner eligibility.
 
 After `ALIGN_MERGED`, align-llm owns a consumer adoption checkpoint, but it must not update
 `.align-revision`, run a pin-changing verification, or advance this request to
-`ALIGN_LLM_VERIFIED` until the common fresh-compiler check-topology design and its dependent
-implementation have both merged. That implementation must make canonical `make ci` build and use
-the pinned compiler through the reviewed fresh-build, identity, process, timeout, cache, and
-cleanup contract; this request must consume that shipped path rather than recreate it. The
+`ALIGN_LLM_VERIFIED` until the merged Section 9 contract's FRESH-IMAGE and FRESH-WORKER capabilities
+have both merged. They must make canonical `make ci` build and use the pinned compiler through the
+reviewed fresh-build, identity, process, timeout, cache, and cleanup contract; this request must
+consume that shipped path rather than recreate it. The
 adoption may share one pin update with the other merged prerequisites needed by the same consumer.
 It release-builds and pins the shipped Align revision and adds the focused
-`json-scan-row-ownership-adoption` target without adding that qualification to routine aggregates. The
-target runs
+`json-scan-row-ownership-adoption` target without adding that qualification to routine aggregates.
+The target runs
 `scripts/run-json-scan-row-ownership-adoption-smoke` over
 `eval/fixtures/json-scan-row-ownership-adoption/`.
 
@@ -1705,7 +1705,7 @@ The implementation closure ledger for the future Align design is:
 | Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
-| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | Successor redesign is Section 9 of `docs/specs/check-gate-topology.md` on branch `agent/fresh-compiler-topology-redesign-v4`; the re-scoped design separates the image-owned supervisor/bootstrap plane from the per-reviewed-head repository worker. Implementation, fixed host image/manifest installation, baseline refresh, and align-llm verification remain pending, and every pin-changing adoption remains blocked. | Section 9 must authenticate the fixed runner-image DSSE envelope and signed per-invocation run capsule, accept only the logical request `make --no-print-directory ci`, dispatch the image-owned bootstrap directly without parsing a repository Makefile, and define the exact env-scrubbed fd-4/5/6 boundary (project root/run/image); snapshot the worker/manifest/run at fd-7/8/9, opening `scripts/fresh-align-compiler` through no-follow descriptors as an euid-owned single-link regular `0755` file bounded by `fresh_worker_max_bytes = 4194304`, and require the worker's observed project HEAD/object format to equal the signed capsule; keep the fixed image manifest independent of repository-worker digests, seal the per-head worker snapshot, open both source roots component-by-component through bounded descriptor windows, recheck directory and symlink identities, enforce fixed source/runtime/tool/Git/output/inode/process/fd/root bounds, reject noexec `/tmp`, encode attestation/probe-byte/Git object formats canonically, accept `--no-print-directory` only in the caller request while rejecting the complete other GNU Make 4.3 option matrix before dispatch, reject concurrent invocations before root creation with the worker-owned `/run/user/<uid>/align-llm-fresh/lock` and fail-closed bounded scan of the protected per-user `roots` namespace, retain separate project/Align source manifests with explicit root `.git` control and both root `target` exceptions plus project `main` exception metadata, admit the tracked contained `AGENTS.md -> CLAUDE.md` symlink with exact `null` mode fields and golden vectors, provide read-only private Git views to every normal project/baseline/eval/loop call and separate fixture views, define raw-to-staged modes for runtime and cache trees, define the schema-2 external cache-manifest wire format with the five exact Cargo prefixes and corrected semantic golden vector, authenticate a self-contained `/runtime/cc-suite` closure for the fixed C/C++ drivers and every helper/resource/header, derive authenticated linker/loader/pkg-config paths and verify the generated `main` ELF closure and byte identity, disable Python bytecode writes in aggregate and nested environments, accept only the pinned tracked `.cargo/config.toml` snapshot in phase 5, stage and authenticate `/tools/alignc` beside `/tools/libalign_runtime.a` plus `/tools/fresh-alignc` with write-once `/tools/fresh-descriptor` and `/tools/fresh-guard` files so the pinned compiler's `current_exe()` lookup works without inherited identity fds, define catchable versus uncatchable cleanup with bounded fail-closed orphan handling and exact status/error grammar, and synchronize C7's post-topology fresh `make ci` request; it must pass the redesigned Section 9 review and every named unit, fault-injection, local/hosted integration, baseline-ancestry, and cleanup regression before a later adoption changes the pin; aarch64 Linux/macOS consumers additionally require separate platform-profile designs and implementations |
+| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | The reviewed Section 9 contract in `docs/specs/check-gate-topology.md` and its wire/source-identity foundations are merged. FRESH-IMAGE owns installation and attestation of the image trust root; FRESH-WORKER owns the repository worker, Make integration, identity-bound baseline refresh, and cleanup. Every pin-changing adoption remains blocked until both capabilities merge. | Run every Section 9 named owner qualification, the installed-image end-to-end unchanged-pin aggregate, baseline ancestry checks, and cleanup evidence before worker merge or later adoption. Aarch64 Linux/macOS consumers additionally require their named platform profiles. |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -3696,17 +3696,18 @@ separately from positional calls:
    cache identity agree on the structural record graph;
 5. allocation parity is measured against the ordinary declared-record representation, and no
    hidden arena or private collection is introduced; and
-6. C6f2 constructs and drops the named records through the shipped surface, then passes its
-   runtime-array, malformed-input, early-exit, and cleanup regressions through `make ci`; the
-   C6c2 enabling consumer separately runs `c6c2-request10-adoption` for the recursive Request 10
-   subset before C6c2 implementation starts, without making Request 10 depend on the later verifier.
+6. C6f2 constructs and drops the named records through the shipped surface, then passes its focused
+   runtime-array, malformed-input, early-exit, and cleanup qualification; the C6c2 consumer runs
+   `c6c2-request10-adoption` for the recursive Request 10 subset before verifier implementation
+   consumes it on the same C6-LIFECYCLE branch.
 
-The C6c2 enabling adoption is intentionally split from the verifier implementation. Its
-`c6c2-request10-adoption` target is allowed only after the named Request 8 and Request 10 Align
-commits are pinned; it constructs the exact recursive C6 record graph, exercises `Option.None`,
-`Option.Some`, nested arrays, reallocation, partial failure, and `Drop`, then runs `make ci`. This
-target supplies the C6c2-specific adoption evidence required by this request; the later
-`c6f2-array-builder-adoption` remains the paired-evaluator consumer evidence.
+The C6c2 adoption is an ordered checkpoint inside the verifier capability, not a separate merge.
+Its `c6c2-request10-adoption` target is allowed only after the named Request 8 and Request 10 Align
+commits are pinned; it constructs the exact recursive C6 record graph and exercises `Option.None`,
+`Option.Some`, nested arrays, reallocation, partial failure, and `Drop`. The verifier implementation
+then consumes that proven surface on the same branch, and one final `make ci` runs after integrated
+owner checks pass. The later `c6f2-array-builder-adoption` remains the paired-evaluator consumer
+evidence.
 
 ### References
 

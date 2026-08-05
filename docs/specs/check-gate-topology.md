@@ -51,7 +51,7 @@ may not satisfy this prerequisite by retaining the current direct
 | `make ci` | Verify `.align-revision`, release-build the pinned sibling Align compiler, require that compiler to be executable, and invoke `capable-checks` with `ALIGNC` set to that exact release compiler. This remains the canonical complete local or capable-runner gate. |
 | Aggregate coexistence | `hosted-checks`, `capable-checks`, and `ci` are the complete serialized-aggregate set. If a top-level GNU Make invocation requests one of them, that aggregate must be the invocation's sole goal. An aggregate plus any other goal, or a repeated aggregate, fails during Makefile parsing before a prerequisite or recipe runs, with `verification aggregates must be requested alone`. Separate concurrent Make processes are unsupported caller behavior and are not valid verification evidence; this slice adds no cross-process repository lock. The recursive `ci` child is a separate invocation containing only `capable-checks` and remains valid. |
 | GitHub Actions pull-request gate | On the declared Ubuntu 24.04 runner with GNU Make 4.3, check out `.align-revision`, run `make align-build`, require the resulting release compiler, run `python3 scripts/check-gate-topology --self-test`, and invoke `make -j8 hosted-checks` with `ALIGNC` set to it. Preserve the aggregate recipe in the job log so review can verify the option-cleared child command, explicit `-j1`, and ordered focused-goal list. |
-| Focused targets | Keep existing commands and semantics. Add `git245-locked-inputs-unit` with the offline contract in `docs/specs/git-245-compat-image.md` and `prompt-score-prefix-smoke` as the final hosted target for the C6c1p prefix-validator gate. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. |
+| Focused targets and qualifications | Existing public target commands remain stable, but their declared coverage is explicit. `eval-coding` runs the coding corpus, bounded invalid-input/containment smoke, Git-configuration isolation, and timeout/process cleanup; it intentionally does not run the deep resource/race/failure-injection qualification at `python3 scripts/run-coding-task-resource-scan-smoke`. `git245-locked-inputs-unit` retains the offline contract in `docs/specs/git-245-compat-image.md`, and `prompt-score-prefix-smoke` remains the final hosted target for the C6c1p prefix-validator gate. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. |
 | Canonical C0 baseline | Record two deterministic-reference samples from a clean implementation source commit containing the final `Makefile`; commit the derived immutable oracle; finalize the canonical baseline with that full oracle commit; require the finalized record's source and oracle identities to equal those named commits; and keep the source, oracle, and finalization commits as ancestors of the final reviewed head and merge result. |
 
 ### 2.1 Inputs and defaults
@@ -3179,25 +3179,27 @@ The successor design and its wire/source-identity foundations are merged. They a
 checkpoints, not a precedent for more helper-only pull requests. Delivery now has two independently
 owned capabilities that may progress in parallel and one dependent adoption wave:
 
-1. **FRESH-WORKER — repository worker and Make integration.** Complete the remaining private-root
-   admission, sealed snapshots, digest/cache/source materialization, one-root lock, compiler and
-   archive bundle, two bwrap namespaces, writable aggregate overlay, namespace-owned no-symlink
-   tmpfs, staged nested tools and `mount-guard`, descriptor/guard handoff, empty-fd subprocess
-   policy, Make interposition, isolated baseline Git scratch, process ownership, resource bounds,
-   status grammar, and cleanup in one consumer-complete repository capability. It must include a
-   core end-to-end functional smoke that actually runs the unchanged-pin aggregate. The named
-   security, race, resource, mutation, and failure-injection closure tests remain focused
-   qualification commands and all run before this capability merges; they do not all become
-   permanent `make ci` dependencies. Because this capability changes the Makefile and compiler
-   consumers, its branch also performs the Section 2.4 identity-bound baseline source, oracle,
-   finalization, and merge-ancestry sequence.
-2. **FRESH-IMAGE — installed minimum-platform profile.** Install and attest the image-owned
+1. **FRESH-IMAGE — installed minimum-platform profile.** Install and attest the image-owned
    supervisor, fixed bootstrap, Python runtime, bwrap image, canonical schema-2 manifest, signed
    runner-image attestation, run-capsule signer/policy, protected per-user root parent, delegated
    cgroup/rlimit lifecycle, executable `/tmp`, and runtime/loader/linker bindings. The supervisor
    verifier, keys/digests, policy, and exact `env -i`/fd-5/fd-6 entrypoint are external acceptance
    evidence. This stays separate because host installation and repository implementation have
-   different owners and failure domains.
+   different owners and failure domains. Worker implementation may progress in parallel, but the
+   installed and attested image is required before worker capable acceptance or merge.
+2. **FRESH-WORKER — repository worker and Make integration.** Complete the remaining private-root
+   admission, sealed snapshots, digest/cache/source materialization, one-root lock, compiler and
+   archive bundle, two bwrap namespaces, writable aggregate overlay, namespace-owned no-symlink
+   tmpfs, staged nested tools and `mount-guard`, descriptor/guard handoff, empty-fd subprocess
+   policy, Make interposition, isolated baseline Git scratch, process ownership, resource bounds,
+   status grammar, and cleanup in one consumer-complete repository capability. It must include a
+   core end-to-end functional smoke that actually runs the unchanged-pin aggregate through the
+   installed FRESH-IMAGE trust root; a synthetic or direct host run is non-evidence. The named
+   security, race, resource, mutation, and failure-injection closure tests remain focused
+   qualification commands and all run before this capability merges; they do not all become
+   permanent `make ci` dependencies. Because this capability changes the Makefile and compiler
+   consumers, its branch also performs the Section 2.4 identity-bound baseline source, oracle,
+   finalization, and merge-ancestry sequence.
 3. **Fresh adoption wave.** After both capabilities pass and merge, batch the merged Align requests
    required by the next real consumer into one `.align-revision` update, rebuild, and original
    acceptance gate through fresh `make ci`. Request 6's adoption script selects its Section 9
