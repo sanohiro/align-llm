@@ -150,16 +150,33 @@ def profile_run(
         )
     elif cgroup_driver == "systemd":
         # Docker's systemd driver only accepts slice names and cannot express the
-        # profile's fixed cgroup-v2 path. Enter it while privileged, then drop to
-        # the repository uid before the native supervisor observes the process.
+        # profile's fixed cgroup-v2 path. A privileged parent creates and later
+        # removes a leaf there; only its child enters that leaf, drops to the
+        # repository uid, and becomes the native supervisor. Keeping the
+        # delegated parent free of processes lets the worker create limit leaves.
         launcher = f"""\
 import os
-with open('/sys/fs/cgroup/align-llm-fresh/{TEST_UID}/cgroup.procs', 'w', encoding='ascii') as target:
-    target.write(str(os.getpid()))
-os.setgroups([])
-os.setgid({TEST_UID})
-os.setuid({TEST_UID})
-os.execve('/usr/local/libexec/align-llm/fresh-supervise', ['fresh-supervise', '--mode', 'self-test'], {{}})
+parent = '/sys/fs/cgroup/align-llm-fresh/{TEST_UID}'
+leaf = parent + '/docker-self-test-' + str(os.getpid())
+os.mkdir(leaf, 0o700)
+child = os.fork()
+if child == 0:
+    try:
+        with open(leaf + '/cgroup.procs', 'w', encoding='ascii') as target:
+            target.write('0\\n')
+        os.setgroups([])
+        os.setgid({TEST_UID})
+        os.setuid({TEST_UID})
+        os.execve('/usr/local/libexec/align-llm/fresh-supervise', ['fresh-supervise', '--mode', 'self-test'], {{}})
+    except BaseException:
+        os._exit(127)
+try:
+    _, status = os.waitpid(child, 0)
+finally:
+    os.rmdir(leaf)
+if os.WIFEXITED(status):
+    os._exit(os.WEXITSTATUS(status))
+os._exit(128 + os.WTERMSIG(status))
 """
         arguments.extend(
             [
