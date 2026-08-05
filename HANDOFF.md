@@ -31,9 +31,12 @@ request checks, reviews, findings, and attestations.
   remain valid if Git closes inherited nonstandard descriptors, and normalizes Git tree records to
   raw-path byte order before manifest construction. Runtime-tree validation accepts stable
   distribution hardlinks under full before/after identity and byte-digest checks, while Cargo-cache
-  regular files retain their separate single-link requirement. Private build/aggregate paths use
-  worker-owned `/proc/<worker-pid>/fd/...` names so descriptor-free children can resolve them, and
-  cleanup distinguishes stable root identity from normal owned-directory metadata changes.
+  regular files retain their separate single-link requirement. Private build/aggregate mount
+  sources are opened relative to the retained private-root descriptor. Ordinary mounts use bwrap
+  `--bind-fd`/`--ro-bind-fd`; the three overlay operands use only the bwrap process's own
+  `/proc/self/fd/...` view because bwrap has no overlay-fd option. Payloads still inherit no worker
+  descriptors. Cleanup distinguishes stable root identity from normal owned-directory metadata
+  changes.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -65,7 +68,11 @@ request checks, reviews, findings, and attestations.
   invalid, Git-configuration, timeout, namespace, resource, mutation, and descendant cleanup smokes.
 - `git diff --check`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after exercising the
-  supervisor-equivalent `O_PATH` root and a Git-tree/raw-byte ordering inversion.
+  supervisor-equivalent `O_PATH` root, a Git-tree/raw-byte ordering inversion, and private
+  descriptor-backed mount admission.
+- Local bubblewrap 0.11.0 descriptor-bind smoke: PASS. A direct aggregate-shaped overlay smoke using
+  retained lower/upper/work descriptors through bwrap's own `/proc/self/fd` view read the lower tree
+  and published the expected upper-layer file.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
   normalization, populated-tree count derivation, and the installed job's incorrect assumption that
@@ -79,9 +86,11 @@ request checks, reviews, findings, and attestations.
   admission then exposed a policy leak in the next phase: the cache single-link rule was also being
   applied to installed runtime trees containing legitimate distribution hardlinks. Runtime reads
   now preserve and compare link count without requiring one; cache reads still reject hardlinks.
-  Private staging then exposed the same child-owned procfs-path assumption for bwrap and an
-  over-strict cleanup comparison that treated normal directory timestamp changes as replacement;
-  both now use the retained worker identity contract.
+  Private staging then exposed an over-strict cleanup comparison that treated normal directory
+  timestamp changes as replacement; cleanup now uses the retained worker identity contract. The
+  next installed diagnostic proved that a new bwrap user namespace cannot traverse the parent
+  worker's procfs descriptor paths. Mount sources now cross that boundary as retained descriptors;
+  fresh hosted evidence for that repair is pending.
   The dedicated hosted profile check must supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions

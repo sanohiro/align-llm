@@ -291,6 +291,69 @@ def cleanup_success_case(module, temporary: Path) -> None:
     require(not admitted.exists(), "owned private root remained after cleanup")
 
 
+def private_mount_case(module, temporary: Path) -> None:
+    roots = temporary / "mount-roots"
+    roots.mkdir(mode=0o700)
+    admitted = roots / "mount-root"
+    admitted.mkdir(mode=0o700)
+    directory = admitted / "directory"
+    directory.mkdir(mode=0o700)
+    regular = admitted / "regular"
+    regular.write_bytes(b"mount bytes")
+    regular.chmod(0o444)
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    lock_fd = os.open(regular, os.O_RDONLY | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        module.snapshot_fd(roots_fd),
+        root_fd,
+        module.snapshot_fd(root_fd),
+        admitted.name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    descriptors: tuple[int, ...] = ()
+    try:
+        arguments, descriptors = module.private_bind_arguments(
+            admission,
+            (
+                (admission.root_path / "directory", "/directory", "dir", True),
+                (admission.root_path / "regular", "/regular", "file", False),
+            ),
+        )
+        require(
+            arguments
+            == [
+                "--bind-fd",
+                str(descriptors[0]),
+                "/directory",
+                "--ro-bind-fd",
+                str(descriptors[1]),
+                "/regular",
+            ],
+            "private descriptor bind argv changed",
+        )
+        require(
+            stat.S_ISDIR(os.fstat(descriptors[0]).st_mode)
+            and stat.S_ISREG(os.fstat(descriptors[1]).st_mode),
+            "private mount descriptors did not retain source identity",
+        )
+        try:
+            module.open_private_mount(
+                admission, admission.root_path.parent / "escape", "dir"
+            )
+        except OSError:
+            pass
+        else:
+            raise AssertionError("private mount source escaped the admitted root")
+    finally:
+        module.close_private_mounts(descriptors)
+        os.close(root_fd)
+        os.close(roots_fd)
+        os.close(lock_fd)
+
+
 def cleanup_replacement_case(module, temporary: Path) -> None:
     roots = temporary / "roots"
     roots.mkdir(mode=0o700)
@@ -562,6 +625,7 @@ def main() -> int:
         digest_golden(module, temporary)
         cache_cases(module, temporary)
         source_identity_cases(module, temporary)
+        private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)
         cleanup_replacement_case(module, temporary)
     public_error_cases(module)

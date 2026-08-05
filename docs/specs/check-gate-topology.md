@@ -1417,8 +1417,9 @@ mutable input to image deployment and cannot create a manifest-update cycle.
 The profile in this section claims only Ubuntu/Linux x86_64 with kernel 6.8 or newer, GNU Make 4.3,
 CPython 3.12, Git 2.45 or newer, Rust/Cargo 1.96.0, LLVM 22, and a bubblewrap installation that
 passes the namespace, overlayfs, and namespace-owned `/target/tmp` no-symlink-mount self-tests. The
-bwrap build must support `--overlay-src` and `--overlay`; the kernel must permit the owner-only
-upper/work pair and `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` in the sandbox user namespace. Compiler
+bwrap build must support `--bind-fd`, `--ro-bind-fd`, `--overlay-src`, and `--overlay`; the kernel
+must permit the owner-only upper/work pair and `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` in the
+sandbox user namespace. Compiler
 identity is carried by authenticated read-only handoff files inside the `/tools` bind; no worker
 handoff descriptor is inherited by the aggregate or nested bwrap, so no nonstandard fd-preservation
 option or protected-fd seccomp filter is part of this profile. The platform self-test instead proves
@@ -2594,10 +2595,13 @@ read/deadline failure returning `fresh compiler: ERROR FILESYSTEM filesystem\n`.
 classifies, or removes a candidate. With no candidate present, it creates one
 `align-llm-fresh-<32 lowercase random hex>` with `mkdirat(roots_fd,O_EXCL,0700)`. It retries exactly
 eight collisions and records parent device/inode, root device/inode, owner token, and root descriptor.
-The worker names private-root paths as `/proc/<worker-pid>/fd/<root-fd>/...`; child vectors still use
-`close_fds=True, pass_fds=()`, but can resolve those worker-owned paths while the worker retains the
-root descriptor for the complete child lifetime. It never relies on a child-owned
-`/proc/self/fd/<root-fd>` path after that child closes inherited nonstandard descriptors.
+The worker resolves every private mount source relative to the retained root descriptor, opens it
+with `O_PATH|O_NOFOLLOW|O_CLOEXEC`, verifies its type and effective-uid ownership, and passes only
+those exact descriptors to the outer bwrap setup. The bwrap argv consumes each descriptor through
+`--bind-fd` or `--ro-bind-fd`. Because bwrap has no descriptor form of its overlay operation, its
+three retained overlay descriptors are named only as `/proc/self/fd/<fd>` in that bwrap's own argv;
+it never asks the new user namespace to traverse the parent worker's procfs descriptor path. The
+worker retains the descriptors until bwrap exits and closes them before cleanup.
 It never removes shared `/tmp`, the profile root parent, the project root,
 `ALIGN_REPO`, either source cache, or a path whose parent/name identity it cannot prove.
 
@@ -2651,7 +2655,7 @@ pair or pre-existing overlay entry is a `FILESYSTEM` error before the aggregate 
 ### 9.5 Exact build namespace
 
 The worker launches the pinned Align release build through the declared bwrap. The following is the
-exact argv shape; one `--ro-bind` pair is emitted for each ordered runtime binding after its target
+exact argv shape; one `--ro-bind-fd` pair is emitted for each ordered runtime binding after its target
 parents are created with `--dir`:
 
 ```text
@@ -2659,10 +2663,10 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --tmpfs / --proc /proc --dev /dev \
   --dir /align-src --dir /tools --dir /runtime --dir /cargo --dir /target --dir /target/tmp \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
-  --ro-bind <root>/align-source /align-src \
-  --ro-bind <root>/tool-bin /tools \
-  --ro-bind <root>/cargo-home /cargo \
-  --bind <root>/cargo-target /target \
+  --ro-bind-fd <align-source-fd> /align-src \
+  --ro-bind-fd <tool-bin-fd> /tools \
+  --ro-bind-fd <cargo-home-fd> /cargo \
+  --bind-fd <cargo-target-fd> /target \
   <ordered runtime binding operations> \
   --setenv HOME /nonexistent --setenv TMPDIR /target/tmp --setenv PATH /tools \
   --setenv PYTHONDONTWRITEBYTECODE 1 \
@@ -2681,8 +2685,8 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
 
 `<ordered runtime binding operations>` is not a free-form placeholder: for each manifest binding,
 the worker emits `--dir` for every missing target parent and then either
-`--ro-bind <root>/runtime/<binding-id> <target-file>` or
-`--ro-bind <root>/runtime/<binding-id> <target-tree>`, in manifest order. Overlapping targets,
+`--ro-bind-fd <runtime-binding-fd> <target-file>` or
+`--ro-bind-fd <runtime-binding-fd> <target-tree>`, in manifest order. Overlapping targets,
 missing parents, host paths, or bindings not represented in the manifest reject before bwrap. The
 empty tmpfs root hides the host root, HOME, `/tmp`, original `ALIGN_REPO`, the project root, sibling
 target, host PATH, and source cache. Only `/target` is writable; `/cargo` is a read-only authenticated cache copy and
@@ -2713,7 +2717,11 @@ archive are copied into the same worker-owned `tool-bin` directory and exposed b
 exited. A sealed memfd may be used as the worker's temporary construction buffer, but no worker
 descriptor or construction memfd crosses the aggregate boundary.
 
-The aggregate and every nested bwrap are invoked with `close_fds=True, pass_fds=()`. No compiler
+The build and aggregate bwrap setup processes are invoked with `close_fds=True` and only their
+verified private mount-source descriptors in `pass_fds`; ordinary descriptors are consumed by a
+`--bind-fd` or `--ro-bind-fd` operation, while the three aggregate overlay descriptors are consumed
+by bwrap's overlay setup through its own `/proc/self/fd` view before the payload starts. Every
+aggregate payload and nested bwrap starts with an empty inherited descriptor set. No compiler
 identity descriptor is inherited by Make, a shell, Python, a fixture, or a nested validation child,
 so those helpers may close, mark, or replace their ordinary descriptors without affecting the worker
 or another compiler invocation. The prior protected-fd seccomp filter and bwrap `--seccomp` handoff
@@ -2930,13 +2938,13 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /baseline-git --dir /tools --dir /cargo --dir /target \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
-  --overlay-src <root>/aggregate-work \
-  --overlay <root>/aggregate-output/workspace-upper \
-            <root>/aggregate-output/workspace-work /workspace \
-  --ro-bind <root>/tool-bin /tools \
-  --ro-bind <root>/cargo-home /cargo \
-  --ro-bind <root>/cargo-target /target \
-  --ro-bind <root>/baseline-git /baseline-git \
+  --overlay-src /proc/self/fd/<aggregate-work-fd> \
+  --overlay /proc/self/fd/<workspace-upper-fd> \
+            /proc/self/fd/<workspace-work-fd> /workspace \
+  --ro-bind-fd <tool-bin-fd> /tools \
+  --ro-bind-fd <cargo-home-fd> /cargo \
+  --ro-bind-fd <cargo-target-fd> /target \
+  --ro-bind-fd <baseline-git-fd> /baseline-git \
   --size 268435456 --tmpfs /target/tmp \
   <same ordered runtime binding operations> \
   --setenv HOME /nonexistent --setenv TMPDIR /target/tmp --setenv PATH /tools \
@@ -3174,12 +3182,12 @@ the public line.
 | Manifest wire | bootstrap/worker | Schema 2 order, mode strings, ordinary and probe-byte string bounds, duplicate/unknown rejection, fixed image paths, and image-attested digest; controller path/API only, with worker digest owned by the run capsule | `fresh-v2-manifest-format-smoke` covers every scalar, order, mode, UTF-8, NUL, ordinary-string size, empty/binary/exact-cap/cap-plus-one probe streams, fixed-path replacement, and rejected caller-digest case. |
 | Digest tree and cache wire | worker | Exact file/dir schema with raw/staged modes, structural hash, canonical JSON hash, raw-byte order, schema-2 cache manifest, and the five fixed Cargo prefixes | `fresh-v2-digest-tree-golden` checks the runtime `abc` vector; `fresh-v2-cache-manifest-golden` checks the nested `registry/index/a` bytes, allowed-prefix array, all digests, mode mapping, count, total, and malformed or out-of-prefix cache manifests. |
 | Source-manifest wire | worker | Exact schema-1 source identity bytes, object-format field, raw-byte path encoding/order, raw `.git/index` preimage including extensions/checksum, explicit root Git-control exception, Git tree/blob objects for directory/file/symlink in both SHA-1 and SHA-256 formats, raw/staged modes including `null` symlink modes, both root target exceptions, and descriptor digest; the project source may use either object format but the Align source is SHA-1-only in this profile | `fresh-v2-source-manifest-golden`, `fresh-v2-source-manifest-symlink-golden`, and `fresh-v2-source-manifest-object-format-golden` independently recompute the complete canonical bytes and digests, including tree/file/symlink entries and both object-ID widths; `fresh-v2-source-identity-smoke` rejects a SHA-256 Align pin before source acceptance. |
-| Bwrap trust and capability probe | worker | Authenticate and retain bwrap before any bwrap execution; run every platform probe from that descriptor and reject mutable-path replacement; prove the fixed image-manifest snapshot and read-only `/tools` handoff boundary without inherited worker fds | `fresh-v2-bwrap-trust-smoke` injects caller manifest overrides, mutates the fixed image manifest and bwrap sources before and during namespace, overlay, no-symlink, and read-only-tools probes, and requires the retained bytes or a `TRUST`/`PLATFORM` rejection before private-root creation. |
+| Bwrap trust and capability probe | worker | Authenticate and retain bwrap before any bwrap execution; require and exercise descriptor-backed read-only/writable binds plus overlay support; run every platform probe from that descriptor and reject mutable-path replacement; prove the fixed image-manifest snapshot and read-only `/tools` handoff boundary without payload-visible worker fds | `fresh-v2-bwrap-trust-smoke` injects caller manifest overrides, mutates the fixed image manifest and bwrap sources before and during descriptor-bind, namespace, overlay, no-symlink, and read-only-tools probes, and requires the retained bytes or a `TRUST`/`PLATFORM` rejection before private-root creation. |
 | Tool identity | worker | Canonical no-symlink host path, retained no-follow descriptor, full hash, probe from retained bytes, copied private bytes, exact probe | `fresh-v2-tool-identity-smoke` covers symlink aliases, replacement after open, version, timeout, overflow, unlisted names, retained-descriptor execution, and copied-byte mutation. |
 | Runtime/loader/Python/compiler identity | worker plus bwrap | Complete ELF interpreter/DT_NEEDED closure for staged tools and generated `main`, authenticated derived linker/loader/pkg-config paths, stable installed-runtime hardlinks with complete before/copy byte proof, actual ordinal staging paths, CPython stdlib and `lib-dynload` trees, the self-contained `/runtime/cc-suite` driver/helper/resource/header closure, executable runtime modes 0555 versus data modes 0444, and no Python bytecode writes or host import | `fresh-v2-runtime-closure-smoke` replaces a library, interpreter, stdlib module, native extension, compiler-suite helper/resource/header, and product dependency, checks stable runtime-hardlink admission while cache hardlinks still reject, checks build and aggregate, proves derived paths and final-output closure, proves descriptor paths name the copied ordinal object, rejects host GCC fallback/marker helpers, and proves no `__pycache__` or host path appears. |
 | Cache placement/copy | worker | External manifest outside root with canonical schema-2 digest, exact five-prefix allowlist, semantically correct non-root count, pre-copy per-file/total bounds, retained source descriptors, directory-aware no-follow copy, raw/staged mode proof, postscan | `fresh-v2-cache-smoke` covers manifest-in-root, malformed wire, the corrected three-node `registry/index/a` golden, every out-of-prefix config/wrapper case, symlink, special, hardlink, rename, 512-MiB file and 20-GiB total limits, raw/staged mode mismatch, digest, and offline cases. |
 | Git/source identity | worker | Separate retained project and `ALIGN_REPO` worktree/Git/common descriptors, scan-capable no-follow reopen from each admitted `O_PATH` root, worker-owned procfs paths that survive Git closing inherited descriptors, project `HEAD`/object-format equality with the signed run capsule before source acceptance, exact SHA-1-only Align pin HEAD/tree/index/clean-worktree proof, explicit root `.git` control exclusion, raw-byte normalization of Git tree order, both raw manifests and exception metadata, raw-to-staged mode mapping, descriptor-relative copies with post-copy proof, fixed tracked Cargo config policy, no helper/config/filter | `fresh-v2-source-identity-smoke` covers `O_PATH` admission, a directory/file-name pair whose Git order differs from raw-byte order, ordinary and linked-worktree roots, root `.git` file/directory handling, common-directory replacement, ancestor ABA, project run-capsule-head mismatch, sibling SHA-1/SHA-256 pin and dirty-tree rejection, source replacement during copy, replacement refs, hidden inputs, contained symlinks, project `main`, both root `target` exceptions, exact `.cargo/config.toml`, mode normalization, and same-HEAD extra Rust input. The separate `fresh-v2-source-manifest-output-exception-golden` covers exception metadata and proves no exception bytes enter `entries`. |
-| Private staging | worker plus admission lock | 0700 owner-only `project-source`, `align-source`, and baseline Git view; fixed source/tool/runtime/Git byte, entry, depth, inode, object, descriptor, process, root-byte, and overflow bounds; bounded source descriptor window with re-opened parent identity checks; worker-owned procfs root paths that remain resolvable by descriptor-free children; pre-created build `/target/tmp`, namespace-owned aggregate tmpfs, same-filesystem overlay upper/work, descriptor-relative cleanup, profile-owned protected per-user `roots` parent, and one-root-per-user admission | `fresh-v2-root-staging-smoke` covers protected-parent collisions, executable-bit preservation, every cap and cap-plus-one/overflow case, mixed 200,000-entry source fd-window exhaustion, directory replacement, symlink target replacement, both source copies, baseline Git copy, modes, target seed, aggregate tmpfs/no-follow mount, upper/work ownership, output escape, overlay unmount, and cleanup unlink authority. |
+| Private staging | worker plus admission lock | 0700 owner-only `project-source`, `align-source`, and baseline Git view; fixed source/tool/runtime/Git byte, entry, depth, inode, object, descriptor, process, root-byte, and overflow bounds; bounded source descriptor window with re-opened parent identity checks; root-relative no-follow mount descriptors consumed by bwrap fd-bind or self-fd overlay operations; pre-created build `/target/tmp`, namespace-owned aggregate tmpfs, same-filesystem overlay upper/work, descriptor-relative cleanup, profile-owned protected per-user `roots` parent, and one-root-per-user admission | `fresh-v2-root-staging-smoke` covers protected-parent collisions, executable-bit preservation, every cap and cap-plus-one/overflow case, mixed 200,000-entry source fd-window exhaustion, directory replacement, symlink target replacement, both source copies, baseline Git copy, modes, target seed, aggregate tmpfs/no-follow mount, upper/work ownership, output escape, overlay unmount, and cleanup unlink authority. |
 | Aggregate temporary call sites | scripts and Align loop | Every aggregate temporary file, fixture, marker, and negative Git state is below the no-symlink `/target/tmp`; the loop no longer writes `eval/`, and no host temp directory is aggregate-visible. Each nested coding-task validation retains independent `--size 67108864 --tmpfs /tmp` and `--size 67108864 --tmpfs /dev/shm` mounts, while `/target/tmp` remains outer task scratch. | `fresh-v2-temp-root-callsite-smoke` runs loop, coding-task, invalid-baseline, and every `mktemp`/`TemporaryDirectory` caller, exercises both nested 64 MiB mounts and `/dev/shm` smoke coverage, attempts a temp-to-workspace symlink, and proves no lower or upper source path changed. |
 | Aggregate publication | worker plus bwrap | Immutable `aggregate-work` lower layer, writable upper/work pair, atomic rename, exact regular `main` mode/link-count/size/ELF/byte identity, generated-output and dependency-graph bounds, and final `/workspace/main` allowlist | `fresh-v2-aggregate-publication-smoke` runs the real compiler publication path, proves `.align-publish-*` is transient, rejects an upper entry outside `main`, mutates a declared product dependency, injects mode/link/size/hash changes after unmount, and checks the post-unmount output closure and scan. |
 | Build namespace | worker plus bwrap | Empty root, authenticated pinned `/align-src` only, no project source or host `ALIGN_REPO`, user/PID/net namespaces, read-only authenticated `/cargo`, tracked Cargo config policy, derived linker/loader/pkg-config paths, compiler closure, and writable `/target` only | `fresh-v2-build-namespace-smoke` uses host-root/cache/HOME/network/project-source/sibling-target markers, attempts a Cargo-cache write, verifies `/align-src/Cargo.toml` and the exact `.cargo/config.toml` digest/key set, checks derived OpenSSL/linker paths and compiler closure, double fork, and runtime loader probes. |

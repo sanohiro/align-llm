@@ -2301,11 +2301,58 @@ def namespace_directories(runtime: Sequence[RuntimeBinding]) -> list[str]:
     return result
 
 
-def runtime_arguments(runtime: Sequence[RuntimeBinding]) -> list[str]:
+def open_private_mount(
+    admission: Admission, source: Path, expected_kind: str
+) -> int:
+    try:
+        relative = source.relative_to(admission.root_path)
+    except ValueError as error:
+        raise OSError(errno.EPERM, "private mount source escaped root") from error
+    if not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        raise OSError(errno.EPERM, "private mount source rejected")
+    descriptor = os.open(
+        os.fspath(relative),
+        os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=admission.root_fd,
+    )
+    try:
+        value = os.fstat(descriptor)
+        expected_type = stat.S_IFDIR if expected_kind == "dir" else stat.S_IFREG
+        if (
+            expected_kind not in ("dir", "file")
+            or stat.S_IFMT(value.st_mode) != expected_type
+            or value.st_uid != os.geteuid()
+        ):
+            raise OSError(errno.EPERM, "private mount source identity rejected")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def private_bind_arguments(
+    admission: Admission,
+    bindings: Sequence[tuple[Path, str, str, bool]],
+) -> tuple[list[str], tuple[int, ...]]:
     arguments: list[str] = []
-    for source, target, _, _ in runtime:
-        arguments.extend(("--ro-bind", str(source), target))
-    return arguments
+    descriptors: list[int] = []
+    try:
+        for source, target, kind, writable in bindings:
+            descriptor = open_private_mount(admission, source, kind)
+            descriptors.append(descriptor)
+            arguments.extend(
+                ("--bind-fd" if writable else "--ro-bind-fd", str(descriptor), target)
+            )
+        return arguments, tuple(descriptors)
+    except Exception:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+
+
+def close_private_mounts(descriptors: Sequence[int]) -> None:
+    for descriptor in reversed(descriptors):
+        os.close(descriptor)
 
 
 def derived_paths(runtime: Sequence[RuntimeBinding]) -> tuple[str, str, str]:
@@ -2442,6 +2489,7 @@ def run_owned(
     phase: str,
     timeout: int,
     environment: Mapping[str, str] | None = None,
+    pass_fds: Sequence[int] = (),
 ) -> None:
     parent = cgroup_parent()
     leaf: Path | None = None
@@ -2467,7 +2515,7 @@ def run_owned(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             close_fds=True,
-            pass_fds=(),
+            pass_fds=tuple(pass_fds),
             preexec_fn=lambda: child_preexec(leaf),
         )
         accepted_start = pid_start_time(process.pid)
@@ -2545,6 +2593,17 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
     tool_bin = root / "tool-bin"
     directories = namespace_directories(runtime)
     library_path, loader_path, pkg_path = derived_paths(runtime)
+    bindings = [
+        (root / "align-source", "/align-src", "dir", False),
+        (tool_bin, "/tools", "dir", False),
+        (root / "cargo-home", "/cargo", "dir", False),
+        (root / "cargo-target", "/target", "dir", True),
+        *(
+            (source, target, kind, False)
+            for source, target, kind, _ in runtime
+        ),
+    ]
+    bind_arguments, bind_descriptors = private_bind_arguments(admission, bindings)
     arguments = [
         str(tool_bin / "bwrap"),
         "--clearenv",
@@ -2566,19 +2625,7 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
         (
             "--dir",
             "/target/tmp",
-            "--ro-bind",
-            str(root / "align-source"),
-            "/align-src",
-            "--ro-bind",
-            str(tool_bin),
-            "/tools",
-            "--ro-bind",
-            str(root / "cargo-home"),
-            "/cargo",
-            "--bind",
-            str(root / "cargo-target"),
-            "/target",
-            *runtime_arguments(runtime),
+            *bind_arguments,
             "--setenv",
             "HOME",
             "/nonexistent",
@@ -2652,7 +2699,16 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
             "align_driver",
         )
     )
-    run_owned(arguments, category="BUILD", phase="build", timeout=BUILD_TIMEOUT)
+    try:
+        run_owned(
+            arguments,
+            category="BUILD",
+            phase="build",
+            timeout=BUILD_TIMEOUT,
+            pass_fds=bind_descriptors,
+        )
+    finally:
+        close_private_mounts(bind_descriptors)
     compiler = root / "cargo-target/release/alignc"
     archive = root / "cargo-target/release/libalign_runtime.a"
     for path in (compiler, archive):
@@ -2825,6 +2881,37 @@ def aggregate_environment(runtime: Sequence[RuntimeBinding]) -> list[str]:
 def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> None:
     root = admission.root_path
     directories = namespace_directories(runtime)
+    opened_overlay_descriptors: list[int] = []
+    try:
+        for source in (
+            root / "aggregate-work",
+            root / "aggregate-output/workspace-upper",
+            root / "aggregate-output/workspace-work",
+        ):
+            opened_overlay_descriptors.append(
+                open_private_mount(admission, source, "dir")
+            )
+    except Exception:
+        close_private_mounts(opened_overlay_descriptors)
+        raise
+    overlay_descriptors = tuple(opened_overlay_descriptors)
+    ordinary_bindings = [
+        (root / "tool-bin", "/tools", "dir", False),
+        (root / "cargo-home", "/cargo", "dir", False),
+        (root / "cargo-target", "/target", "dir", False),
+        (root / "baseline-git", "/baseline-git", "dir", False),
+        *(
+            (source, target, kind, False)
+            for source, target, kind, _ in runtime
+        ),
+    ]
+    try:
+        bind_arguments, bind_descriptors = private_bind_arguments(
+            admission, ordinary_bindings
+        )
+    except Exception:
+        close_private_mounts(overlay_descriptors)
+        raise
     arguments = [
         str(root / "tool-bin/bwrap"),
         "--clearenv",
@@ -2845,28 +2932,16 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
     arguments.extend(
         (
             "--overlay-src",
-            str(root / "aggregate-work"),
+            f"/proc/self/fd/{overlay_descriptors[0]}",
             "--overlay",
-            str(root / "aggregate-output/workspace-upper"),
-            str(root / "aggregate-output/workspace-work"),
+            f"/proc/self/fd/{overlay_descriptors[1]}",
+            f"/proc/self/fd/{overlay_descriptors[2]}",
             "/workspace",
-            "--ro-bind",
-            str(root / "tool-bin"),
-            "/tools",
-            "--ro-bind",
-            str(root / "cargo-home"),
-            "/cargo",
-            "--ro-bind",
-            str(root / "cargo-target"),
-            "/target",
-            "--ro-bind",
-            str(root / "baseline-git"),
-            "/baseline-git",
+            *bind_arguments,
             "--size",
             "268435456",
             "--tmpfs",
             "/target/tmp",
-            *runtime_arguments(runtime),
             *aggregate_environment(runtime),
             "--chdir",
             "/workspace",
@@ -2884,7 +2959,17 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             "capable-checks",
         )
     )
-    run_owned(arguments, category="CHILD", phase="aggregate", timeout=AGGREGATE_TIMEOUT)
+    try:
+        run_owned(
+            arguments,
+            category="CHILD",
+            phase="aggregate",
+            timeout=AGGREGATE_TIMEOUT,
+            pass_fds=(*overlay_descriptors, *bind_descriptors),
+        )
+    finally:
+        close_private_mounts(bind_descriptors)
+        close_private_mounts(overlay_descriptors)
     upper = root / "aggregate-output/workspace-upper"
     names = sorted(os.listdir(upper), key=os.fsencode)
     if any(name != "main" for name in names):
