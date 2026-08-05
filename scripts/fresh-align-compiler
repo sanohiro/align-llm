@@ -2601,6 +2601,8 @@ def run_owned(
         if cgroup_populated(leaf):
             raise CleanupError("child cgroup remained populated")
         if primary_failure:
+            os.write(2, b"DIAGNOSTIC OWNED STDOUT\n" + bytes(captures["stdout"]))
+            os.write(2, b"DIAGNOSTIC OWNED STDERR\n" + bytes(captures["stderr"]))
             fail(category, phase)
     finally:
         active = sys.exc_info()[1]
