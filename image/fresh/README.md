@@ -18,14 +18,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-attestation-wire-smoke
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-image-control-smoke
 ```
 
-The installed-profile acceptance needs a Docker daemon with privileged cgroup-v2 access. It builds
-the image with ephemeral, distinct public keys, creates the external image attestation, provisions
-the protected runtime and cgroup parents, runs the image-only self-test without a network, and
-checks canonical trust rejection:
+The installed-profile acceptance needs a Docker daemon with privileged cgroup-v2 access and nested
+unprivileged user namespaces. It builds the image with ephemeral, distinct public keys, creates the
+external image attestation, provisions the protected runtime and cgroup parents, runs the image-only
+self-test without a network, and checks canonical trust rejection:
 
 ```text
 PYTHONDONTWRITEBYTECODE=1 scripts/run-fresh-image-profile-smoke
 ```
+
+The hosted Ubuntu 24.04 qualification temporarily disables that runner's AppArmor restriction on
+unprivileged user namespaces, verifies a nested namespace can be created, and restores the original
+setting after the profile. A deployment must provide equivalent nested-user-namespace capability;
+the image does not weaken the host policy itself.
 
 Production deployment follows the same ownership boundary: build with public-key hex arguments,
 produce `image-attestation.dsse` using `scripts/fresh-image-attest` and an offline image seed, mount

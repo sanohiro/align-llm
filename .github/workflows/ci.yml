@@ -209,11 +209,49 @@ jobs:
           python3 scripts/run-fresh-attestation-wire-smoke
           python3 scripts/run-fresh-image-control-smoke
 
+      - name: Enable qualified nested user namespaces
+        if: steps.scope.outputs.owned == 'true'
+        id: userns
+        shell: bash
+        run: |
+          set -euo pipefail
+          setting=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          changed=false
+          previous=0
+          if [[ -e "$setting" ]]; then
+            previous="$(<"$setting")"
+            if [[ ! "$previous" =~ ^[01]$ ]]; then
+              echo "Unexpected AppArmor user-namespace setting: $previous" >&2
+              exit 1
+            fi
+            if [[ "$previous" != "0" ]]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+              changed=true
+            fi
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          unshare --user --map-root-user true
+
       - name: Build and attest installed image profile
         if: steps.scope.outputs.owned == 'true'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python3 scripts/run-fresh-image-profile-smoke
+
+      - name: Restore user namespace restriction
+        if: always() && steps.scope.outputs.owned == 'true' && steps.userns.outputs.changed == 'true'
+        shell: bash
+        env:
+          PREVIOUS_USERNS_RESTRICTION: ${{ steps.userns.outputs.previous }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$PREVIOUS_USERNS_RESTRICTION" =~ ^[01]$ ]]; then
+            echo "Refusing invalid AppArmor user-namespace restore value" >&2
+            exit 1
+          fi
+          sudo sysctl -w \
+            "kernel.apparmor_restrict_unprivileged_userns=$PREVIOUS_USERNS_RESTRICTION"
 
       - name: Report unaffected image profile
         if: steps.scope.outputs.owned != 'true'
