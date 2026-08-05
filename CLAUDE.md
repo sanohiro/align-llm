@@ -14,9 +14,10 @@ manifests in their native configuration locations.
 session or on a different machine, read `HANDOFF.md` after this guide and before continuing work.
 Conversation history and per-machine memory are not durable project state.
 
-Update `HANDOFF.md` after a material change to the active work and before handing work to another
-environment or agent. Keep it concise and current rather than appending a session transcript. It
-must identify:
+Update `HANDOFF.md` at a durable capability checkpoint, when a blocker or next action changes, and
+before handing work to another environment or agent. Do not update it for each commit, review
+comment, check rerun, or pull request metadata change. Keep it concise and current rather than
+appending a session transcript. It must identify:
 
 - the current branch and relevant commit;
 - the active goal and what is complete, in progress, or not started;
@@ -77,6 +78,36 @@ improvements over broader but unverified feature coverage. Establish fixed evalu
 provider-independent coding loop before expanding the custom inference runtime. Every optimization
 needs a reproducible measurement tied to time to a passing patch or an explicitly named secondary
 metric.
+
+## Delivery throughput and documentation proportionality
+
+Organize roadmap work around **consumer-complete capabilities**: the smallest coherent change that
+lets a real caller perform a useful new end-to-end behavior. A contract cell, helper, fixture set,
+adoption record, or design checkpoint is normally a commit or an acceptance item inside that
+capability, not a pull request boundary of its own. Split a capability only when the pieces have
+independent consumers, can be verified independently without temporary compatibility behavior, or
+belong to genuinely different failure domains such as host-image provisioning and repository code.
+
+Design before coding, but keep design proportional to the decision being made:
+
+- Update an authoritative specification when a public contract, persisted format, ownership or
+  process boundary, or cross-module invariant changes. Implementation of an already settled
+  contract does not need another narrative design document.
+- A separate design pull request is exceptional. Use one when external coordination must consume
+  the decision before implementation, or when several independent consumers depend on the same
+  broad contract. Otherwise review design and implementation together in the capability branch.
+- `HANDOFF.md`, request registers, review evidence, and planning prose support implementation; they
+  are not product progress by themselves and must not become an append-only execution journal.
+- Line count and elapsed time are diagnostics, never quotas, quality gates, or reasons to pad a
+  diff. As a planning expectation, sustained implementation should normally produce a compiling,
+  owner-tested checkpoint within roughly eight active hours. Over roughly 24 active hours, a
+  capability-sized task should usually deliver a substantial usable result; when its natural scope
+  supports it, roughly 5,000-15,000 changed hand-written production-and-test lines can be
+  reasonable, and a genuinely large capability may contain around 10,000 production-source lines.
+  Report production source, tests/automation, and documentation separately; documentation volume
+  does not substitute for working product behavior. If progress is materially smaller, inspect
+  design churn, repeated verification, review loops, blockers, and over-splitting before creating
+  another smaller pull request.
 
 ## Language and international collaboration
 
@@ -160,36 +191,41 @@ PROPOSED
   its hypothetical surface.
 - `ALIGN_MERGED` means the capability is available at a named Align commit. Run the required Align
   release build, update `.align-revision`, and adopt the shipped surface.
-- `ALIGN_LLM_VERIFIED` means the original acceptance gate passes in align-llm with `make ci`.
+- `ALIGN_LLM_VERIFIED` means every original named focused acceptance target and one final `make ci`
+  pass against the same pinned Align revision and final align-llm integration head.
 - `CLOSED` means the Align response, ownership model, limits, shipped commit or pull requests, and
   align-llm verification evidence are recorded in the request register.
 
-For a blocking request, stop only the gate or slice that requires the missing capability. Do not
-invent a local compatibility layer, fragile workaround, or code against a proposed API. Record the
+For a blocking request, stop only the consumer capability that requires the missing functionality.
+Do not invent a local compatibility layer, fragile workaround, or code against a proposed API. Record the
 blocker and resume condition in both the request and `HANDOFF.md`. Continue independent roadmap work
 when it remains valid and does not pre-commit the blocked design. Stop the whole project only when no
 safe independent work remains.
 
 For a non-blocking request, record its first expected consumer and continue the current gate. If that
 consumer is reached before the request is `ALIGN_MERGED`, reclassify the request as blocking and
-pause that dependent slice.
+pause that dependent consumer.
 
-Resume a blocked slice only after the capability is merged at a named Align commit, the sibling
-release compiler and runtime are rebuilt, `.align-revision` is updated, and the original
-acceptance gate passes through `make ci`. A passing Align test alone does not close the request;
-align-llm must verify the capability as the real client.
+Resume a blocked consumer only after the capability is merged at a named Align commit, the sibling
+release compiler and runtime are rebuilt, `.align-revision` is updated, every original named
+focused acceptance target passes, and one final `make ci` passes against that same pin and
+integration head. A passing Align test or `make ci` alone does not close the request; align-llm must
+verify the capability as the real client.
+
+When several merged Align requests are prerequisites for the same next consumer, adopt them in one
+pin update and one real-client verification capability. Request lifecycle entries remain separately
+traceable, but they do not require one align-llm pull request each.
 
 ## Change discipline
 
-- For roadmap work, use one branch per gate or enabling slice. Do not mix repository-governance
-  changes, Align request records, and product implementation in one pull request when they can be
-  reviewed independently.
-- The initial repository bootstrap may combine those surfaces only when they form one executable
-  development-cycle foundation, cross-reference one another, remain separated into scoped commits,
-  and the pull request explicitly records the exception and receives full adversarial review.
-  After that foundation merges, the normal one-gate or one-enabling-slice rule has no bootstrap
-  exception.
-- Keep commits small and scoped to one roadmap gate or enabling change.
+- For roadmap work, use one branch per consumer-complete capability. Keep distinct failure domains
+  separate, but combine the design, implementation, owner tests, integration, and directly required
+  automation that make one capability usable.
+- Repository governance, Align request records, and product implementation may share a pull request
+  only when they jointly establish that capability and are separated into comprehensible commits.
+  Otherwise keep them independent so each pull request has one observable outcome.
+- Keep commits scoped to reviewable internal checkpoints. Commit size is not a pull request size
+  limit, and an internal checkpoint does not need its own branch or review cycle.
 - Include the relevant check, evaluation, or benchmark result in every pull request description.
 - Do not claim performance improvements without a reproducible baseline and measurement.
 - Do not commit model weights, generated binaries, credentials, local profiles, or machine-specific
@@ -208,8 +244,8 @@ align-llm must verify the capability as the real client.
 ## Design before implementation
 
 Do not use implementation or repeated full-diff review to discover the contract for a non-trivial
-roadmap gate. Before coding a change that adds a public CLI, persisted format, ownership boundary,
-external process or network boundary, or coordinated behavior across three or more modules:
+consumer capability. Before coding a change that adds a public CLI, persisted format, ownership
+boundary, external process or network boundary, or coordinated behavior across three or more modules:
 
 1. Write or update the plan of record under `docs/specs/` and keep one public-contract ledger
    authoritative while drafting. For every public surface, record the exact command, type, or
@@ -225,12 +261,14 @@ external process or network boundary, or coordinated behavior across three or mo
    cleanup, early exit, malformed input, and every affected module. Before coding, each applicable
    cell must name its intended owner module and exact regression test or benchmark, or be explicitly
    deferred.
-4. Run a fresh independent adversarial review of the design, invariants, acceptance coverage, and
-   proposed pull request boundaries. Resolve valid findings before implementation starts.
-5. Merge the reviewed design or enabling-slice pull request before opening a dependent
-   implementation pull request. Split implementation into the smallest independently correct
-   vertical slices; if a slice is expected to exceed roughly 1,000 changed hand-written lines,
-   record why it cannot be split safely.
+4. Perform a risk-focused author review before coding. Obtain a separate pre-implementation design
+   review only when the contract will be merged for external coordination or when changing it after
+   implementation begins would invalidate several independent consumers. Otherwise the capability's
+   comprehensive review covers both the settled design and implementation.
+5. Implement the smallest consumer-complete vertical capability. A large diff requires clear commit
+   structure, owner tests, and review ownership, not an automatic split. Split only at an
+   independently usable boundary or a distinct failure domain; never leave `main` with a dormant
+   producer, a hypothetical consumer, or duplicated temporary behavior solely to reduce line count.
 
 For applicable surfaces, the contract ledger and closure matrix must also cover:
 
@@ -285,9 +323,9 @@ enumerate:
 
 When an agent is asked to continue through roadmap work, a completed pull request is a checkpoint,
 not a stopping condition. Prepare `HANDOFF.md` on the merging branch to describe the expected
-post-merge checkpoint. After the merge, refresh `main` and start the next eligible gate or enabling
-slice; correct merge-dependent handoff details in the first commit of that branch. Do not create a
-recursive handoff-only pull request solely to record that the previous pull request merged. Stop
+post-merge checkpoint. After the merge, refresh `main` and start the next eligible consumer
+capability; correct merge-dependent handoff details in the first commit of that branch. Do not
+create a recursive handoff-only pull request solely to record that the previous pull request merged. Stop
 only when the user asks, the roadmap has no eligible work, or no safe independent work remains
 after blockers are recorded.
 
@@ -302,24 +340,27 @@ Elapsed time is not a stopping criterion for a useful command, review, test, or 
 - Treat an automation timeout as the end of that invocation only. Preserve useful logs, findings,
   and completed phases, then resume from the first unfinished area instead of restarting the whole
   scope.
-- Keep every iteration evidence-producing: a smaller verified slice, a resolved finding, a new
-  measurement, or a recorded blocker. If implementation work goes two hours without a PR-ready
-  checkpoint, excluding a single required command that is still making progress, re-scope to
-  the next smaller independently correct slice and record why in `HANDOFF.md`.
+- Keep every iteration evidence-producing: an implemented and owner-tested portion of the same
+  capability, a resolved root-cause class, a new measurement, or a recorded blocker. If roughly
+  eight active hours pass without a compiling owner-tested checkpoint, audit the dominant cost and
+  redirect it. If roughly 24 active hours pass without a consumer-usable result or substantial
+  implementation progress, re-evaluate the capability boundary. The correction may be to combine a
+  prematurely separated producer and consumer; do not automatically create a smaller pull request.
 - When a reviewer finds a bug, audit the complete diff for the same root-cause class and fix that
   class in one pass. If the conditionally required final review finds any issue requiring another
   non-trivial change, stop the local patch loop, reopen the closure matrix, identify the missed
   invariant, and redesign or re-split the pull request before continuing.
 
-After each merge, perform one bounded retrospective before starting the next branch:
+After each consumer capability, or after a review/CI/merge incident that exposed a reusable process
+problem, perform one bounded retrospective:
 
 - inspect the final review findings and dispositions, CI and local-check failures, merge or
   worktree friction, scope surprises, and commands whose names overstated or understated their
   actual coverage;
 - distinguish reusable repository knowledge from one-off execution conditions and preferences;
 - for each reusable lesson, add or strengthen the smallest rule, checklist item, regression test,
-  or automation guard in a separate governance or automation slice, or record the exact queued
-  improvement and trigger in `HANDOFF.md` when it cannot be taken immediately; and
+  or automation guard when its value exceeds its maintenance cost, or queue it with an exact trigger;
+  do not create a governance pull request for every ordinary finding; and
 - keep the evidence in the merged pull request and checks. Do not rewrite the merged branch, create
   a retrospective-only handoff pull request, or mix the improvement into an unrelated product
   slice.
@@ -327,7 +368,7 @@ After each merge, perform one bounded retrospective before starting the next bra
 ## Verification timing and review convergence
 
 Classify the changed surface before choosing verification. Verification is evidence for a coherent
-slice, not an edit-loop ritual.
+capability or internal checkpoint, not an edit-loop ritual.
 
 - A documentation/specification/HANDOFF-only change uses `git diff --check` and the applicable
   Markdown, schema, link/reference, or other targeted static checks available for the changed
@@ -335,8 +376,16 @@ slice, not an edit-loop ritual.
   tests, `make check`, `make build`, `make ci`, or the full hosted check unless it also changes
   executable automation, workflow files, the Makefile, a build or toolchain input, a fixture or
   acceptance corpus, `.align-revision`, `.gitattributes`, or another executable contract boundary.
-- A pure or local implementation slice runs its focused compiler, unit, fixture, or smoke checks
-  once after the slice is coherent. Do not run the aggregate suite after each small edit.
+- A pure or local implementation checkpoint runs its focused compiler, unit, fixture, or smoke
+  checks once after it is coherent. Do not run the aggregate suite after each small edit.
+- Keep core aggregates bounded to functional integration and stable regressions that every change
+  must protect. Security, resource-limit, race, fuzz, stress, platform qualification, and mutation
+  suites use named focused commands and run when their owning boundary changes or an explicit audit
+  requires them. A focused qualification may remain outside every aggregate; its owner must name
+  the exact invocation. Benchmarks run only for a performance claim or a named measurement gate.
+- Adding a test does not imply adding it to `make ci`. Prefer the narrowest owner target that catches
+  the regression, and do not make one smoke helper invoke an unrelated qualification suite merely
+  to obtain aggregate reachability.
 - Run the full aggregate (`make ci` locally, or its applicable hosted equivalent) only at a named
   implementation/adoption gate, before a merge that changes integration behavior, after a pin or
   check-topology change, or when fresh base-tip integration evidence is required. A docs-only
@@ -344,12 +393,13 @@ slice, not an edit-loop ritual.
 - Batch related edits before verification. After review, apply all valid findings from the one
   comprehensive review in one consolidated repair, then rerun only affected verification. An
   ordinary repair implementing recorded findings does not require another review.
-- Use one comprehensive review for a pull request. A second review is allowed only when the repair
-  materially expands or changes behavior, design, specification, or governance. If that conditional
-  final review finds another non-trivial issue, stop the local repair loop and re-scope or redesign
-  the slice instead of repeating review and repair indefinitely.
-- Every pull request and `HANDOFF.md` records the exact verification commands and results, or the
-  concrete reason a check is `N/A`.
+- Use one comprehensive review for a stable capability candidate, preferably before publishing the
+  pull request. A second review is allowed only when the repair materially expands or changes
+  behavior, design, specification, or governance. If that conditional final review finds another
+  non-trivial issue, stop the local repair loop and re-scope or redesign the capability instead of
+  repeating review and repair indefinitely.
+- Every pull request records exact verification commands and results, or the concrete reason a check
+  is `N/A`. `HANDOFF.md` retains only the latest durable evidence needed to resume the capability.
 
 ## Pull request review and merge workflow
 
@@ -357,28 +407,30 @@ Review is mandatory before merging any pull request that changes code, an author
 specification, or repository governance. Opening a pull request is not completion, and an agent
 must not open and immediately merge it.
 
-1. Finish a coherent, independently mergeable implementation; do not use a draft pull request as a
+1. Finish a coherent, independently mergeable capability; do not use a draft pull request as a
    scratchpad for basic correctness work.
-2. Run the checks, evaluations, or benchmarks appropriate to the change.
-3. Open the pull request with an English title and description. Include the exact verification
-   results and any relevant baseline or measurement.
-4. Run one comprehensive review of the complete pull request diff. Apply
-   `docs/review-checklist.md` to the changed surface and use high review effort plus a fresh
-   independent adversarial reviewer for a non-trivial change. The reviewer must finish the whole
-   review and report all findings before content editing resumes.
-5. Scrutinize every finding against the code. Apply valid findings; do not apply suggestions
+2. Run the checks, evaluations, or benchmarks appropriate to the changed owners.
+3. Run one comprehensive review of the stable candidate diff. Apply `docs/review-checklist.md` to
+   the changed surface and use high review effort plus a fresh independent adversarial reviewer for
+   a non-trivial change. The reviewer must finish the assigned scope and report all findings before
+   content editing resumes. A very large change may use complementary reviewers with explicitly
+   disjoint risk areas; do not ask several reviewers to repeat the same whole-diff review.
+4. Scrutinize every finding against the code. Apply valid findings; do not apply suggestions
    blindly. Record a concrete reason for rejecting any finding. Audit each accepted root-cause
    class across the complete diff, then apply all accepted findings in one consolidated follow-up
    commit when practical.
-6. Push that follow-up and rerun affected verification. An ordinary repair that implements only
+5. Rerun affected owner verification. An ordinary repair that implements only
    findings already recorded by the comprehensive review does not require another review. Verify
    directly that the repair contains no unrelated behavior or scope.
-7. Run one final comprehensive review only when the repair substantially expands the reviewed
+6. Run one final comprehensive review only when the repair substantially expands the reviewed
    scope, changes the implementation approach, or materially changes behavior, design, an
    authoritative specification, or repository governance. Typographical corrections, narrow
    fixes implementing an existing finding, test-only corrections, and review-record metadata do
    not trigger it. This is the last review round: if it finds another issue requiring a non-trivial
    change, stop and re-scope or redesign instead of starting a repair/re-review loop.
+7. Open or update the pull request with an English title and description, the exact verification
+   results, relevant baseline or measurement, and the review envelope. Publication is a delivery
+   checkpoint, not a trigger to repeat a completed review.
 8. Merge only after required checks pass, every finding has a disposition, and no valid finding
    remains unresolved.
 
@@ -395,17 +447,17 @@ base tip; otherwise it must identify a synthetic merge or equivalent tree that c
 head and base-tip SHAs.
 
 - Record the comprehensive review envelope in a native GitHub review or dedicated pull request
-  comment. GitHub checks and statuses are check evidence only and never satisfy the review
-  requirement.
+  comment after publication, including when the review happened before the pull request existed.
+  GitHub checks and statuses are check evidence only and never satisfy the review requirement.
 - When the conditional final review is required, its external record contains the same complete
   SHA-bound envelope, finding list, and dispositions as the initial comprehensive review.
 - Pull request descriptions, reviews, comments, checks, and statuses are non-content metadata.
   Recording them must not modify the branch or trigger another review cycle.
 - A repair push does not invalidate the comprehensive review merely because its head SHA changes.
   Bind the recorded findings to their dispositions and repair commit, inspect the final delta for
-  unrelated changes, and rerun affected checks. Require the one final review only under step 7.
+  unrelated changes, and rerun affected checks. Require the one final review only under step 6.
 - A base-tip change requires fresh integration check evidence. It requires another review only
-  when its effect meets one of step 7's substantial or material change triggers.
+  when its effect meets one of step 6's substantial or material change triggers.
 
 A pull request is merge-ready when it has the comprehensive review envelope, every finding has a
 recorded disposition, any required one-time final review is clean, required checks pass for the

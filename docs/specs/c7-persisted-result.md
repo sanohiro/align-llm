@@ -1,10 +1,10 @@
 # C7-PersistedResult: owned verification result and artifact verification
 
-Status: DESIGN GATE. No C7 implementation is authorized by this document until this design has
-been independently reviewed and merged.
+Status: reviewed design plan of record; implementation remains blocked on the named Align and
+platform prerequisites. Section 12 defines the consumer-complete delivery boundary.
 
 This document is the plan of record for the first C7 consumer named by
-`docs/specs/roadmap.md`. It defines a deliberately small vertical slice: decode one declared
+`docs/specs/roadmap.md`. It defines a vertical capability: decode one declared
 verification input into an owned record, let the input document and all borrowed views expire,
 publish one canonical result artifact, reload that artifact, and verify its value with an
 independent algorithm-testing gate. It does not define a general property-testing framework or
@@ -19,7 +19,7 @@ implementation interface.
 
 ### 1.1 Goal
 
-The slice proves all of the following in one reproducible client path:
+The capability proves all of the following in one reproducible client path:
 
 1. A JSON input is decoded into a declared record whose retained text fields are owned
    `string` values, not borrowed `str` views.
@@ -33,7 +33,7 @@ The slice proves all of the following in one reproducible client path:
 
 The primary C7-PersistedResult metric is a passing lifetime-and-integrity gate: all required
 ownership, wire, malformed-input, invariant, and differential cases pass, including the source
-deletion case and the intentionally mutated upper-bound case. The slice makes no speed claim.
+deletion case and the intentionally mutated upper-bound case. The capability makes no speed claim.
 
 ### 1.2 In scope
 
@@ -41,8 +41,8 @@ deletion case and the intentionally mutated upper-bound case. The slice makes no
 - One input record and one persisted result record in §4.
 - The fixed `bounded-bucket-v1` algorithm in §5.
 - Canonical JSON, SHA-256 identity, deterministic validation, and failure behavior in §§6–9.
-- A checked-in deterministic acceptance runner, a focused Make target, and its aggregate topology
-  adoption in §12.
+- Checked-in bounded functional and focused qualification runners, with aggregate admission decided
+  by measured cost and the policy in §12.
 - Request 9 adoption evidence for the exact direct owned fields used by these records.
 
 ### 1.3 Explicitly out of scope
@@ -60,8 +60,8 @@ deletion case and the intentionally mutated upper-bound case. The slice makes no
 - Atomic publication, exclusive creation, no-replace rename, crash recovery, or concurrent
   same-path writers. The current `std.fs.write_file` whole-file boundary is used with the limits
   stated in §9. Request 14 remains a separate publication capability.
-- A benchmark claim or performance threshold. A later named C7 benchmark slice owns that work;
-  this slice records no elapsed time in the artifact and must not be used to claim a speedup.
+- A benchmark claim or performance threshold. A later claim-specific benchmark owns that work;
+  this capability records no elapsed time in the artifact and must not be used to claim a speedup.
 
 ### 1.4 Gate statement
 
@@ -74,8 +74,9 @@ The C7-PersistedResult adoption gate passes only when:
 - the deterministic boundary corpus, generated differential corpus, malformed-byte corpus, and
   artifact-mutation corpus all produce their exact statuses and errors;
 - a temporary source mutation that changes the upper-bound comparison is detected by the gate;
-- focused, per-unit, hosted, capable, and aggregate checks cover the new target according to the
-  topology contract; and
+- focused and per-unit checks cover the changed owners, the qualification command covers the full
+  algorithm-testing corpus, and one aggregate integration run passes without requiring that full
+  corpus to become a permanent aggregate dependency; and
 - the acceptance environment is the minimum pinned Align environment named in §11.
 
 An artifact with a semantic `FAIL` is a valid persisted value but is not a passing verification
@@ -114,25 +115,24 @@ The first consumer depends on these exact conditions:
 | `.align-revision` and fresh compiler topology | Updated only after the common topology design/implementation prerequisites, then verified through `make ci` | No C7 implementation or adoption evidence may use an unpinned newer sibling checkout. |
 
 Request 9 remains `PROPOSED` and is already `Blocking: yes` in its register entry. The lifecycle
-transition from `Blocking: no` to `Blocking: yes` is recorded by the C7-D change that lands this
-design and the synchronized Request 9 metadata together; it names C7-PersistedResult
-implementation/adoption as the blocked slice while leaving C7-D design, fixture design,
-documentation, and independent review independent. Request 9 is therefore a current blocker for
-C7-A/C7-I1 and later adoption work, not for this design gate. No compatibility layer or
-hypothetical API is permitted.
+transition from `Blocking: no` to `Blocking: yes` was recorded with this design and the synchronized
+Request 9 metadata; it names C7-PersistedResult implementation/adoption as the blocked consumer
+while leaving independent platform work available. Request 9 is therefore a current blocker for
+the product capability, not for maintaining this design. No compatibility layer or hypothetical
+API is permitted.
 
 ### 2.3 Source-of-truth ledger
 
 | Decision | Authoritative source | Required agreement |
 | --- | --- | --- |
 | Roadmap purpose and C7 ordering | `docs/specs/roadmap.md` §C7 | This document refines only the named first consumer and does not advance C6. |
-| Algorithm-verifier categories | `docs/specs/align-llm.md` §10.4 | The first slice implements deterministic property-like generation, differential comparison, invariant checks, boundary checks, and a mutation check; generic fuzz/benchmark infrastructure remains deferred. |
+| Algorithm-verifier categories | `docs/specs/align-llm.md` §10.4 | The qualification runner implements deterministic property-like generation, differential comparison, invariant checks, boundary checks, and a mutation check; generic fuzz/benchmark infrastructure remains deferred. |
 | Owned JSON field formation and Move behavior | Align Request 9 and the shipped Align compiler/tests at its adoption commit | C7 uses no unshipped field shape and does not copy Request 9's implementation into align-llm. |
 | JSON lexical grammar and escaping | Request 7's merged Align design/implementation | C7 golden vectors are consumers of that grammar, not a second grammar. |
 | Ordinary file reads/writes and errno mapping | `../align/docs/guide/13-std-os.md` and shipped `std.fs` | C7 uses `read_file` and `write_file`; it claims neither bounded read allocation nor atomic publication. |
 | SHA-256 and lowercase hex | shipped `std.crypto.sha256` and `std.encoding.hex_encode` | The implementation uses the standard-library operations; it does not self-host a digest. |
-| Make aggregate topology | `docs/specs/check-gate-topology.md`, `Makefile`, and its identity-bound oracle | Adding the focused target requires updating the Make list, topology oracle, focused runner, and any affected baseline in one implementation slice. |
-| Project continuity | `HANDOFF.md` | The active blocker, exact next step, and verification evidence are updated after every material design change. |
+| Make aggregate topology | `docs/specs/check-gate-topology.md`, `Makefile`, and its identity-bound oracle | Focused qualification remains outside aggregates. If measured evidence admits the bounded functional smoke, update the Make list, topology oracle, runner, and affected baseline together. |
+| Project continuity | `HANDOFF.md` | Record durable capability checkpoints, the active blocker, exact next step, and latest relevant verification without duplicating transient PR evidence. |
 
 ## 3. Public contract ledger
 
@@ -506,8 +506,9 @@ writers. Those are explicit unsupported caller conditions, not silently accepted
 `verify_file` is read-only and never removes a malformed artifact.
 
 This limitation is acceptable for the first local fixture consumer because the adoption runner owns
-a fresh temporary directory and serializes one result per destination. A later artifact-publication
-slice must adopt the reviewed exclusive-create/no-replace surface before making stronger guarantees.
+a fresh temporary directory and serializes one result per destination. A later
+artifact-publication capability must adopt the reviewed exclusive-create/no-replace surface before
+making stronger guarantees.
 
 ## 8. Deterministic validation and error precedence
 
@@ -612,15 +613,18 @@ this slice; each is `N/A` with this reason rather than an omitted decision.
 ### 9.4 Acceptance-runner process boundary
 
 The algorithm-testing gate is deliberately different from the product-process boundary: the
-Python 3.12 acceptance runner is an external test harness and launches only the compiler and the
-temporary mutated product executable. The focused target has a `build` prerequisite and resolves
-the compiler and product paths before any temporary `cwd` change, so the runner takes no
-user-supplied arguments:
+Python 3.12 acceptance harness launches only the compiler and product executables. The bounded
+functional smoke and full qualification runner have `build` prerequisites and resolve compiler and
+product paths before any temporary `cwd` change, so neither takes user-supplied arguments:
 
 ```text
 persisted-result-smoke: build
   -> resolve the selected compiler at the repository root
   -> ./scripts/run-persisted-result-smoke "<selected-compiler>" "<absolute-project-root>/main"
+
+persisted-result-qualification: build
+  -> resolve the selected compiler at the repository root
+  -> ./scripts/run-persisted-result-qualification "<selected-compiler>" "<absolute-project-root>/main"
 ```
 
 The resolution step follows the existing repository selection order at the repository root:
@@ -631,15 +635,17 @@ selector only; it is never passed to a child whose working directory changes, an
 allowed to rediscover a compiler from the temporary tree. A failed resolution is a harness error
 before any temporary source or product child starts.
 
-When this hosted-compatible target runs inside the Section 9 capable aggregate, that ordinary
-selection is replaced by the controller-owned `/tools/fresh-alignc` launcher. The runner must start
+If measured evidence admits the bounded functional smoke to the Section 9 capable aggregate, its
+ordinary selection is replaced by the controller-owned `/tools/fresh-alignc` launcher. The
+qualification target remains focused and may use the same fresh profile when explicitly invoked.
+Both runners must start
 every child with `close_fds=True, pass_fds=()`; it must not resolve a sibling pathname, `sys.executable`,
 or a host compiler from the temporary root. The mutation cases still pass the staged launcher as the
 explicit compiler argv element, and the launcher opens the authenticated read-only
 `/tools/fresh-descriptor`, `/tools/fresh-guard`, and compiler/archive bundle. The non-fresh hosted
 profile retains the explicit real-path rule above.
 
-For each mutation case the runner creates one `mkdtemp` root and preserves the repository source
+For each qualification mutation case the qualification runner creates one `mkdtemp` root and preserves the repository source
 layout below it: `<temporary-root>/src/main.align`, the reachable `src/*.align` modules, and the
 temporary output remain in their corresponding relative locations. It replaces exactly one UTF-8
 byte pattern in `<temporary-root>/src/persisted_result.align` (`else if raw < upper_bound` to
@@ -747,17 +753,17 @@ must fail read-only. Existing destination bytes are compared before and after in
 
 ### 10.4 Property, differential, invariant, fuzz, and benchmark classifications
 
-| C7 category | First-slice treatment | Gate evidence |
+| C7 category | Capability treatment | Gate evidence |
 | --- | --- | --- |
 | Property-based testing | Deterministic generated domain corpus, seed and cardinality fixed in §10.1 | 256 PASS + 32 FAIL reference comparisons |
 | Differential testing | Python reference calculation is independent of Align implementation | Per-case observed/status/diagnostic and digest comparison |
 | Invariant checking | `verify_file` recomputes content identity, bounded bucket, status, and diagnostic | Result mutation corpus and standalone verifier |
-| Fuzzing | Deterministic byte mutations of valid input/result fixtures; no coverage-guided or unbounded campaign | Malformed/mutation corpus in §10.3 |
+| Fuzzing | Qualification-only deterministic byte mutations of valid input/result fixtures; no coverage-guided or unbounded campaign | Malformed/mutation corpus in §10.3 |
 | Overflow/boundary check | Pre-addition range validation and exact lower/upper equality cases | Boundary table, max operand case, invalid range cases |
-| Complexity/performance check | N/A for this slice; no performance-sensitive implementation or claim | A later C7 benchmark design must add baseline, hardware, sample count, and command before claiming regression/speed |
+| Complexity/performance check | N/A for this capability; no performance-sensitive implementation or claim | A later C7 benchmark design must add baseline, hardware, sample count, and command before claiming regression/speed |
 
 The runner may record wall-clock duration for diagnostics, but it must not persist it, compare it,
-or describe it as a performance result. A future benchmark slice must update this document or
+or describe it as a performance result. A future claim-specific benchmark must update this document or
 supersede this section before adding a threshold.
 
 ## 11. Compatibility and adoption environment
@@ -796,56 +802,44 @@ portable binary layout or compare compiler descriptors. Per-unit and whole-progr
 prove the imported `persisted_result` interface is the same as the implementation unit on each
 declared target.
 
-## 12. Implementation and acceptance slices
+## 12. Capability delivery and acceptance ownership
 
-The following order prevents a later slice from being consumed prematurely:
+The historical C7-D/P/A/I1/I2/I3/G labels remain useful references for prerequisites and closure
+cells, but they are not required branch or pull request boundaries. Delivery has two operational
+boundaries:
 
-1. **C7-D — this design gate.** Merge this document and the synchronized Request 9 lifecycle
-   update after the ledger/prose/matrix consistency pass and one fresh independent adversarial
-   design review. No source or Make behavior changes.
-2. **C7-P — target platform profiles.** Before any C7 evidence is claimed on aarch64 Linux or
-   aarch64 macOS, merge that target's reviewed platform-profile design and implementation, rebuild
-   the sibling compiler/runtime at the pinned revision, and pass the target-local profile gate. The
-   x86_64 Section 9 design and its checks cannot satisfy this slice by substitution.
-3. **C7-A — Align Request 9 adoption.** After Align Request 9 reaches `ALIGN_MERGED`, and after the
-   applicable platform profile has reached its named merged state, rebuild the sibling release
-   compiler/runtime, update `.align-revision`, add the exact owned-record syntax and lifetime
-   adoption fixture, and run the Request 9 named gate plus the Section 9 fresh `make ci` command
-   inside the image-owned supervisor. The fixed image-attested toolchain manifest is selected by
-   the image, while the supervisor-signed run capsule binds the checked-out head and worker digest;
-   caller-supplied manifest, digest, or run-capsule overrides are rejected. `ci` must invoke the
-   fixed bootstrap and must not be replaced by a direct `align-build` or sibling compiler path. If
-   that gate fails, C7 implementation remains paused.
-4. **C7-I1 — owned records and pure verifier.** Add `src/persisted_result.align` with the exact
-   record declarations, decode/encode lifetime boundary, digest identity, algorithm, and
-   `persist_file`/`verify_file`. Add focused module and per-unit checks. This slice must not add
-   property generation or Make topology yet unless the acceptance fixture is already coherent.
-5. **C7-I2 — CLI vertical integration.** Add the two `main` dispatch branches, exact summary output,
-   and CLI/error smoke. Keep provider and existing result formats unchanged.
-6. **C7-I3 — algorithm-testing adoption.** Add the independent runner, fixed boundary/malformed/
-   mutation fixtures, deterministic generated corpus, and the `persisted-result-smoke` Make target.
-   The post-C7 topology is exact: `HOSTED_CHECK_TARGETS` is
-   `gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke
-   test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke
-   prompt-score-smoke prompt-score-prefix-smoke persisted-result-smoke`; `CAPABLE_ONLY_CHECK_TARGETS`
-   remains `eval-coding baseline-check`; and `SERIAL_CHECK_AGGREGATES` remains
-   `hosted-checks capable-checks ci`. `persisted-result-smoke` is hosted-compatible and is the
-   final hosted focused target, with the exact Make prerequisite `persisted-result-smoke: build`.
-   `hosted-checks` runs the hosted list after filtering
-   `gate-topology-check` in one option-cleared `-j1` child Make; `capable-checks` runs that same
-   hosted list followed by the two capable-only targets in one such child; the supervisor-owned
-   `make ci` child invokes the fixed Section 9 bootstrap with the image attestation and per-head run
-   capsule, builds and stages the pinned compiler from the separately validated sibling Align tree,
-   and then runs only `capable-checks` through the fresh descriptor boundary. The topology oracle,
-   aggregate graph, focused target list, and any identity-bound baseline are updated together.
-7. **C7-G — named adoption gate.** Run `make persisted-result-smoke`, `make check`, `make build`,
-   `make hosted-checks`, `make capable-checks`, and the full Section 9 supervisor-attested `make ci`
-   with its image and per-head run identities; repeat the focused
-   adoption target on all three required native Align environments; record the final
-   head/base/merge-base/integration identity and all results in the pull request and HANDOFF.
+1. **C7-P — target platform profiles.** A platform profile is independently installable and has a
+   distinct host-image failure domain. Before C7 evidence is claimed on aarch64 Linux or aarch64
+   macOS, that target's reviewed profile must be implemented, the sibling compiler/runtime rebuilt
+   at the pinned revision, and the target-local profile gate passed. The x86_64 Section 9 profile
+   cannot substitute for another target.
+2. **C7-PERSISTED-RESULT — complete product consumer.** After Request 9 is `ALIGN_MERGED` and the
+   applicable platform profile is available, adopt the exact owned-record surface and implement the
+   records, decode/encode lifetime boundary, digest identity, algorithm, `persist_file`/
+   `verify_file`, both CLI branches, stable summaries, persistence, and functional end-to-end smoke
+   in one capability branch. The adoption fixture is an internal checkpoint of this consumer: if it
+   fails against the shipped compiler, stop the dependent implementation without merging a dormant
+   adoption-only change. The Section 9 image selects the fixed toolchain manifest and its signed run
+   capsule binds the checked-out head and worker digest; caller overrides remain rejected.
 
-Every implementation slice stays below roughly 1,000 changed hand-written lines unless its plan
-update records why it cannot be split. C7 does not modify C6 code or consume C6's blocked records.
+The capability owns two deliberately different test classes:
+
+- `persisted-result-smoke` is the bounded functional path: valid ownership/lifetime transfer,
+  canonical encode/decode, source deletion, CLI success, semantic `FAIL`, and representative
+  malformed input. It may join the core aggregate only after measured runtime and maintenance cost
+  show that it remains a small stable integration regression.
+- `persisted-result-qualification` owns the complete boundary corpus, generated differential
+  corpus, artifact mutation, intentionally mutated source, target matrix, and any later fuzz,
+  stress, or benchmark work. The capability pull request runs it, and its owning boundary runs it
+  when changed, but it remains outside routine hosted/capable aggregates. Performance checks run
+  only when making a performance claim.
+
+At the named capability gate, run the focused module/per-unit checks, both commands above, the
+applicable platform-profile acceptance, and one full Section 9 supervisor-attested `make ci` after
+integration. Record exact results in the pull request; `HANDOFF.md` retains only the durable outcome
+and next capability. Update the topology oracle and identity-bound baseline only if the bounded
+functional smoke is actually admitted to an aggregate. C7 does not modify C6 code or consume C6's
+blocked records.
 
 ### 12.1 Planned file ownership
 
@@ -853,19 +847,20 @@ update records why it cannot be split. C7 does not modify C6 code or consume C6'
 | --- | --- | --- |
 | `src/persisted_result.align` | C7 implementation | Records, validation, digest, algorithm, file orchestration, ownership comments |
 | `src/main.align` | CLI integration | Exact dispatch, summary, semantic-Fail exit mapping |
-| `scripts/run-persisted-result-smoke` | C7 acceptance owner | Independent reference, generated/malformed/mutation cases, source deletion |
+| `scripts/run-persisted-result-smoke` | C7 functional owner | Bounded CLI, lifetime, canonical artifact, source deletion, semantic-Fail, and representative malformed cases |
+| `scripts/run-persisted-result-qualification` | C7 qualification owner | Independent reference, full generated/boundary/malformed/mutation corpus, target matrix, and optional claim-specific stress/benchmark cases |
 | `eval/` C7 fixtures | Acceptance owner | Canonical boundary inputs/expected bytes only after adopted encoder behavior is fixed |
 | `docs/examples/c7-persisted-result-syntax.align` | Syntax/adoption owner | Declarations and calls separately; parser-only check |
 | `docs/examples/c7-persisted-result-lifetime.align` | Request 9 adoption owner | Direct source-owner expiry before every retained field read/move; parser/runtime adoption fixture |
-| `Makefile` | Check-topology owner | Focused target and aggregate inclusion |
-| `scripts/check-gate-topology` | Topology oracle owner | Expected target/list identity and self-tests |
-| `docs/specs/check-gate-topology.md` | Topology design owner | Public graph and baseline implications |
+| `Makefile` | Check-topology owner | Focused commands; aggregate inclusion only after the bounded-smoke admission decision |
+| `scripts/check-gate-topology` | Topology oracle owner | Update only if aggregate membership changes |
+| `docs/specs/check-gate-topology.md` | Topology design owner | Record the admission decision and baseline implications when applicable |
 | `docs/align-development.md` | Developer-guide owner | Command and adoption instructions |
-| `HANDOFF.md` | Continuity owner | Blocker, branch, exact next step, and evidence after material changes |
+| `HANDOFF.md` | Continuity owner | Durable capability checkpoint, blocker, next action, and latest relevant evidence |
 
 The C7 implementation must not add an Align request record inside the product implementation
 commit. A newly discovered Align gap is recorded separately in `docs/align-requests.md` before
-the dependent slice is attempted.
+the dependent capability consumes it.
 
 ## 13. Closure matrix
 
@@ -909,17 +904,17 @@ not a missing owner.
 | Same-process operation pairs | C7 module/file boundary | §9.2 matrix is explicit; no shared mutable state | independent-destination/read-only pair smoke |
 | Same-output concurrent processes | N/A/unsupported | No lock or race guarantee | documented unsupported caller case |
 | CLI option/environment isolation | `src/main.align`, runner | No runtime option/env can alter result | environment perturbation smoke |
-| Make target graph | Make/topology owner | Focused target appears in the authoritative hosted/capable graph and oracle | `make gate-topology-check`, topology self-test |
-| Aggregate-plus-focused invocation | existing Make topology owner | Aggregate remains sole top-level goal; focused target is separate | topology checker aggregate coexistence case |
+| Make target graph | Make/topology owner | Qualification stays focused; bounded smoke enters the authoritative graph only after the §12 admission decision | focused commands; topology self-test only if membership changes |
+| Aggregate-plus-focused invocation | existing Make topology owner | Aggregate remains sole top-level goal; focused qualification is invoked separately | topology checker coexistence case only if functional smoke joins the graph |
 | Per-unit/imported interface | Align compiler adoption + C7 module | Imported public surface and whole-program build agree | `alignc check-per-unit`, `make check`, `make build` |
 | Generic monomorphization | N/A: no generic C7 public type/function | No generic implementation or acceptance claim | N/A with this reason |
 | Structural Align compiler cache identity | N/A: C7 owns no compiler/cache artifact | Request 9/Align owns descriptor identity; C7 uses no application cache | N/A with this reason; adoption compiler checks remain required |
 | Artifact schema/wire identity | C7 plan and module | Field order/types/version/content digest agree | canonical golden vectors, schema mutation |
 | Producer-owned inspection fields | C7 module | Every persisted field is constructed from explicit input or deterministic algorithm; no reflection/source read | producer table below and independent reference comparison |
 | Minimum tool/platform compatibility | adoption Make/CI owner | Pin and test every named native environment; no supplementary host substitutes for a required target | named environments in §11 and hosted evidence |
-| Performance benchmark | N/A for first slice | No threshold or speed claim | Later C7 benchmark design required before activation |
+| Performance benchmark | N/A for this capability | No threshold or speed claim | Later C7 benchmark design required before a performance claim |
 | Syntax examples | docs/adoption owner | Declaration and positional-call examples parse separately | `alignc fmt docs/examples/c7-persisted-result-syntax.align` |
-| Milestone ordering | C7 design owner | Request 9 adoption precedes implementation; runner/topology follows coherent CLI | PR boundaries and HANDOFF checkpoint |
+| Milestone ordering | C7 design owner | Shipped Request 9 surface and platform profile precede dependent implementation; internal checkpoints remain on the capability branch | capability commits and focused acceptance evidence |
 
 ### 13.1 Producer-owned field table
 
@@ -972,12 +967,12 @@ the PR description:
    as shipped.
 4. Wire check: independently expand the field order, optional omission, digest preimage, NUL, and
    semantic-failure examples; do not derive an expected artifact by parsing the implementation.
-5. Gate-topology check: identify the exact future Make list/oracle files before implementation so a
-   focused target cannot be added without its aggregate and topology update.
-6. Review check: obtain one fresh independent adversarial design review of the complete document;
-   resolve valid findings in one consolidated design repair before implementation starts.
+5. Gate-topology check: keep qualification outside the aggregate; if the bounded smoke is admitted,
+   identify and update the exact Make list, oracle, and identity-bound baseline together.
+6. Review check: the merged design review remains historical evidence. Review the stable product
+   capability once with its implementation and resolve valid findings in one consolidated repair.
 
-The design PR itself is documentation/specification-only. Its verification is `git diff --check`
-plus targeted Markdown/link assertions. Source tests, `make check`, `make build`, `make ci`, and
-the C7 acceptance target are `N/A` until the implementation/adoption slices change an executable
-contract boundary. The exact N/A reason must remain in the PR description and HANDOFF.
+The original design change was documentation/specification-only. Future documentation-only updates
+use `git diff --check` plus targeted Markdown/link assertions. Source tests remain `N/A` until the
+consumer capability changes an executable contract boundary; then its owner checks, both C7
+commands, applicable platform evidence, and one final aggregate integration run are required.

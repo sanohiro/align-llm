@@ -7,8 +7,10 @@ the dependency clearly").
 
 **How to use this document.** `align-llm` is a *driver*: its purpose is to surface genuine Align
 needs, not to force-build around them. Each request below is meant to be implemented **in the
-Align repository** (`../align`), in Align's own design discipline (author a design spec under
-`docs/impl/std-design/`, then implement + test), and can be handed directly to Align's own tooling.
+Align repository** (`../align`), under the current `../align/CLAUDE.md` delivery and test rules, and
+can be handed directly to Align's own tooling. Update the relevant design when the request changes a
+public contract, but do not infer a separate design pull request or one pull request per register
+row; Align may deliver mutually dependent prerequisites as one consumer-complete capability wave.
 `align-llm` does not work around these; it waits for the Align capability and then exercises it as a
 real client.
 
@@ -23,7 +25,7 @@ Every new or reopened request must begin with this metadata:
 Status: PROPOSED | ACCEPTED | IMPLEMENTING | ALIGN_MERGED | ALIGN_LLM_VERIFIED | CLOSED
 Priority: critical | high | medium | low
 Blocking: yes | no
-Blocked gate or slice: <roadmap gate/slice, or "none">
+Blocked gate or slice: <consumer capability or acceptance cell, or "none">
 Independent work that may continue: <work that does not assume the requested surface>
 Resume condition: <observable Align and align-llm gate>
 Align commit or pull request: <named commit/PR, or "pending">
@@ -37,23 +39,32 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The next transition away from the currently pinned Align commit
-`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` has one Linux x86_64 repository-wide prerequisite. A
-reviewed `docs/specs/check-gate-topology.md` fresh-compiler design update and its dependent
-implementation must both merge before any Linux x86_64 request changes `.align-revision`, runs
-verification against a new compiler, or advances to `ALIGN_LLM_VERIFIED`. This augments every
+`d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` has one Linux x86_64 repository-wide prerequisite. The
+reviewed `docs/specs/check-gate-topology.md` fresh-compiler design is merged; its FRESH-WORKER and
+FRESH-IMAGE capabilities must both merge before any Linux x86_64 request changes `.align-revision`,
+runs verification against a new compiler, or advances to `ALIGN_LLM_VERIFIED`. This augments every
 lifecycle entry below, including older requests whose local resume condition only names their
 feature-specific adoption gate. A consumer whose required acceptance environment is outside this
 profile must also name and merge a reviewed platform profile and implementation; the x86_64
 topology is not cross-platform evidence.
 
-A blocking request pauses only its dependent gate or slice. Record that pause and its resume
+A blocking request pauses only its dependent consumer capability. Record that pause and its resume
 condition in `HANDOFF.md`; continue independent work when it remains valid. Do not implement a
 workaround or write code against a proposed surface. A non-blocking request must name its first
 expected consumer and becomes blocking if that consumer is reached before `ALIGN_MERGED`.
 
-After Align merges the capability, rebuild its release compiler and runtime, update
-`.align-revision`, and run the original acceptance gate through `make ci`. Close the request only
-after this file records both Align's response and align-llm's real-client verification.
+After Align merges the capability, adopt all merged requests required by the next consumer in one
+pin wave when practical: rebuild the release compiler/runtime once, update `.align-revision` once,
+run every request's original focused acceptance target, then run one final `make ci`. Close each
+request only after this file records Align's response and its real-client verification.
+
+Older entries use terms such as “adoption slice,” “enabling slice,” or “separate target” to name
+dependency and acceptance cells. Those terms do not mandate separate align-llm branches or pull
+requests. Unless an entry identifies a distinct external/platform failure domain, perform its
+adoption target as an ordered checkpoint on the consumer capability branch and review it with the
+consumer that first uses the shipped surface. A focused adoption or qualification target does not
+join routine hosted/capable aggregates merely because it is important; run it on pin changes and
+when its owning boundary changes.
 
 > **Status (2026-08-01): Requests 1 and 3 are CLOSED; Request 2 is ALIGN_MERGED; Requests 4, 5, 6, 7, 8, and 9 are PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
@@ -487,7 +498,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C1 streaming provider acceptance
 Independent work that may continue: non-streaming provider calls, token counting, common result persistence, C2 preparation
-Resume condition: after ALIGN_MERGED, a pinned Align compiler decodes valid chunked SSE and rejects truncated or malformed framing, and align-llm's provider stream smoke passes; if Request 5 reached ALIGN_MERGED first, the Request 4 adoption slice must pass the combined bodyless/chunk-cap/trailer-guard/aggregate-storage gate; if both capabilities ship together, Request 5's bounded-response adoption owns that gate; this request cannot reach ALIGN_LLM_VERIFIED until the applicable gate passes
+Resume condition: after ALIGN_MERGED, the next provider-consumer prerequisite wave pins the shipped compiler with any other ready prerequisites, decodes valid chunked SSE, rejects truncated or malformed framing, and passes align-llm's provider stream smoke; if Request 5 reached ALIGN_MERGED first or both ship together, that wave also passes the combined bodyless/chunk-cap/trailer-guard/aggregate-storage gate before either request reaches ALIGN_LLM_VERIFIED
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -604,8 +615,8 @@ commits. If Request 4 ships first, Request 5 owns that same combined gate. The r
 first need not be reopened; the second request's lifecycle record must name both Align commits and
 the combined align-llm verification. If both capabilities ship in one Align commit or pull request,
 or both register entries advance to `ALIGN_MERGED` together, Request 5's bounded-response adoption
-slice owns the combined gate; neither request may reach `ALIGN_LLM_VERIFIED` until that slice names
-the joint delivery and records the combined verification.
+checkpoint owns the combined gate; neither request may reach `ALIGN_LLM_VERIFIED` until that
+checkpoint names the joint delivery and records the combined verification.
 
 ### Current align-llm evidence
 
@@ -624,7 +635,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6 provider-proposal slice and real-provider prompt-optimizer gate
 Independent work that may continue: C6 artifacts, renderer, pure scorer, activation lifecycle, and deterministic A/B evaluator
-Resume condition: after ALIGN_MERGED, a separate bounded-response adoption slice pins the shipped Align release, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and make ci; if Request 4 reached ALIGN_MERGED first or both capabilities ship together, that slice also owns and must pass the combined bodyless/chunk-cap/trailer-guard/aggregate-storage gate before Request 5 reaches ALIGN_LLM_VERIFIED, and for a joint delivery neither request may reach ALIGN_LLM_VERIFIED first; only then does the C6 provider-proposal slice resume
+Resume condition: after ALIGN_MERGED, the C6-MEASURED prerequisite wave pins the shipped Align release with any other merged prerequisites, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and one final make ci; if Request 4 reached ALIGN_MERGED first or both capabilities ship together, the same wave also owns and must pass the combined bodyless/chunk-cap/trailer-guard/aggregate-storage gate before Request 5 reaches ALIGN_LLM_VERIFIED, and for a joint delivery neither request may reach ALIGN_LLM_VERIFIED first; only then does the provider-proposal cell resume
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -1336,15 +1347,16 @@ second owner for scanner eligibility.
 
 ### align-llm adoption gate
 
-After `ALIGN_MERGED`, align-llm owns a separate adoption slice, but it must not update
+After `ALIGN_MERGED`, align-llm owns a consumer adoption checkpoint, but it must not update
 `.align-revision`, run a pin-changing verification, or advance this request to
-`ALIGN_LLM_VERIFIED` until the common fresh-compiler check-topology design and its dependent
-implementation have both merged. That implementation must make canonical `make ci` build and use
-the pinned compiler through the reviewed fresh-build, identity, process, timeout, cache, and
-cleanup contract; this request must consume that shipped path rather than recreate it. The
-adoption then release-builds and pins the shipped Align revision, adds
-`json-scan-row-ownership-adoption` to the `Makefile`, and includes that target in `make ci`. The
-target runs
+`ALIGN_LLM_VERIFIED` until the merged Section 9 contract's FRESH-IMAGE and FRESH-WORKER capabilities
+have both merged. They must make canonical `make ci` build and use the pinned compiler through the
+reviewed fresh-build, identity, process, timeout, cache, and cleanup contract; this request must
+consume that shipped path rather than recreate it. The
+adoption may share one pin update with the other merged prerequisites needed by the same consumer.
+It release-builds and pins the shipped Align revision and adds the focused
+`json-scan-row-ownership-adoption` target without adding that qualification to routine aggregates.
+The target runs
 `scripts/run-json-scan-row-ownership-adoption-smoke` over
 `eval/fixtures/json-scan-row-ownership-adoption/`.
 
@@ -1386,7 +1398,7 @@ nonzero status, require empty stdout, and match exactly once:
 ```
 
 It rejects a panic, backtrace, or any unexpected file under the selected cache. It checks
-`owned-option.align` against the outcome selected by the adoption slice that installed the active
+`owned-option.align` against the outcome selected by the adoption checkpoint that installed the active
 `.align-revision`, then invokes `<pinned-alignc> run copy-row.align` and
 `<pinned-alignc> run decode-owned.align` in that order with the same named cache in the ordinary
 profile. In the Section 9 fresh-capable profile, those exact vectors are
@@ -1399,11 +1411,12 @@ in the ordinary profile, or with
 profile. The selected profile vector is used in both the admitted and rejected outcome branches;
 only the expected status and diagnostic differ. The initial Request 6 adoption records
 the outcome of its active compiler. If a later decoded-owner cleanup changes that outcome, the
-align-llm adoption slice that first pins the changed compiler must update both optional-fixture
+align-llm adoption checkpoint that first pins the changed compiler must update both optional-fixture
 expectations and this script in the same pull request before `.align-revision` advances. Thus the
 persistent `make ci` target never infers current behavior from the immutable Request 6 commit.
-The script removes the validated temporary directory on every exit. Only this target plus
-`make ci` may advance Request 6 to `ALIGN_LLM_VERIFIED`.
+The script removes the validated temporary directory on every exit. This focused target must pass
+before the consumer capability's one final `make ci`; together they may advance Request 6 to
+`ALIGN_LLM_VERIFIED`.
 
 ### References
 
@@ -1428,7 +1441,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: Request 7 acceptance, implementation, and align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
 Independent work that may continue: the separate benchmark-evidence design and implementation, C6 design review, Request 5 bounded-response work, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
-Resume condition: Request 7 may enter ACCEPTED only after the separate benchmark-evidence design is reviewed and merged; it may enter IMPLEMENTING only after Request 6, decoded-owner cleanup, the benchmark-input slice, and that design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, the common Linux x86_64 fresh-compiler check-topology design plus its dependent implementation both merge, the separate Request 7 topology update adding `c6-json-escape-adoption` merges, and the required immutable Git 2.45.0 compatibility image/job passes, align-llm adoption pins the shipped Align release and passes that exact target plus `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform-profile designs and implementations before they can claim adoption; this closes only the escape prerequisite
+Resume condition: Request 7 may enter ACCEPTED only after the separate Align benchmark-evidence design is reviewed and merged; it may enter IMPLEMENTING only after Request 6, decoded-owner cleanup, the benchmark-input work, and that design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, FRESH-WORKER and FRESH-IMAGE have merged, and the required immutable Git 2.45.0 compatibility image/job passes, the C6-LIFECYCLE prerequisite wave pins the shipped Align release with its other merged prerequisites, runs the focused `c6-json-escape-adoption` target outside routine aggregates, and then runs one final `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform profiles before they can claim adoption; this closes only the escape prerequisite
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -1692,7 +1705,7 @@ The implementation closure ledger for the future Align design is:
 | Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
-| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | Successor redesign is Section 9 of `docs/specs/check-gate-topology.md` on branch `agent/fresh-compiler-topology-redesign-v4`; the re-scoped design separates the image-owned supervisor/bootstrap plane from the per-reviewed-head repository worker. Implementation, fixed host image/manifest installation, baseline refresh, and align-llm verification remain pending, and every pin-changing adoption remains blocked. | Section 9 must authenticate the fixed runner-image DSSE envelope and signed per-invocation run capsule, accept only the logical request `make --no-print-directory ci`, dispatch the image-owned bootstrap directly without parsing a repository Makefile, and define the exact env-scrubbed fd-4/5/6 boundary (project root/run/image); snapshot the worker/manifest/run at fd-7/8/9, opening `scripts/fresh-align-compiler` through no-follow descriptors as an euid-owned single-link regular `0755` file bounded by `fresh_worker_max_bytes = 4194304`, and require the worker's observed project HEAD/object format to equal the signed capsule; keep the fixed image manifest independent of repository-worker digests, seal the per-head worker snapshot, open both source roots component-by-component through bounded descriptor windows, recheck directory and symlink identities, enforce fixed source/runtime/tool/Git/output/inode/process/fd/root bounds, reject noexec `/tmp`, encode attestation/probe-byte/Git object formats canonically, accept `--no-print-directory` only in the caller request while rejecting the complete other GNU Make 4.3 option matrix before dispatch, reject concurrent invocations before root creation with the worker-owned `/run/user/<uid>/align-llm-fresh/lock` and fail-closed bounded scan of the protected per-user `roots` namespace, retain separate project/Align source manifests with explicit root `.git` control and both root `target` exceptions plus project `main` exception metadata, admit the tracked contained `AGENTS.md -> CLAUDE.md` symlink with exact `null` mode fields and golden vectors, provide read-only private Git views to every normal project/baseline/eval/loop call and separate fixture views, define raw-to-staged modes for runtime and cache trees, define the schema-2 external cache-manifest wire format with the five exact Cargo prefixes and corrected semantic golden vector, authenticate a self-contained `/runtime/cc-suite` closure for the fixed C/C++ drivers and every helper/resource/header, derive authenticated linker/loader/pkg-config paths and verify the generated `main` ELF closure and byte identity, disable Python bytecode writes in aggregate and nested environments, accept only the pinned tracked `.cargo/config.toml` snapshot in phase 5, stage and authenticate `/tools/alignc` beside `/tools/libalign_runtime.a` plus `/tools/fresh-alignc` with write-once `/tools/fresh-descriptor` and `/tools/fresh-guard` files so the pinned compiler's `current_exe()` lookup works without inherited identity fds, define catchable versus uncatchable cleanup with bounded fail-closed orphan handling and exact status/error grammar, and synchronize C7's post-topology fresh `make ci` request; it must pass the redesigned Section 9 review and every named unit, fault-injection, local/hosted integration, baseline-ancestry, and cleanup regression before a later adoption changes the pin; aarch64 Linux/macOS consumers additionally require separate platform-profile designs and implementations |
+| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | The reviewed Section 9 contract in `docs/specs/check-gate-topology.md` and its wire/source-identity foundations are merged. FRESH-IMAGE owns installation and attestation of the image trust root; FRESH-WORKER owns the repository worker, Make integration, identity-bound baseline refresh, and cleanup. Every pin-changing adoption remains blocked until both capabilities merge. | Run every Section 9 named owner qualification, the installed-image end-to-end unchanged-pin aggregate, baseline ancestry checks, and cleanup evidence before worker merge or later adoption. Aarch64 Linux/macOS consumers additionally require their named platform profiles. |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -1982,26 +1995,24 @@ Align compiler/runtime tests must:
 ### align-llm adoption gate
 
 After Request 7 reaches `ALIGN_MERGED` on top of its two named shipped prerequisites, align-llm owns
-a separate adoption slice with one immutable observable gate. It release-builds and writes only the
-final Request 7 Align commit to the single `.align-revision`; the Request 6 and cleanup lifecycle
-entries retain their distinct commits. Before implementation, a separate reviewed update to
-`docs/specs/check-gate-topology.md` adds `c6-json-escape-adoption` as the final
-`HOSTED_CHECK_TARGETS` entry and names its external-history preparation; that design update merges
-first. The adoption implementation then updates the `Makefile` list, the
-`scripts/check-gate-topology` embedded oracle and self-test, and the hosted workflow through its
-canonical `make -j8 hosted-checks` aggregate. It must not append an out-of-band workflow command.
-Because `capable-checks` consumes the complete hosted list, `make ci` runs the same target. The
-adoption slice also checks in `scripts/check-git-lazy-fetch-version` as the single version-parser
+one immutable observable adoption checkpoint inside C6-LIFECYCLE. It may release-build and pin the
+final Request 7 Align commit together with other merged prerequisites needed by that consumer; the
+Request 6 and cleanup lifecycle entries retain their distinct commits. The existing C6 contract
+already owns `c6-json-escape-adoption`, so no separate align-llm design pull request is required.
+The implementation adds the focused target without placing the full qualification in
+`HOSTED_CHECK_TARGETS`; it runs on pin changes and when this boundary changes, followed by the
+capability's one final `make ci`. The same capability also checks in
+`scripts/check-git-lazy-fetch-version` as the single version-parser
 owner used by the hosted history preparation and the focused target, plus
 `eval/fixtures/c6-json-escape-adoption/scanner-align-revision` and
 `eval/fixtures/c6-json-escape-adoption/cleanup-align-revision`, each containing exactly its
-lowercase 40-hex prerequisite commit plus one newline. Both local and hosted aggregates execute the
-same adoption script. The gate requires each prerequisite lifecycle entry to equal its fixture file
+lowercase 40-hex prerequisite commit plus one newline. Direct local and hosted qualification runs
+execute the same adoption script. The gate requires each prerequisite lifecycle entry to equal its fixture file
 while Request 7's lifecycle entry equals `.align-revision`.
 
-The hosted CI checkout must make the prerequisite history available without moving the exact
+Any hosted qualification checkout must make the prerequisite history available without moving the exact
 detached Request 7 checkout. Before its first scripted inspection of that checkout, the
-adoption-slice workflow runs the checked-in `scripts/check-git-lazy-fetch-version` preflight
+qualification workflow runs the checked-in `scripts/check-git-lazy-fetch-version` preflight
 described below. The workflow's initial `git init`, remote configuration, exact validated-revision
 fetch and detach, later unshallow fetch, and every HEAD/comparator operation all use one checked-in
 wrapper around fixed `/usr/bin/git` under `env -i`, an empty `HOME`, the same system/global/XDG,
@@ -2249,19 +2260,17 @@ must reject both without executing either filter marker. Index/tree mode, path, 
 regular-file, directory, symlink, executable-bit, raw-byte, unsupported-gitlink, SHA-1, and SHA-256
 cases exercise every comparator decision. The rejected files and helpers must never execute. This
 replaces
-the current hosted workflow's depth-one-only behavior only in the future adoption slice.
+the current hosted workflow's depth-one-only behavior only in the future adoption capability.
 
 An allowed ordinary root `target/` is treated only as unrelated prior output; no acceptance command
-may execute or link an artifact from it. Before the next Linux x86_64 adoption or verification that
-changes `.align-revision`, a separate reviewed design slice must update
-`docs/specs/check-gate-topology.md` and merge, followed by a dependent implementation slice that
-makes canonical `make ci` consume the reviewed fresh-compiler path, refreshes the identity-bound
-baseline after the Makefile change, and passes its complete local and hosted acceptance matrix.
+may execute or link an artifact from it. The reviewed Section 9 update to
+`docs/specs/check-gate-topology.md` is merged. Before the next Linux x86_64 adoption or verification
+that changes `.align-revision`, FRESH-WORKER must make canonical `make ci` consume that path and
+refresh its identity-bound baseline, while FRESH-IMAGE must install and attest the host profile.
 This is a repository-wide pin-transition prerequisite, not a Request 7-only helper: Request 6,
 decoded-owner cleanup, Request 7, and any other request that would advance the x86_64 pin or claim
-`ALIGN_LLM_VERIFIED` against a new compiler must wait for both slices. A request with an aarch64 or
-macOS acceptance environment must additionally wait for its named platform-profile design and
-implementation.
+`ALIGN_LLM_VERIFIED` against a new compiler must wait for both capabilities. A request with an
+aarch64 or macOS acceptance environment must additionally wait for its named platform profile.
 The plan, rather than this request register, owns the exact public inputs, bootstrap, commands,
 statuses, timeout constants, process topology, cleanup algorithm, implementation modules, and
 regression names for building and using a fresh pinned compiler outside `ALIGN_REPO`.
@@ -2280,7 +2289,7 @@ cannot delete an unowned path or race a surviving writer. Its closure matrix mus
 every phase failure, timeout, exhaustion, and cleanup failure under both local `make ci` and the
 hosted serialized aggregate, and must name exact negative and integration tests for each cell.
 
-The fresh-compiler successor redesign is now drafted as Section 9 of
+The fresh-compiler successor redesign is merged as Section 9 of
 `docs/specs/check-gate-topology.md`. The re-scoped design separates the image-owned supervisor and
 bootstrap plane from the per-reviewed-head repository worker: the fixed image manifest authenticates
 only image tools/runtime, while a signed run capsule binds the checked-out head and current worker
@@ -2290,9 +2299,10 @@ project HEAD/object-format identity, descriptor-relative one-root admission lock
 bounded source-fd window, fail-closed orphan policy, executable-`/tmp` requirement,
 process/fd/inode/Git-object/root bounds, complete Make-option rejection, explicit output-exception
 metadata, and phase-5 Cargo-config ownership while retaining the earlier source, cache, runtime,
-output, and read-only bundle decisions. It is a new design slice on `agent/fresh-compiler-topology-redesign-v4`; no
-implementation, host image, baseline refresh, or align-llm verification may consume it until its
-new review and merge. Request 7 must consume the merged contract exactly; its separate Git 2.45.0
+output, and read-only bundle decisions. Its reviewed wire and source-identity foundations are also
+merged. FRESH-WORKER and FRESH-IMAGE must now complete their respective repository and host-profile
+capabilities before pin-changing verification consumes the contract. Request 7 must consume the
+merged contract exactly; its separate Git 2.45.0
 image and C7 non-x86 platform profiles remain independent prerequisites.
 
 The target validates all three revision files' exact encoding, disables replacement objects and
@@ -2495,8 +2505,7 @@ product slice starts only after every other separately registered JSON prerequis
 - `../align/bench/json_decode` and `../align/bench/json_soa` — clean-input parser regression
   tripwires.
 - `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — committed C6 consumer and architecture;
-  the detailed C6 design remains on its separate design branch until its prerequisite register is
-  complete.
+  the merged detailed C6 design owns the prerequisite and consumer checkpoints.
 
 ---
 
@@ -2508,7 +2517,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension, and C6c2 cannot adopt its runtime-sized declared-record result arrays until the capability is merged
 Independent work that may continue: C6c2 design and other application designs, pure codecs, renderers, scorers, activation slices, Request 5, Request 6, Request 7, and any implementation that does not construct a runtime-sized declared-record array
-Resume condition: Request 8 must reach ALIGN_MERGED at a named Align commit before its recursive extension can start; after ALIGN_MERGED at a named Align commit, rebuild both the sibling release compiler and runtime and update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged. The C6f2 consumer runs its named `c6f2-array-builder-adoption` target and `make ci`; the C6c2 enabling consumer independently runs the Request 8 subset of `c6c2-request8-adoption` and `make ci`, which may advance this request for C6c2 without requiring the later C6c2 verifier implementation or Request 10. C6c2 remains blocked on Request 10 until its separate adoption gate passes.
+Resume condition: Request 8 must reach ALIGN_MERGED at a named Align commit before its recursive extension can start; after ALIGN_MERGED, the next C6 consumer prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with any other merged prerequisites it needs after FRESH-WORKER and FRESH-IMAGE merge. C6-LIFECYCLE runs the Request 8 subset of `c6c2-request8-adoption` as an ordered checkpoint before C6c2 consumes it, then continues on the same capability branch while Request 10 remains blocking; C6-EVALUATION later runs `c6f2-array-builder-adoption`. Each focused target plus the capability wave's one final `make ci` supplies the applicable real-client evidence.
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -2519,7 +2528,8 @@ A future data-oriented evaluator may discover result cardinalities while it read
 runs paired samples. It must construct arrays of declared records, possibly with nested declared
 records, and those arrays must remain ordinary Align values with explicit ownership. They cannot be
 replaced by a dynamic JSON value tree or by a private application vector. The first concrete
-consumer must name its exact record shapes in a separate design before this request is adopted.
+consumer must name its exact record shapes in its authoritative design before this request is
+adopted; that design may be reviewed with the consumer implementation.
 
 This request targets the existing individually owned heap-builder form. Any record inserted into
 that form must use owned `string` for persistent text and must not carry a `str`, `slice`,
@@ -2881,19 +2891,18 @@ Before Align marks Request 8 `ALIGN_MERGED`, its focused tests must prove all of
     record shapes, wire boundary, adoption fixture, and output checks in its own reviewed design;
     it must not assume a JSON DTO, a borrowed-view conversion, or a private collection abstraction.
     Request 8 itself does not absorb any consumer's wire or persistence boundary. For the currently
-    named C6c2 consumer, `c6c2-request8-adoption` is that separate enabling fixture and is allowed
-    to verify this Request 8 base before the C6c2 verifier or Request 10 exists.
+    named C6c2 consumer, `c6c2-request8-adoption` is the enabling fixture and must pass before the
+    verifier consumes the surface on the same capability branch.
 
-The align-llm adoption slice is separate from the Align implementation. After `ALIGN_MERGED`, each
-named consumer adoption slice must rebuild the sibling release compiler and runtime from the named
-Align commit, update `.align-revision` to that exact commit, and add its consumer-specific target and
-fixture. The targets must use the reviewed fresh-compiler topology and exact shipped pin, verify the
+Align implementation remains in the sibling repository. After `ALIGN_MERGED`, each named consumer
+adoption checkpoint uses the capability branch's shared release build and pin update and adds its
+consumer-specific target and fixture. The targets must use the reviewed fresh-compiler topology and exact shipped pin, verify the
 declared record values and cleanup boundary, and reject panic, stale source use, and unexpected
 artifacts. `c6c2-request8-adoption` is the first C6c2 enabling target and covers only the Request 8
-base graph; it may advance Request 8 to `ALIGN_LLM_VERIFIED` before C6c2's verifier implementation
-or Request 10 is available. The later `c6f2-array-builder-adoption` covers the paired evaluator
-consumer. Each target plus `make ci` is required for the consumer that names it; adoption does not
-silently inherit another consumer's fixture.
+base graph; it must pass before C6c2's verifier implementation consumes the surface, but does not
+need a separate merge. The later `c6f2-array-builder-adoption` covers the paired evaluator consumer.
+Each target remains separately traceable; one final `make ci` closes the capability wave rather than
+running after every checkpoint. Adoption does not silently inherit another consumer's fixture.
 
 ### References
 
@@ -2943,9 +2952,9 @@ silently inherit another consumer's fixture.
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C7's named `C7-PersistedResult` persisted verification-result implementation and adoption slice; the reviewed consumer design is `docs/specs/c7-persisted-result.md`; the first Align implementation of this request remains gated on Request 7's named `ALIGN_MERGED` escape-grammar commit and a reviewed Align memory-model/spec update that defines explicit free-standing JSON materialization inside an arena; C6 remains independent
+Blocked gate or slice: C7's named `C7-PERSISTED-RESULT` consumer capability; the reviewed consumer design is `docs/specs/c7-persisted-result.md`; the first Align implementation of this request remains gated on Request 7's named `ALIGN_MERGED` escape-grammar commit and a reviewed Align memory-model/spec update that defines explicit free-standing JSON materialization inside an arena; C6 remains independent
 Independent work that may continue: Request 5, Request 6, Request 7, application designs, and any consumer that does not require this direct owned JSON shape
-Resume condition: Request 9's Align implementation may start only after Request 7 reaches `ALIGN_MERGED` at a named Align commit that supplies the authoritative escape grammar/vector and the reviewed Align memory-model/spec update authorizes this JSON terminal's explicit free-standing allocation inside an arena; Request 9 reuses that grammar but owns its separate free-standing materialization contract. After Request 9 reaches `ALIGN_MERGED` at a named Align commit, the C7 consumer adoption slice must rebuild the sibling release compiler and runtime, update `.align-revision` to that exact commit after the common check-topology design and implementation are already merged, run the named C7 adoption target and `make ci`, and resume only after the original C7 lifetime and artifact gate passes.
+Resume condition: Request 9's Align implementation may start only after Request 7 reaches `ALIGN_MERGED` at a named Align commit that supplies the authoritative escape grammar/vector and the reviewed Align memory-model/spec update authorizes this JSON terminal's explicit free-standing allocation inside an arena; Request 9 reuses that grammar but owns its separate free-standing materialization contract. After Request 9 reaches `ALIGN_MERGED` and the applicable FRESH-WORKER/FRESH-IMAGE/platform profiles have merged, the C7-PERSISTED-RESULT branch rebuilds the sibling release compiler/runtime and pins it with any other merged prerequisites, runs the named C7 adoption fixture before product code consumes the surface, implements the consumer on the same branch, and closes with the original C7 lifetime/artifact qualification plus one final `make ci`.
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -3561,10 +3570,11 @@ Before Align marks Request 9 `ALIGN_MERGED`, focused tests must prove:
    cleanup-after-abort path is promised.
 8. Existing `str`/`array<str>` zero-copy behavior and Request 7's separately tracked escaped-view
    behavior remain unchanged. Request 9 does not claim to close Request 7.
-9. A future named align-llm adoption slice, created only after a concrete consumer design exists,
+9. A future named align-llm adoption checkpoint, implemented on a branch with its concrete consumer,
    must construct the flat owned record, drop the input, encode the inline canonical bytes, decode
-   again, and exercise direct text-array cleanup. Only that named target plus `make ci` may advance
-   Request 9 to `ALIGN_LLM_VERIFIED`; this proposal does not claim that target or its fixture exists.
+   again, and exercise direct text-array cleanup. That named target, the consumer qualification, and
+   the capability's one final `make ci` may advance Request 9 to `ALIGN_LLM_VERIFIED`; this proposal
+   does not claim that target or its fixture exists.
 
 10. The metric decision is explicit: Request 9 makes no performance claim or threshold. The
     whole-program/per-unit allocation-parity measurement must pass, and any speed/size optimization
@@ -3628,7 +3638,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by this evaluator extension, and C6c2 cannot adopt its recursive runtime-sized result arrays until both requests are merged
 Independent work that may continue: C6c2 design, C6a1 codec work that does not materialize recursive runtime arrays, C6b, C6c, C6d, Request 5, Request 6, Request 7, Request 8, Request 9, and verification work that does not construct the blocked record graph
-Resume condition: Request 8 first reaches ALIGN_MERGED at a named Align commit; then Align merges this request at a named commit, the sibling release compiler and runtime are rebuilt, and `.align-revision` is updated after the common check-topology design and implementation are already merged. The C6f2 path runs `c6f2-array-builder-adoption` and `make ci`; the C6c2 path runs the Request 10 recursive subset of `c6c2-request10-adoption` and `make ci`, then the original recursive-construction acceptance matrix. The C6c2 target is a separate enabling adoption slice and does not require the later verifier implementation; only after both Request 8 and Request 10 adoption gates pass may C6c2 implementation resume.
+Resume condition: Request 8 first reaches ALIGN_MERGED at a named Align commit, then Align merges this request at a named commit. The C6-LIFECYCLE prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` once with the merged Requests 8 and 10 plus its other ready prerequisites after FRESH-WORKER and FRESH-IMAGE merge. It runs the recursive subsets of `c6c2-request8-adoption` and `c6c2-request10-adoption` in order on the same capability branch, then implements the verifier only after both pass and closes with the original recursive-construction matrix and one final `make ci`. C6-EVALUATION later runs `c6f2-array-builder-adoption` for its own record graph without creating a pin-only pull request.
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -3686,17 +3696,18 @@ separately from positional calls:
    cache identity agree on the structural record graph;
 5. allocation parity is measured against the ordinary declared-record representation, and no
    hidden arena or private collection is introduced; and
-6. C6f2 constructs and drops the named records through the shipped surface, then passes its
-   runtime-array, malformed-input, early-exit, and cleanup regressions through `make ci`; the
-   C6c2 enabling consumer separately runs `c6c2-request10-adoption` for the recursive Request 10
-   subset before C6c2 implementation starts, without making Request 10 depend on the later verifier.
+6. C6f2 constructs and drops the named records through the shipped surface, then passes its focused
+   runtime-array, malformed-input, early-exit, and cleanup qualification; the C6c2 consumer runs
+   `c6c2-request10-adoption` for the recursive Request 10 subset before verifier implementation
+   consumes it on the same C6-LIFECYCLE branch.
 
-The C6c2 enabling adoption is intentionally split from the verifier implementation. Its
-`c6c2-request10-adoption` target is allowed only after the named Request 8 and Request 10 Align
-commits are pinned; it constructs the exact recursive C6 record graph, exercises `Option.None`,
-`Option.Some`, nested arrays, reallocation, partial failure, and `Drop`, then runs `make ci`. This
-target supplies the C6c2-specific adoption evidence required by this request; the later
-`c6f2-array-builder-adoption` remains the paired-evaluator consumer evidence.
+The C6c2 adoption is an ordered checkpoint inside the verifier capability, not a separate merge.
+Its `c6c2-request10-adoption` target is allowed only after the named Request 8 and Request 10 Align
+commits are pinned; it constructs the exact recursive C6 record graph and exercises `Option.None`,
+`Option.Some`, nested arrays, reallocation, partial failure, and `Drop`. The verifier implementation
+then consumes that proven surface on the same branch, and one final `make ci` runs after integrated
+owner checks pass. The later `c6f2-array-builder-adoption` remains the paired-evaluator consumer
+evidence.
 
 ### References
 
@@ -3718,7 +3729,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6f1 trusted snapshot/workspace boundary, C6f2 paired evaluator, and C6g1 real-consumer process boundaries
 Independent work that may continue: C6a1 through C6d2 pure codecs, rendering, scoring, activation, and any work without an external child process
-Resume condition: Align merges a cap-aware process capture surface at a named commit; the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, and C6's helper/adapter over-cap, timeout, environment, kill/reap, and cleanup tests pass through `make ci`
+Resume condition: Align merges a cap-aware process capture surface at a named commit; the C6-EVALUATION prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then C6's focused helper/adapter over-cap, timeout, environment, kill/reap, and cleanup qualification passes before the wave's one final `make ci`
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -3769,7 +3780,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6a1/C6a2 canonical artifact persistence and every C6 slice that writes a result with a declared raw-byte cap
 Independent work that may continue: pure prompt rendering, scoring, and design work that does not encode a capped persisted artifact
-Resume condition: Align merges a bounded canonical encoder at a named commit; the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, and C6's exact-cap, overflow, malformed-record, and cleanup adoption target plus `make ci` pass
+Resume condition: Align merges a bounded canonical encoder at a named commit; the next C6 consumer prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then C6's focused exact-cap, overflow, malformed-record, and cleanup adoption target passes before the wave's one final `make ci`
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -3818,7 +3829,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6a1/C6a2 canonical artifact declarations and every C6 command that persists a nested result
 Independent work that may continue: C6b/C6c pure rendering and scoring, C6d fixture-only state work, Request 5, Request 7, Request 9, Request 11, Request 12, and any work that does not persist the recursive C6 graph
-Resume condition: Align reviews and merges the exact recursive owned graph below at a named commit; the sibling release compiler/runtime are rebuilt, `.align-revision` is updated, and the C6a1/C6a2 owned-graph adoption target plus `make ci` pass
+Resume condition: Align reviews and merges the exact recursive owned graph below at a named commit; the C6-LIFECYCLE prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then the focused C6a1/C6a2 owned-graph adoption target passes before the wave's one final `make ci`
 Align commit or pull request: pending
 align-llm verification: pending
 ```
@@ -3898,7 +3909,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator result/evidence publication and any later C6 command that promises no-replace artifact finalization
 Independent work that may continue: C6c1p and C6c2 pure verification, prompt rendering, scoring, design work, and any implementation that does not publish a pair with exclusive creation and no-replace rename
-Resume condition: Align accepts and merges the reviewed exclusive-create and no-replace-publication design at a named commit; the sibling release compiler and runtime are rebuilt, `.align-revision` is updated, `c6f2-request14-adoption` passes the exact publication race/cleanup matrix, and `make ci` passes
+Resume condition: Align accepts and merges the reviewed exclusive-create and no-replace-publication design at a named commit; the C6-EVALUATION prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then focused `c6f2-request14-adoption` passes the exact publication race/cleanup matrix before the wave's one final `make ci`
 Align commit or pull request: pending
 align-llm verification: pending
 ```

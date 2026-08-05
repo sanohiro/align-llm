@@ -35,8 +35,8 @@ portability correction was audited against merged baseline-identity design commi
 This document now has one additional prerequisite layer. Sections 1-7 describe the merged check
 graph and its existing pinned-compiler implementation. Section 9 defines the successor future
 fresh-compiler transition contract; Section 8 is retained only as non-normative review history.
-Until Section 9's design and dependent implementation slices merge, the existing `make ci` behavior
-remains the current implementation. For any later pin-changing adoption, Section 9 supersedes the
+Until FRESH-WORKER and FRESH-IMAGE merge, the existing `make ci` behavior remains the current
+implementation. For any later pin-changing adoption, Section 9 supersedes the
 earlier `make ci`, `align-build`, compiler-selection, and source-build claims; a later implementation
 may not satisfy this prerequisite by retaining the current direct
 `../align/target/release/alignc` path.
@@ -51,7 +51,7 @@ may not satisfy this prerequisite by retaining the current direct
 | `make ci` | Verify `.align-revision`, release-build the pinned sibling Align compiler, require that compiler to be executable, and invoke `capable-checks` with `ALIGNC` set to that exact release compiler. This remains the canonical complete local or capable-runner gate. |
 | Aggregate coexistence | `hosted-checks`, `capable-checks`, and `ci` are the complete serialized-aggregate set. If a top-level GNU Make invocation requests one of them, that aggregate must be the invocation's sole goal. An aggregate plus any other goal, or a repeated aggregate, fails during Makefile parsing before a prerequisite or recipe runs, with `verification aggregates must be requested alone`. Separate concurrent Make processes are unsupported caller behavior and are not valid verification evidence; this slice adds no cross-process repository lock. The recursive `ci` child is a separate invocation containing only `capable-checks` and remains valid. |
 | GitHub Actions pull-request gate | On the declared Ubuntu 24.04 runner with GNU Make 4.3, check out `.align-revision`, run `make align-build`, require the resulting release compiler, run `python3 scripts/check-gate-topology --self-test`, and invoke `make -j8 hosted-checks` with `ALIGNC` set to it. Preserve the aggregate recipe in the job log so review can verify the option-cleared child command, explicit `-j1`, and ordered focused-goal list. |
-| Focused targets | Keep existing commands and semantics. Add `git245-locked-inputs-unit` with the offline contract in `docs/specs/git-245-compat-image.md` and `prompt-score-prefix-smoke` as the final hosted target for the C6c1p prefix-validator gate. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. |
+| Focused targets and qualifications | Existing public target commands remain stable, but their declared coverage is explicit. `eval-coding` runs the coding corpus, bounded invalid-input/containment smoke, Git-configuration isolation, and timeout/process cleanup; it intentionally does not run the deep resource/race/failure-injection qualification at `python3 scripts/run-coding-task-resource-scan-smoke`. `git245-locked-inputs-unit` retains the offline contract in `docs/specs/git-245-compat-image.md`, and `prompt-score-prefix-smoke` remains the final hosted target for the C6c1p prefix-validator gate. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. |
 | Canonical C0 baseline | Record two deterministic-reference samples from a clean implementation source commit containing the final `Makefile`; commit the derived immutable oracle; finalize the canonical baseline with that full oracle commit; require the finalized record's source and oracle identities to equal those named commits; and keep the source, oracle, and finalization commits as ancestors of the final reviewed head and merge result. |
 
 ### 2.1 Inputs and defaults
@@ -496,9 +496,12 @@ The hosted gate excludes only:
   exceptional refresh only because it changes the identity-bound `Makefile`.
 
 The capable gate adds exactly those two targets. It also includes the Git 2.45 locked-input unit and
-every C1-C5 focused target through the hosted graph. New focused roadmap gates must be assigned
-deliberately to the hosted graph, the capable-only set, or both through dependency, with the reason
-recorded in the owning design and documentation.
+every C1-C5 core focused target through the hosted graph. A new check must be classified deliberately
+as a routine functional regression or a focused qualification. Routine regressions may be assigned
+to the hosted graph, the capable-only set, or both through dependency after their runtime and
+maintenance cost are measured. Security, resource-limit, race, fuzz, stress, platform, mutation,
+and benchmark qualification may remain outside every aggregate; the owning design must name the
+exact command and trigger. Aggregate membership is not a proxy for test importance.
 
 `make ci` is not evidence that an arbitrary future focused target ran unless that target is
 reachable in this authoritative graph at the tested commit.
@@ -679,7 +682,7 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Monomorphization, interface, whole/per-unit parity | N/A | no Align code or interface changes | Existing `check` and `build` remain in both graphs. |
 | Runtime provenance or allocation parity | N/A | no runtime behavior or allocation change | N/A. |
 
-## 7. Acceptance and pull request boundaries
+## 7. Historical acceptance and pull request boundaries
 
 ### Design slice
 
@@ -1384,11 +1387,11 @@ evidence.
 
 ## 9. Fresh compiler transition contract (successor redesign)
 
-This section is the successor design slice for the historical contract in Section 8. It is the only
-normative fresh-compiler contract in this document. It is still a design-only slice: it does not
-change the current `Makefile`, install a bootstrap, refresh the C0 baseline, or change
-`.align-revision`. The dependent implementation must merge this contract first and must not consume
-an older Section 8 rule by implication.
+This section is the merged successor contract for the historical contract in Section 8 and is the
+only normative fresh-compiler contract in this document. Its wire, manifest, and source-identity
+foundations are merged; FRESH-WORKER and FRESH-IMAGE still must implement the remaining repository
+and host-profile behavior before `.align-revision` changes. Neither capability may consume an older
+Section 8 rule by implication.
 
 This successor is deliberately split into two planes. The image plane is the externally deployed
 `fresh-supervise`/`fresh-bootstrap` pair and its fixed toolchain manifest; the repository plane is
@@ -1398,8 +1401,9 @@ edit. After checkout, the trusted supervisor creates a per-invocation signed run
 the exact repository head, the canonical `ALIGN_REPO` selection, and the current worker digest. The
 bootstrap authenticates that capsule,
 seals the worker bytes, and passes only the sealed snapshot to the repository-plane worker. Thus the
-image deployment is a prerequisite for the worker implementation, but the worker implementation is
-not a mutable input to the image deployment and cannot create a manifest-update cycle.
+image deployment and worker implementation are separate failure domains and may be developed in
+parallel against this contract, but both are prerequisites for fresh adoption. The worker is not a
+mutable input to image deployment and cannot create a manifest-update cycle.
 
 ### 9.1 Scope, trust root, and public surface
 
@@ -2816,8 +2820,8 @@ overlay upper/work pair at `/workspace`. There is no standalone `/workspace/main
 writable parent directory is intentional because the Align compiler stages `.align-publish-*`
 beside `main` and atomically renames the staged executable into place. The upper layer, not the
 lower source copy, receives that publication. All current smoke scripts must direct temporary
-fixtures, invalid task files, markers, and baseline scratch files to `/target/tmp` before this
-implementation slice can pass its call-site audit. The exact workspace output allowlist is therefore:
+fixtures, invalid task files, markers, and baseline scratch files to `/target/tmp` before the
+FRESH-WORKER capability can pass its call-site audit. The exact workspace output allowlist is therefore:
 
 ```text
 /workspace/main                         one regular compiler output file
@@ -3171,37 +3175,39 @@ Source tests,
 `make build`, `make ci`, hosted checks, and benchmarks are N/A until executable implementation or an
 executable contract boundary exists.
 
-The dependent delivery order is:
+The successor design and its wire/source-identity foundations are merged. They are internal
+checkpoints, not a precedent for more helper-only pull requests. Delivery now has two independently
+owned capabilities that may progress in parallel and one dependent adoption wave:
 
-1. Merge this successor design after its own comprehensive adversarial review; the historical Section
-   8 checkpoint is not an implementation dependency.
-2. Install and attest the image-owned supervisor, fixed bootstrap, Python runtime, bwrap image,
-   canonical schema-2 manifest without a repository-worker digest, signed runner-image attestation,
-   run-capsule signer/policy, protected per-user root parent, unique per-invocation cgroup leaves with
-   `pids.max`/rlimit lifecycle, executable `/tmp` requirement, and complete
-   runtime/loader/linker bindings on the minimum hosted and capable images. The supervisor's verifier,
-   raw Ed25519 keys/key digests, predicate policy, and exact `env -i`/fd-5/fd-6 entrypoint are
-   recorded as external acceptance evidence.
-3. Implement the repository worker and Make integration, with the supervisor generating its
-   per-invocation run capsule; no image-manifest edit is required when the worker changes. The slice
-   includes sealed snapshots, digest/cache/source boundaries, one-root admission lock, two bwrap namespaces
-   with the writable aggregate overlay, namespace-owned no-symlink aggregate tmpfs, staged nested
-   tools and `mount-guard`, write-once descriptor/guard handoff files, read-only bundle launcher and
-   empty-fd Python subprocess policy, Make interposition, isolated baseline Git scratch, cardinality/
-   cgroup/rlimit checks, and every named closure test as one enabling slice.
-4. Because the implementation changes the Makefile and compiler consumers, refresh the identity-bound
-   C0 baseline using the Section 2.4 source, oracle, finalization, and merge-ancestry sequence.
-5. Run all synthetic tests, the hosted topology unit, `baseline-check`, and one fresh capable
-   `make ci` at the unchanged Align revision. The result is not evidence until cleanup, descriptor,
-   loader, interpreter, and baseline checks all pass.
-6. Only after that implementation merges may a separate consumer adoption slice update
-   `.align-revision`, rebuild Align, and run its original acceptance gate through fresh `make ci`.
-   Request 6's adoption script must select its Section 9 profile inside that fresh aggregate:
-   `ALIGNC_CACHE=off /tools/fresh-alignc check <file>` and
-   `ALIGNC_CACHE=off /tools/fresh-alignc run <file>`; it may retain its named pinned-compiler and
-   cache vectors only for the ordinary non-fresh profile.
+1. **FRESH-IMAGE — installed minimum-platform profile.** Install and attest the image-owned
+   supervisor, fixed bootstrap, Python runtime, bwrap image, canonical schema-2 manifest, signed
+   runner-image attestation, run-capsule signer/policy, protected per-user root parent, delegated
+   cgroup/rlimit lifecycle, executable `/tmp`, and runtime/loader/linker bindings. The supervisor
+   verifier, keys/digests, policy, and exact `env -i`/fd-5/fd-6 entrypoint are external acceptance
+   evidence. This stays separate because host installation and repository implementation have
+   different owners and failure domains. Worker implementation may progress in parallel, but the
+   installed and attested image is required before worker capable acceptance or merge.
+2. **FRESH-WORKER — repository worker and Make integration.** Complete the remaining private-root
+   admission, sealed snapshots, digest/cache/source materialization, one-root lock, compiler and
+   archive bundle, two bwrap namespaces, writable aggregate overlay, namespace-owned no-symlink
+   tmpfs, staged nested tools and `mount-guard`, descriptor/guard handoff, empty-fd subprocess
+   policy, Make interposition, isolated baseline Git scratch, process ownership, resource bounds,
+   status grammar, and cleanup in one consumer-complete repository capability. It must include a
+   core end-to-end functional smoke that actually runs the unchanged-pin aggregate through the
+   installed FRESH-IMAGE trust root; a synthetic or direct host run is non-evidence. The named
+   security, race, resource, mutation, and failure-injection closure tests remain focused
+   qualification commands and all run before this capability merges; they do not all become
+   permanent `make ci` dependencies. Because this capability changes the Makefile and compiler
+   consumers, its branch also performs the Section 2.4 identity-bound baseline source, oracle,
+   finalization, and merge-ancestry sequence.
+3. **Fresh adoption wave.** After both capabilities pass and merge, batch the merged Align requests
+   required by the next real consumer into one `.align-revision` update, rebuild, and original
+   acceptance gate through fresh `make ci`. Request 6's adoption script selects its Section 9
+   profile inside that aggregate with `ALIGNC_CACHE=off /tools/fresh-alignc check <file>` and
+   `ALIGNC_CACHE=off /tools/fresh-alignc run <file>`; its ordinary non-fresh profile may retain the
+   named pinned-compiler and cache vectors.
 
 No Request 6, Request 7, Request 9, C7, or other consumer may implement against this redesign before
-its review and dependent implementation merge. A proposed descriptor, manifest, host image, or
+FRESH-WORKER and FRESH-IMAGE merge. A proposed descriptor, manifest, host image, or
 platform profile is not an input. The request register remains lifecycle authority; this section
 owns only the common Linux x86_64 fresh-compiler contract and its evidence.

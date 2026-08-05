@@ -1,18 +1,15 @@
 ## Scope
 
-- Roadmap gate or enabling slice:
+- Consumer-complete capability:
+- Useful end-to-end outcome:
 - What changed:
 - What is intentionally out of scope:
 
 ## Verification
 
-```text
-make ci
-```
-
-- Result:
+- Changed-owner commands and results:
 - Applicable aggregate (`make ci`, `make hosted-checks`, or N/A with reason):
-- Additional focused checks (do not substitute these for an aggregate):
+- Focused qualification (resource/race/security/fuzz/stress/platform/mutation, or N/A with reason):
 - Align revision (`.align-revision`):
 - Additional evaluation or benchmark:
 
@@ -63,8 +60,8 @@ Use `N/A` with a reason when the change makes no performance claim.
   synthetic merge or equivalent):
 - Required check names, statuses, and links:
 
-- [ ] One comprehensive review completed
+- [ ] One comprehensive stable-candidate review completed
 - [ ] A final review was run only if its material-change trigger applied
 - [ ] Required checks pass
 - [ ] No valid review finding remains unresolved
-- [ ] `HANDOFF.md` is updated when current state or next steps changed
+- [ ] `HANDOFF.md` records the durable capability state when its checkpoint, blocker, or next action changed

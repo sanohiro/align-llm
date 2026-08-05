@@ -56,10 +56,22 @@ make run
 ```
 
 Run `make ci` for the complete capable-host gate. It builds the exact pinned Align release compiler,
-then runs every hosted check, the sandboxed coding corpus, and canonical baseline verification in a
-deterministic order. Run `make hosted-checks` only on hosts that cannot provide the coding corpus's
-nested user namespace; it intentionally omits `eval-coding` and `baseline-check`. A focused target
-is diagnostic evidence for that surface, not evidence that either aggregate completed.
+then runs the bounded hosted functional graph, the sandboxed coding corpus, and canonical baseline
+verification in a deterministic order. It is complete for that declared graph, not for every
+focused qualification script in the repository. Run `make hosted-checks` only on hosts that cannot
+provide the coding corpus's nested user namespace; it intentionally omits `eval-coding` and
+`baseline-check`. A focused target is diagnostic evidence for that surface, not evidence that
+either aggregate completed.
+
+Resource-limit, race, security, fuzz, stress, platform, mutation, and benchmark qualification run
+through their named owner commands when the owning boundary changes or an explicit audit requires
+them. For example, coding-task resource-monitor qualification is:
+
+```sh
+python3 scripts/run-coding-task-resource-scan-smoke
+```
+
+It is intentionally not a transitive child of `make eval-coding`.
 
 ## Managing language dependencies
 
@@ -69,12 +81,13 @@ When the engine needs a feature that does not compile in the current Align check
 2. Reduce the need to the smallest compiler or standard-library capability.
 3. Register it in `docs/align-requests.md` with the lifecycle and blocking metadata required by
    `CLAUDE.md`.
-4. If it is blocking, pause only the dependent gate or slice and record the resume condition in
-   `HANDOFF.md`. Continue valid independent work without assuming the proposed surface.
+4. If it is blocking, pause only the dependent consumer capability and record the resume condition
+   in `HANDOFF.md`. Continue valid independent work without assuming the proposed surface.
 5. Implement and test that capability in `../align` as a separate, reviewable change.
 6. Update this repository only after the Align change is available at a named commit or release.
-7. Rebuild the pinned Align release compiler, update `.align-revision`, run `make ci`, and record the
-   real-client verification before closing the request.
+7. Batch merged prerequisites needed by the next consumer when practical. Rebuild the pinned Align
+   release compiler, update `.align-revision` once, run every original request acceptance target and
+   one final `make ci`, and record the real-client verification before closing each request.
 
 This separation keeps engine work reproducible and prevents application code from becoming an accidental language specification.
 
