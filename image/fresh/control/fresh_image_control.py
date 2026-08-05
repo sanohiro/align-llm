@@ -823,6 +823,19 @@ def _run_retained_tool(
     timeout: int = 10,
     pass_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess[bytes]:
+    inherited = tuple(dict.fromkeys((descriptor, *pass_fds)))
+
+    def diagnostic_preexec() -> None:
+        if pass_fds:
+            states = []
+            for fd in inherited:
+                try:
+                    value = os.fstat(fd)
+                    states.append((fd, value.st_dev, value.st_ino))
+                except OSError as error:
+                    states.append((fd, "error", error.errno))
+            os.write(2, ("DIAGNOSTIC PREEXEC " + repr(states) + "\n").encode("ascii"))
+
     return subprocess.run(
         list(arguments),
         executable=f"/proc/self/fd/{descriptor}",
@@ -830,8 +843,9 @@ def _run_retained_tool(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        pass_fds=tuple(dict.fromkeys((descriptor, *pass_fds))),
+        pass_fds=inherited,
         close_fds=True,
+        preexec_fn=diagnostic_preexec if pass_fds else None,
         timeout=timeout,
         check=False,
     )
