@@ -11,7 +11,8 @@ requirement.
 
 - lexical resolution from a retained project-root descriptor;
 - retained no-follow descriptors and identity snapshots for each worktree, root Git
-  control entry, Git directory, common directory, `HEAD`, index, and object store;
+  control entry, Git directory, common directory, `HEAD`, every loose symbolic-ref
+  component or the selected `packed-refs`, index, and object store;
 - the fixed Git child environment, explicit descriptor inheritance, and post-child
   descriptor rechecks;
 - project capsule identity, Align revision and SHA-1-only policy, Git tree/index
@@ -32,8 +33,8 @@ accepted `SourceIdentityHandle` rather than re-resolve a pathname.
 | `capture_align_source(project_root_fd, align_repo_relative, expected_revision)` | Resolve the signed relative sibling from the retained project parent, require the controller-supplied revision to be exactly lowercase 40-hex, reject SHA-256, require matching SHA-1 `HEAD`, and return an owned handle. The later worker-input slice owns reading the one-line `.align-revision` file before either capture. |
 | `SourceIdentityHandle.identity` | Immutable `SourceIdentity` containing source kind, revision, tree, object format, index digest, canonical source manifest bytes/digest, exception metadata, and retained-descriptor snapshots. |
 | `SourceIdentityHandle.recheck()` | Reconstruct and compare the complete identity from retained descriptors. Reject any source, Git-control, ancestor, object, index, exception, or descriptor change before materialization. |
-| Errors | Raise a stable source-identity exception category without paths, raw source bytes, environment values, credentials, Git child output, or errno text. Validation order follows Section 9.9's source phases. |
-| Bounds | Reuse Section 9's 200,000-entry, depth-64, 64-MiB raw path/link, 512-MiB file, 4-GiB source/index, and 2,048-byte symlink bounds. Git policy output is capped at 4 MiB and tree/index-list output at 192 MiB, which covers the declared entry/path product; output beyond either cap rejects. |
+| Errors | Raise a stable source-identity exception category with no cause/context chain and without paths, raw source bytes, environment values, credentials, Git child output, or errno text. Validation order follows Section 9.9's source phases. |
+| Bounds | Reuse Section 9's 200,000-entry, depth-64, 64-MiB raw path/link, 512-MiB file, 4-GiB source/index, and 2,048-byte symlink bounds. Packed refs are capped at 64 MiB, Git policy output at 4 MiB, and tree/index-list output at 192 MiB, which covers the declared entry/path product; output beyond a cap rejects. |
 
 Borrowed descriptors are never closed. Returned handles own every duplicate and close each
 owned descriptor exactly once; close is idempotent and use after close is rejected. Git
@@ -41,7 +42,9 @@ children use `cwd=/proc/self/fd/<worktree>`, descriptor-backed `GIT_WORK_TREE`, 
 and `GIT_COMMON_DIR`, `close_fds=True`, and only the retained descriptors in `pass_fds`.
 Ambient `GIT_*`, caller config, replacement refs, alternates, grafts, shallow/promisor
 state, fsmonitor, hooks, filters, bare repositories, and `core.worktree` are rejected or
-cleared before object lookup. No Git child runs after source materialization begins.
+cleared before object lookup. The accepted full commit ID, never the mutable token `HEAD`,
+is used for every tree and index comparison after the retained HEAD/ref equality check.
+No Git child runs after source materialization begins.
 
 This slice is larger than the usual 1,000-line review target because splitting resolver/Git
 descriptor ownership from raw enumeration and `SourceIdentityHandle.recheck()` would publish an
@@ -54,14 +57,14 @@ and Make integration stay out of scope.
 | Area | Owner and regression evidence |
 | --- | --- |
 | Root ownership and relative resolver | `fresh_source_identity.py`; ordinary and linked roots, retained `..` traversal, absolute/empty/dot/symlink/missing rejection, root-path replacement, borrowed-fd survival, and closed-handle rejection in `run-fresh-source-identity-smoke`. |
-| Descriptor lifetime and ABA | The smoke asserts a stable process fd count, idempotent close, caller-fd retention, same-byte file replacement rejection, and root-path replacement rejection. Fine-grained private-copy mutation cases remain owned by the later materialization slice. |
-| Ordinary and linked `.git` | Fixtures cover directory and exact linked-worktree `gitdir: <path>\n`/`commondir` forms, retained worktree/index/common/object descriptors, and both root-control metadata forms. |
+| Descriptor lifetime and ABA | The smoke asserts a stable process fd count, idempotent close, caller-fd retention, same-byte file/root replacement rejection, and exact no-leak failure cleanup for missing `HEAD`, index, objects, and malformed linked `commondir`. Fine-grained private-copy mutation cases remain owned by the later materialization slice. |
+| Ordinary and linked `.git` | Fixtures cover directory and exact linked-worktree `gitdir: <path>\n`/`commondir` forms, loose and packed symbolic refs, in-place ordinary/linked/packed ref races, linked Git-control mutation, common-directory mutation, retained worktree/index/common/object descriptors, and both root-control metadata forms. |
 | Fixed Git boundary | Tests inject ambient Git/config state and reject filters, fsmonitor, hooks, `core.worktree`, partial-clone configuration, packed replacement refs, alternates, shallow metadata, and promisor packs while proving caller configuration is ignored. |
 | Project and Align identities | Tests cover project HEAD/object-format mismatch, SHA-1 and SHA-256 project repositories, exact Align pin mismatch, SHA-256 Align rejection, staged/dirty/untracked input, and assume-unchanged/skip-worktree flags. The controller-owned raw `.align-revision` read remains in the later worker-input slice. |
-| Raw enumeration and modes | Tests cover raw ordering, parent directories, regular/executable files, directories, symlinks, raw-to-staged mode mapping, tracked hard links, nested `.git`, case-fold collisions, target/main output rules, count/file cap rejection, and identical manifest bytes for absent/present output exceptions. |
+| Raw enumeration and modes | Tests cover raw ordering, parent directories, regular/executable files, directories, symlinks, raw-to-staged mode mapping, tracked hard links, nested `.git`, case-fold collisions, target/main output rules, entry/depth/path-link/file/total/symlink/index/Git-output cap rejection, and identical manifest bytes for absent/present output exceptions. |
 | Git object semantics | Tests independently hash directory/tree, regular-file/blob, and symlink/blob objects from both supported object formats and reject missing, wrong-type, wrong-size, or wrong-ID objects. |
 | Symlink identity | Tests cover contained relative chains, absolute/escaping/cyclic/untracked targets, target replacement, and proof before acceptance. |
-| Manifest and recheck | Tests parse the canonical bytes, compare output-exception identity, retain raw index and descriptor snapshots, rerun the complete accepted identity, and reject content, mode, inode, Git-policy, index, and source-root changes. |
+| Manifest and recheck | Tests load the reviewed module and its local wire dependencies from exact source bytes, prove a timestamp-valid stale cache is ignored, preserve the caller cache snapshot, parse canonical bytes, compare output-exception identity, prove the index is never eagerly read, retain raw index and descriptor snapshots, rerun the complete accepted identity, reject content/mode/inode/Git-policy/index/ref/root changes, and verify public exceptions have no cause, context, hostile path, or errno traceback. |
 | Deferred surfaces | Private root, source/cache materialization, Cargo configuration, bwrap, Make, process, status, and cleanup are explicitly deferred to their named later slices. |
 
 ## Acceptance

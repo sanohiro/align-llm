@@ -4,20 +4,94 @@
 from __future__ import annotations
 
 import os
+import py_compile
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
+import traceback
+import types
 from collections import OrderedDict
 from pathlib import Path
 
-import fresh_source_identity as source_identity
-from fresh_source import validate_source_manifest_bytes
-from fresh_source_identity import (
-    SourceIdentityError,
-    capture_align_source,
-    capture_project_source,
-    open_relative_directory,
-)
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+LOCAL_MODULES = ("fresh_attestation", "fresh_source", "fresh_source_identity")
+MISSING = object()
+
+
+def load_exact_module(name: str, path: Path) -> types.ModuleType:
+    raw = path.read_bytes()
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    module.__package__ = ""
+    sys.modules[name] = module
+    exec(compile(raw, str(path), "exec"), module.__dict__)
+    return module
+
+
+def install_reviewed_modules() -> dict[str, object]:
+    originals = {name: sys.modules.get(name, MISSING) for name in LOCAL_MODULES}
+    try:
+        load_exact_module("fresh_attestation", SCRIPT_DIRECTORY / "fresh_attestation.py")
+        fresh_source = load_exact_module("fresh_source", SCRIPT_DIRECTORY / "fresh_source.py")
+        reviewed = load_exact_module(
+            "fresh_source_identity", SCRIPT_DIRECTORY / "fresh_source_identity.py"
+        )
+    except Exception:
+        restore_modules(originals)
+        raise
+    globals().update(
+        {
+            "source_identity": reviewed,
+            "validate_source_manifest_bytes": fresh_source.validate_source_manifest_bytes,
+            "SourceIdentityError": reviewed.SourceIdentityError,
+            "capture_align_source": reviewed.capture_align_source,
+            "capture_project_source": reviewed.capture_project_source,
+            "open_relative_directory": reviewed.open_relative_directory,
+        }
+    )
+    return originals
+
+
+def restore_modules(originals: dict[str, object]) -> None:
+    for name, value in originals.items():
+        if value is MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = value
+
+
+def cache_snapshot() -> tuple[tuple[str, tuple[int, ...], bytes], ...] | None:
+    root = SCRIPT_DIRECTORY / "__pycache__"
+    try:
+        root_metadata = root.lstat()
+    except FileNotFoundError:
+        return None
+    values: list[tuple[str, tuple[int, ...], bytes]] = []
+    paths = [root]
+    if stat.S_ISDIR(root_metadata.st_mode) and not root.is_symlink():
+        paths.extend(sorted(root.rglob("*")))
+    for path in paths:
+        relative = str(path.relative_to(root))
+        metadata = path.lstat()
+        if path.is_symlink():
+            content = os.fsencode(os.readlink(path))
+        elif path.is_file():
+            content = path.read_bytes()
+        else:
+            content = b""
+        identity = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_nlink,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+        values.append((relative, identity, content))
+    return tuple(values)
 
 
 def git(path: Path, *arguments: str, output: bool = False) -> str:
@@ -131,9 +205,144 @@ def assert_linked_worktree(root: Path) -> None:
         assert (linked / ".git").is_file()
         assert handle.identity.exceptions[0].kind == "regular"
         handle.recheck()
+        control = (linked / ".git").read_bytes()
+        with (linked / ".git").open("r+b", buffering=0) as stream:
+            stream.write(control)
+            stream.truncate()
+            os.fsync(stream.fileno())
+        reject(handle.recheck, "linked Git control mutation")
     finally:
         handle.close()
         os.close(fd)
+    fd, handle = capture_project(linked)
+    try:
+        (primary / ".git" / "source-identity-mutation").write_bytes(b"marker")
+        reject(handle.recheck, "linked common-directory mutation")
+    finally:
+        handle.close()
+        os.close(fd)
+
+
+def replace_file_bytes_in_place(path: Path, old: bytes, new: bytes) -> None:
+    content = path.read_bytes()
+    if content.count(old) != 1 or len(old) != len(new):
+        raise AssertionError("race fixture does not have one fixed-width identity")
+    replacement = content.replace(old, new)
+    with path.open("r+b", buffering=0) as stream:
+        stream.write(replacement)
+        stream.truncate()
+        os.fsync(stream.fileno())
+
+
+def assert_symbolic_ref_races(root: Path) -> None:
+    ordinary = root / "ordinary"
+    old = repository(ordinary)
+    git(ordinary, "commit", "--allow-empty", "-qm", "same tree")
+    new = git(ordinary, "rev-parse", "HEAD", output=True)
+    git(ordinary, "reset", "--hard", "-q", old)
+    ordinary_branch = git(ordinary, "symbolic-ref", "--short", "HEAD", output=True)
+    ordinary_ref = ordinary / ".git" / "refs" / "heads" / ordinary_branch
+
+    def run_race(path: Path, ref_path: Path, expected: str, replacement: str, label: str) -> None:
+        original_git = source_identity._git
+        mutated = False
+
+        def racing_git(view, arguments, **kwargs):
+            nonlocal mutated
+            result = original_git(view, arguments, **kwargs)
+            if arguments == ["rev-parse", "--verify", "HEAD"] and not mutated:
+                replace_file_bytes_in_place(
+                    ref_path, expected.encode("ascii"), replacement.encode("ascii")
+                )
+                mutated = True
+            return result
+
+        fd = root_fd(path)
+        source_identity._git = racing_git
+        try:
+            reject(lambda: capture_project_source(fd, expected, "sha1"), label)
+            assert mutated
+        finally:
+            source_identity._git = original_git
+            os.close(fd)
+
+    run_race(ordinary, ordinary_ref, old, new, "ordinary symbolic-ref race")
+
+    primary = root / "linked-primary"
+    old = repository(primary)
+    git(primary, "commit", "--allow-empty", "-qm", "same tree")
+    new = git(primary, "rev-parse", "HEAD", output=True)
+    linked = root / "linked"
+    git(primary, "worktree", "add", "-q", "-b", "linked-race", str(linked), old)
+    linked_ref = primary / ".git" / "refs" / "heads" / "linked-race"
+    run_race(linked, linked_ref, old, new, "linked symbolic-ref race")
+
+    packed = root / "packed"
+    old = repository(packed)
+    git(packed, "commit", "--allow-empty", "-qm", "same tree")
+    new = git(packed, "rev-parse", "HEAD", output=True)
+    git(packed, "reset", "--hard", "-q", old)
+    git(packed, "pack-refs", "--all", "--prune")
+    run_race(
+        packed,
+        packed / ".git" / "packed-refs",
+        old,
+        new,
+        "packed symbolic-ref race",
+    )
+
+
+def assert_failure_cleanup(root: Path) -> None:
+    for label in ("head", "index", "objects"):
+        path = root / label
+        expected = repository(path)
+        target = path / ".git" / ("HEAD" if label == "head" else label)
+        if label == "objects":
+            target.rename(path / ".git" / "objects-away")
+        else:
+            target.unlink()
+        fd = root_fd(path)
+        before = len(os.listdir("/proc/self/fd"))
+        try:
+            for _ in range(3):
+                reject(lambda: capture_project_source(fd, expected, "sha1"), f"missing {label}")
+                assert len(os.listdir("/proc/self/fd")) == before
+        finally:
+            os.close(fd)
+
+    primary = root / "linked-primary"
+    expected = repository(primary)
+    linked = root / "linked"
+    git(primary, "worktree", "add", "-q", "-b", "linked-cleanup", str(linked), expected)
+    control = (linked / ".git").read_text(encoding="utf-8")
+    git_dir = Path(control.removeprefix("gitdir: ").strip())
+    (git_dir / "commondir").write_bytes(b"../missing\n")
+    fd = root_fd(linked)
+    before = len(os.listdir("/proc/self/fd"))
+    try:
+        for _ in range(3):
+            reject(lambda: capture_project_source(fd, expected, "sha1"), "bad commondir")
+            assert len(os.listdir("/proc/self/fd")) == before
+    finally:
+        os.close(fd)
+
+
+def assert_index_is_not_eagerly_read(path: Path) -> None:
+    repository(path)
+    original_read = source_identity._read_fd
+
+    def guarded_read(fd, limit, label):
+        if label == "index":
+            raise AssertionError("index was eagerly read")
+        return original_read(fd, limit, label)
+
+    source_identity._read_fd = guarded_read
+    try:
+        fd, handle = capture_project(path)
+        handle.close()
+        os.close(fd)
+    finally:
+        source_identity._read_fd = original_read
 
 
 def assert_align_capture(root: Path) -> None:
@@ -179,6 +388,26 @@ def assert_resolver(root: Path) -> None:
         reject(lambda: open_relative_directory(fd, b""), "empty directory")
         reject(lambda: open_relative_directory(fd, b"./../sibling"), "dot directory component")
         reject(lambda: open_relative_directory(fd, b"/sibling"), "absolute directory")
+    finally:
+        os.close(fd)
+
+
+def assert_public_errors_are_sanitized(root: Path) -> None:
+    project = root / "project"
+    project.mkdir(parents=True)
+    fd = root_fd(project)
+    hostile = b"hostile-" + b"secret-" + b"name"
+    try:
+        try:
+            open_relative_directory(fd, hostile)
+        except SourceIdentityError as error:
+            rendered = "".join(traceback.format_exception(error))
+            assert error.__cause__ is None
+            assert error.__context__ is None
+            assert os.fsdecode(hostile) not in rendered
+            assert "Errno" not in rendered
+        else:
+            raise AssertionError("missing hostile path was accepted")
     finally:
         os.close(fd)
 
@@ -423,6 +652,44 @@ def assert_bounds(root: Path) -> None:
     finally:
         source_identity.MAX_FILE_BYTES = previous_size
 
+    depth = root / "depth"
+    repository(depth)
+    current = depth
+    for index in range(65):
+        current = current / f"d{index}"
+        current.mkdir()
+    (current / "leaf").write_bytes(b"x")
+    commit(depth, "depth cap")
+    reject(lambda: capture_project(depth), "source depth cap")
+
+    bounded = root / "other-bounds"
+    repository(bounded)
+    cases = (
+        ("MAX_RAW_PATH_LINK_BYTES", 2, "raw path/link cap"),
+        ("MAX_TOTAL_SOURCE_BYTES", 2, "total source byte cap"),
+        ("MAX_SYMLINK_BYTES", 2, "symlink byte cap"),
+        ("MAX_INDEX_BYTES", 1, "index byte cap"),
+        ("MAX_GIT_CONFIG_BYTES", 1, "Git policy output cap"),
+        ("MAX_GIT_LIST_BYTES", 1, "Git list output cap"),
+    )
+    for name, value, label in cases:
+        previous = getattr(source_identity, name)
+        try:
+            setattr(source_identity, name, value)
+            reject(lambda: capture_project(bounded), label)
+        finally:
+            setattr(source_identity, name, previous)
+
+    packed = root / "packed-refs"
+    repository(packed)
+    git(packed, "pack-refs", "--all", "--prune")
+    previous_packed = source_identity.MAX_PACKED_REFS_BYTES
+    try:
+        source_identity.MAX_PACKED_REFS_BYTES = 1
+        reject(lambda: capture_project(packed), "packed refs byte cap")
+    finally:
+        source_identity.MAX_PACKED_REFS_BYTES = previous_packed
+
 
 def assert_object_query_rejections() -> None:
     tree_id = "1" * 40
@@ -452,9 +719,31 @@ def assert_object_query_rejections() -> None:
         source_identity._git = original_git
 
 
+def assert_exact_loader_ignores_stale_cache(root: Path) -> None:
+    root.mkdir(parents=True)
+    source = root / "fixture.py"
+    source.write_bytes(b"VALUE = 'old'\n")
+    source_stat = source.stat()
+    cache = root / "fixture.pyc"
+    py_compile.compile(str(source), cfile=str(cache), doraise=True)
+    source.write_bytes(b"VALUE = 'new'\n")
+    os.utime(source, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+    original = sys.modules.get("exact_loader_fixture", MISSING)
+    try:
+        loaded = load_exact_module("exact_loader_fixture", source)
+        assert loaded.VALUE == "new"
+    finally:
+        if original is MISSING:
+            sys.modules.pop("exact_loader_fixture", None)
+        else:
+            sys.modules["exact_loader_fixture"] = original
+
+
 def main() -> None:
     original = dict(os.environ)
     fd_baseline = len(os.listdir("/proc/self/fd"))
+    cache_before = cache_snapshot()
+    originals = install_reviewed_modules()
     try:
         os.environ.update(
             {
@@ -470,8 +759,12 @@ def main() -> None:
             assert_basic_capture(root / "ordinary")
             assert_sha256_project(root / "sha256-project")
             assert_linked_worktree(root / "linked-case")
+            assert_symbolic_ref_races(root / "ref-race-case")
+            assert_failure_cleanup(root / "failure-cleanup-case")
+            assert_index_is_not_eagerly_read(root / "index-read-case")
             assert_align_capture(root / "align-case")
             assert_resolver(root / "resolver-case")
+            assert_public_errors_are_sanitized(root / "error-case")
             assert_mutations(root / "mutation-case")
             assert_symlink_rejections(root / "symlink-case")
             assert_policy_rejections(root / "policy-case")
@@ -481,10 +774,13 @@ def main() -> None:
             assert_structural_rejections(root / "structural-case")
             assert_bounds(root / "bound-case")
             assert_object_query_rejections()
+            assert_exact_loader_ignores_stale_cache(root / "exact-loader-case")
     finally:
         os.environ.clear()
         os.environ.update(original)
+        restore_modules(originals)
     assert len(os.listdir("/proc/self/fd")) == fd_baseline
+    assert cache_snapshot() == cache_before
     print("fresh source identity smoke: PASS")
 
 

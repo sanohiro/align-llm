@@ -37,7 +37,9 @@ MAX_GITDIR_BYTES = 4096
 MAX_REVISION_BYTES = 128
 MAX_GIT_CONFIG_BYTES = 4 * 1024 * 1024
 MAX_GIT_LIST_BYTES = 192 * 1024 * 1024
+MAX_PACKED_REFS_BYTES = 64 * 1024 * 1024
 MAX_OBJECT_IDS = MAX_ENTRIES * 2
+MAX_REF_CHAIN = 16
 READ_CHUNK = 1024 * 1024
 GIT_BINARY = "/usr/bin/git"
 HEX = re.compile(rb"^[0-9a-f]+$")
@@ -71,7 +73,7 @@ def _snapshot(fd: int) -> DescriptorSnapshot:
     try:
         value = os.fstat(fd)
     except OSError as error:
-        raise SourceIdentityError("source descriptor is not readable") from error
+        raise SourceIdentityError("source descriptor is not readable") from None
     return DescriptorSnapshot(
         value.st_dev,
         value.st_ino,
@@ -88,9 +90,17 @@ class _OwnedFD:
     def __init__(self, fd: int, label: str) -> None:
         self.fd = fd
         self.label = label
-        self.initial = _snapshot(fd)
         self.closed = False
-        os.set_inheritable(fd, False)
+        try:
+            self.initial = _snapshot(fd)
+            os.set_inheritable(fd, False)
+        except Exception:
+            self.closed = True
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
 
     def current(self) -> DescriptorSnapshot:
         if self.closed:
@@ -107,7 +117,7 @@ class _OwnedFD:
             try:
                 os.close(self.fd)
             except OSError as error:
-                raise SourceIdentityError("source descriptor close failed") from error
+                raise SourceIdentityError("source descriptor close failed") from None
 
 
 class DirectoryHandle:
@@ -133,8 +143,14 @@ class DirectoryHandle:
     def assert_stable(self) -> None:
         if self._closed:
             raise SourceIdentityError("directory handle is closed")
-        for item in self._descriptors:
-            item.assert_stable()
+        failure: SourceIdentityError | None = None
+        try:
+            for item in self._descriptors:
+                item.assert_stable()
+        except SourceIdentityError as error:
+            failure = SourceIdentityError(str(error))
+        if failure is not None:
+            raise failure
 
     def close(self) -> None:
         if self._closed:
@@ -147,7 +163,7 @@ class DirectoryHandle:
             except SourceIdentityError as error:
                 first = first or error
         if first is not None:
-            raise first
+            raise SourceIdentityError(str(first))
 
     def __enter__(self) -> "DirectoryHandle":
         return self
@@ -160,7 +176,7 @@ def _duplicate(fd: int, label: str) -> _OwnedFD:
     try:
         duplicate = os.dup(fd)
     except OSError as error:
-        raise SourceIdentityError("source descriptor duplication failed") from error
+        raise SourceIdentityError("source descriptor duplication failed") from None
     return _OwnedFD(duplicate, label)
 
 
@@ -168,7 +184,7 @@ def _open_at(directory_fd: int, name: bytes, flags: int, label: str) -> _OwnedFD
     try:
         fd = os.open(name, flags, dir_fd=directory_fd)
     except OSError as error:
-        raise SourceIdentityError("source path could not be opened") from error
+        raise SourceIdentityError("source path could not be opened") from None
     return _OwnedFD(fd, label)
 
 
@@ -179,7 +195,7 @@ def _raw_path(value: str | bytes, label: str) -> bytes:
         try:
             raw = value.encode("utf-8", "strict")
         except UnicodeEncodeError as error:
-            raise SourceIdentityError(f"{label} is not UTF-8") from error
+            raise SourceIdentityError(f"{label} is not UTF-8") from None
     else:
         raise SourceIdentityError(f"{label} is not a path")
     if not raw or b"\x00" in raw or len(raw) > MAX_PATH_BYTES:
@@ -206,7 +222,7 @@ def _assert_all(descriptors: Iterable[_OwnedFD]) -> None:
         descriptor.assert_stable()
 
 
-def open_relative_directory(project_root_fd: int, relative: str | bytes) -> DirectoryHandle:
+def _open_relative_directory(project_root_fd: int, relative: str | bytes) -> DirectoryHandle:
     """Open a relative directory without following any path component symlink."""
 
     parts = _components(relative, "relative directory")
@@ -243,12 +259,24 @@ def open_relative_directory(project_root_fd: int, relative: str | bytes) -> Dire
         raise
 
 
+def open_relative_directory(project_root_fd: int, relative: str | bytes) -> DirectoryHandle:
+    """Public sanitized wrapper for descriptor-relative directory resolution."""
+
+    failure: SourceIdentityError | None = None
+    try:
+        return _open_relative_directory(project_root_fd, relative)
+    except SourceIdentityError as error:
+        failure = SourceIdentityError(str(error))
+    assert failure is not None
+    raise failure
+
+
 def _open_absolute_directory(absolute: bytes) -> DirectoryHandle:
     parts = _components(absolute, "absolute directory", absolute=True)
     try:
         root = _OwnedFD(os.open(b"/", DIR_FLAGS), "filesystem-root")
     except OSError as error:
-        raise SourceIdentityError("filesystem root could not be opened") from error
+        raise SourceIdentityError("filesystem root could not be opened") from None
     owned = [root]
     current = root
     try:
@@ -283,7 +311,7 @@ def _read_fd(fd: int, limit: int, label: str) -> bytes:
             raise SourceIdentityError(f"{label} has an unstable size")
         return b"".join(chunks)
     except OSError as error:
-        raise SourceIdentityError(f"{label} is not readable") from error
+        raise SourceIdentityError(f"{label} is not readable") from None
 
 
 def _read_child_file(directory_fd: int, name: bytes, limit: int, label: str) -> tuple[_OwnedFD, bytes]:
@@ -299,6 +327,14 @@ def _read_child_file(directory_fd: int, name: bytes, limit: int, label: str) -> 
         raise
 
 
+def _open_child_regular(directory_fd: int, name: bytes, label: str) -> _OwnedFD:
+    descriptor = _open_at(directory_fd, name, READ_FLAGS, label)
+    if descriptor.initial.file_type != stat.S_IFREG or descriptor.initial.links != 1:
+        descriptor.close()
+        raise SourceIdentityError(f"{label} is not an ordinary file")
+    return descriptor
+
+
 def _optional_child_file(directory_fd: int, name: bytes, limit: int, label: str) -> tuple[_OwnedFD, bytes] | None:
     try:
         return _read_child_file(directory_fd, name, limit, label)
@@ -310,7 +346,7 @@ def _optional_child_file(directory_fd: int, name: bytes, limit: int, label: str)
         except FileNotFoundError:
             return None
         except OSError as open_error:
-            raise error from open_error
+            raise error from None
         try:
             os.close(probe)
         except OSError:
@@ -329,6 +365,7 @@ class _GitView:
     objects: _OwnedFD
     commondir: _OwnedFD | None
     gitdir_bytes: bytes | None
+    resolved_head: str
     extras: tuple[_OwnedFD, ...] = ()
 
     def descriptors(self) -> tuple[_OwnedFD, ...]:
@@ -401,8 +438,10 @@ def _git(
     arguments: list[str],
     *,
     input_bytes: bytes | None = None,
-    max_output: int = MAX_GIT_CONFIG_BYTES,
+    max_output: int | None = None,
 ) -> bytes:
+    if max_output is None:
+        max_output = MAX_GIT_CONFIG_BYTES
     view.assert_stable()
     process: subprocess.Popen[bytes] | None = None
     try:
@@ -438,11 +477,99 @@ def _git(
         if process is not None and process.poll() is None:
             process.kill()
             process.wait()
-        raise SourceIdentityError("Git child could not be started") from error
+        raise SourceIdentityError("Git child could not be started") from None
     view.assert_stable()
     if return_code != 0:
         raise SourceIdentityError("Git source query failed")
     return b"".join(chunks)
+
+
+def _parse_ref_value(raw: bytes, label: str) -> tuple[str, bytes]:
+    if not raw.endswith(b"\n") or b"\n" in raw[:-1] or b"\r" in raw:
+        raise SourceIdentityError(f"{label} is malformed")
+    value = raw[:-1]
+    if value.startswith(b"ref: "):
+        refname = value[len(b"ref: ") :]
+        parts = refname.split(b"/")
+        if (
+            not refname.startswith(b"refs/")
+            or len(parts) > MAX_DEPTH
+            or any(not part or part in (b".", b"..") for part in parts)
+        ):
+            raise SourceIdentityError(f"{label} symbolic ref is invalid")
+        return "ref", refname
+    if len(value) not in (40, 64) or not HEX.fullmatch(value):
+        raise SourceIdentityError(f"{label} object ID is invalid")
+    return "oid", value
+
+
+def _packed_ref(raw: bytes, refname: bytes) -> bytes:
+    matches: list[bytes] = []
+    for line in raw.splitlines():
+        if not line or line.startswith((b"#", b"^")):
+            continue
+        fields = line.split(b" ", 1)
+        if len(fields) == 2 and fields[1] == refname:
+            matches.append(fields[0])
+    if len(matches) != 1 or len(matches[0]) not in (40, 64) or not HEX.fullmatch(matches[0]):
+        raise SourceIdentityError("symbolic HEAD ref is not uniquely resolved")
+    return matches[0]
+
+
+def _retain_head_resolution(common_fd: int, head_bytes: bytes) -> tuple[str, tuple[_OwnedFD, ...]]:
+    retained: list[_OwnedFD] = []
+    raw = head_bytes
+    seen: set[bytes] = set()
+    try:
+        for chain_index in range(MAX_REF_CHAIN):
+            value_kind, value = _parse_ref_value(raw, "HEAD" if chain_index == 0 else "symbolic ref")
+            if value_kind == "oid":
+                return value.decode("ascii"), tuple(retained)
+            if value in seen:
+                raise SourceIdentityError("symbolic HEAD ref is cyclic")
+            seen.add(value)
+            parts = value.split(b"/")
+            current = _duplicate(common_fd, f"ref-root-{chain_index}")
+            retained.append(current)
+            missing = False
+            for component_index, part in enumerate(parts[:-1]):
+                try:
+                    descriptor = os.open(part, DIR_FLAGS, dir_fd=current.fd)
+                except FileNotFoundError:
+                    missing = True
+                    break
+                except OSError:
+                    raise SourceIdentityError("symbolic HEAD ref cannot be opened") from None
+                current = _OwnedFD(descriptor, f"ref-parent-{chain_index}-{component_index}")
+                retained.append(current)
+            if not missing:
+                try:
+                    ref_fd = os.open(parts[-1], READ_FLAGS, dir_fd=current.fd)
+                except FileNotFoundError:
+                    ref_fd = -1
+                except OSError:
+                    raise SourceIdentityError("symbolic HEAD ref cannot be opened") from None
+                if ref_fd >= 0:
+                    ref_descriptor = _OwnedFD(ref_fd, f"ref-value-{chain_index}")
+                    retained.append(ref_descriptor)
+                    if ref_descriptor.initial.file_type != stat.S_IFREG or ref_descriptor.initial.links != 1:
+                        raise SourceIdentityError("symbolic HEAD ref is not an ordinary file")
+                    raw = _read_fd(ref_descriptor.fd, MAX_REVISION_BYTES, "symbolic ref")
+                    ref_descriptor.assert_stable()
+                    continue
+            packed, packed_bytes = _read_child_file(
+                common_fd, b"packed-refs", MAX_PACKED_REFS_BYTES, "packed refs"
+            )
+            retained.append(packed)
+            return _packed_ref(packed_bytes, value).decode("ascii"), tuple(retained)
+        raise SourceIdentityError("symbolic HEAD ref chain is too deep")
+    except Exception:
+        for descriptor in reversed(retained):
+            try:
+                descriptor.close()
+            except SourceIdentityError:
+                pass
+        raise
 
 
 def _open_git_view(worktree: DirectoryHandle, *, kind: str) -> _GitView:
@@ -466,7 +593,7 @@ def _open_git_view(worktree: DirectoryHandle, *, kind: str) -> _GitView:
             if path.startswith(b"/"):
                 git_dir = _open_absolute_directory(path)
             else:
-                git_dir = open_relative_directory(root_fd, path)
+                git_dir = _open_relative_directory(root_fd, path)
         else:
             raise SourceIdentityError("root Git control entry has an invalid type")
         handles.append(git_dir)
@@ -476,6 +603,7 @@ def _open_git_view(worktree: DirectoryHandle, *, kind: str) -> _GitView:
         optional = _optional_child_file(git_dir.fd, b"commondir", MAX_GITDIR_BYTES, "commondir")
         if optional is not None:
             commondir, raw = optional
+            owned.append(commondir)
             if (
                 not raw.endswith(b"\n")
                 or raw[:-1].startswith(b"/")
@@ -484,17 +612,19 @@ def _open_git_view(worktree: DirectoryHandle, *, kind: str) -> _GitView:
                 or b"\r" in raw[:-1]
             ):
                 raise SourceIdentityError("commondir metadata is invalid")
-            common_dir = open_relative_directory(git_dir.fd, raw[:-1])
+            common_dir = _open_relative_directory(git_dir.fd, raw[:-1])
             handles.append(common_dir)
 
-        head, _ = _read_child_file(git_dir.fd, b"HEAD", MAX_REVISION_BYTES, "HEAD")
-        index, _ = _read_child_file(git_dir.fd, b"index", MAX_INDEX_BYTES, "index")
+        head, head_bytes = _read_child_file(git_dir.fd, b"HEAD", MAX_REVISION_BYTES, "HEAD")
+        owned.append(head)
+        index = _open_child_regular(git_dir.fd, b"index", "index")
+        owned.append(index)
         objects = _open_at(common_dir.fd, b"objects", DIR_FLAGS, "objects")
+        owned.append(objects)
         if objects.initial.file_type != stat.S_IFDIR:
             raise SourceIdentityError("Git object store is not a directory")
-        owned.extend([head, index, objects])
-        if common_dir is git_dir:
-            handles.append(common_dir)
+        resolved_head, ref_descriptors = _retain_head_resolution(common_dir.fd, head_bytes)
+        owned.extend(ref_descriptors)
         return _GitView(
             worktree,
             root_git,
@@ -505,6 +635,8 @@ def _open_git_view(worktree: DirectoryHandle, *, kind: str) -> _GitView:
             objects,
             commondir,
             gitdir_bytes,
+            resolved_head,
+            ref_descriptors,
         )
     except Exception:
         closed_handles: set[int] = set()
@@ -546,7 +678,7 @@ def _reject_present(directory_fd: int, path: bytes, label: str) -> None:
             except FileNotFoundError:
                 return
             except OSError as error:
-                raise SourceIdentityError(f"{label} cannot be checked") from error
+                raise SourceIdentityError(f"{label} cannot be checked") from None
             opened.append(descriptor)
             current = descriptor
         raise SourceIdentityError(f"{label} is present")
@@ -564,7 +696,7 @@ def _reject_promisor_packs(objects_fd: int) -> None:
     except FileNotFoundError:
         return
     except OSError as error:
-        raise SourceIdentityError("Git pack directory cannot be checked") from error
+        raise SourceIdentityError("Git pack directory cannot be checked") from None
     try:
         with os.scandir(pack_fd) as entries:
             for entry in entries:
@@ -633,19 +765,24 @@ def _object_format(view: _GitView) -> str:
     return values[0].decode("ascii")
 
 
-def _revision(view: _GitView) -> str:
-    object_type = _git(view, ["cat-file", "-t", "HEAD"])
+def _revision(view: _GitView, expected_revision: str) -> str:
+    if view.resolved_head != expected_revision:
+        raise SourceIdentityError("retained Git HEAD does not match the expected source identity")
+    object_type = _git(view, ["cat-file", "-t", expected_revision])
     if _parse_lines(object_type, "HEAD object type") != [b"commit"]:
         raise SourceIdentityError("Git HEAD does not name a commit")
     raw = _git(view, ["rev-parse", "--verify", "HEAD"])
     values = _parse_lines(raw, "HEAD")
     if len(values) != 1 or not HEX.fullmatch(values[0]) or len(values[0]) not in (40, 64):
         raise SourceIdentityError("Git HEAD is invalid")
-    return values[0].decode("ascii")
+    revision = values[0].decode("ascii")
+    if revision != expected_revision:
+        raise SourceIdentityError("Git HEAD changed from its retained identity")
+    return revision
 
 
-def _tree_id(view: _GitView) -> str:
-    raw = _git(view, ["rev-parse", "--verify", "HEAD^{tree}"])
+def _tree_id(view: _GitView, revision: str) -> str:
+    raw = _git(view, ["rev-parse", "--verify", f"{revision}^{{tree}}"])
     values = _parse_lines(raw, "tree")
     if len(values) != 1 or not HEX.fullmatch(values[0]) or len(values[0]) not in (40, 64):
         raise SourceIdentityError("Git tree is invalid")
@@ -670,7 +807,7 @@ def _read_index(view: _GitView) -> str:
             digest.update(chunk)
             offset += len(chunk)
     except OSError as error:
-        raise SourceIdentityError("Git index is not readable") from error
+        raise SourceIdentityError("Git index is not readable") from None
     view.index.assert_stable()
     if offset != size or not header.startswith(b"DIRC"):
         raise SourceIdentityError("Git index preimage is invalid")
@@ -687,7 +824,7 @@ def _parse_ls_tree(raw: bytes, width: int) -> list[tuple[bytes, str, str, str]]:
             metadata, path = record.split(b"\t", 1)
             mode, kind, object_id = metadata.split(b" ", 2)
         except ValueError as error:
-            raise SourceIdentityError("Git tree record is malformed") from error
+            raise SourceIdentityError("Git tree record is malformed") from None
         if not path or b"\x00" in path or path.startswith(b"/") or b"//" in path:
             raise SourceIdentityError("Git tree path is invalid")
         if path in seen:
@@ -809,7 +946,7 @@ def _exception_metadata(view: _GitView, kind: str, tree_paths: set[bytes]) -> tu
         except FileNotFoundError:
             return OutputExceptionMetadata(label, False, None, None, None)
         except OSError as error:
-            raise SourceIdentityError(f"root {label} output cannot be checked") from error
+            raise SourceIdentityError(f"root {label} output cannot be checked") from None
         snapshot = _stat_snapshot(value)
         if expected == "directory":
             if (
@@ -835,10 +972,10 @@ def _exception_metadata(view: _GitView, kind: str, tree_paths: set[bytes]) -> tu
     return tuple(values)
 
 
-def _tracked_index_paths(view: _GitView, expected: set[bytes]) -> None:
+def _tracked_index_paths(view: _GitView, expected: set[bytes], revision: str) -> None:
     staged = _git(
         view,
-        ["diff-index", "--cached", "--name-only", "-z", "HEAD", "--"],
+        ["diff-index", "--cached", "--name-only", "-z", revision, "--"],
         max_output=MAX_GIT_LIST_BYTES,
     )
     if staged:
@@ -870,7 +1007,7 @@ def _list_directory(fd: int, remaining: int) -> list[bytes]:
                     raise SourceIdentityError("source directory entry name is invalid")
                 names.append(name)
     except OSError as error:
-        raise SourceIdentityError("source directory cannot be enumerated") from error
+        raise SourceIdentityError("source directory cannot be enumerated") from None
     names.sort()
     return names
 
@@ -986,7 +1123,7 @@ def _verify_object_store(
             try:
                 object_size = int(size_bytes)
             except ValueError as error:
-                raise SourceIdentityError("Git object size is invalid") from error
+                raise SourceIdentityError("Git object size is invalid") from None
             expected_type, expected_size = expected[requested]
             if (
                 object_id.decode("ascii", "strict") != requested
@@ -1051,7 +1188,7 @@ def _enumerate_source(
                 try:
                     raw_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                 except OSError as error:
-                    raise SourceIdentityError("source entry cannot be inspected") from error
+                    raise SourceIdentityError("source entry cannot be inspected") from None
                 before = _stat_snapshot(raw_stat)
                 entry_kind, git_mode, git_object = expected
                 mode_value: str | None
@@ -1105,7 +1242,7 @@ def _enumerate_source(
                         target = os.fsencode(target) if isinstance(target, str) else target
                         after = _stat_snapshot(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
                     except OSError as error:
-                        raise SourceIdentityError("source symlink cannot be read") from error
+                        raise SourceIdentityError("source symlink cannot be read") from None
                     if before != after or not target or len(target) > MAX_SYMLINK_BYTES or b"\x00" in target:
                         raise SourceIdentityError("source symlink changed or exceeds its bound")
                     raw_path_link_bytes += len(target)
@@ -1140,7 +1277,7 @@ def _enumerate_source(
         walk(root.fd, b"", 1)
         root.assert_stable()
     except OSError as error:
-        raise SourceIdentityError("source root cannot be enumerated") from error
+        raise SourceIdentityError("source root cannot be enumerated") from None
     finally:
         root.close()
     if observed != tree_paths:
@@ -1173,22 +1310,22 @@ def _capture_identity(
     object_format = _object_format(view)
     if object_format != expected_object_format or (kind == "align-source" and object_format != "sha1"):
         raise SourceIdentityError("Git object format does not match the expected source identity")
-    revision = _revision(view)
+    revision = _revision(view, expected_revision)
     width = 40 if object_format == "sha1" else 64
     if len(revision) != width or revision != expected_revision:
         raise SourceIdentityError("Git HEAD does not match the expected source identity")
-    tree_id = _tree_id(view)
+    tree_id = _tree_id(view, revision)
     if len(tree_id) != width:
         raise SourceIdentityError("Git tree has the wrong object format")
     index_sha256 = _read_index(view)
     raw_tree = _git(
         view,
-        ["ls-tree", "-r", "-t", "-z", "--full-tree", "HEAD"],
+        ["ls-tree", "-r", "-t", "-z", "--full-tree", revision],
         max_output=MAX_GIT_LIST_BYTES,
     )
     tree_entries = _parse_ls_tree(raw_tree, width)
     leaf_paths = {path for path, entry_kind, _, _ in tree_entries if entry_kind != "dir"}
-    _tracked_index_paths(view, leaf_paths)
+    _tracked_index_paths(view, leaf_paths, revision)
     _verify_tree_objects(tree_entries, object_format, tree_id)
     entries, entry_snapshots, exceptions = _enumerate_source(view, kind, tree_entries, object_format)
     _verify_object_store(view, tree_entries, tree_id, entries)
@@ -1251,20 +1388,32 @@ class SourceIdentityHandle:
     def recheck(self) -> None:
         if self._closed:
             raise SourceIdentityError("source identity handle is closed")
-        current = _capture_identity(
-            self._view,
-            kind=self.identity.kind,
-            expected_revision=self._expected_revision,
-            expected_object_format=self._expected_object_format,
-        )
-        if current != self.identity:
-            raise SourceIdentityError("source identity changed")
+        failure: SourceIdentityError | None = None
+        try:
+            current = _capture_identity(
+                self._view,
+                kind=self.identity.kind,
+                expected_revision=self._expected_revision,
+                expected_object_format=self._expected_object_format,
+            )
+            if current != self.identity:
+                raise SourceIdentityError("source identity changed")
+        except SourceIdentityError as error:
+            failure = SourceIdentityError(str(error))
+        if failure is not None:
+            raise failure
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        _close_view(self._view)
+        failure: SourceIdentityError | None = None
+        try:
+            _close_view(self._view)
+        except SourceIdentityError as error:
+            failure = SourceIdentityError(str(error))
+        if failure is not None:
+            raise failure
 
     def __enter__(self) -> "SourceIdentityHandle":
         return self
@@ -1304,7 +1453,7 @@ def _capture(
         raise
 
 
-def capture_project_source(
+def _capture_project_source(
     root_fd: int, expected_head: str, expected_object_format: str
 ) -> SourceIdentityHandle:
     if expected_object_format not in ("sha1", "sha256"):
@@ -1313,7 +1462,7 @@ def capture_project_source(
     try:
         encoded = expected_head.encode("ascii")
     except (AttributeError, UnicodeEncodeError) as error:
-        raise SourceIdentityError("expected project HEAD is invalid") from error
+        raise SourceIdentityError("expected project HEAD is invalid") from None
     if len(encoded) != width or not HEX.fullmatch(encoded):
         raise SourceIdentityError("expected project HEAD is invalid")
     descriptor = _duplicate(root_fd, "project-root")
@@ -1326,15 +1475,39 @@ def capture_project_source(
     )
 
 
-def capture_align_source(
+def _capture_align_source(
     project_root_fd: int, align_repo_relative: str | bytes, expected_revision: str
 ) -> SourceIdentityHandle:
     if not isinstance(expected_revision, str) or not REVISION.fullmatch(expected_revision):
         raise SourceIdentityError("expected Align revision is invalid")
-    worktree = open_relative_directory(project_root_fd, align_repo_relative)
+    worktree = _open_relative_directory(project_root_fd, align_repo_relative)
     return _capture(
         worktree,
         kind="align-source",
         expected_revision=expected_revision,
         expected_object_format="sha1",
     )
+
+
+def capture_project_source(
+    root_fd: int, expected_head: str, expected_object_format: str
+) -> SourceIdentityHandle:
+    failure: SourceIdentityError | None = None
+    try:
+        return _capture_project_source(root_fd, expected_head, expected_object_format)
+    except SourceIdentityError as error:
+        failure = SourceIdentityError(str(error))
+    assert failure is not None
+    raise failure
+
+
+def capture_align_source(
+    project_root_fd: int, align_repo_relative: str | bytes, expected_revision: str
+) -> SourceIdentityHandle:
+    failure: SourceIdentityError | None = None
+    try:
+        return _capture_align_source(project_root_fd, align_repo_relative, expected_revision)
+    except SourceIdentityError as error:
+        failure = SourceIdentityError(str(error))
+    assert failure is not None
+    raise failure
