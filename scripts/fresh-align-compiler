@@ -1034,7 +1034,11 @@ def open_git_view(tool_fd: int, root_fd: int) -> GitView:
     retained: list[tuple[int, Snapshot]] = []
     entry_checks: list[tuple[int, bytes, Snapshot]] = []
     try:
-        retained_root = os.dup(root_fd)
+        retained_root = os.open(
+            b".",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
         retained.append((retained_root, snapshot_fd(retained_root)))
         root_git = os.open(
             b".git", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=retained_root
