@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <linux/memfd.h>
+#include <limits.h>
 #include <stddef.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -22,8 +23,6 @@
 
 #define PYTHON_PATH "/usr/bin/python3"
 #define REQUIRED_SEALS (F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL)
-
-extern char **environ;
 
 static int fail(void) {
     static const char message[] = "fresh compiler: ERROR TRUST supervisor\n";
@@ -47,8 +46,24 @@ static int write_all(int fd, const unsigned char *data, size_t size) {
     return 0;
 }
 
+static int close_unexpected_descriptors(void) {
+    return syscall(SYS_close_range, 3U, 3U, 0U) < 0 ||
+                   syscall(SYS_close_range, 7U, 9U, 0U) < 0 ||
+                   syscall(SYS_close_range, 12U, UINT_MAX, 0U) < 0
+               ? -1
+               : 0;
+}
+
 int main(int argc, char **argv) {
     char *child_argv[12];
+    char *child_env[] = {
+        "PATH=/usr/bin:/bin",
+        "LC_ALL=C",
+        "LANG=C",
+        "HOME=/nonexistent",
+        "TMPDIR=/tmp",
+        NULL,
+    };
     int payload_fd;
     int self_fd;
     int index;
@@ -90,6 +105,9 @@ int main(int argc, char **argv) {
         child_argv[index + 5] = argv[index];
     }
     child_argv[argc + 5] = NULL;
-    execve(PYTHON_PATH, child_argv, environ);
+    if (close_unexpected_descriptors() < 0) {
+        return fail();
+    }
+    execve(PYTHON_PATH, child_argv, child_env);
     return fail();
 }

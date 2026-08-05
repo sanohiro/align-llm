@@ -8,6 +8,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -19,6 +20,7 @@ from fresh_image_control import (  # noqa: E402
     ControlError,
     _mode_from_arguments,
     _normalize_relative,
+    _open_regular,
     _read_sealed,
     _reject_environment,
     _sealed_memfd,
@@ -109,6 +111,54 @@ def main() -> int:
                 assert (first / name).read_bytes() == (second / name).read_bytes()
                 assert (first / name).read_bytes().startswith(b"\x7fELF")
             assert not has_elf_interpreter(first / "fresh-supervise")
+            fifo = first / "worker-fifo"
+            os.mkfifo(fifo, 0o755)
+            started = time.monotonic()
+            rejected(
+                lambda: _open_regular(
+                    str(fifo), limit=4_194_304, exact_mode=0o755
+                )
+            )
+            assert time.monotonic() - started < 1.0
+            signing_seed = first / "offline-seed"
+            signing_seed.write_bytes(b"s" * 32)
+            signing_seed.chmod(0o400)
+            signer_manifest = first / "signer-manifest"
+            signer_manifest.write_bytes(b"{}\n")
+            signer_manifest.chmod(0o444)
+            signer_started = time.monotonic()
+            signer_fifo = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPOSITORY / "scripts" / "fresh-image-attest"),
+                    "--image-digest",
+                    "sha256:" + "1" * 64,
+                    "--provenance-digest",
+                    "sha256:" + "2" * 64,
+                    "--supervisor",
+                    str(fifo),
+                    "--bootstrap",
+                    str(first / "fresh-bootstrap"),
+                    "--manifest",
+                    str(signer_manifest),
+                    "--image-signing-seed",
+                    str(signing_seed),
+                    "--output",
+                    str(first / "fifo-attestation"),
+                ],
+                env={
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "LC_ALL": "C",
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=2,
+            )
+            assert signer_fifo.returncode != 0
+            assert time.monotonic() - signer_started < 1.0
             injected = subprocess.run(
                 [str(first / "fresh-supervise")],
                 env={"LD_PRELOAD": "/nonexistent/fresh-image-injection.so"},
@@ -120,6 +170,25 @@ def main() -> int:
             assert injected.returncode == 1
             assert injected.stdout == b""
             assert injected.stderr == b"fresh compiler: ERROR ARGUMENT input\n"
+            for environment in (
+                {"LD_DEBUG": "libs"},
+                {"GLIBC_TUNABLES": "glibc.malloc.check=1"},
+                {"PYTHONHASHSEED": "1"},
+            ):
+                rejected_environment = subprocess.run(
+                    [str(first / "fresh-supervise"), "--mode", "self-test"],
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                assert rejected_environment.returncode == 1
+                assert rejected_environment.stdout == b""
+                assert (
+                    rejected_environment.stderr
+                    == b"fresh compiler: ERROR ARGUMENT input\n"
+                )
             injected_option = subprocess.run(
                 [
                     str(first / "fresh-supervise"),

@@ -68,10 +68,18 @@ COPY scripts/build-fresh-image-control scripts/fresh_attestation.py scripts/fres
 COPY image/fresh /build/align-llm/image/fresh
 
 RUN mkdir -p /usr/local/libexec/align-llm /usr/local/share/align-llm \
-      /opt/align-llm/tool-bin /var/cache/align-llm/cargo && \
+      /opt/align-llm/tool-bin /var/cache/align-llm/cargo \
+      /tmp/fresh-control-a /tmp/fresh-control-b && \
     python3 /build/align-llm/scripts/build-fresh-image-control \
-      --cc /usr/lib/llvm-22/bin/clang --output-dir /usr/local/libexec/align-llm && \
-    /usr/lib/llvm-22/bin/clang -std=c11 -O2 -Wall -Wextra -Werror -fPIE -pie \
+      --cc /usr/lib/llvm-22/bin/clang --output-dir /tmp/fresh-control-a && \
+    python3 /build/align-llm/scripts/build-fresh-image-control \
+      --cc /usr/lib/llvm-22/bin/clang --output-dir /tmp/fresh-control-b && \
+    cmp /tmp/fresh-control-a/fresh-supervise /tmp/fresh-control-b/fresh-supervise && \
+    cmp /tmp/fresh-control-a/fresh-bootstrap /tmp/fresh-control-b/fresh-bootstrap && \
+    install -m 0755 /tmp/fresh-control-a/fresh-supervise \
+      /tmp/fresh-control-a/fresh-bootstrap /usr/local/libexec/align-llm/ && \
+    rm -rf /tmp/fresh-control-a /tmp/fresh-control-b && \
+    /usr/lib/llvm-22/bin/clang -std=c11 -O2 -Wall -Wextra -Werror -static-pie \
       -Wl,-z,relro,-z,now -Wl,--build-id=none \
       -o /opt/align-llm/tool-bin/mount-guard /build/align-llm/image/fresh/mount-guard.c && \
     install -m 0755 /build/align-llm/image/fresh/fresh-profile \

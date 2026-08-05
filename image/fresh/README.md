@@ -30,6 +30,10 @@ PYTHONDONTWRITEBYTECODE=1 scripts/run-fresh-image-profile-smoke
 Production deployment follows the same ownership boundary: build with public-key hex arguments,
 produce `image-attestation.dsse` using `scripts/fresh-image-attest` and an offline image seed, mount
 the four fixed files under `/run/align-llm-fresh` read-only, and mount the same persistent
-`/run/user` profile into the provisioner and worker containers. Run `fresh-profile setup <uid>`
-before invoking the image and `fresh-profile cleanup <uid>` afterward. The exact file modes and
-ownership are normative in Section 9.1 of `docs/specs/check-gate-topology.md`.
+`/run/user` profile into the provisioner and worker containers. The invocation runs as that uid and
+must start inside the delegated `/sys/fs/cgroup/align-llm-fresh/<uid>` subtree; for Docker's cgroupfs
+driver the matching parent is `--cgroup-parent=/align-llm-fresh/<uid>`. Run
+`fresh-profile setup <uid>` before invoking the image and `fresh-profile cleanup <uid>` afterward.
+The immutable attestation and digest files remain root-owned while only `run-signing-seed` is owned
+by the invoking uid. The exact file modes and ownership are normative in Section 9.1 of
+`docs/specs/check-gate-topology.md`.

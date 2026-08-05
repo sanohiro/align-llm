@@ -14,9 +14,11 @@ import fcntl
 import hashlib
 import os
 import re
+import resource
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -35,7 +37,7 @@ from fresh_attestation import (
     validate_invocation_predicate,
     verify_envelope,
 )
-from fresh_manifest import validate_manifest_bytes
+from fresh_manifest import serialized_digest, structural_digest, validate_manifest_bytes
 
 
 MAX_WORKER_BYTES = 4_194_304
@@ -189,6 +191,20 @@ def _same_identity(left: FileIdentity, right: FileIdentity) -> bool:
     return left == right
 
 
+def _close_descriptors_except(allowed: set[int]) -> None:
+    try:
+        descriptors = [int(name) for name in os.listdir("/proc/self/fd")]
+    except (OSError, ValueError) as error:
+        raise ControlError("TRUST", "supervisor", "descriptor inventory unavailable") from error
+    for descriptor in descriptors:
+        if descriptor in allowed:
+            continue
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
 def _read_exact_bounded(fd: int, *, limit: int, deadline: float) -> bytes:
     identity = _identity(fd)
     if identity.size < 0 or identity.size > limit:
@@ -212,6 +228,7 @@ def _regular_snapshot(
     limit: int,
     exact_mode: int | None = None,
     exact_owner: int | None = None,
+    deadline: float | None = None,
 ) -> bytes:
     before = _identity(fd)
     if not stat.S_ISREG(before.mode) or before.links != 1:
@@ -222,7 +239,13 @@ def _regular_snapshot(
         raise ControlError("TRUST", "input", "input has the wrong owner")
     os.lseek(fd, 0, os.SEEK_SET)
     raw = _read_exact_bounded(
-        fd, limit=limit, deadline=time.monotonic() + SNAPSHOT_DEADLINE_SECONDS
+        fd,
+        limit=limit,
+        deadline=(
+            time.monotonic() + SNAPSHOT_DEADLINE_SECONDS
+            if deadline is None
+            else deadline
+        ),
     )
     after = _identity(fd)
     if not _same_identity(before, after):
@@ -237,13 +260,21 @@ def _open_regular(
     exact_mode: int | None = None,
     exact_owner: int | None = None,
 ) -> tuple[int, bytes]:
+    deadline = time.monotonic() + SNAPSHOT_DEADLINE_SECONDS
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(
+            path,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
     except OSError as error:
         raise ControlError("TRUST", "input", f"cannot open {path}") from error
     try:
         return fd, _regular_snapshot(
-            fd, limit=limit, exact_mode=exact_mode, exact_owner=exact_owner
+            fd,
+            limit=limit,
+            exact_mode=exact_mode,
+            exact_owner=exact_owner,
+            deadline=deadline,
         )
     except Exception:
         os.close(fd)
@@ -383,7 +414,7 @@ def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
     def run(*arguments: str) -> str:
         try:
             result = subprocess.run(
-                [git_path, *arguments],
+                [git_path, "-c", "safe.directory=*", *arguments],
                 cwd=cwd,
                 env=environment,
                 stdin=subprocess.DEVNULL,
@@ -411,7 +442,8 @@ def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
     return object_format, head
 
 
-def _worker_snapshot(project_fd: int) -> bytes:
+def _worker_snapshot(project_fd: int, *, owner: int) -> bytes:
+    deadline = time.monotonic() + SNAPSHOT_DEADLINE_SECONDS
     try:
         scripts_fd = os.open(
             "scripts",
@@ -420,7 +452,7 @@ def _worker_snapshot(project_fd: int) -> bytes:
         )
         worker_fd = os.open(
             "fresh-align-compiler",
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
             dir_fd=scripts_fd,
         )
     except OSError as error:
@@ -433,7 +465,8 @@ def _worker_snapshot(project_fd: int) -> bytes:
             worker_fd,
             limit=MAX_WORKER_BYTES,
             exact_mode=0o755,
-            exact_owner=os.geteuid(),
+            exact_owner=owner,
+            deadline=deadline,
         )
     finally:
         if "worker_fd" in locals():
@@ -488,9 +521,11 @@ def _verify_image_envelope(
     os.close(manifest_fd)
     try:
         expected = {
-            "image_digest": _read_digest(paths.image_digest, owner=os.geteuid()),
+            "image_digest": _read_digest(paths.image_digest, owner=paths.image_owner),
             "image_name": EXPECTED_IMAGE_NAME,
-            "provenance_digest": _read_digest(paths.provenance_digest, owner=os.geteuid()),
+            "provenance_digest": _read_digest(
+                paths.provenance_digest, owner=paths.image_owner
+            ),
             "verifier_key_sha256": sha256_hex(image_key),
             "supervisor_path": SUPERVISOR_PATH,
             "supervisor_sha256": sha256_hex(supervisor_raw),
@@ -579,7 +614,10 @@ def supervise(
         raise ControlError("SOURCE", "project-source", "cannot retain project root") from error
     object_format, head = _git_identity(project_fd, paths.git)
     try:
-        worker_raw = _worker_snapshot(project_fd)
+        worker_raw = _worker_snapshot(
+            project_fd,
+            owner=paths.image_owner if mode == "self-test" else os.geteuid(),
+        )
     except ControlError as error:
         raise ControlError("TRUST", "supervisor", "worker snapshot rejected") from error
     run_owner = os.geteuid() if paths.run_owner is None else paths.run_owner
@@ -616,6 +654,7 @@ def supervise(
         os.dup2(image_fd, 6, inheritable=True)
     os.set_inheritable(6, True)
     os.chdir("/proc/self/fd/4")
+    _close_descriptors_except({0, 1, 2, 4, 5, 6})
     os.execve(paths.bootstrap, [paths.bootstrap, "--mode", mode], CHILD_ENVIRONMENT)
 
 
@@ -692,6 +731,173 @@ def _version_tuple(raw: bytes, pattern: bytes) -> tuple[int, ...]:
     return tuple(int(part) for part in match.group(1).split(b"."))
 
 
+def _runtime_tree(path: str, *, root: bool = True) -> OrderedDict[str, object]:
+    try:
+        value = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise ControlError("TOOL", "tools", "runtime binding is unavailable") from error
+    if stat.S_ISLNK(value.st_mode) or not (
+        stat.S_ISREG(value.st_mode) or stat.S_ISDIR(value.st_mode)
+    ):
+        raise ControlError("TOOL", "tools", "runtime binding type is invalid")
+    if value.st_uid != 0:
+        raise ControlError("TOOL", "tools", "runtime binding owner is invalid")
+    fields: list[tuple[str, object]] = []
+    if not root:
+        fields.append(("name", os.path.basename(path)))
+    kind = "dir" if stat.S_ISDIR(value.st_mode) else "file"
+    mode = stat.S_IMODE(value.st_mode)
+    staged = "0700" if kind == "dir" else ("0555" if mode & 0o111 else "0444")
+    fields.extend(
+        [
+            ("kind", kind),
+            ("mode", f"{mode:04o}"),
+            ("staged_mode", staged),
+            ("size", 0 if kind == "dir" else value.st_size),
+            ("sha256", "0" * 64),
+            ("entries", []),
+        ]
+    )
+    node: OrderedDict[str, object] = OrderedDict(fields)
+    if kind == "file":
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+        except OSError as error:
+            raise ControlError("TOOL", "tools", "runtime file open rejected") from error
+        try:
+            before = _identity(descriptor)
+            if (
+                not stat.S_ISREG(before.mode)
+                or before.owner != 0
+                or before.size != value.st_size
+                or before.size > 536_870_912
+            ):
+                raise ControlError("TOOL", "tools", "runtime file identity rejected")
+            deadline = time.monotonic() + SNAPSHOT_DEADLINE_SECONDS
+            remaining = before.size
+            hasher = hashlib.sha256()
+            while remaining:
+                if time.monotonic() > deadline:
+                    raise ControlError("TOOL", "tools", "runtime file deadline exceeded")
+                block = os.read(descriptor, min(1_048_576, remaining))
+                if not block:
+                    raise ControlError("TOOL", "tools", "runtime file was short")
+                hasher.update(block)
+                remaining -= len(block)
+            if os.read(descriptor, 1):
+                raise ControlError("TOOL", "tools", "runtime file grew")
+            if not _same_identity(before, _identity(descriptor)):
+                raise ControlError("TOOL", "tools", "runtime file changed")
+        finally:
+            os.close(descriptor)
+        node["sha256"] = hasher.hexdigest()
+        return node
+    try:
+        names = sorted(os.listdir(path), key=os.fsencode)
+    except OSError as error:
+        raise ControlError("TOOL", "tools", "runtime directory read rejected") from error
+    entries = [_runtime_tree(os.path.join(path, name), root=False) for name in names]
+    try:
+        after = os.stat(path, follow_symlinks=False)
+    except OSError as error:
+        raise ControlError("TOOL", "tools", "runtime directory changed") from error
+    if (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+    ) != (after.st_dev, after.st_ino, after.st_mode, after.st_uid):
+        raise ControlError("TOOL", "tools", "runtime directory changed")
+    node["entries"] = entries
+    node["sha256"] = structural_digest(node)
+    return node
+
+
+def _run_retained_tool(
+    descriptor: int, arguments: Sequence[str], *, timeout: int = 10
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        list(arguments),
+        executable=f"/proc/self/fd/{descriptor}",
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        pass_fds=(descriptor,),
+        close_fds=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="align-llm-fresh-bwrap-", dir="/dev/shm") as name:
+        lower = os.path.join(name, "lower")
+        upper = os.path.join(name, "upper")
+        work = os.path.join(name, "work")
+        os.mkdir(lower, 0o700)
+        os.mkdir(upper, 0o700)
+        os.mkdir(work, 0o700)
+        os.mkdir(os.path.join(lower, "tmp"), 0o700)
+        marker = os.open(
+            os.path.join(lower, "lower-marker"),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(marker)
+        arguments = [
+            bwrap_argv0,
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--die-with-parent",
+            "--new-session",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--cap-add",
+            "CAP_SYS_ADMIN",
+            "--tmpfs",
+            "/",
+            "--dir",
+            "/target",
+            "--overlay-src",
+            lower,
+            "--overlay",
+            upper,
+            work,
+            "/target",
+            "--tmpfs",
+            "/target/tmp",
+            "--ro-bind",
+            "/opt/align-llm/tool-bin",
+            "/tools",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--",
+            "/tools/mount-guard",
+            "--no-symlink-follow",
+            "/target/tmp",
+            "--",
+            "/tools/mount-guard",
+            "--namespace-self-test",
+        ]
+        try:
+            result = _run_retained_tool(bwrap_fd, arguments, timeout=20)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ControlError("TRUST", "bwrap", "bubblewrap namespace probe failed") from error
+        if result.returncode != 0 or result.stdout or result.stderr:
+            raise ControlError("TRUST", "bwrap", "bubblewrap namespace probe rejected")
+
+
 def _platform_self_test(manifest_raw: bytes) -> None:
     if os.uname().sysname != "Linux" or os.uname().machine != "x86_64":
         raise ControlError("PLATFORM", "platform", "platform is not Linux x86_64")
@@ -703,7 +909,13 @@ def _platform_self_test(manifest_raw: bytes) -> None:
         manifest = validate_manifest_bytes(manifest_raw)
     except WireError as error:
         raise ControlError("TRUST", "manifest", "manifest is invalid") from error
+    for binding in manifest["runtime_bindings"]:
+        tree = _runtime_tree(binding["source"])
+        if tree != binding["manifest"] or serialized_digest(tree) != binding["manifest_sha256"]:
+            raise ControlError("TOOL", "tools", "runtime binding digest mismatch")
     probe_output: dict[str, bytes] = {}
+    bwrap_fd = -1
+    bwrap_argv0 = ""
     for tool in manifest["tools"]:
         path = tool["path"]
         try:
@@ -712,58 +924,58 @@ def _platform_self_test(manifest_raw: bytes) -> None:
             )
         except ControlError as error:
             raise ControlError("TOOL", "tools", "tool snapshot rejected") from error
-        os.close(fd)
         if sha256_hex(raw) != tool["sha256"]:
+            os.close(fd)
             raise ControlError("TOOL", "tools", f"tool digest mismatch: {tool['name']}")
         try:
-            result = subprocess.run(
-                tool["argv"],
-                env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=10,
-                check=False,
-            )
+            result = _run_retained_tool(fd, tool["argv"])
         except (OSError, subprocess.TimeoutExpired) as error:
+            os.close(fd)
             raise ControlError("TOOL", "tools", f"tool probe failed: {tool['name']}") from error
         if (
             result.returncode != 0
             or result.stdout.hex() != tool["stdout"]
             or result.stderr.hex() != tool["stderr"]
         ):
+            os.close(fd)
             raise ControlError("TOOL", "tools", f"tool probe changed: {tool['name']}")
         probe_output[tool["name"]] = result.stdout + result.stderr
-    if _version_tuple(probe_output["git"], rb"git version (\d+\.\d+(?:\.\d+)?)") < (2, 45):
-        raise ControlError("PLATFORM", "platform", "Git is older than 2.45")
-    for name in ("cargo", "rustc"):
-        if _version_tuple(probe_output[name], rb"(?:cargo|rustc) (\d+\.\d+\.\d+)") != (
-            1,
-            96,
-            0,
-        ):
-            raise ControlError("PLATFORM", "platform", f"{name} is not 1.96.0")
-    if _version_tuple(probe_output["make"], rb"GNU Make (\d+\.\d+(?:\.\d+)?)") < (4, 3):
-        raise ControlError("PLATFORM", "platform", "GNU Make is older than 4.3")
-    if _version_tuple(probe_output["clang"], rb"clang version (\d+)")[:1] != (22,):
-        raise ControlError("PLATFORM", "platform", "Clang is not major 22")
-    bwrap_path = next(tool["path"] for tool in manifest["tools"] if tool["name"] == "bwrap")
+        if tool["name"] == "bwrap":
+            bwrap_fd = fd
+            bwrap_argv0 = tool["argv"][0]
+        else:
+            os.close(fd)
+    if bwrap_fd < 0:
+        raise ControlError("TRUST", "bwrap", "bubblewrap descriptor is missing")
     try:
-        help_result = subprocess.run(
-            [bwrap_path, "--help"],
-            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ControlError("TRUST", "bwrap", "bubblewrap probe failed") from error
-    if help_result.returncode != 0 or not all(
-        option in help_result.stdout for option in (b"--overlay-src", b"--overlay")
-    ):
-        raise ControlError("TRUST", "bwrap", "bubblewrap overlay support is missing")
+        if _version_tuple(probe_output["git"], rb"git version (\d+\.\d+(?:\.\d+)?)") < (
+            2,
+            45,
+        ):
+            raise ControlError("PLATFORM", "platform", "Git is older than 2.45")
+        for name in ("cargo", "rustc"):
+            if _version_tuple(
+                probe_output[name], rb"(?:cargo|rustc) (\d+\.\d+\.\d+)"
+            ) != (1, 96, 0):
+                raise ControlError("PLATFORM", "platform", f"{name} is not 1.96.0")
+        if _version_tuple(
+            probe_output["make"], rb"GNU Make (\d+\.\d+(?:\.\d+)?)"
+        ) < (4, 3):
+            raise ControlError("PLATFORM", "platform", "GNU Make is older than 4.3")
+        if _version_tuple(probe_output["clang"], rb"clang version (\d+)")[:1] != (22,):
+            raise ControlError("PLATFORM", "platform", "Clang is not major 22")
+        try:
+            help_result = _run_retained_tool(bwrap_fd, [bwrap_argv0, "--help"])
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ControlError("TRUST", "bwrap", "bubblewrap probe failed") from error
+        if help_result.returncode != 0 or not all(
+            option in help_result.stdout + help_result.stderr
+            for option in (b"--overlay-src", b"--overlay")
+        ):
+            raise ControlError("TRUST", "bwrap", "bubblewrap overlay support is missing")
+        _namespace_self_test(bwrap_fd, bwrap_argv0)
+    finally:
+        os.close(bwrap_fd)
 
     temporary = f"/tmp/align-llm-fresh-exec-{os.getpid()}"
     source_fd = -1
@@ -850,8 +1062,55 @@ def _platform_self_test(manifest_raw: bytes) -> None:
         with open(os.path.join(leaf, "pids.max"), encoding="ascii") as source:
             if source.read().strip() != "512":
                 raise OSError(errno.EIO, "cgroup pids.max mismatch")
+        limits = (
+            (resource.RLIMIT_NPROC, 512),
+            (resource.RLIMIT_NOFILE, 4096),
+            (resource.RLIMIT_FSIZE, 536_870_912),
+        )
+
+        def admit_limited_child() -> None:
+            for kind, limit in limits:
+                resource.setrlimit(kind, (limit, limit))
+            with open(os.path.join(leaf, "cgroup.procs"), "w", encoding="ascii") as target:
+                target.write("0\n")
+
+        child_code = """
+import os
+import resource
+import sys
+expected = sys.argv[1]
+assert resource.getrlimit(resource.RLIMIT_NPROC) == (512, 512)
+assert resource.getrlimit(resource.RLIMIT_NOFILE) == (4096, 4096)
+assert resource.getrlimit(resource.RLIMIT_FSIZE) == (536870912, 536870912)
+lines = open('/proc/self/cgroup', encoding='ascii').read().splitlines()
+assert any(line.startswith('0::') and line.endswith(expected) for line in lines)
+os.write(1, b'limited child: PASS\\n')
+"""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                child_code,
+                "/" + leaf.removeprefix("/sys/fs/cgroup/"),
+            ],
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            preexec_fn=admit_limited_child,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0 or result.stdout != b"limited child: PASS\n" or result.stderr:
+            raise OSError(errno.EIO, "cgroup/rlimit child rejected")
+        with open(os.path.join(leaf, "cgroup.procs"), encoding="ascii") as source:
+            if source.read().strip():
+                raise OSError(errno.EBUSY, "cgroup child remained attached")
         os.rmdir(leaf)
-    except OSError as error:
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as error:
         raise ControlError("PLATFORM", "platform", "cgroup delegation is unavailable") from error
     finally:
         if leaf is not None:
@@ -872,7 +1131,9 @@ def bootstrap(
     if mode == "self-test":
         _platform_self_test(manifest_raw)
     try:
-        worker_raw = _worker_snapshot(4)
+        worker_raw = _worker_snapshot(
+            4, owner=paths.image_owner if mode == "self-test" else os.geteuid()
+        )
     except ControlError as error:
         raise ControlError("TRUST", "supervisor", "worker snapshot rejected") from error
     if predicate["controller_sha256"] != sha256_hex(worker_raw):

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -54,6 +55,44 @@ static int drop_capabilities(void) {
     return 0;
 }
 
+static int namespace_self_test(void) {
+    struct stat marker;
+    int descriptor;
+    static const char byte = 'x';
+
+    if (lstat("/target/lower-marker", &marker) < 0 || !S_ISREG(marker.st_mode)) {
+        return 11;
+    }
+    descriptor = open("/target/upper-marker", O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (descriptor < 0 || write(descriptor, &byte, 1) != 1 || close(descriptor) < 0) {
+        if (descriptor >= 0) {
+            close(descriptor);
+        }
+        return 12;
+    }
+    descriptor = open("/tools/write-probe", O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (descriptor >= 0 || errno != EROFS) {
+        if (descriptor >= 0) {
+            close(descriptor);
+        }
+        return 13;
+    }
+    if (symlink("/target/lower-marker", "/target/tmp/link") < 0) {
+        return 14;
+    }
+    descriptor = open("/target/tmp/link", O_RDONLY | O_CLOEXEC);
+    if (descriptor >= 0 || errno != ELOOP) {
+        if (descriptor >= 0) {
+            close(descriptor);
+        }
+        return 15;
+    }
+    if (unlink("/target/tmp/link") < 0) {
+        return 16;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *mountpoints[MAX_MOUNTPOINTS];
     int count = 0;
@@ -65,6 +104,9 @@ int main(int argc, char **argv) {
         return write(STDOUT_FILENO, version, sizeof(version) - 1) == (ssize_t)(sizeof(version) - 1)
                    ? 0
                    : 1;
+    }
+    if (argc == 2 && strcmp(argv[1], "--namespace-self-test") == 0) {
+        return namespace_self_test();
     }
     if (argc < 5 || strcmp(argv[1], "--no-symlink-follow") != 0) {
         return 2;

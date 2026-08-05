@@ -26,6 +26,7 @@ PROVENANCE_SCRIPTS = (
     "generate-fresh-toolchain-manifest",
     "materialize-fresh-tree",
 )
+TEST_UID = 12345
 
 
 def source_provenance() -> str:
@@ -99,6 +100,7 @@ def populate_volume(image: str, volume: str, source: Path) -> None:
             "cp /input/image-digest /output/image-digest; "
             "cp /input/provenance-digest /output/provenance-digest; "
             "chmod 0444 /output/image-attestation.dsse /output/image-digest /output/provenance-digest; "
+            f"chown {TEST_UID}:{TEST_UID} /output/run-signing-seed; "
             "chmod 0400 /output/run-signing-seed",
         ]
     )
@@ -123,7 +125,11 @@ def profile_run(
             "--rm",
             "--privileged",
             "--cgroupns=host",
+            "--cgroup-parent",
+            f"/align-llm-fresh/{TEST_UID}",
             "--network=none",
+            "--user",
+            f"{TEST_UID}:{TEST_UID}",
             "--mount",
             f"type=volume,src={volume},dst=/run/align-llm-fresh,readonly",
             "--mount",
@@ -137,16 +143,22 @@ def profile_run(
     )
 
 
-def require_trust_rejection(result: subprocess.CompletedProcess[bytes], name: str) -> None:
+def require_rejection(
+    result: subprocess.CompletedProcess[bytes], name: str, expected: bytes
+) -> None:
     if (
         result.returncode != 1
         or result.stdout
-        or result.stderr != b"fresh compiler: ERROR TRUST supervisor\n"
+        or result.stderr != expected
     ):
         raise RuntimeError(
             f"{name} was not rejected canonically: returncode={result.returncode}, "
             f"stdout={result.stdout!r}, stderr={result.stderr!r}"
         )
+
+
+def require_trust_rejection(result: subprocess.CompletedProcess[bytes], name: str) -> None:
+    require_rejection(result, name, b"fresh compiler: ERROR TRUST supervisor\n")
 
 
 def deployment_copy(source: Path, target: Path) -> None:
@@ -256,27 +268,10 @@ def main() -> int:
                     f"type=volume,src={runtime_volume},dst=/run/user",
                     image,
                     "setup",
-                    "0",
+                    str(TEST_UID),
                 ]
             )
             cgroup_ready = True
-            for operation in ("setup", "cleanup"):
-                run(
-                    [
-                        "docker",
-                        "run",
-                        "--rm",
-                        "--privileged",
-                        "--cgroupns=host",
-                        "--entrypoint",
-                        "/usr/local/libexec/align-llm/fresh-profile",
-                        "--mount",
-                        f"type=volume,src={runtime_volume},dst=/run/user",
-                        image,
-                        operation,
-                        "12345",
-                    ]
-                )
             duplicate_setup = run(
                 [
                     "docker",
@@ -290,12 +285,63 @@ def main() -> int:
                     f"type=volume,src={runtime_volume},dst=/run/user",
                     image,
                     "setup",
-                    "0",
+                    str(TEST_UID),
                 ],
                 check=False,
             )
             if duplicate_setup.returncode == 0:
                 raise RuntimeError("duplicate profile setup was accepted")
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--entrypoint",
+                    "/bin/sh",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "-eu",
+                    "-c",
+                    f"touch /run/user/{TEST_UID}/align-llm-fresh/roots/orphan",
+                ]
+            )
+            refused_cleanup = run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--privileged",
+                    "--cgroupns=host",
+                    "--entrypoint",
+                    "/usr/local/libexec/align-llm/fresh-profile",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "cleanup",
+                    str(TEST_UID),
+                ],
+                check=False,
+            )
+            if refused_cleanup.returncode == 0:
+                raise RuntimeError("nonempty profile cleanup was accepted")
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--entrypoint",
+                    "/bin/sh",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "-eu",
+                    "-c",
+                    f"test -f /run/user/{TEST_UID}/align-llm-fresh/lock; "
+                    f"test -f /run/user/{TEST_UID}/align-llm-fresh/roots/orphan; "
+                    f"rm /run/user/{TEST_UID}/align-llm-fresh/roots/orphan",
+                ]
+            )
             result = profile_run(image, volume, runtime_volume)
             if result.returncode != 0:
                 raise RuntimeError(
@@ -374,6 +420,34 @@ def main() -> int:
                     ),
                     name,
                 )
+            runtime_replacement = temporary / "runtime-replacement"
+            runtime_replacement.write_bytes(b"not the installed runtime\n")
+            runtime_replacement.chmod(0o444)
+            tool_replacement = temporary / "tool-replacement"
+            tool_replacement.write_bytes(bootstrap.read_bytes())
+            tool_replacement.chmod(0o755)
+            for name, source, target in (
+                (
+                    "replaced runtime backend",
+                    runtime_replacement,
+                    "/runtime/system/ld-linux-x86-64.so.2",
+                ),
+                (
+                    "replaced retained tool",
+                    tool_replacement,
+                    "/opt/align-llm/tool-bin/bwrap",
+                ),
+            ):
+                require_rejection(
+                    profile_run(
+                        image,
+                        volume,
+                        runtime_volume,
+                        replacements=((source, target),),
+                    ),
+                    name,
+                    b"fresh compiler: ERROR TOOL tools\n",
+                )
         finally:
             if cgroup_ready:
                 run(
@@ -389,7 +463,7 @@ def main() -> int:
                         f"type=volume,src={runtime_volume},dst=/run/user",
                         image,
                         "cleanup",
-                        "0",
+                        str(TEST_UID),
                     ],
                     check=False,
                 )

@@ -31,6 +31,15 @@ def main() -> int:
         except OSError:
             continue
         raise AssertionError(f"descriptor {closed} reached the worker")
+    open_descriptors = set()
+    for name in os.listdir("/proc/self/fd"):
+        descriptor = int(name)
+        try:
+            os.fstat(descriptor)
+        except OSError:
+            continue
+        open_descriptors.add(descriptor)
+    assert open_descriptors == {0, 1, 2, 4, 7, 8, 9}
     expected_environment = {
         "PATH": "/usr/bin:/bin",
         "LC_ALL": "C",

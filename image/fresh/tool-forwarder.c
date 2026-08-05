@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 
+#include <limits.h>
+#include <sys/syscall.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -24,6 +26,9 @@ int main(int argc, char **argv) {
     arguments[0] = (char *)TOOL_TARGET;
     for (index = 1; index < argc; ++index) {
         arguments[index] = argv[index];
+    }
+    if (syscall(SYS_close_range, 3U, UINT_MAX, 0U) < 0) {
+        return 1;
     }
     execve(TOOL_TARGET, arguments, environ);
     return 1;

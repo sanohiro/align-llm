@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/memfd.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,9 +44,75 @@ static int fail_argument(void) {
     return 1;
 }
 
-static int has_loader_injection(void) {
-    return getenv("LD_AUDIT") != NULL || getenv("LD_LIBRARY_PATH") != NULL ||
-           getenv("LD_PRELOAD") != NULL;
+static int matches_name(const char *entry, const char *name) {
+    size_t length = strlen(name);
+    return strncmp(entry, name, length) == 0 && entry[length] == '=';
+}
+
+static int matches_prefix(const char *entry, const char *prefix) {
+    return strncmp(entry, prefix, strlen(prefix)) == 0;
+}
+
+static int sanitize_environment(char **child_env) {
+    static char path[] = "PATH=/usr/bin:/bin";
+    static char locale[] = "LC_ALL=C";
+    static char language[] = "LANG=C";
+    static char home[] = "HOME=/nonexistent";
+    static char temporary[] = "TMPDIR=/tmp";
+    static const char *forbidden[] = {
+        "ALIGNC", "ALIGN_LLM_TOOLCHAIN_MANIFEST", "ALIGN_LLM_TOOLCHAIN_MANIFEST_SHA256",
+        "ALIGN_LLM_WORK_PARENT", "CARGO_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "RUSTC", "RUSTFLAGS", "GCONV_PATH", "LOCPATH",
+        "MALLOC_TRACE", "MALLOC_CHECK_", "MALLOC_PERTURB_",
+    };
+    char *align_repo = NULL;
+    int index;
+    int output = 0;
+
+    for (index = 0; environ[index] != NULL; ++index) {
+        char *entry = environ[index];
+        size_t forbidden_index;
+        if (matches_name(entry, "ALIGN_REPO")) {
+            if (align_repo != NULL) {
+                return -1;
+            }
+            align_repo = entry;
+            continue;
+        }
+        if (matches_prefix(entry, "LD_") || matches_prefix(entry, "GLIBC_") ||
+            matches_prefix(entry, "PYTHON")) {
+            return -1;
+        }
+        if ((matches_name(entry, "MAKEFLAGS") || matches_name(entry, "GNUMAKEFLAGS") ||
+             matches_name(entry, "MAKEOVERRIDES")) &&
+            strchr(entry, '=')[1] != '\0') {
+            return -1;
+        }
+        for (forbidden_index = 0;
+             forbidden_index < sizeof(forbidden) / sizeof(forbidden[0]); ++forbidden_index) {
+            if (matches_name(entry, forbidden[forbidden_index])) {
+                return -1;
+            }
+        }
+    }
+    child_env[output++] = path;
+    child_env[output++] = locale;
+    child_env[output++] = language;
+    child_env[output++] = home;
+    child_env[output++] = temporary;
+    if (align_repo != NULL) {
+        child_env[output++] = align_repo;
+    }
+    child_env[output] = NULL;
+    return 0;
+}
+
+static int close_unexpected_descriptors(void) {
+    return syscall(SYS_close_range, 3U, 9U, 0U) < 0 ||
+                   syscall(SYS_close_range, 12U, UINT_MAX, 0U) < 0
+               ? -1
+               : 0;
 }
 
 static int memfd(const char *name) {
@@ -88,10 +155,11 @@ static int snapshot_payload(void) {
 
 int main(int argc, char **argv) {
     char *child_argv[16];
+    char *child_env[7];
     int self_fd;
     int index;
 
-    if (has_loader_injection()) {
+    if (sanitize_environment(child_env) < 0) {
         return fail_argument();
     }
     if (argc > 10) {
@@ -120,6 +188,9 @@ int main(int argc, char **argv) {
         child_argv[index + 5] = argv[index];
     }
     child_argv[argc + 5] = NULL;
-    execve(PYTHON_PATH, child_argv, environ);
+    if (close_unexpected_descriptors() < 0) {
+        return fail();
+    }
+    execve(PYTHON_PATH, child_argv, child_env);
     return fail();
 }
