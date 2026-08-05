@@ -128,6 +128,32 @@ def digest_golden(module, temporary: Path) -> None:
     else:
         raise AssertionError("wrong structural digest accepted")
 
+    runtime = temporary / "runtime-hardlinks"
+    runtime.mkdir(mode=0o755)
+    (runtime / "original").write_bytes(b"shared runtime bytes")
+    (runtime / "original").chmod(0o644)
+    os.link(runtime / "original", runtime / "alias")
+    runtime_node = digest_node(module, runtime, "0444")
+    require(
+        module.validate_tree_manifest(runtime_node, str(runtime)) == (3, 40),
+        "stable runtime hardlinks were rejected",
+    )
+    runtime_copy = temporary / "runtime-hardlinks-copy"
+    module.copy_tree_manifest(runtime_node, runtime, runtime_copy)
+    require(
+        (runtime_copy / "original").read_bytes()
+        == (runtime_copy / "alias").read_bytes()
+        == b"shared runtime bytes",
+        "runtime hardlink bytes changed during private copy",
+    )
+    cache_node = digest_node(module, runtime, "0600")
+    try:
+        module.validate_tree_manifest(cache_node, str(runtime), policy="cache")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("cache hardlinks were accepted")
+
 
 def cache_cases(module, temporary: Path) -> None:
     root = temporary / "cargo"

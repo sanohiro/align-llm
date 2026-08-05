@@ -29,7 +29,9 @@ request checks, reviews, findings, and attestations.
   Installed-profile source admission now reopens the supervisor's retained `O_PATH` project root as
   a no-follow scan-capable descriptor, gives Git worker-owned `/proc/<worker-pid>/fd/...` paths that
   remain valid if Git closes inherited nonstandard descriptors, and normalizes Git tree records to
-  raw-path byte order before manifest construction.
+  raw-path byte order before manifest construction. Runtime-tree validation accepts stable
+  distribution hardlinks under full before/after identity and byte-digest checks, while Cargo-cache
+  regular files retain their separate single-link requirement.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -71,8 +73,11 @@ request checks, reviews, findings, and attestations.
   already retained config bytes through Git's documented stdin path. A later installed run showed
   that Git closes inherited nonstandard descriptors before repository lookup and that the admitted
   root is intentionally `O_PATH`; the worker now supplies worker-owned descriptor paths, reopens a
-  scan-capable root without pathname resolution, and raw-byte sorts Git tree records. The dedicated
-  hosted profile check must supply fresh installed-platform evidence after push.
+  scan-capable root without pathname resolution, and raw-byte sorts Git tree records. That source
+  admission then exposed a policy leak in the next phase: the cache single-link rule was also being
+  applied to installed runtime trees containing legitimate distribution hardlinks. Runtime reads
+  now preserve and compare link count without requiring one; cache reads still reject hardlinks.
+  The dedicated hosted profile check must supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions
 
