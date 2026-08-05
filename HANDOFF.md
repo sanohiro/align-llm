@@ -57,8 +57,10 @@ request checks, reviews, findings, and attestations.
 - `git diff --check`: PASS.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
-  normalization, and populated-tree count derivation. The dedicated hosted profile check must supply
-  fresh installed-platform evidence after push.
+  normalization, populated-tree count derivation, and the installed job's incorrect assumption that
+  a sibling Align checkout exists. The profile now obtains the pinned Align source from its canonical
+  repository before entering the no-network worker boundary. The dedicated hosted profile check must
+  supply fresh installed-platform evidence after push.
 
 ## Blockers and decisions
 
