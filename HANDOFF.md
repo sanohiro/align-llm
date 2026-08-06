@@ -8,7 +8,7 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - Open draft pull request: #61, merge-commit-only. Latest product implementation commit:
-  `32f1a26`; the refreshed baseline oracle and finalization commits follow it.
+  `19809d2`; a handoff update follows it before the required baseline refresh.
 - Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
   stop this execution as requested; do not start the next roadmap capability.
 - Product repair is complete through the independent review findings: the worker retains
@@ -30,39 +30,29 @@ attestations; this file records durable project state.
   qualification, and invalid-task smoke cover the new boundary.
 - Local Docker is unavailable; installed-image and capable aggregate evidence must come from the
   hosted Ubuntu 24.04 profile.
+- The installed profile exposed two post-review integration defects: the nested forwarder did not
+  preserve `--userns <fd>` until `ceedd05`, and a read-only source volume copied fixture files as
+  `0444`/`0555`, which is fixed by `19809d2` before the next baseline and hosted run.
 
 ## Baseline provenance
 
-- Source/checkpoint: `32f1a26ae92c33f38935eaf58fc4ffe9f0d051cd`.
-- Immutable oracle: `ae941b4a658e8b8bc1a81a98ce08478930997063`.
-- Finalization: `4e828e5d0fb9d9764f0200f799909961ba04cf07`.
-- The source commit is followed only by the oracle-only and finalizer-only commits for the
-  refreshed coding-v1 baseline. Do not change a recorded evaluation artifact without restarting
-  the Section 2.4 measurement sequence.
+- Previous source/checkpoint: `32f1a26ae92c33f38935eaf58fc4ffe9f0d051cd`.
+- Previous immutable oracle: `ae941b4a658e8b8bc1a81a98ce08478930997063`.
+- Previous finalization: `4e828e5d0fb9d9764f0200f799909961ba04cf07`.
+- The runner changed after that finalization; restart the Section 2.4 source, pending-measurement,
+  oracle, and finalization sequence from the clean handoff source commit before hosted evidence.
 
 ## Next steps, in priority order
 
-1. Dispatch and complete the product branch's full hosted CI at `88577eb`. Confirm the installed
-   profile reaches capable evaluation and that the refreshed baseline and exact aggregate
-   capability contract pass. Product run `31095923293` reached the repaired quota scan but the
-   installed aggregate failed because nested coding-task bwrap could not create a user namespace;
-   diagnostic run `31096629371` exposed that child error. The current repair prepares the
-   descendant namespace before Make loses `CAP_SETUID`/`CAP_SETGID` and reuses it through the
-   nested validation boundary. Earlier run `31094357807` reached the repaired aggregate quota
-   descriptor scan but failed while entering kernel-owned `workspace-work/work`; `c59e079` made
-   that directory opaque during live polling. Earlier run `31087751448` reached the repaired
-   Python 3.12 resource scan but
-   exposed a second opcode-trace portability issue fixed in `cce58e6`, while run `31086926485`
-   exposed the original resource-scan race before `f1bcda2`. Earlier runs `31081165976` and
-   `31081113394` failed at nested `mount_setattr` before the capability repair.
-2. Record the initial review's eight finding dispositions and the repair SHA on PR #61. Because the
-   repair materially changed behavior, run one conditional final independent review of the final
-   diff and record its SHA-bound envelope; no further local repair loop is allowed after a
-   non-trivial final-review finding without re-scoping the slice.
-3. Mark the PR ready, verify exact head/base ancestry and merge-commit-only policy, then merge with
-   the GitHub connector using the exact expected head SHA.
-4. After merge, perform the bounded retrospective and refresh main without discarding the
-   intentional primary-worktree change. Do not begin another roadmap gate in this execution.
+1. Commit this handoff as the clean source checkpoint, run the Section 2.4 two-sample baseline
+   refresh, and pass `make baseline-check`.
+2. Push and complete hosted CI for the refreshed head; confirm the installed profile reaches
+   capable evaluation and the exact aggregate capability contract passes.
+3. Finish the independent comprehensive review, record the initial eight finding dispositions and
+   the final SHA-bound envelope on PR #61, then mark ready and merge with the GitHub connector
+   using the exact head SHA and merge method `merge`.
+4. After merge, perform the bounded retrospective, refresh main without discarding the intentional
+   primary-worktree change, and stop this execution. Do not begin another roadmap gate.
 
 ## Latest verification
 
@@ -78,6 +68,13 @@ attestations; this file records durable project state.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-image-control-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-coding-task-resource-scan-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-coding-task-git-config-smoke`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile eval/runners/run-coding-task.py`: PASS after
+  read-only fixture mode normalization.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-coding-task-invalid-smoke`: PASS after read-only
+  fixture mode normalization.
+- The latest hosted run `31104118223` passed the pinned job but the installed profile failed at
+  coding evaluation: nested validation was then fixed by `ceedd05`, and the remaining
+  read-only-fixture mode issue is fixed by `19809d2`; new hosted evidence is required.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-baseline-failure-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-gate-topology --self-test`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-index-smoke`: PASS.
