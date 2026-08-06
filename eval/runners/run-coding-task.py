@@ -647,6 +647,76 @@ def require_sandbox_capability() -> None:
         file=sys.stderr,
         flush=True,
     )
+    if FRESH_MODE:
+        size = str(MAX_VALIDATION_TMPFS_BYTES)
+
+        def without(sequence: list[str]) -> list[str]:
+            result = fresh_namespace_prefix()
+            width = len(sequence)
+            for index in range(len(result) - width + 1):
+                if result[index : index + width] == sequence:
+                    del result[index : index + width]
+                    return result
+            raise TaskError(f"diagnostic probe sequence not found: {sequence}")
+
+        variants = {
+            "without-target-bind": without(
+                ["--bind", "/target/tmp", "/target/tmp"]
+            ),
+            "without-tmpfs-tmp": without(
+                ["--size", size, "--tmpfs", "/tmp"]
+            ),
+            "without-tmpfs-dev-shm": without(
+                ["--size", size, "--tmpfs", "/dev/shm"]
+            ),
+            "tmpfs-target-instead-of-bind": [
+                *without(["--bind", "/target/tmp", "/target/tmp"]),
+                "--size",
+                size,
+                "--tmpfs",
+                "/target/tmp",
+            ],
+        }
+        for name, prefix in variants.items():
+            command = [*prefix, "--", str(PYTHON_EXECUTABLE), "-c", "pass"]
+            try:
+                variant = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    timeout=BWRAP_PROBE_TIMEOUT_SECONDS,
+                    close_fds=True,
+                    pass_fds=(),
+                )
+                details = (variant.stderr or variant.stdout).decode(
+                    "utf-8", errors="replace"
+                ).strip()
+                print(
+                    "DIAGNOSTIC sandbox-variant "
+                    + json.dumps(
+                        {
+                            "name": name,
+                            "returncode": variant.returncode,
+                            "details": details[:512],
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                print(
+                    "DIAGNOSTIC sandbox-variant "
+                    + json.dumps(
+                        {
+                            "name": name,
+                            "error": f"{type(error).__name__}: {error}",
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
     try:
         probe = subprocess.run(
             probe_command,
