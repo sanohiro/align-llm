@@ -586,8 +586,6 @@ def sandbox_probe_command() -> list[str]:
             "/tools/mount-guard",
             "--no-symlink-follow",
             "/target/tmp",
-            "/tmp",
-            "/dev/shm",
             "--",
             str(PYTHON_EXECUTABLE),
             "-c",
@@ -647,116 +645,6 @@ def require_sandbox_capability() -> None:
         file=sys.stderr,
         flush=True,
     )
-    if FRESH_MODE:
-        size = str(MAX_VALIDATION_TMPFS_BYTES)
-
-        def without(sequence: list[str]) -> list[str]:
-            result = fresh_namespace_prefix()
-            width = len(sequence)
-            for index in range(len(result) - width + 1):
-                if result[index : index + width] == sequence:
-                    del result[index : index + width]
-                    return result
-            raise TaskError(f"diagnostic probe sequence not found: {sequence}")
-
-        without_tmpfs = fresh_namespace_prefix()
-        for sequence in (
-            ["--tmpfs", "/"],
-            ["--size", size, "--tmpfs", "/tmp"],
-            ["--size", size, "--tmpfs", "/dev/shm"],
-        ):
-            width = len(sequence)
-            for index in range(len(without_tmpfs) - width + 1):
-                if without_tmpfs[index : index + width] == sequence:
-                    del without_tmpfs[index : index + width]
-                    break
-            else:
-                raise TaskError(f"diagnostic probe sequence not found: {sequence}")
-
-        without_dev_and_tmpfs = without_tmpfs[:]
-        width = 2
-        for index in range(len(without_dev_and_tmpfs) - width + 1):
-            if without_dev_and_tmpfs[index : index + width] == ["--dev", "/dev"]:
-                del without_dev_and_tmpfs[index : index + width]
-                break
-        else:
-            raise TaskError("diagnostic probe sequence not found: ['--dev', '/dev']")
-
-        variants = {
-            "without-all-tmpfs": without_tmpfs,
-            "without-dev-and-tmpfs": without_dev_and_tmpfs,
-            "without-root-tmpfs": without(["--tmpfs", "/"]),
-            "without-proc": without(["--proc", "/proc"]),
-            "without-dev": without(["--dev", "/dev"]),
-            "without-target-bind": without(
-                ["--bind", "/target/tmp", "/target/tmp"]
-            ),
-            "without-tmpfs-tmp": without(
-                ["--size", size, "--tmpfs", "/tmp"]
-            ),
-            "without-tmpfs-dev-shm": without(
-                ["--size", size, "--tmpfs", "/dev/shm"]
-            ),
-            "tmpfs-target-instead-of-bind": [
-                *without(["--bind", "/target/tmp", "/target/tmp"]),
-                "--size",
-                size,
-                "--tmpfs",
-                "/target/tmp",
-            ],
-            "inner-cap-sys-admin": [
-                *without(["--cap-drop", "ALL"]),
-                "--cap-add",
-                "CAP_SYS_ADMIN",
-            ],
-            "without-unshare-all": without(["--unshare-all"]),
-        }
-        for name, prefix in variants.items():
-            command = [
-                *prefix,
-                "--",
-                str(PYTHON_EXECUTABLE),
-                "-c",
-                "pass",
-            ]
-            try:
-                variant = subprocess.run(
-                    command,
-                    check=False,
-                    capture_output=True,
-                    timeout=BWRAP_PROBE_TIMEOUT_SECONDS,
-                    close_fds=True,
-                    pass_fds=(),
-                )
-                details = (variant.stderr or variant.stdout).decode(
-                    "utf-8", errors="replace"
-                ).strip()
-                print(
-                    "DIAGNOSTIC sandbox-variant "
-                    + json.dumps(
-                        {
-                            "name": name,
-                            "returncode": variant.returncode,
-                            "details": details[:512],
-                        },
-                        sort_keys=True,
-                    ),
-                    file=sys.stderr,
-                    flush=True,
-                )
-            except (OSError, subprocess.TimeoutExpired) as error:
-                print(
-                    "DIAGNOSTIC sandbox-variant "
-                    + json.dumps(
-                        {
-                            "name": name,
-                            "error": f"{type(error).__name__}: {error}",
-                        },
-                        sort_keys=True,
-                    ),
-                    file=sys.stderr,
-                    flush=True,
-                )
     try:
         probe = subprocess.run(
             probe_command,
