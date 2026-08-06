@@ -1236,6 +1236,10 @@ def bootstrap(
         "self-test": b"fresh compiler self-test: PASS\n",
     }[mode]
     if result.returncode != 0 or result.stderr or result.stdout != expected:
+        if result.stdout:
+            os.write(2, b"fresh compiler diagnostic: worker stdout: " + result.stdout)
+        if result.stderr:
+            os.write(2, b"fresh compiler diagnostic: worker stderr: " + result.stderr)
         raise ControlError("CHILD", "aggregate", "worker result is not canonical")
     os.write(1, expected)
     return 0
