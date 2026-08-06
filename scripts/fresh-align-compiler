@@ -3032,6 +3032,8 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         "--unshare-user",
         "--unshare-pid",
         "--unshare-net",
+        "--cap-add",
+        "CAP_SYS_ADMIN",
         "--tmpfs",
         "/",
         "--proc",
