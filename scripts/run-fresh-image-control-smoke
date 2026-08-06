@@ -103,11 +103,11 @@ def forwarder_descriptor_case(temporary: Path) -> None:
         ],
         check=True,
     )
-    opened = [os.open(temporary, os.O_PATH | os.O_CLOEXEC) for _ in range(4)]
+    opened = [os.open(temporary, os.O_PATH | os.O_CLOEXEC) for _ in range(5)]
     try:
-        bind_fd, lower_fd, upper_fd, rejected_fd = opened
+        bind_fd, lower_fd, upper_fd, userns_fd, rejected_fd = opened
         environment = {
-            "EXPECTED_OPEN": ",".join(str(value) for value in opened[:3]),
+            "EXPECTED_OPEN": ",".join(str(value) for value in opened[:4]),
             "EXPECTED_CLOSED": str(rejected_fd),
         }
         result = subprocess.run(
@@ -116,6 +116,8 @@ def forwarder_descriptor_case(temporary: Path) -> None:
                 "--bind-fd",
                 str(bind_fd),
                 "/bind",
+                "--userns",
+                str(userns_fd),
                 "--overlay-src",
                 f"/proc/self/fd/{lower_fd}",
                 "--overlay",

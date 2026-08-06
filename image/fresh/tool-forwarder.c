@@ -88,6 +88,14 @@ static int prepare_bwrap_descriptors(int argc, char **argv) {
             }
             continue;
         }
+        if (strcmp(argv[index], "--userns") == 0) {
+            if (index + 1 >= argc || parse_fd(argv[index + 1], &descriptor) != 0 ||
+                append_fd(descriptors, &count, capacity, descriptor) != 0) {
+                free(descriptors);
+                return -1;
+            }
+            continue;
+        }
         if (strcmp(argv[index], "--overlay-src") == 0) {
             if (index + 1 >= argc) {
                 free(descriptors);

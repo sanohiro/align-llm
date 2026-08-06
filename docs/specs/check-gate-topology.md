@@ -1420,12 +1420,14 @@ passes the namespace, overlayfs, and namespace-owned `/target/tmp` no-symlink-mo
 bwrap build is pinned to v0.11.2 commit `1b80120ef26a28e065e67f89bfef873f13bdd317` and must support
 `--bind-fd`, `--ro-bind-fd`, `--overlay-src`, and `--overlay`; the kernel must permit the owner-only
 upper/work pair and `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` in the sandbox user namespace. Compiler
-identity is carried by authenticated read-only handoff files inside the `/tools` bind; no worker
-handoff descriptor is inherited by the aggregate or nested bwrap, so no nonstandard fd-preservation
-option or protected-fd seccomp filter is part of this profile. The platform self-test instead proves
-that a read-only `/tools` bind pins the descriptor, guard, compiler, and runtime archive as one
-immutable sibling bundle. C7's aarch64 Linux and aarch64 macOS environments require separate platform
-profiles.
+identity is carried by authenticated read-only handoff files inside the `/tools` bind; no compiler
+identity or worker handoff descriptor is inherited by the aggregate or nested bwrap. The nested
+validation bwrap has one explicit exception: its prepared user-namespace descriptor is inherited
+through `--userns <fd>`, so the bwrap forwarder must preserve that exact descriptor through its
+`execve` boundary. No protected-fd seccomp filter is part of this profile. The platform self-test
+instead proves that a read-only `/tools` bind pins the descriptor, guard, compiler, and runtime
+archive as one immutable sibling bundle. C7's aarch64 Linux and aarch64 macOS environments require
+separate platform profiles.
 Request 7's immutable image whose `/usr/bin/git` is exactly Git 2.45.0 remains a separate
 prerequisite. The accepted `/tmp` mount must be executable: a `noexec` mount is a `PLATFORM`
 failure before private-root creation. The accepted image also provides the fixed process, descriptor,
@@ -2611,12 +2613,14 @@ those exact descriptors to the outer bwrap setup. The bwrap argv consumes each d
 `--bind-fd` or `--ro-bind-fd`. Because bwrap has no descriptor form of its overlay operation, its
 three retained overlay descriptors are named only as `/proc/self/fd/<fd>` in that bwrap's own argv.
 The bwrap-only tool forwarder marks every nonstandard descriptor close-on-exec, recognizes mount
-descriptors only in `--bind-fd`, `--ro-bind-fd`, `--overlay-src`, and the writable arguments of
-`--overlay` before the payload delimiter, and clears close-on-exec only for that exact set. Read-only
-fd-bind operations for the three overlay descriptors follow the overlay operation so bwrap consumes
-and closes them during setup; a following tmpfs hides their holding mounts before the payload. The
-child never asks the new user namespace to traverse the parent worker's procfs descriptor path. The
-worker retains its copies until bwrap exits and closes them before cleanup.
+descriptors in `--bind-fd`, `--ro-bind-fd`, `--overlay-src`, and the writable arguments of `--overlay`,
+and recognizes the namespace descriptor in `--userns` before the payload delimiter. It clears
+close-on-exec only for that exact set. Read-only fd-bind operations for the three overlay descriptors
+follow the overlay operation so bwrap consumes and closes them during setup; the `--userns` descriptor
+is consumed by bwrap's pre-clone `setns` operation and is not inherited by the payload. A following
+tmpfs hides the overlay holding mounts before the payload. The child never asks the new user namespace
+to traverse the parent worker's procfs descriptor path. The worker retains its copies until bwrap
+exits and closes them before cleanup.
 It never removes shared `/tmp`, the profile root parent, the project root,
 `ALIGN_REPO`, either source cache, or a path whose parent/name identity it cannot prove.
 
@@ -2748,8 +2752,10 @@ descriptor or construction memfd crosses the aggregate boundary.
 
 The build and aggregate bwrap setup processes are invoked with `close_fds=True` and only their
 verified private mount-source descriptors in `pass_fds`; ordinary descriptors are consumed by a
-`--bind-fd` or `--ro-bind-fd` operation. The bwrap-only forwarder rejects malformed descriptor
-arguments, leaves unrelated descriptors close-on-exec, and passes only the recognized setup set.
+`--bind-fd` or `--ro-bind-fd` operation. The nested validation bwrap additionally passes its one
+prepared user-namespace descriptor in `pass_fds`, consumed by `--userns`. The bwrap-only forwarder
+rejects malformed descriptor arguments, leaves unrelated descriptors close-on-exec, and passes only
+the recognized setup set.
 The three aggregate overlay descriptors are registered by post-overlay read-only fd-bind operations
 and their holding mounts are hidden before the payload starts. The aggregate Make payload starts
 with an empty inherited descriptor set. A nested coding-task bwrap receives exactly one additional
