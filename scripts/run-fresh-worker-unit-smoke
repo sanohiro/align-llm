@@ -275,6 +275,11 @@ def cleanup_success_case(module, temporary: Path) -> None:
     root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     root_identity = module.snapshot_fd(root_fd)
     (admitted / "owned").write_bytes(b"owned")
+    read_only = admitted / "read-only"
+    read_only.mkdir(mode=0o700)
+    (read_only / "nested").write_bytes(b"nested")
+    (read_only / "nested").chmod(0o444)
+    read_only.chmod(0o500)
     lock = temporary / "success-lock"
     lock.write_bytes(b"")
     lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)

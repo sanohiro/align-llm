@@ -3077,6 +3077,7 @@ def require_parent_entry(admission: Admission) -> None:
 def remove_contents_fd(directory_fd: int, depth: int = 0) -> None:
     if depth > MAX_SOURCE_DEPTH:
         raise CleanupError("cleanup depth exceeded")
+    os.fchmod(directory_fd, 0o700)
     for child in sorted(os.listdir(directory_fd), key=os.fsencode, reverse=True):
         raw_child = os.fsencode(child)
         value = os.stat(raw_child, dir_fd=directory_fd, follow_symlinks=False)
