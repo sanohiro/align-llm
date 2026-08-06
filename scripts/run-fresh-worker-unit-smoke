@@ -209,6 +209,31 @@ def build_linker_case(module) -> None:
     )
 
 
+def compiler_materialization_case(module, temporary: Path) -> None:
+    source = temporary / "cargo-output"
+    source.write_bytes(b"cargo output with a stable hard link\n")
+    source.chmod(0o755)
+    alias = temporary / "cargo-output-alias"
+    os.link(source, alias)
+    target = temporary / "fresh-bundle-output"
+    size, digest = module.install_file(source, target, 0o555, single_link=False)
+    value = target.lstat()
+    require(source.lstat().st_nlink == 2, "Cargo hardlink fixture was not created")
+    require(value.st_nlink == 1, "compiler materialization retained a hard link")
+    require(stat.S_IMODE(value.st_mode) == 0o555, "compiler materialization mode changed")
+    target_raw = target.read_bytes()
+    require(
+        (size, digest) == (len(target_raw), module.sha256(target_raw)),
+        "compiler materialization digest changed",
+    )
+    try:
+        module.install_file(source, temporary / "single-link-reject", 0o444)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("default compiler copy accepted a hard-linked source")
+
+
 def run_attestation_cases(module) -> None:
     seed = bytes(range(32))
     public_key = ed25519_public_key(seed)
@@ -673,6 +698,7 @@ def main() -> int:
         private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)
         cleanup_replacement_case(module, temporary)
+        compiler_materialization_case(module, temporary)
     public_error_cases(module)
     build_linker_case(module)
     print("fresh worker unit smoke: PASS")
