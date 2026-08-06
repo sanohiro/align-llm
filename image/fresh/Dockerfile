@@ -57,6 +57,7 @@ RUN python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
     mkdir -p /runtime/system && \
     cp -aL /usr/lib/x86_64-linux-gnu /runtime/system/usr-lib-x86_64 && \
     cp -aL /usr/lib/x86_64-linux-gnu /runtime/system/lib-x86_64 && \
+    cp -aL /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64 && \
     cp -aL /usr/lib/python3.12 /runtime/system/python3.12 && \
     cp -aL /usr/include /runtime/system/include && \
     cp -aL /usr/share/git-core /runtime/system/git-core && \
@@ -182,6 +183,7 @@ RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --runtime /runtime/bwrap=/runtime/bwrap \
       --runtime /runtime/system/usr-lib-x86_64=/usr/lib/x86_64-linux-gnu \
       --runtime /runtime/system/lib-x86_64=/lib/x86_64-linux-gnu \
+      --runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu \
       --runtime /runtime/system/python3.12=/usr/lib/python3.12 \
       --runtime /runtime/system/include=/usr/include \
       --runtime /runtime/system/git-core=/usr/share/git-core \

@@ -12,6 +12,7 @@ from pathlib import Path
 REPOSITORY = Path(__file__).resolve().parent.parent
 SPECIFICATION = REPOSITORY / "docs/specs/check-gate-topology.md"
 WORKER = REPOSITORY / "scripts/fresh-align-compiler"
+IMAGE_DOCKERFILE = REPOSITORY / "image/fresh/Dockerfile"
 
 EXPECTED_CASES = {
     "fresh-v2-image-trust-smoke",
@@ -96,6 +97,14 @@ def verify_contract_inventory() -> None:
     for token in required:
         if token not in worker:
             raise RuntimeError(f"worker closure owner is missing: {token}")
+
+    image = IMAGE_DOCKERFILE.read_text(encoding="utf-8")
+    for token in (
+        "cp -aL /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64",
+        "--runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu",
+    ):
+        if token not in image:
+            raise RuntimeError(f"image runtime closure is missing: {token}")
 
 
 def main() -> int:

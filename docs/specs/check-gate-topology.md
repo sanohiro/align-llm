@@ -2009,6 +2009,11 @@ directory `/runtime/cc-suite/lib/clang/22`, `-B/runtime/cc-suite/bin`, and
 `target=/runtime/cc-suite` contains the complete regular-file closure needed by those drivers:
 `clang`, `clang++`, `ld.lld`, assembler and archive helpers, compiler-rt and startup objects,
 LLVM resources and libraries, C and C++ headers, and every helper named by the fixed driver trace.
+The image also carries a separate authenticated runtime-support tree at
+`target=/usr/lib/gcc/x86_64-linux-gnu`. It contains only the image's GCC-compatible startup and
+`libgcc_s` support files required by the fixed Clang driver for Rust's Linux target; it does not
+include a GCC driver, `libexec` helpers, or a host-discovered executable path. The tree is mounted
+read-only and is part of the same derived library closure.
 The `ar`, `ranlib`, and linker tool records point into this same closure and use no ambient helper
 or library search path. The worker rejects a missing trace member, a host path in a driver result,
 or a compiler invocation that would consult an undeclared helper before either namespace starts.
