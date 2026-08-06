@@ -1866,6 +1866,7 @@ class Admission:
     root_identity: Snapshot
     root_name: str
     root_path: Path
+    aggregate_started: bool = False
 
 
 def require_directory(parent_fd: int, name: str, owner: int, mode: int) -> int:
@@ -3019,6 +3020,7 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         )
     )
     try:
+        admission.aggregate_started = True
         run_owned(
             arguments,
             category="CHILD",
@@ -3069,6 +3071,36 @@ def scan_private_fd(root_fd: int) -> tuple[int, int]:
         return count, total
 
     return visit(root_fd, 0, 0, 0)
+
+
+def cleanup_overlay_work_entry(admission: Admission) -> None:
+    path_fd, retained = open_relative_directory(
+        admission.root_fd, "aggregate-output/workspace-work"
+    )
+    try:
+        directory_fd = os.open(
+            ".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=path_fd
+        )
+        try:
+            names = sorted(os.listdir(directory_fd), key=os.fsencode)
+            if not names:
+                return
+            if names != ["work"]:
+                raise CleanupError("unexpected overlay work entry")
+            value = os.stat(b"work", dir_fd=directory_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(value.st_mode):
+                raise CleanupError("overlay work entry is not a directory")
+            os.rmdir(b"work", dir_fd=directory_fd)
+            if os.listdir(directory_fd):
+                raise CleanupError("overlay work entry remained")
+        finally:
+            os.close(directory_fd)
+    except CleanupError:
+        raise
+    except OSError as error:
+        raise CleanupError("overlay work cleanup failed") from error
+    finally:
+        close_retained(retained)
 
 
 def same_owned_directory(fd: int, accepted: Snapshot) -> bool:
@@ -3130,6 +3162,8 @@ def cleanup(admission: Admission | None) -> None:
     ):
         raise CleanupError("private root identity changed")
     require_parent_entry(admission)
+    if admission.aggregate_started:
+        cleanup_overlay_work_entry(admission)
     scan_private_fd(admission.root_fd)
     require_parent_entry(admission)
     remove_contents_fd(admission.root_fd)
