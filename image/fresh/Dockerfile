@@ -8,7 +8,7 @@ ARG BWRAP_COMMIT=1b80120ef26a28e065e67f89bfef873f13bdd317
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget gnupg xz-utils git make build-essential pkg-config \
       meson ninja-build libcap-dev libselinux1-dev libssl-dev zlib1g-dev libexpat1-dev \
-      gettext perl python3.12 python3.12-dev python3-pip jq file && \
+      libzstd-dev gettext perl python3.12 python3.12-dev python3-pip jq file && \
     rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
