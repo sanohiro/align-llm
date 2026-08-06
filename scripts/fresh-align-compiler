@@ -197,7 +197,7 @@ RUST_LINKER_NAMESPACE_PATH = "/tools/cc"
 ALIGN_REVISION_FILE = ".align-revision"
 MAX_PATH_BYTES = 4096
 MAX_SOURCE_DEPTH = 64
-DIAGNOSTIC = os.environ.get("ALIGN_LLM_FRESH_DIAGNOSTIC") == "1"
+DIAGNOSTIC = True
 
 
 class WorkerError(Exception):
