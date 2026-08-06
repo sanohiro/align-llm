@@ -28,6 +28,7 @@ PROVENANCE_SCRIPTS = (
 )
 ALIGN_REPOSITORY = "https://github.com/sanohiro/align.git"
 TEST_UID = 12345
+WORKER_INVOCATION_TIMEOUT = 5_000
 
 
 def docker_cgroup_driver(info: bytes) -> str:
@@ -67,6 +68,7 @@ def run(
     check: bool = True,
     stdout: int | None = subprocess.PIPE,
     stderr: int | None = subprocess.PIPE,
+    timeout: int = 1_800,
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         arguments,
@@ -83,7 +85,7 @@ def run(
         stdout=stdout,
         stderr=stderr,
         check=check,
-        timeout=1800,
+        timeout=timeout,
     )
 
 
@@ -282,7 +284,7 @@ os._exit(128 + os.WTERMSIG(status))
             *command,
         ]
     )
-    return run(arguments, check=False)
+    return run(arguments, check=False, timeout=WORKER_INVOCATION_TIMEOUT)
 
 
 def populate_source_volume(image: str, volume: str, source: Path) -> None:

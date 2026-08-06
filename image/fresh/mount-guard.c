@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/mount.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sched.h>
@@ -19,6 +20,7 @@
 #include <unistd.h>
 
 #define MAX_MOUNTPOINTS 32
+#define MAX_TMPFS_LIMITS 8
 #define USERNS_PATH_BYTES 64
 
 extern char **environ;
@@ -172,6 +174,17 @@ static int apply_no_symlink_follow(const char *path) {
     return 0;
 }
 
+static int apply_tmpfs_inode_limit(const char *path) {
+    unsigned long long before;
+    unsigned long long after;
+    if (mount_id(path, &before) < 0 ||
+        mount(NULL, path, "tmpfs", MS_REMOUNT, "nr_inodes=65536") < 0 ||
+        mount_id(path, &after) < 0 || before != after) {
+        return -1;
+    }
+    return 0;
+}
+
 static int drop_capabilities(void) {
     struct __user_cap_header_struct header;
     struct __user_cap_data_struct data[2];
@@ -227,7 +240,9 @@ static int namespace_self_test(void) {
 
 int main(int argc, char **argv) {
     const char *mountpoints[MAX_MOUNTPOINTS];
+    const char *tmpfs_limits[MAX_TMPFS_LIMITS];
     int count = 0;
+    int tmpfs_count = 0;
     int command_index = -1;
     int prepare_userns = 0;
     pid_t helper_pid = -1;
@@ -258,6 +273,14 @@ int main(int argc, char **argv) {
             prepare_userns = 1;
             continue;
         }
+        if (strcmp(argv[index], "--tmpfs-inodes") == 0) {
+            if (index + 1 >= argc || tmpfs_count == MAX_TMPFS_LIMITS ||
+                argv[index + 1][0] != '/') {
+                return 2;
+            }
+            tmpfs_limits[tmpfs_count++] = argv[++index];
+            continue;
+        }
         if (argv[index][0] != '/' || argv[index][1] == '\0' || count == MAX_MOUNTPOINTS) {
             return 2;
         }
@@ -274,6 +297,11 @@ int main(int argc, char **argv) {
     }
     for (index = 0; index < count; ++index) {
         if (apply_no_symlink_follow(mountpoints[index]) < 0) {
+            return 1;
+        }
+    }
+    for (index = 0; index < tmpfs_count; ++index) {
+        if (apply_tmpfs_inode_limit(tmpfs_limits[index]) < 0) {
             return 1;
         }
     }

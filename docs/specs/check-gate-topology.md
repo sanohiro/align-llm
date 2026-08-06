@@ -1896,7 +1896,7 @@ mount IDs before and after the operation, and, only when the aggregate invokes t
 `--prepare-validation-userns` flag, preparing the single documented descendant user namespace.
 After those operations it reduces its effective and permitted capability sets to `CAP_SETFCAP`
 only, sets `no_new_privs`, and `execve`-s the post-`--` command. Its exact argv is
-`mount-guard --no-symlink-follow <one-or-more-absolute-mountpoints> [--prepare-validation-userns] -- <absolute-command> <args>`;
+`mount-guard --no-symlink-follow <one-or-more-absolute-mountpoints> [--tmpfs-inodes <absolute-tmpfs-mount>] [--prepare-validation-userns] -- <absolute-command> <args>`;
 it rejects relative, duplicate, or unlisted mountpoints, rejects the preparation flag more than
 once, and has no shell, network, repository, or arbitrary mount operation.
 
@@ -2542,7 +2542,9 @@ directories and asserts that the worker never exceeds the 2,048 active source wi
 depth, or the 4,096 total fd cap.
 
 The fixed pre-dispatch worker snapshot limit is `fresh_worker_max_bytes = 4194304`, with a fixed
-5-second monotonic supervisor/bootstrap read deadline; the bootstrap
+5-second monotonic supervisor/bootstrap read deadline and a 5,000-second worker invocation
+deadline covering tool probes, source/cache validation, materialization, build, aggregate, and
+final cleanup; the bootstrap
 rejects a larger controller before reading beyond that bound or starting a repository child. The
 fixed source/resource limits are: at most 200,000 non-root entries per source root, depth 64,
 64 MiB of raw path and link bytes, 512 MiB per regular source file, 4 GiB total source bytes, 512
@@ -2981,7 +2983,7 @@ existing workspace-temp paths must be changed to the worker-provided temporary r
 | --- | --- |
 | `scripts/run-loop-smoke` and the loop marker in `src/main.align` | The script's output file and marker use `$ALIGN_LLM_TEMP_ROOT`; the Align loop obtains that existing environment value through `std.env` and writes, tests, and removes `<root>/loop-smoke-marker`. No `eval/.loop-smoke-marker` path remains. |
 | `scripts/run-coding-task-timeout-smoke` | Its `.timeout.XXXXXX.json`, `.normal.XXXXXX.json`, and markers use `$ALIGN_LLM_TEMP_ROOT` below `/target/tmp`; no `project_root` temp path remains. |
-| `scripts/run-coding-task-invalid-smoke` | Its host marker, task fixtures, ignored fixture directories, and whitespace fixtures use `$ALIGN_LLM_TEMP_ROOT`; its subprocess fixture roots remain beneath that root. |
+| `scripts/run-coding-task-invalid-smoke` | Its task fixtures, ignored fixture directories, and whitespace fixtures use `$ALIGN_LLM_TEMP_ROOT`; its host-boundary marker is created in the aggregate `/workspace` and remains outside the nested validation bind list. Its subprocess fixture roots remain beneath the worker temporary root. |
 | `scripts/run-baseline-invalid-smoke` | The invalid baseline temp file and its private Git fixture use `$ALIGN_LLM_TEMP_ROOT`; it never writes `eval/baselines/.invalid.*` or any ref below `/workspace/.git`. |
 | `eval/runners/verify-baseline.py` and `eval/runners/record-baseline.py` | Every Git child uses the worker-provided private `/baseline-git` view; no helper resolves `.git`, `git-common-dir`, or an ambient `GIT_*` path from `/workspace`. Their own temporary fixtures use `$ALIGN_LLM_TEMP_ROOT`. |
 | `eval` Git tasks and the Git calls in `src/main.align` | Project-root Git reads use the aggregate's exact `GIT_DIR=/baseline-git`, `GIT_COMMON_DIR=/baseline-git`, and `GIT_WORK_TREE=/workspace` values; fixture repositories explicitly clear those three variables before `git init` or a fixture-local Git operation. The call-site audit covers every direct Git argv and rejects an ambient or hidden-workspace Git view. |
@@ -3033,7 +3035,8 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --setenv ALIGNC /tools/fresh-alignc --setenv ALIGN_LLM_BWRAP /tools/bwrap \
   --setenv ALIGN_LLM_PRLIMIT /tools/prlimit \
   --chdir /workspace \
-  -- /tools/mount-guard --no-symlink-follow /target/tmp --prepare-validation-userns -- \
+  -- /tools/mount-guard --no-symlink-follow /target/tmp \
+       --tmpfs-inodes / --tmpfs-inodes /target/tmp --prepare-validation-userns -- \
        /tools/make --silent --no-print-directory -j1 -f /workspace/Makefile capable-checks
 ```
 
@@ -3067,16 +3070,18 @@ order, so the nested admission retains `CAP_SYS_ADMIN` for the staged `mount-gua
 operation and `CAP_SETFCAP` for its capability reduction. The guard
 then reduces capabilities before `prlimit` or the validation task starts. Its remaining bwrap argv
 includes `--dir /tools --ro-bind /tools /tools`, `--bind /target/tmp /target/tmp`,
-`--size 67108864 --tmpfs /tmp`, `--size 67108864 --tmpfs /dev/shm`,
+`--size 67108864 --tmpfs /workspace`, `--size 67108864 --tmpfs /tmp`,
+`--size 67108864 --tmpfs /dev/shm`,
 `--setenv PATH /tools`, `--setenv TMPDIR /tmp`, `--setenv ALIGNC_CACHE off`,
 `--setenv PYTHONHOME /usr`, `--setenv PYTHONNOUSERSITE 1`, and
 `--setenv PYTHONDONTWRITEBYTECODE 1`, plus the same authenticated runtime mounts
 needed by the staged tools. The two 67108864-byte mounts preserve the existing per-validation
-quotas for `/tmp` and `/dev/shm`; `/target/tmp` remains the outer namespace-owned task checkout and
+quotas for `/workspace`, `/tmp`, and `/dev/shm`; `/target/tmp` remains the outer namespace-owned task checkout and
 artifact scratch, not the validation process's temporary filesystem. The source of that bind is the
 outer namespace tmpfs, never a host directory; the nested sandbox's staged `mount-guard` receives
-the fixed mount list `/target/tmp /tmp /dev/shm` and reapplies `MOUNT_ATTR_NOSYMFOLLOW` to all three
-mounts before the task starts. It invokes `/tools/prlimit` and `/tools/python3` by
+the fixed mount list `/target/tmp /workspace /tmp /dev/shm`, applies `nr_inodes=65536` to the nested
+tmpfs mounts `/`, `/workspace`, `/tmp`, and `/dev/shm`, and reapplies `MOUNT_ATTR_NOSYMFOLLOW` to all four
+guarded mounts before the task starts. It invokes `/tools/prlimit` and `/tools/python3` by
 explicit path. The nested environment repeats `PYTHONHOME=/usr`, `PYTHONNOUSERSITE=1`,
 `PYTHONDONTWRITEBYTECODE=1`, and the three derived search-path variables. The outer Python process
 starts that bwrap with `close_fds=True` and passes only the one prepared user-namespace descriptor;

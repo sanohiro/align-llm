@@ -171,6 +171,7 @@ def verify_contract_inventory() -> None:
         '"CAP_SETUID"',
         '"CAP_SETGID"',
         '"--prepare-validation-userns"',
+        '"--tmpfs-inodes"',
         '"--size"',
         "validate_published_elf",
     ):
@@ -213,7 +214,7 @@ def verify_contract_inventory() -> None:
     directories_start = worker.index("def namespace_directories")
     directories_end = worker.index("\ndef open_private_mount", directories_start)
     directories = worker[directories_start:directories_end]
-    for token in ('"/tmp"', '"/dev/shm"'):
+    for token in ('"/tmp"', '"/dev/shm"', '"/workspace"'):
         if token not in directories:
             raise RuntimeError(f"nested sandbox parent is missing: {token}")
 

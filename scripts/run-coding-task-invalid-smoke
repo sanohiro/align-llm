@@ -15,7 +15,10 @@ source_fixture="${project_root}/eval/fixtures/python-inclusive-range-v1/reposito
 scratch_root="${ALIGN_LLM_TEMP_ROOT:-${TMPDIR:-/tmp}}"
 export ALIGN_LLM_TEMP_ROOT="${scratch_root}"
 output_file="$(mktemp "${scratch_root}/invalid-output.XXXXXX")"
-host_marker="$(mktemp "${scratch_root}/sandbox-host.XXXXXX")"
+# Keep this marker in the aggregate workspace, outside the nested validation
+# bind list. The nested sandbox must hide the inherited workspace overlay with
+# its own tmpfs before the validation task starts.
+host_marker="$(mktemp "${project_root}/.sandbox-host.XXXXXX")"
 sandbox_task="$(mktemp "${scratch_root}/sandbox.XXXXXX.json")"
 ignored_source="$(mktemp -d "${scratch_root}/ignored.XXXXXX")"
 ignored_task="$(mktemp "${scratch_root}/ignored.XXXXXX.json")"

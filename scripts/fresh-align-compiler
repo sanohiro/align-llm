@@ -182,6 +182,10 @@ MAX_ELF_DEPTH = 64
 BUILD_TIMEOUT = 1_800
 AGGREGATE_TIMEOUT = 1_800
 VALIDATION_TIMEOUT = 120
+MATERIALIZATION_TIMEOUT = 120
+CLEANUP_TIMEOUT = 30
+TOOL_PROBE_TIMEOUT = 5
+MAX_TOOL_RUNTIME_BYTES = 8 * 1024 * 1024 * 1024
 RESOURCE_POLL_SECONDS = 0.25
 READ_CHUNK = 1_048_576
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -197,6 +201,8 @@ RUST_LINKER_NAMESPACE_PATH = "/tools/cc"
 ALIGN_REVISION_FILE = ".align-revision"
 MAX_PATH_BYTES = 4096
 MAX_SOURCE_DEPTH = 64
+CANCELLED_SIGNAL: int | None = None
+PHASE_DEADLINE: float | None = None
 
 
 class WorkerError(Exception):
@@ -213,6 +219,33 @@ class CleanupError(Exception):
 
 def fail(category: str, phase: str) -> None:
     raise WorkerError(category, phase)
+
+
+def cancellation_handler(signum: int, _frame: Any) -> None:
+    global CANCELLED_SIGNAL
+    if CANCELLED_SIGNAL is None:
+        CANCELLED_SIGNAL = signum
+
+
+def install_signal_handlers() -> None:
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, cancellation_handler)
+
+
+def check_cancelled(category: str, phase: str) -> None:
+    if CANCELLED_SIGNAL is not None:
+        fail(category, phase)
+
+
+def check_phase_deadline() -> None:
+    if PHASE_DEADLINE is not None and time.monotonic() >= PHASE_DEADLINE:
+        raise OSError(errno.ETIMEDOUT, "worker phase deadline exceeded")
+
+
+def phase_timeout(default: float) -> float:
+    if PHASE_DEADLINE is None:
+        return default
+    return max(0.1, PHASE_DEADLINE - time.monotonic())
 
 
 def sha256(raw: bytes) -> str:
@@ -815,7 +848,7 @@ def authenticate_tools(manifest: Mapping[str, Any]) -> dict[str, int]:
             if sha256(raw) != tool["sha256"]:
                 os.close(fd)
                 raise ValueError("tool digest rejected")
-            result = run_tool(fd, tool["argv"], timeout=10)
+            result = run_tool(fd, tool["argv"], timeout=TOOL_PROBE_TIMEOUT)
             if (
                 result.returncode != 0
                 or result.stdout.hex() != tool["stdout"]
@@ -986,7 +1019,7 @@ def parse_local_git_config(raw: bytes, tool_fd: int) -> None:
         stderr=subprocess.PIPE,
         pass_fds=(tool_fd,),
         close_fds=True,
-        timeout=VALIDATION_TIMEOUT,
+        timeout=phase_timeout(VALIDATION_TIMEOUT),
         check=False,
     )
     if result.returncode != 0 or len(result.stdout) > 4 * 1024 * 1024 or result.stderr:
@@ -1188,6 +1221,7 @@ def open_git_view(tool_fd: int, root_fd: int) -> GitView:
 
 
 def git(view: GitView, arguments: Sequence[str], *, output_limit: int = 192 * 1024 * 1024) -> bytes:
+    check_phase_deadline()
     assert_git_view(view)
     retained = f"/proc/{os.getpid()}/fd"
     environment = dict(GIT_ENVIRONMENT)
@@ -1216,9 +1250,10 @@ def git(view: GitView, arguments: Sequence[str], *, output_limit: int = 192 * 10
     for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
         os.set_blocking(stream.fileno(), False)
         streams.register(stream, selectors.EVENT_READ, label)
-    deadline = time.monotonic() + VALIDATION_TIMEOUT
+    deadline = time.monotonic() + phase_timeout(VALIDATION_TIMEOUT)
     try:
         while streams.get_map():
+            check_phase_deadline()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError
@@ -1342,6 +1377,7 @@ def hash_source_file(root_fd: int, path: bytes, object_format: str) -> tuple[Sna
         git_object.update(b"blob " + str(accepted.size).encode("ascii") + b"\0")
         offset = 0
         while offset < accepted.size:
+            check_phase_deadline()
             block = os.pread(descriptor, min(READ_CHUNK, accepted.size - offset), offset)
             if not block:
                 raise ValueError("source file changed")
@@ -1442,6 +1478,7 @@ def source_identity_from_view(
     prior: bytes | None = None
     manifest_entries: list[OrderedDict[str, Any]] = []
     for path, record in listing_records:
+        check_phase_deadline()
         header, path = record.split(b"\t", 1)
         mode_raw, type_raw, oid_raw = header.split(b" ", 2)
         mode_text = mode_raw.decode("ascii")
@@ -1546,6 +1583,7 @@ def source_identity_from_view(
 
     indexed: dict[bytes, tuple[str, str]] = {}
     for record in git(view, ("ls-files", "--stage", "-z")).split(b"\0"):
+        check_phase_deadline()
         if not record:
             continue
         header, path = record.split(b"\t", 1)
@@ -1564,16 +1602,19 @@ def source_identity_from_view(
     if indexed != expected_index:
         raise ValueError("source index differs from HEAD")
     for record in git(view, ("ls-files", "-t", "-v", "-z")).split(b"\0"):
+        check_phase_deadline()
         if record and not record.startswith(b"H "):
             raise ValueError("source index flags hide worktree state")
 
     observed: dict[bytes, tuple[str, int | None, int | None]] = {}
 
     def enumerate_worktree(directory_fd: int, prefix: bytes = b"", depth: int = 0) -> None:
+        check_phase_deadline()
         if depth > MAX_SOURCE_DEPTH:
             raise ValueError("source worktree depth exceeded")
         names = sorted(os.listdir(directory_fd), key=os.fsencode)
         for name in names:
+            check_phase_deadline()
             raw_name = os.fsencode(name)
             path = raw_name if not prefix else prefix + b"/" + raw_name
             value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
@@ -1650,6 +1691,8 @@ def source_identity_from_view(
             )
             if candidate in (b"", b"..") or candidate.startswith(b"../") or candidate.startswith(b"/"):
                 raise ValueError("source symlink escapes the root")
+            if candidate == b".":
+                break
             current = candidate
         else:
             raise ValueError("source symlink chain exceeds its bound")
@@ -1703,6 +1746,9 @@ def source_identity(
     expected_head: str | None = None,
     expected_format: str | None = None,
 ) -> SourceIdentity:
+    global PHASE_DEADLINE
+    previous_deadline = PHASE_DEADLINE
+    PHASE_DEADLINE = time.monotonic() + VALIDATION_TIMEOUT
     view = open_git_view(git_fd, root_fd)
     try:
         return source_identity_from_view(
@@ -1714,6 +1760,111 @@ def source_identity(
     except Exception:
         close_git_view(view)
         raise
+    finally:
+        PHASE_DEADLINE = previous_deadline
+
+
+def enumerate_source_worktree(root_fd: int, kind: str) -> dict[bytes, tuple[str, int | None, int | None]]:
+    observed: dict[bytes, tuple[str, int | None, int | None]] = {}
+
+    def visit(directory_fd: int, prefix: bytes = b"", depth: int = 0) -> None:
+        check_phase_deadline()
+        if depth > MAX_SOURCE_DEPTH:
+            raise ValueError("source worktree depth exceeded")
+        names = sorted(os.listdir(directory_fd), key=os.fsencode)
+        for name in names:
+            check_phase_deadline()
+            raw_name = os.fsencode(name)
+            path = raw_name if not prefix else prefix + b"/" + raw_name
+            value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
+            if not prefix and raw_name == b".git":
+                if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+                    raise ValueError("root Git control has the wrong type")
+                continue
+            if not prefix and raw_name == b"target":
+                mode = stat.S_IMODE(value.st_mode)
+                if (
+                    not stat.S_ISDIR(value.st_mode)
+                    or mode & 0o700 != 0o700
+                    or mode & 0o022
+                    or mode & 0o7000
+                ):
+                    raise ValueError("source target exception rejected")
+                continue
+            if not prefix and raw_name == b"main":
+                if (
+                    kind != "project-source"
+                    or not stat.S_ISREG(value.st_mode)
+                    or value.st_nlink != 1
+                    or stat.S_IMODE(value.st_mode) not in (0o644, 0o755)
+                ):
+                    raise ValueError("source main exception rejected")
+                continue
+            if stat.S_ISDIR(value.st_mode):
+                observed[path] = ("dir", stat.S_IMODE(value.st_mode), value.st_nlink)
+                child = os.open(
+                    raw_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    visit(child, path, depth + 1)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(value.st_mode):
+                observed[path] = ("file", stat.S_IMODE(value.st_mode), value.st_nlink)
+            elif stat.S_ISLNK(value.st_mode):
+                observed[path] = ("symlink", None, value.st_nlink)
+            else:
+                raise ValueError("source worktree contains a special entry")
+            if len(observed) > MAX_SOURCE_ENTRIES:
+                raise ValueError("source worktree exceeds its entry bound")
+
+    visit(root_fd)
+    return observed
+
+
+def assert_source_worktree(identity: SourceIdentity) -> None:
+    observed = enumerate_source_worktree(identity.view.root_fd, identity.kind)
+    expected = {
+        entry.path: (
+            entry.kind,
+            entry.raw_mode,
+            1 if entry.kind != "dir" else observed.get(entry.path, (None, None, None))[2],
+        )
+        for entry in identity.entries
+    }
+    if observed != expected:
+        raise OSError(errno.ESTALE, "source filesystem differs from retained manifest")
+    folded: set[bytes] = set()
+    for path in observed:
+        value = path.lower()
+        if value in folded:
+            raise OSError(errno.EEXIST, "source paths collide under case folding")
+        folded.add(value)
+    for entry in identity.entries:
+        check_phase_deadline()
+        if entry.kind == "dir":
+            descriptor, accepted, retained = open_source_entry(
+                identity.view.root_fd, entry.path, os.O_PATH | os.O_DIRECTORY
+            )
+            try:
+                if accepted != entry.source_snapshot:
+                    raise OSError(errno.ESTALE, "source directory changed")
+            finally:
+                close_retained(retained)
+        elif entry.kind == "symlink":
+            parent, name, retained = open_source_parent(identity.view.root_fd, entry.path)
+            try:
+                value = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                target = os.fsencode(os.readlink(name, dir_fd=parent))
+                if snapshot_from_stat(value) != entry.source_snapshot or target != entry.symlink_target:
+                    raise OSError(errno.ESTALE, "source symlink changed")
+            finally:
+                close_retained(retained)
+        else:
+            read_source_entry(identity, entry, MAX_FILE_BYTES)
+    assert_git_view(identity.view)
 
 
 def verify_align_pin(project: SourceIdentity, align: SourceIdentity) -> None:
@@ -1768,6 +1919,7 @@ def validate_tree_manifest(
     depth: int = 0,
     policy: str = "runtime",
 ) -> tuple[int, int]:
+    check_phase_deadline()
     exact_fields(
         node,
         ("kind", "mode", "staged_mode", "size", "sha256", "entries")
@@ -1832,6 +1984,7 @@ def validate_tree_manifest(
     count = 1
     total = 0
     for entry in entries:
+        check_phase_deadline()
         name = entry["name"]
         child_count, child_total = validate_tree_manifest(
             entry,
@@ -2035,6 +2188,7 @@ def destination_path(admission: Admission, relative: str) -> Path:
 
 def copy_source(identity: SourceIdentity, destination: Path) -> None:
     for entry in identity.entries:
+        check_phase_deadline()
         path = destination / os.fsdecode(entry.path)
         if entry.kind == "dir":
             descriptor, accepted, retained = open_source_entry(
@@ -2087,6 +2241,7 @@ def copy_source(identity: SourceIdentity, destination: Path) -> None:
             digest = hashlib.sha256()
             offset = 0
             while offset < accepted.size:
+                check_phase_deadline()
                 block = os.pread(source, min(READ_CHUNK, accepted.size - offset), offset)
                 if not block:
                     raise OSError(errno.EIO, "short source read")
@@ -2109,7 +2264,116 @@ def copy_source(identity: SourceIdentity, destination: Path) -> None:
             close_retained(retained)
         if sha256(read_path(str(path), MAX_FILE_BYTES)) != entry.digest or stat.S_IMODE(path.stat().st_mode) != entry.staged_mode:
             raise OSError(errno.EIO, "staged source verification failed")
-    assert_git_view(identity.view)
+    assert_source_worktree(identity)
+
+
+def open_manifest_source(source: Path) -> tuple[int, list[tuple[int, Snapshot]]]:
+    raw = os.fsencode(str(source))
+    if not raw.startswith(b"/") or b"\x00" in raw:
+        raise OSError(errno.EINVAL, "manifest source must be absolute")
+    current = os.open(
+        b"/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    retained: list[tuple[int, Snapshot]] = [(current, snapshot_fd(current))]
+    try:
+        for part in raw.split(b"/")[1:]:
+            if part in (b"", b".", b".."):
+                raise OSError(errno.EINVAL, "manifest source path is not canonical")
+            current = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=current,
+            )
+            retained.append((current, snapshot_fd(current)))
+        for descriptor, accepted in retained:
+            assert_snapshot(descriptor, accepted)
+        return current, retained
+    except Exception:
+        close_retained(retained)
+        raise
+
+
+def copy_tree_manifest_fd(
+    node: Mapping[str, Any],
+    source_fd: int,
+    destination: Path,
+    *,
+    root: bool,
+    policy: str,
+) -> tuple[int, int]:
+    check_phase_deadline()
+    kind = node["kind"]
+    accepted = snapshot_fd(source_fd)
+    if kind == "file":
+        if (
+            not stat.S_ISREG(accepted.file_type)
+            or accepted.size != node["size"]
+            or stat.S_IMODE(accepted.mode) != int(node["mode"], 8)
+            or (policy == "cache" and accepted.links != 1)
+        ):
+            raise OSError(errno.EIO, "manifest file identity changed")
+        raw = read_fd(source_fd, MAX_FILE_BYTES)
+        if len(raw) != node["size"] or sha256(raw) != node["sha256"]:
+            raise OSError(errno.EIO, "manifest file changed")
+        assert_snapshot(source_fd, accepted)
+        descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            int(node["staged_mode"], 8),
+        )
+        try:
+            view = memoryview(raw)
+            while view:
+                check_phase_deadline()
+                count = os.write(descriptor, view)
+                if count <= 0:
+                    raise OSError(errno.EIO, "short manifest copy")
+                view = view[count:]
+            os.fchmod(descriptor, int(node["staged_mode"], 8))
+        finally:
+            os.close(descriptor)
+        return 1, len(raw)
+
+    if (
+        not stat.S_ISDIR(accepted.file_type)
+        or stat.S_IMODE(accepted.mode) != int(node["mode"], 8)
+    ):
+        raise OSError(errno.EIO, "manifest directory identity changed")
+    expected_names = [child["name"] for child in node["entries"]]
+    actual_names = sorted(os.listdir(source_fd), key=os.fsencode)
+    if expected_names != actual_names:
+        raise OSError(errno.ESTALE, "manifest directory entries changed")
+    if root and destination.exists():
+        value = destination.lstat()
+        if not stat.S_ISDIR(value.st_mode) or os.listdir(destination):
+            raise OSError(errno.ENOTEMPTY, "manifest destination is not empty")
+    elif not root:
+        destination.mkdir(mode=int(node["staged_mode"], 8))
+    else:
+        destination.mkdir(mode=int(node["staged_mode"], 8))
+    count = 1
+    total = 0
+    for child in node["entries"]:
+        check_phase_deadline()
+        child_name = os.fsencode(child["name"])
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        if child["kind"] == "dir":
+            flags |= os.O_DIRECTORY
+        child_fd = os.open(child_name, flags, dir_fd=source_fd)
+        try:
+            child_count, child_total = copy_tree_manifest_fd(
+                child,
+                child_fd,
+                destination / child["name"],
+                root=False,
+                policy=policy,
+            )
+        finally:
+            os.close(child_fd)
+        count += child_count
+        total += child_total
+    assert_snapshot(source_fd, accepted)
+    return count, total
 
 
 def copy_tree_manifest(
@@ -2120,48 +2384,18 @@ def copy_tree_manifest(
     root: bool = True,
     policy: str = "runtime",
 ) -> tuple[int, int]:
-    kind = node["kind"]
-    if kind == "file":
-        raw = read_path(
-            str(source), MAX_FILE_BYTES, single_link=policy == "cache"
+    source_fd, retained = open_manifest_source(source)
+    try:
+        return copy_tree_manifest_fd(
+            node, source_fd, destination, root=root, policy=policy
         )
-        if len(raw) != node["size"] or sha256(raw) != node["sha256"]:
-            raise OSError(errno.EIO, "manifest file changed")
-        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, int(node["staged_mode"], 8))
-        try:
-            view = memoryview(raw)
-            while view:
-                count = os.write(descriptor, view)
-                if count <= 0:
-                    raise OSError(errno.EIO, "short manifest copy")
-                view = view[count:]
-            os.fchmod(descriptor, int(node["staged_mode"], 8))
-        finally:
-            os.close(descriptor)
-        return 1, len(raw)
-    if root and destination.exists():
-        value = destination.lstat()
-        if not stat.S_ISDIR(value.st_mode) or os.listdir(destination):
-            raise OSError(errno.ENOTEMPTY, "manifest destination is not empty")
-    else:
-        destination.mkdir(mode=0o700)
-    count = 1
-    total = 0
-    for child in node["entries"]:
-        child_count, child_total = copy_tree_manifest(
-            child,
-            source / child["name"],
-            destination / child["name"],
-            root=False,
-            policy=policy,
-        )
-        count += child_count
-        total += child_total
-    return count, total
+    finally:
+        close_retained(retained)
 
 
 def copy_tools(tools: Mapping[str, int], destination: Path) -> None:
     for name, descriptor in tools.items():
+        check_phase_deadline()
         raw = read_fd(descriptor, MAX_FILE_BYTES)
         path = destination / name
         output = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o555)
@@ -2186,6 +2420,7 @@ def copy_runtime(manifest: Mapping[str, Any], destination: Path) -> list[Runtime
     result: list[RuntimeBinding] = []
     total = 0
     for index, binding in enumerate(manifest["runtime_bindings"]):
+        check_phase_deadline()
         source = Path(binding["source"])
         target = destination / f"runtime-{index:06d}"
         validate_tree_manifest(binding["manifest"], str(source))
@@ -2198,6 +2433,7 @@ def copy_runtime(manifest: Mapping[str, Any], destination: Path) -> list[Runtime
 
 
 def copy_cache(manifest: Mapping[str, Any], cache_manifest: Mapping[str, Any], destination: Path) -> None:
+    check_phase_deadline()
     copy_tree_manifest(
         cache_manifest["root"],
         Path(manifest["cargo_cache"]["root"]),
@@ -2225,6 +2461,70 @@ class GitCopyBudget:
             raise OSError(errno.EFBIG, "Git view copy exceeds its bound")
 
 
+def source_copy_summary(identity: SourceIdentity) -> tuple[int, int]:
+    entries = len(identity.entries)
+    total = sum(
+        entry.source_snapshot.size
+        for entry in identity.entries
+        if entry.kind in ("file", "symlink")
+    )
+    return entries, total
+
+
+def git_copy_summary(identity: SourceIdentity) -> tuple[int, int]:
+    view = identity.view
+    budget = GitCopyBudget()
+
+    def visit(source: int, depth: int = 0, relative: tuple[bytes, ...] = ()) -> None:
+        check_phase_deadline()
+        if depth > MAX_SOURCE_DEPTH:
+            raise OSError(errno.ELOOP, "Git view depth exceeded")
+        for name in sorted(os.listdir(source), key=os.fsencode):
+            check_phase_deadline()
+            raw_name = os.fsencode(name)
+            value = os.stat(raw_name, dir_fd=source, follow_symlinks=False)
+            if stat.S_ISDIR(value.st_mode):
+                budget.add(0)
+                child = os.open(
+                    raw_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=source,
+                )
+                try:
+                    visit(child, depth + 1, (*relative, raw_name))
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(value.st_mode) and value.st_nlink == 1 and value.st_size <= MAX_FILE_BYTES:
+                budget.add(
+                    value.st_size,
+                    object_entry=bool(relative and relative[0] == b"objects"),
+                )
+            else:
+                raise OSError(errno.EPERM, "Git view entry rejected")
+
+    source_fd = os.open(
+        b".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=view.common_fd
+    )
+    try:
+        visit(source_fd)
+    finally:
+        os.close(source_fd)
+    if snapshot_fd(view.git_fd) != snapshot_fd(view.common_fd):
+        linked_fd = os.open(
+            b".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=view.git_fd
+        )
+        try:
+            for name in (b"HEAD", b"index"):
+                value = os.stat(name, dir_fd=linked_fd, follow_symlinks=False)
+                if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or value.st_size > MAX_FILE_BYTES:
+                    raise OSError(errno.EPERM, "Git view file rejected")
+                budget.add(value.st_size)
+        finally:
+            os.close(linked_fd)
+    assert_git_view(view)
+    return budget.entries, budget.bytes
+
+
 def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
     view = identity.view
     assert_git_view(view)
@@ -2238,6 +2538,7 @@ def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
         replace: bool = False,
         object_entry: bool = False,
     ) -> None:
+        check_phase_deadline()
         input_fd = os.open(
             name,
             os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -2261,6 +2562,7 @@ def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
         try:
             offset = 0
             while offset < accepted.size:
+                check_phase_deadline()
                 block = os.pread(input_fd, min(READ_CHUNK, accepted.size - offset), offset)
                 if not block:
                     raise OSError(errno.EIO, "short Git view read")
@@ -2286,6 +2588,7 @@ def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
         if depth > MAX_SOURCE_DEPTH:
             raise OSError(errno.ELOOP, "Git view depth exceeded")
         for name in sorted(os.listdir(source), key=os.fsencode):
+            check_phase_deadline()
             raw_name = os.fsencode(name)
             value = os.stat(raw_name, dir_fd=source, follow_symlinks=False)
             path = target / name
@@ -2579,6 +2882,61 @@ def reap_descendants(deadline: float) -> None:
             time.sleep(0.01)
 
 
+def terminate_owned_process(
+    process: subprocess.Popen[bytes],
+    leaf: Path,
+    accepted_start: str | None,
+) -> None:
+    """Terminate one owned process tree and prove its cgroup is empty."""
+    try:
+        populated = cgroup_populated(leaf)
+    except OSError as error:
+        raise CleanupError("owned child cgroup could not be inspected") from error
+    if process.poll() is None or populated:
+        if process.poll() is None and accepted_start is not None:
+            try:
+                if pid_start_time(process.pid) == accepted_start:
+                    os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+        grace_deadline = time.monotonic() + 1
+        reap_descendants(grace_deadline)
+        while time.monotonic() < grace_deadline:
+            try:
+                populated = cgroup_populated(leaf)
+            except OSError as error:
+                raise CleanupError("owned child cgroup could not be inspected") from error
+            if process.poll() is not None and not populated:
+                break
+            time.sleep(0.01)
+        try:
+            populated = cgroup_populated(leaf)
+            if process.poll() is None or populated:
+                kill_cgroup(leaf)
+        except OSError as error:
+            raise CleanupError("owned child cgroup could not be terminated") from error
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired as error:
+        raise CleanupError("owned child did not exit") from error
+    cleanup_deadline = time.monotonic() + 5
+    reap_descendants(cleanup_deadline)
+    while time.monotonic() < cleanup_deadline:
+        try:
+            populated = cgroup_populated(leaf)
+        except OSError as error:
+            raise CleanupError("owned child cgroup could not be inspected") from error
+        if not populated:
+            break
+        time.sleep(0.01)
+    try:
+        populated = cgroup_populated(leaf)
+    except OSError as error:
+        raise CleanupError("owned child cgroup could not be inspected") from error
+    if populated:
+        raise CleanupError("child cgroup remained populated")
+
+
 def run_owned(
     arguments: Sequence[str],
     *,
@@ -2602,10 +2960,11 @@ def run_owned(
     if leaf is None:
         fail("PLATFORM", "platform")
     process: subprocess.Popen[bytes] | None = None
+    accepted_start: str | None = None
+    teardown_complete = False
     primary_failure = False
     resource_failure: WorkerError | None = None
     try:
-        set_subreaper()
         (leaf / "pids.max").write_text("512\n", encoding="ascii")
         process = subprocess.Popen(
             list(arguments),
@@ -2628,6 +2987,7 @@ def run_owned(
         next_resource_check = time.monotonic()
         try:
             while streams.get_map():
+                check_cancelled(category, phase)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     primary_failure = True
@@ -2658,6 +3018,7 @@ def run_owned(
                     break
             if not primary_failure and not streams.get_map():
                 while process.poll() is None:
+                    check_cancelled(category, phase)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         primary_failure = True
@@ -2689,31 +3050,33 @@ def run_owned(
         finally:
             streams.close()
 
-        if process.poll() is None or cgroup_populated(leaf):
-            primary_failure = True
-            # A PID-directed signal is allowed only while the retained start
-            # time still identifies the admitted leader. The cgroup kill owns
-            # escaped sessions and double-fork descendants.
-            try:
-                if process.poll() is None and pid_start_time(process.pid) == accepted_start:
-                    os.killpg(process.pid, signal.SIGTERM)
-            except OSError:
-                pass
-            kill_cgroup(leaf)
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired as error:
-            raise CleanupError("owned child did not exit") from error
-        cleanup_deadline = time.monotonic() + 5
-        reap_descendants(cleanup_deadline)
-        while cgroup_populated(leaf) and time.monotonic() < cleanup_deadline:
-            time.sleep(0.01)
-        if cgroup_populated(leaf):
-            raise CleanupError("child cgroup remained populated")
+            if process.poll() is None or cgroup_populated(leaf):
+                primary_failure = True
+            terminate_owned_process(process, leaf, accepted_start)
+        except CleanupError as error:
+            failure = WorkerError(category, phase)
+            failure.cleanup_failed = True
+            raise failure from error
+        finally:
+            teardown_complete = True
         if resource_failure is not None:
             raise resource_failure
         if primary_failure:
             fail(category, phase)
+    except BaseException as active_error:
+        if process is not None and not teardown_complete:
+            try:
+                terminate_owned_process(process, leaf, accepted_start)
+            except CleanupError as error:
+                failure = WorkerError(category, phase)
+                failure.cleanup_failed = True
+                raise failure from error
+            finally:
+                teardown_complete = True
+        if isinstance(active_error, WorkerError):
+            raise
+        raise
     finally:
         active = sys.exc_info()[1]
         try:
@@ -2843,6 +3206,7 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
             phase="build",
             timeout=BUILD_TIMEOUT,
             pass_fds=bind_descriptors,
+            resource_check=lambda: enforce_private_quota(admission),
         )
     finally:
         close_private_mounts(bind_descriptors)
@@ -3361,6 +3725,10 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             "/tools/mount-guard",
             "--no-symlink-follow",
             "/target/tmp",
+            "--tmpfs-inodes",
+            "/",
+            "--tmpfs-inodes",
+            "/target/tmp",
             "--prepare-validation-userns",
             "--",
             "/tools/make",
@@ -3412,11 +3780,16 @@ def scan_private_fd(
     entry_limit: int = MAX_PRIVATE_ENTRIES,
     byte_limit: int = MAX_ROOT_BYTES,
     opaque_directories: frozenset[bytes] = frozenset(),
+    deadline: float | None = None,
 ) -> tuple[int, int]:
     def visit(directory_fd: int, depth: int, count: int, total: int) -> tuple[int, int]:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise CleanupError("private tree scan timed out")
         if depth > MAX_SOURCE_DEPTH:
             raise CleanupError("private tree exceeds depth bound")
         for name in os.listdir(directory_fd):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise CleanupError("private tree scan timed out")
             raw_name = os.fsencode(name)
             value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
             count += 1
@@ -3440,6 +3813,17 @@ def scan_private_fd(
         return count, total
 
     return visit(root_fd, 0, 0, 0)
+
+
+def enforce_private_quota(admission: Admission) -> None:
+    try:
+        scan_private_fd(
+            admission.root_fd,
+            entry_limit=MAX_PRIVATE_ENTRIES,
+            byte_limit=MAX_ROOT_BYTES,
+        )
+    except (CleanupError, OSError) as error:
+        raise OSError(errno.EFBIG, "private root exceeds its bound") from error
 
 
 def enforce_aggregate_quota(admission: Admission) -> None:
@@ -3475,7 +3859,9 @@ def enforce_aggregate_quota(admission: Admission) -> None:
         fail("CHILD", "aggregate")
 
 
-def cleanup_overlay_work_entry(admission: Admission) -> None:
+def cleanup_overlay_work_entry(admission: Admission, deadline: float | None = None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise CleanupError("overlay work cleanup timed out")
     path_fd, retained = open_relative_directory(
         admission.root_fd, "aggregate-output/workspace-work"
     )
@@ -3532,11 +3918,17 @@ def require_parent_entry(admission: Admission) -> None:
         os.close(current)
 
 
-def remove_contents_fd(directory_fd: int, depth: int = 0) -> None:
+def remove_contents_fd(
+    directory_fd: int, depth: int = 0, deadline: float | None = None
+) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise CleanupError("private tree removal timed out")
     if depth > MAX_SOURCE_DEPTH:
         raise CleanupError("cleanup depth exceeded")
     os.fchmod(directory_fd, 0o700)
     for child in sorted(os.listdir(directory_fd), key=os.fsencode, reverse=True):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise CleanupError("private tree removal timed out")
         raw_child = os.fsencode(child)
         value = os.stat(raw_child, dir_fd=directory_fd, follow_symlinks=False)
         if stat.S_ISDIR(value.st_mode):
@@ -3546,7 +3938,7 @@ def remove_contents_fd(directory_fd: int, depth: int = 0) -> None:
                 dir_fd=directory_fd,
             )
             try:
-                remove_contents_fd(child_fd, depth + 1)
+                remove_contents_fd(child_fd, depth + 1, deadline)
             finally:
                 os.close(child_fd)
             os.rmdir(raw_child, dir_fd=directory_fd)
@@ -3559,16 +3951,17 @@ def remove_contents_fd(directory_fd: int, depth: int = 0) -> None:
 def cleanup(admission: Admission | None) -> None:
     if admission is None:
         return
+    deadline = time.monotonic() + CLEANUP_TIMEOUT
     if not same_owned_directory(admission.roots_fd, admission.roots_identity) or not same_owned_directory(
         admission.root_fd, admission.root_identity
     ):
         raise CleanupError("private root identity changed")
     require_parent_entry(admission)
     if admission.aggregate_started:
-        cleanup_overlay_work_entry(admission)
-    scan_private_fd(admission.root_fd)
+        cleanup_overlay_work_entry(admission, deadline)
+    scan_private_fd(admission.root_fd, deadline=deadline)
     require_parent_entry(admission)
-    remove_contents_fd(admission.root_fd)
+    remove_contents_fd(admission.root_fd, deadline=deadline)
     require_parent_entry(admission)
     os.close(admission.root_fd)
     os.rmdir(admission.root_name, dir_fd=admission.roots_fd)
@@ -3584,11 +3977,15 @@ def cleanup(admission: Admission | None) -> None:
 
 
 def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
+    global PHASE_DEADLINE
     if mode not in ("ci", "build") or (project_fd, manifest_fd, run_fd) != (4, 8, 9):
         fail("ARGUMENT", "input")
     if dict(os.environ) != EXPECTED_ENVIRONMENT:
         fail("ARGUMENT", "input")
     expected_descriptor_set()
+    install_signal_handlers()
+    set_subreaper()
+    check_cancelled("FILESYSTEM", "filesystem")
     try:
         manifest_raw = verify_sealed(manifest_fd, MAX_MANIFEST_BYTES)
         manifest = validate_manifest(manifest_raw)
@@ -3624,10 +4021,16 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
             verify_align_pin(project, align)
         except Exception:
             fail("SOURCE", "align-source")
+        runtime_entry_count = 0
+        runtime_total = 0
         try:
             cache_manifest = validate_cache(manifest)
             for binding in manifest["runtime_bindings"]:
-                validate_tree_manifest(binding["manifest"], binding["source"])
+                count, total = validate_tree_manifest(binding["manifest"], binding["source"])
+                runtime_entry_count += count
+                runtime_total += total
+            cache_entry_count = cache_manifest["entry_count"] + 1
+            cache_total = cache_manifest["total_size"]
         except Exception:
             fail("CACHE", "cache")
         admission: Admission | None = None
@@ -3637,48 +4040,103 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
             admission = admit_root()
             make_root_children(admission)
             root = admission.root_path
-            copy_git_view(project, root / "baseline-git")
-            copy_source(project, root / "project-source")
-            copy_source(align, root / "align-source")
-            copy_source(project, root / "aggregate-work")
-            copy_tools(tools, root / "tool-bin")
-            runtime = copy_runtime(manifest, root / "runtime")
-            copy_cache(manifest, cache_manifest, root / "cargo-home")
+            previous_deadline = PHASE_DEADLINE
+            PHASE_DEADLINE = time.monotonic() + MATERIALIZATION_TIMEOUT
+            try:
+                git_entries, git_bytes = git_copy_summary(project)
+                project_entries, project_bytes = source_copy_summary(project)
+                align_entries, align_bytes = source_copy_summary(align)
+                tool_bytes = sum(os.fstat(descriptor).st_size for descriptor in tools.values())
+                if tool_bytes + runtime_total > MAX_TOOL_RUNTIME_BYTES:
+                    raise OSError(errno.EFBIG, "tool and runtime staging exceeds its bound")
+                try:
+                    current_entries, current_bytes = scan_private_fd(admission.root_fd)
+                except CleanupError as error:
+                    raise OSError(errno.EFBIG, "private root exceeds its bound") from error
+                planned_entries = (
+                    git_entries
+                    + (2 * project_entries)
+                    + align_entries
+                    + len(tools)
+                    + runtime_entry_count
+                    + cache_entry_count
+                )
+                planned_bytes = (
+                    git_bytes
+                    + (2 * project_bytes)
+                    + align_bytes
+                    + tool_bytes
+                    + runtime_total
+                    + cache_total
+                )
+                if (
+                    current_entries + planned_entries > MAX_PRIVATE_ENTRIES
+                    or current_bytes + planned_bytes > MAX_ROOT_BYTES
+                ):
+                    raise OSError(errno.EFBIG, "planned private staging exceeds its bound")
+                enforce_private_quota(admission)
+                copy_git_view(project, root / "baseline-git")
+                enforce_private_quota(admission)
+                copy_source(project, root / "project-source")
+                enforce_private_quota(admission)
+                copy_source(align, root / "align-source")
+                enforce_private_quota(admission)
+                copy_source(project, root / "aggregate-work")
+                enforce_private_quota(admission)
+                copy_tools(tools, root / "tool-bin")
+                enforce_private_quota(admission)
+                runtime = copy_runtime(manifest, root / "runtime")
+                enforce_private_quota(admission)
+                copy_cache(manifest, cache_manifest, root / "cargo-home")
+                enforce_private_quota(admission)
+            finally:
+                PHASE_DEADLINE = previous_deadline
             compiler, archive = build_compiler(admission, runtime)
             install_bundle(admission, compiler, archive, project, align, manifest_raw, runtime)
             if mode == "ci":
                 run_aggregate(admission, runtime)
         except WorkerError as error:
             primary = error
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except (CleanupError, OSError, ValueError, subprocess.SubprocessError):
             primary = WorkerError("FILESYSTEM", "filesystem")
         finally:
             try:
                 cleanup(admission)
             except CleanupError as error:
                 cleanup_failure = error
+            except OSError as error:
+                cleanup_failure = CleanupError("private cleanup failed")
         if primary is not None:
             primary.cleanup_failed = cleanup_failure is not None
             raise primary
         if cleanup_failure is not None:
             raise cleanup_failure
     finally:
+        active = sys.exc_info()[1]
+        final_cleanup_failure: CleanupError | None = None
         for identity in (locals().get("align"), locals().get("project")):
             if isinstance(identity, SourceIdentity):
                 try:
                     close_git_view(identity.view)
-                except CleanupError:
-                    pass
+                except CleanupError as error:
+                    final_cleanup_failure = final_cleanup_failure or error
         for descriptor in tools.values():
             try:
                 os.close(descriptor)
-            except OSError:
-                pass
+            except OSError as error:
+                final_cleanup_failure = final_cleanup_failure or CleanupError(
+                    "tool descriptor close failed"
+                )
         if align_retained:
             try:
                 close_retained(align_retained)
-            except CleanupError:
-                pass
+            except CleanupError as error:
+                final_cleanup_failure = final_cleanup_failure or error
+        if final_cleanup_failure is not None:
+            if isinstance(active, WorkerError):
+                active.cleanup_failed = True
+            elif active is None:
+                raise final_cleanup_failure
 
 
 def main(arguments: Sequence[str] | None = None) -> int:

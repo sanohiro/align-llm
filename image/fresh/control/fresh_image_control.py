@@ -59,6 +59,7 @@ GIT_PATH = "/runtime/git/bin/git"
 PYTHON_PATH = "/usr/bin/python3"
 EXPECTED_IMAGE_NAME = "oci://ghcr.io/sanohiro/align-llm-fresh"
 SUPERVISOR_VERSION = "1.0.0"
+WORKER_INVOCATION_TIMEOUT = 5_000
 
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -1222,7 +1223,7 @@ def bootstrap(
         pass_fds=(4, 7, 8, 9),
         close_fds=True,
         check=False,
-        timeout=30 if mode == "self-test" else 300,
+        timeout=30 if mode == "self-test" else WORKER_INVOCATION_TIMEOUT,
     )
     expected = {
         "ci": b"fresh compiler and capable checks: PASS\n",

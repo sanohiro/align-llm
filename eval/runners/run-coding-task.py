@@ -514,6 +514,9 @@ def fixture_environment() -> dict[str, str]:
 
 def validation_environment() -> dict[str, str]:
     environment = fixture_environment()
+    if FRESH_MODE:
+        environment["TMPDIR"] = "/tmp"
+        environment["ALIGNC_CACHE"] = "off"
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONNOUSERSITE"] = "1"
     return environment
@@ -574,6 +577,10 @@ def fresh_namespace_prefix() -> list[str]:
         "CAP_SETFCAP",
         "--tmpfs",
         "/",
+        "--size",
+        str(MAX_VALIDATION_TMPFS_BYTES),
+        "--tmpfs",
+        "/workspace",
         "--proc",
         "/proc",
         "--dev",
@@ -629,6 +636,17 @@ def sandbox_probe_command(
             "/tools/mount-guard",
             "--no-symlink-follow",
             "/target/tmp",
+            "/workspace",
+            "/tmp",
+            "/dev/shm",
+            "--tmpfs-inodes",
+            "/",
+            "--tmpfs-inodes",
+            "/workspace",
+            "--tmpfs-inodes",
+            "/tmp",
+            "--tmpfs-inodes",
+            "/dev/shm",
             "--",
             str(PYTHON_EXECUTABLE),
             "-c",
@@ -768,7 +786,16 @@ def validation_sandbox_command(
                 "/tools/mount-guard",
                 "--no-symlink-follow",
                 "/target/tmp",
+                "/workspace",
                 "/tmp",
+                "/dev/shm",
+                "--tmpfs-inodes",
+                "/",
+                "--tmpfs-inodes",
+                "/workspace",
+                "--tmpfs-inodes",
+                "/tmp",
+                "--tmpfs-inodes",
                 "/dev/shm",
                 "--",
                 *validation_resource_limits(timeout_seconds),
