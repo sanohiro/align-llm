@@ -3239,7 +3239,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         cleanup_failure = error.cleanup_failed
     except CleanupError:
         cleanup_failure = True
-    except Exception:
+    except Exception as error:
+        diagnostic = f"DIAGNOSTIC INTERNAL {type(error).__name__}: {error}\n"
+        os.write(2, diagnostic.encode("utf-8", "replace"))
         primary = WorkerError("INTERNAL", "internal")
     if primary is not None:
         category = primary.category if primary.category in PUBLIC_CATEGORIES else "INTERNAL"
