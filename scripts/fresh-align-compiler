@@ -3048,8 +3048,6 @@ def aggregate_environment(runtime: Sequence[RuntimeBinding]) -> list[str]:
             ("ALIGN_LLM_FRESH_COMPILER", "1"),
         )
     )
-    if DIAGNOSTIC:
-        values["ALIGN_LLM_FRESH_DIAGNOSTIC"] = "1"
     result: list[str] = []
     for name, value in values.items():
         result.extend(("--setenv", name, value))
