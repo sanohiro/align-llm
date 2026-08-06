@@ -2318,9 +2318,9 @@ def open_private_mount(
     )
     try:
         value = os.fstat(descriptor)
-        expected_type = stat.S_IFDIR if expected_kind == "dir" else stat.S_IFREG
+        expected_type = stat.S_IFDIR if expected_kind in ("dir", "tree") else stat.S_IFREG
         if (
-            expected_kind not in ("dir", "file")
+            expected_kind not in ("dir", "tree", "file")
             or stat.S_IFMT(value.st_mode) != expected_type
             or value.st_uid != os.geteuid()
         ):

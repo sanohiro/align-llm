@@ -344,6 +344,16 @@ def private_mount_case(module, temporary: Path) -> None:
             and stat.S_ISREG(os.fstat(descriptors[1]).st_mode),
             "private mount descriptors did not retain source identity",
         )
+        tree_descriptor = module.open_private_mount(
+            admission, admission.root_path / "directory", "tree"
+        )
+        try:
+            require(
+                stat.S_ISDIR(os.fstat(tree_descriptor).st_mode),
+                "runtime tree mount kind was not accepted as a directory",
+            )
+        finally:
+            os.close(tree_descriptor)
         require(
             module.overlay_arguments((17, 19, 23))
             == [
