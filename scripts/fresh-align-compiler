@@ -3038,6 +3038,8 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         "0",
         "--cap-add",
         "CAP_SYS_ADMIN",
+        "--cap-add",
+        "CAP_SETFCAP",
         "--tmpfs",
         "/",
         "--proc",
