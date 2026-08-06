@@ -383,6 +383,38 @@ def overlay_work_cleanup_case(module, temporary: Path) -> None:
         os.close(descriptor)
 
 
+def aggregate_quota_case(module, temporary: Path) -> None:
+    roots = temporary / "quota-roots"
+    roots.mkdir(mode=0o700)
+    root_name = module.ROOT_PREFIX + "quota"
+    admitted = roots / root_name
+    (admitted / "aggregate-output/workspace-upper").mkdir(parents=True, mode=0o700)
+    (admitted / "aggregate-output/workspace-work/work").mkdir(parents=True, mode=0o700)
+    (admitted / "aggregate-output/workspace-upper/main").write_bytes(b"output")
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    lock = temporary / "quota-lock"
+    lock.write_bytes(b"")
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        module.snapshot_fd(roots_fd),
+        root_fd,
+        module.snapshot_fd(root_fd),
+        root_name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    try:
+        try:
+            module.enforce_aggregate_quota(admission)
+        except module.WorkerError as error:
+            raise AssertionError("aggregate quota rejected readable overlay directories") from error
+    finally:
+        for descriptor in (root_fd, roots_fd, lock_fd):
+            os.close(descriptor)
+
+
 def private_mount_case(module, temporary: Path) -> None:
     roots = temporary / "mount-roots"
     roots.mkdir(mode=0o700)
@@ -800,6 +832,7 @@ def main() -> int:
         private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)
         overlay_work_cleanup_case(module, temporary)
+        aggregate_quota_case(module, temporary)
         cleanup_replacement_case(module, temporary)
         compiler_materialization_case(module, temporary)
     public_error_cases(module)
