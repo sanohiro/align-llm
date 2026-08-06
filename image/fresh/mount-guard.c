@@ -34,9 +34,20 @@ static int apply_no_symlink_follow(const char *path) {
     unsigned long long after;
     memset(&attributes, 0, sizeof(attributes));
     attributes.attr_set = MOUNT_ATTR_NOSYMFOLLOW;
-    if (mount_id(path, &before) < 0 ||
-        syscall(SYS_mount_setattr, AT_FDCWD, path, 0, &attributes, sizeof(attributes)) < 0 ||
-        mount_id(path, &after) < 0 || before != after) {
+    if (mount_id(path, &before) < 0) {
+        dprintf(STDERR_FILENO, "DIAGNOSTIC mount-guard statx-before path=%s errno=%d %s\n", path, errno, strerror(errno));
+        return -1;
+    }
+    if (syscall(SYS_mount_setattr, AT_FDCWD, path, 0, &attributes, sizeof(attributes)) < 0) {
+        dprintf(STDERR_FILENO, "DIAGNOSTIC mount-guard mount-setattr path=%s errno=%d %s\n", path, errno, strerror(errno));
+        return -1;
+    }
+    if (mount_id(path, &after) < 0) {
+        dprintf(STDERR_FILENO, "DIAGNOSTIC mount-guard statx-after path=%s errno=%d %s\n", path, errno, strerror(errno));
+        return -1;
+    }
+    if (before != after) {
+        dprintf(STDERR_FILENO, "DIAGNOSTIC mount-guard mount-id path=%s before=%llu after=%llu\n", path, before, after);
         return -1;
     }
     return 0;
