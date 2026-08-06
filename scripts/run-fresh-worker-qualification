@@ -110,6 +110,13 @@ def verify_contract_inventory() -> None:
         if token not in aggregate:
             raise RuntimeError(f"aggregate capability boundary is missing: {token}")
 
+    directories_start = worker.index("def namespace_directories")
+    directories_end = worker.index("\ndef open_private_mount", directories_start)
+    directories = worker[directories_start:directories_end]
+    for token in ('"/tmp"', '"/dev/shm"'):
+        if token not in directories:
+            raise RuntimeError(f"nested sandbox parent is missing: {token}")
+
     image = IMAGE_DOCKERFILE.read_text(encoding="utf-8")
     for token in (
         "libzstd-dev",

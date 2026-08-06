@@ -2676,6 +2676,7 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --tmpfs / --proc /proc --dev /dev \
   --dir /align-src --dir /tools --dir /runtime --dir /cargo --dir /target --dir /target/tmp \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
+  --dir /tmp --dir /dev/shm \
   --ro-bind-fd <align-source-fd> /align-src \
   --ro-bind-fd <tool-bin-fd> /tools \
   --ro-bind-fd <cargo-home-fd> /cargo \
