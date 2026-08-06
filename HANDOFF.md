@@ -7,18 +7,19 @@ request checks, reviews, findings, and attestations.
 
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
-- Open pull request: #61 (`agent/fresh-worker-capability`), current head
-  `a8e5429aee5b009ffe8e4041cca71f016b917e6c`; it is not merged and must remain merge-commit-only.
-- Current baseline tuple for this head: source/checkpoint
-  `ccb42a79f2392328725c8125aa0662c3825432a5`, oracle
-  `36e087c67004dfda54c16f64f236221357c341b1`, finalization
-  `8921d4d3d1fee4c454a1514027a3c620a66bc447`.
+- Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
+  remain merge-commit-only. The latest product/evaluation commit before this handoff is
+  `3bec17cc5b3f8fc7a1a31d5400b53a1ebd2b7751`.
+- Current baseline tuple: source/checkpoint
+  `1120e7e67d034c0c1d50998c1a2bc7caf8025dfc`, oracle
+  `d115e06962f8fcf168985666683873476b5250c7`, finalization
+  `3bec17cc5b3f8fc7a1a31d5400b53a1ebd2b7751`.
 - Relevant review-repair checkpoint: `366dc3d02452c1775b2b97d307ebcdeba155c586`. Subsequent
   non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
   the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
   the pull request before merge.
-- Active goal: complete, review, and merge the consumer-complete FRESH-WORKER capability. The user
-  requested that execution stop after this pull request merges; do not start the next roadmap item.
+- Active goal: complete, review, and merge the consumer-complete FRESH-WORKER capability, then
+  continue with the next eligible roadmap item as requested by the user.
 - In progress: the repository worker now cryptographically re-verifies the sealed Ed25519/DSSE
   invocation and image-manifest tuple,
   captures separate project/Align Git identities, admits one protected private root, materializes
@@ -53,21 +54,16 @@ request checks, reviews, findings, and attestations.
 
 ## Next actions
 
-1. Use the retained diagnostic worktree `/tmp/align-llm-fresh-aggregate-diagnostic` and branch
-   `agent/fresh-worker-aggregate-diagnostic`. Its current uncommitted file
-   `image/fresh/control/fresh_image_control.py` emits the worker's bounded stdout/stderr before
-   canonical-result rejection; commit/push it and dispatch CI to obtain the aggregate's actual
-   failure. The prior diagnostic run `31022815776` still ended at generic `ERROR CHILD aggregate`
-   because this upper-control diagnostic was not yet present.
-2. Apply the evidence-backed aggregate repair to `agent/fresh-worker-capability`, run the focused
-   qualification and topology checks, then refresh the Section 2.4 baseline tuple from the new
-   source commit (source -> oracle-only -> finalizer-only). Push to PR #61.
-3. Obtain fresh installed Ubuntu 24.04 FRESH-IMAGE/FRESH-WORKER evidence, record the required
-   comprehensive and conditional final review envelopes and finding dispositions, and merge with a
-   merge commit only after all checks pass. Do not start the next roadmap item; the user asked to
-   stop after this PR.
-4. After merge, perform the bounded retrospective, remove the temporary diagnostic branches and
-   worktrees, update the merged-branch handoff as appropriate, and stop.
+1. Push the refreshed source/oracle/finalization tuple to PR #61 and obtain fresh pinned and
+   installed Ubuntu 24.04 evidence. Hosted checks own the installed-platform evidence because the
+   local Docker endpoint is unavailable.
+2. Run one fresh independent adversarial review of the complete PR diff, record the SHA-bound review
+   envelope and all finding dispositions, and apply any valid findings in one consolidated repair.
+   Rerun only affected checks unless the repair materially changes the reviewed contract.
+3. Mark the PR ready, verify the final head, base tip, required checks, ancestry, and merge method,
+   then merge PR #61 with a merge commit only.
+4. After merge, perform the bounded retrospective, refresh the main/worktree state without
+   discarding intentional local changes, and start the next eligible roadmap gate.
 
 ## Latest verification
 
@@ -91,14 +87,14 @@ request checks, reviews, findings, and attestations.
 - `python3 scripts/run-fresh-image-control-smoke`: PASS, including compilation and execution of the
   bwrap-only forwarder with three recognized mount descriptors preserved and an unrecognized
   descriptor after `--` closed at target exec.
-- Hosted PR run `31021997154`: Pinned Align job `92361333668` PASS. Its initial Installed job
-  `92360777058` failed on a Docker Hub Ubuntu manifest `502`; rerun Installed job `92361332327`
-  built and attested the image, passed the bwrap self-test, and failed only at the real worker
-  aggregate with `fresh compiler: ERROR CHILD aggregate`.
-- Diagnostic run `31022815776`: Pinned checks PASS and Installed image build/self-test reached the
-  same aggregate failure. The worker-level diagnostic output was captured internally, but the
-  upper image-control canonical-result check still suppressed it; the retained uncommitted control
-  patch is the next diagnostic action.
+- Hosted diagnostic run `31063159443`: Pinned checks PASS; Installed image build and bwrap
+  self-test passed, and the aggregate failure was traced to cleanup attempting to remove the
+  read-only staged Git `refs/tags` directory (`PermissionError: [Errno 13] Permission denied`).
+- Source fix `1120e7e` restores directory write access before descriptor-relative cleanup and adds a
+  read-only nested-directory regression. Local worker qualification and baseline checks pass.
+- `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
+  failure-retention smoke tests. The refreshed baseline tuple is recorded above; hosted checks for
+  the pushed head remain pending.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
   normalization, populated-tree count derivation, and the installed job's incorrect assumption that
@@ -130,8 +126,9 @@ request checks, reviews, findings, and attestations.
 
 - No implementation blocker is known. Local Docker unavailability is an execution condition, not a
   design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
-- The current functional blocker is the unexplained installed aggregate failure after bwrap self-test;
-  do not guess a repair before the retained upper-control diagnostic exposes the bounded child output.
+- Fresh hosted installed-profile evidence for the cleanup repair is pending after push. No
+  implementation blocker is known; the prior failure has an evidence-backed fix and local
+  regression coverage.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
   not adopt a new Align surface.
 - FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
