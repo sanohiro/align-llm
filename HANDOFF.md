@@ -1,200 +1,80 @@
 # Session handoff
 
-Read `CLAUDE.md` first. This file records durable capability state; GitHub owns transient pull
-request checks, reviews, findings, and attestations.
+Read `CLAUDE.md` first. GitHub owns transient pull request checks, review findings, and
+attestations; this file records durable project state.
 
 ## Current state
 
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
-  `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
-- Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
-  remain merge-commit-only. The latest product/evaluation commit before this handoff is
-  `e0190ec615a500d32a5f6d112d474e346cc9b12d` (`fix: clean overlay work entries descriptor-relatively`).
-- Current baseline tuple: source/checkpoint
-  `7bc459df4c5b34cbdd9b6e44b49b34dbeacd79d5`, oracle
-  `4128b5aaa67f379f1cb8bae837d273dd7a3c4144`, finalization
-  `4721da16435494b73b98e5f187a6adba6656d0ee`.
-  The coding-v1 artifact manifest does not include the worker, image, qualification, or topology
-  documentation paths changed by this repair, so the tuple remains valid and `make baseline-check`
-  passes without a new measurement.
-- Relevant review-repair checkpoint: `366dc3d02452c1775b2b97d307ebcdeba155c586`. Subsequent
-  non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
-  the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
-  the pull request before merge.
-- Active goal: complete, review, and merge the consumer-complete FRESH-WORKER capability, then
-  continue with the next eligible roadmap item as requested by the user.
-- In progress: the repository worker now cryptographically re-verifies the sealed Ed25519/DSSE
-  invocation and image-manifest tuple,
-  captures separate project/Align Git identities, admits one protected private root, materializes
-  source/tool/runtime/offline-cache inputs, builds the pinned compiler in a first bwrap namespace,
-  installs a descriptor/guard/compiler/archive bundle, and launches `capable-checks` through a
-  writable overlay in a second namespace. Make and evaluation consumers use the fresh launcher,
-  namespace-owned temporary root, nested staged tools, and private baseline Git view. The installed
-  image now seeds the authenticated Cargo cache at the pinned Align revision, and its profile smoke
-  contains the real no-network aggregate path. The cache manifest derives its cardinality and byte
-  totals from that populated seed. Review repair additionally rejects local Git helpers
-  before source queries, retains and rechecks Git/common/ref/index/object identity, streams source
-  and child output under bounds, kills and reaps the complete cgroup, and makes staging and cleanup
-  descriptor-relative so a replacement root is never deleted.
-  Installed-profile source admission now reopens the supervisor's retained `O_PATH` project root as
-  a no-follow scan-capable descriptor, gives Git worker-owned `/proc/<worker-pid>/fd/...` paths that
-  remain valid if Git closes inherited nonstandard descriptors, and normalizes Git tree records to
-  raw-path byte order before manifest construction. Runtime-tree validation accepts stable
-  distribution hardlinks under full before/after identity and byte-digest checks, while Cargo-cache
-  regular files retain their separate single-link requirement. Private build/aggregate mount
-  sources are opened relative to the retained private-root descriptor. Ordinary mounts use bwrap
-  `--bind-fd`/`--ro-bind-fd`; the three overlay operands use only the bwrap process's own
-  `/proc/self/fd/...` view because bwrap has no overlay-fd option. The bwrap-only forwarder preserves
-  only mount descriptors named by setup options; post-overlay fd-bind operations make bwrap consume
-  the three overlay descriptors, and a tmpfs hides their holding mounts before the payload.
-  Payloads still inherit no worker descriptors. Cleanup distinguishes stable root identity from normal owned-directory metadata
-  changes. The installed build diagnostic then showed that Rust's target linker receives driver
-  arguments (`-Wl,...`, `-m64`, and `-B...`) that the raw `ld.lld` entry point rejects. The worker
-  now uses the authenticated `/tools/cc` Clang driver for the Rust target linker; the raw linker
-  remains selected only by Clang's fixed `-fuse-ld` path. The next installed diagnostic showed that
-  Clang then needed `crtbeginS.o`, `crtendS.o`, and `libgcc_s`; the image now authenticates and
-  mounts only the GCC startup/runtime support tree at `/usr/lib/gcc/x86_64-linux-gnu`, without a
-  GCC driver or host executable search path. The following diagnostic confirmed GCC 13 was selected
-  and exposed the next missing linker input, `-lzstd`; the image now installs `libzstd-dev` so the
-  authenticated `/usr/lib/x86_64-linux-gnu` tree contains its declared development symlink.
-  The next diagnostic reached compiler bundle validation and showed Cargo's release `alignc` and
-  `libalign_runtime.a` can be stable hardlinks to `deps` outputs. The worker now reads those
-  worker-owned release files with a full before/after identity check and materializes one-link
-  copies under `cargo-target/fresh-bundle` before descriptor publication; cache, runtime, and final
-  aggregate-output link policies remain unchanged. The latest installed diagnostic showed the
-  aggregate child exiting while cleanup tried to recursively open the overlayfs internal `work`
-  directory. Cleanup now records whether aggregate launch began and, only in that state, accepts
-  an empty work directory or the exact directory named `work`; it verifies and removes that entry
-  with descriptor-relative no-follow `rmdir` and rejects unknown entries without recursive descent.
-- The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
-  `4510138117e1fd612295256ba91f21361b84c3c5`, and
-  `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
-  from a head whose latest non-evaluation source/checkpoint commit is followed by an oracle-only
-  commit and a finalizer-only commit; older tuples remain historical ancestors, not merge evidence.
+  `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
+- Open draft pull request: #61, merge-commit-only. Current head:
+  `3b22497e601b3d11289351fbf35936fcacc45456`.
+- Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
+  start the next eligible roadmap capability (`C6-LIFECYCLE`).
+- Product work is complete through the aggregate capability boundary: the worker launches the
+  capable namespace as UID/GID 0 with `CAP_SYS_ADMIN` and `CAP_SETFCAP`; `mount-guard` applies
+  the no-symlink attribute, retains only `CAP_SETFCAP`, sets `no_new_privs`, and execs Make so
+  nested validation bwrap can map UID 0 without retaining mount authority. The fresh sandbox
+  probe guards only `/target/tmp`; validation setup guards `/target/tmp`, `/tmp`, and `/dev/shm`
+  after nested mounts exist. Aggregate fixture scripts clear the inherited project Git view.
+- Local Docker is unavailable; installed-image and capable aggregate evidence must come from the
+  hosted Ubuntu 24.04 profile.
 
-## Next actions
+## Baseline provenance
 
-1. Push the overlay-work cleanup repair and handoff to PR #61 and obtain fresh pinned and installed
-   Ubuntu 24.04 evidence. Hosted checks own the installed-platform evidence because the local Docker
-   endpoint is unavailable.
-2. Run one fresh independent adversarial review of the complete PR diff, record the SHA-bound review
-   envelope and all finding dispositions, and apply any valid findings in one consolidated repair.
-   Rerun only affected checks unless the repair materially changes the reviewed contract.
-3. Mark the PR ready, verify the final head, base tip, required checks, ancestry, and merge method,
-   then merge PR #61 with a merge commit only.
-4. After merge, perform the bounded retrospective, refresh the main/worktree state without
-   discarding intentional local changes, and start the next eligible roadmap gate.
+- Source/checkpoint: `9f3541bffe6b89226a68e71b560368506d197a28`.
+- Immutable oracle: `9c9e535386fb570b5f275ba0a14d43621f19b99c`.
+- Finalization: `3b22497e601b3d11289351fbf35936fcacc45456`.
+- The source commit is followed only by the oracle-only and finalizer-only commits for the
+  refreshed coding-v1 baseline. Do not change a recorded evaluation artifact without restarting
+  the Section 2.4 measurement sequence.
+
+## Next steps, in priority order
+
+1. Inspect diagnostic run `31080479832` on branch `agent/fresh-worker-aggregate-diagnostic`
+   (current diagnostic head `7c475452bb67028d270cd60df18c016df711e97e`). Its pinned job passed;
+   the installed job is testing the probe-only `/target/tmp` guard and reports cgroup residue if
+   the compiler leader exits successfully but its owned cgroup is still populated. Diagnostic
+   instrumentation must not enter PR #61.
+2. Dispatch and complete the product branch's full hosted CI. Confirm the installed profile reaches
+   capable evaluation and that the refreshed baseline and exact aggregate capability contract pass.
+3. Update PR #61 with the final head, baseline tuple, hosted evidence, and the known diagnostic
+   history. Run one fresh independent adversarial review of the complete diff, record the
+   SHA-bound review envelope with `none` or every finding and disposition, and apply valid findings
+   in one consolidated repair. Rerun affected checks; restart baseline provenance if a recorded
+   artifact changes.
+4. Mark the PR ready, verify exact head/base ancestry and merge-commit-only policy, then merge with
+   the GitHub connector using the exact expected head SHA.
+5. After merge, perform the bounded retrospective, refresh main without discarding the intentional
+   primary-worktree change, and begin the reviewed `C6-LIFECYCLE` design gate.
 
 ## Latest verification
 
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS, batching the
-  attestation/manifest/image-control owners, worker unit cases, topology oracle, and the complete
-  Section 9.10 focused-case inventory. Manifest cases include a populated generated Cargo-cache
-  tree. Worker cases include forged signatures, supervisor replay, Git helper and alternate
-  rejection, packed/linked Git identity, source/common-dir replacement, bounded streams, and
-  replacement-root cleanup authority.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-gate-topology --self-test`: PASS.
-- `ALIGNC=../align/target/release/alignc PYTHONDONTWRITEBYTECODE=1 make hosted-checks`: PASS.
-- `ALIGNC=../align/target/release/alignc PYTHONDONTWRITEBYTECODE=1 make eval-coding`: PASS, including
-  invalid, Git-configuration, timeout, namespace, resource, mutation, and descendant cleanup smokes.
 - `git diff --check`: PASS.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after exercising the
-  supervisor-equivalent `O_PATH` root, a Git-tree/raw-byte ordering inversion, and private
-  descriptor-backed mount admission, stable Cargo-output hardlink materialization and the unchanged
-  default single-link rejection, plus exact known overlay `work` cleanup and unknown-entry rejection;
-  the Rust linker contract requires `/tools/cc`.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS after the image
-  contract check for the authenticated GCC startup/runtime support tree.
-- `git diff --check`: PASS after the compiler-output materialization repair.
-- `make baseline-check`: PASS after the repair; the recorded source/oracle/finalization tuple is
-  unchanged because the changed worker and supporting documentation are outside the artifact set.
-- `git diff --check`: PASS after the overlay-work cleanup repair.
-- Local bubblewrap 0.11.0 descriptor-bind smoke: PASS. A direct aggregate-shaped overlay smoke using
-  retained lower/upper/work descriptors through bwrap's own `/proc/self/fd` view read the lower tree
-  and published the expected upper-layer file.
-- `python3 scripts/run-fresh-image-control-smoke`: PASS, including compilation and execution of the
-  bwrap-only forwarder with three recognized mount descriptors preserved and an unrecognized
-  descriptor after `--` closed at target exec.
-- Hosted diagnostic run `31063159443`: Pinned checks PASS; Installed image build and bwrap
-  self-test passed, and the aggregate failure was traced to cleanup attempting to remove the
-  read-only staged Git `refs/tags` directory (`PermissionError: [Errno 13] Permission denied`).
-- Source fix `1120e7e` restores directory write access before descriptor-relative cleanup and adds a
-  read-only nested-directory regression. Local worker qualification and baseline checks pass.
-- Diagnostic run `31064929389`: Pinned checks PASS; Installed image build and bwrap self-test
-  passed, and the aggregate failure was traced to the runtime manifest's `kind: tree` being
-  interpreted as a regular file by private mount admission. Source fix `4e71ecd` accepts `tree` as
-  a directory kind and adds a direct regression. Local worker qualification passes.
-- Diagnostic run `31066038115`: Pinned checks PASS; Installed image build and bwrap self-test
-  passed through the compiler build, then exposed the exact derived paths and Rust linker argv.
-  The raw `ld.lld` target rejected driver options and could not resolve the `-l...` inputs; source
-  fix `11c07ae` selects `/tools/cc` and updates the Section 9.5 contract with a linker-entry
-  regression. Local worker unit and focused qualification pass.
-- Diagnostic run `31067093178`: Pinned checks PASS; `/tools/cc` was accepted and the build reached
-  Clang, which exposed missing `crtbeginS.o`, `crtendS.o`, and `libgcc_s` support. Source fix
-  `81f80e9` stages `/usr/lib/gcc/x86_64-linux-gnu` as an authenticated runtime binding and adds
-  a static image-contract regression. Diagnostic run `31068073929` then confirmed GCC 13 was
-  selected and exposed the next missing `-lzstd` linker input; product repair `44ce50b` stages the
-  authenticated development library tree.
-- Hosted run `31068469776`: Pinned checks PASS and installed image build passed; the aggregate
-  reached compiler bundle validation but reported only `COMPILER compiler` without child output.
-- Diagnostic run `31069134458` on `abc1bdf`: Pinned checks PASS and the installed compiler output
-  inspection showed `alignc` and `libalign_runtime.a` with `st_nlink == 2`; this is the evidence for
-  product repair `b14f78b`.
-- Hosted run `31069800116` on the materialization repair: pinned checks and image build passed, and
-  compiler materialization passed; the aggregate then failed while the normal worker suppressed the
-  child detail.
-- Diagnostic run `31070212866` on `a71c743`: pinned checks and image build passed; aggregate output
-  showed `PermissionError: [Errno 13] Permission denied: b'work'` from recursive cleanup of the
-  overlayfs internal work entry. Product repair `e0190ec` removes only the exact known entry with
-  descriptor-relative cleanup and adds the corresponding unit regression.
-- `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
-  failure-retention smoke tests for the current tuple above. Hosted checks for the pushed head
-  remain pending.
-- Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
-  unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
-  normalization, populated-tree count derivation, and the installed job's incorrect assumption that
-  a sibling Align checkout exists. The profile now obtains the pinned Align source from its canonical
-  repository before entering the no-network worker boundary. Installed diagnostics also showed that
-  Git could not reopen an inherited config memfd through its procfs view; admission now feeds the
-  already retained config bytes through Git's documented stdin path. A later installed run showed
-  that Git closes inherited nonstandard descriptors before repository lookup and that the admitted
-  root is intentionally `O_PATH`; the worker now supplies worker-owned descriptor paths, reopens a
-  scan-capable root without pathname resolution, and raw-byte sorts Git tree records. That source
-  admission then exposed a policy leak in the next phase: the cache single-link rule was also being
-  applied to installed runtime trees containing legitimate distribution hardlinks. Runtime reads
-  now preserve and compare link count without requiring one; cache reads still reject hardlinks.
-  Private staging then exposed an over-strict cleanup comparison that treated normal directory
-  timestamp changes as replacement; cleanup now uses the retained worker identity contract. The
-  next installed diagnostic proved that a new bwrap user namespace cannot traverse the parent
-  worker's procfs descriptor paths. Mount sources now cross that boundary as retained descriptors.
-  Descriptor diagnostics proved every mount fd present immediately before the authenticated tool
-  forwarder, then missing in bwrap. The forwarder was closing all nonstandard descriptors before
-  executing its target. Its bwrap-only mode now marks all such descriptors close-on-exec, parses the
-  fixed setup argv before `--`, and clears the flag only for recognized bind and overlay mount fds;
-  the bwrap setup then consumes every preserved descriptor before the payload. The image retains its
-  v0.11.2 pin `1b80120ef26a28e065e67f89bfef873f13bdd317`. Hosted run `31020180770`
-  reproduced the opaque failure and diagnostic run `31020913056` exposed the forwarder close; fresh
-  hosted evidence for the repair is pending.
-  The dedicated hosted profile check must supply fresh installed-platform evidence after push.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-image-control-smoke`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-index-smoke`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-test-selection-smoke`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-patch-eval-smoke`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-verification-loop-smoke`: PASS.
+- Baseline recorder: two deterministic-reference samples PASS from the source commit above.
+- `make baseline-check`: PASS, including canonical oracle, invalid-input, and failure-retention
+  smokes.
+- Prior hosted diagnostic runs through `31079703787` established and repaired linker runtime
+  bindings, compiler-output hardlink materialization, descriptor-relative overlay cleanup, UID/GID
+  and `CAP_SYS_ADMIN` aggregate admission, staged shell/interpreter paths, and aggregate fixture
+  Git isolation. Run `31080479832` is the current diagnostic evidence for the remaining nested
+  validation boundary.
 
-## Blockers and decisions
+## Constraints and intentional state
 
-- No implementation blocker is known. Local Docker unavailability is an execution condition, not a
-  design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
-- Fresh hosted installed-profile evidence for the GCC runtime-support, `libzstd-dev`, compiler
-  output hardlink, and overlay-work cleanup repairs is pending after push. No implementation
-  blocker is known; each failure has an evidence-backed fix and local regression coverage.
-- `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
-  not adopt a new Align surface.
-- FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
-  Make interposition, cache/image completion, and the first real consumer aggregate are not useful or
-  reviewable as independently shipped helper surfaces.
-- The pull request must use a merge commit so the implementation source, immutable oracle, and
-  canonical finalization commits remain ancestors of the exact merged head.
-- The diagnostic branch/worktree `agent/fresh-worker-aggregate-diagnostic` /
-  `/tmp/align-llm-fresh-aggregate-diagnostic` is intentionally retained for hosted aggregate
-  diagnostics through commit `a71c7438ca56bc07e451ade99abaa454600caf73`; its changes must not enter PR #61. The older
-  `agent/fresh-worker-diagnostic` worktree is also intentionally retained for historical FD-boundary
-  evidence until the PR is resolved.
-- The separate primary worktree has intentional uncommitted state; do not discard or overwrite it
-  while this clean worktree is active.
+- Keep all source, documentation, diagnostics, commits, and PR metadata in English.
+- `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; no Align language request is
+  opened by this capability.
+- The PR must use a merge commit so source, oracle, and finalization ancestry remains reachable.
+- Diagnostic worktree `/tmp/align-llm-fresh-aggregate-diagnostic` and branch
+  `agent/fresh-worker-aggregate-diagnostic` are intentionally retained for hosted aggregate
+  diagnosis; never merge their diagnostic-only instrumentation.
+- The primary worktree `/home/hiro/prj/align-llm` has an intentional uncommitted `HANDOFF.md`.
+  Do not discard or overwrite it.
