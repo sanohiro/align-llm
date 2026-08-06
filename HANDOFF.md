@@ -9,11 +9,11 @@ request checks, reviews, findings, and attestations.
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
 - Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
   remain merge-commit-only. The latest product/evaluation commit before this handoff is
-  `3bec17cc5b3f8fc7a1a31d5400b53a1ebd2b7751`.
+  `6d1f173b165fd5e40832941a8e278e40584794e8`.
 - Current baseline tuple: source/checkpoint
-  `1120e7e67d034c0c1d50998c1a2bc7caf8025dfc`, oracle
-  `d115e06962f8fcf168985666683873476b5250c7`, finalization
-  `3bec17cc5b3f8fc7a1a31d5400b53a1ebd2b7751`.
+  `4e71ecd7c699103104dfd2d6e3215bc2b6bb7922`, oracle
+  `d8ac9b8cdbf01aad2b8f734c2f278e3748880694`, finalization
+  `6d1f173b165fd5e40832941a8e278e40584794e8`.
 - Relevant review-repair checkpoint: `366dc3d02452c1775b2b97d307ebcdeba155c586`. Subsequent
   non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
   the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
@@ -92,9 +92,13 @@ request checks, reviews, findings, and attestations.
   read-only staged Git `refs/tags` directory (`PermissionError: [Errno 13] Permission denied`).
 - Source fix `1120e7e` restores directory write access before descriptor-relative cleanup and adds a
   read-only nested-directory regression. Local worker qualification and baseline checks pass.
+- Diagnostic run `31064929389`: Pinned checks PASS; Installed image build and bwrap self-test
+  passed, and the aggregate failure was traced to the runtime manifest's `kind: tree` being
+  interpreted as a regular file by private mount admission. Source fix `4e71ecd` accepts `tree` as
+  a directory kind and adds a direct regression. Local worker qualification passes.
 - `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
-  failure-retention smoke tests. The refreshed baseline tuple is recorded above; hosted checks for
-  the pushed head remain pending.
+  failure-retention smoke tests for the prior tuple. The refreshed baseline tuple is recorded
+  above; hosted checks for the pushed head remain pending.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
   normalization, populated-tree count derivation, and the installed job's incorrect assumption that
@@ -126,9 +130,9 @@ request checks, reviews, findings, and attestations.
 
 - No implementation blocker is known. Local Docker unavailability is an execution condition, not a
   design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
-- Fresh hosted installed-profile evidence for the cleanup repair is pending after push. No
-  implementation blocker is known; the prior failure has an evidence-backed fix and local
-  regression coverage.
+- Fresh hosted installed-profile evidence for the runtime-tree repair is pending after push. No
+  implementation blocker is known; the cleanup and runtime-tree failures each have evidence-backed
+  fixes and local regression coverage.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
   not adopt a new Align surface.
 - FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
