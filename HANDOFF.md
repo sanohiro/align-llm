@@ -9,11 +9,12 @@ request checks, reviews, findings, and attestations.
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
 - Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
   remain merge-commit-only. The latest product/evaluation commit before this handoff is
-  `6d1f173b165fd5e40832941a8e278e40584794e8`.
+  `11c07aea24d0220a3be00a19b675d0a6275ede17`.
 - Current baseline tuple: source/checkpoint
   `4e71ecd7c699103104dfd2d6e3215bc2b6bb7922`, oracle
   `d8ac9b8cdbf01aad2b8f734c2f278e3748880694`, finalization
-  `6d1f173b165fd5e40832941a8e278e40584794e8`.
+  `6d1f173b165fd5e40832941a8e278e40584794e8` is invalidated by source commit
+  `11c07aea24d0220a3be00a19b675d0a6275ede17`; refresh it before the next push.
 - Relevant review-repair checkpoint: `366dc3d02452c1775b2b97d307ebcdeba155c586`. Subsequent
   non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
   the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
@@ -45,7 +46,10 @@ request checks, reviews, findings, and attestations.
   only mount descriptors named by setup options; post-overlay fd-bind operations make bwrap consume
   the three overlay descriptors, and a tmpfs hides their holding mounts before the payload.
   Payloads still inherit no worker descriptors. Cleanup distinguishes stable root identity from normal owned-directory metadata
-  changes.
+  changes. The installed build diagnostic then showed that Rust's target linker receives driver
+  arguments (`-Wl,...`, `-m64`, and `-B...`) that the raw `ld.lld` entry point rejects. The worker
+  now uses the authenticated `/tools/cc` Clang driver for the Rust target linker; the raw linker
+  remains selected only by Clang's fixed `-fuse-ld` path.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -54,15 +58,17 @@ request checks, reviews, findings, and attestations.
 
 ## Next actions
 
-1. Push the refreshed source/oracle/finalization tuple to PR #61 and obtain fresh pinned and
+1. Record a new clean baseline source commit for `11c07ae`, create the pending measurement, commit
+   the immutable oracle, finalize the canonical baseline, and run the baseline checks.
+2. Push the refreshed source/oracle/finalization tuple to PR #61 and obtain fresh pinned and
    installed Ubuntu 24.04 evidence. Hosted checks own the installed-platform evidence because the
    local Docker endpoint is unavailable.
-2. Run one fresh independent adversarial review of the complete PR diff, record the SHA-bound review
+3. Run one fresh independent adversarial review of the complete PR diff, record the SHA-bound review
    envelope and all finding dispositions, and apply any valid findings in one consolidated repair.
    Rerun only affected checks unless the repair materially changes the reviewed contract.
-3. Mark the PR ready, verify the final head, base tip, required checks, ancestry, and merge method,
+4. Mark the PR ready, verify the final head, base tip, required checks, ancestry, and merge method,
    then merge PR #61 with a merge commit only.
-4. After merge, perform the bounded retrospective, refresh the main/worktree state without
+5. After merge, perform the bounded retrospective, refresh the main/worktree state without
    discarding intentional local changes, and start the next eligible roadmap gate.
 
 ## Latest verification
@@ -80,7 +86,7 @@ request checks, reviews, findings, and attestations.
 - `git diff --check`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after exercising the
   supervisor-equivalent `O_PATH` root, a Git-tree/raw-byte ordering inversion, and private
-  descriptor-backed mount admission.
+  descriptor-backed mount admission; the Rust linker contract requires `/tools/cc`.
 - Local bubblewrap 0.11.0 descriptor-bind smoke: PASS. A direct aggregate-shaped overlay smoke using
   retained lower/upper/work descriptors through bwrap's own `/proc/self/fd` view read the lower tree
   and published the expected upper-layer file.
@@ -96,6 +102,11 @@ request checks, reviews, findings, and attestations.
   passed, and the aggregate failure was traced to the runtime manifest's `kind: tree` being
   interpreted as a regular file by private mount admission. Source fix `4e71ecd` accepts `tree` as
   a directory kind and adds a direct regression. Local worker qualification passes.
+- Diagnostic run `31066038115`: Pinned checks PASS; Installed image build and bwrap self-test
+  passed through the compiler build, then exposed the exact derived paths and Rust linker argv.
+  The raw `ld.lld` target rejected driver options and could not resolve the `-l...` inputs; source
+  fix `11c07ae` selects `/tools/cc` and updates the Section 9.5 contract with a linker-entry
+  regression. Local worker unit and focused qualification pass.
 - `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
   failure-retention smoke tests for the prior tuple. The refreshed baseline tuple is recorded
   above; hosted checks for the pushed head remain pending.
@@ -130,9 +141,9 @@ request checks, reviews, findings, and attestations.
 
 - No implementation blocker is known. Local Docker unavailability is an execution condition, not a
   design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
-- Fresh hosted installed-profile evidence for the runtime-tree repair is pending after push. No
-  implementation blocker is known; the cleanup and runtime-tree failures each have evidence-backed
-  fixes and local regression coverage.
+- Fresh hosted installed-profile evidence for the Rust linker-driver repair is pending after push.
+  No implementation blocker is known; the cleanup, runtime-tree, and linker failures each have
+  evidence-backed fixes and local regression coverage.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
   not adopt a new Align surface.
 - FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
@@ -141,9 +152,9 @@ request checks, reviews, findings, and attestations.
 - The pull request must use a merge commit so the implementation source, immutable oracle, and
   canonical finalization commits remain ancestors of the exact merged head.
 - The diagnostic branch/worktree `agent/fresh-worker-aggregate-diagnostic` /
-  `/tmp/align-llm-fresh-aggregate-diagnostic` is intentionally retained. It has one intentional
-  uncommitted file: `image/fresh/control/fresh_image_control.py` with the upper-control diagnostic
-  output patch. The older `agent/fresh-worker-diagnostic` worktree is also intentionally retained
-  for historical FD-boundary evidence until the PR is resolved.
+  `/tmp/align-llm-fresh-aggregate-diagnostic` is intentionally retained for hosted aggregate
+  diagnostics through commit `bd02c98`; its changes must not enter PR #61. The older
+  `agent/fresh-worker-diagnostic` worktree is also intentionally retained for historical FD-boundary
+  evidence until the PR is resolved.
 - The separate primary worktree has intentional uncommitted state; do not discard or overwrite it
   while this clean worktree is active.
