@@ -2522,6 +2522,7 @@ def run_owned(
     timeout: int,
     environment: Mapping[str, str] | None = None,
     pass_fds: Sequence[int] = (),
+    report_output: bool = False,
 ) -> None:
     parent = cgroup_parent()
     leaf: Path | None = None
@@ -2607,9 +2608,10 @@ def run_owned(
             time.sleep(0.01)
         if cgroup_populated(leaf):
             raise CleanupError("child cgroup remained populated")
-        if primary_failure:
+        if report_output or primary_failure:
             os.write(2, b"DIAGNOSTIC OWNED STDOUT\n" + bytes(captures["stdout"]))
             os.write(2, b"DIAGNOSTIC OWNED STDERR\n" + bytes(captures["stderr"]))
+        if primary_failure:
             fail(category, phase)
     finally:
         active = sys.exc_info()[1]
@@ -2739,6 +2741,28 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
             "-p",
             "align_driver",
         )
+    )
+    probe_arguments = arguments[:]
+    probe_marker = max(
+        index for index, value in enumerate(probe_arguments) if value == "/tools/cargo"
+    )
+    probe_arguments[probe_marker:] = [
+        "/tools/cc",
+        "-v",
+        "-###",
+        "-fuse-ld=lld",
+        "-pie",
+        "-o",
+        "/target/fresh-clang-probe",
+        "/dev/null",
+    ]
+    run_owned(
+        probe_arguments,
+        category="BUILD",
+        phase="build",
+        timeout=VALIDATION_TIMEOUT,
+        pass_fds=bind_descriptors,
+        report_output=True,
     )
     try:
         run_owned(
