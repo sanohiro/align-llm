@@ -3190,7 +3190,10 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
                 run_aggregate(admission, runtime)
         except WorkerError as error:
             primary = error
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            diagnostic = f"DIAGNOSTIC WORKER EXCEPTION {type(error).__name__}: {error}\n"
+            os.write(2, diagnostic.encode("utf-8", "replace"))
+            os.write(2, traceback.format_exc().encode("utf-8", "replace"))
             primary = WorkerError("FILESYSTEM", "filesystem")
         finally:
             try:
