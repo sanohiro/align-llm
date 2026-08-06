@@ -3406,6 +3406,7 @@ def scan_private_fd(
     *,
     entry_limit: int = MAX_PRIVATE_ENTRIES,
     byte_limit: int = MAX_ROOT_BYTES,
+    opaque_directories: frozenset[bytes] = frozenset(),
 ) -> tuple[int, int]:
     def visit(directory_fd: int, depth: int, count: int, total: int) -> tuple[int, int]:
         if depth > MAX_SOURCE_DEPTH:
@@ -3415,15 +3416,16 @@ def scan_private_fd(
             value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
             count += 1
             if stat.S_ISDIR(value.st_mode):
-                child = os.open(
-                    raw_name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=directory_fd,
-                )
-                try:
-                    count, total = visit(child, depth + 1, count, total)
-                finally:
-                    os.close(child)
+                if raw_name not in opaque_directories:
+                    child = os.open(
+                        raw_name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        count, total = visit(child, depth + 1, count, total)
+                    finally:
+                        os.close(child)
             elif stat.S_ISREG(value.st_mode):
                 total += value.st_size
             elif not stat.S_ISLNK(value.st_mode):
@@ -3436,7 +3438,9 @@ def scan_private_fd(
 
 
 def enforce_aggregate_quota(admission: Admission) -> None:
-    def scan(relative: str) -> tuple[int, int]:
+    def scan(
+        relative: str, *, opaque_directories: frozenset[bytes] = frozenset()
+    ) -> tuple[int, int]:
         descriptor, retained = open_relative_directory(admission.root_fd, relative)
         readable = os.open(
             b".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=descriptor
@@ -3446,6 +3450,7 @@ def enforce_aggregate_quota(admission: Admission) -> None:
                 readable,
                 entry_limit=MAX_PRIVATE_ENTRIES,
                 byte_limit=MAX_AGGREGATE_OVERLAY_BYTES,
+                opaque_directories=opaque_directories,
             )
         finally:
             os.close(readable)
@@ -3453,7 +3458,9 @@ def enforce_aggregate_quota(admission: Admission) -> None:
 
     try:
         upper_count, upper_bytes = scan("aggregate-output/workspace-upper")
-        work_count, work_bytes = scan("aggregate-output/workspace-work")
+        work_count, work_bytes = scan(
+            "aggregate-output/workspace-work", opaque_directories=frozenset((b"work",))
+        )
         if (
             upper_count + work_count > MAX_PRIVATE_ENTRIES
             or upper_bytes + work_bytes > MAX_AGGREGATE_OVERLAY_BYTES

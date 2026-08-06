@@ -2938,7 +2938,11 @@ the final entry's device/inode, regular type, `st_nlink`, exact mode, size, and 
 SHA-256. A changed, hard-linked, truncated, oversized, non-ELF, or differently hashed `main` is an
 aggregate failure; output identity is not inferred from its pathname.
 Compiler staging names such as `.align-publish-*` must be absent after a successful aggregate. The
-work directory must contain no user-created entry. After an aggregate has started and its overlay
+work directory must contain no user-created entry. During live quota polling, the worker scans
+every upper entry and every work-parent entry except the known kernel-owned internal `work/`
+directory; that directory is counted as an opaque directory and is not recursively opened because
+its overlayfs permissions are owned by the aggregate namespace. Any other work entry remains
+subject to the full descriptor-relative quota scan. After an aggregate has started and its overlay
 mount has exited, the only accepted overlayfs state is an empty work directory or exactly one
 directory named `work`; the worker opens the parent descriptor-relatively, verifies that entry is a
 directory without following a symlink, and removes it with one descriptor-relative `rmdir`. It never

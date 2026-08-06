@@ -389,7 +389,9 @@ def aggregate_quota_case(module, temporary: Path) -> None:
     root_name = module.ROOT_PREFIX + "quota"
     admitted = roots / root_name
     (admitted / "aggregate-output/workspace-upper").mkdir(parents=True, mode=0o700)
-    (admitted / "aggregate-output/workspace-work/work").mkdir(parents=True, mode=0o700)
+    opaque_work = admitted / "aggregate-output/workspace-work/work"
+    opaque_work.mkdir(parents=True, mode=0o700)
+    opaque_work.chmod(0o000)
     (admitted / "aggregate-output/workspace-upper/main").write_bytes(b"output")
     roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -409,7 +411,7 @@ def aggregate_quota_case(module, temporary: Path) -> None:
         try:
             module.enforce_aggregate_quota(admission)
         except module.WorkerError as error:
-            raise AssertionError("aggregate quota rejected readable overlay directories") from error
+            raise AssertionError("aggregate quota entered opaque overlay work directory") from error
     finally:
         for descriptor in (root_fd, roots_fd, lock_fd):
             os.close(descriptor)
