@@ -8,7 +8,7 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - Open draft pull request: #61, merge-commit-only. Latest product implementation commit:
-  `19809d2`; a handoff update follows it before the required baseline refresh.
+  `19809d2`; baseline oracle `8e1f7f3` and finalization `6771c05` follow it.
 - Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
   stop this execution as requested; do not start the next roadmap capability.
 - Product repair is complete through the independent review findings: the worker retains
@@ -36,22 +36,21 @@ attestations; this file records durable project state.
 
 ## Baseline provenance
 
-- Previous source/checkpoint: `32f1a26ae92c33f38935eaf58fc4ffe9f0d051cd`.
-- Previous immutable oracle: `ae941b4a658e8b8bc1a81a98ce08478930997063`.
-- Previous finalization: `4e828e5d0fb9d9764f0200f799909961ba04cf07`.
-- The runner changed after that finalization; restart the Section 2.4 source, pending-measurement,
-  oracle, and finalization sequence from the clean handoff source commit before hosted evidence.
+- Source/checkpoint: `54cc701fa1a2cc064446e0ac1c55fdc1c6396be0`.
+- Immutable oracle: `8e1f7f37f270a431a121c7f38e7bb10594b770ec`.
+- Finalization: `6771c058c7e37b71822a08deffac6f7dc673b645`.
+- The source commit is followed only by the oracle-only, finalizer-only, and handoff metadata
+  commits for this refreshed coding-v1 baseline. Do not change a recorded evaluation artifact
+  without restarting the Section 2.4 measurement sequence.
 
 ## Next steps, in priority order
 
-1. Commit this handoff as the clean source checkpoint, run the Section 2.4 two-sample baseline
-   refresh, and pass `make baseline-check`.
-2. Push and complete hosted CI for the refreshed head; confirm the installed profile reaches
+1. Push and complete hosted CI for the refreshed head; confirm the installed profile reaches
    capable evaluation and the exact aggregate capability contract passes.
-3. Finish the independent comprehensive review, record the initial eight finding dispositions and
+2. Finish the independent comprehensive review, record the initial eight finding dispositions and
    the final SHA-bound envelope on PR #61, then mark ready and merge with the GitHub connector
    using the exact head SHA and merge method `merge`.
-4. After merge, perform the bounded retrospective, refresh main without discarding the intentional
+3. After merge, perform the bounded retrospective, refresh main without discarding the intentional
    primary-worktree change, and stop this execution. Do not begin another roadmap gate.
 
 ## Latest verification
@@ -72,6 +71,9 @@ attestations; this file records durable project state.
   read-only fixture mode normalization.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-coding-task-invalid-smoke`: PASS after read-only
   fixture mode normalization.
+- Section 2.4 baseline refresh from source `54cc701`: two deterministic-reference samples PASS;
+  oracle `8e1f7f3`, finalization `6771c05`.
+- `PYTHONDONTWRITEBYTECODE=1 make baseline-check`: PASS after the refreshed baseline.
 - The latest hosted run `31104118223` passed the pinned job but the installed profile failed at
   coding evaluation: nested validation was then fixed by `ceedd05`, and the remaining
   read-only-fixture mode issue is fixed by `19809d2`; new hosted evidence is required.
