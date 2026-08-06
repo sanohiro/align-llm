@@ -655,7 +655,10 @@ def supervise(
     os.set_inheritable(6, True)
     os.chdir("/proc/self/fd/4")
     _close_descriptors_except({0, 1, 2, 4, 5, 6})
-    os.execve(paths.bootstrap, [paths.bootstrap, "--mode", mode], CHILD_ENVIRONMENT)
+    child_environment = dict(CHILD_ENVIRONMENT)
+    if os.environ.get("ALIGN_LLM_FRESH_DIAGNOSTIC") == "1":
+        child_environment["ALIGN_LLM_FRESH_DIAGNOSTIC"] = "1"
+    os.execve(paths.bootstrap, [paths.bootstrap, "--mode", mode], child_environment)
 
 
 def _bootstrap_verify(
@@ -1213,9 +1216,12 @@ def bootstrap(
         "--run-attestation-fd",
         "9",
     ]
+    worker_environment = dict(WORKER_ENVIRONMENT)
+    if os.environ.get("ALIGN_LLM_FRESH_DIAGNOSTIC") == "1":
+        worker_environment["ALIGN_LLM_FRESH_DIAGNOSTIC"] = "1"
     result = subprocess.run(
         arguments,
-        env=WORKER_ENVIRONMENT,
+        env=worker_environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
