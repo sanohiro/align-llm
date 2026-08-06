@@ -9,7 +9,7 @@ request checks, reviews, findings, and attestations.
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
 - Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
   remain merge-commit-only. The latest product/evaluation commit before this handoff is
-  `4721da16435494b73b98e5f187a6adba6656d0ee`.
+  `81f80e94958876c5c4f9105be3589f395834cbb0`.
 - Current baseline tuple: source/checkpoint
   `7bc459df4c5b34cbdd9b6e44b49b34dbeacd79d5`, oracle
   `4128b5aaa67f379f1cb8bae837d273dd7a3c4144`, finalization
@@ -48,7 +48,10 @@ request checks, reviews, findings, and attestations.
   changes. The installed build diagnostic then showed that Rust's target linker receives driver
   arguments (`-Wl,...`, `-m64`, and `-B...`) that the raw `ld.lld` entry point rejects. The worker
   now uses the authenticated `/tools/cc` Clang driver for the Rust target linker; the raw linker
-  remains selected only by Clang's fixed `-fuse-ld` path.
+  remains selected only by Clang's fixed `-fuse-ld` path. The next installed diagnostic showed that
+  Clang then needed `crtbeginS.o`, `crtendS.o`, and `libgcc_s`; the image now authenticates and
+  mounts only the GCC startup/runtime support tree at `/usr/lib/gcc/x86_64-linux-gnu`, without a
+  GCC driver or host executable search path.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -84,6 +87,8 @@ request checks, reviews, findings, and attestations.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after exercising the
   supervisor-equivalent `O_PATH` root, a Git-tree/raw-byte ordering inversion, and private
   descriptor-backed mount admission; the Rust linker contract requires `/tools/cc`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS after the image
+  contract check for the authenticated GCC startup/runtime support tree.
 - Local bubblewrap 0.11.0 descriptor-bind smoke: PASS. A direct aggregate-shaped overlay smoke using
   retained lower/upper/work descriptors through bwrap's own `/proc/self/fd` view read the lower tree
   and published the expected upper-layer file.
@@ -104,6 +109,10 @@ request checks, reviews, findings, and attestations.
   The raw `ld.lld` target rejected driver options and could not resolve the `-l...` inputs; source
   fix `11c07ae` selects `/tools/cc` and updates the Section 9.5 contract with a linker-entry
   regression. Local worker unit and focused qualification pass.
+- Diagnostic run `31067093178`: Pinned checks PASS; `/tools/cc` was accepted and the build reached
+  Clang, which exposed missing `crtbeginS.o`, `crtendS.o`, and `libgcc_s` support. Source fix
+  `81f80e9` stages `/usr/lib/gcc/x86_64-linux-gnu` as an authenticated runtime binding and adds
+  a static image-contract regression. Fresh installed evidence for this repair is pending.
 - `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
   failure-retention smoke tests for the current tuple above. Hosted checks for the pushed head
   remain pending.
@@ -138,9 +147,9 @@ request checks, reviews, findings, and attestations.
 
 - No implementation blocker is known. Local Docker unavailability is an execution condition, not a
   design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
-- Fresh hosted installed-profile evidence for the Rust linker-driver repair is pending after push.
-  No implementation blocker is known; the cleanup, runtime-tree, and linker failures each have
-  evidence-backed fixes and local regression coverage.
+- Fresh hosted installed-profile evidence for the GCC runtime-support repair is pending after push.
+  No implementation blocker is known; the cleanup, runtime-tree, linker-driver, and startup-runtime
+  failures each have evidence-backed fixes and local regression coverage.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
   not adopt a new Align surface.
 - FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
@@ -150,7 +159,7 @@ request checks, reviews, findings, and attestations.
   canonical finalization commits remain ancestors of the exact merged head.
 - The diagnostic branch/worktree `agent/fresh-worker-aggregate-diagnostic` /
   `/tmp/align-llm-fresh-aggregate-diagnostic` is intentionally retained for hosted aggregate
-  diagnostics through commit `bd02c98`; its changes must not enter PR #61. The older
+  diagnostics through commit `bc7ab2c`; its changes must not enter PR #61. The older
   `agent/fresh-worker-diagnostic` worktree is also intentionally retained for historical FD-boundary
   evidence until the PR is resolved.
 - The separate primary worktree has intentional uncommitted state; do not discard or overwrite it
