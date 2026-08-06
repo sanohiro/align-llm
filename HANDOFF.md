@@ -8,7 +8,7 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - Open draft pull request: #61, merge-commit-only. Latest product implementation commit:
-  `b1e21b80a79e87ce525470571b0f27cbb1e362c9`; documentation-only handoff commits follow it.
+  `c59e0791e7f50d9ad0c4f952182eadb7f8f9d504`; documentation-only handoff commits follow it.
 - Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
   stop this execution as requested; do not start the next roadmap capability.
 - Product repair is complete through the independent review findings: the worker retains
@@ -20,7 +20,8 @@ attestations; this file records durable project state.
   separates scanner construction from context entry without interpreter-version-dependent
   traceback bytecode offsets, and its cleanup-boundary smoke uses a Python-version-stable trace
   boundary. Aggregate quota scanning now reopens the final directory as a readable descriptor
-  before enumeration; the worker unit smoke covers this O_PATH regression.
+  before enumeration and treats the kernel-owned overlay `work/` metadata directory as opaque
+  during live quota polling; the worker unit smoke covers both regressions.
 - Local Docker is unavailable; installed-image and capable aggregate evidence must come from the
   hosted Ubuntu 24.04 profile.
 
@@ -35,14 +36,15 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Dispatch and complete the product branch's full hosted CI at `b1e21b8`. Confirm the installed
+1. Dispatch and complete the product branch's full hosted CI at `c59e079`. Confirm the installed
    profile reaches capable evaluation and that the refreshed baseline and exact aggregate
-   capability contract pass; diagnostic run `31093650552` isolated the aggregate quota `O_PATH`
-   `EBADF` and the product repair is now pushed. Earlier run `31087751448` reached the repaired
-   Python 3.12 resource scan but exposed a second opcode-trace portability issue fixed in
-   `cce58e6`, while run `31086926485` exposed the original resource-scan race before `f1bcda2`.
-   Earlier runs `31081165976` and `31081113394` failed at nested `mount_setattr` before the
-   capability repair.
+   capability contract pass. Run `31094357807` reached the repaired aggregate quota descriptor
+   scan but still failed while entering kernel-owned `workspace-work/work`; diagnostic run
+   `31094926870` isolated that permission error and `c59e079` makes the directory opaque during
+   live polling. Earlier run `31087751448` reached the repaired Python 3.12 resource scan but
+   exposed a second opcode-trace portability issue fixed in `cce58e6`, while run `31086926485`
+   exposed the original resource-scan race before `f1bcda2`. Earlier runs `31081165976` and
+   `31081113394` failed at nested `mount_setattr` before the capability repair.
 2. Record the initial review's eight finding dispositions and the repair SHA on PR #61. Because the
    repair materially changed behavior, run one conditional final independent review of the final
    diff and record its SHA-bound envelope; no further local repair loop is allowed after a
@@ -59,7 +61,7 @@ attestations; this file records durable project state.
   interpreter-stable resource-scan and cleanup-boundary repair (focused; installed profile
   deferred).
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after the
-  aggregate quota descriptor-reopen repair.
+  aggregate quota descriptor-reopen and opaque overlay-work repairs.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-image-control-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-coding-task-resource-scan-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-coding-task-git-config-smoke`: PASS.
@@ -74,6 +76,7 @@ attestations; this file records durable project state.
   detached Align `d9fb5da`; oracle `dbdc3f0` and finalization `40c9c41` are committed.
 - `make baseline-check`: PASS, including canonical oracle, invalid-input, and failure-retention
   smokes.
+- `git diff --check`: PASS after the opaque overlay-work repair.
 - Prior hosted diagnostic runs through `31079703787` established and repaired linker runtime
   bindings, compiler-output hardlink materialization, descriptor-relative overlay cleanup, UID/GID
   and `CAP_SYS_ADMIN` aggregate admission, staged shell/interpreter paths, and aggregate fixture
