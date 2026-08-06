@@ -60,6 +60,8 @@ RESOURCE_POLL_INTERVAL_SECONDS = 0.25
 BWRAP_PROBE_TIMEOUT_SECONDS = 2
 MAX_RESOURCE_SCAN_SECONDS = 0.1
 MAX_PROCESS_TREE_SCAN_SECONDS = 0.5
+VALIDATION_USERNS_ENV = "ALIGN_LLM_VALIDATION_USERNS_PATH"
+ACTIVE_FRESH_USERNS_FDS: set[int] = set()
 
 
 def enable_child_subreaper() -> bool:
@@ -432,6 +434,7 @@ def run(
     env: dict[str, str] | None = None,
     command_name: str | None = None,
     resource_check: ResourceCheck | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     display_name = command_name or argv[0]
     require_process_containment()
@@ -444,7 +447,7 @@ def run(
             stderr=subprocess.PIPE,
             start_new_session=True,
             close_fds=True,
-            pass_fds=(),
+            pass_fds=pass_fds,
         )
     except OSError as error:
         raise TaskError(f"command failed to run: {display_name}: {error}") from error
@@ -522,13 +525,43 @@ def validation_command(argv: list[str]) -> list[str]:
     return argv
 
 
+def active_fresh_userns_fds() -> tuple[int, ...]:
+    return tuple(sorted(ACTIVE_FRESH_USERNS_FDS))
+
+
+def close_fresh_userns_fds(fds: tuple[int, ...] | set[int]) -> None:
+    for descriptor in tuple(fds):
+        ACTIVE_FRESH_USERNS_FDS.discard(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
 def fresh_namespace_prefix() -> list[str]:
+    namespace_path = os.environ.get(VALIDATION_USERNS_ENV)
+    if not namespace_path:
+        raise TaskError(
+            "validation sandbox is unavailable: prepared user namespace path is required"
+        )
+    try:
+        namespace_fd = os.open(namespace_path, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError as error:
+        raise TaskError(
+            "validation sandbox is unavailable: prepared user namespace could not be opened"
+        ) from error
+    ACTIVE_FRESH_USERNS_FDS.add(namespace_fd)
     arguments = [
         str(BWRAP_EXECUTABLE),
         "--clearenv",
         "--die-with-parent",
         "--new-session",
-        "--unshare-all",
+        "--userns",
+        str(namespace_fd),
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-uts",
         "--uid",
         str(os.getuid()),
         "--gid",
@@ -537,6 +570,8 @@ def fresh_namespace_prefix() -> list[str]:
         "ALL",
         "--cap-add",
         "CAP_SYS_ADMIN",
+        "--cap-add",
+        "CAP_SETFCAP",
         "--tmpfs",
         "/",
         "--proc",
@@ -579,10 +614,17 @@ def fresh_namespace_prefix() -> list[str]:
     return arguments
 
 
-def sandbox_probe_command() -> list[str]:
+def sandbox_probe_command(
+    namespace_prefix: list[str] | None = None,
+) -> list[str]:
     if FRESH_MODE:
+        prefix = (
+            namespace_prefix
+            if namespace_prefix is not None
+            else fresh_namespace_prefix()
+        )
         return [
-            *fresh_namespace_prefix(),
+            *prefix,
             "--",
             "/tools/mount-guard",
             "--no-symlink-follow",
@@ -639,15 +681,15 @@ def sandbox_probe_command() -> list[str]:
     ]
 
 
-def require_sandbox_capability() -> None:
+def _require_sandbox_capability(command: list[str]) -> None:
     try:
         probe = subprocess.run(
-            sandbox_probe_command(),
+            command,
             check=False,
             capture_output=True,
             timeout=BWRAP_PROBE_TIMEOUT_SECONDS,
             close_fds=True,
-            pass_fds=(),
+            pass_fds=active_fresh_userns_fds(),
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise TaskError(
@@ -663,6 +705,14 @@ def require_sandbox_capability() -> None:
             "validation sandbox is unavailable: required bubblewrap namespaces "
             f"could not be created{suffix}"
         )
+
+
+def require_sandbox_capability() -> None:
+    previous_fds = set(ACTIVE_FRESH_USERNS_FDS)
+    try:
+        _require_sandbox_capability(sandbox_probe_command())
+    finally:
+        close_fresh_userns_fds(ACTIVE_FRESH_USERNS_FDS.difference(previous_fds))
 
 
 def validation_resource_limits(timeout_seconds: int) -> list[str]:
@@ -701,27 +751,33 @@ def validation_sandbox_command(
         raise TaskError(
             f"validation sandbox is unavailable: {PRLIMIT_EXECUTABLE} is required"
         )
-    require_sandbox_capability()
-
     resolved = validation_command(argv)
     if FRESH_MODE:
-        return [
-            *fresh_namespace_prefix(),
-            "--ro-bind",
-            str(checkout / ".git"),
-            str(checkout / ".git"),
-            "--chdir",
-            str(checkout),
-            "--",
-            "/tools/mount-guard",
-            "--no-symlink-follow",
-            "/target/tmp",
-            "/tmp",
-            "/dev/shm",
-            "--",
-            *validation_resource_limits(timeout_seconds),
-            *resolved,
-        ]
+        previous_fds = set(ACTIVE_FRESH_USERNS_FDS)
+        try:
+            namespace_prefix = fresh_namespace_prefix()
+            _require_sandbox_capability(sandbox_probe_command(namespace_prefix))
+            return [
+                *namespace_prefix,
+                "--ro-bind",
+                str(checkout / ".git"),
+                str(checkout / ".git"),
+                "--chdir",
+                str(checkout),
+                "--",
+                "/tools/mount-guard",
+                "--no-symlink-follow",
+                "/target/tmp",
+                "/tmp",
+                "/dev/shm",
+                "--",
+                *validation_resource_limits(timeout_seconds),
+                *resolved,
+            ]
+        except BaseException:
+            close_fresh_userns_fds(ACTIVE_FRESH_USERNS_FDS.difference(previous_fds))
+            raise
+    require_sandbox_capability()
     executable = Path(resolved[0]).resolve()
     system_root = Path("/usr")
     python_root = Path(sys.base_prefix).resolve()
@@ -1461,7 +1517,7 @@ def check_validation_resources(
         )
 
 
-def validate_candidate(
+def _validate_candidate(
     checkout: Path,
     patch: Path,
     allowed_edits: list[str],
@@ -1472,6 +1528,7 @@ def validate_candidate(
     resolved_validation_argv = validation_sandbox_command(
         validation_argv, checkout, validation_timeout_seconds
     )
+    validation_pass_fds = active_fresh_userns_fds()
     validation_env = validation_environment()
     resource_check = lambda process, deadline: check_validation_resources(
         checkout,
@@ -1486,6 +1543,7 @@ def validate_candidate(
         env=validation_env,
         command_name=validation_argv[0],
         resource_check=resource_check,
+        pass_fds=validation_pass_fds,
     )
     print_command_output("pre-repair validation", before)
     if before.returncode == 0:
@@ -1525,6 +1583,7 @@ def validate_candidate(
         env=validation_env,
         command_name=validation_argv[0],
         resource_check=resource_check,
+        pass_fds=validation_pass_fds,
     )
     print_command_output("post-repair validation", after)
     check_allowed_changes(
@@ -1548,6 +1607,28 @@ def validate_candidate(
         raise TaskError("validation changed the candidate Git index after repair")
     if after.returncode != 0:
         raise TaskError("candidate patch did not pass validation")
+
+
+def validate_candidate(
+    checkout: Path,
+    patch: Path,
+    allowed_edits: list[str],
+    validation_argv: list[str],
+    validation_timeout_seconds: int,
+    source_revision: str,
+) -> None:
+    previous_fds = set(ACTIVE_FRESH_USERNS_FDS)
+    try:
+        _validate_candidate(
+            checkout,
+            patch,
+            allowed_edits,
+            validation_argv,
+            validation_timeout_seconds,
+            source_revision,
+        )
+    finally:
+        close_fresh_userns_fds(ACTIVE_FRESH_USERNS_FDS.difference(previous_fds))
 
 
 def main() -> int:

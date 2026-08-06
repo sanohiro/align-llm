@@ -524,6 +524,7 @@ printf '%s\n' "coding task host filesystem mutation: contained"
 
 python3 - "${runner}" "${project_root}" <<'PY'
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -568,9 +569,50 @@ with tempfile.TemporaryDirectory(prefix="align-llm-bwrap-probe-smoke-") as tempo
     finally:
         module.BWRAP_EXECUTABLE = available_bwrap
 
+original_fresh_mode = module.FRESH_MODE
+original_userns_path = os.environ.pop(module.VALIDATION_USERNS_ENV, None)
+with tempfile.TemporaryDirectory(prefix="align-llm-userns-fd-smoke-") as temporary:
+    fake_bwrap = Path(temporary) / "bwrap"
+    fake_bwrap.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_bwrap.chmod(0o755)
+    module.FRESH_MODE = True
+    module.BWRAP_EXECUTABLE = fake_bwrap
+    try:
+        try:
+            module.fresh_namespace_prefix()
+        except module.TaskError as error:
+            if "prepared user namespace path is required" not in str(error):
+                raise
+        else:
+            raise RuntimeError("fresh namespace builder accepted a missing user namespace path")
+        if module.active_fresh_userns_fds():
+            raise RuntimeError("missing user namespace path leaked a descriptor")
+
+        os.environ[module.VALIDATION_USERNS_ENV] = "/proc/self/ns/user"
+        module.require_sandbox_capability()
+        if module.active_fresh_userns_fds():
+            raise RuntimeError("sandbox probe leaked the prepared user namespace descriptor")
+        command = module.validation_sandbox_command(["python3", "-c", "pass"], project_root, 10)
+        fds = module.active_fresh_userns_fds()
+        if len(fds) != 1 or "--userns" not in command:
+            raise RuntimeError("fresh validation did not retain one prepared user namespace descriptor")
+        if "--unshare-all" in command or "--unshare-user" in command:
+            raise RuntimeError("fresh validation attempted to create another user namespace")
+    finally:
+        module.close_fresh_userns_fds(module.active_fresh_userns_fds())
+        module.FRESH_MODE = original_fresh_mode
+        module.BWRAP_EXECUTABLE = available_bwrap
+        if original_userns_path is None:
+            os.environ.pop(module.VALIDATION_USERNS_ENV, None)
+        else:
+            os.environ[module.VALIDATION_USERNS_ENV] = original_userns_path
+
 command = module.validation_sandbox_command(["python3", "-c", "pass"], project_root, 10)
-if str(module.PRLIMIT_EXECUTABLE) not in command or str(module.MAX_VALIDATION_TMPFS_BYTES) not in command:
-    raise RuntimeError("validation resource limits were not applied to the sandbox")
+try:
+    if str(module.PRLIMIT_EXECUTABLE) not in command or str(module.MAX_VALIDATION_TMPFS_BYTES) not in command:
+        raise RuntimeError("validation resource limits were not applied to the sandbox")
+finally:
+    module.close_fresh_userns_fds(module.active_fresh_userns_fds())
 
 with tempfile.TemporaryDirectory(prefix="align-llm-tmpfs-smoke-") as temporary:
     checkout = Path(temporary) / "repository"
@@ -590,13 +632,18 @@ with tempfile.TemporaryDirectory(prefix="align-llm-tmpfs-smoke-") as temporary:
         checkout,
         10,
     )
-    result = subprocess.run(
-        command,
-        env=module.validation_environment(),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    validation_fds = module.active_fresh_userns_fds()
+    try:
+        result = subprocess.run(
+            command,
+            env=module.validation_environment(),
+            check=False,
+            capture_output=True,
+            pass_fds=validation_fds,
+            text=True,
+        )
+    finally:
+        module.close_fresh_userns_fds(validation_fds)
     if result.returncode != 0:
         raise RuntimeError(f"bounded /dev/shm validation failed: {result.stderr}")
     if int(result.stdout.strip()) > module.MAX_VALIDATION_TMPFS_BYTES:

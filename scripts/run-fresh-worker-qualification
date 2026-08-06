@@ -168,6 +168,9 @@ def verify_contract_inventory() -> None:
         '"--cap-add"',
         '"CAP_SYS_ADMIN"',
         '"CAP_SETFCAP"',
+        '"CAP_SETUID"',
+        '"CAP_SETGID"',
+        '"--prepare-validation-userns"',
         '"--size"',
         "validate_published_elf",
     ):
@@ -183,8 +186,26 @@ def verify_contract_inventory() -> None:
 
     runner = (REPOSITORY / "eval/runners/run-coding-task.py").read_text(encoding="utf-8")
     prefix = runner[runner.index("def fresh_namespace_prefix"): runner.index("\ndef sandbox_probe_command", runner.index("def fresh_namespace_prefix"))]
-    if '"--cap-drop",\n        "ALL",\n        "--cap-add",\n        "CAP_SYS_ADMIN"' not in prefix:
+    if (
+        '"--cap-drop",\n        "ALL",\n        "--cap-add",\n        "CAP_SYS_ADMIN",\n        "--cap-add",\n        "CAP_SETFCAP"'
+        not in prefix
+    ):
         raise RuntimeError("nested validation capability admission order changed")
+    for token in (
+        '"--userns"',
+        '"--unshare-ipc"',
+        '"--unshare-pid"',
+        '"--unshare-net"',
+        '"--unshare-uts"',
+    ):
+        if token not in prefix:
+            raise RuntimeError(f"nested validation namespace boundary is missing: {token}")
+    for token in ('"--unshare-all"', '"--unshare-user"'):
+        if token in prefix:
+            raise RuntimeError(f"nested validation namespace boundary is too broad: {token}")
+    guard = (REPOSITORY / "image/fresh/mount-guard.c").read_text(encoding="utf-8")
+    if '"--prepare-validation-userns"' not in guard:
+        raise RuntimeError("aggregate mount-guard user namespace preparation is missing")
     alignc = (REPOSITORY / "scripts/alignc").read_text(encoding="utf-8")
     if 'if [[ "${ALIGNC:-}" != "/tools/fresh-alignc" ]]; then' not in alignc:
         raise RuntimeError("fresh compiler override authentication is missing")

@@ -1888,13 +1888,15 @@ not executable records. An actual argv spelling with a version suffix is a separ
 is no PATH discovery, `command -v`, `which`, rustup, Git hook, Cargo helper, shell probe, or unlisted
 executable fallback. Git must report at least 2.45, Cargo and rustc must match Rust 1.96.0, and LLVM
 must report major 22; the manifest owns all remaining versions and digests. `mount-guard` is
-an image-owned, manifest-authenticated fixed executable whose only accepted operation is applying
+an image-owned, manifest-authenticated fixed executable whose accepted operations are applying
 `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` to the explicitly supplied mountpoints, verifying their
-mount IDs before and after the operation, reducing its effective and permitted capability sets to
-`CAP_SETFCAP` only, setting `no_new_privs`, and `execve`-ing the post-`--` command. Its exact argv is
-`mount-guard --no-symlink-follow <one-or-more-absolute-mountpoints> -- <absolute-command> <args>`;
-it rejects relative, duplicate, or unlisted mountpoints and has no shell, network, repository, or
-arbitrary mount operation.
+mount IDs before and after the operation, and, only when the aggregate invokes the optional
+`--prepare-validation-userns` flag, preparing the single documented descendant user namespace.
+After those operations it reduces its effective and permitted capability sets to `CAP_SETFCAP`
+only, sets `no_new_privs`, and `execve`-s the post-`--` command. Its exact argv is
+`mount-guard --no-symlink-follow <one-or-more-absolute-mountpoints> [--prepare-validation-userns] -- <absolute-command> <args>`;
+it rejects relative, duplicate, or unlisted mountpoints, rejects the preparation flag more than
+once, and has no shell, network, repository, or arbitrary mount operation.
 
 The `bwrap` record is authenticated before any capability probe can execute it. Immediately after
 manifest validation, the worker opens the declared bwrap path through retained no-follow parent
@@ -2749,11 +2751,13 @@ verified private mount-source descriptors in `pass_fds`; ordinary descriptors ar
 `--bind-fd` or `--ro-bind-fd` operation. The bwrap-only forwarder rejects malformed descriptor
 arguments, leaves unrelated descriptors close-on-exec, and passes only the recognized setup set.
 The three aggregate overlay descriptors are registered by post-overlay read-only fd-bind operations
-and their holding mounts are hidden before the payload starts. Every
-aggregate payload and nested bwrap starts with an empty inherited descriptor set. No compiler
-identity descriptor is inherited by Make, a shell, Python, a fixture, or a nested validation child,
-so those helpers may close, mark, or replace their ordinary descriptors without affecting the worker
-or another compiler invocation. The prior protected-fd seccomp filter and bwrap `--seccomp` handoff
+and their holding mounts are hidden before the payload starts. The aggregate Make payload starts
+with an empty inherited descriptor set. A nested coding-task bwrap receives exactly one additional
+prepared user-namespace descriptor through the explicit exception in the coding-task runner; no
+other descriptor is inherited. No compiler identity descriptor is inherited by Make, a shell,
+Python, a fixture, or a nested validation task, so those helpers may close, mark, or replace their
+ordinary descriptors without affecting the worker or another compiler invocation. The prior
+protected-fd seccomp filter and bwrap `--seccomp` handoff
 are deliberately absent from this contract: there are no worker-owned identity descriptors in the
 child process tree to protect. The fixed read-only bind is the ownership boundary, and the closure
 tests prove that replacing a path in the private root or attempting to create an alternate descriptor
@@ -2902,12 +2906,20 @@ FRESH-WORKER capability can pass its call-site audit. The exact workspace output
 ```
 
 No `eval/`, `scripts/`, `src/`, `tests/`, `Makefile`, or source-control path is writable in the
-lower tree. The aggregate enters its user namespace as UID/GID 0 with `CAP_SYS_ADMIN` and
-`CAP_SETFCAP` added. `CAP_SYS_ADMIN` lets the staged `mount-guard` apply the required mount
-attribute. The guard performs that operation, reduces its effective and permitted capability sets
-to `CAP_SETFCAP` only, sets `no_new_privs`, and execs the requested command; `CAP_SYS_ADMIN` is not
-retained by Make or its direct children. `CAP_SETFCAP` remains available for the nested bwrap's
-declared UID-0 user-namespace setup, but no nested task receives `CAP_SYS_ADMIN` after its own guard.
+lower tree. The aggregate enters its user namespace as UID/GID 0 with `CAP_SYS_ADMIN`,
+`CAP_SETFCAP`, `CAP_SETUID`, and `CAP_SETGID` temporarily added. `CAP_SYS_ADMIN` lets the staged
+`mount-guard` apply the required mount attribute; `CAP_SETUID` and `CAP_SETGID` let that guard
+prepare one descendant user namespace whose UID/GID map is exactly `0 0 1`. The guard writes
+`setgroups=deny` before the gid map, keeps the helper child alive under the aggregate process, and
+publishes the helper's `/proc/<pid>/ns/user` path as the private
+`ALIGN_LLM_VALIDATION_USERNS_PATH` environment value. This setup happens before capability
+reduction and the path is available only inside the aggregate namespace. The guard then reduces
+its effective and permitted capability sets to `CAP_SETFCAP` only, sets `no_new_privs`, and execs
+the requested command; `CAP_SYS_ADMIN`, `CAP_SETUID`, and `CAP_SETGID` are not retained by Make or
+its direct children. `CAP_SETFCAP` remains available for the nested bwrap's declared UID-0
+mount-guard setup, but no nested task receives `CAP_SYS_ADMIN` after its own guard. The helper
+inherits the aggregate parent's death signal and is therefore removed when Make or the aggregate
+exits; a failed map or exec kills and reaps it before reporting failure.
 The aggregate mounts a `268435456`-byte namespace-owned tmpfs at `/target/tmp`; it never binds the
 host-side `cargo-target/tmp`. Before Make starts, the staged `mount-guard` executes
 `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` only on `/target/tmp` and verifies that mount identity. A symlink such as
@@ -2977,6 +2989,7 @@ The exact aggregate argv shape is:
 ```text
 bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net \
   --uid 0 --gid 0 --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP \
+  --cap-add CAP_SETUID --cap-add CAP_SETGID \
   --size 268435456 --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /baseline-git --dir /tools --dir /cargo --dir /target \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
@@ -3014,7 +3027,7 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --setenv ALIGNC /tools/fresh-alignc --setenv ALIGN_LLM_BWRAP /tools/bwrap \
   --setenv ALIGN_LLM_PRLIMIT /tools/prlimit \
   --chdir /workspace \
-  -- /tools/mount-guard --no-symlink-follow /target/tmp -- \
+  -- /tools/mount-guard --no-symlink-follow /target/tmp --prepare-validation-userns -- \
        /tools/make --silent --no-print-directory -j1 -f /workspace/Makefile capable-checks
 ```
 
@@ -3032,10 +3045,21 @@ and `ALIGN_LLM_PYTHON=/tools/python3`; `fixture_environment()` must set `PATH=/t
 and `/tmp`. `validation_command()` must resolve a `python3` task command to the staged
 `/tools/python3`, never to `sys.executable` or a host pathname.
 
-A nested validation sandbox must make the staged execution boundary visible explicitly. Its bwrap
-argv begins with `--cap-drop ALL --cap-add CAP_SYS_ADMIN` in that order, so the nested admission
-retains `CAP_SYS_ADMIN` for the staged `mount-guard` mount-attribute operation. The guard then
-reduces capabilities before `prlimit` or the validation task starts. Its remaining bwrap argv
+A nested validation sandbox must make the staged execution boundary visible explicitly. The
+aggregate's prepared user namespace is the only user namespace the nested bwrap may use: the
+runner opens `ALIGN_LLM_VALIDATION_USERNS_PATH` with `O_RDONLY|O_CLOEXEC`, passes that descriptor
+as `--userns <fd>`, and requests `--unshare-ipc --unshare-pid --unshare-net --unshare-uts`.
+`--unshare-all` and `--unshare-user` are forbidden in this nested argv because they would attempt
+to create a user namespace from the already-root aggregate and fail after the aggregate has done
+its work. The same retained namespace descriptor is passed to the sandbox capability probe and to
+both pre-repair and post-repair validation invocations; it is closed after the candidate is
+complete. The bwrap process receives it through `pass_fds`, while the validation task and its
+descendants receive no namespace descriptor or helper path.
+
+The nested argv begins with `--cap-drop ALL --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP` in that
+order, so the nested admission retains `CAP_SYS_ADMIN` for the staged `mount-guard` mount-attribute
+operation and `CAP_SETFCAP` for its capability reduction. The guard
+then reduces capabilities before `prlimit` or the validation task starts. Its remaining bwrap argv
 includes `--dir /tools --ro-bind /tools /tools`, `--bind /target/tmp /target/tmp`,
 `--size 67108864 --tmpfs /tmp`, `--size 67108864 --tmpfs /dev/shm`,
 `--setenv PATH /tools`, `--setenv TMPDIR /tmp`, `--setenv ALIGNC_CACHE off`,
@@ -3048,14 +3072,18 @@ outer namespace tmpfs, never a host directory; the nested sandbox's staged `moun
 the fixed mount list `/target/tmp /tmp /dev/shm` and reapplies `MOUNT_ATTR_NOSYMFOLLOW` to all three
 mounts before the task starts. It invokes `/tools/prlimit` and `/tools/python3` by
 explicit path. The nested environment repeats `PYTHONHOME=/usr`, `PYTHONNOUSERSITE=1`,
-`PYTHONDONTWRITEBYTECODE=1`, and the three derived search-path variables. The outer Python process starts that bwrap with `close_fds=True, pass_fds=()`; no
-worker identity descriptor crosses into the nested child. The sandbox capability probe uses the same
-staged bwrap, Python, and mount-guard paths and the same empty descriptor policy. Every fresh Python
-subprocess boundary uses `close_fds=True, pass_fds=()`; compiler-capable children use the fixed
-`/tools/fresh-alignc` pathname and open the read-only handoff files themselves. This applies to the
-shared `run()` helper and to direct `subprocess.run` calls in `run-coding-task.py` and
-`record-baseline.py`; relying on a host compiler, `sys.executable`, or an ambient path remains
-forbidden. No host `/tmp`, HOME, loader cache, source root, or target is visible.
+`PYTHONDONTWRITEBYTECODE=1`, and the three derived search-path variables. The outer Python process
+starts that bwrap with `close_fds=True` and passes only the one prepared user-namespace descriptor;
+no worker identity descriptor or helper-control descriptor crosses into the nested child. The
+sandbox capability probe uses the same staged bwrap, Python, and mount-guard paths and the same
+exact descriptor allowlist. Every fresh Python
+subprocess boundary uses `close_fds=True, pass_fds=()` except the fresh coding-task sandbox probe
+and its two validation invocations, which pass exactly the one prepared user-namespace descriptor
+and no other descriptor. Compiler-capable children use the fixed `/tools/fresh-alignc` pathname and
+open the read-only handoff files themselves. This applies to the shared `run()` helper and to
+direct `subprocess.run` calls in `run-coding-task.py` and `record-baseline.py`; relying on a host
+compiler, `sys.executable`, or an ambient path remains forbidden. No host `/tmp`, HOME, loader
+cache, source root, or target is visible.
 
 Before the aggregate starts, the worker creates `baseline-git/` as a private read-only Git view of
 the project source. It copies, through retained project Git descriptors and no-follow operations,
@@ -3246,12 +3274,13 @@ the public line.
 | Private staging | worker plus admission lock | 0700 owner-only `project-source`, `align-source`, and baseline Git view; fixed source/tool/runtime/Git byte, entry, depth, inode, object, descriptor, process, root-byte, and overflow bounds; bounded source descriptor window with re-opened parent identity checks; root-relative no-follow mount descriptors consumed by bwrap fd-bind or self-fd overlay operations; pre-created build `/target/tmp` and `cargo-target/fresh-bundle`, namespace-owned aggregate tmpfs, same-filesystem overlay upper/work, descriptor-relative cleanup, profile-owned protected per-user `roots` parent, and one-root-per-user admission | `fresh-v2-root-staging-smoke` covers protected-parent collisions, executable-bit preservation, every cap and cap-plus-one/overflow case, mixed 200,000-entry source fd-window exhaustion, directory replacement, symlink target replacement, both source copies, baseline Git copy, modes, target seed, compiler-output hardlink materialization, aggregate tmpfs/no-follow mount, upper/work ownership, known overlay `work` cleanup, output escape, overlay unmount, and cleanup unlink authority. |
 | Aggregate temporary call sites | scripts and Align loop | Every aggregate temporary file, fixture, marker, and negative Git state is below the no-symlink `/target/tmp`; the loop no longer writes `eval/`, and no host temp directory is aggregate-visible. Each nested coding-task validation retains independent `--size 67108864 --tmpfs /tmp` and `--size 67108864 --tmpfs /dev/shm` mounts, while `/target/tmp` remains outer task scratch. | `fresh-v2-temp-root-callsite-smoke` runs loop, coding-task, invalid-baseline, and every `mktemp`/`TemporaryDirectory` caller, exercises both nested 64 MiB mounts and `/dev/shm` smoke coverage, attempts a temp-to-workspace symlink, and proves no lower or upper source path changed. |
 | Aggregate publication | worker plus bwrap | Immutable `aggregate-work` lower layer, writable upper/work pair, atomic rename, exact regular `main` mode/link-count/size/ELF/byte identity, generated-output and dependency-graph bounds, exact overlayfs internal-work cleanup state, and final `/workspace/main` allowlist | `fresh-v2-aggregate-publication-smoke` runs the real compiler publication path, proves `.align-publish-*` is transient, rejects an upper entry outside `main`, rejects an unknown workdir entry, mutates a declared product dependency, injects mode/link/size/hash changes after unmount, and checks the post-unmount output closure and scan. |
+| Nested validation user namespace | aggregate mount-guard plus coding-task runner | Before Make loses `CAP_SETUID`/`CAP_SETGID`, exactly one descendant user namespace is created with `setgroups=deny` and maps `0 0 1`; its proc namespace path is private to the aggregate, inherited only through the documented environment lookup, opened as one `O_CLOEXEC` descriptor, passed to nested bwrap with explicit non-user namespace flags, reused for both validation runs, and closed on success or every failure path; helper death follows the aggregate parent and no helper or namespace descriptor reaches the validation task | `fresh-v2-aggregate-topology-smoke`, `fresh-v2-interpreter-boundary-smoke`, and `run-coding-task-invalid-smoke` cover aggregate capability admission, prepared-userns bwrap argv and descriptor allowlist, missing/probe-failure fail-closed behavior, and validation-run cleanup. |
 | Build namespace | worker plus bwrap | Empty root, authenticated pinned `/align-src` only, no project source or host `ALIGN_REPO`, user/PID/net namespaces, read-only authenticated `/cargo`, tracked Cargo config policy, derived linker/loader/pkg-config paths, compiler closure, and writable `/target` only | `fresh-v2-build-namespace-smoke` uses host-root/cache/HOME/network/project-source/sibling-target markers, attempts a Cargo-cache write, verifies `/align-src/Cargo.toml` and the exact `.cargo/config.toml` digest/key set, checks derived OpenSSL/linker paths and compiler closure, double fork, and runtime loader probes. |
-| Compiler descriptor | worker/launcher | Canonical schema 4 with separate project/Align source digests, write-once descriptor/guard files, authenticated single-link compiler/archive sibling bundle at `/tools/alignc` and `/tools/libalign_runtime.a` plus the `/tools/fresh-alignc` launcher, fixed read-only execution path, exact digest and revision, and no inherited identity fd | `fresh-v2-descriptor-file-smoke` replaces each source path after staging, mutates or makes the private handoff files writable, attempts alternate descriptor paths and compiler/archive names, proves Cargo hardlink outputs are materialized before descriptor publication, proves non-compiler children use `pass_fds=()`, compiles a tiny Align program through the namespace-visible launcher/compiler/archive bundle, and checks exact descriptor-v4 golden bytes. |
+| Compiler descriptor | worker/launcher | Canonical schema 4 with separate project/Align source digests, write-once descriptor/guard files, authenticated single-link compiler/archive sibling bundle at `/tools/alignc` and `/tools/libalign_runtime.a` plus the `/tools/fresh-alignc` launcher, fixed read-only execution path, exact digest and revision, and no inherited identity fd | `fresh-v2-descriptor-file-smoke` replaces each source path after staging, mutates or makes the private handoff files writable, attempts alternate descriptor paths and compiler/archive names, proves Cargo hardlinks are materialized before descriptor publication, proves non-validation children use `pass_fds=()` while the coding-task boundary receives only its prepared user-namespace fd, compiles a tiny Align program through the namespace-visible launcher/compiler/archive bundle, and checks exact descriptor-v4 golden bytes. |
 | Direct compiler call | fresh launcher | Execution is only the launcher-verified `/tools/alignc` path with its authenticated descriptor/guard and sibling archive; no flag-controlled, PATH, host, or old fallback. Request 6's fresh profile uses the same launcher and fixed `ALIGNC_CACHE=off` value. | `fresh-v2-direct-interposition-smoke` clears every fresh marker and installs old sibling/PATH marker compilers, replaces the private handoff files and bundle, and requires none to run while a tiny link proves `libalign_runtime.a` is found beside `current_exe()`; the Request 6 adoption smoke proves its `check` and `run` vectors use `/tools/fresh-alignc`. |
-| Internal compiler call | Makefile/scripts/Python runners | All consumers use the fresh launcher and fixed read-only handoff paths; every Python boundary uses `close_fds=True, pass_fds=()` and the fresh environment disables bytecode writes; no bare compiler, sibling, mutable path, or fallback | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, handoff-file replacement, workspace `__pycache__` prevention, absence of worker identity fds, and the Section 9 Request 6 fresh-profile branch. |
-| Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python plus stdlib/extension roots, Bash, `mount-guard`, `/tools`, no-symlink aggregate `/target/tmp` plus nested validation `/tmp` and `/dev/shm`, derived linker/loader paths, `PYTHONDONTWRITEBYTECODE=1`, PATH, and empty descriptor propagation | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools/modules, runs nested validation, exercises the independent 64 MiB `/tmp` and `/dev/shm` mounts, attempts a temp-to-workspace symlink and a contained source symlink, creates an importable runner module, and verifies staged identities, temp-root propagation, mount attributes, no `__pycache__`, and no worker identity fd. |
-| Aggregate topology | supervisor/worker/Makefile | Exactly one bwrap aggregate, UID/GID 0 with only the declared `CAP_SYS_ADMIN`/`CAP_SETFCAP` admission pair, mount-guard reduction to `CAP_SETFCAP` plus `no_new_privs` before Make, closed executable inventory including `seq`, supervisor exact request validation and direct-bootstrap argv/env/fd-4/5/6 boundary, private-source-only Make parsing, fixed internal `-f /workspace/Makefile`, complete normalized GNU Make 4.3 option/alias matrix with a separate accepted `--no-print-directory` row, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, accepted-request and newer-option rejection, tracked and untracked alternate makefile bypass, fixed internal Makefile selection, repository Makefile supervisor bypass, loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation; the qualification inventory additionally asserts the nested `--cap-drop ALL --cap-add CAP_SYS_ADMIN` order, root `--size 268435456`, authenticated `/tools/fresh-alignc`, bounded Git view, and published-ELF closure owners. |
+| Internal compiler call | Makefile/scripts/Python runners | All consumers use the fresh launcher and fixed read-only handoff paths; every Python boundary uses `close_fds=True, pass_fds=()` except the coding-task sandbox probe and its two validation invocations, which pass exactly the prepared user-namespace fd; the fresh environment disables bytecode writes; no bare compiler, sibling, mutable path, or fallback | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, handoff-file replacement, workspace `__pycache__` prevention, absence of worker identity fds, and the Section 9 Request 6 fresh-profile branch. |
+| Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python plus stdlib/extension roots, Bash, `mount-guard`, `/tools`, no-symlink aggregate `/target/tmp` plus nested validation `/tmp` and `/dev/shm`, derived linker/loader paths, `PYTHONDONTWRITEBYTECODE=1`, PATH, and the single prepared user-namespace descriptor as the only permitted nested input fd | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools/modules, runs nested validation, exercises the independent 64 MiB `/tmp` and `/dev/shm` mounts, attempts a temp-to-workspace symlink and a contained source symlink, creates an importable runner module, and verifies staged identities, temp-root propagation, mount attributes, no `__pycache__`, and no worker identity fd; all other aggregate child launches retain the empty descriptor set. |
+| Aggregate topology | supervisor/worker/Makefile | Exactly one bwrap aggregate, UID/GID 0 with `CAP_SYS_ADMIN`/`CAP_SETFCAP` plus temporary setup-only `CAP_SETUID`/`CAP_SETGID`, mount-guard preparation of the one descendant validation user namespace, reduction to `CAP_SETFCAP` plus `no_new_privs` before Make, closed executable inventory including `seq`, supervisor exact request validation and direct-bootstrap argv/env/fd-4/5/6 boundary, private-source-only Make parsing, fixed internal `-f /workspace/Makefile`, complete normalized GNU Make 4.3 option/alias matrix with a separate accepted `--no-print-directory` row, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, accepted-request and newer-option rejection, tracked and untracked alternate makefile bypass, fixed internal Makefile selection, repository Makefile supervisor bypass, loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation except for the single prepared user-namespace fd at the nested coding-task boundary; the qualification inventory additionally asserts the nested `--cap-drop ALL --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP` order, no nested `--unshare-all`/`--unshare-user`, prepared `--userns` descriptor use, the aggregate `--prepare-validation-userns` flag, root `--size 268435456`, authenticated `/tools/fresh-alignc`, bounded Git view, and published-ELF closure owners. |
 | Process ownership | worker plus per-invocation cgroup/rlimit boundary | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap, a unique worker-owned delegated cgroup leaf with empty-membership and cleanup proof, `pids.max=512`, `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, `RLIMIT_FSIZE=536870912`, source active-window accounting, and bounded worker fd scans | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, stream overflow, double fork, signal, PID reuse, reader closure, process cap-plus-one, source-window cap-plus-one, total-fd cap-plus-one, exact file-size-limit boundary, cgroup leaf replacement/nonempty cleanup, uncatchable worker death, and missing cgroup delegation. |
 | Cleanup success | worker | Reverse descriptor-relative removal, stable parent/root device-inode/type/mode/owner identity while owned content metadata changes, root absent before PASS | `fresh-v2-cleanup-smoke` proves normal staging metadata changes are accepted, while no private root, handoff file, cache copy, target, marker, or child remains. |
 | Cleanup failure | worker plus admission lock | Never delete replacement/unowned path; exact primary/cleanup precedence; uncatchable death leaves one bounded root, releases only the kernel lock, and makes the next invocation fail closed before root creation | `fresh-v2-cleanup-failure-smoke` injects close, unlink, parent replacement, live child, catchable signal, successful-phase cleanup failures, worker `SIGKILL`, repeated death attempts, and later invocations that must leave the unprovable root untouched and refuse a second root. |
@@ -3305,7 +3334,8 @@ owned capabilities that may progress in parallel and one dependent adoption wave
    admission, sealed snapshots, digest/cache/source materialization, one-root lock, compiler and
    archive bundle, two bwrap namespaces, writable aggregate overlay, namespace-owned no-symlink
    tmpfs, staged nested tools and `mount-guard`, descriptor/guard handoff, empty-fd subprocess
-   policy, Make interposition, isolated baseline Git scratch, process ownership, resource bounds,
+   policy with the single prepared-userns exception, Make interposition, isolated baseline Git scratch,
+   process ownership, resource bounds,
    status grammar, and cleanup in one consumer-complete repository capability. It must include a
    core end-to-end functional smoke that actually runs the unchanged-pin aggregate through the
    installed FRESH-IMAGE trust root; a synthetic or direct host run is non-evidence. The named
