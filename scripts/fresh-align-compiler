@@ -2287,6 +2287,8 @@ def namespace_directories(runtime: Sequence[RuntimeBinding]) -> list[str]:
         "/usr",
         "/usr/bin",
         "/usr/lib",
+        "/tmp",
+        "/dev/shm",
     ]
     seen = set(fixed)
     result = list(fixed)
