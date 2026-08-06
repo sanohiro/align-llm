@@ -2014,6 +2014,9 @@ The image also carries a separate authenticated runtime-support tree at
 `libgcc_s` support files required by the fixed Clang driver for Rust's Linux target; it does not
 include a GCC driver, `libexec` helpers, or a host-discovered executable path. The tree is mounted
 read-only and is part of the same derived library closure.
+The image installs `libzstd-dev` so the authenticated system-library tree contains the declared
+`libzstd.so` linker input required by the pinned Align runtime build; the package's compiler or
+header paths are not exposed through `PATH` or an undeclared search variable.
 The `ar`, `ranlib`, and linker tool records point into this same closure and use no ambient helper
 or library search path. The worker rejects a missing trace member, a host path in a driver result,
 or a compiler invocation that would consult an undeclared helper before either namespace starts.

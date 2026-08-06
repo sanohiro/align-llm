@@ -51,7 +51,9 @@ request checks, reviews, findings, and attestations.
   remains selected only by Clang's fixed `-fuse-ld` path. The next installed diagnostic showed that
   Clang then needed `crtbeginS.o`, `crtendS.o`, and `libgcc_s`; the image now authenticates and
   mounts only the GCC startup/runtime support tree at `/usr/lib/gcc/x86_64-linux-gnu`, without a
-  GCC driver or host executable search path.
+  GCC driver or host executable search path. The following diagnostic confirmed GCC 13 was selected
+  and exposed the next missing linker input, `-lzstd`; the image now installs `libzstd-dev` so the
+  authenticated `/usr/lib/x86_64-linux-gnu` tree contains its declared development symlink.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -112,7 +114,8 @@ request checks, reviews, findings, and attestations.
 - Diagnostic run `31067093178`: Pinned checks PASS; `/tools/cc` was accepted and the build reached
   Clang, which exposed missing `crtbeginS.o`, `crtendS.o`, and `libgcc_s` support. Source fix
   `81f80e9` stages `/usr/lib/gcc/x86_64-linux-gnu` as an authenticated runtime binding and adds
-  a static image-contract regression. Fresh installed evidence for this repair is pending.
+  a static image-contract regression. Diagnostic run `31068073929` then confirmed GCC 13 was
+  selected and exposed the next missing `-lzstd` linker input; the product repair is in progress.
 - `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
   failure-retention smoke tests for the current tuple above. Hosted checks for the pushed head
   remain pending.
@@ -147,9 +150,10 @@ request checks, reviews, findings, and attestations.
 
 - No implementation blocker is known. Local Docker unavailability is an execution condition, not a
   design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
-- Fresh hosted installed-profile evidence for the GCC runtime-support repair is pending after push.
-  No implementation blocker is known; the cleanup, runtime-tree, linker-driver, and startup-runtime
-  failures each have evidence-backed fixes and local regression coverage.
+- Fresh hosted installed-profile evidence for the GCC runtime-support and `libzstd-dev` repair is
+  pending after push. No implementation blocker is known; the cleanup, runtime-tree, linker-driver,
+  startup-runtime, and zstd-linker failures each have evidence-backed fixes and local regression
+  coverage.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
   not adopt a new Align surface.
 - FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
