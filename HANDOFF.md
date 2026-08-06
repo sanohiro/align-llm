@@ -9,11 +9,14 @@ request checks, reviews, findings, and attestations.
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
 - Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
   remain merge-commit-only. The latest product/evaluation commit before this handoff is
-  `44ce50f4e4b8c40fecbe579406b3323590cf6e5a`.
+  `b14f78b57eec825c5365bc01883be3f1b6a1648e`.
 - Current baseline tuple: source/checkpoint
   `7bc459df4c5b34cbdd9b6e44b49b34dbeacd79d5`, oracle
   `4128b5aaa67f379f1cb8bae837d273dd7a3c4144`, finalization
   `4721da16435494b73b98e5f187a6adba6656d0ee`.
+  The coding-v1 artifact manifest does not include the worker, image, qualification, or topology
+  documentation paths changed by this repair, so the tuple remains valid and `make baseline-check`
+  passes without a new measurement.
 - Relevant review-repair checkpoint: `366dc3d02452c1775b2b97d307ebcdeba155c586`. Subsequent
   non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
   the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
@@ -54,6 +57,11 @@ request checks, reviews, findings, and attestations.
   GCC driver or host executable search path. The following diagnostic confirmed GCC 13 was selected
   and exposed the next missing linker input, `-lzstd`; the image now installs `libzstd-dev` so the
   authenticated `/usr/lib/x86_64-linux-gnu` tree contains its declared development symlink.
+  The next diagnostic reached compiler bundle validation and showed Cargo's release `alignc` and
+  `libalign_runtime.a` can be stable hardlinks to `deps` outputs. The worker now reads those
+  worker-owned release files with a full before/after identity check and materializes one-link
+  copies under `cargo-target/fresh-bundle` before descriptor publication; cache, runtime, and final
+  aggregate-output link policies remain unchanged.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -62,7 +70,7 @@ request checks, reviews, findings, and attestations.
 
 ## Next actions
 
-1. Push the refreshed source/oracle/finalization tuple to PR #61 and obtain fresh pinned and
+1. Push the hardlink-materialization repair and handoff to PR #61 and obtain fresh pinned and
    installed Ubuntu 24.04 evidence. Hosted checks own the installed-platform evidence because the
    local Docker endpoint is unavailable.
 2. Run one fresh independent adversarial review of the complete PR diff, record the SHA-bound review
@@ -88,9 +96,13 @@ request checks, reviews, findings, and attestations.
 - `git diff --check`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after exercising the
   supervisor-equivalent `O_PATH` root, a Git-tree/raw-byte ordering inversion, and private
-  descriptor-backed mount admission; the Rust linker contract requires `/tools/cc`.
+  descriptor-backed mount admission, plus stable Cargo-output hardlink materialization and the
+  unchanged default single-link rejection; the Rust linker contract requires `/tools/cc`.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS after the image
   contract check for the authenticated GCC startup/runtime support tree.
+- `git diff --check`: PASS after the compiler-output materialization repair.
+- `make baseline-check`: PASS after the repair; the recorded source/oracle/finalization tuple is
+  unchanged because the changed worker and supporting documentation are outside the artifact set.
 - Local bubblewrap 0.11.0 descriptor-bind smoke: PASS. A direct aggregate-shaped overlay smoke using
   retained lower/upper/work descriptors through bwrap's own `/proc/self/fd` view read the lower tree
   and published the expected upper-layer file.
@@ -116,6 +128,11 @@ request checks, reviews, findings, and attestations.
   `81f80e9` stages `/usr/lib/gcc/x86_64-linux-gnu` as an authenticated runtime binding and adds
   a static image-contract regression. Diagnostic run `31068073929` then confirmed GCC 13 was
   selected and exposed the next missing `-lzstd` linker input; the product repair is in progress.
+- Hosted run `31068469776`: Pinned checks PASS and installed image build passed; the aggregate
+  reached compiler bundle validation but reported only `COMPILER compiler` without child output.
+- Diagnostic run `31069134458` on `abc1bdf`: Pinned checks PASS and the installed compiler output
+  inspection showed `alignc` and `libalign_runtime.a` with `st_nlink == 2`; this is the evidence for
+  product repair `b14f78b`.
 - `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
   failure-retention smoke tests for the current tuple above. Hosted checks for the pushed head
   remain pending.
@@ -150,10 +167,10 @@ request checks, reviews, findings, and attestations.
 
 - No implementation blocker is known. Local Docker unavailability is an execution condition, not a
   design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
-- Fresh hosted installed-profile evidence for the GCC runtime-support and `libzstd-dev` repair is
-  pending after push. No implementation blocker is known; the cleanup, runtime-tree, linker-driver,
-  startup-runtime, and zstd-linker failures each have evidence-backed fixes and local regression
-  coverage.
+- Fresh hosted installed-profile evidence for the GCC runtime-support, `libzstd-dev`, and compiler
+  output hardlink repairs is pending after push. No implementation blocker is known; the cleanup,
+  runtime-tree, linker-driver, startup-runtime, zstd-linker, and compiler-bundle failures each have
+  evidence-backed fixes and local regression coverage.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
   not adopt a new Align surface.
 - FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
@@ -163,7 +180,7 @@ request checks, reviews, findings, and attestations.
   canonical finalization commits remain ancestors of the exact merged head.
 - The diagnostic branch/worktree `agent/fresh-worker-aggregate-diagnostic` /
   `/tmp/align-llm-fresh-aggregate-diagnostic` is intentionally retained for hosted aggregate
-  diagnostics through commit `5f389a7`; its changes must not enter PR #61. The older
+  diagnostics through commit `abc1bdfbebe202460a0764500a054b125ef0485e`; its changes must not enter PR #61. The older
   `agent/fresh-worker-diagnostic` worktree is also intentionally retained for historical FD-boundary
   evidence until the PR is resolved.
 - The separate primary worktree has intentional uncommitted state; do not discard or overwrite it
