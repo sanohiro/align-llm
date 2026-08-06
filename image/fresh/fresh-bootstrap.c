@@ -4,6 +4,7 @@
 #include <linux/memfd.h>
 #include <limits.h>
 #include <stddef.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -23,6 +24,20 @@
 
 #define PYTHON_PATH "/usr/bin/python3"
 #define REQUIRED_SEALS (F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL)
+
+extern char **environ;
+
+static char *diagnostic_environment(void) {
+    static const char name[] = "ALIGN_LLM_FRESH_DIAGNOSTIC=1";
+    int index;
+
+    for (index = 0; environ[index] != NULL; ++index) {
+        if (strcmp(environ[index], name) == 0) {
+            return environ[index];
+        }
+    }
+    return NULL;
+}
 
 static int fail(void) {
     static const char message[] = "fresh compiler: ERROR TRUST supervisor\n";
@@ -62,6 +77,7 @@ int main(int argc, char **argv) {
         "LANG=C",
         "HOME=/nonexistent",
         "TMPDIR=/tmp",
+        NULL,
         NULL,
     };
     int payload_fd;
@@ -105,6 +121,8 @@ int main(int argc, char **argv) {
         child_argv[index + 5] = argv[index];
     }
     child_argv[argc + 5] = NULL;
+    child_env[5] = diagnostic_environment();
+    child_env[6] = NULL;
     if (close_unexpected_descriptors() < 0) {
         return fail();
     }
