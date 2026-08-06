@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
+
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 temp_dir=$(mktemp -d)
 repo_dir="$temp_dir/repository"

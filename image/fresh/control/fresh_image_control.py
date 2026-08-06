@@ -880,6 +880,8 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
             "0",
             "--cap-add",
             "CAP_SYS_ADMIN",
+            "--cap-add",
+            "CAP_SETFCAP",
             "--tmpfs",
             "/",
             "--dir",

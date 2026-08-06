@@ -586,8 +586,6 @@ def sandbox_probe_command() -> list[str]:
             "/tools/mount-guard",
             "--no-symlink-follow",
             "/target/tmp",
-            "/tmp",
-            "/dev/shm",
             "--",
             str(PYTHON_EXECUTABLE),
             "-c",
