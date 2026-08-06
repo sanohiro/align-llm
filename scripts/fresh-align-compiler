@@ -2723,7 +2723,7 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
             "/tools/ranlib",
             "--setenv",
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
-            "/tools/linker",
+            "/tools/cc",
             "--chdir",
             "/align-src",
             "--",
