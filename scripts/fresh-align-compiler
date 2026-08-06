@@ -2774,8 +2774,34 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
         )
     finally:
         close_private_mounts(bind_descriptors)
-    compiler = root / "cargo-target/release/alignc"
-    archive = root / "cargo-target/release/libalign_runtime.a"
+    release_compiler = root / "cargo-target/release/alignc"
+    release_archive = root / "cargo-target/release/libalign_runtime.a"
+    bundle = root / "cargo-target/fresh-bundle"
+    bundle.mkdir(mode=0o700)
+    outputs = (
+        (release_compiler, bundle / "alignc", 0o555),
+        (release_archive, bundle / "libalign_runtime.a", 0o444),
+    )
+    for source, target, mode in outputs:
+        try:
+            value = source.lstat()
+        except OSError:
+            fail("COMPILER", "compiler")
+        if not stat.S_ISREG(value.st_mode) or value.st_size <= 0 or value.st_size > MAX_FILE_BYTES:
+            fail("COMPILER", "compiler")
+        size, _ = install_file(source, target, mode, single_link=False)
+        value = target.lstat()
+        if (
+            not stat.S_ISREG(value.st_mode)
+            or value.st_nlink != 1
+            or stat.S_IMODE(value.st_mode) != mode
+            or size <= 0
+            or size > MAX_FILE_BYTES
+            or value.st_size != size
+        ):
+            fail("COMPILER", "compiler")
+    compiler = bundle / "alignc"
+    archive = bundle / "libalign_runtime.a"
     try:
         entries = []
         for name in sorted(os.listdir(root / "cargo-target/release"), key=os.fsencode):
@@ -2795,8 +2821,8 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
     return compiler, archive
 
 
-def install_file(source: Path, target: Path, mode: int) -> tuple[int, str]:
-    raw = read_path(str(source), MAX_FILE_BYTES)
+def install_file(source: Path, target: Path, mode: int, *, single_link: bool = True) -> tuple[int, str]:
+    raw = read_path(str(source), MAX_FILE_BYTES, single_link=single_link)
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
     try:
         view = memoryview(raw)
@@ -3050,6 +3076,7 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             phase="aggregate",
             timeout=AGGREGATE_TIMEOUT,
             pass_fds=(*overlay_descriptors, *bind_descriptors),
+            report_output=True,
         )
     finally:
         close_private_mounts(bind_descriptors)
