@@ -9,7 +9,7 @@ request checks, reviews, findings, and attestations.
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
 - Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
   remain merge-commit-only. The latest product/evaluation commit before this handoff is
-  `81f80e94958876c5c4f9105be3589f395834cbb0`.
+  `44ce50f4e4b8c40fecbe579406b3323590cf6e5a`.
 - Current baseline tuple: source/checkpoint
   `7bc459df4c5b34cbdd9b6e44b49b34dbeacd79d5`, oracle
   `4128b5aaa67f379f1cb8bae837d273dd7a3c4144`, finalization
@@ -163,7 +163,7 @@ request checks, reviews, findings, and attestations.
   canonical finalization commits remain ancestors of the exact merged head.
 - The diagnostic branch/worktree `agent/fresh-worker-aggregate-diagnostic` /
   `/tmp/align-llm-fresh-aggregate-diagnostic` is intentionally retained for hosted aggregate
-  diagnostics through commit `bc7ab2c`; its changes must not enter PR #61. The older
+  diagnostics through commit `5f389a7`; its changes must not enter PR #61. The older
   `agent/fresh-worker-diagnostic` worktree is also intentionally retained for historical FD-boundary
   evidence until the PR is resolved.
 - The separate primary worktree has intentional uncommitted state; do not discard or overwrite it
