@@ -28,6 +28,7 @@ import struct
 import subprocess
 import sys
 import time
+import traceback
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -3242,6 +3243,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     except Exception as error:
         diagnostic = f"DIAGNOSTIC INTERNAL {type(error).__name__}: {error}\n"
         os.write(2, diagnostic.encode("utf-8", "replace"))
+        os.write(2, traceback.format_exc().encode("utf-8", "replace"))
         primary = WorkerError("INTERNAL", "internal")
     if primary is not None:
         category = primary.category if primary.category in PUBLIC_CATEGORIES else "INTERNAL"
