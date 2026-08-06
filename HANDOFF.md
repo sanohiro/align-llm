@@ -9,7 +9,7 @@ request checks, reviews, findings, and attestations.
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
 - Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
   remain merge-commit-only. The latest product/evaluation commit before this handoff is
-  `b14f78b57eec825c5365bc01883be3f1b6a1648e`.
+  `e0190ec615a500d32a5f6d112d474e346cc9b12d` (`fix: clean overlay work entries descriptor-relatively`).
 - Current baseline tuple: source/checkpoint
   `7bc459df4c5b34cbdd9b6e44b49b34dbeacd79d5`, oracle
   `4128b5aaa67f379f1cb8bae837d273dd7a3c4144`, finalization
@@ -61,7 +61,11 @@ request checks, reviews, findings, and attestations.
   `libalign_runtime.a` can be stable hardlinks to `deps` outputs. The worker now reads those
   worker-owned release files with a full before/after identity check and materializes one-link
   copies under `cargo-target/fresh-bundle` before descriptor publication; cache, runtime, and final
-  aggregate-output link policies remain unchanged.
+  aggregate-output link policies remain unchanged. The latest installed diagnostic showed the
+  aggregate child exiting while cleanup tried to recursively open the overlayfs internal `work`
+  directory. Cleanup now records whether aggregate launch began and, only in that state, accepts
+  an empty work directory or the exact directory named `work`; it verifies and removes that entry
+  with descriptor-relative no-follow `rmdir` and rejects unknown entries without recursive descent.
 - The original source/oracle/finalization history exists at `8eafdecf24caa7cd9c5c119f08335a77f0972759`,
   `4510138117e1fd612295256ba91f21361b84c3c5`, and
   `ce8a2ab1d42cef33fbbbf8b77893ac57268ff696`. The review repair changes recorded inputs. Merge only
@@ -70,9 +74,9 @@ request checks, reviews, findings, and attestations.
 
 ## Next actions
 
-1. Push the hardlink-materialization repair and handoff to PR #61 and obtain fresh pinned and
-   installed Ubuntu 24.04 evidence. Hosted checks own the installed-platform evidence because the
-   local Docker endpoint is unavailable.
+1. Push the overlay-work cleanup repair and handoff to PR #61 and obtain fresh pinned and installed
+   Ubuntu 24.04 evidence. Hosted checks own the installed-platform evidence because the local Docker
+   endpoint is unavailable.
 2. Run one fresh independent adversarial review of the complete PR diff, record the SHA-bound review
    envelope and all finding dispositions, and apply any valid findings in one consolidated repair.
    Rerun only affected checks unless the repair materially changes the reviewed contract.
@@ -96,13 +100,15 @@ request checks, reviews, findings, and attestations.
 - `git diff --check`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after exercising the
   supervisor-equivalent `O_PATH` root, a Git-tree/raw-byte ordering inversion, and private
-  descriptor-backed mount admission, plus stable Cargo-output hardlink materialization and the
-  unchanged default single-link rejection; the Rust linker contract requires `/tools/cc`.
+  descriptor-backed mount admission, stable Cargo-output hardlink materialization and the unchanged
+  default single-link rejection, plus exact known overlay `work` cleanup and unknown-entry rejection;
+  the Rust linker contract requires `/tools/cc`.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS after the image
   contract check for the authenticated GCC startup/runtime support tree.
 - `git diff --check`: PASS after the compiler-output materialization repair.
 - `make baseline-check`: PASS after the repair; the recorded source/oracle/finalization tuple is
   unchanged because the changed worker and supporting documentation are outside the artifact set.
+- `git diff --check`: PASS after the overlay-work cleanup repair.
 - Local bubblewrap 0.11.0 descriptor-bind smoke: PASS. A direct aggregate-shaped overlay smoke using
   retained lower/upper/work descriptors through bwrap's own `/proc/self/fd` view read the lower tree
   and published the expected upper-layer file.
@@ -127,12 +133,20 @@ request checks, reviews, findings, and attestations.
   Clang, which exposed missing `crtbeginS.o`, `crtendS.o`, and `libgcc_s` support. Source fix
   `81f80e9` stages `/usr/lib/gcc/x86_64-linux-gnu` as an authenticated runtime binding and adds
   a static image-contract regression. Diagnostic run `31068073929` then confirmed GCC 13 was
-  selected and exposed the next missing `-lzstd` linker input; the product repair is in progress.
+  selected and exposed the next missing `-lzstd` linker input; product repair `44ce50b` stages the
+  authenticated development library tree.
 - Hosted run `31068469776`: Pinned checks PASS and installed image build passed; the aggregate
   reached compiler bundle validation but reported only `COMPILER compiler` without child output.
 - Diagnostic run `31069134458` on `abc1bdf`: Pinned checks PASS and the installed compiler output
   inspection showed `alignc` and `libalign_runtime.a` with `st_nlink == 2`; this is the evidence for
   product repair `b14f78b`.
+- Hosted run `31069800116` on the materialization repair: pinned checks and image build passed, and
+  compiler materialization passed; the aggregate then failed while the normal worker suppressed the
+  child detail.
+- Diagnostic run `31070212866` on `a71c743`: pinned checks and image build passed; aggregate output
+  showed `PermissionError: [Errno 13] Permission denied: b'work'` from recursive cleanup of the
+  overlayfs internal work entry. Product repair `e0190ec` removes only the exact known entry with
+  descriptor-relative cleanup and adds the corresponding unit regression.
 - `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
   failure-retention smoke tests for the current tuple above. Hosted checks for the pushed head
   remain pending.
@@ -167,10 +181,9 @@ request checks, reviews, findings, and attestations.
 
 - No implementation blocker is known. Local Docker unavailability is an execution condition, not a
   design blocker; hosted Ubuntu 24.04 owns the required installed-profile evidence.
-- Fresh hosted installed-profile evidence for the GCC runtime-support, `libzstd-dev`, and compiler
-  output hardlink repairs is pending after push. No implementation blocker is known; the cleanup,
-  runtime-tree, linker-driver, startup-runtime, zstd-linker, and compiler-bundle failures each have
-  evidence-backed fixes and local regression coverage.
+- Fresh hosted installed-profile evidence for the GCC runtime-support, `libzstd-dev`, compiler
+  output hardlink, and overlay-work cleanup repairs is pending after push. No implementation
+  blocker is known; each failure has an evidence-backed fix and local regression coverage.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; this capability does
   not adopt a new Align surface.
 - FRESH-WORKER remains one capability because private admission, two namespaces, the compiler bundle,
@@ -180,7 +193,7 @@ request checks, reviews, findings, and attestations.
   canonical finalization commits remain ancestors of the exact merged head.
 - The diagnostic branch/worktree `agent/fresh-worker-aggregate-diagnostic` /
   `/tmp/align-llm-fresh-aggregate-diagnostic` is intentionally retained for hosted aggregate
-  diagnostics through commit `abc1bdfbebe202460a0764500a054b125ef0485e`; its changes must not enter PR #61. The older
+  diagnostics through commit `a71c7438ca56bc07e451ade99abaa454600caf73`; its changes must not enter PR #61. The older
   `agent/fresh-worker-diagnostic` worktree is also intentionally retained for historical FD-boundary
   evidence until the PR is resolved.
 - The separate primary worktree has intentional uncommitted state; do not discard or overwrite it
