@@ -2493,6 +2493,10 @@ def cgroup_populated(leaf: Path) -> bool:
     return values["populated"] == "1"
 
 
+def cgroup_processes(leaf: Path) -> str:
+    return (leaf / "cgroup.procs").read_text(encoding="ascii").strip().replace("\n", ",")
+
+
 def kill_cgroup(leaf: Path) -> None:
     try:
         (leaf / "cgroup.kill").write_text("1\n", encoding="ascii")
@@ -2588,8 +2592,19 @@ def run_owned(
         finally:
             streams.close()
 
-        if process.poll() is None or cgroup_populated(leaf):
+        leader_running = process.poll() is None
+        populated_before_cleanup = cgroup_populated(leaf)
+        if leader_running or populated_before_cleanup:
             primary_failure = True
+            os.write(
+                2,
+                (
+                    "DIAGNOSTIC OWNED STATE "
+                    f"category={category} phase={phase} leader_running={leader_running} "
+                    f"populated={populated_before_cleanup} "
+                    f"procs={cgroup_processes(leaf)}\n"
+                ).encode("utf-8", "replace"),
+            )
             # A PID-directed signal is allowed only while the retained start
             # time still identifies the admitted leader. The cgroup kill owns
             # escaped sessions and double-fork descendants.
