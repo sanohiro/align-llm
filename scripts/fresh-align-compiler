@@ -3070,7 +3070,6 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             "/target/tmp",
             "--",
             "/tools/make",
-            "--silent",
             "--no-print-directory",
             "-j1",
             "-f",
