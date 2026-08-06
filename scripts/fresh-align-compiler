@@ -3457,13 +3457,17 @@ def scan_private_fd(
 def enforce_aggregate_quota(admission: Admission) -> None:
     def scan(relative: str) -> tuple[int, int]:
         descriptor, retained = open_relative_directory(admission.root_fd, relative)
+        readable = os.open(
+            b".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=descriptor
+        )
         try:
             return scan_private_fd(
-                descriptor,
+                readable,
                 entry_limit=MAX_PRIVATE_ENTRIES,
                 byte_limit=MAX_AGGREGATE_OVERLAY_BYTES,
             )
         finally:
+            os.close(readable)
             close_retained(retained)
 
     try:
