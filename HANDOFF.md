@@ -8,7 +8,7 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - Open draft pull request: #61, merge-commit-only. Latest product implementation commit:
-  `c59e0791e7f50d9ad0c4f952182eadb7f8f9d504`; documentation-only handoff commits follow it.
+  `88577eb`; documentation-only handoff commits follow it.
 - Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
   stop this execution as requested; do not start the next roadmap capability.
 - Product repair is complete through the independent review findings: the worker retains
@@ -21,7 +21,13 @@ attestations; this file records durable project state.
   traceback bytecode offsets, and its cleanup-boundary smoke uses a Python-version-stable trace
   boundary. Aggregate quota scanning now reopens the final directory as a readable descriptor
   before enumeration and treats the kernel-owned overlay `work/` metadata directory as opaque
-  during live quota polling; the worker unit smoke covers both regressions.
+  during live quota polling; the worker unit smoke covers both regressions. The latest repair
+  provisions one aggregate-owned descendant user namespace before capability reduction, writes
+  `setgroups=deny` and the exact `0 0 1` UID/GID maps, and passes its namespace descriptor to the
+  nested coding-task bwrap with explicit non-user namespace flags. The descriptor is reused for
+  the capability probe and both validation runs, then closed on success or failure; the helper
+  follows the aggregate parent's death signal. The worker and mount-guard contracts, static
+  qualification, and invalid-task smoke cover the new boundary.
 - Local Docker is unavailable; installed-image and capable aggregate evidence must come from the
   hosted Ubuntu 24.04 profile.
 
@@ -36,12 +42,16 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Dispatch and complete the product branch's full hosted CI at `c59e079`. Confirm the installed
+1. Dispatch and complete the product branch's full hosted CI at `88577eb`. Confirm the installed
    profile reaches capable evaluation and that the refreshed baseline and exact aggregate
-   capability contract pass. Run `31094357807` reached the repaired aggregate quota descriptor
-   scan but still failed while entering kernel-owned `workspace-work/work`; diagnostic run
-   `31094926870` isolated that permission error and `c59e079` makes the directory opaque during
-   live polling. Earlier run `31087751448` reached the repaired Python 3.12 resource scan but
+   capability contract pass. Product run `31095923293` reached the repaired quota scan but the
+   installed aggregate failed because nested coding-task bwrap could not create a user namespace;
+   diagnostic run `31096629371` exposed that child error. The current repair prepares the
+   descendant namespace before Make loses `CAP_SETUID`/`CAP_SETGID` and reuses it through the
+   nested validation boundary. Earlier run `31094357807` reached the repaired aggregate quota
+   descriptor scan but failed while entering kernel-owned `workspace-work/work`; `c59e079` made
+   that directory opaque during live polling. Earlier run `31087751448` reached the repaired
+   Python 3.12 resource scan but
    exposed a second opcode-trace portability issue fixed in `cce58e6`, while run `31086926485`
    exposed the original resource-scan race before `f1bcda2`. Earlier runs `31081165976` and
    `31081113394` failed at nested `mount_setattr` before the capability repair.
@@ -57,11 +67,14 @@ attestations; this file records durable project state.
 ## Latest verification
 
 - `git diff --check`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile eval/runners/run-coding-task.py scripts/run-fresh-worker-qualification`: PASS.
+- `gcc -std=c11 -Wall -Wextra -Werror -O2 -static -o /tmp/align-llm-mount-guard-test image/fresh/mount-guard.c`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-coding-task-invalid-smoke`: PASS, including missing
+  bubblewrap, probe failure, prepared-userns FD, validation quota, and Git replacement cases.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS after the
-  interpreter-stable resource-scan and cleanup-boundary repair (focused; installed profile
-  deferred).
+  nested validation namespace repair (focused; installed profile deferred).
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after the
-  aggregate quota descriptor-reopen and opaque overlay-work repairs.
+  aggregate quota, opaque overlay-work, and nested validation namespace repairs.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-image-control-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-coding-task-resource-scan-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-coding-task-git-config-smoke`: PASS.
@@ -76,7 +89,7 @@ attestations; this file records durable project state.
   detached Align `d9fb5da`; oracle `dbdc3f0` and finalization `40c9c41` are committed.
 - `make baseline-check`: PASS, including canonical oracle, invalid-input, and failure-retention
   smokes.
-- `git diff --check`: PASS after the opaque overlay-work repair.
+- `git diff --check`: PASS after the nested validation namespace repair.
 - Prior hosted diagnostic runs through `31079703787` established and repaired linker runtime
   bindings, compiler-output hardlink materialization, descriptor-relative overlay cleanup, UID/GID
   and `CAP_SYS_ADMIN` aggregate admission, staged shell/interpreter paths, and aggregate fixture
