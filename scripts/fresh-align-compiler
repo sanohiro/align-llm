@@ -2627,6 +2627,13 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
     tool_bin = root / "tool-bin"
     directories = namespace_directories(runtime)
     library_path, loader_path, pkg_path = derived_paths(runtime)
+    os.write(
+        2,
+        (
+            "DIAGNOSTIC BUILD PATHS "
+            f"library={library_path!r} loader={loader_path!r} pkgconfig={pkg_path!r}\n"
+        ).encode("utf-8", "replace"),
+    )
     bindings = [
         (root / "align-source", "/align-src", "dir", False),
         (tool_bin, "/tools", "dir", False),
