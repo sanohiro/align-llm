@@ -14,6 +14,7 @@ scratch_git=""
 if [[ "${ALIGN_LLM_FRESH_COMPILER:-}" == "1" ]]; then
   scratch_git="$(mktemp -d "${scratch_root}/baseline-git.XXXXXX")"
   cp -a "${ALIGN_LLM_BASELINE_GIT_DIR}/." "${scratch_git}/"
+  chmod -R u+rwX "${scratch_git}"
   export ALIGN_LLM_BASELINE_GIT_DIR="${scratch_git}"
   export ALIGN_LLM_BASELINE_GIT_COMMON_DIR="${scratch_git}"
   export ALIGN_LLM_BASELINE_GIT_WORK_TREE="${project_root}"

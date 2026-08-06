@@ -31,7 +31,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 REQUIRED_SEALS = (
@@ -168,12 +168,21 @@ MAX_FILE_BYTES = 536_870_912
 MAX_RUNTIME_BYTES = 21_474_836_480
 MAX_PRIVATE_ENTRIES = 400_000
 MAX_ROOT_BYTES = 68_719_476_736
+MAX_GIT_VIEW_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CANDIDATES = 65_536
 MAX_STREAM_BYTES = 65_536
 MAX_OPEN_FDS = 4_096
+MAX_GIT_OBJECTS = 1_000_000
+MAX_GIT_REACHABLE_OUTPUT_BYTES = 256 * 1024 * 1024
+MAX_AGGREGATE_ROOT_TMPFS_BYTES = 256 * 1024 * 1024
+MAX_AGGREGATE_OVERLAY_BYTES = 512 * 1024 * 1024
+MAX_GENERATED_MAIN_BYTES = 256 * 1024 * 1024
+MAX_ELF_NODES = 4_096
+MAX_ELF_DEPTH = 64
 BUILD_TIMEOUT = 1_800
 AGGREGATE_TIMEOUT = 1_800
 VALIDATION_TIMEOUT = 120
+RESOURCE_POLL_SECONDS = 0.25
 READ_CHUNK = 1_048_576
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -1236,6 +1245,25 @@ def git(view: GitView, arguments: Sequence[str], *, output_limit: int = 192 * 10
     return bytes(stdout)
 
 
+def assert_reachable_git_bound(view: GitView, object_format: str) -> None:
+    object_pattern = rb"[0-9a-f]{40}" if object_format == "sha1" else rb"[0-9a-f]{64}"
+    raw = git(
+        view,
+        ("rev-list", "--objects", "--all"),
+        output_limit=MAX_GIT_REACHABLE_OUTPUT_BYTES,
+    )
+    objects: set[bytes] = set()
+    for line in raw.splitlines():
+        object_id = line.split(None, 1)[0]
+        if not re.fullmatch(object_pattern, object_id):
+            raise ValueError("reachable Git object id rejected")
+        objects.add(object_id)
+        if len(objects) > MAX_GIT_OBJECTS:
+            raise ValueError("reachable Git object bound exceeded")
+    if not objects:
+        raise ValueError("reachable Git object set is empty")
+
+
 @dataclass(frozen=True)
 class SourceEntry:
     path: bytes
@@ -1394,6 +1422,7 @@ def source_identity_from_view(
         raise ValueError("source object format does not match run capsule")
     if kind == "align-source" and object_format != "sha1":
         raise ValueError("Align source object format is not SHA-1")
+    assert_reachable_git_bound(view, object_format)
     status_raw = git(view, ("status", "--porcelain=v1", "-z", "--untracked-files=normal"))
     allowed_status = {b"?? target/"}
     if kind == "project-source":
@@ -2177,11 +2206,38 @@ def copy_cache(manifest: Mapping[str, Any], cache_manifest: Mapping[str, Any], d
     )
 
 
+@dataclass
+class GitCopyBudget:
+    entries: int = 0
+    bytes: int = 0
+    object_entries: int = 0
+
+    def add(self, size: int, *, object_entry: bool = False) -> None:
+        self.entries += 1
+        self.bytes += size
+        if object_entry:
+            self.object_entries += 1
+        if (
+            self.entries > MAX_PRIVATE_ENTRIES
+            or self.bytes > MAX_GIT_VIEW_BYTES
+            or self.object_entries > MAX_GIT_OBJECTS
+        ):
+            raise OSError(errno.EFBIG, "Git view copy exceeds its bound")
+
+
 def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
     view = identity.view
     assert_git_view(view)
+    budget = GitCopyBudget()
 
-    def copy_regular(source: int, name: bytes, target: Path, *, replace: bool = False) -> None:
+    def copy_regular(
+        source: int,
+        name: bytes,
+        target: Path,
+        *,
+        replace: bool = False,
+        object_entry: bool = False,
+    ) -> None:
         input_fd = os.open(
             name,
             os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -2191,6 +2247,7 @@ def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
         if accepted.file_type != stat.S_IFREG or accepted.links != 1 or accepted.size > MAX_FILE_BYTES:
             os.close(input_fd)
             raise OSError(errno.EPERM, "Git view file rejected")
+        budget.add(accepted.size, object_entry=object_entry)
         if replace:
             try:
                 target.unlink()
@@ -2220,7 +2277,12 @@ def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
             os.close(output)
             os.close(input_fd)
 
-    def recurse(source: int, target: Path, depth: int = 0) -> None:
+    def recurse(
+        source: int,
+        target: Path,
+        depth: int = 0,
+        relative: tuple[bytes, ...] = (),
+    ) -> None:
         if depth > MAX_SOURCE_DEPTH:
             raise OSError(errno.ELOOP, "Git view depth exceeded")
         for name in sorted(os.listdir(source), key=os.fsencode):
@@ -2228,6 +2290,7 @@ def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
             value = os.stat(raw_name, dir_fd=source, follow_symlinks=False)
             path = target / name
             if stat.S_ISDIR(value.st_mode):
+                budget.add(0)
                 path.mkdir(mode=0o700)
                 child = os.open(
                     raw_name,
@@ -2235,11 +2298,16 @@ def copy_git_view(identity: SourceIdentity, destination: Path) -> None:
                     dir_fd=source,
                 )
                 try:
-                    recurse(child, path, depth + 1)
+                    recurse(child, path, depth + 1, (*relative, raw_name))
                 finally:
                     os.close(child)
             elif stat.S_ISREG(value.st_mode):
-                copy_regular(source, raw_name, path)
+                copy_regular(
+                    source,
+                    raw_name,
+                    path,
+                    object_entry=bool(relative and relative[0] == b"objects"),
+                )
             else:
                 raise OSError(errno.EPERM, "Git view entry rejected")
 
@@ -2519,6 +2587,7 @@ def run_owned(
     timeout: int,
     environment: Mapping[str, str] | None = None,
     pass_fds: Sequence[int] = (),
+    resource_check: Callable[[], None] | None = None,
 ) -> None:
     parent = cgroup_parent()
     leaf: Path | None = None
@@ -2534,6 +2603,7 @@ def run_owned(
         fail("PLATFORM", "platform")
     process: subprocess.Popen[bytes] | None = None
     primary_failure = False
+    resource_failure: WorkerError | None = None
     try:
         set_subreaper()
         (leaf / "pids.max").write_text("512\n", encoding="ascii")
@@ -2555,12 +2625,25 @@ def run_owned(
             os.set_blocking(stream.fileno(), False)
             streams.register(stream, selectors.EVENT_READ, label)
         deadline = time.monotonic() + timeout
+        next_resource_check = time.monotonic()
         try:
             while streams.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     primary_failure = True
                     break
+                if resource_check is not None and time.monotonic() >= next_resource_check:
+                    try:
+                        resource_check()
+                    except WorkerError as error:
+                        resource_failure = error
+                        primary_failure = True
+                        break
+                    except Exception:
+                        resource_failure = WorkerError(category, phase)
+                        primary_failure = True
+                        break
+                    next_resource_check = time.monotonic() + RESOURCE_POLL_SECONDS
                 for key, _ in streams.select(min(remaining, 0.25)):
                     block = os.read(key.fileobj.fileno(), READ_CHUNK)
                     if not block:
@@ -2572,6 +2655,29 @@ def run_owned(
                         break
                     target.extend(block)
                 if primary_failure:
+                    break
+            if not primary_failure and not streams.get_map():
+                while process.poll() is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        primary_failure = True
+                        break
+                    if resource_check is not None and time.monotonic() >= next_resource_check:
+                        try:
+                            resource_check()
+                        except WorkerError as error:
+                            resource_failure = error
+                            primary_failure = True
+                            break
+                        except Exception:
+                            resource_failure = WorkerError(category, phase)
+                            primary_failure = True
+                            break
+                        next_resource_check = time.monotonic() + RESOURCE_POLL_SECONDS
+                    try:
+                        process.wait(timeout=min(remaining, RESOURCE_POLL_SECONDS))
+                    except subprocess.TimeoutExpired:
+                        continue
                     break
             if not primary_failure:
                 try:
@@ -2604,6 +2710,8 @@ def run_owned(
             time.sleep(0.01)
         if cgroup_populated(leaf):
             raise CleanupError("child cgroup remained populated")
+        if resource_failure is not None:
+            raise resource_failure
         if primary_failure:
             fail(category, phase)
     finally:
@@ -2933,6 +3041,234 @@ def aggregate_environment(runtime: Sequence[RuntimeBinding]) -> list[str]:
     return result
 
 
+@dataclass(frozen=True)
+class ELFInfo:
+    interpreter: str | None
+    needed: tuple[str, ...]
+    search_paths: tuple[str, ...]
+
+
+def runtime_file_map(runtime: Sequence[RuntimeBinding]) -> dict[str, Path]:
+    files: dict[str, Path] = {}
+
+    def visit(node: Mapping[str, Any], source: Path, namespace: Path) -> None:
+        if node["kind"] == "file":
+            key = str(namespace)
+            if key in files:
+                raise ValueError("runtime namespace file is ambiguous")
+            files[key] = source
+            return
+        for entry in node["entries"]:
+            visit(entry, source / entry["name"], namespace / entry["name"])
+
+    for source, target, _, node in runtime:
+        visit(node, source, Path(target))
+    return files
+
+
+def parse_elf(raw: bytes) -> ELFInfo:
+    if len(raw) < 64 or raw[:4] != b"\x7fELF":
+        raise ValueError("published output is not ELF")
+    ident = raw[:16]
+    if ident[4:7] != b"\x02\x01\x01":
+        raise ValueError("published output ELF class or encoding rejected")
+    (
+        elf_type,
+        machine,
+        version,
+        _,
+        program_offset,
+        _,
+        _,
+        header_size,
+        program_size,
+        program_count,
+        _,
+        _,
+        _,
+    ) = struct.unpack_from("<HHIQQQIHHHHHH", raw, 16)
+    if (
+        elf_type not in (2, 3)
+        or machine != 62
+        or version != 1
+        or header_size != 64
+        or program_size < 56
+        or program_count == 0
+        or program_count > MAX_ELF_NODES
+        or program_offset > len(raw)
+        or program_count * program_size > len(raw) - program_offset
+    ):
+        raise ValueError("published output ELF header rejected")
+
+    load_segments: list[tuple[int, int, int, int]] = []
+    interpreter: str | None = None
+    dynamic: tuple[int, int, int] | None = None
+    for index in range(program_count):
+        offset = program_offset + index * program_size
+        (
+            program_type,
+            _,
+            file_offset,
+            virtual_address,
+            _,
+            file_size,
+            memory_size,
+            _,
+        ) = struct.unpack_from("<IIQQQQQQ", raw, offset)
+        if file_offset > len(raw) or file_size > len(raw) - file_offset or memory_size < file_size:
+            raise ValueError("published output ELF segment rejected")
+        if program_type == 1:
+            load_segments.append((file_offset, file_size, virtual_address, memory_size))
+        elif program_type == 3:
+            if interpreter is not None or file_size == 0:
+                raise ValueError("published output ELF interpreter rejected")
+            value = raw[file_offset : file_offset + file_size]
+            if not value.endswith(b"\0") or b"\0" in value[:-1]:
+                raise ValueError("published output ELF interpreter string rejected")
+            try:
+                interpreter = value[:-1].decode("ascii")
+            except UnicodeDecodeError as error:
+                raise ValueError("published output ELF interpreter encoding rejected") from error
+            if not interpreter.startswith("/"):
+                raise ValueError("published output ELF interpreter path rejected")
+        elif program_type == 2:
+            if dynamic is not None or file_size == 0 or file_size % 16:
+                raise ValueError("published output ELF dynamic segment rejected")
+            dynamic = (file_offset, file_size, virtual_address)
+    if not load_segments:
+        raise ValueError("published output ELF has no load segment")
+
+    def virtual_to_file(address: int, size: int) -> int:
+        for file_offset, file_size, virtual_address, _ in load_segments:
+            if (
+                address >= virtual_address
+                and address <= virtual_address + file_size
+                and size <= virtual_address + file_size - address
+            ):
+                return file_offset + address - virtual_address
+        raise ValueError("published output ELF virtual address is unmapped")
+
+    needed_offsets: list[int] = []
+    search_offsets: list[int] = []
+    string_table_address: int | None = None
+    string_table_size: int | None = None
+    if dynamic is not None:
+        dynamic_offset, dynamic_size, _ = dynamic
+        for offset in range(dynamic_offset, dynamic_offset + dynamic_size, 16):
+            tag, value = struct.unpack_from("<qQ", raw, offset)
+            if tag == 0:
+                break
+            if tag == 1:
+                needed_offsets.append(value)
+            elif tag == 5:
+                if string_table_address is not None:
+                    raise ValueError("published output ELF has duplicate string table")
+                string_table_address = value
+            elif tag == 10:
+                if string_table_size is not None:
+                    raise ValueError("published output ELF has duplicate string table size")
+                string_table_size = value
+            elif tag in (15, 29):
+                search_offsets.append(value)
+        else:
+            raise ValueError("published output ELF dynamic table is unterminated")
+        if string_table_address is None or string_table_size is None or string_table_size == 0:
+            raise ValueError("published output ELF string table is incomplete")
+        string_table_offset = virtual_to_file(string_table_address, string_table_size)
+        if string_table_size > len(raw) - string_table_offset:
+            raise ValueError("published output ELF string table is out of range")
+        strings = raw[string_table_offset : string_table_offset + string_table_size]
+
+        def string_at(value: int) -> str:
+            if value >= len(strings):
+                raise ValueError("published output ELF string offset is out of range")
+            end = strings.find(b"\0", value)
+            if end < 0:
+                raise ValueError("published output ELF string is unterminated")
+            try:
+                return strings[value:end].decode("ascii")
+            except UnicodeDecodeError as error:
+                raise ValueError("published output ELF string encoding rejected") from error
+
+        needed = tuple(string_at(value) for value in needed_offsets)
+        search_paths = tuple(string_at(value) for value in search_offsets)
+    else:
+        needed = ()
+        search_paths = ()
+    return ELFInfo(interpreter, needed, search_paths)
+
+
+def normalized_elf_search_path(value: str, current: str) -> str:
+    if value == "$ORIGIN":
+        return str(Path(current).parent)
+    if value.startswith("$ORIGIN/"):
+        value = str(Path(current).parent / value[8:])
+    if not value.startswith("/") or "\x00" in value:
+        raise ValueError("published output ELF search path rejected")
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts[1:]):
+        raise ValueError("published output ELF search path is not canonical")
+    return value
+
+
+def resolve_elf_dependency(
+    name: str,
+    current: str,
+    search_paths: Sequence[str],
+    runtime_files: Mapping[str, Path],
+) -> str:
+    if not name or "\x00" in name:
+        raise ValueError("published output ELF dependency name rejected")
+    if name.startswith("/"):
+        candidates = [name]
+    elif "/" in name:
+        raise ValueError("published output ELF relative dependency path rejected")
+    else:
+        candidates = [str(Path(directory) / name) for directory in search_paths]
+    matches = []
+    for candidate in candidates:
+        if candidate in runtime_files and candidate not in matches:
+            matches.append(candidate)
+    if len(matches) != 1:
+        raise ValueError("published output ELF dependency is missing or ambiguous")
+    return matches[0]
+
+
+def validate_published_elf(raw: bytes, runtime: Sequence[RuntimeBinding]) -> None:
+    runtime_files = runtime_file_map(runtime)
+    loader_directories = tuple(
+        value for value in derived_paths(runtime)[1].split(":") if value
+    )
+    pending: list[tuple[str, bytes, int]] = [("/workspace/main", raw, 0)]
+    seen: set[str] = set()
+    while pending:
+        namespace, value, depth = pending.pop()
+        if depth > MAX_ELF_DEPTH or namespace in seen or len(seen) >= MAX_ELF_NODES:
+            if depth > MAX_ELF_DEPTH or len(seen) >= MAX_ELF_NODES:
+                raise ValueError("published output ELF dependency graph exceeds its bound")
+            continue
+        seen.add(namespace)
+        parsed = parse_elf(value)
+        if namespace == "/workspace/main" and (
+            parsed.interpreter is None or not parsed.needed
+        ):
+            raise ValueError("published output ELF lacks interpreter or DT_NEEDED")
+        directories = list(loader_directories)
+        for search_path in parsed.search_paths:
+            for part in search_path.split(":"):
+                directories.insert(0, normalized_elf_search_path(part, namespace))
+        if parsed.interpreter is not None:
+            interpreter = resolve_elf_dependency(
+                parsed.interpreter, namespace, (), runtime_files
+            )
+            pending.append((interpreter, read_path(str(runtime_files[interpreter]), MAX_FILE_BYTES), depth + 1))
+        for dependency in parsed.needed:
+            resolved = resolve_elf_dependency(
+                dependency, namespace, tuple(dict.fromkeys(directories)), runtime_files
+            )
+            pending.append((resolved, read_path(str(runtime_files[resolved]), MAX_FILE_BYTES), depth + 1))
+
+
 def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> None:
     root = admission.root_path
     directories = namespace_directories(runtime)
@@ -2983,6 +3319,8 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         "CAP_SYS_ADMIN",
         "--cap-add",
         "CAP_SETFCAP",
+        "--size",
+        str(MAX_AGGREGATE_ROOT_TMPFS_BYTES),
         "--tmpfs",
         "/",
         "--proc",
@@ -3037,6 +3375,7 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             phase="aggregate",
             timeout=AGGREGATE_TIMEOUT,
             pass_fds=(*overlay_descriptors, *bind_descriptors),
+            resource_check=lambda: enforce_aggregate_quota(admission),
         )
     finally:
         close_private_mounts(bind_descriptors)
@@ -3047,14 +3386,27 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         fail("CHILD", "aggregate")
     output = upper / "main"
     value = output.lstat()
-    if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or stat.S_IMODE(value.st_mode) != 0o755 or value.st_size > MAX_FILE_BYTES:
+    if (
+        not stat.S_ISREG(value.st_mode)
+        or value.st_nlink != 1
+        or stat.S_IMODE(value.st_mode) != 0o755
+        or value.st_size <= 0
+        or value.st_size > MAX_GENERATED_MAIN_BYTES
+    ):
         fail("CHILD", "aggregate")
-    raw = read_path(str(output), MAX_FILE_BYTES)
-    if not raw.startswith(b"\x7fELF"):
+    raw = read_path(str(output), MAX_GENERATED_MAIN_BYTES)
+    try:
+        validate_published_elf(raw, runtime)
+    except (OSError, ValueError):
         fail("CHILD", "aggregate")
 
 
-def scan_private_fd(root_fd: int) -> tuple[int, int]:
+def scan_private_fd(
+    root_fd: int,
+    *,
+    entry_limit: int = MAX_PRIVATE_ENTRIES,
+    byte_limit: int = MAX_ROOT_BYTES,
+) -> tuple[int, int]:
     def visit(directory_fd: int, depth: int, count: int, total: int) -> tuple[int, int]:
         if depth > MAX_SOURCE_DEPTH:
             raise CleanupError("private tree exceeds depth bound")
@@ -3076,11 +3428,35 @@ def scan_private_fd(root_fd: int) -> tuple[int, int]:
                 total += value.st_size
             elif not stat.S_ISLNK(value.st_mode):
                 raise CleanupError("private tree contains special entry")
-            if count > MAX_PRIVATE_ENTRIES or total > MAX_ROOT_BYTES:
+            if count > entry_limit or total > byte_limit:
                 raise CleanupError("private tree exceeds cleanup bound")
         return count, total
 
     return visit(root_fd, 0, 0, 0)
+
+
+def enforce_aggregate_quota(admission: Admission) -> None:
+    def scan(relative: str) -> tuple[int, int]:
+        descriptor, retained = open_relative_directory(admission.root_fd, relative)
+        try:
+            return scan_private_fd(
+                descriptor,
+                entry_limit=MAX_PRIVATE_ENTRIES,
+                byte_limit=MAX_AGGREGATE_OVERLAY_BYTES,
+            )
+        finally:
+            close_retained(retained)
+
+    try:
+        upper_count, upper_bytes = scan("aggregate-output/workspace-upper")
+        work_count, work_bytes = scan("aggregate-output/workspace-work")
+        if (
+            upper_count + work_count > MAX_PRIVATE_ENTRIES
+            or upper_bytes + work_bytes > MAX_AGGREGATE_OVERLAY_BYTES
+        ):
+            raise CleanupError("aggregate writable store exceeds its bound")
+    except (CleanupError, OSError):
+        fail("CHILD", "aggregate")
 
 
 def cleanup_overlay_work_entry(admission: Admission) -> None:

@@ -2906,8 +2906,8 @@ lower tree. The aggregate enters its user namespace as UID/GID 0 with `CAP_SYS_A
 `CAP_SETFCAP` added. `CAP_SYS_ADMIN` lets the staged `mount-guard` apply the required mount
 attribute. The guard performs that operation, reduces its effective and permitted capability sets
 to `CAP_SETFCAP` only, sets `no_new_privs`, and execs the requested command; `CAP_SYS_ADMIN` is not
-retained by Make or its direct children. `CAP_SETFCAP` is retained because the nested validation
-bwrap must create a child user namespace and map UID 0 on the declared minimum kernel profile.
+retained by Make or its direct children. `CAP_SETFCAP` remains available for the nested bwrap's
+declared UID-0 user-namespace setup, but no nested task receives `CAP_SYS_ADMIN` after its own guard.
 The aggregate mounts a `268435456`-byte namespace-owned tmpfs at `/target/tmp`; it never binds the
 host-side `cargo-target/tmp`. Before Make starts, the staged `mount-guard` executes
 `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` only on `/target/tmp` and verifies that mount identity. A symlink such as
@@ -2930,8 +2930,8 @@ from the retained output descriptor and recursively resolves every dynamic depen
 authenticated runtime tree and the derived `LD_LIBRARY_PATH`; every resolved file is compared to its
 runtime digest and staged mode. A missing or ambiguous dependency, a loader outside the runtime
 bindings, an absolute host path, or an unresolved `RPATH`/`RUNPATH` is an aggregate failure. A
-statically linked output still undergoes the ELF class/interpreter absence check and has no dynamic
-dependency exception beyond that explicit state.
+statically linked output is rejected: the published contract requires one absolute `PT_INTERP` and
+at least one `DT_NEEDED` entry before recursive closure resolution.
 
 After the overlay is unmounted, the worker reopens the parent descriptor-relatively and rechecks
 the final entry's device/inode, regular type, `st_nlink`, exact mode, size, and complete-byte
@@ -2973,7 +2973,7 @@ The exact aggregate argv shape is:
 ```text
 bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net \
   --uid 0 --gid 0 --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP \
-  --tmpfs / --proc /proc --dev /dev \
+  --size 268435456 --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /baseline-git --dir /tools --dir /cargo --dir /target \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
   --dir /fd-hold --dir /fd-hold/lower --dir /fd-hold/upper --dir /fd-hold/work \
@@ -3029,7 +3029,10 @@ and `/tmp`. `validation_command()` must resolve a `python3` task command to the 
 `/tools/python3`, never to `sys.executable` or a host pathname.
 
 A nested validation sandbox must make the staged execution boundary visible explicitly. Its bwrap
-argv includes `--dir /tools --ro-bind /tools /tools`, `--bind /target/tmp /target/tmp`,
+argv begins with `--cap-drop ALL --cap-add CAP_SYS_ADMIN` in that order, so the nested admission
+retains `CAP_SYS_ADMIN` for the staged `mount-guard` mount-attribute operation. The guard then
+reduces capabilities before `prlimit` or the validation task starts. Its remaining bwrap argv
+includes `--dir /tools --ro-bind /tools /tools`, `--bind /target/tmp /target/tmp`,
 `--size 67108864 --tmpfs /tmp`, `--size 67108864 --tmpfs /dev/shm`,
 `--setenv PATH /tools`, `--setenv TMPDIR /tmp`, `--setenv ALIGNC_CACHE off`,
 `--setenv PYTHONHOME /usr`, `--setenv PYTHONNOUSERSITE 1`, and
@@ -3055,7 +3058,12 @@ the project source. It copies, through retained project Git descriptors and no-f
 the project `HEAD`, index, refs, packed refs, and the complete object database required to resolve
 the project `HEAD`, recorded baseline source/oracle/finalization commits, and every requested
 `merge-base`; it creates no host-path alternates, hooks, config includes, grafts, or replacement
-refs. The copy is rehashed and rescanned, then mounted read-only at `/baseline-git`. All normal
+refs. Before the copy, a descriptor-backed `rev-list --objects --all` scan requires the
+authenticated object-format width and at most `fresh_git_object_max = 1000000` reachable object IDs.
+The recursive copy itself admits at most `fresh_private_entry_max = 400000` directory/file entries
+and `fresh_git_view_max_bytes = 4294967296` bytes, including loose objects, pack files, refs, and
+metadata; a cap breach fails before the next file is copied. The copy is rehashed and rescanned,
+then mounted read-only at `/baseline-git`. All normal
 project Git calls, including the fixed eval corpus and the Align loop, use the aggregate's exact
 values `GIT_DIR=/baseline-git`, `GIT_COMMON_DIR=/baseline-git`, and `GIT_WORK_TREE=/workspace`;
 baseline callers additionally receive the worker-provided exact values
@@ -3239,7 +3247,7 @@ the public line.
 | Direct compiler call | fresh launcher | Execution is only the launcher-verified `/tools/alignc` path with its authenticated descriptor/guard and sibling archive; no flag-controlled, PATH, host, or old fallback. Request 6's fresh profile uses the same launcher and fixed `ALIGNC_CACHE=off` value. | `fresh-v2-direct-interposition-smoke` clears every fresh marker and installs old sibling/PATH marker compilers, replaces the private handoff files and bundle, and requires none to run while a tiny link proves `libalign_runtime.a` is found beside `current_exe()`; the Request 6 adoption smoke proves its `check` and `run` vectors use `/tools/fresh-alignc`. |
 | Internal compiler call | Makefile/scripts/Python runners | All consumers use the fresh launcher and fixed read-only handoff paths; every Python boundary uses `close_fds=True, pass_fds=()` and the fresh environment disables bytecode writes; no bare compiler, sibling, mutable path, or fallback | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, handoff-file replacement, workspace `__pycache__` prevention, absence of worker identity fds, and the Section 9 Request 6 fresh-profile branch. |
 | Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python plus stdlib/extension roots, Bash, `mount-guard`, `/tools`, no-symlink aggregate `/target/tmp` plus nested validation `/tmp` and `/dev/shm`, derived linker/loader paths, `PYTHONDONTWRITEBYTECODE=1`, PATH, and empty descriptor propagation | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools/modules, runs nested validation, exercises the independent 64 MiB `/tmp` and `/dev/shm` mounts, attempts a temp-to-workspace symlink and a contained source symlink, creates an importable runner module, and verifies staged identities, temp-root propagation, mount attributes, no `__pycache__`, and no worker identity fd. |
-| Aggregate topology | supervisor/worker/Makefile | Exactly one bwrap aggregate, UID/GID 0 with only the declared `CAP_SYS_ADMIN`/`CAP_SETFCAP` admission pair, mount-guard reduction to `CAP_SETFCAP` plus `no_new_privs` before Make, closed executable inventory including `seq`, supervisor exact request validation and direct-bootstrap argv/env/fd-4/5/6 boundary, private-source-only Make parsing, fixed internal `-f /workspace/Makefile`, complete normalized GNU Make 4.3 option/alias matrix with a separate accepted `--no-print-directory` row, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, accepted-request and newer-option rejection, tracked and untracked alternate makefile bypass, fixed internal Makefile selection, repository Makefile supervisor bypass, loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation; the worker qualification's aggregate contract inventory asserts both capability tokens. |
+| Aggregate topology | supervisor/worker/Makefile | Exactly one bwrap aggregate, UID/GID 0 with only the declared `CAP_SYS_ADMIN`/`CAP_SETFCAP` admission pair, mount-guard reduction to `CAP_SETFCAP` plus `no_new_privs` before Make, closed executable inventory including `seq`, supervisor exact request validation and direct-bootstrap argv/env/fd-4/5/6 boundary, private-source-only Make parsing, fixed internal `-f /workspace/Makefile`, complete normalized GNU Make 4.3 option/alias matrix with a separate accepted `--no-print-directory` row, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, accepted-request and newer-option rejection, tracked and untracked alternate makefile bypass, fixed internal Makefile selection, repository Makefile supervisor bypass, loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation; the qualification inventory additionally asserts the nested `--cap-drop ALL --cap-add CAP_SYS_ADMIN` order, root `--size 268435456`, authenticated `/tools/fresh-alignc`, bounded Git view, and published-ELF closure owners. |
 | Process ownership | worker plus per-invocation cgroup/rlimit boundary | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap, a unique worker-owned delegated cgroup leaf with empty-membership and cleanup proof, `pids.max=512`, `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, `RLIMIT_FSIZE=536870912`, source active-window accounting, and bounded worker fd scans | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, stream overflow, double fork, signal, PID reuse, reader closure, process cap-plus-one, source-window cap-plus-one, total-fd cap-plus-one, exact file-size-limit boundary, cgroup leaf replacement/nonempty cleanup, uncatchable worker death, and missing cgroup delegation. |
 | Cleanup success | worker | Reverse descriptor-relative removal, stable parent/root device-inode/type/mode/owner identity while owned content metadata changes, root absent before PASS | `fresh-v2-cleanup-smoke` proves normal staging metadata changes are accepted, while no private root, handoff file, cache copy, target, marker, or child remains. |
 | Cleanup failure | worker plus admission lock | Never delete replacement/unowned path; exact primary/cleanup precedence; uncatchable death leaves one bounded root, releases only the kernel lock, and makes the next invocation fail closed before root creation | `fresh-v2-cleanup-failure-smoke` injects close, unlink, parent replacement, live child, catchable signal, successful-phase cleanup failures, worker `SIGKILL`, repeated death attempts, and later invocations that must leave the unprovable root untouched and refuse a second root. |
@@ -3299,7 +3307,12 @@ owned capabilities that may progress in parallel and one dependent adoption wave
    installed FRESH-IMAGE trust root; a synthetic or direct host run is non-evidence. The named
    security, race, resource, mutation, and failure-injection closure tests remain focused
    qualification commands and all run before this capability merges; they do not all become
-   permanent `make ci` dependencies. Because this capability changes the Makefile and compiler
+   permanent `make ci` dependencies. `python3 scripts/run-fresh-worker-qualification` executes
+   every available focused owner and labels each closure row as focused or deferred; after the
+   installed profile enables nested user namespaces, `python3 scripts/run-fresh-worker-qualification
+   --installed-profile` invokes the installed image, aggregate, baseline, resource, cleanup, and
+   failure owners before reporting those rows as executed. The qualification output never claims a
+   deferred row passed. Because this capability changes the Makefile and compiler
    consumers, its branch also performs the Section 2.4 identity-bound baseline source, oracle,
    finalization, and merge-ancestry sequence.
 3. **Fresh adoption wave.** After both capabilities pass and merge, batch the merged Align requests

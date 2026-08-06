@@ -536,6 +536,8 @@ def fresh_namespace_prefix() -> list[str]:
         str(os.getgid()),
         "--cap-drop",
         "ALL",
+        "--cap-add",
+        "CAP_SYS_ADMIN",
         "--tmpfs",
         "/",
         "--proc",

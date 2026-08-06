@@ -5,9 +5,12 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 align_repo="${ALIGN_REPO:-${project_root}/../align}"
 
-if [[ "${ALIGN_LLM_FRESH_COMPILER:-}" == "1" && -z "${ALIGNC:-}" ]]; then
-  printf '%s\n' "fresh compiler launcher is missing" >&2
-  exit 1
+if [[ "${ALIGN_LLM_FRESH_COMPILER:-}" == "1" ]]; then
+  if [[ "${ALIGNC:-}" != "/tools/fresh-alignc" ]]; then
+    printf '%s\n' "fresh compiler launcher is not the authenticated path" >&2
+    exit 1
+  fi
+  compiler="/tools/fresh-alignc"
 elif [[ -n "${ALIGNC:-}" ]]; then
   compiler="${ALIGNC}"
 elif [[ -x "${align_repo}/target/release/alignc" ]]; then

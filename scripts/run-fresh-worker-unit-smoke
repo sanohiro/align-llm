@@ -544,6 +544,52 @@ def bounded_tool_cases(module) -> None:
         os.close(python_fd)
 
 
+def published_elf_cases(module) -> None:
+    executable = Path("/bin/true")
+    require(executable.is_file(), "ELF closure fixture is unavailable")
+    raw = executable.read_bytes()
+    parsed = module.parse_elf(raw)
+    require(parsed.interpreter is not None, "ELF fixture lost its interpreter")
+    require(parsed.needed, "ELF fixture lost its DT_NEEDED entries")
+    ldd = subprocess.run(
+        ["ldd", str(executable)], check=True, capture_output=True, text=True
+    )
+    targets = {parsed.interpreter}
+    for line in ldd.stdout.splitlines():
+        if "=>" in line:
+            candidate = line.split("=>", 1)[1].strip().split(" ", 1)[0]
+        else:
+            candidate = line.strip().split(" ", 1)[0]
+        if candidate.startswith("/"):
+            targets.add(candidate)
+    runtime = []
+    for target in sorted(targets):
+        source = Path(target).resolve()
+        require(source.is_file(), f"ELF closure member is unavailable: {target}")
+        runtime.append((source, target, "file", {"kind": "file"}))
+    module.validate_published_elf(raw, runtime)
+
+    missing_name = parsed.needed[0]
+    missing_runtime = [
+        binding for binding in runtime if Path(binding[1]).name != missing_name
+    ]
+    try:
+        module.validate_published_elf(raw, missing_runtime)
+    except (OSError, ValueError):
+        pass
+    else:
+        raise AssertionError("missing ELF dependency was accepted")
+
+    malformed = bytearray(raw)
+    malformed[4] = 1
+    try:
+        module.parse_elf(bytes(malformed))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-64-bit ELF output was accepted")
+
+
 def source_identity_cases(module, temporary: Path) -> None:
     git_path = Path("/usr/bin/git")
     require(git_path.is_file(), "Git fixture executable is unavailable")
@@ -745,6 +791,7 @@ def main() -> int:
     canonical_wire_cases(module)
     run_attestation_cases(module)
     bounded_tool_cases(module)
+    published_elf_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:
         temporary = Path(name)
         digest_golden(module, temporary)

@@ -14,6 +14,55 @@ SPECIFICATION = REPOSITORY / "docs/specs/check-gate-topology.md"
 WORKER = REPOSITORY / "scripts/fresh-align-compiler"
 IMAGE_DOCKERFILE = REPOSITORY / "image/fresh/Dockerfile"
 
+FOCUSED_CHECKS = (
+    ("run-fresh-attestation-wire-smoke", ("fresh-v2-attestation-wire-golden",)),
+    (
+        "run-fresh-manifest-wire-smoke",
+        (
+            "fresh-v2-manifest-format-smoke",
+            "fresh-v2-digest-tree-golden",
+            "fresh-v2-cache-manifest-golden",
+        ),
+    ),
+    (
+        "run-fresh-source-manifest-wire-smoke",
+        (
+            "fresh-v2-source-manifest-golden",
+            "fresh-v2-source-manifest-symlink-golden",
+            "fresh-v2-source-manifest-object-format-golden",
+            "fresh-v2-source-manifest-output-exception-golden",
+        ),
+    ),
+    ("run-fresh-source-identity-smoke", ("fresh-v2-source-identity-smoke",)),
+    (
+        "run-fresh-image-control-smoke",
+        (
+            "fresh-v2-image-trust-smoke",
+            "fresh-v2-run-attestation-smoke",
+            "fresh-v2-pre-dispatch-source-smoke",
+        ),
+    ),
+    (
+        "run-fresh-worker-unit-smoke",
+        (
+            "fresh-v2-bwrap-trust-smoke",
+            "fresh-v2-tool-identity-smoke",
+            "fresh-v2-cache-smoke",
+            "fresh-v2-root-staging-smoke",
+            "fresh-v2-descriptor-file-smoke",
+            "fresh-v2-cleanup-smoke",
+            "fresh-v2-cleanup-failure-smoke",
+            "fresh-v2-status-grammar-smoke",
+        ),
+    ),
+    (
+        "run-coding-task-resource-scan-smoke",
+        ("fresh-v2-process-lifecycle-smoke",),
+    ),
+    ("run-baseline-failure-smoke", ("fresh-v2-baseline-scratch-smoke",)),
+    ("check-gate-topology --self-test", ("fresh-v2-aggregate-topology-smoke",)),
+)
+
 EXPECTED_CASES = {
     "fresh-v2-image-trust-smoke",
     "fresh-v2-run-attestation-smoke",
@@ -77,6 +126,19 @@ def verify_contract_inventory() -> None:
             f"FRESH-WORKER qualification inventory changed: missing={missing}, unexpected={unexpected}"
         )
 
+    owners: dict[str, str] = {}
+    for command, cases in FOCUSED_CHECKS:
+        for case in cases:
+            if case in owners:
+                raise RuntimeError(f"FRESH-WORKER case has duplicate focused owners: {case}")
+            owners[case] = command
+        if command != "check-gate-topology --self-test":
+            path = REPOSITORY / "scripts" / command
+            if not path.is_file():
+                raise RuntimeError(f"FRESH-WORKER focused owner is missing: {path}")
+    if not set(owners) <= EXPECTED_CASES:
+        raise RuntimeError("FRESH-WORKER focused owner names are outside the contract inventory")
+
     worker = WORKER.read_text(encoding="utf-8")
     forbidden = {
         ".communicate(": "unbounded child collection returned",
@@ -106,9 +168,26 @@ def verify_contract_inventory() -> None:
         '"--cap-add"',
         '"CAP_SYS_ADMIN"',
         '"CAP_SETFCAP"',
+        '"--size"',
+        "validate_published_elf",
     ):
         if token not in aggregate:
             raise RuntimeError(f"aggregate capability boundary is missing: {token}")
+    for token in (
+        "MAX_AGGREGATE_OVERLAY_BYTES",
+        "assert_reachable_git_bound",
+        "GitCopyBudget",
+    ):
+        if token not in worker:
+            raise RuntimeError(f"worker resource boundary is missing: {token}")
+
+    runner = (REPOSITORY / "eval/runners/run-coding-task.py").read_text(encoding="utf-8")
+    prefix = runner[runner.index("def fresh_namespace_prefix"): runner.index("\ndef sandbox_probe_command", runner.index("def fresh_namespace_prefix"))]
+    if '"--cap-drop",\n        "ALL",\n        "--cap-add",\n        "CAP_SYS_ADMIN"' not in prefix:
+        raise RuntimeError("nested validation capability admission order changed")
+    alignc = (REPOSITORY / "scripts/alignc").read_text(encoding="utf-8")
+    if 'if [[ "${ALIGNC:-}" != "/tools/fresh-alignc" ]]; then' not in alignc:
+        raise RuntimeError("fresh compiler override authentication is missing")
 
     directories_start = worker.index("def namespace_directories")
     directories_end = worker.index("\ndef open_private_mount", directories_start)
@@ -132,15 +211,33 @@ def verify_contract_inventory() -> None:
 
 
 def main() -> int:
+    installed_profile = "--installed-profile" in sys.argv[1:]
+    unexpected = [argument for argument in sys.argv[1:] if argument != "--installed-profile"]
+    if unexpected:
+        raise SystemExit(f"unsupported qualification option: {unexpected[0]}")
     verify_contract_inventory()
-    run(sys.executable, "scripts/run-fresh-attestation-wire-smoke")
-    run(sys.executable, "scripts/run-fresh-manifest-wire-smoke")
-    run(sys.executable, "scripts/run-fresh-image-control-smoke")
-    run(sys.executable, "scripts/run-fresh-worker-unit-smoke")
-    run(sys.executable, "scripts/check-gate-topology", "--self-test")
-    print("fresh worker focused qualification: PASS")
+    for command, _ in FOCUSED_CHECKS:
+        if command == "check-gate-topology --self-test":
+            run(sys.executable, "scripts/check-gate-topology", "--self-test")
+        else:
+            run(sys.executable, f"scripts/{command}")
+    if installed_profile:
+        run(sys.executable, "scripts/run-fresh-image-profile-smoke")
+    print(
+        "fresh worker qualification: PASS "
+        + ("(focused and installed profile)" if installed_profile else "(focused; installed profile deferred)")
+    )
+    owners = {case: command for command, cases in FOCUSED_CHECKS for case in cases}
     for name in sorted(EXPECTED_CASES):
-        print(f"  {name}: covered by the batched owner checks; installed cases remain hosted")
+        if name in owners:
+            print(f"  {name}: owner={owners[name]} execution=focused")
+        elif installed_profile:
+            print(f"  {name}: owner=run-fresh-image-profile-smoke execution=installed-profile")
+        else:
+            print(
+                f"  {name}: owner=run-fresh-image-profile-smoke "
+                "execution=deferred-to-installed-profile"
+            )
     return 0
 
 
