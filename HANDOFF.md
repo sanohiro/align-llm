@@ -8,7 +8,7 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - Open draft pull request: #61, merge-commit-only. Current head:
-  `4cf2b4eca16bbc8007ced82d31b9a9729a7b85fb`.
+  `40c9c417461923993d2f8d1bc16b3a65b51335f1`.
 - Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
   start the next eligible roadmap capability (`C6-LIFECYCLE`).
 - Product repair is complete through the independent review findings: the worker retains
@@ -16,15 +16,17 @@ attestations; this file records durable project state.
   exact fresh compiler path, bounds reachable and copied Git state, enforces aggregate writable
   stores while the child runs, and validates the published x86_64 ELF dependency closure. The
   qualification command now runs all focused owners and labels installed-profile cases as
-  deferred until `--installed-profile` runs in the hosted job.
+  deferred until `--installed-profile` runs in the hosted job. The resource-scan race fix now
+  separates scanner construction from context entry without interpreter-version-dependent
+  traceback bytecode offsets.
 - Local Docker is unavailable; installed-image and capable aggregate evidence must come from the
   hosted Ubuntu 24.04 profile.
 
 ## Baseline provenance
 
-- Source/checkpoint: `75d716d360875d3038eb0304ae217ae16833d0e9`.
-- Immutable oracle: `1c4d61f6fe8d88acd9bb89eeb35c03f1525d0231`.
-- Finalization: `fe494d42ed2547c64c0b808ce447a8fd2bfd5aa1`.
+- Source/checkpoint: `f1bcda26bdf18b00415b077730212c7d87a9fedf`.
+- Immutable oracle: `dbdc3f0ce45163000ac4001e2fd771532071dcda`.
+- Finalization: `40c9c41a9da43fb715e5f7285e2ff0c5cc2a5df8`.
 - The source commit is followed only by the oracle-only and finalizer-only commits for the
   refreshed coding-v1 baseline. Do not change a recorded evaluation artifact without restarting
   the Section 2.4 measurement sequence.
@@ -33,8 +35,9 @@ attestations; this file records durable project state.
 
 1. Push the repair and finalization commits, then dispatch and complete the product branch's full
    hosted CI. Confirm the installed profile reaches capable evaluation and that the refreshed
-   baseline and exact aggregate capability contract pass; the prior product run `31081165976` and
-   diagnostic run `31081113394` failed at nested `mount_setattr` before this repair.
+   baseline and exact aggregate capability contract pass; run `31086926485` exposed the Python
+   3.12 resource-scan race before `f1bcda2`, while earlier runs `31081165976` and `31081113394`
+   failed at nested `mount_setattr` before the capability repair.
 2. Record the initial review's eight finding dispositions and the repair SHA on PR #61. Because the
    repair materially changed behavior, run one conditional final independent review of the final
    diff and record its SHA-bound envelope; no further local repair loop is allowed after a
@@ -47,7 +50,8 @@ attestations; this file records durable project state.
 ## Latest verification
 
 - `git diff --check`: PASS.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS after the
+  interpreter-stable resource-scan repair (focused; installed profile deferred).
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-image-control-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-coding-task-resource-scan-smoke`: PASS.
@@ -59,8 +63,8 @@ attestations; this file records durable project state.
 - `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-patch-eval-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-verification-loop-smoke`: PASS.
 - `ALIGNC=/home/hiro/prj/align-clean-672/target/release/alignc PYTHONDONTWRITEBYTECODE=1 make hosted-checks`: PASS.
-- Baseline recorder: two deterministic-reference samples PASS from source `75d716d` using
-  detached Align `d9fb5da`; oracle `1c4d61f6` and finalization `fe494d4` are committed.
+- Baseline recorder: two deterministic-reference samples PASS from source `f1bcda2` using
+  detached Align `d9fb5da`; oracle `dbdc3f0` and finalization `40c9c41` are committed.
 - `make baseline-check`: PASS, including canonical oracle, invalid-input, and failure-retention
   smokes.
 - Prior hosted diagnostic runs through `31079703787` established and repaired linker runtime
