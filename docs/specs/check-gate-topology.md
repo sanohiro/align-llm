@@ -2901,10 +2901,12 @@ FRESH-WORKER capability can pass its call-site audit. The exact workspace output
 ```
 
 No `eval/`, `scripts/`, `src/`, `tests/`, `Makefile`, or source-control path is writable in the
-lower tree. The aggregate mounts a `268435456`-byte namespace-owned tmpfs at `/target/tmp`; it
-never binds the host-side `cargo-target/tmp`. Before Make starts, the staged `mount-guard` executes
-`mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` only on `/target/tmp`, verifies that mount identity, sets
-`no_new_privs`, drops its capabilities, and then execs the requested command. A symlink such as
+lower tree. The aggregate enters its user namespace as UID/GID 0 with only `CAP_SYS_ADMIN` added
+so the staged `mount-guard` can apply the required mount attribute. The guard performs that
+operation before it sets `no_new_privs`, drops every capability, and execs the requested command.
+The aggregate mounts a `268435456`-byte namespace-owned tmpfs at `/target/tmp`; it never binds the
+host-side `cargo-target/tmp`. Before Make starts, the staged `mount-guard` executes
+`mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` only on `/target/tmp` and verifies that mount identity. A symlink such as
 `/target/tmp/e -> /workspace` therefore cannot turn a temporary pathname into a workspace write.
 Contained relative symlinks in the immutable source remain usable because `/workspace` is not
 marked no-symlink-follow; source enumeration and materialization already prove that every such link
@@ -2966,6 +2968,7 @@ The exact aggregate argv shape is:
 
 ```text
 bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net \
+  --uid 0 --gid 0 --cap-add CAP_SYS_ADMIN \
   --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /baseline-git --dir /tools --dir /cargo --dir /target \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
@@ -3007,9 +3010,10 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
        /tools/make --silent --no-print-directory -j1 -f /workspace/Makefile capable-checks
 ```
 
-The runtime bindings include regular staged copies at `/usr/bin/env`, `/usr/bin/python3`, `/bin/sh`,
-and `/bin/bash`, so `#!/usr/bin/env python3`, `#!/usr/bin/env bash`, and Make's `SHELL=/bin/sh`
-cannot reach a host interpreter. `PATH=/tools` contains only the closed staged launchers. The
+The image manifest contributes regular staged copies from `/usr/bin/env`, `/usr/bin/python3.12`,
+`/usr/bin/dash`, and `/usr/bin/bash` at the exact namespace paths `/usr/bin/env`, `/usr/bin/python3`,
+`/bin/sh`, and `/bin/bash`. Thus `#!/usr/bin/env python3`, `#!/usr/bin/env bash`, and Make's
+`SHELL=/bin/sh` cannot reach a host interpreter. `PATH=/tools` contains only the closed staged launchers. The
 aggregate always sets `ALIGNC_CACHE=off`; the compiler code-generation cache is not an implicit
 aggregate input and cannot create an unbounded cache under `/nonexistent`.
 implementation must update `eval/runners/run-coding-task.py` so both `ALIGN_LLM_BWRAP` and

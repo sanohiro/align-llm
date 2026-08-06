@@ -97,12 +97,22 @@ def verify_contract_inventory() -> None:
     for token in required:
         if token not in worker:
             raise RuntimeError(f"worker closure owner is missing: {token}")
+    aggregate_start = worker.index("def run_aggregate")
+    aggregate_end = worker.index("\ndef scan_private_fd", aggregate_start)
+    aggregate = worker[aggregate_start:aggregate_end]
+    for token in ('"--uid"', '"--gid"', '"--cap-add"', '"CAP_SYS_ADMIN"'):
+        if token not in aggregate:
+            raise RuntimeError(f"aggregate capability boundary is missing: {token}")
 
     image = IMAGE_DOCKERFILE.read_text(encoding="utf-8")
     for token in (
         "libzstd-dev",
         "cp -aL /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64",
         "--runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu",
+        "--runtime /usr/bin/dash=/bin/sh",
+        "--runtime /usr/bin/bash=/bin/bash",
+        "--runtime /usr/bin/env=/usr/bin/env",
+        "--runtime /usr/bin/python3.12=/usr/bin/python3",
     ):
         if token not in image:
             raise RuntimeError(f"image runtime closure is missing: {token}")
