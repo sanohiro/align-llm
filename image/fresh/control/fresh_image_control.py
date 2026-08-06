@@ -1217,8 +1217,6 @@ def bootstrap(
         "9",
     ]
     worker_environment = dict(WORKER_ENVIRONMENT)
-    if os.environ.get("ALIGN_LLM_FRESH_DIAGNOSTIC") == "1":
-        worker_environment["ALIGN_LLM_FRESH_DIAGNOSTIC"] = "1"
     result = subprocess.run(
         arguments,
         env=worker_environment,
