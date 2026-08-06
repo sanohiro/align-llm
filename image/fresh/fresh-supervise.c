@@ -66,7 +66,9 @@ static int sanitize_environment(char **child_env) {
         "GIT_ALTERNATE_OBJECT_DIRECTORIES", "RUSTC", "RUSTFLAGS", "GCONV_PATH", "LOCPATH",
         "MALLOC_TRACE", "MALLOC_CHECK_", "MALLOC_PERTURB_",
     };
+    static const char diagnostic_name[] = "ALIGN_LLM_FRESH_DIAGNOSTIC";
     char *align_repo = NULL;
+    char *diagnostic = NULL;
     int index;
     int output = 0;
 
@@ -78,6 +80,13 @@ static int sanitize_environment(char **child_env) {
                 return -1;
             }
             align_repo = entry;
+            continue;
+        }
+        if (matches_name(entry, diagnostic_name)) {
+            if (diagnostic != NULL || strcmp(entry + strlen(diagnostic_name) + 1, "1") != 0) {
+                return -1;
+            }
+            diagnostic = entry;
             continue;
         }
         if (matches_prefix(entry, "LD_") || matches_prefix(entry, "GLIBC_") ||
@@ -103,6 +112,9 @@ static int sanitize_environment(char **child_env) {
     child_env[output++] = temporary;
     if (align_repo != NULL) {
         child_env[output++] = align_repo;
+    }
+    if (diagnostic != NULL) {
+        child_env[output++] = diagnostic;
     }
     child_env[output] = NULL;
     return 0;
