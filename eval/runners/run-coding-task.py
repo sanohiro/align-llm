@@ -659,7 +659,22 @@ def require_sandbox_capability() -> None:
                     return result
             raise TaskError(f"diagnostic probe sequence not found: {sequence}")
 
+        without_tmpfs = fresh_namespace_prefix()
+        for sequence in (
+            ["--tmpfs", "/"],
+            ["--size", size, "--tmpfs", "/tmp"],
+            ["--size", size, "--tmpfs", "/dev/shm"],
+        ):
+            width = len(sequence)
+            for index in range(len(without_tmpfs) - width + 1):
+                if without_tmpfs[index : index + width] == sequence:
+                    del without_tmpfs[index : index + width]
+                    break
+            else:
+                raise TaskError(f"diagnostic probe sequence not found: {sequence}")
+
         variants = {
+            "without-all-tmpfs": without_tmpfs,
             "without-root-tmpfs": without(["--tmpfs", "/"]),
             "without-proc": without(["--proc", "/proc"]),
             "without-dev": without(["--dev", "/dev"]),

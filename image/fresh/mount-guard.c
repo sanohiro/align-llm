@@ -60,8 +60,8 @@ static int drop_capabilities(void) {
     memset(data, 0, sizeof(data));
     header.version = _LINUX_CAPABILITY_VERSION_3;
     header.pid = 0;
-    data[0].effective = 1U << CAP_SETFCAP;
-    data[0].permitted = 1U << CAP_SETFCAP;
+    data[0].effective = (1U << CAP_SETFCAP) | (1U << CAP_SYS_ADMIN);
+    data[0].permitted = (1U << CAP_SETFCAP) | (1U << CAP_SYS_ADMIN);
     if (syscall(SYS_capset, &header, data) < 0 || prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
         return -1;
     }
