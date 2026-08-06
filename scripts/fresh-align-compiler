@@ -2324,6 +2324,12 @@ def open_private_mount(
             or stat.S_IFMT(value.st_mode) != expected_type
             or value.st_uid != os.geteuid()
         ):
+            diagnostic = (
+                "DIAGNOSTIC MOUNT IDENTITY "
+                f"source={source} kind={expected_kind} mode={stat.S_IMODE(value.st_mode):04o} "
+                f"type={stat.S_IFMT(value.st_mode):o} uid={value.st_uid} euid={os.geteuid()}\n"
+            )
+            os.write(2, diagnostic.encode("utf-8", "replace"))
             raise OSError(errno.EPERM, "private mount source identity rejected")
         return descriptor
     except Exception:
