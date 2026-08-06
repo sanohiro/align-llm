@@ -870,19 +870,12 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
         instructions,
         tuple(dis.findlinestarts(module.validation_worktree_usage.__code__)),
     )
-    entry_store_offsets = [
-        instruction.offset
-        for instruction in instructions
-        if (
-            instruction.opname == "STORE_FAST"
-            and instruction.argval == "entries"
-            and line_numbers.get(instruction.offset) == context_lines[0]
-        )
+    entered_lines = [
+        line_number
+        for line_number, line in enumerate(source_lines, start=1)
+        if line.strip() == b"entered = True"
     ]
-    require(
-        len(entry_store_offsets) == 1,
-        f"unexpected scan entry store offsets: {entry_store_offsets}",
-    )
+    require(len(entered_lines) == 1, f"unexpected entered lines: {entered_lines}")
     body_capture_lines = [
         line_number
         for line_number, line in enumerate(source_lines, start=1)
@@ -906,19 +899,19 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
     )
 
     for name, target_event, target, next_error, close_error, close_context_error in (
-        ("context-entry-store", "opcode", entry_store_offsets[0], None, None, None),
+        ("context-entry-boundary", "line", entered_lines[0], None, None, None),
         (
-            "context-entry-store-close-error",
-            "opcode",
-            entry_store_offsets[0],
+            "context-entry-boundary-close-error",
+            "line",
+            entered_lines[0],
             None,
             FileNotFoundError("close vanished during interruption"),
             None,
         ),
         (
-            "context-entry-store-nested-close-error",
-            "opcode",
-            entry_store_offsets[0],
+            "context-entry-boundary-nested-close-error",
+            "line",
+            entered_lines[0],
             None,
             FileNotFoundError("close vanished after internal cleanup error"),
             ValueError("internal cleanup context"),
@@ -1043,8 +1036,8 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
             frame.f_trace_opcodes = True
         if (
             frame.f_code is module.validation_worktree_usage.__code__
-            and event == "opcode"
-            and frame.f_lasti == entry_store_offsets[0]
+            and event == "line"
+            and frame.f_lineno == entered_lines[0]
             and frame.f_locals.get("current") == ordinary_target
         ):
             ordinary_interrupted = True
