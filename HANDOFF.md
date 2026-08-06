@@ -8,7 +8,7 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - Open draft pull request: #61, merge-commit-only. Latest product implementation commit:
-  `88577eb`; documentation-only handoff commits follow it.
+  `32f1a26`; the refreshed baseline oracle and finalization commits follow it.
 - Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
   stop this execution as requested; do not start the next roadmap capability.
 - Product repair is complete through the independent review findings: the worker retains
@@ -33,9 +33,9 @@ attestations; this file records durable project state.
 
 ## Baseline provenance
 
-- Source/checkpoint: `f1bcda26bdf18b00415b077730212c7d87a9fedf`.
-- Immutable oracle: `dbdc3f0ce45163000ac4001e2fd771532071dcda`.
-- Finalization: `40c9c41a9da43fb715e5f7285e2ff0c5cc2a5df8`.
+- Source/checkpoint: `32f1a26ae92c33f38935eaf58fc4ffe9f0d051cd`.
+- Immutable oracle: `ae941b4a658e8b8bc1a81a98ce08478930997063`.
+- Finalization: `4e828e5d0fb9d9764f0200f799909961ba04cf07`.
 - The source commit is followed only by the oracle-only and finalizer-only commits for the
   refreshed coding-v1 baseline. Do not change a recorded evaluation artifact without restarting
   the Section 2.4 measurement sequence.
@@ -88,7 +88,7 @@ attestations; this file records durable project state.
 - Baseline recorder: two deterministic-reference samples PASS from source `f1bcda2` using
   detached Align `d9fb5da`; oracle `dbdc3f0` and finalization `40c9c41` are committed.
 - `make baseline-check`: PASS, including canonical oracle, invalid-input, and failure-retention
-  smokes.
+  smokes, after the two-sample refresh from source `32f1a26`.
 - `git diff --check`: PASS after the nested validation namespace repair.
 - Prior hosted diagnostic runs through `31079703787` established and repaired linker runtime
   bindings, compiler-output hardlink materialization, descriptor-relative overlay cleanup, UID/GID
