@@ -247,7 +247,7 @@ def prove_deadline_source_contract(module: types.ModuleType) -> None:
     worktree_usage = source_section(
         source,
         "def validation_worktree_usage(",
-        "\ndef loaded_name_call_offsets(",
+        "\ndef validation_process_usage(",
     )
     deleted_usage = source_section(
         source,
@@ -298,37 +298,6 @@ def prove_deadline_source_contract(module: types.ModuleType) -> None:
         and "except Exception" not in invoke
         and "except BaseException" not in invoke,
         "callback adjudication catches the wrong exception class",
-    )
-    require(
-        module.CALL_OPNAMES
-        == frozenset(("CALL", "CALL_FUNCTION", "CALL_METHOD")),
-        "supported call opcode set differs",
-    )
-    for call_opname in module.CALL_OPNAMES:
-        instructions = (
-            types.SimpleNamespace(opname="LOAD_FAST", argval="scan", offset=2),
-            types.SimpleNamespace(opname="PRECALL", argval=None, offset=4),
-            types.SimpleNamespace(opname=call_opname, argval=None, offset=6),
-            types.SimpleNamespace(opname="CALL", argval=None, offset=8),
-        )
-        require(
-            module.loaded_name_call_offsets_from_instructions(
-                instructions,
-                "scan",
-            )
-            == frozenset((6,)),
-            f"{call_opname} did not select the exact scan call offset",
-        )
-    require(
-        module.loaded_name_call_offsets_from_instructions(
-            (
-                types.SimpleNamespace(opname="LOAD_FAST", argval="scan", offset=2),
-                types.SimpleNamespace(opname="RETURN_VALUE", argval=None, offset=4),
-            ),
-            "scan",
-        )
-        == frozenset(),
-        "non-call instruction was accepted as a scan call",
     )
     require(
         instruction_line_numbers(
@@ -893,7 +862,7 @@ def owner_scope_interruption_case(module: types.ModuleType, owner: Path) -> None
     context_lines = [
         line_number
         for line_number, line in enumerate(source_lines, start=1)
-        if line.strip() == b"with scan(current) as entries:"
+        if line.strip() == b"with context as entries:"
     ]
     require(len(context_lines) == 1, f"unexpected scan context lines: {context_lines}")
     instructions = tuple(dis.get_instructions(module.validation_worktree_usage))

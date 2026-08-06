@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import ctypes
-import dis
 import hashlib
 import json
 import os
@@ -1211,7 +1210,14 @@ def validation_worktree_usage(
         body_error: tuple[type[BaseException], BaseException, Any] | None = None
         close_error: BaseException | None = None
         try:
-            with scan(current) as entries:
+            try:
+                context = scan(current)
+            except OSError as error:
+                require_scan_deadline()
+                if isinstance(error, FileNotFoundError) and current != checkout:
+                    continue
+                raise directory_error(current, error) from error
+            with context as entries:
                 entered = True
                 try:
                     require_scan_deadline()
@@ -1269,7 +1275,6 @@ def validation_worktree_usage(
             current_frame = sys._getframe()
             seen_contexts: set[int] = set()
             outer_error = True
-            scan_construction_error = False
             while (
                 candidate_error is not None
                 and id(candidate_error) not in seen_contexts
@@ -1282,12 +1287,6 @@ def validation_worktree_usage(
                 ):
                     candidate_traceback = candidate_traceback.tb_next
                 if candidate_traceback is not None:
-                    if (
-                        outer_error
-                        and candidate_traceback.tb_lasti
-                        in VALIDATION_WORKTREE_SCAN_CALL_OFFSETS
-                    ):
-                        scan_construction_error = True
                     if not outer_error:
                         cleanup_replaced_body = True
                     if not isinstance(candidate_error, Exception):
@@ -1309,12 +1308,6 @@ def validation_worktree_usage(
                 if not isinstance(error, OSError):
                     raise
                 require_scan_deadline()
-                if (
-                    isinstance(error, FileNotFoundError)
-                    and current != checkout
-                    and scan_construction_error
-                ):
-                    continue
                 raise directory_error(current, error) from error
             else:
                 close_error = error
@@ -1332,37 +1325,6 @@ def validation_worktree_usage(
                 raise directory_error(current, close_error) from close_error
             raise close_error
     return total_bytes, file_count, visible_inodes
-
-
-CALL_OPNAMES = frozenset(("CALL", "CALL_FUNCTION", "CALL_METHOD"))
-
-
-def loaded_name_call_offsets_from_instructions(
-    instructions: tuple[Any, ...], name: str
-) -> frozenset[int]:
-    offsets = []
-    for index, instruction in enumerate(instructions):
-        if not instruction.opname.startswith("LOAD_") or instruction.argval != name:
-            continue
-        for candidate in instructions[index + 1 :]:
-            if candidate.opname in CALL_OPNAMES:
-                offsets.append(candidate.offset)
-                break
-    return frozenset(offsets)
-
-
-def loaded_name_call_offsets(function: Callable[..., Any], name: str) -> frozenset[int]:
-    return loaded_name_call_offsets_from_instructions(
-        tuple(dis.get_instructions(function)),
-        name,
-    )
-
-
-VALIDATION_WORKTREE_SCAN_CALL_OFFSETS = loaded_name_call_offsets(
-    validation_worktree_usage, "scan"
-)
-if len(VALIDATION_WORKTREE_SCAN_CALL_OFFSETS) != 1:
-    raise RuntimeError("cannot identify the validation worktree scan call")
 
 
 def validation_process_usage(
