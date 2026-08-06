@@ -1890,8 +1890,8 @@ executable fallback. Git must report at least 2.45, Cargo and rustc must match R
 must report major 22; the manifest owns all remaining versions and digests. `mount-guard` is
 an image-owned, manifest-authenticated fixed executable whose only accepted operation is applying
 `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` to the explicitly supplied mountpoints, verifying their
-mount IDs before and after the operation, dropping capabilities, setting `no_new_privs`, and
-`execve`-ing the post-`--` command. Its exact argv is
+mount IDs before and after the operation, reducing its effective and permitted capability sets to
+`CAP_SETFCAP` only, setting `no_new_privs`, and `execve`-ing the post-`--` command. Its exact argv is
 `mount-guard --no-symlink-follow <one-or-more-absolute-mountpoints> -- <absolute-command> <args>`;
 it rejects relative, duplicate, or unlisted mountpoints and has no shell, network, repository, or
 arbitrary mount operation.
@@ -2901,9 +2901,12 @@ FRESH-WORKER capability can pass its call-site audit. The exact workspace output
 ```
 
 No `eval/`, `scripts/`, `src/`, `tests/`, `Makefile`, or source-control path is writable in the
-lower tree. The aggregate enters its user namespace as UID/GID 0 with only `CAP_SYS_ADMIN` added
-so the staged `mount-guard` can apply the required mount attribute. The guard performs that
-operation before it sets `no_new_privs`, drops every capability, and execs the requested command.
+lower tree. The aggregate enters its user namespace as UID/GID 0 with `CAP_SYS_ADMIN` and
+`CAP_SETFCAP` added. `CAP_SYS_ADMIN` lets the staged `mount-guard` apply the required mount
+attribute. The guard performs that operation, reduces its effective and permitted capability sets
+to `CAP_SETFCAP` only, sets `no_new_privs`, and execs the requested command; `CAP_SYS_ADMIN` is not
+retained by Make or its direct children. `CAP_SETFCAP` is retained because the nested validation
+bwrap must create a child user namespace and map UID 0 on the declared minimum kernel profile.
 The aggregate mounts a `268435456`-byte namespace-owned tmpfs at `/target/tmp`; it never binds the
 host-side `cargo-target/tmp`. Before Make starts, the staged `mount-guard` executes
 `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` only on `/target/tmp` and verifies that mount identity. A symlink such as
@@ -2968,7 +2971,7 @@ The exact aggregate argv shape is:
 
 ```text
 bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net \
-  --uid 0 --gid 0 --cap-add CAP_SYS_ADMIN \
+  --uid 0 --gid 0 --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP \
   --tmpfs / --proc /proc --dev /dev \
   --dir /workspace --dir /baseline-git --dir /tools --dir /cargo --dir /target \
   --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib \
