@@ -183,6 +183,8 @@ RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --runtime /runtime/bwrap=/runtime/bwrap \
       --runtime /usr/bin/dash=/bin/sh \
       --runtime /usr/bin/bash=/bin/bash \
+      --runtime /usr/bin/env=/usr/bin/env \
+      --runtime /usr/bin/python3.12=/usr/bin/python3 \
       --runtime /runtime/system/usr-lib-x86_64=/usr/lib/x86_64-linux-gnu \
       --runtime /runtime/system/lib-x86_64=/lib/x86_64-linux-gnu \
       --runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu \
