@@ -8,7 +8,7 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - Open draft pull request: #61, merge-commit-only. Current head:
-  `cce58e6d35a2af7396af9d4ee1844fbc1d91f7e8`.
+  `37d5d0f9f82f016a6caaaf9fb134189920ffccb0`.
 - Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
   start the next eligible roadmap capability (`C6-LIFECYCLE`).
 - Product repair is complete through the independent review findings: the worker retains
