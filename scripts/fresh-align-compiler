@@ -184,6 +184,7 @@ IMAGE_KEY_ID = "align-llm-runner-image-v1"
 RUN_PUBLIC_KEY_PATH = "/usr/local/share/align-llm/run-verifier.pub"
 SUPERVISOR_VERSION = "1.0.0"
 CONTROLLER_PATH = "scripts/fresh-align-compiler"
+RUST_LINKER_NAMESPACE_PATH = "/tools/cc"
 ALIGN_REVISION_FILE = ".align-revision"
 MAX_PATH_BYTES = 4096
 MAX_SOURCE_DEPTH = 64
@@ -2707,7 +2708,7 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
             "/tools/ranlib",
             "--setenv",
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
-            "/tools/linker",
+            RUST_LINKER_NAMESPACE_PATH,
             "--chdir",
             "/align-src",
             "--",

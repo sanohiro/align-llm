@@ -202,6 +202,13 @@ def public_error_cases(module) -> None:
     require(module.ROOT_CHILDREN[-1] == "descriptor", "private-root layout changed")
 
 
+def build_linker_case(module) -> None:
+    require(
+        module.RUST_LINKER_NAMESPACE_PATH == "/tools/cc",
+        "Rust linker entry point changed from the authenticated C driver",
+    )
+
+
 def run_attestation_cases(module) -> None:
     seed = bytes(range(32))
     public_key = ed25519_public_key(seed)
@@ -667,6 +674,7 @@ def main() -> int:
         cleanup_success_case(module, temporary)
         cleanup_replacement_case(module, temporary)
     public_error_cases(module)
+    build_linker_case(module)
     print("fresh worker unit smoke: PASS")
     return 0
 

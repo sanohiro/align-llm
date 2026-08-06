@@ -2682,11 +2682,18 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
   --setenv RUSTC /tools/rustc --setenv CARGO /tools/cargo \
   --setenv LLVM_CONFIG /tools/llvm-config-22 --setenv CC /tools/cc \
   --setenv CXX /tools/cxx --setenv AR /tools/ar --setenv RANLIB /tools/ranlib \
-  --setenv CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER /tools/linker \
+  --setenv CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER /tools/cc \
   --chdir /align-src \
   -- /tools/cargo build --manifest-path /align-src/Cargo.toml --locked --offline --release \
      -p align_runtime -p align_driver
 ```
+
+The Rust target linker is the authenticated `/tools/cc` driver, not the raw `/tools/linker`
+`ld.lld` executable. Rust passes driver options such as `-m64` and `-Wl,...` to its configured
+linker; `/tools/cc` translates those options and invokes the fixed `/runtime/cc-suite/bin/ld.lld`
+through its declared `-fuse-ld` path. The `linker` tool record remains in the closed inventory for
+that direct compiler-suite linker and its identity checks; it is not used as the Rust driver entry
+point.
 
 `<ordered runtime binding operations>` is not a free-form placeholder: for each manifest binding,
 the worker emits `--dir` for every missing target parent and then either
