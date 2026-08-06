@@ -9,12 +9,11 @@ request checks, reviews, findings, and attestations.
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18` (PR #60).
 - Open pull request: #61 (`agent/fresh-worker-capability`); the branch is not merged and must
   remain merge-commit-only. The latest product/evaluation commit before this handoff is
-  `11c07aea24d0220a3be00a19b675d0a6275ede17`.
+  `4721da16435494b73b98e5f187a6adba6656d0ee`.
 - Current baseline tuple: source/checkpoint
-  `4e71ecd7c699103104dfd2d6e3215bc2b6bb7922`, oracle
-  `d8ac9b8cdbf01aad2b8f734c2f278e3748880694`, finalization
-  `6d1f173b165fd5e40832941a8e278e40584794e8` is invalidated by source commit
-  `11c07aea24d0220a3be00a19b675d0a6275ede17`; refresh it before the next push.
+  `7bc459df4c5b34cbdd9b6e44b49b34dbeacd79d5`, oracle
+  `4128b5aaa67f379f1cb8bae837d273dd7a3c4144`, finalization
+  `4721da16435494b73b98e5f187a6adba6656d0ee`.
 - Relevant review-repair checkpoint: `366dc3d02452c1775b2b97d307ebcdeba155c586`. Subsequent
   non-evaluation commits may contain installed-profile fixes or durable checkpoint corrections; use
   the latest non-evaluation source commit and its valid oracle/finalization descendants recorded by
@@ -58,17 +57,15 @@ request checks, reviews, findings, and attestations.
 
 ## Next actions
 
-1. Record a new clean baseline source commit for `11c07ae`, create the pending measurement, commit
-   the immutable oracle, finalize the canonical baseline, and run the baseline checks.
-2. Push the refreshed source/oracle/finalization tuple to PR #61 and obtain fresh pinned and
+1. Push the refreshed source/oracle/finalization tuple to PR #61 and obtain fresh pinned and
    installed Ubuntu 24.04 evidence. Hosted checks own the installed-platform evidence because the
    local Docker endpoint is unavailable.
-3. Run one fresh independent adversarial review of the complete PR diff, record the SHA-bound review
+2. Run one fresh independent adversarial review of the complete PR diff, record the SHA-bound review
    envelope and all finding dispositions, and apply any valid findings in one consolidated repair.
    Rerun only affected checks unless the repair materially changes the reviewed contract.
-4. Mark the PR ready, verify the final head, base tip, required checks, ancestry, and merge method,
+3. Mark the PR ready, verify the final head, base tip, required checks, ancestry, and merge method,
    then merge PR #61 with a merge commit only.
-5. After merge, perform the bounded retrospective, refresh the main/worktree state without
+4. After merge, perform the bounded retrospective, refresh the main/worktree state without
    discarding intentional local changes, and start the next eligible roadmap gate.
 
 ## Latest verification
@@ -108,8 +105,8 @@ request checks, reviews, findings, and attestations.
   fix `11c07ae` selects `/tools/cc` and updates the Section 9.5 contract with a linker-entry
   regression. Local worker unit and focused qualification pass.
 - `make baseline-check`: PASS, including canonical verification, invalid-input rejection, and
-  failure-retention smoke tests for the prior tuple. The refreshed baseline tuple is recorded
-  above; hosted checks for the pushed head remain pending.
+  failure-retention smoke tests for the current tuple above. Hosted checks for the pushed head
+  remain pending.
 - Installed image build/E2E: not run locally because the Docker daemon at the configured endpoint is
   unavailable. Hosted attempts identified and fixed the cache seed's explicit `RUSTC` input, raw-mode
   normalization, populated-tree count derivation, and the installed job's incorrect assumption that
