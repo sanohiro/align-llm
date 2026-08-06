@@ -660,6 +660,9 @@ def require_sandbox_capability() -> None:
             raise TaskError(f"diagnostic probe sequence not found: {sequence}")
 
         variants = {
+            "without-root-tmpfs": without(["--tmpfs", "/"]),
+            "without-proc": without(["--proc", "/proc"]),
+            "without-dev": without(["--dev", "/dev"]),
             "without-target-bind": without(
                 ["--bind", "/target/tmp", "/target/tmp"]
             ),
@@ -676,9 +679,21 @@ def require_sandbox_capability() -> None:
                 "--tmpfs",
                 "/target/tmp",
             ],
+            "inner-cap-sys-admin": [
+                *without(["--cap-drop", "ALL"]),
+                "--cap-add",
+                "CAP_SYS_ADMIN",
+            ],
+            "without-unshare-all": without(["--unshare-all"]),
         }
         for name, prefix in variants.items():
-            command = [*prefix, "--", str(PYTHON_EXECUTABLE), "-c", "pass"]
+            command = [
+                *prefix,
+                "--",
+                str(PYTHON_EXECUTABLE),
+                "-c",
+                "pass",
+            ]
             try:
                 variant = subprocess.run(
                     command,
