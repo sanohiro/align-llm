@@ -872,6 +872,7 @@ def git_output(checkout: Path, *args: str, nul_terminated: bool = False) -> str:
 
 def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str) -> None:
     shutil.copytree(source, checkout, symlinks=True)
+    normalize_pinned_checkout_modes(checkout)
     init = run(
         ["git", "init", "-q", "--initial-branch=main", "--object-format=sha1"],
         checkout,
@@ -909,6 +910,24 @@ def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str)
         raise TaskError(
             f"fixture revision mismatch: expected {expected_revision}, got {actual_revision}"
         )
+
+
+def normalize_pinned_checkout_modes(checkout: Path) -> None:
+    """Make a copied fixture worktree writable while preserving Git's executable bit."""
+    for directory, child_directories, filenames in os.walk(checkout, followlinks=False):
+        current = Path(directory)
+        for name in (*child_directories, *filenames):
+            path = current / name
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                continue
+            if stat.S_ISDIR(metadata.st_mode):
+                path.chmod(0o755)
+            elif stat.S_ISREG(metadata.st_mode):
+                path.chmod(0o755 if metadata.st_mode & 0o111 else 0o644)
+            else:
+                raise TaskError(f"unsupported pinned fixture entry: {path}")
+    checkout.chmod(0o755)
 
 
 def print_command_output(label: str, result: subprocess.CompletedProcess[str]) -> None:
