@@ -8,9 +8,9 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on `origin/main` merge commit
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - Open draft pull request: #61, merge-commit-only. Latest product implementation commit:
-  `cce58e641b979aeee5882b332ee69a18118e65f3`; documentation-only handoff commits follow it.
+  `b1e21b80a79e87ce525470571b0f27cbb1e362c9`; documentation-only handoff commits follow it.
 - Active goal: finish the FRESH-WORKER capability, complete the required review and merge, then
-  start the next eligible roadmap capability (`C6-LIFECYCLE`).
+  stop this execution as requested; do not start the next roadmap capability.
 - Product repair is complete through the independent review findings: the worker retains
   `CAP_SYS_ADMIN` for nested mount admission before `mount-guard` reduces it, authenticates the
   exact fresh compiler path, bounds reachable and copied Git state, enforces aggregate writable
@@ -19,7 +19,8 @@ attestations; this file records durable project state.
   deferred until `--installed-profile` runs in the hosted job. The resource-scan race fix now
   separates scanner construction from context entry without interpreter-version-dependent
   traceback bytecode offsets, and its cleanup-boundary smoke uses a Python-version-stable trace
-  boundary.
+  boundary. Aggregate quota scanning now reopens the final directory as a readable descriptor
+  before enumeration; the worker unit smoke covers this O_PATH regression.
 - Local Docker is unavailable; installed-image and capable aggregate evidence must come from the
   hosted Ubuntu 24.04 profile.
 
@@ -34,9 +35,10 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Push the repair and finalization commits, then dispatch and complete the product branch's full
-   hosted CI. Confirm the installed profile reaches capable evaluation and that the refreshed
-   baseline and exact aggregate capability contract pass; run `31087751448` reached the repaired
+1. Dispatch and complete the product branch's full hosted CI at `b1e21b8`. Confirm the installed
+   profile reaches capable evaluation and that the refreshed baseline and exact aggregate
+   capability contract pass; diagnostic run `31093650552` isolated the aggregate quota `O_PATH`
+   `EBADF` and the product repair is now pushed. Earlier run `31087751448` reached the repaired
    Python 3.12 resource scan but exposed a second opcode-trace portability issue fixed in
    `cce58e6`, while run `31086926485` exposed the original resource-scan race before `f1bcda2`.
    Earlier runs `31081165976` and `31081113394` failed at nested `mount_setattr` before the
@@ -47,8 +49,8 @@ attestations; this file records durable project state.
    non-trivial final-review finding without re-scoping the slice.
 3. Mark the PR ready, verify exact head/base ancestry and merge-commit-only policy, then merge with
    the GitHub connector using the exact expected head SHA.
-4. After merge, perform the bounded retrospective, refresh main without discarding the intentional
-   primary-worktree change, and begin the reviewed `C6-LIFECYCLE` design gate.
+4. After merge, perform the bounded retrospective and refresh main without discarding the
+   intentional primary-worktree change. Do not begin another roadmap gate in this execution.
 
 ## Latest verification
 
@@ -56,7 +58,8 @@ attestations; this file records durable project state.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-qualification`: PASS after the
   interpreter-stable resource-scan and cleanup-boundary repair (focused; installed profile
   deferred).
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-worker-unit-smoke`: PASS after the
+  aggregate quota descriptor-reopen repair.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-image-control-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-coding-task-resource-scan-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 bash scripts/run-coding-task-git-config-smoke`: PASS.
@@ -83,8 +86,8 @@ attestations; this file records durable project state.
 - `.align-revision` remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; no Align language request is
   opened by this capability.
 - The PR must use a merge commit so source, oracle, and finalization ancestry remains reachable.
-- Diagnostic worktree `/tmp/align-llm-fresh-aggregate-diagnostic` and branch
-  `agent/fresh-worker-aggregate-diagnostic` are intentionally retained for hosted aggregate
-  diagnosis; never merge their diagnostic-only instrumentation.
+- Diagnostic worktrees `/tmp/align-llm-fresh-aggregate-diagnostic` and
+  `/tmp/align-llm-fresh-aggregate-diagnostic-v2`, plus their diagnostic branches, are intentionally
+  retained for hosted aggregate diagnosis; never merge their diagnostic-only instrumentation.
 - The primary worktree `/home/hiro/prj/align-llm` has an intentional uncommitted `HANDOFF.md`.
   Do not discard or overwrite it.
