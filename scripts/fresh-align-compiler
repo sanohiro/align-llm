@@ -2776,6 +2776,18 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
         close_private_mounts(bind_descriptors)
     compiler = root / "cargo-target/release/alignc"
     archive = root / "cargo-target/release/libalign_runtime.a"
+    try:
+        entries = []
+        for name in sorted(os.listdir(root / "cargo-target/release"), key=os.fsencode):
+            path = root / "cargo-target/release" / name
+            value = path.lstat()
+            entries.append(
+                f"{name} type={stat.S_IFMT(value.st_mode):o} mode={stat.S_IMODE(value.st_mode):04o} "
+                f"links={value.st_nlink} size={value.st_size}\n"
+            )
+        os.write(2, b"DIAGNOSTIC COMPILER OUTPUT\n" + "".join(entries).encode("utf-8"))
+    except OSError as error:
+        os.write(2, f"DIAGNOSTIC COMPILER OUTPUT ERROR {type(error).__name__}: {error}\n".encode("utf-8"))
     for path in (compiler, archive):
         value = path.lstat()
         if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or value.st_size <= 0 or value.st_size > MAX_FILE_BYTES:
