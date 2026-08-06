@@ -641,9 +641,15 @@ def sandbox_probe_command() -> list[str]:
 
 
 def require_sandbox_capability() -> None:
+    probe_command = sandbox_probe_command()
+    print(
+        "DIAGNOSTIC sandbox-probe argv=" + json.dumps(probe_command),
+        file=sys.stderr,
+        flush=True,
+    )
     try:
         probe = subprocess.run(
-            sandbox_probe_command(),
+            probe_command,
             check=False,
             capture_output=True,
             timeout=BWRAP_PROBE_TIMEOUT_SECONDS,
