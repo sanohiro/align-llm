@@ -673,8 +673,18 @@ def require_sandbox_capability() -> None:
             else:
                 raise TaskError(f"diagnostic probe sequence not found: {sequence}")
 
+        without_dev_and_tmpfs = without_tmpfs[:]
+        width = 2
+        for index in range(len(without_dev_and_tmpfs) - width + 1):
+            if without_dev_and_tmpfs[index : index + width] == ["--dev", "/dev"]:
+                del without_dev_and_tmpfs[index : index + width]
+                break
+        else:
+            raise TaskError("diagnostic probe sequence not found: ['--dev', '/dev']")
+
         variants = {
             "without-all-tmpfs": without_tmpfs,
+            "without-dev-and-tmpfs": without_dev_and_tmpfs,
             "without-root-tmpfs": without(["--tmpfs", "/"]),
             "without-proc": without(["--proc", "/proc"]),
             "without-dev": without(["--dev", "/dev"]),
