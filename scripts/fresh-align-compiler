@@ -2610,6 +2610,14 @@ def run_owned(
         if cgroup_populated(leaf):
             raise CleanupError("child cgroup remained populated")
         if report_output or primary_failure:
+            os.write(
+                2,
+                (
+                    "DIAGNOSTIC OWNED RESULT "
+                    f"category={category} phase={phase} returncode={process.returncode!r} "
+                    f"primary_failure={primary_failure}\n"
+                ).encode("utf-8", "replace"),
+            )
             os.write(2, b"DIAGNOSTIC OWNED STDOUT\n" + bytes(captures["stdout"]))
             os.write(2, b"DIAGNOSTIC OWNED STDERR\n" + bytes(captures["stderr"]))
         if primary_failure:
