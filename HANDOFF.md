@@ -3,29 +3,37 @@
 Read `CLAUDE.md` first. GitHub owns transient pull request checks, review findings, and
 attestations; this file records durable project state.
 
-## Current state
+## Active continuation checkpoint (2026-08-07)
 
-- Branch: `agent/fresh-worker-capability`, based on PR #61 base
-  `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
-- PR #61 is draft and must merge with method `merge`. The preceding pushed product head was
-  `ddb6a23f6090d35704ab7e67d1779c789570a9a9`; the current repair commits are design
-  `8432374` and implementation `03d77bb`. The reviewed product includes the cgroup-v2 cleanup,
-  ELF alias, identical-file alias, bounded materialization, and image-control launch-cleanup
-  repairs.
-  The current identity-bound baseline is source
-  `d4cc7da8e5f104a81ef6c86d25cc5a3e66f9848e`, oracle
-  `4831aa98e33edb2afdd5033031870bea67fea6b7`, and finalization
-  `aeee406fa06248d45fc46dc6d29c62087158e913`.
-- Active goal: finish the reviewed FRESH-WORKER repair, complete PR review/fix/merge, then start
-  the next eligible roadmap gate without waiting for a stop instruction.
-- The prior baseline tuple
-  `6b2828c3f0353cc5cd66854167f350a58faffb4e` /
-  `f095a04d898e2b31aa9c8fd7e77a7f213a367369` /
-  `870baf4d7faf03f579dde6256e79b4be91168dec` is invalidated. The replacement baseline includes
-  `scripts/check-baseline-chain` in the recorded artifact manifest and passes the full chain gate.
+The checkpoint below supersedes the older historical entries in this file. PR #61 is merged;
+continue with the corrected Request 6 adoption design before implementation.
+
+- Branch: `agent/request6-adoption-contract-v2`, based on merged `main` at
+  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; the design replacement is currently being prepared
+  after the final review of PR #62 found two P1 and two P2 contract gaps.
+- PR #61 (`Install the authenticated fresh worker`) merged with method `merge` at
+  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; its exact-head review and hosted evidence remain
+  recorded in GitHub comment `5214227839` and run `31159427993`.
+- PR #62 is not mergeable as written and must not be merged. Its final review found that ordinary
+  Make-control options were consumed before the promised pre-Make rejection, the cleared PATH
+  removed the rustup-based Cargo toolchain, the optional-schema oracle remained conditional in one
+  acceptance item, and the branch handoff was stale. The replacement design splits the ordinary
+  non-Make launcher and authenticated direct toolchain inputs from the fresh worker request.
+- Active goal: finish and review the corrected Request 6 adoption contract, merge that design gate,
+  then implement the wrapper, focused target, fixtures, pin wave, fresh adoption vector, and final
+  fresh `make ci` on a new branch. Request 7 and later consumers remain blocked on this gate.
+- The shipped Align revision for Request 6 is
+  `e65448b744c04e3868d079eef8b45ce0d43ac8ee`; `.align-revision` must remain unchanged until the
+  reviewed implementation branch consumes the fresh adoption design.
 
 ## Review and repair
 
+- PR #62's final `codex review --base main` against head `92220dfe5b77a38fc76f16a78c7ca3a4ab435873`
+  found two P1 and two P2 design defects: ordinary Make options were consumed before the promised
+  rejection, the cleared ordinary PATH removed the rustup-based Cargo toolchain, item 2 retained a
+  conditional optional-schema oracle, and the branch handoff was stale. The PR is superseded rather
+  than repaired in place. The replacement design adds a non-Make ordinary launcher, authenticated
+  direct Rust/LLVM/native inputs, a fixed shipped scanner oracle, and this current checkpoint.
 - A fresh independent adversarial review found four valid non-trivial gaps: tool/Git descendants
   were outside the shared worker owner, cgroup leaves were pathname-owned, private-root cleanup
   closed identity witnesses before removal, and `make baseline-check` did not execute the
@@ -105,12 +113,15 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Push the current product head and this handoff, obtain passing hosted pinned and installed
-   checks for the complete repair, publish the final SHA-bound comprehensive review envelope with
-   the P1 disposition and consolidated repair `03d77bb`, mark ready, and merge the exact head with
-   method `merge`.
-2. Refresh `main`, perform the bounded retrospective, update this handoff for the post-merge
-   checkpoint, and start the next roadmap gate.
+1. Finish the corrected Request 6 design ledger and closure matrix, run its author-side consistency
+   checks and one fresh independent adversarial review, then open the replacement design PR. Do not
+   merge PR #62 or consume its unrevised ordinary command.
+2. After the corrected design merges, create a new implementation branch from merged `main`; read
+   the sibling Align instructions and shipped JSON scanner design, then implement the ordinary
+   launcher, focused target/fixtures, exact pin, fresh adoption vector, baseline ancestry, and final
+   fresh `make ci`.
+3. Open the implementation PR, complete its review/fix/merge evidence, refresh `main` safely while
+   preserving the primary intentional handoff, and continue to the next eligible roadmap gate.
 
 ## Latest verification
 

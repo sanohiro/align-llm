@@ -1196,10 +1196,9 @@ Align compiler/runtime tests must:
 2. reject an owned array reached through a nested struct, a direct object union payload, a nested
    object union payload, and an `array<Struct>` union payload; prove that the diagnostic traverses
    every variant rather than accepting a union because the selected input happens to use a Copy
-   variant. For `Option<nested Move struct>`, the Request 6 implementation base freezes one of two
-   outcomes: if general Decode still admits it, require this scanner-specific Copy-row diagnostic;
-   if an already-merged cleanup prerequisite restored rejection, require that earlier canonical
-   schema diagnostic and prove the scanner ownership predicate is not reached. A generic fixture
+   variant. For `Option<nested Move struct>`, the shipped Request 6 implementation base admits
+   ordinary declared-record decode and therefore requires the scanner-specific Copy-row diagnostic;
+   the scanner check must not infer a different oracle from the compiler's later behavior. A generic fixture
    declares `Wrap<T> { value: T }`: scanning the concrete `Wrap<i64>` monomorph must check and run,
    while `Wrap<array<i64>>` must fail with the exact row spelling `'Wrap<array<i64>>'`, proving
    ownership is classified after monomorphization;
@@ -1369,46 +1368,75 @@ sets `ALIGNC=/tools/fresh-alignc` is not fresh evidence. The focused target rema
 `HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and `SERIAL_CHECK_AGGREGATES`; the final
 fresh `make --no-print-directory ci` is a separate required gate.
 
+The ordinary profile has a non-Make public entrypoint:
+`scripts/run-json-scan-row-ownership-adoption`. It accepts no positional arguments and is the only
+host command that launches the ordinary preparation and focused target. The Make target remains an
+internal worker target for the authenticated fresh vector. The ordinary wrapper validates its
+arguments and inherited Make-control variables before it starts `/usr/bin/make`; a non-empty
+`MAKEFLAGS`, `GNUMAKEFLAGS`, or `MAKEOVERRIDES`, an alternate goal, an alternate makefile, or any
+other argument is rejected in the wrapper's input phase, not consumed by GNU Make. Its success
+stdout is exactly `json-scan adoption: PASS\n`, stderr is empty, and failures suppress child
+streams and emit exactly one bounded `json-scan adoption: ERROR <phase>\n` line where `phase` is
+one of `input`, `toolchain`, `revision`, `build`, `fixture`, or `cleanup`.
+
+The ordinary wrapper's required inputs are explicit environment values: `ALIGN_REPO` is the
+absolute clean Align worktree, `ALIGN_RUST_TOOLCHAIN_BIN` is an absolute no-symlink directory
+containing direct Rust 1.96.0 `cargo` and `rustc` binaries, `ALIGN_LLVM_PREFIX` is the absolute
+no-symlink LLVM 22 prefix containing its direct `llvm-config`, and `ALIGN_NATIVE_PREFIX` is the
+absolute no-symlink native dependency prefix whose `bin`, `include`, `lib`, and `lib/pkgconfig`
+entries are the only native search roots used by the locked Align build. The wrapper opens and
+authenticates every named tool and required native file with no-follow regular-file checks,
+records its digest, and rejects rustup shims, symlink aliases, version mismatches, and mutable
+replacement before the first Make child. It derives the exact `CARGO`, `RUSTC`, `LLVM_CONFIG`,
+`LLVM_SYS_221_PREFIX`, `CC`, `CXX`, `AR`, `RANLIB`, and linker values from those authenticated
+inputs; it clears `RUSTUP_HOME`, `RUSTC_WRAPPER`, Cargo configuration/proxy/credential channels,
+and all unrelated inherited build variables. `PATH` contains only the authenticated Rust and LLVM
+bin directories followed by the fixed native system directories. The wrapper creates unique
+mode-`0700` `CARGO_HOME`, `CARGO_TARGET_DIR`, cache, and output paths and records their identities.
+The adoption implementation changes the `align-build` recipe to invoke `$(CARGO)` with the
+Makefile default `CARGO ?= cargo`; the wrapper always supplies the authenticated absolute Cargo
+path, so the ordinary build never falls back to a bare or rustup-selected executable.
+
+The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
+
+```text
+env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
+  ALIGN_REPO=<absolute-clean-align-worktree> \
+  ALIGN_RUST_TOOLCHAIN_BIN=<absolute-direct-rust-1.96.0-bin> \
+  ALIGN_LLVM_PREFIX=<absolute-direct-llvm-22-prefix> \
+  ALIGN_NATIVE_PREFIX=<absolute-native-dependency-prefix> \
+  ./scripts/run-json-scan-row-ownership-adoption
+```
+
+After its preflight, the wrapper alone launches these fixed child vectors with the authenticated
+toolchain environment and empty Make-control variables:
+
+```text
+/usr/bin/make --no-print-directory -f <project-root>/Makefile align-revision
+/usr/bin/make --no-print-directory -f <project-root>/Makefile align-build
+/usr/bin/make --no-print-directory -f <project-root>/Makefile json-scan-row-ownership-adoption
+```
+
+The first child verifies the exact `.align-revision` commit and clean raw source tree. The second
+builds the locked release packages into the unique target directory using the direct authenticated
+Cargo/Rust binaries; the third accepts only that newly built, no-follow regular executable and
+never searches sibling release/debug paths or `PATH` for a compiler. A missing, symlinked,
+non-executable, stale, or digest-mismatched artifact fails before any fixture compiler call. The
+ordinary profile records the absolute Align worktree, exact revision, authenticated toolchain
+file identities and versions, build-target identity, compiler digest, cache identity, and all
+three internal vectors. The authenticated fresh profile performs the equivalent source and
+compiler-build checks inside the worker-owned private root and supplies only its fixed
+`/tools/fresh-alignc` and `ALIGNC_CACHE=off` vector; it does not run the ordinary host wrapper or
+trust its artifacts.
+
 The focused target accepts no positional arguments and its preflight rejects missing, extra, or
 unexpected fixture entries before starting the compiler. It opens the project root from the
 invocation `cwd`, requires the fixture directory and every expected fixture to be an owned regular
 file with no symlink or special-file component, rejects an unexpected entry, and creates all
-ordinary-profile cache and output paths below one newly created mode-`0700` temporary directory
-owned by the invoking uid. The temporary directory has a checked device/inode identity and is
-removed only after the target proves that no compiler child remains; a failed identity or cleanup
-proof leaves the path untouched and fails closed.
-
-The ordinary preparation sequence is explicit and is not satisfied by a stale sibling binary:
-
-```text
-env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
-  MAKEFLAGS= GNUMAKEFLAGS= MAKEOVERRIDES= \
-  ALIGN_REPO=<absolute-clean-align-worktree> \
-  make --no-print-directory align-revision
-env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
-  MAKEFLAGS= GNUMAKEFLAGS= MAKEOVERRIDES= \
-  ALIGN_REPO=<absolute-clean-align-worktree> CARGO_TARGET_DIR=<unique-build-dir> \
-  make --no-print-directory align-build
-env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
-  MAKEFLAGS= GNUMAKEFLAGS= MAKEOVERRIDES= \
-  ALIGN_REPO=<absolute-clean-align-worktree> ALIGNC=<unique-build-dir>/release/alignc \
-  ALIGNC_CACHE=<unique-cache-dir> make --no-print-directory json-scan-row-ownership-adoption
-```
-
-The first command must verify the exact `.align-revision` commit and clean raw source tree. The
-second builds the locked release packages into the unique target directory; the third accepts only
-that newly built, no-follow regular executable and never searches the sibling release/debug paths
-or `PATH`. A missing, symlinked, non-executable, or otherwise unverified release artifact fails
-before any fixture compiler call. Each `env -i` vector is mandatory: a non-empty inherited
-`MAKEFLAGS`, `GNUMAKEFLAGS`, or `MAKEOVERRIDES` is rejected before Make starts, and the ordinary
-`run-json-scan-row-ownership-adoption-smoke` ordinary-profile option-isolation regression exercises
-`-n`, `-i`, `-e`, an alternate goal, and an alternate makefile under those variables. The ordinary
-profile records the absolute Align worktree, the
-exact revision, build-target identity, compiler digest, cache identity, and all three command
-vectors. The authenticated fresh profile performs the equivalent source and compiler-build checks
-inside the worker-owned private root and supplies only its fixed `/tools/fresh-alignc` and
-`ALIGNC_CACHE=off` vector; it does not run the ordinary host preparation commands or trust their
-artifacts.
+ordinary-profile cache and output paths below the wrapper's newly created mode-`0700` temporary
+directory. The temporary directory has a checked device/inode identity and is removed only after
+the target proves that no compiler child remains; a failed identity or cleanup proof leaves the
+path untouched and fails closed.
 
 Every compiler invocation captures bounded stdout and stderr, forwards neither stream on a
 negative result except for the one expected diagnostic comparison, rejects a panic/backtrace or
