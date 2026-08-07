@@ -188,6 +188,35 @@ TOOL_PROBE_TIMEOUT = 5
 MAX_TOOL_RUNTIME_BYTES = 8 * 1024 * 1024 * 1024
 RESOURCE_POLL_SECONDS = 0.25
 READ_CHUNK = 1_048_576
+RENAME_NOREPLACE = 1
+
+
+def rename_noreplace(
+    old_directory: int, old_name: bytes, new_directory: int, new_name: bytes
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as error:
+        raise OSError(errno.ENOSYS, "renameat2 is unavailable") from error
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        old_directory,
+        old_name,
+        new_directory,
+        new_name,
+        RENAME_NOREPLACE,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 MODE = re.compile(r"^[0-7]{4}$")
@@ -897,6 +926,11 @@ def assert_snapshot(descriptor: int, accepted: Snapshot) -> None:
         stable = current == accepted
     if not stable:
         raise ValueError("retained descriptor changed")
+
+
+def assert_materialization_snapshot(descriptor: int, accepted: Snapshot) -> None:
+    if snapshot_fd(descriptor) != accepted:
+        raise ValueError("materialization source changed")
 
 
 def assert_git_view(view: GitView) -> None:
@@ -2262,7 +2296,7 @@ def copy_tree_manifest_fd(
         raw = read_fd(source_fd, MAX_FILE_BYTES)
         if len(raw) != node["size"] or sha256(raw) != node["sha256"]:
             raise OSError(errno.EIO, "manifest file changed")
-        assert_snapshot(source_fd, accepted)
+        assert_materialization_snapshot(source_fd, accepted)
         descriptor = os.open(
             destination,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -2319,7 +2353,43 @@ def copy_tree_manifest_fd(
             os.close(child_fd)
         count += child_count
         total += child_total
-    assert_snapshot(source_fd, accepted)
+    if sorted(os.listdir(source_fd), key=os.fsencode) != expected_names:
+        raise OSError(errno.ESTALE, "manifest directory entries changed during copy")
+    assert_materialization_snapshot(source_fd, accepted)
+    return count, total
+
+
+def verify_staged_tree(
+    node: Mapping[str, Any], destination: Path, *, root: bool = True
+) -> tuple[int, int]:
+    kind = node["kind"]
+    value = destination.lstat()
+    if kind == "file":
+        if (
+            not stat.S_ISREG(value.st_mode)
+            or stat.S_IMODE(value.st_mode) != int(node["staged_mode"], 8)
+            or value.st_size != node["size"]
+            or sha256(read_path(str(destination), MAX_FILE_BYTES)) != node["sha256"]
+        ):
+            raise OSError(errno.EIO, "staged manifest file changed")
+        return 1, value.st_size
+    if (
+        not stat.S_ISDIR(value.st_mode)
+        or stat.S_IMODE(value.st_mode) != int(node["staged_mode"], 8)
+    ):
+        raise OSError(errno.EIO, "staged manifest directory changed")
+    expected_names = [entry["name"] for entry in node["entries"]]
+    actual_names = sorted(os.listdir(destination), key=os.fsencode)
+    if actual_names != expected_names:
+        raise OSError(errno.EIO, "staged manifest directory entries changed")
+    count = 1
+    total = 0
+    for entry in node["entries"]:
+        child_count, child_total = verify_staged_tree(
+            entry, destination / entry["name"], root=False
+        )
+        count += child_count
+        total += child_total
     return count, total
 
 
@@ -2333,9 +2403,11 @@ def copy_tree_manifest(
 ) -> tuple[int, int]:
     source_fd, retained = open_manifest_source(source)
     try:
-        return copy_tree_manifest_fd(
+        result = copy_tree_manifest_fd(
             node, source_fd, destination, root=root, policy=policy
         )
+        verify_staged_tree(node, destination, root=root)
+        return result
     finally:
         close_retained(retained)
 
@@ -2849,6 +2921,139 @@ def cgroup_file_write(leaf_fd: int, name: str, raw: bytes) -> None:
         os.close(descriptor)
 
 
+def cgroup_members(leaf_fd: int, name: str) -> tuple[int, ...]:
+    raw = cgroup_file_read(leaf_fd, name)
+    members: list[int] = []
+    for line in raw.splitlines():
+        if not line or not line.isdigit() or int(line) <= 0:
+            raise OSError(errno.EPROTO, "cgroup membership is malformed")
+        members.append(int(line))
+    if len(set(members)) != len(members):
+        raise OSError(errno.EPROTO, "cgroup membership is duplicated")
+    return tuple(sorted(members))
+
+
+def require_cgroup_empty_fd(leaf_fd: int) -> None:
+    if cgroup_members(leaf_fd, "cgroup.procs") or cgroup_members(leaf_fd, "cgroup.threads"):
+        raise OSError(errno.EBUSY, "cgroup admission is not empty")
+
+
+def cgroup_child_membership(lease: CgroupLease, pid: int) -> None:
+    processes = cgroup_members(lease.leaf_fd, "cgroup.procs")
+    if processes != (pid,):
+        raise CleanupError("cgroup contains an unexpected process")
+    try:
+        task_names = os.listdir(f"/proc/{pid}/task")
+    except OSError as error:
+        raise CleanupError("child thread membership could not be inspected") from error
+    expected_threads = tuple(sorted(int(name) for name in task_names if name.isdigit()))
+    if cgroup_members(lease.leaf_fd, "cgroup.threads") != expected_threads:
+        raise CleanupError("cgroup contains an unexpected thread")
+
+
+def cgroup_group_is_owned(lease: CgroupLease, process_group: int) -> bool:
+    members = cgroup_members(lease.leaf_fd, "cgroup.procs") + cgroup_members(
+        lease.leaf_fd, "cgroup.threads"
+    )
+    for pid in members:
+        try:
+            if os.getpgid(pid) != process_group:
+                return False
+        except ProcessLookupError:
+            return False
+    return True
+
+
+def cgroup_entry_present(lease: CgroupLease) -> bool:
+    try:
+        os.stat(lease.leaf_name, dir_fd=lease.parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def restore_cgroup_quarantine(
+    lease: CgroupLease, quarantine_fd: int, quarantine_name: bytes
+) -> None:
+    try:
+        if cgroup_entry_present(lease):
+            return
+        rename_noreplace(
+            quarantine_fd,
+            quarantine_name,
+            lease.parent_fd,
+            os.fsencode(lease.leaf_name),
+        )
+    except OSError:
+        return
+
+
+def remove_cgroup_leaf(lease: CgroupLease) -> None:
+    """Atomically quarantine and remove one authenticated, empty cgroup leaf."""
+    if not same_cgroup_directory(snapshot_fd(lease.parent_fd), lease.parent_identity):
+        raise CleanupError("cgroup parent identity changed")
+    if not cgroup_entry_matches(lease):
+        raise CleanupError("child cgroup identity changed")
+    try:
+        require_cgroup_empty_fd(lease.leaf_fd)
+    except OSError as error:
+        raise CleanupError("child cgroup was not empty") from error
+
+    for _ in range(8):
+        quarantine_name = os.fsencode(ROOT_PREFIX + "cgroup-cleanup-" + secrets.token_hex(16))
+        try:
+            rename_noreplace(
+                lease.parent_fd,
+                os.fsencode(lease.leaf_name),
+                lease.parent_fd,
+                quarantine_name,
+            )
+        except FileExistsError:
+            continue
+        moved_fd = -1
+        try:
+            moved_fd = os.open(
+                quarantine_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=lease.parent_fd,
+            )
+            moved_identity = snapshot_fd(moved_fd)
+            if not same_cgroup_directory(moved_identity, lease.leaf_identity):
+                restore_cgroup_quarantine(lease, lease.parent_fd, quarantine_name)
+                raise CleanupError("child cgroup entry was replaced")
+            try:
+                require_cgroup_empty_fd(moved_fd)
+            except OSError as error:
+                raise CleanupError("child cgroup was not empty during cleanup") from error
+            if cgroup_entry_present(lease):
+                raise CleanupError("child cgroup replacement appeared during cleanup")
+            current = os.stat(
+                quarantine_name,
+                dir_fd=lease.parent_fd,
+                follow_symlinks=False,
+            )
+            if not same_cgroup_directory(current, lease.leaf_identity):
+                raise CleanupError("child cgroup quarantine identity changed")
+            os.rmdir(quarantine_name, dir_fd=lease.parent_fd)
+            try:
+                os.stat(quarantine_name, dir_fd=lease.parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise CleanupError("child cgroup quarantine remains")
+            if cgroup_entry_present(lease):
+                raise CleanupError("child cgroup replacement appeared after cleanup")
+            return
+        except CleanupError:
+            raise
+        except OSError as error:
+            raise CleanupError("child cgroup quarantine cleanup failed") from error
+        finally:
+            if moved_fd >= 0:
+                os.close(moved_fd)
+    raise CleanupError("child cgroup quarantine name exhaustion")
+
+
 def open_cgroup_lease() -> CgroupLease:
     parent_path = cgroup_parent()
     expected_parent = snapshot_from_stat(parent_path.stat())
@@ -2885,7 +3090,9 @@ def open_cgroup_lease() -> CgroupLease:
             lease = CgroupLease(parent_fd, parent_identity, leaf_fd, leaf_identity, candidate)
             if not cgroup_entry_matches(lease):
                 raise OSError(errno.ESTALE, "cgroup leaf identity changed")
+            require_cgroup_empty_fd(leaf_fd)
             cgroup_file_write(leaf_fd, "pids.max", b"512\n")
+            require_cgroup_empty_fd(leaf_fd)
             return lease
         raise OSError(errno.EEXIST, "cgroup leaf name exhaustion")
     except Exception as active:
@@ -2907,8 +3114,16 @@ def open_cgroup_lease() -> CgroupLease:
                 ):
                     cleanup_error = CleanupError("cgroup leaf identity changed during admission")
                 else:
-                    os.rmdir(leaf_name, dir_fd=parent_fd)
-            except OSError:
+                    remove_cgroup_leaf(
+                        CgroupLease(
+                            parent_fd,
+                            parent_identity,
+                            leaf_fd,
+                            leaf_identity,
+                            leaf_name,
+                        )
+                    )
+            except (CleanupError, OSError):
                 cleanup_error = CleanupError("cgroup leaf cleanup failed")
             try:
                 os.close(leaf_fd)
@@ -2928,6 +3143,7 @@ def child_preexec(leaf_fd: int) -> None:
     resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
     resource.setrlimit(resource.RLIMIT_NOFILE, (MAX_OPEN_FDS, MAX_OPEN_FDS))
     resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_FILE_BYTES, MAX_FILE_BYTES))
+    require_cgroup_empty_fd(leaf_fd)
     cgroup_file_write(leaf_fd, "cgroup.procs", b"0\n")
     os.set_inheritable(leaf_fd, False)
     os.setsid()
@@ -2953,6 +3169,10 @@ def cgroup_populated(lease: CgroupLease) -> bool:
         raise CleanupError("cgroup parent identity changed")
     if not cgroup_entry_matches(lease):
         raise CleanupError("child cgroup identity changed")
+    if cgroup_members(lease.leaf_fd, "cgroup.procs"):
+        return True
+    if cgroup_members(lease.leaf_fd, "cgroup.threads"):
+        return True
     raw = cgroup_file_read(lease.leaf_fd, "cgroup.events").decode("ascii")
     values = dict(line.split(" ", 1) for line in raw.splitlines() if " " in line)
     if values.get("populated") not in ("0", "1"):
@@ -2960,10 +3180,12 @@ def cgroup_populated(lease: CgroupLease) -> bool:
     return values["populated"] == "1"
 
 
-def kill_cgroup(lease: CgroupLease) -> None:
+def kill_cgroup(lease: CgroupLease, process_group: int | None) -> None:
     try:
         if not cgroup_entry_matches(lease):
             raise CleanupError("child cgroup identity changed")
+        if process_group is None or not cgroup_group_is_owned(lease, process_group):
+            raise CleanupError("child cgroup contains a foreign process")
         cgroup_file_write(lease.leaf_fd, "cgroup.kill", b"1\n")
     except CleanupError:
         raise
@@ -3027,7 +3249,7 @@ def terminate_owned_process(
         try:
             populated = cgroup_populated(lease)
             if process.poll() is None or populated:
-                kill_cgroup(lease)
+                kill_cgroup(lease, accepted_group)
         except OSError as error:
             raise CleanupError("owned child cgroup could not be terminated") from error
     try:
@@ -3097,6 +3319,12 @@ def run_owned(
         )
         accepted_start = pid_start_time(process.pid)
         accepted_group = os.getpgid(process.pid)
+        try:
+            cgroup_child_membership(lease, process.pid)
+        except CleanupError:
+            if process.poll() is None:
+                raise
+            require_cgroup_empty_fd(lease.leaf_fd)
         assert process.stdout is not None and process.stderr is not None
         streams = selectors.DefaultSelector()
         for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
@@ -3231,13 +3459,7 @@ def run_owned(
                 raise CleanupError("child cgroup identity changed during cleanup")
             if cgroup_populated(lease):
                 raise CleanupError("child cgroup remained populated during cleanup")
-            os.rmdir(lease.leaf_name, dir_fd=lease.parent_fd)
-            try:
-                os.stat(lease.leaf_name, dir_fd=lease.parent_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                raise CleanupError("child cgroup remains after cleanup")
+            remove_cgroup_leaf(lease)
         except (CleanupError, OSError) as error:
             if isinstance(active, WorkerError):
                 active.cleanup_failed = True
@@ -4099,35 +4321,140 @@ def require_parent_entry(admission: Admission) -> None:
         os.close(current)
 
 
+def private_entry_present(parent_fd: int, name: bytes) -> bool:
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def restore_private_quarantine(
+    source_fd: int, source_name: bytes, destination_fd: int, destination_name: bytes
+) -> None:
+    try:
+        if private_entry_present(destination_fd, destination_name):
+            return
+        rename_noreplace(source_fd, source_name, destination_fd, destination_name)
+    except OSError:
+        return
+
+
+def create_cleanup_quarantine(
+    roots_fd: int,
+) -> tuple[str, int, Snapshot]:
+    for _ in range(8):
+        name = ROOT_PREFIX + "cleanup-" + secrets.token_hex(16)
+        try:
+            os.mkdir(name, 0o700, dir_fd=roots_fd)
+        except FileExistsError:
+            continue
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=roots_fd,
+        )
+        return name, descriptor, snapshot_fd(descriptor)
+    raise CleanupError("private cleanup quarantine name exhaustion")
+
+
+def move_private_entry_to_quarantine(
+    source_fd: int,
+    source_name: bytes,
+    quarantine_fd: int,
+    expected: Snapshot,
+) -> tuple[bytes, int]:
+    flags = os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC
+    if expected.file_type == stat.S_IFDIR:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    for _ in range(8):
+        quarantine_name = os.fsencode(
+            ROOT_PREFIX + "cleanup-entry-" + secrets.token_hex(16)
+        )
+        try:
+            rename_noreplace(source_fd, source_name, quarantine_fd, quarantine_name)
+        except FileExistsError:
+            continue
+        moved_fd = -1
+        try:
+            moved_fd = os.open(flags=flags, path=quarantine_name, dir_fd=quarantine_fd)
+            if not same_entry_identity(snapshot_fd(moved_fd), expected):
+                restore_private_quarantine(
+                    quarantine_fd,
+                    quarantine_name,
+                    source_fd,
+                    source_name,
+                )
+                raise CleanupError("private entry was replaced during quarantine")
+            return quarantine_name, moved_fd
+        except CleanupError:
+            if moved_fd >= 0:
+                os.close(moved_fd)
+            raise
+        except OSError as error:
+            if moved_fd >= 0:
+                os.close(moved_fd)
+            raise CleanupError("private entry quarantine failed") from error
+    raise CleanupError("private entry quarantine name exhaustion")
+
+
 def remove_contents_fd(
-    directory_fd: int, depth: int = 0, deadline: float | None = None
+    directory_fd: int,
+    quarantine_fd: int,
+    depth: int = 0,
+    deadline: float | None = None,
 ) -> None:
     if deadline is not None and time.monotonic() >= deadline:
         raise CleanupError("private tree removal timed out")
     if depth > MAX_SOURCE_DEPTH:
         raise CleanupError("cleanup depth exceeded")
     os.fchmod(directory_fd, 0o700)
-    for child in sorted(os.listdir(directory_fd), key=os.fsencode, reverse=True):
+    names = sorted(os.listdir(directory_fd), key=os.fsencode, reverse=True)
+    for child in names:
         if deadline is not None and time.monotonic() >= deadline:
             raise CleanupError("private tree removal timed out")
         raw_child = os.fsencode(child)
         value = os.stat(raw_child, dir_fd=directory_fd, follow_symlinks=False)
+        accepted_entry = snapshot_from_stat(value)
         if stat.S_ISDIR(value.st_mode):
             child_fd = os.open(
                 raw_child,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                 dir_fd=directory_fd,
             )
+            quarantine_name = b""
+            moved_fd = -1
             try:
                 child_identity = snapshot_fd(child_fd)
-                remove_contents_fd(child_fd, depth + 1, deadline)
-                if not same_entry_identity(snapshot_fd(child_fd), child_identity):
-                    raise CleanupError("private child directory identity changed")
-                current = os.stat(raw_child, dir_fd=directory_fd, follow_symlinks=False)
-                if not same_entry_identity(current, child_identity):
+                if not same_entry_identity(os.fstat(child_fd), accepted_entry):
                     raise CleanupError("private child directory entry was replaced")
-                os.rmdir(raw_child, dir_fd=directory_fd)
+                os.fchmod(child_fd, 0o700)
+                quarantine_name, moved_fd = move_private_entry_to_quarantine(
+                    directory_fd,
+                    raw_child,
+                    quarantine_fd,
+                    child_identity,
+                )
+                remove_contents_fd(moved_fd, quarantine_fd, depth + 1, deadline)
+                if os.listdir(moved_fd):
+                    raise CleanupError("private child directory remained populated")
+                if not same_entry_identity(snapshot_fd(moved_fd), child_identity):
+                    raise CleanupError("private child directory identity changed")
+                if private_entry_present(directory_fd, raw_child):
+                    raise CleanupError("private child directory replacement appeared")
+                current = os.stat(
+                    quarantine_name,
+                    dir_fd=quarantine_fd,
+                    follow_symlinks=False,
+                )
+                if not same_entry_identity(current, child_identity):
+                    raise CleanupError("private quarantine directory identity changed")
+                os.rmdir(quarantine_name, dir_fd=quarantine_fd)
+                if private_entry_present(quarantine_fd, quarantine_name):
+                    raise CleanupError("private quarantine directory remains")
             finally:
+                if moved_fd >= 0:
+                    os.close(moved_fd)
                 os.close(child_fd)
         elif stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode):
             child_fd = os.open(
@@ -4135,16 +4462,40 @@ def remove_contents_fd(
                 os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
                 dir_fd=directory_fd,
             )
+            quarantine_name = b""
+            moved_fd = -1
             try:
                 child_identity = snapshot_fd(child_fd)
-                current = os.stat(raw_child, dir_fd=directory_fd, follow_symlinks=False)
-                if not same_entry_identity(current, child_identity):
+                if not same_entry_identity(os.fstat(child_fd), accepted_entry):
                     raise CleanupError("private file entry was replaced")
-                os.unlink(raw_child, dir_fd=directory_fd)
+                quarantine_name, moved_fd = move_private_entry_to_quarantine(
+                    directory_fd,
+                    raw_child,
+                    quarantine_fd,
+                    child_identity,
+                )
+                if not same_entry_identity(snapshot_fd(moved_fd), child_identity):
+                    raise CleanupError("private file identity changed during quarantine")
+                if private_entry_present(directory_fd, raw_child):
+                    raise CleanupError("private file replacement appeared")
+                current = os.stat(
+                    quarantine_name,
+                    dir_fd=quarantine_fd,
+                    follow_symlinks=False,
+                )
+                if not same_entry_identity(current, child_identity):
+                    raise CleanupError("private quarantine file identity changed")
+                os.unlink(quarantine_name, dir_fd=quarantine_fd)
+                if private_entry_present(quarantine_fd, quarantine_name):
+                    raise CleanupError("private quarantine file remains")
             finally:
+                if moved_fd >= 0:
+                    os.close(moved_fd)
                 os.close(child_fd)
         else:
             raise CleanupError("cleanup refused special entry")
+    if os.listdir(directory_fd):
+        raise CleanupError("private tree changed during quarantine cleanup")
 
 
 def close_admission_descriptors(admission: Admission) -> CleanupError | None:
@@ -4177,6 +4528,8 @@ def cleanup(admission: Admission | None) -> None:
     if admission is None:
         return
     deadline = time.monotonic() + CLEANUP_TIMEOUT
+    quarantine_fd = -1
+    moved_root_fd = -1
     try:
         if not same_owned_directory(admission.roots_fd, admission.roots_identity) or not same_owned_directory(
             admission.root_fd, admission.root_identity
@@ -4186,27 +4539,62 @@ def cleanup(admission: Admission | None) -> None:
         if admission.aggregate_started:
             cleanup_overlay_work_entry(admission, deadline)
         scan_private_fd(admission.root_fd, deadline=deadline)
-        require_parent_entry(admission)
-        remove_contents_fd(admission.root_fd, deadline=deadline)
-        require_parent_entry(admission)
-        if not same_entry_identity(snapshot_fd(admission.root_fd), admission.root_identity):
-            raise CleanupError("private root identity changed during cleanup")
-        current = os.stat(
-            admission.root_name,
-            dir_fd=admission.roots_fd,
-            follow_symlinks=False,
+        quarantine_name, quarantine_fd, quarantine_identity = create_cleanup_quarantine(
+            admission.roots_fd
         )
+        root_name = os.fsencode(admission.root_name)
+        rename_noreplace(
+            admission.roots_fd,
+            root_name,
+            quarantine_fd,
+            root_name,
+        )
+        moved_root_fd = os.open(
+            root_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=quarantine_fd,
+        )
+        if not same_owned_directory(moved_root_fd, admission.root_identity):
+            restore_private_quarantine(
+                quarantine_fd,
+                root_name,
+                admission.roots_fd,
+                root_name,
+            )
+            raise CleanupError("private root was replaced during quarantine")
+        if private_entry_present(admission.roots_fd, root_name):
+            raise CleanupError("private root replacement appeared during quarantine")
+        remove_contents_fd(
+            moved_root_fd,
+            quarantine_fd,
+            deadline=deadline,
+        )
+        if not same_owned_directory(moved_root_fd, admission.root_identity):
+            raise CleanupError("private root identity changed during cleanup")
+        if private_entry_present(admission.roots_fd, root_name):
+            raise CleanupError("private root replacement appeared during cleanup")
+        current = os.stat(root_name, dir_fd=quarantine_fd, follow_symlinks=False)
         if not same_entry_identity(current, admission.root_identity):
-            raise CleanupError("private root entry was replaced")
-        os.rmdir(admission.root_name, dir_fd=admission.roots_fd)
-        try:
-            os.stat(admission.root_name, dir_fd=admission.roots_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise CleanupError("private root remains")
+            raise CleanupError("quarantined private root identity changed")
+        os.rmdir(root_name, dir_fd=quarantine_fd)
+        if private_entry_present(quarantine_fd, root_name):
+            raise CleanupError("quarantined private root remains")
+        if os.listdir(quarantine_fd):
+            raise CleanupError("private cleanup quarantine is not empty")
+        if not same_owned_directory(quarantine_fd, quarantine_identity):
+            raise CleanupError("private cleanup quarantine identity changed")
+        os.rmdir(quarantine_name, dir_fd=admission.roots_fd)
+        if private_entry_present(admission.roots_fd, os.fsencode(quarantine_name)):
+            raise CleanupError("private cleanup quarantine remains")
     finally:
         active = sys.exc_info()[1]
+        for descriptor in (moved_root_fd, quarantine_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    if active is None:
+                        raise CleanupError("private quarantine descriptor close failed")
         close_failure = close_admission_descriptors(admission)
         if close_failure is not None and active is None:
             raise close_failure

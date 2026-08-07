@@ -25,6 +25,7 @@ from fresh_image_control import (  # noqa: E402
     _reject_environment,
     _sealed_memfd,
 )
+import fresh_image_control as control  # noqa: E402
 
 
 def rejected(callback: object) -> None:
@@ -33,6 +34,14 @@ def rejected(callback: object) -> None:
     except ControlError:
         return
     raise AssertionError("case was accepted")
+
+
+def rejected_os(callback: object) -> None:
+    try:
+        callback()  # type: ignore[operator]
+    except OSError:
+        return
+    raise AssertionError("OS-level case was accepted")
 
 
 def build(output: Path) -> dict[str, str]:
@@ -138,6 +147,24 @@ def forwarder_descriptor_case(temporary: Path) -> None:
             os.close(descriptor)
 
 
+def cgroup_membership_case(temporary: Path) -> None:
+    leaf = temporary / "control-cgroup-membership"
+    leaf.mkdir(mode=0o700)
+    leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    original_read = control._control_cgroup_file_read
+    try:
+        values = {"cgroup.procs": b"17\n23\n", "cgroup.threads": b"23\n17\n"}
+        control._control_cgroup_file_read = lambda _fd, name, _limit=4096: values[name]
+        assert control._control_cgroup_members(leaf_fd, "cgroup.procs") == (17, 23)
+        rejected_os(lambda: control._control_cgroup_empty(leaf_fd))
+        for raw in (b"0\n", b"bad\n", b"7\n7\n"):
+            control._control_cgroup_file_read = lambda _fd, _name, _limit=4096, raw=raw: raw
+            rejected_os(lambda: control._control_cgroup_members(leaf_fd, "cgroup.procs"))
+    finally:
+        control._control_cgroup_file_read = original_read
+        os.close(leaf_fd)
+
+
 def main() -> int:
     assert _normalize_relative("../align") == "../align"
     assert _normalize_relative("a/./b/../c") == "a/c"
@@ -159,6 +186,8 @@ def main() -> int:
     rejected(
         lambda: _reject_environment({"ALIGN_REPO": "../align"}, mode="self-test")
     )
+    with tempfile.TemporaryDirectory(prefix="fresh-image-membership-") as name:
+        cgroup_membership_case(Path(name))
 
     original = os.dup(31) if _fd_open(31) else None
     try:
