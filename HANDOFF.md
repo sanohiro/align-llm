@@ -8,12 +8,12 @@ attestations; this file records durable project state.
 - Branch: `agent/fresh-worker-capability`, based on PR #61 base
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - PR #61 is draft and must merge with method `merge`. The current product head before this
-  handoff update is `b82c56abd2eb3feae640f078ca92859d8af23084`; the reviewed product includes
+  handoff update is `aeee406fa06248d45fc46dc6d29c62087158e913`; the reviewed product includes
   the cgroup-v2 cleanup, ELF alias, identical-file alias, and bounded materialization repairs.
   The current identity-bound baseline is source
-  `8fa4fd7a762fcf973a70ae50b80815799b194e79`, oracle
-  `d50a7535c676e3f1de891041974420e16c5a088f`, and finalization
-  `44c825e1f9f1e25c2258a52e7b88424071093a6d`.
+  `d4cc7da8e5f104a81ef6c86d25cc5a3e66f9848e`, oracle
+  `4831aa98e33edb2afdd5033031870bea67fea6b7`, and finalization
+  `aeee406fa06248d45fc46dc6d29c62087158e913`.
 - Active goal: finish the reviewed FRESH-WORKER repair, complete PR review/fix/merge, then start
   the next eligible roadmap gate without waiting for a stop instruction.
 - The prior baseline tuple
@@ -81,6 +81,14 @@ attestations; this file records durable project state.
   `b82c56a` select `/tools` only for the exact fresh marker/tool-root pair and reject partial or
   different settings. The baseline was then refreshed through source `8fa4fd7`, oracle `d50a753`,
   and finalization `44c825e`.
+- Exact-head hosted run `31154734504` passed Pinned but still failed Installed with the public
+  `CHILD aggregate` category. Diagnostic run `31155288459` showed that the staged Git executable
+  was now found, but the standalone chain checker had dropped the aggregate's private
+  `GIT_DIR=/baseline-git`, `GIT_COMMON_DIR=/baseline-git`, and `GIT_WORK_TREE=/workspace` values;
+  its first `cat-file` therefore rejected `SOURCE_COMMIT`. Design `b7a1370` extends the closure
+  contract to the full executable/private-view tuple; implementation `d4cc7da` and baseline
+  refresh `4831aa9`/`aeee406` propagate and regression-test those exact values. Diagnostic
+  instrumentation remains off the product branch.
 - The diagnostic branch `agent/fresh-worker-current-diagnostic` exposed only the hosted
   `filesystem` category before aggregate failure; diagnostic branch
   `agent/fresh-worker-aggregate-diagnostic-v5` isolated the runtime file-open failure and is
@@ -107,13 +115,13 @@ attestations; this file records durable project state.
 - `make baseline-check`: PASS; canonical baseline, invalid-input smokes, failure smoke, and the
   executable source/oracle/finalization chain checker all passed.
 - `PYTHONDONTWRITEBYTECODE=1 make baseline-check`: PASS after the fresh baseline Git executable
-  repair and identity-bound refresh; the smoke covers staged `/tools`, ordinary host PATH, and
-  incomplete/different fresh settings.
+  and private-view propagation repair and identity-bound refresh; the smoke covers staged
+  `/tools`, ordinary host PATH, incomplete/different fresh settings, and mismatched Git views.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after bounded
   materialization repair.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after bounded
   materialization repair.
-- The source recorder completed two deterministic-reference samples from source `8fa4fd7`.
+- The source recorder completed two deterministic-reference samples from source `d4cc7da`.
 - `git diff --check`: PASS for the source, oracle, and finalization commits.
 - `bash -n scripts/run-baseline-invalid-smoke` and
   `GIT_NO_REPLACE_OBJECTS=1 PYTHONDONTWRITEBYTECODE=1 make baseline-check`: PASS, including the
