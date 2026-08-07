@@ -1615,25 +1615,29 @@ name, wrong-name memfds, every missing/extra seal, and a creator that did not us
 the last case is rejected by the creator trace. The test must not claim that the receiver can recover
 the omitted flag from the resulting descriptor.
 
-The authority offset ledger is normative. All byte validation uses `pread` where available and
-never relies on an inherited offset; after every verifier or interpreter read, the owner executes
-`lseek(fd, 0, SEEK_SET)` and requires a zero result. Immediately before each edge below, it repeats
-that seek and records offset zero; the receiver repeats it before verification and again before the
-next edge:
+The authority offset ledger is normative for byte-bearing descriptors only. FD `12`, FD `13`, and
+FD `15`, plus every local sealed memfd rehydrated from them, use `pread` where available and never
+rely on an inherited offset; after every verifier or interpreter read, the owner executes
+`lseek(fd, 0, SEEK_SET)` and requires a zero result. O_PATH identity descriptors, directory bind
+sources, the supervisor socket, and executable authorities have no byte-offset contract: they are
+validated through `fstat`/identity checks or their declared exec/bind operation and are never passed
+to `lseek` or `pread`. Immediately before each data-bearing edge below, the sender repeats the seek
+and records offset zero; the receiver repeats it before verification and again before the next edge:
 
 | Edge | Sender action at offset zero | Receiver action before use |
 | --- | --- | --- |
 | supervisor -> FD-14 dispatcher | Rewind FD `15`; pass FD `15`, the named project/image/manifest descriptors, retained Align-root FD `18`, and the connected supervisor-channel FD `16`; FD `14` is an executable descriptor and has no data offset contract | Dispatcher validates the channel peer/ticket and retained FD `18`, rewinds and verifies FD `15` before nonce read |
-| dispatcher -> sealed worker Python | Rewind FD `12`, `13`, `15`, and `18` after capsule construction; clear `FD_CLOEXEC` on `4`, `12`, `13`, `15`, `16`, and `18`; invoke `/usr/bin/python3 -I -B /proc/self/fd/13` with `close_fds=True, pass_fds=(4,12,13,15,16,18)` | Worker rewinds all three authority fds and FD `18` after Python has opened the `/proc/self/fd/13` source, verifies them, peeks the queued proof on FD `16`, then closes FD `18` after the final source check |
-| worker -> bwrap | Rewind every descriptor in `B` after worker verification; clear `FD_CLOEXEC` on every descriptor in `B`; FD `18` is closed before this edge; FD `27` remains `FD_CLOEXEC` and is retained only by the forked bwrap launcher child for direct `execveat(AT_EMPTY_PATH)`, not by a Python `pass_fds` member | Pinned bwrap consumes FD `12`, `13`, `15`, `20..26`, `40..(40+N-1)`, and `400..(400+T-1)` through fixed `--ro-bind-fd` operations, retains FD `16` because the exact vector includes `--as-pid-1 --sync-fd 16`, closes every consumed source descriptor after binding, and performs no arbitrary-FD forwarding |
+| dispatcher -> sealed worker Python | Rewind FD `12`, `13`, and `15` after capsule construction; revalidate identity-only FD `18` without an offset operation; clear `FD_CLOEXEC` on `4`, `12`, `13`, `15`, `16`, and `18`; invoke `/usr/bin/python3 -I -B /proc/self/fd/13` with `close_fds=True, pass_fds=(4,12,13,15,16,18)` | Worker rewinds the three authority fds after Python has opened the `/proc/self/fd/13` source, verifies them, revalidates FD `18` by identity without `lseek`/`pread`, peeks the queued proof on FD `16`, then closes FD `18` after the final source check |
+| worker -> bwrap | Rewind FD `12`, `13`, and `15` after worker verification; revalidate the identity-only descriptors in `B` without offset operations; clear `FD_CLOEXEC` on every descriptor in `B`; FD `18` is closed before this edge; FD `27` remains `FD_CLOEXEC` and is retained only by the forked bwrap launcher child for direct `execveat(AT_EMPTY_PATH)`, not by a Python `pass_fds` member | Pinned bwrap consumes FD `12`, `13`, `15`, `20..26`, `40..(40+N-1)`, and `400..(400+T-1)` through fixed `--ro-bind-fd` operations, retains FD `16` because the exact vector includes `--as-pid-1 --sync-fd 16`, closes every consumed source descriptor after binding, and performs no arbitrary-FD forwarding |
 | bwrap -> namespace helper | The PID-1 helper receives only fixed path arguments plus the inherited supervisor channel FD `16`; FD `27` was closed by the successful bwrap exec | Helper opens the three fixed read-only bind paths with no-follow flags, consumes and verifies the one queued proof on FD `16`, and uses `pread`; it then rehydrates and rewinds local sealed memfds before verification |
 | namespace helper verification | Use `pread` and require offset zero after each read; no authority descriptor, proof channel, or bind-path fd is passed to a Make child; peer PID/procfs checks are N/A inside the private PID namespace and are completed by dispatcher/worker before bwrap | Close all local authority memfds, FD `16`, and bind-path descriptors only after the final row and reverse cleanup; every Make child sees exactly `{0,1,2}` |
 
-Any failed seek, changed offset, unexpected short read, or authority descriptor present after the
-close boundary is a `toolchain` failure after FD 14 dispatch. FD `14` and FD `27` are executable
-authorities: their contract
-is the retained identity, closure, and `execveat(AT_EMPTY_PATH)` edge, and any attempt to read their
-data through a path is a `toolchain` failure rather than an offset exception once FD 14 has started.
+Any failed seek on a byte-bearing descriptor, changed data offset, unexpected short read, identity
+failure, or authority descriptor present after the close boundary is a `toolchain` failure after FD
+14 dispatch. FD `14` and FD `27` are executable authorities, and FD `18` is an O_PATH identity
+authority: each contract is retained identity, closure, and its declared `execveat(AT_EMPTY_PATH)` or
+descriptor-relative operation. An attempt to read any of them through an undeclared path is a
+`toolchain` failure rather than an offset exception once FD 14 has started.
 
 The checked-in `ordinary-adoption-v2-wire-golden` predicate uses deterministic zero-filled digests,
 project head `1111111111111111111111111111111111111111`, and Align head
@@ -1990,6 +1994,11 @@ from a host pathname:
 ```text
 <bwrap-fd-27> --clearenv --die-with-parent --new-session --as-pid-1 --unshare-user --unshare-pid --unshare-net --unshare-ipc --sync-fd 16 --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /authority --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 12 /authority/capsule --ro-bind-fd 13 /authority/worker --ro-bind-fd 15 /authority/nonce --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-path /authority/capsule --worker-path /authority/worker --nonce-path /authority/nonce --supervisor-channel-fd 16 --mode ordinary-adoption
 ```
+
+The launcher child invokes this vector with `execveat(AT_EMPTY_PATH)` on FD `27`, with `argv[0]`
+exactly `bwrap`; the `<bwrap-fd-27>` token denotes the executable descriptor and is not an
+unspecified argument. The helper's `argv[0]` remains exactly `/usr/bin/adoption-namespace` as shown
+in its separate fixed vector.
 
 The pinned-bwrap acceptance fixture uses a sealed regular-file memfd for each authority source and
 executes the exact `--ro-bind-fd <fd> <file-target>` form, not only directory binds. It proves the

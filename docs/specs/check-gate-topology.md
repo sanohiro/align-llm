@@ -1547,7 +1547,8 @@ upper/work pair and `mount_setattr(MOUNT_ATTR_NOSYMFOLLOW)` in the sandbox user 
 identity is carried by authenticated read-only handoff files inside the `/tools` bind. No compiler
 identity or worker handoff descriptor is inherited by the legacy aggregate or its nested validation
 bwrap. Ordinary Request 6 adoption is an explicit, narrower exception: the authenticated
-repository worker receives sealed authority FDs `12`, `13`, and `15` as fixed input; it rewinds them
+repository worker receives sealed authority FDs `12`, `13`, and `15` as fixed input; it rewinds those
+byte-bearing descriptors
 and supplies them to the ordinary outer bwrap only as the sources of fixed `--ro-bind-fd` operations
 at `/authority/capsule`, `/authority/worker`, and `/authority/nonce`. Pinned bwrap consumes and
 closes those source descriptors while creating the read-only binds; no authority FD is inherited by
@@ -1687,6 +1688,15 @@ named-option child vector, including `argv[0]`, is
 ordinary child has only `PATH=/usr/bin:/bin`, `LC_ALL=C`, `LANG=C`, `HOME=/nonexistent`, and
 `TMPDIR=/tmp`; the validated Align path is an explicit argv value, not inherited environment. It
 rejects every other command, option, assignment, and inherited `MAKEFLAGS` value before dispatch.
+The ordinary descriptor offset contract applies only to byte-bearing memfds `12`, `13`, and `15` and
+to local sealed memfds rehydrated from them: those owners use `pread` and restore offset zero with
+`lseek` before each data handoff. O_PATH identity descriptors such as FD `18`, directory/runtime/tool
+bind sources, the supervisor socket, and executable FD `27` have no byte-offset contract and are
+validated by identity, protocol, bind, or exec checks without `lseek`/`pread`. The worker's bwrap
+launcher invokes FD `27` with `execveat(AT_EMPTY_PATH)` and fixed `argv[0] = bwrap`.
+Any closure-matrix shorthand that says the original descriptors are rewound means these
+byte-bearing memfds; identity-only descriptors are revalidated by their stated identity, bind,
+protocol, or exec contract instead.
 The supervisor maps a failed image, manifest, or ordinary nonce check to exit 1, empty stdout, and
 exactly `fresh compiler: ERROR TRUST supervisor\n`; no repository worker, Make process, or private
 root exists on that path. The worker runs either the fixed internal `capable-checks` Make graph or
