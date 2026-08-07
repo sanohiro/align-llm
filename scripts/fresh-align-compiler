@@ -781,48 +781,20 @@ def run_tool(
     environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     pass_fds = (descriptor,) if cwd_fd is None else (descriptor, cwd_fd)
-    process = subprocess.Popen(
-        list(arguments),
+    result = run_owned(
+        arguments,
+        category="TOOL",
+        phase="tools",
+        timeout=timeout,
+        environment=environment
+        or {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+        pass_fds=pass_fds,
         executable=f"/proc/self/fd/{descriptor}",
         cwd=None if cwd_fd is None else f"/proc/self/fd/{cwd_fd}",
-        env=dict(environment or {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"}),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        pass_fds=pass_fds,
-        close_fds=True,
+        return_result=True,
     )
-    assert process.stdout is not None and process.stderr is not None
-    streams = selectors.DefaultSelector()
-    captures = {"stdout": bytearray(), "stderr": bytearray()}
-    for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
-        os.set_blocking(stream.fileno(), False)
-        streams.register(stream, selectors.EVENT_READ, label)
-    deadline = time.monotonic() + timeout
-    try:
-        while streams.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(arguments, timeout)
-            for key, _ in streams.select(min(remaining, 0.25)):
-                block = os.read(key.fileobj.fileno(), READ_CHUNK)
-                if not block:
-                    streams.unregister(key.fileobj)
-                    continue
-                target = captures[key.data]
-                if len(target) + len(block) > MAX_STREAM_BYTES:
-                    raise ValueError("tool probe output exceeds bound")
-                target.extend(block)
-        return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
-    except Exception:
-        process.kill()
-        process.wait()
-        raise
-    finally:
-        streams.close()
-    return subprocess.CompletedProcess(
-        list(arguments), return_code, bytes(captures["stdout"]), bytes(captures["stderr"])
-    )
+    assert result is not None
+    return result
 
 
 def authenticate_tools(manifest: Mapping[str, Any]) -> dict[str, int]:
@@ -1002,7 +974,7 @@ def parse_local_git_config(raw: bytes, tool_fd: int) -> None:
     # through Git's documented stdin path: an inherited memfd pathname is not
     # guaranteed to survive into Git's view of procfs. The config subcommand
     # does not consult worktree helpers; no repository operation has run yet.
-    result = subprocess.run(
+    result = run_owned(
         [
             "git",
             "config",
@@ -1012,15 +984,15 @@ def parse_local_git_config(raw: bytes, tool_fd: int) -> None:
             "--null",
             "--list",
         ],
-        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+        category="SOURCE",
+        phase="project-source",
+        environment={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
         executable=f"/proc/self/fd/{tool_fd}",
-        input=raw,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         pass_fds=(tool_fd,),
-        close_fds=True,
+        input_data=raw,
         timeout=phase_timeout(VALIDATION_TIMEOUT),
-        check=False,
+        stdout_limit=4 * 1024 * 1024,
+        return_result=True,
     )
     if result.returncode != 0 or len(result.stdout) > 4 * 1024 * 1024 or result.stderr:
         raise ValueError("Git configuration rejected")
@@ -1232,52 +1204,23 @@ def git(view: GitView, arguments: Sequence[str], *, output_limit: int = 192 * 10
             "GIT_COMMON_DIR": f"{retained}/{view.common_fd}",
         }
     )
-    process = subprocess.Popen(
+    result = run_owned(
         ["git", *arguments],
+        category="SOURCE",
+        phase="project-source",
+        timeout=phase_timeout(VALIDATION_TIMEOUT),
+        environment=environment,
+        pass_fds=tuple({view.tool_fd, *(fd for fd, _ in view.retained)}),
         executable=f"/proc/self/fd/{view.tool_fd}",
         cwd=f"{retained}/{view.root_fd}",
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        pass_fds=tuple({view.tool_fd, *(fd for fd, _ in view.retained)}),
-        close_fds=True,
+        stdout_limit=output_limit,
+        return_result=True,
     )
-    assert process.stdout is not None and process.stderr is not None
-    streams = selectors.DefaultSelector()
-    stdout = bytearray()
-    stderr = bytearray()
-    for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
-        os.set_blocking(stream.fileno(), False)
-        streams.register(stream, selectors.EVENT_READ, label)
-    deadline = time.monotonic() + phase_timeout(VALIDATION_TIMEOUT)
-    try:
-        while streams.get_map():
-            check_phase_deadline()
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError
-            for key, _ in streams.select(min(remaining, 0.25)):
-                block = os.read(key.fileobj.fileno(), READ_CHUNK)
-                if not block:
-                    streams.unregister(key.fileobj)
-                    continue
-                target = stdout if key.data == "stdout" else stderr
-                target.extend(block)
-                limit = output_limit if key.data == "stdout" else MAX_STREAM_BYTES
-                if len(target) > limit:
-                    raise ValueError("Git output exceeds bound")
-        return_code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
-    except Exception:
-        process.kill()
-        process.wait()
-        raise ValueError("Git identity command rejected") from None
-    finally:
-        streams.close()
+    assert result is not None
     assert_git_view(view)
-    if return_code != 0 or stderr:
+    if result.returncode != 0 or result.stderr:
         raise ValueError("Git identity command rejected")
-    return bytes(stdout)
+    return result.stdout
 
 
 def assert_reachable_git_bound(view: GitView, object_format: str) -> None:
@@ -2783,6 +2726,15 @@ def derived_paths(runtime: Sequence[RuntimeBinding]) -> tuple[str, str, str]:
     return ":".join(libraries), ":".join(loaders), ":".join(pkgconfig)
 
 
+@dataclass
+class CgroupLease:
+    parent_fd: int
+    parent_identity: Snapshot
+    leaf_fd: int
+    leaf_identity: Snapshot
+    leaf_name: str
+
+
 def cgroup_parent() -> Path:
     path = Path(f"/sys/fs/cgroup/align-llm-fresh/{os.geteuid()}")
     value = path.stat()
@@ -2829,11 +2781,151 @@ def verify_platform() -> None:
     cgroup_parent()
 
 
-def child_preexec(leaf: Path) -> None:
+def same_cgroup_directory(value: os.stat_result | Snapshot, accepted: Snapshot) -> bool:
+    if isinstance(value, Snapshot):
+        return (
+            value.device == accepted.device
+            and value.inode == accepted.inode
+            and value.file_type == accepted.file_type == stat.S_IFDIR
+            and value.mode == accepted.mode
+        )
+    return (
+        value.st_dev == accepted.device
+        and value.st_ino == accepted.inode
+        and stat.S_IFMT(value.st_mode) == accepted.file_type
+        and stat.S_IMODE(value.st_mode) == accepted.mode
+        and value.st_uid == os.geteuid()
+        and stat.S_ISDIR(value.st_mode)
+    )
+
+
+def cgroup_entry_matches(lease: CgroupLease) -> bool:
+    try:
+        value = os.stat(lease.leaf_name, dir_fd=lease.parent_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return same_cgroup_directory(value, lease.leaf_identity)
+
+
+def cgroup_file_read(leaf_fd: int, name: str, limit: int = 4096) -> bytes:
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=leaf_fd,
+    )
+    try:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            block = os.read(descriptor, min(READ_CHUNK, limit + 1 - total))
+            if not block:
+                return b"".join(chunks)
+            total += len(block)
+            if total > limit:
+                raise OSError(errno.EFBIG, "cgroup control file exceeds bound")
+            chunks.append(block)
+    finally:
+        os.close(descriptor)
+
+
+def cgroup_file_write(leaf_fd: int, name: str, raw: bytes) -> None:
+    descriptor = os.open(
+        name,
+        os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=leaf_fd,
+    )
+    try:
+        view = memoryview(raw)
+        while view:
+            count = os.write(descriptor, view)
+            if count <= 0:
+                raise OSError(errno.EIO, "short cgroup control write")
+            view = view[count:]
+    finally:
+        os.close(descriptor)
+
+
+def open_cgroup_lease() -> CgroupLease:
+    parent_path = cgroup_parent()
+    expected_parent = snapshot_from_stat(parent_path.stat())
+    parent_fd = -1
+    leaf_fd = -1
+    leaf_name = ""
+    parent_identity: Snapshot | None = None
+    leaf_identity: Snapshot | None = None
+    try:
+        parent_fd = os.open(
+            str(parent_path),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        parent_identity = snapshot_fd(parent_fd)
+        if (
+            not same_cgroup_directory(parent_identity, expected_parent)
+            or parent_identity.file_type != stat.S_IFDIR
+            or parent_identity.mode != 0o700
+        ):
+            raise OSError(errno.EPERM, "cgroup parent identity rejected")
+        for _ in range(8):
+            candidate = ROOT_PREFIX + secrets.token_hex(16)
+            try:
+                os.mkdir(candidate, 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                continue
+            leaf_name = candidate
+            leaf_fd = os.open(
+                candidate,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+            leaf_identity = snapshot_fd(leaf_fd)
+            lease = CgroupLease(parent_fd, parent_identity, leaf_fd, leaf_identity, candidate)
+            if not cgroup_entry_matches(lease):
+                raise OSError(errno.ESTALE, "cgroup leaf identity changed")
+            cgroup_file_write(leaf_fd, "pids.max", b"512\n")
+            return lease
+        raise OSError(errno.EEXIST, "cgroup leaf name exhaustion")
+    except Exception as active:
+        cleanup_error: CleanupError | None = None
+        if leaf_fd >= 0:
+            try:
+                if (
+                    parent_identity is None
+                    or leaf_identity is None
+                    or not cgroup_entry_matches(
+                        CgroupLease(
+                            parent_fd,
+                            parent_identity,
+                            leaf_fd,
+                            leaf_identity,
+                            leaf_name,
+                        )
+                    )
+                ):
+                    cleanup_error = CleanupError("cgroup leaf identity changed during admission")
+                else:
+                    os.rmdir(leaf_name, dir_fd=parent_fd)
+            except OSError:
+                cleanup_error = CleanupError("cgroup leaf cleanup failed")
+            try:
+                os.close(leaf_fd)
+            except OSError:
+                cleanup_error = cleanup_error or CleanupError("cgroup leaf descriptor close failed")
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                cleanup_error = cleanup_error or CleanupError("cgroup parent descriptor close failed")
+        if cleanup_error is not None:
+            raise cleanup_error from active
+        raise
+
+
+def child_preexec(leaf_fd: int) -> None:
     resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
     resource.setrlimit(resource.RLIMIT_NOFILE, (MAX_OPEN_FDS, MAX_OPEN_FDS))
     resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_FILE_BYTES, MAX_FILE_BYTES))
-    (leaf / "cgroup.procs").write_text("0\n", encoding="ascii")
+    cgroup_file_write(leaf_fd, "cgroup.procs", b"0\n")
+    os.set_inheritable(leaf_fd, False)
     os.setsid()
 
 
@@ -2852,31 +2944,43 @@ def pid_start_time(pid: int) -> str:
     return fields[19].decode("ascii")
 
 
-def cgroup_populated(leaf: Path) -> bool:
-    raw = (leaf / "cgroup.events").read_text(encoding="ascii")
+def cgroup_populated(lease: CgroupLease) -> bool:
+    if not same_cgroup_directory(snapshot_fd(lease.parent_fd), lease.parent_identity):
+        raise CleanupError("cgroup parent identity changed")
+    if not cgroup_entry_matches(lease):
+        raise CleanupError("child cgroup identity changed")
+    raw = cgroup_file_read(lease.leaf_fd, "cgroup.events").decode("ascii")
     values = dict(line.split(" ", 1) for line in raw.splitlines() if " " in line)
     if values.get("populated") not in ("0", "1"):
         raise CleanupError("child cgroup events rejected")
     return values["populated"] == "1"
 
 
-def kill_cgroup(leaf: Path) -> None:
+def kill_cgroup(lease: CgroupLease) -> None:
     try:
-        (leaf / "cgroup.kill").write_text("1\n", encoding="ascii")
+        if not cgroup_entry_matches(lease):
+            raise CleanupError("child cgroup identity changed")
+        cgroup_file_write(lease.leaf_fd, "cgroup.kill", b"1\n")
+    except CleanupError:
+        raise
     except OSError as error:
         raise CleanupError("child cgroup kill failed") from error
 
 
-def reap_descendants(deadline: float) -> None:
+def reap_descendants(
+    deadline: float, direct_process: subprocess.Popen[bytes] | None = None
+) -> None:
     while time.monotonic() < deadline:
         reaped = False
         while True:
             try:
-                pid, _ = os.waitpid(-1, os.WNOHANG)
+                pid, status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:
                 return
             if pid == 0:
                 break
+            if direct_process is not None and pid == direct_process.pid:
+                direct_process.returncode = os.waitstatus_to_exitcode(status)
             reaped = True
         if not reaped:
             time.sleep(0.01)
@@ -2884,35 +2988,42 @@ def reap_descendants(deadline: float) -> None:
 
 def terminate_owned_process(
     process: subprocess.Popen[bytes],
-    leaf: Path,
+    lease: CgroupLease,
     accepted_start: str | None,
+    accepted_group: int | None,
 ) -> None:
     """Terminate one owned process tree and prove its cgroup is empty."""
     try:
-        populated = cgroup_populated(leaf)
+        populated = cgroup_populated(lease)
     except OSError as error:
         raise CleanupError("owned child cgroup could not be inspected") from error
     if process.poll() is None or populated:
         if process.poll() is None and accepted_start is not None:
             try:
-                if pid_start_time(process.pid) == accepted_start:
-                    os.killpg(process.pid, signal.SIGTERM)
-            except OSError:
+                if (
+                    pid_start_time(process.pid) == accepted_start
+                    and accepted_group is not None
+                    and os.getpgid(process.pid) == accepted_group
+                ):
+                    os.killpg(accepted_group, signal.SIGTERM)
+            except ProcessLookupError:
                 pass
+            except OSError as error:
+                raise CleanupError("owned child process identity could not be checked") from error
         grace_deadline = time.monotonic() + 1
-        reap_descendants(grace_deadline)
+        reap_descendants(grace_deadline, process)
         while time.monotonic() < grace_deadline:
             try:
-                populated = cgroup_populated(leaf)
+                populated = cgroup_populated(lease)
             except OSError as error:
                 raise CleanupError("owned child cgroup could not be inspected") from error
             if process.poll() is not None and not populated:
                 break
             time.sleep(0.01)
         try:
-            populated = cgroup_populated(leaf)
+            populated = cgroup_populated(lease)
             if process.poll() is None or populated:
-                kill_cgroup(leaf)
+                kill_cgroup(lease)
         except OSError as error:
             raise CleanupError("owned child cgroup could not be terminated") from error
     try:
@@ -2920,17 +3031,17 @@ def terminate_owned_process(
     except subprocess.TimeoutExpired as error:
         raise CleanupError("owned child did not exit") from error
     cleanup_deadline = time.monotonic() + 5
-    reap_descendants(cleanup_deadline)
+    reap_descendants(cleanup_deadline, process)
     while time.monotonic() < cleanup_deadline:
         try:
-            populated = cgroup_populated(leaf)
+            populated = cgroup_populated(lease)
         except OSError as error:
             raise CleanupError("owned child cgroup could not be inspected") from error
         if not populated:
             break
         time.sleep(0.01)
     try:
-        populated = cgroup_populated(leaf)
+        populated = cgroup_populated(lease)
     except OSError as error:
         raise CleanupError("owned child cgroup could not be inspected") from error
     if populated:
@@ -2942,47 +3053,55 @@ def run_owned(
     *,
     category: str,
     phase: str,
-    timeout: int,
+    timeout: float,
     environment: Mapping[str, str] | None = None,
     pass_fds: Sequence[int] = (),
+    input_data: bytes | None = None,
     resource_check: Callable[[], None] | None = None,
-) -> None:
-    parent = cgroup_parent()
-    leaf: Path | None = None
-    for _ in range(8):
-        candidate = parent / (ROOT_PREFIX + secrets.token_hex(16))
-        try:
-            candidate.mkdir(mode=0o700)
-            leaf = candidate
-            break
-        except FileExistsError:
-            pass
-    if leaf is None:
+    executable: str | None = None,
+    cwd: str | None = None,
+    stdout_limit: int = MAX_STREAM_BYTES,
+    stderr_limit: int = MAX_STREAM_BYTES,
+    return_result: bool = False,
+) -> subprocess.CompletedProcess[bytes] | None:
+    try:
+        lease = open_cgroup_lease()
+    except Exception:
         fail("PLATFORM", "platform")
     process: subprocess.Popen[bytes] | None = None
     accepted_start: str | None = None
+    accepted_group: int | None = None
     teardown_complete = False
-    primary_failure = False
+    timed_out = False
+    overflow_label: str | None = None
+    process_unhealthy = False
     resource_failure: WorkerError | None = None
+    streams: selectors.BaseSelector | None = None
+    captures = {"stdout": bytearray(), "stderr": bytearray()}
     try:
-        (leaf / "pids.max").write_text("512\n", encoding="ascii")
         process = subprocess.Popen(
             list(arguments),
+            executable=executable,
+            cwd=cwd,
             env=dict(environment or {}),
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             close_fds=True,
-            pass_fds=tuple(pass_fds),
-            preexec_fn=lambda: child_preexec(leaf),
+            pass_fds=tuple({*pass_fds, lease.leaf_fd}),
+            preexec_fn=lambda: child_preexec(lease.leaf_fd),
         )
         accepted_start = pid_start_time(process.pid)
+        accepted_group = os.getpgid(process.pid)
         assert process.stdout is not None and process.stderr is not None
         streams = selectors.DefaultSelector()
-        captures = {"stdout": bytearray(), "stderr": bytearray()}
         for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
             os.set_blocking(stream.fileno(), False)
             streams.register(stream, selectors.EVENT_READ, label)
+        pending_input = memoryview(input_data) if input_data is not None else None
+        if process.stdin is not None and pending_input is not None:
+            os.set_blocking(process.stdin.fileno(), False)
+            streams.register(process.stdin, selectors.EVENT_WRITE, "stdin")
         deadline = time.monotonic() + timeout
         next_resource_check = time.monotonic()
         try:
@@ -2990,49 +3109,62 @@ def run_owned(
                 check_cancelled(category, phase)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    primary_failure = True
+                    timed_out = True
                     break
                 if resource_check is not None and time.monotonic() >= next_resource_check:
                     try:
                         resource_check()
                     except WorkerError as error:
                         resource_failure = error
-                        primary_failure = True
                         break
                     except Exception:
                         resource_failure = WorkerError(category, phase)
-                        primary_failure = True
                         break
                     next_resource_check = time.monotonic() + RESOURCE_POLL_SECONDS
                 for key, _ in streams.select(min(remaining, 0.25)):
+                    if key.data == "stdin":
+                        assert pending_input is not None and process.stdin is not None
+                        try:
+                            count = os.write(process.stdin.fileno(), pending_input)
+                        except BrokenPipeError:
+                            count = len(pending_input)
+                        pending_input = pending_input[count:]
+                        if not pending_input:
+                            streams.unregister(key.fileobj)
+                            process.stdin.close()
+                        continue
                     block = os.read(key.fileobj.fileno(), READ_CHUNK)
                     if not block:
                         streams.unregister(key.fileobj)
                         continue
                     target = captures[key.data]
-                    if len(target) + len(block) > MAX_STREAM_BYTES:
-                        primary_failure = True
+                    limit = stdout_limit if key.data == "stdout" else stderr_limit
+                    if len(target) + len(block) > limit:
+                        overflow_label = key.data
                         break
                     target.extend(block)
-                if primary_failure:
+                if resource_failure is not None or timed_out or overflow_label is not None:
                     break
-            if not primary_failure and not streams.get_map():
+            if (
+                resource_failure is None
+                and not timed_out
+                and overflow_label is None
+                and not streams.get_map()
+            ):
                 while process.poll() is None:
                     check_cancelled(category, phase)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        primary_failure = True
+                        timed_out = True
                         break
                     if resource_check is not None and time.monotonic() >= next_resource_check:
                         try:
                             resource_check()
                         except WorkerError as error:
                             resource_failure = error
-                            primary_failure = True
                             break
                         except Exception:
                             resource_failure = WorkerError(category, phase)
-                            primary_failure = True
                             break
                         next_resource_check = time.monotonic() + RESOURCE_POLL_SECONDS
                     try:
@@ -3040,20 +3172,18 @@ def run_owned(
                     except subprocess.TimeoutExpired:
                         continue
                     break
-            if not primary_failure:
+            if resource_failure is None and not timed_out and overflow_label is None:
                 try:
                     process.wait(timeout=max(0.1, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
-                    primary_failure = True
-                else:
-                    primary_failure = process.returncode != 0
+                    timed_out = True
         finally:
             streams.close()
+            streams = None
 
         try:
-            if process.poll() is None or cgroup_populated(leaf):
-                primary_failure = True
-            terminate_owned_process(process, leaf, accepted_start)
+            process_unhealthy = process.poll() is None or cgroup_populated(lease)
+            terminate_owned_process(process, lease, accepted_start, accepted_group)
         except CleanupError as error:
             failure = WorkerError(category, phase)
             failure.cleanup_failed = True
@@ -3062,12 +3192,25 @@ def run_owned(
             teardown_complete = True
         if resource_failure is not None:
             raise resource_failure
-        if primary_failure:
+        if return_result:
+            if timed_out:
+                raise subprocess.TimeoutExpired(arguments, timeout)
+            if overflow_label is not None:
+                raise ValueError(f"{overflow_label} output exceeds bound")
+            if process_unhealthy:
+                raise CleanupError("owned child process tree remained")
+            return subprocess.CompletedProcess(
+                list(arguments),
+                process.returncode,
+                bytes(captures["stdout"]),
+                bytes(captures["stderr"]),
+            )
+        if process_unhealthy or process.returncode != 0:
             fail(category, phase)
     except BaseException as active_error:
         if process is not None and not teardown_complete:
             try:
-                terminate_owned_process(process, leaf, accepted_start)
+                terminate_owned_process(process, lease, accepted_start, accepted_group)
             except CleanupError as error:
                 failure = WorkerError(category, phase)
                 failure.cleanup_failed = True
@@ -3080,12 +3223,31 @@ def run_owned(
     finally:
         active = sys.exc_info()[1]
         try:
-            leaf.rmdir()
-        except OSError as error:
+            if not cgroup_entry_matches(lease):
+                raise CleanupError("child cgroup identity changed during cleanup")
+            if cgroup_populated(lease):
+                raise CleanupError("child cgroup remained populated during cleanup")
+            os.rmdir(lease.leaf_name, dir_fd=lease.parent_fd)
+            try:
+                os.stat(lease.leaf_name, dir_fd=lease.parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise CleanupError("child cgroup remains after cleanup")
+        except (CleanupError, OSError) as error:
             if isinstance(active, WorkerError):
                 active.cleanup_failed = True
             else:
                 raise CleanupError("child cgroup cleanup failed") from error
+        finally:
+            for descriptor in (lease.leaf_fd, lease.parent_fd):
+                try:
+                    os.close(descriptor)
+                except OSError as error:
+                    if isinstance(active, WorkerError):
+                        active.cleanup_failed = True
+                    elif active is None:
+                        raise CleanupError("cgroup descriptor close failed") from error
 
 
 def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> tuple[Path, Path]:
@@ -3902,6 +4064,21 @@ def same_owned_directory(fd: int, accepted: Snapshot) -> bool:
     )
 
 
+def same_entry_identity(value: os.stat_result | Snapshot, accepted: Snapshot) -> bool:
+    if isinstance(value, Snapshot):
+        return (
+            value.device == accepted.device
+            and value.inode == accepted.inode
+            and value.file_type == accepted.file_type
+        )
+    return (
+        value.st_dev == accepted.device
+        and value.st_ino == accepted.inode
+        and stat.S_IFMT(value.st_mode) == accepted.file_type
+        and value.st_uid == os.geteuid()
+    )
+
+
 def require_parent_entry(admission: Admission) -> None:
     try:
         current = os.open(
@@ -3938,42 +4115,97 @@ def remove_contents_fd(
                 dir_fd=directory_fd,
             )
             try:
+                child_identity = snapshot_fd(child_fd)
                 remove_contents_fd(child_fd, depth + 1, deadline)
+                if not same_entry_identity(snapshot_fd(child_fd), child_identity):
+                    raise CleanupError("private child directory identity changed")
+                current = os.stat(raw_child, dir_fd=directory_fd, follow_symlinks=False)
+                if not same_entry_identity(current, child_identity):
+                    raise CleanupError("private child directory entry was replaced")
+                os.rmdir(raw_child, dir_fd=directory_fd)
             finally:
                 os.close(child_fd)
-            os.rmdir(raw_child, dir_fd=directory_fd)
         elif stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode):
-            os.unlink(raw_child, dir_fd=directory_fd)
+            child_fd = os.open(
+                raw_child,
+                os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                child_identity = snapshot_fd(child_fd)
+                current = os.stat(raw_child, dir_fd=directory_fd, follow_symlinks=False)
+                if not same_entry_identity(current, child_identity):
+                    raise CleanupError("private file entry was replaced")
+                os.unlink(raw_child, dir_fd=directory_fd)
+            finally:
+                os.close(child_fd)
         else:
             raise CleanupError("cleanup refused special entry")
+
+
+def close_admission_descriptors(admission: Admission) -> CleanupError | None:
+    failure: CleanupError | None = None
+    for field in ("root_fd", "roots_fd"):
+        descriptor = getattr(admission, field)
+        if descriptor < 0:
+            continue
+        try:
+            os.close(descriptor)
+        except OSError:
+            failure = failure or CleanupError("private descriptor close failed")
+        finally:
+            setattr(admission, field, -1)
+    if admission.lock_fd >= 0:
+        try:
+            fcntl.flock(admission.lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            failure = failure or CleanupError("private lock release failed")
+        try:
+            os.close(admission.lock_fd)
+        except OSError:
+            failure = failure or CleanupError("private lock close failed")
+        finally:
+            admission.lock_fd = -1
+    return failure
 
 
 def cleanup(admission: Admission | None) -> None:
     if admission is None:
         return
     deadline = time.monotonic() + CLEANUP_TIMEOUT
-    if not same_owned_directory(admission.roots_fd, admission.roots_identity) or not same_owned_directory(
-        admission.root_fd, admission.root_identity
-    ):
-        raise CleanupError("private root identity changed")
-    require_parent_entry(admission)
-    if admission.aggregate_started:
-        cleanup_overlay_work_entry(admission, deadline)
-    scan_private_fd(admission.root_fd, deadline=deadline)
-    require_parent_entry(admission)
-    remove_contents_fd(admission.root_fd, deadline=deadline)
-    require_parent_entry(admission)
-    os.close(admission.root_fd)
-    os.rmdir(admission.root_name, dir_fd=admission.roots_fd)
     try:
-        os.stat(admission.root_name, dir_fd=admission.roots_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        pass
-    else:
-        raise CleanupError("private root remains")
-    os.close(admission.roots_fd)
-    fcntl.flock(admission.lock_fd, fcntl.LOCK_UN)
-    os.close(admission.lock_fd)
+        if not same_owned_directory(admission.roots_fd, admission.roots_identity) or not same_owned_directory(
+            admission.root_fd, admission.root_identity
+        ):
+            raise CleanupError("private root identity changed")
+        require_parent_entry(admission)
+        if admission.aggregate_started:
+            cleanup_overlay_work_entry(admission, deadline)
+        scan_private_fd(admission.root_fd, deadline=deadline)
+        require_parent_entry(admission)
+        remove_contents_fd(admission.root_fd, deadline=deadline)
+        require_parent_entry(admission)
+        if not same_entry_identity(snapshot_fd(admission.root_fd), admission.root_identity):
+            raise CleanupError("private root identity changed during cleanup")
+        current = os.stat(
+            admission.root_name,
+            dir_fd=admission.roots_fd,
+            follow_symlinks=False,
+        )
+        if not same_entry_identity(current, admission.root_identity):
+            raise CleanupError("private root entry was replaced")
+        os.rmdir(admission.root_name, dir_fd=admission.roots_fd)
+        try:
+            os.stat(admission.root_name, dir_fd=admission.roots_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise CleanupError("private root remains")
+    finally:
+        active = sys.exc_info()[1]
+        close_failure = close_admission_descriptors(admission)
+        if close_failure is not None and active is None:
+            raise close_failure
 
 
 def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:

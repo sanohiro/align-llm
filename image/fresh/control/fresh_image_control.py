@@ -15,6 +15,8 @@ import hashlib
 import os
 import re
 import resource
+import selectors
+import signal
 import stat
 import subprocess
 import sys
@@ -22,6 +24,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Sequence
 
 from fresh_attestation import (
@@ -60,6 +63,8 @@ PYTHON_PATH = "/usr/bin/python3"
 EXPECTED_IMAGE_NAME = "oci://ghcr.io/sanohiro/align-llm-fresh"
 SUPERVISOR_VERSION = "1.0.0"
 WORKER_INVOCATION_TIMEOUT = 5_000
+CONTROL_STREAM_LIMIT = 65_536
+CONTROL_CGROUP_PREFIX = "align-llm-control-"
 
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -164,6 +169,337 @@ class ControlError(RuntimeError):
         super().__init__(detail or f"{category} {phase}")
         self.category = category
         self.phase = phase
+
+
+def _control_cgroup_file_write(leaf_fd: int, name: str, raw: bytes) -> None:
+    descriptor = os.open(
+        name,
+        os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=leaf_fd,
+    )
+    try:
+        view = memoryview(raw)
+        while view:
+            count = os.write(descriptor, view)
+            if count <= 0:
+                raise OSError(errno.EIO, "short control cgroup write")
+            view = view[count:]
+    finally:
+        os.close(descriptor)
+
+
+def _control_cgroup_file_read(leaf_fd: int, name: str, limit: int = 4096) -> bytes:
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=leaf_fd,
+    )
+    try:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            block = os.read(descriptor, min(65_536, limit + 1 - total))
+            if not block:
+                return b"".join(chunks)
+            total += len(block)
+            if total > limit:
+                raise OSError(errno.EFBIG, "control cgroup file exceeds bound")
+            chunks.append(block)
+    finally:
+        os.close(descriptor)
+
+
+def _control_cgroup_lease() -> tuple[int, int, str, tuple[int, int, int, int, int]]:
+    parent_path = f"/sys/fs/cgroup/align-llm-fresh/{os.geteuid()}"
+    parent_fd = os.open(
+        parent_path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    leaf_fd = -1
+    leaf_name = ""
+    try:
+        parent = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+            or stat.S_IMODE(parent.st_mode) != 0o700
+        ):
+            raise OSError(errno.EPERM, "control cgroup parent rejected")
+        for _ in range(8):
+            candidate = CONTROL_CGROUP_PREFIX + os.urandom(16).hex()
+            try:
+                os.mkdir(candidate, 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                continue
+            leaf_name = candidate
+            leaf_fd = os.open(
+                candidate,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+            leaf = os.fstat(leaf_fd)
+            identity = (
+                leaf.st_dev,
+                leaf.st_ino,
+                stat.S_IFMT(leaf.st_mode),
+                stat.S_IMODE(leaf.st_mode),
+                leaf.st_uid,
+            )
+            current = os.stat(leaf_name, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                current.st_dev,
+                current.st_ino,
+                stat.S_IFMT(current.st_mode),
+                stat.S_IMODE(current.st_mode),
+                current.st_uid,
+            ) != identity:
+                raise OSError(errno.ESTALE, "control cgroup leaf replaced")
+            _control_cgroup_file_write(leaf_fd, "pids.max", b"512\n")
+            if _control_cgroup_file_read(leaf_fd, "pids.max").strip() != b"512":
+                raise OSError(errno.EIO, "control cgroup pids.max rejected")
+            return parent_fd, leaf_fd, leaf_name, identity
+        raise OSError(errno.EEXIST, "control cgroup leaf name exhaustion")
+    except Exception:
+        cleanup_error: OSError | None = None
+        if leaf_fd >= 0:
+            try:
+                current = os.stat(leaf_name, dir_fd=parent_fd, follow_symlinks=False)
+                leaf = os.fstat(leaf_fd)
+                if (current.st_dev, current.st_ino) == (leaf.st_dev, leaf.st_ino):
+                    os.rmdir(leaf_name, dir_fd=parent_fd)
+                else:
+                    cleanup_error = OSError(errno.ESTALE, "control cgroup leaf was replaced")
+            except OSError as error:
+                cleanup_error = error
+            try:
+                os.close(leaf_fd)
+            except OSError as error:
+                cleanup_error = cleanup_error or error
+        try:
+            os.close(parent_fd)
+        except OSError as error:
+            cleanup_error = cleanup_error or error
+        if cleanup_error is not None:
+            raise cleanup_error
+        raise
+
+
+def _control_cgroup_matches(
+    parent_fd: int,
+    leaf_fd: int,
+    leaf_name: str,
+    identity: tuple[int, int, int, int, int],
+) -> bool:
+    try:
+        current = os.stat(leaf_name, dir_fd=parent_fd, follow_symlinks=False)
+        leaf = os.fstat(leaf_fd)
+    except OSError:
+        return False
+    current_identity = (
+        current.st_dev,
+        current.st_ino,
+        stat.S_IFMT(current.st_mode),
+        stat.S_IMODE(current.st_mode),
+        current.st_uid,
+    )
+    leaf_identity = (
+        leaf.st_dev,
+        leaf.st_ino,
+        stat.S_IFMT(leaf.st_mode),
+        stat.S_IMODE(leaf.st_mode),
+        leaf.st_uid,
+    )
+    return current_identity == identity == leaf_identity
+
+
+def _control_pid_start(pid: int) -> str:
+    raw = Path(f"/proc/{pid}/stat").read_bytes()
+    close = raw.rfind(b")")
+    fields = raw[close + 2 :].split()
+    if close < 0 or len(fields) < 20:
+        raise OSError(errno.EINVAL, "control child identity rejected")
+    return fields[19].decode("ascii")
+
+
+def _control_terminate(
+    process: subprocess.Popen[bytes],
+    *,
+    start: str,
+    group: int,
+    parent_fd: int,
+    leaf_fd: int,
+    leaf_name: str,
+    identity: tuple[int, int, int, int, int],
+) -> None:
+    populated = (
+        b"populated 1"
+        in _control_cgroup_file_read(leaf_fd, "cgroup.events")
+    )
+    if process.poll() is None:
+        try:
+            if _control_pid_start(process.pid) == start and os.getpgid(process.pid) == group:
+                os.killpg(group, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and (process.poll() is None or populated):
+        time.sleep(0.01)
+        populated = (
+            b"populated 1"
+            in _control_cgroup_file_read(leaf_fd, "cgroup.events")
+        )
+    if process.poll() is None or populated:
+        if not _control_cgroup_matches(parent_fd, leaf_fd, leaf_name, identity):
+            raise OSError(errno.ESTALE, "control cgroup identity changed")
+        _control_cgroup_file_write(leaf_fd, "cgroup.kill", b"1\n")
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired as error:
+        raise OSError(errno.ETIMEDOUT, "control child did not exit") from error
+    if (
+        b"populated 1"
+        in _control_cgroup_file_read(leaf_fd, "cgroup.events")
+    ):
+        raise OSError(errno.EBUSY, "control cgroup remained populated")
+
+
+def _run_controlled_child(
+    arguments: Sequence[str],
+    *,
+    environment: Mapping[str, str],
+    timeout: float,
+    pass_fds: Sequence[int] = (),
+    executable: str | None = None,
+    cwd: str | None = None,
+    stdout_limit: int = CONTROL_STREAM_LIMIT,
+    stderr_limit: int = CONTROL_STREAM_LIMIT,
+) -> subprocess.CompletedProcess[bytes]:
+    parent_fd, leaf_fd, leaf_name, identity = _control_cgroup_lease()
+    process: subprocess.Popen[bytes] | None = None
+    streams: selectors.BaseSelector | None = None
+    captures = {"stdout": bytearray(), "stderr": bytearray()}
+    start = ""
+    group = -1
+    try:
+        def preexec() -> None:
+            resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
+            resource.setrlimit(resource.RLIMIT_NOFILE, (4096, 4096))
+            resource.setrlimit(resource.RLIMIT_FSIZE, (536_870_912, 536_870_912))
+            _control_cgroup_file_write(leaf_fd, "cgroup.procs", b"0\n")
+            os.set_inheritable(leaf_fd, False)
+            os.setsid()
+
+        process = subprocess.Popen(
+            list(arguments),
+            executable=executable,
+            cwd=cwd,
+            env=dict(environment),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=tuple(dict.fromkeys((leaf_fd, *pass_fds))),
+            close_fds=True,
+            preexec_fn=preexec,
+        )
+        start = _control_pid_start(process.pid)
+        group = os.getpgid(process.pid)
+        assert process.stdout is not None and process.stderr is not None
+        streams = selectors.DefaultSelector()
+        for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+            os.set_blocking(stream.fileno(), False)
+            streams.register(stream, selectors.EVENT_READ, label)
+        deadline = time.monotonic() + timeout
+        timed_out = False
+        overflow = False
+        while streams.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            for key, _ in streams.select(min(remaining, 0.25)):
+                block = os.read(key.fileobj.fileno(), 1_048_576)
+                if not block:
+                    streams.unregister(key.fileobj)
+                    continue
+                target = captures[key.data]
+                limit = stdout_limit if key.data == "stdout" else stderr_limit
+                if len(target) + len(block) > limit:
+                    overflow = True
+                    break
+                target.extend(block)
+            if timed_out or overflow:
+                break
+        if not timed_out and not overflow:
+            try:
+                process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+    except BaseException:
+        if process is not None:
+            _control_terminate(
+                process,
+                start=start,
+                group=group,
+                parent_fd=parent_fd,
+                leaf_fd=leaf_fd,
+                leaf_name=leaf_name,
+                identity=identity,
+            )
+        raise
+    finally:
+        if streams is not None:
+            streams.close()
+    if process is None:
+        raise OSError(errno.ECHILD, "control child was not started")
+    try:
+        if (
+            timed_out
+            or overflow
+            or process.poll() is None
+            or b"populated 1"
+            in _control_cgroup_file_read(leaf_fd, "cgroup.events")
+        ):
+            _control_terminate(
+                process,
+                start=start,
+                group=group,
+                parent_fd=parent_fd,
+                leaf_fd=leaf_fd,
+                leaf_name=leaf_name,
+                identity=identity,
+            )
+        else:
+            process.wait()
+    finally:
+        cleanup_error: OSError | None = None
+        try:
+            if not _control_cgroup_matches(parent_fd, leaf_fd, leaf_name, identity):
+                raise OSError(errno.ESTALE, "control cgroup identity changed during cleanup")
+            if (
+                b"populated 1"
+                in _control_cgroup_file_read(leaf_fd, "cgroup.events")
+            ):
+                raise OSError(errno.EBUSY, "control cgroup remained populated during cleanup")
+            os.rmdir(leaf_name, dir_fd=parent_fd)
+        except OSError as error:
+            cleanup_error = error
+        for descriptor in (leaf_fd, parent_fd):
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                cleanup_error = cleanup_error or error
+        if cleanup_error is not None:
+            raise cleanup_error
+    if timed_out:
+        raise subprocess.TimeoutExpired(arguments, timeout)
+    if overflow:
+        raise ValueError("control child output exceeds bound")
+    return subprocess.CompletedProcess(
+        list(arguments),
+        process.returncode,
+        bytes(captures["stdout"]),
+        bytes(captures["stderr"]),
+    )
 
 
 @dataclass(frozen=True)
@@ -414,19 +750,15 @@ def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
 
     def run(*arguments: str) -> str:
         try:
-            result = subprocess.run(
+            result = _run_controlled_child(
                 [git_path, "-c", "safe.directory=*", *arguments],
                 cwd=cwd,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                check=False,
+                environment=environment,
                 timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ControlError("SOURCE", "project-source", "Git identity probe failed") from error
-        if result.returncode != 0 or len(result.stdout) > 128:
+        if result.returncode != 0 or result.stderr or len(result.stdout) > 128:
             raise ControlError("SOURCE", "project-source", "Git identity probe rejected")
         try:
             return result.stdout.decode("ascii").strip()
@@ -824,17 +1156,12 @@ def _run_retained_tool(
     timeout: int = 10,
     pass_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
+    return _run_controlled_child(
         list(arguments),
         executable=f"/proc/self/fd/{descriptor}",
-        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        environment={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
         pass_fds=tuple(dict.fromkeys((descriptor, *pass_fds))),
-        close_fds=True,
         timeout=timeout,
-        check=False,
     )
 
 
@@ -1053,14 +1380,10 @@ def _platform_self_test(manifest_raw: bytes) -> None:
         source_fd = -1
         os.close(target_fd)
         target_fd = -1
-        result = subprocess.run(
+        result = _run_controlled_child(
             [temporary],
-            env={},
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            environment={},
             timeout=5,
-            check=False,
         )
         if result.returncode != 0:
             raise ControlError("PLATFORM", "platform", "/tmp is not executable")
@@ -1100,22 +1423,84 @@ def _platform_self_test(manifest_raw: bytes) -> None:
         raise ControlError("PLATFORM", "platform", "runtime profile is unavailable") from error
 
     cgroup_parent = f"/sys/fs/cgroup/align-llm-fresh/{os.geteuid()}"
-    leaf: str | None = None
+    parent_fd = -1
+    leaf_fd = -1
+    leaf_name: str | None = None
+    leaf_identity: tuple[int, int, int, int, int] | None = None
     try:
-        parent = os.stat(cgroup_parent, follow_symlinks=False)
+        parent_fd = os.open(
+            cgroup_parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        parent = os.fstat(parent_fd)
         if (
             not stat.S_ISDIR(parent.st_mode)
             or parent.st_uid != os.geteuid()
             or stat.S_IMODE(parent.st_mode) != 0o700
         ):
             raise OSError(errno.EPERM, "cgroup parent ownership mismatch")
-        leaf = os.path.join(cgroup_parent, f"self-test-{os.getpid()}")
-        os.mkdir(leaf, 0o700)
-        with open(os.path.join(leaf, "pids.max"), "w", encoding="ascii") as output:
-            output.write("512\n")
-        with open(os.path.join(leaf, "pids.max"), encoding="ascii") as source:
-            if source.read().strip() != "512":
-                raise OSError(errno.EIO, "cgroup pids.max mismatch")
+        leaf_name = f"self-test-{os.getpid()}"
+        os.mkdir(leaf_name, 0o700, dir_fd=parent_fd)
+        leaf_fd = os.open(
+            leaf_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        leaf = os.fstat(leaf_fd)
+        leaf_identity = (
+            leaf.st_dev,
+            leaf.st_ino,
+            stat.S_IFMT(leaf.st_mode),
+            stat.S_IMODE(leaf.st_mode),
+            leaf.st_uid,
+        )
+
+        def leaf_matches() -> bool:
+            if leaf_identity is None or leaf_name is None:
+                return False
+            try:
+                current = os.stat(leaf_name, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError:
+                return False
+            return (
+                (
+                    current.st_dev,
+                    current.st_ino,
+                    stat.S_IFMT(current.st_mode),
+                    stat.S_IMODE(current.st_mode),
+                    current.st_uid,
+                )
+                == leaf_identity
+            )
+
+        def write_control(name: str, raw: bytes) -> None:
+            descriptor = os.open(
+                name,
+                os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=leaf_fd,
+            )
+            try:
+                if os.write(descriptor, raw) != len(raw):
+                    raise OSError(errno.EIO, "short cgroup control write")
+            finally:
+                os.close(descriptor)
+
+        def read_control(name: str) -> bytes:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=leaf_fd,
+            )
+            try:
+                return os.read(descriptor, 4096)
+            finally:
+                os.close(descriptor)
+
+        if not leaf_matches():
+            raise OSError(errno.ESTALE, "cgroup leaf identity mismatch")
+        write_control("pids.max", b"512\n")
+        if read_control("pids.max").strip() != b"512":
+            raise OSError(errno.EIO, "cgroup pids.max mismatch")
         limits = (
             (resource.RLIMIT_NPROC, 512),
             (resource.RLIMIT_NOFILE, 4096),
@@ -1125,8 +1510,9 @@ def _platform_self_test(manifest_raw: bytes) -> None:
         def admit_limited_child() -> None:
             for kind, limit in limits:
                 resource.setrlimit(kind, (limit, limit))
-            with open(os.path.join(leaf, "cgroup.procs"), "w", encoding="ascii") as target:
-                target.write("0\n")
+            write_control("cgroup.procs", b"0\n")
+            os.set_inheritable(leaf_fd, False)
+            os.setsid()
 
         child_code = """
 import os
@@ -1147,31 +1533,49 @@ os.write(1, b'limited child: PASS\\n')
                 "-B",
                 "-c",
                 child_code,
-                "/" + leaf.removeprefix("/sys/fs/cgroup/"),
+                "/" + cgroup_parent.removeprefix("/sys/fs/cgroup/") + "/" + leaf_name,
             ],
             env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             close_fds=True,
+            pass_fds=(leaf_fd,),
             preexec_fn=admit_limited_child,
             timeout=10,
             check=False,
         )
         if result.returncode != 0 or result.stdout != b"limited child: PASS\n" or result.stderr:
             raise OSError(errno.EIO, "cgroup/rlimit child rejected")
-        with open(os.path.join(leaf, "cgroup.procs"), encoding="ascii") as source:
-            if source.read().strip():
-                raise OSError(errno.EBUSY, "cgroup child remained attached")
-        os.rmdir(leaf)
+        if not leaf_matches() or read_control("cgroup.procs").strip():
+            raise OSError(errno.EBUSY, "cgroup child remained attached")
+        os.rmdir(leaf_name, dir_fd=parent_fd)
+        leaf_name = None
     except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as error:
         raise ControlError("PLATFORM", "platform", "cgroup delegation is unavailable") from error
     finally:
-        if leaf is not None:
+        cleanup_error: OSError | None = None
+        if leaf_name is not None and parent_fd >= 0:
             try:
-                os.rmdir(leaf)
-            except OSError:
-                pass
+                if not leaf_matches():
+                    raise OSError(errno.ESTALE, "cgroup leaf replacement detected")
+                os.rmdir(leaf_name, dir_fd=parent_fd)
+                leaf_name = None
+            except OSError as error:
+                cleanup_error = error
+        for descriptor_name in ("leaf_fd", "parent_fd"):
+            descriptor = locals()[descriptor_name]
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError as error:
+                    cleanup_error = cleanup_error or error
+        if cleanup_error is not None:
+            raise ControlError(
+                "PLATFORM",
+                "platform",
+                "cgroup self-test cleanup failed",
+            ) from cleanup_error
 
 
 def bootstrap(
@@ -1214,15 +1618,10 @@ def bootstrap(
         "--run-attestation-fd",
         "9",
     ]
-    result = subprocess.run(
+    result = _run_controlled_child(
         arguments,
-        env=WORKER_ENVIRONMENT,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        environment=WORKER_ENVIRONMENT,
         pass_fds=(4, 7, 8, 9),
-        close_fds=True,
-        check=False,
         timeout=30 if mode == "self-test" else WORKER_INVOCATION_TIMEOUT,
     )
     expected = {

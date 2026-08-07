@@ -86,6 +86,7 @@ baseline-check:
 	python3 ./eval/runners/verify-baseline.py
 	./scripts/run-baseline-invalid-smoke
 	./scripts/run-baseline-failure-smoke
+	python3 ./scripts/check-baseline-chain
 
 gate-topology-check: override export ALIGN_LLM_HOSTED_CHECK_TARGETS := $(HOSTED_CHECK_TARGETS)
 gate-topology-check: override export ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS := $(CAPABLE_ONLY_CHECK_TARGETS)

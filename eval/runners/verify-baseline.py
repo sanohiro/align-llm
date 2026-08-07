@@ -247,6 +247,7 @@ def corpus_tasks(
         project_root / "eval" / "runners" / "record-baseline.py",
         project_root / "eval" / "runners" / "verify-baseline.py",
         project_root / "scripts" / "check-align-revision",
+        project_root / "scripts" / "check-baseline-chain",
         project_root / "scripts" / "finalize-canonical-baseline.py",
     }
     expected_codes = []

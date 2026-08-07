@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
 
 from fresh_attestation import (
@@ -42,6 +43,56 @@ def load_worker():
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+@contextmanager
+def fake_cgroup(module, temporary: Path):
+    parent = temporary / "fake-cgroup-parent"
+    parent.mkdir(mode=0o700)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    parent_identity = module.snapshot_fd(parent_fd)
+    original_open = module.open_cgroup_lease
+    original_read = module.cgroup_file_read
+    original_write = module.cgroup_file_write
+    counter = 0
+
+    def open_lease():
+        nonlocal counter
+        counter += 1
+        name = f"{module.ROOT_PREFIX}unit-{counter}"
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+        leaf_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        return module.CgroupLease(
+            os.dup(parent_fd),
+            parent_identity,
+            leaf_fd,
+            module.snapshot_fd(leaf_fd),
+            name,
+        )
+
+    def read_control(_leaf_fd: int, name: str, _limit: int = 4096) -> bytes:
+        if name == "cgroup.events":
+            return b"populated 0\n"
+        return b""
+
+    def write_control(_leaf_fd: int, _name: str, _raw: bytes) -> None:
+        return None
+
+    module.open_cgroup_lease = open_lease
+    module.cgroup_file_read = read_control
+    module.cgroup_file_write = write_control
+    try:
+        yield
+    finally:
+        module.open_cgroup_lease = original_open
+        module.cgroup_file_read = original_read
+        module.cgroup_file_write = original_write
+        os.close(parent_fd)
+        parent.rmdir()
 
 
 def digest_node(module, root: Path, staged_file_mode: str) -> OrderedDict:
@@ -379,8 +430,6 @@ def overlay_work_cleanup_case(module, temporary: Path) -> None:
     else:
         raise AssertionError("unknown overlay work entry was accepted")
     require(rejected.exists(), "unknown overlay work root was removed")
-    for descriptor in (rejected_root_fd, rejected_roots_fd, rejected_lock_fd):
-        os.close(descriptor)
 
 
 def aggregate_quota_case(module, temporary: Path) -> None:
@@ -547,33 +596,32 @@ def cleanup_replacement_case(module, temporary: Path) -> None:
         raise AssertionError("replacement private root was accepted for cleanup")
     require(marker.read_bytes() == b"replacement", "cleanup deleted a replacement root")
     require((moved / "owned").read_bytes() == b"owned", "cleanup changed the admitted root on mismatch")
-    for descriptor in (root_fd, roots_fd, lock_fd):
-        os.close(descriptor)
 
 
-def bounded_tool_cases(module) -> None:
+def bounded_tool_cases(module, temporary: Path) -> None:
     python_fd = os.open("/usr/bin/python3", os.O_RDONLY | os.O_CLOEXEC)
     try:
-        try:
-            module.run_tool(
-                python_fd,
-                ("python3", "-c", f"import os; os.write(1, b'x' * {module.MAX_STREAM_BYTES + 1})"),
-                timeout=5,
-            )
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("tool stream cap-plus-one was buffered or accepted")
-        try:
-            module.run_tool(
-                python_fd,
-                ("python3", "-c", "import time; time.sleep(5)"),
-                timeout=1,
-            )
-        except subprocess.TimeoutExpired:
-            pass
-        else:
-            raise AssertionError("tool deadline was not enforced")
+        with fake_cgroup(module, temporary):
+            try:
+                module.run_tool(
+                    python_fd,
+                    ("python3", "-c", f"import os; os.write(1, b'x' * {module.MAX_STREAM_BYTES + 1})"),
+                    timeout=5,
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("tool stream cap-plus-one was buffered or accepted")
+            try:
+                module.run_tool(
+                    python_fd,
+                    ("python3", "-c", "import time; time.sleep(5)"),
+                    timeout=1,
+                )
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                raise AssertionError("tool deadline was not enforced")
     finally:
         os.close(python_fd)
 
@@ -824,13 +872,14 @@ def main() -> int:
     module = load_worker()
     canonical_wire_cases(module)
     run_attestation_cases(module)
-    bounded_tool_cases(module)
     published_elf_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:
         temporary = Path(name)
+        bounded_tool_cases(module, temporary)
         digest_golden(module, temporary)
         cache_cases(module, temporary)
-        source_identity_cases(module, temporary)
+        with fake_cgroup(module, temporary):
+            source_identity_cases(module, temporary)
         private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)
         overlay_work_cleanup_case(module, temporary)
