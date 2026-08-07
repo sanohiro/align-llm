@@ -6,7 +6,7 @@ attestations; this file records durable project state.
 ## Active checkpoint (2026-08-07)
 
 - Branch: `agent/request6-adoption-contract-v2`, with corrected design content complete at
-  `4b75b55390a3f57c11755b5df3bb274d1b3fd22e`, based on merged `main` at
+  `af7b2016c17e09f9db6dfa1517070fe93d31d297`, based on merged `main` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. This handoff-only metadata update follows that
   design commit; no design content follows it.
 - Active goal: finish and merge the corrected Request 6 focused-adoption design, then implement
@@ -25,8 +25,12 @@ attestations; this file records durable project state.
   inventory; its setup-only `/private-tool-inventory` mount is detached before children start.
   Project scripts remain interpreter/data arguments, Cargo admission uses the 24 GiB materialization
   bound with the metadata reserve, and the exact capsule predicate/PAE golden is recorded in the
-  adoption gate. FRESH-IMAGE-REQUEST6 is a separate installed-profile prerequisite. A fresh
-  independent review is required.
+  adoption gate. The capsule now defines the complete `raw-tree/v1` preimage and exact
+  `HANDOFF.md` exclusion; `/usr/bin/bwrap` is the retained FD-27 pre-namespace executable; the
+  public ordinary profile is a direct runner `execve` with no preceding shell or `/usr/bin/env`;
+  `ordinary-adoption` is present in the supervisor ledger; and deferred golden/closure owners are
+  explicitly not claimed as passed by the docs-only gate. FRESH-IMAGE-REQUEST6 is a separate
+  installed-profile prerequisite. A fresh independent review of `af7b2016` is required.
 - PR #62 is superseded and must not be merged. The replacement design PR must include the corrected
   vectors and current handoff state.
 - Expected post-merge checkpoint: refresh `main` safely, perform the bounded design retrospective,
@@ -36,7 +40,7 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Run one fresh independent adversarial review of `4b75b553`, then update the design PR with its
+1. Run one fresh independent adversarial review of `af7b2016`, then update the design PR with its
    SHA-bound review envelope and merge it only after checks and all findings are resolved.
 2. Record the final review disposition on PR #62, close it as superseded, publish the replacement
    design PR, and complete its review/fix/merge evidence.
@@ -46,9 +50,9 @@ attestations; this file records durable project state.
 
 ## Latest verification
 
-- `make gate-topology-check`: PASS at `4b75b553`.
-- `git diff --check`: PASS at `4b75b553`.
-- Markdown fence parity: PASS (`docs/align-requests.md` 94, `docs/specs/check-gate-topology.md` 76).
+- `make gate-topology-check`: PASS at `af7b2016`.
+- `git diff --check`: PASS at `af7b2016`.
+- `for file in docs/align-requests.md docs/specs/check-gate-topology.md; do awk '/^```/ { count++ } END { if (count % 2 != 0) exit 1; print FILENAME ": " count }' "$file"; done`: PASS (96, 76) at `af7b2016`.
 - The design-only gate does not run source tests, `make check`, `make build`, or `make ci`; those
   checks are deferred until executable implementation or an executable contract boundary exists.
 
