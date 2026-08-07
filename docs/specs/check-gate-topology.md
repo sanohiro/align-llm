@@ -1697,6 +1697,11 @@ launcher invokes FD `27` with `execveat(AT_EMPTY_PATH)` and fixed `argv[0] = bwr
 Any closure-matrix shorthand that says the original descriptors are rewound means these
 byte-bearing memfds; identity-only descriptors are revalidated by their stated identity, bind,
 protocol, or exec contract instead.
+The dispatcher FD shorthand in the public-surface and closure tables has the same explicit scope:
+when it says the child has only FDs `4/6/8/15/16/18`, those are the inherited data and protocol
+descriptors. FD `14` is additionally retained in that child as the image-owned executable authority,
+is excluded from the data-descriptor list and Python `pass_fds`, and is closed only by failed cleanup
+or the successful `execveat(AT_EMPTY_PATH)` edge. No table entry permits any other inherited data FD.
 The supervisor maps a failed image, manifest, or ordinary nonce check to exit 1, empty stdout, and
 exactly `fresh compiler: ERROR TRUST supervisor\n`; no repository worker, Make process, or private
 root exists on that path. The worker runs either the fixed internal `capable-checks` Make graph or
