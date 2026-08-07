@@ -33,7 +33,7 @@ def bounded_diagnostic(value: str) -> str:
     return prefix + DIAGNOSTIC_TRUNCATION_MARKER
 
 
-def git_environment() -> dict[str, str]:
+def git_environment(*, use_baseline: bool = True) -> dict[str, str]:
     environment = {
         key: value for key, value in os.environ.items() if not key.startswith("GIT_")
     }
@@ -41,8 +41,27 @@ def git_environment() -> dict[str, str]:
     environment["GIT_ATTR_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment["GIT_GRAFT_FILE"] = os.devnull
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     environment["XDG_CONFIG_HOME"] = os.devnull
     environment["LC_ALL"] = "C"
+    if use_baseline:
+        fresh_names = (
+            "ALIGN_LLM_BASELINE_GIT_DIR",
+            "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+            "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+        )
+        fresh = [os.environ.get(name) for name in fresh_names]
+        if any(value is not None for value in fresh):
+            if any(not value for value in fresh):
+                raise BaselineError("fresh baseline Git identity is incomplete")
+            assert all(value is not None for value in fresh)
+            expected = dict(zip(("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"), fresh))
+            for name, value in expected.items():
+                if os.environ.get(name) != value:
+                    raise BaselineError("fresh baseline Git identity differs from the worker")
+            environment.update(expected)
     return environment
 
 
@@ -159,6 +178,7 @@ def artifact_manifest(
         project_root / "eval" / "runners" / "record-baseline.py",
         project_root / "eval" / "runners" / "verify-baseline.py",
         project_root / "scripts" / "check-align-revision",
+        project_root / "scripts" / "check-baseline-chain",
         project_root / "scripts" / "finalize-canonical-baseline.py",
     }
     for task_value in task_files:
@@ -439,12 +459,15 @@ def main() -> int:
 
         corpus_path = resolve_inside(project_root, args.corpus, "corpus")
         output_path = resolve_inside(project_root, args.output, "output")
-        align_repo = Path(
-            os.environ.get("ALIGN_REPO", str(project_root.parent / "align"))
-        ).resolve()
-        pinned_compiler = align_repo / "target" / "release" / "alignc"
-        checked_run(["make", "align-build"], project_root)
-        checked_run(["make", f"ALIGNC={pinned_compiler}", "build"], project_root)
+        if os.environ.get("ALIGN_LLM_FRESH_COMPILER") == "1":
+            checked_run(["make", "ALIGNC=/tools/fresh-alignc", "build"], project_root)
+        else:
+            align_repo = Path(
+                os.environ.get("ALIGN_REPO", str(project_root.parent / "align"))
+            ).resolve()
+            pinned_compiler = align_repo / "target" / "release" / "alignc"
+            checked_run(["make", "align-build"], project_root)
+            checked_run(["make", f"ALIGNC={pinned_compiler}", "build"], project_root)
         binary = (project_root / "main").resolve()
         for path, label in ((corpus_path, "corpus"), (binary, "align-llm binary")):
             if not path.is_file():

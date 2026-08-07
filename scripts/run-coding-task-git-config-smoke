@@ -49,6 +49,17 @@ modules = (
     ("eval/runners/verify-baseline.py", "git_environment"),
     ("scripts/finalize-canonical-baseline.py", "git_environment"),
 )
+
+
+def environment_for(module_path, function_name):
+    function = getattr(module_path, function_name)
+    if function_name == "git_environment" and module_path.__file__.endswith(
+        "eval/runners/record-baseline.py"
+    ):
+        return function(use_baseline=False)
+    return function()
+
+
 for relative_path, function_name in modules:
     path = project_root / relative_path
     spec = importlib.util.spec_from_file_location("git_environment_smoke", path)
@@ -56,7 +67,7 @@ for relative_path, function_name in modules:
         raise SystemExit(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    environment = getattr(module, function_name)()
+    environment = environment_for(module, function_name)
     if environment.get("GIT_ATTR_NOSYSTEM") != "1":
         raise SystemExit(f"{path} does not disable system Git attributes")
 
@@ -100,7 +111,7 @@ with tempfile.TemporaryDirectory() as temporary:
             check=False,
             capture_output=True,
             text=True,
-            env=getattr(module, function_name)(),
+            env=environment_for(module, function_name),
         )
         if result.returncode != 0 or result.stdout.strip() != "sample.txt: filter: unspecified":
             raise SystemExit(
@@ -110,6 +121,47 @@ with tempfile.TemporaryDirectory() as temporary:
 PY
 
 printf '%s\n' "system Git attributes: isolated"
+
+python3 - <<'PY'
+import importlib.util
+import os
+import shutil
+import stat
+import tempfile
+from pathlib import Path
+
+project_root = Path.cwd()
+path = project_root / "eval/runners/run-coding-task.py"
+spec = importlib.util.spec_from_file_location("coding_task_runner", path)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"cannot load {path}")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    source = root / "source"
+    source.mkdir()
+    (source / "plain.py").write_text("print('plain')\n", encoding="utf-8")
+    (source / "tool.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (source / "nested").mkdir()
+    (source / "nested" / "link").symlink_to("../plain.py")
+    (source / "plain.py").chmod(0o444)
+    (source / "tool.sh").chmod(0o555)
+    source.chmod(0o555)
+    checkout = root / "checkout"
+    shutil.copytree(source, checkout, symlinks=True)
+    module.normalize_pinned_checkout_modes(checkout)
+    if stat.S_IMODE((checkout / "plain.py").stat().st_mode) != 0o644:
+        raise SystemExit("read-only fixture lost writable non-executable mode")
+    if stat.S_IMODE((checkout / "tool.sh").stat().st_mode) != 0o755:
+        raise SystemExit("read-only fixture lost executable mode")
+    if not (checkout / "nested" / "link").is_symlink():
+        raise SystemExit("read-only fixture symlink was not preserved")
+
+PY
+
+printf '%s\n' "coding task read-only fixture modes: normalized"
 
 PATH="${tool_dir}:${PATH}" \
 PYTHONPATH="${python_path}" \

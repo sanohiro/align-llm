@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import ctypes
-import dis
 import hashlib
 import json
 import os
@@ -26,8 +25,27 @@ FIXTURE_GIT_ENV = {
     "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
 }
 PR_SET_CHILD_SUBREAPER = 36
-BWRAP_EXECUTABLE = Path(os.environ.get("ALIGN_LLM_BWRAP", "/usr/bin/bwrap"))
-PRLIMIT_EXECUTABLE = Path("/usr/bin/prlimit")
+FRESH_MODE = os.environ.get("ALIGN_LLM_FRESH_COMPILER") == "1"
+BWRAP_EXECUTABLE = (
+    Path(os.environ["ALIGN_LLM_BWRAP"])
+    if FRESH_MODE
+    else Path(os.environ.get("ALIGN_LLM_BWRAP", "/usr/bin/bwrap"))
+)
+PRLIMIT_EXECUTABLE = (
+    Path(os.environ["ALIGN_LLM_PRLIMIT"])
+    if FRESH_MODE
+    else Path(os.environ.get("ALIGN_LLM_PRLIMIT", "/usr/bin/prlimit"))
+)
+TOOL_ROOT = (
+    Path(os.environ["ALIGN_LLM_TOOL_ROOT"])
+    if FRESH_MODE
+    else Path(os.environ.get("ALIGN_LLM_TOOL_ROOT", "/usr/bin"))
+)
+PYTHON_EXECUTABLE = Path(
+    os.environ["ALIGN_LLM_PYTHON"]
+    if FRESH_MODE
+    else os.environ.get("ALIGN_LLM_PYTHON", sys.executable)
+).resolve()
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 COMMAND_OUTPUT_TRUNCATION_MARKER = b"\n[output truncated]"
 MAX_VALIDATION_TMPFS_BYTES = 64 * 1024 * 1024
@@ -42,6 +60,8 @@ RESOURCE_POLL_INTERVAL_SECONDS = 0.25
 BWRAP_PROBE_TIMEOUT_SECONDS = 2
 MAX_RESOURCE_SCAN_SECONDS = 0.1
 MAX_PROCESS_TREE_SCAN_SECONDS = 0.5
+VALIDATION_USERNS_ENV = "ALIGN_LLM_VALIDATION_USERNS_PATH"
+ACTIVE_FRESH_USERNS_FDS: set[int] = set()
 
 
 def enable_child_subreaper() -> bool:
@@ -397,10 +417,12 @@ def is_string_list(value: Any) -> bool:
 
 def resolve_inside(root: Path, relative: str, label: str) -> Path:
     candidate = (root / relative).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as error:
-        raise TaskError(f"{label} escapes the project root") from error
+    allowed = [root]
+    temporary = os.environ.get("ALIGN_LLM_TEMP_ROOT")
+    if temporary:
+        allowed.append(Path(temporary).resolve())
+    if not any(candidate == parent or candidate.is_relative_to(parent) for parent in allowed):
+        raise TaskError(f"{label} escapes the project and temporary roots")
     return candidate
 
 
@@ -412,6 +434,7 @@ def run(
     env: dict[str, str] | None = None,
     command_name: str | None = None,
     resource_check: ResourceCheck | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     display_name = command_name or argv[0]
     require_process_containment()
@@ -423,6 +446,8 @@ def run(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            close_fds=True,
+            pass_fds=pass_fds,
         )
     except OSError as error:
         raise TaskError(f"command failed to run: {display_name}: {error}") from error
@@ -461,11 +486,23 @@ def run(
 
 
 def fixture_environment() -> dict[str, str]:
-    environment = {
-        "HOME": "/tmp/home",
-        "PATH": "/usr/bin:/bin",
-        "TMPDIR": "/tmp",
-    }
+    if FRESH_MODE:
+        environment = {
+            "HOME": "/nonexistent",
+            "PATH": "/tools",
+            "TMPDIR": "/target/tmp",
+            "PYTHONHOME": "/usr",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        for name in ("LIBRARY_PATH", "LD_LIBRARY_PATH", "PKG_CONFIG_PATH"):
+            environment[name] = os.environ.get(name, "")
+    else:
+        environment = {
+            "HOME": "/tmp/home",
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": "/tmp",
+        }
     environment.update(FIXTURE_GIT_ENV)
     environment["GIT_CONFIG_NOSYSTEM"] = "1"
     environment["GIT_ATTR_NOSYSTEM"] = "1"
@@ -477,6 +514,9 @@ def fixture_environment() -> dict[str, str]:
 
 def validation_environment() -> dict[str, str]:
     environment = fixture_environment()
+    if FRESH_MODE:
+        environment["TMPDIR"] = "/tmp"
+        environment["ALIGNC_CACHE"] = "off"
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONNOUSERSITE"] = "1"
     return environment
@@ -484,11 +524,134 @@ def validation_environment() -> dict[str, str]:
 
 def validation_command(argv: list[str]) -> list[str]:
     if argv[0] == "python3":
-        return [str(Path(sys.executable).resolve()), *argv[1:]]
+        return [str(PYTHON_EXECUTABLE), *argv[1:]]
     return argv
 
 
-def sandbox_probe_command() -> list[str]:
+def active_fresh_userns_fds() -> tuple[int, ...]:
+    return tuple(sorted(ACTIVE_FRESH_USERNS_FDS))
+
+
+def close_fresh_userns_fds(fds: tuple[int, ...] | set[int]) -> None:
+    for descriptor in tuple(fds):
+        ACTIVE_FRESH_USERNS_FDS.discard(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
+def fresh_namespace_prefix() -> list[str]:
+    namespace_path = os.environ.get(VALIDATION_USERNS_ENV)
+    if not namespace_path:
+        raise TaskError(
+            "validation sandbox is unavailable: prepared user namespace path is required"
+        )
+    try:
+        namespace_fd = os.open(namespace_path, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError as error:
+        raise TaskError(
+            "validation sandbox is unavailable: prepared user namespace could not be opened"
+        ) from error
+    ACTIVE_FRESH_USERNS_FDS.add(namespace_fd)
+    arguments = [
+        str(BWRAP_EXECUTABLE),
+        "--clearenv",
+        "--die-with-parent",
+        "--new-session",
+        "--userns",
+        str(namespace_fd),
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-uts",
+        "--uid",
+        str(os.getuid()),
+        "--gid",
+        str(os.getgid()),
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "CAP_SYS_ADMIN",
+        "--cap-add",
+        "CAP_SETFCAP",
+        "--tmpfs",
+        "/",
+        "--size",
+        str(MAX_VALIDATION_TMPFS_BYTES),
+        "--tmpfs",
+        "/workspace",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+    for directory in (
+        "/tools",
+        "/target",
+        "/usr",
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/runtime",
+        "/tmp",
+        "/dev/shm",
+    ):
+        arguments.extend(("--dir", directory))
+    for path in ("/tools", "/usr", "/bin", "/lib", "/lib64", "/runtime"):
+        if Path(path).exists():
+            arguments.extend(("--ro-bind", path, path))
+    arguments.extend(
+        (
+            "--bind",
+            "/target/tmp",
+            "/target/tmp",
+            "--size",
+            str(MAX_VALIDATION_TMPFS_BYTES),
+            "--tmpfs",
+            "/tmp",
+            "--size",
+            str(MAX_VALIDATION_TMPFS_BYTES),
+            "--tmpfs",
+            "/dev/shm",
+        )
+    )
+    for name, value in validation_environment().items():
+        arguments.extend(("--setenv", name, value))
+    return arguments
+
+
+def sandbox_probe_command(
+    namespace_prefix: list[str] | None = None,
+) -> list[str]:
+    if FRESH_MODE:
+        prefix = (
+            namespace_prefix
+            if namespace_prefix is not None
+            else fresh_namespace_prefix()
+        )
+        return [
+            *prefix,
+            "--",
+            "/tools/mount-guard",
+            "--no-symlink-follow",
+            "/target/tmp",
+            "/workspace",
+            "/tmp",
+            "/dev/shm",
+            "--tmpfs-inodes",
+            "/",
+            "--tmpfs-inodes",
+            "/workspace",
+            "--tmpfs-inodes",
+            "/tmp",
+            "--tmpfs-inodes",
+            "/dev/shm",
+            "--",
+            str(PYTHON_EXECUTABLE),
+            "-c",
+            "pass",
+        ]
     return [
         str(BWRAP_EXECUTABLE),
         "--die-with-parent",
@@ -536,13 +699,15 @@ def sandbox_probe_command() -> list[str]:
     ]
 
 
-def require_sandbox_capability() -> None:
+def _require_sandbox_capability(command: list[str]) -> None:
     try:
         probe = subprocess.run(
-            sandbox_probe_command(),
+            command,
             check=False,
             capture_output=True,
             timeout=BWRAP_PROBE_TIMEOUT_SECONDS,
+            close_fds=True,
+            pass_fds=active_fresh_userns_fds(),
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise TaskError(
@@ -558,6 +723,14 @@ def require_sandbox_capability() -> None:
             "validation sandbox is unavailable: required bubblewrap namespaces "
             f"could not be created{suffix}"
         )
+
+
+def require_sandbox_capability() -> None:
+    previous_fds = set(ACTIVE_FRESH_USERNS_FDS)
+    try:
+        _require_sandbox_capability(sandbox_probe_command())
+    finally:
+        close_fresh_userns_fds(ACTIVE_FRESH_USERNS_FDS.difference(previous_fds))
 
 
 def validation_resource_limits(timeout_seconds: int) -> list[str]:
@@ -596,9 +769,42 @@ def validation_sandbox_command(
         raise TaskError(
             f"validation sandbox is unavailable: {PRLIMIT_EXECUTABLE} is required"
         )
-    require_sandbox_capability()
-
     resolved = validation_command(argv)
+    if FRESH_MODE:
+        previous_fds = set(ACTIVE_FRESH_USERNS_FDS)
+        try:
+            namespace_prefix = fresh_namespace_prefix()
+            _require_sandbox_capability(sandbox_probe_command(namespace_prefix))
+            return [
+                *namespace_prefix,
+                "--ro-bind",
+                str(checkout / ".git"),
+                str(checkout / ".git"),
+                "--chdir",
+                str(checkout),
+                "--",
+                "/tools/mount-guard",
+                "--no-symlink-follow",
+                "/target/tmp",
+                "/workspace",
+                "/tmp",
+                "/dev/shm",
+                "--tmpfs-inodes",
+                "/",
+                "--tmpfs-inodes",
+                "/workspace",
+                "--tmpfs-inodes",
+                "/tmp",
+                "--tmpfs-inodes",
+                "/dev/shm",
+                "--",
+                *validation_resource_limits(timeout_seconds),
+                *resolved,
+            ]
+        except BaseException:
+            close_fresh_userns_fds(ACTIVE_FRESH_USERNS_FDS.difference(previous_fds))
+            raise
+    require_sandbox_capability()
     executable = Path(resolved[0]).resolve()
     system_root = Path("/usr")
     python_root = Path(sys.base_prefix).resolve()
@@ -693,6 +899,7 @@ def git_output(checkout: Path, *args: str, nul_terminated: bool = False) -> str:
 
 def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str) -> None:
     shutil.copytree(source, checkout, symlinks=True)
+    normalize_pinned_checkout_modes(checkout)
     init = run(
         ["git", "init", "-q", "--initial-branch=main", "--object-format=sha1"],
         checkout,
@@ -730,6 +937,24 @@ def create_pinned_checkout(source: Path, checkout: Path, expected_revision: str)
         raise TaskError(
             f"fixture revision mismatch: expected {expected_revision}, got {actual_revision}"
         )
+
+
+def normalize_pinned_checkout_modes(checkout: Path) -> None:
+    """Make a copied fixture worktree writable while preserving Git's executable bit."""
+    for directory, child_directories, filenames in os.walk(checkout, followlinks=False):
+        current = Path(directory)
+        for name in (*child_directories, *filenames):
+            path = current / name
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                continue
+            if stat.S_ISDIR(metadata.st_mode):
+                path.chmod(0o755)
+            elif stat.S_ISREG(metadata.st_mode):
+                path.chmod(0o755 if metadata.st_mode & 0o111 else 0o644)
+            else:
+                raise TaskError(f"unsupported pinned fixture entry: {path}")
+    checkout.chmod(0o755)
 
 
 def print_command_output(label: str, result: subprocess.CompletedProcess[str]) -> None:
@@ -1087,7 +1312,14 @@ def validation_worktree_usage(
         body_error: tuple[type[BaseException], BaseException, Any] | None = None
         close_error: BaseException | None = None
         try:
-            with scan(current) as entries:
+            try:
+                context = scan(current)
+            except OSError as error:
+                require_scan_deadline()
+                if isinstance(error, FileNotFoundError) and current != checkout:
+                    continue
+                raise directory_error(current, error) from error
+            with context as entries:
                 entered = True
                 try:
                     require_scan_deadline()
@@ -1145,7 +1377,6 @@ def validation_worktree_usage(
             current_frame = sys._getframe()
             seen_contexts: set[int] = set()
             outer_error = True
-            scan_construction_error = False
             while (
                 candidate_error is not None
                 and id(candidate_error) not in seen_contexts
@@ -1158,12 +1389,6 @@ def validation_worktree_usage(
                 ):
                     candidate_traceback = candidate_traceback.tb_next
                 if candidate_traceback is not None:
-                    if (
-                        outer_error
-                        and candidate_traceback.tb_lasti
-                        in VALIDATION_WORKTREE_SCAN_CALL_OFFSETS
-                    ):
-                        scan_construction_error = True
                     if not outer_error:
                         cleanup_replaced_body = True
                     if not isinstance(candidate_error, Exception):
@@ -1185,12 +1410,6 @@ def validation_worktree_usage(
                 if not isinstance(error, OSError):
                     raise
                 require_scan_deadline()
-                if (
-                    isinstance(error, FileNotFoundError)
-                    and current != checkout
-                    and scan_construction_error
-                ):
-                    continue
                 raise directory_error(current, error) from error
             else:
                 close_error = error
@@ -1208,37 +1427,6 @@ def validation_worktree_usage(
                 raise directory_error(current, close_error) from close_error
             raise close_error
     return total_bytes, file_count, visible_inodes
-
-
-CALL_OPNAMES = frozenset(("CALL", "CALL_FUNCTION", "CALL_METHOD"))
-
-
-def loaded_name_call_offsets_from_instructions(
-    instructions: tuple[Any, ...], name: str
-) -> frozenset[int]:
-    offsets = []
-    for index, instruction in enumerate(instructions):
-        if not instruction.opname.startswith("LOAD_") or instruction.argval != name:
-            continue
-        for candidate in instructions[index + 1 :]:
-            if candidate.opname in CALL_OPNAMES:
-                offsets.append(candidate.offset)
-                break
-    return frozenset(offsets)
-
-
-def loaded_name_call_offsets(function: Callable[..., Any], name: str) -> frozenset[int]:
-    return loaded_name_call_offsets_from_instructions(
-        tuple(dis.get_instructions(function)),
-        name,
-    )
-
-
-VALIDATION_WORKTREE_SCAN_CALL_OFFSETS = loaded_name_call_offsets(
-    validation_worktree_usage, "scan"
-)
-if len(VALIDATION_WORKTREE_SCAN_CALL_OFFSETS) != 1:
-    raise RuntimeError("cannot identify the validation worktree scan call")
 
 
 def validation_process_usage(
@@ -1375,7 +1563,7 @@ def check_validation_resources(
         )
 
 
-def validate_candidate(
+def _validate_candidate(
     checkout: Path,
     patch: Path,
     allowed_edits: list[str],
@@ -1386,6 +1574,7 @@ def validate_candidate(
     resolved_validation_argv = validation_sandbox_command(
         validation_argv, checkout, validation_timeout_seconds
     )
+    validation_pass_fds = active_fresh_userns_fds()
     validation_env = validation_environment()
     resource_check = lambda process, deadline: check_validation_resources(
         checkout,
@@ -1400,6 +1589,7 @@ def validate_candidate(
         env=validation_env,
         command_name=validation_argv[0],
         resource_check=resource_check,
+        pass_fds=validation_pass_fds,
     )
     print_command_output("pre-repair validation", before)
     if before.returncode == 0:
@@ -1439,6 +1629,7 @@ def validate_candidate(
         env=validation_env,
         command_name=validation_argv[0],
         resource_check=resource_check,
+        pass_fds=validation_pass_fds,
     )
     print_command_output("post-repair validation", after)
     check_allowed_changes(
@@ -1462,6 +1653,28 @@ def validate_candidate(
         raise TaskError("validation changed the candidate Git index after repair")
     if after.returncode != 0:
         raise TaskError("candidate patch did not pass validation")
+
+
+def validate_candidate(
+    checkout: Path,
+    patch: Path,
+    allowed_edits: list[str],
+    validation_argv: list[str],
+    validation_timeout_seconds: int,
+    source_revision: str,
+) -> None:
+    previous_fds = set(ACTIVE_FRESH_USERNS_FDS)
+    try:
+        _validate_candidate(
+            checkout,
+            patch,
+            allowed_edits,
+            validation_argv,
+            validation_timeout_seconds,
+            source_revision,
+        )
+    finally:
+        close_fresh_userns_fds(ACTIVE_FRESH_USERNS_FDS.difference(previous_fds))
 
 
 def main() -> int:

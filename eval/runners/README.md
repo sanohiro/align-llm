@@ -12,7 +12,9 @@ eval/runners/run-fixed.sh eval/tasks/smoke-v1.json
 ```
 
 `run-coding-task.py` materializes a fixture as a deterministic SHA-1 Git commit in a temporary
-directory. It checks the pinned revision, requires validation to fail before repair, applies a
+directory. It normalizes copied regular files and directories to writable `0644`/`0755` modes while
+preserving Git's executable bit, because a read-only source mount may expose the same inputs as
+`0444`/`0555`. It checks the pinned revision, requires validation to fail before repair, applies a
 candidate patch, enforces the edit allowlist, and requires validation to pass afterward. Candidate
 validation runs in a bubblewrap sandbox with isolated process, mount, IPC, and network namespaces;
 only the temporary checkout worktree is writable while its `.git` metadata remains read-only, and

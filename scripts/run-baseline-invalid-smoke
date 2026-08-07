@@ -4,11 +4,27 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 baseline="${project_root}/eval/baselines/coding-v1-reference.json"
-invalid_baseline="$(mktemp "${project_root}/eval/baselines/.invalid.XXXXXX.json")"
-output_file="$(mktemp)"
+scratch_root="${ALIGN_LLM_TEMP_ROOT:-${TMPDIR:-/tmp}}"
+export ALIGN_LLM_TEMP_ROOT="${scratch_root}"
+invalid_baseline="$(mktemp "${scratch_root}/invalid-baseline.XXXXXX.json")"
+output_file="$(mktemp "${scratch_root}/baseline-output.XXXXXX")"
 replacement_namespace="refs/align-llm-smoke/replace-${BASHPID}"
 replacement_ref=""
-git_common_dir="$(git -C "${project_root}" rev-parse --path-format=absolute --git-common-dir)"
+scratch_git=""
+if [[ "${ALIGN_LLM_FRESH_COMPILER:-}" == "1" ]]; then
+  scratch_git="$(mktemp -d "${scratch_root}/baseline-git.XXXXXX")"
+  cp -a "${ALIGN_LLM_BASELINE_GIT_DIR}/." "${scratch_git}/"
+  chmod -R u+rwX "${scratch_git}"
+  export ALIGN_LLM_BASELINE_GIT_DIR="${scratch_git}"
+  export ALIGN_LLM_BASELINE_GIT_COMMON_DIR="${scratch_git}"
+  export ALIGN_LLM_BASELINE_GIT_WORK_TREE="${project_root}"
+  export GIT_DIR="${scratch_git}"
+  export GIT_COMMON_DIR="${scratch_git}"
+  export GIT_WORK_TREE="${project_root}"
+  git_common_dir="${scratch_git}"
+else
+  git_common_dir="$(git -C "${project_root}" rev-parse --path-format=absolute --git-common-dir)"
+fi
 cleanup() {
   status=$?
   rm -f "${invalid_baseline}" "${output_file}"
@@ -16,6 +32,9 @@ cleanup() {
     git -C "${project_root}" update-ref -d "${replacement_ref}" || true
   fi
   rmdir "${git_common_dir}/${replacement_namespace}" 2>/dev/null || true
+  if [[ -n "${scratch_git}" ]]; then
+    rm -r "${scratch_git}"
+  fi
   # Keep the shared parent: another concurrent smoke invocation may be using it.
   exit "${status}"
 }
@@ -291,6 +310,7 @@ fi
 printf '%s\n' "unrelated baseline Python runtime: rejected"
 
 python3 - <<'PY'
+import importlib.machinery
 import importlib.util
 import os
 import subprocess
@@ -298,8 +318,92 @@ import sys
 import tempfile
 from pathlib import Path
 
+for name in (
+    "ALIGN_LLM_BASELINE_GIT_DIR",
+    "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+    "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_WORK_TREE",
+):
+    os.environ.pop(name, None)
+
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
+
+chain_path = Path("scripts/check-baseline-chain").resolve()
+chain_loader = importlib.machinery.SourceFileLoader("check_baseline_chain", str(chain_path))
+chain_spec = importlib.util.spec_from_loader("check_baseline_chain", chain_loader)
+if chain_spec is None or chain_spec.loader is None:
+    raise RuntimeError("cannot load baseline chain checker")
+chain = importlib.util.module_from_spec(chain_spec)
+chain_spec.loader.exec_module(chain)
+saved_fresh = {
+    name: os.environ.get(name)
+    for name in (
+        "ALIGN_LLM_FRESH_COMPILER",
+        "ALIGN_LLM_TOOL_ROOT",
+        "ALIGN_LLM_BASELINE_GIT_DIR",
+        "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+        "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+    )
+}
+try:
+    os.environ.update(
+        {
+            "ALIGN_LLM_FRESH_COMPILER": "1",
+            "ALIGN_LLM_TOOL_ROOT": "/tools",
+            "ALIGN_LLM_BASELINE_GIT_DIR": "/baseline-git",
+            "ALIGN_LLM_BASELINE_GIT_COMMON_DIR": "/baseline-git",
+            "ALIGN_LLM_BASELINE_GIT_WORK_TREE": "/workspace",
+            "GIT_DIR": "/baseline-git",
+            "GIT_COMMON_DIR": "/baseline-git",
+            "GIT_WORK_TREE": "/workspace",
+        }
+    )
+    selected = chain.git_environment()
+    if selected["PATH"] != "/tools" or any(
+        selected[name] != "/baseline-git"
+        for name in ("GIT_DIR", "GIT_COMMON_DIR")
+    ) or selected["GIT_WORK_TREE"] != "/workspace":
+        raise RuntimeError("fresh baseline chain did not select the staged Git PATH")
+    os.environ["GIT_DIR"] = "/other-git"
+    try:
+        chain.git_environment()
+    except chain.BaselineChainError:
+        pass
+    else:
+        raise RuntimeError("different fresh baseline Git view was accepted")
+    os.environ["GIT_DIR"] = "/baseline-git"
+    os.environ.pop("ALIGN_LLM_TOOL_ROOT")
+    try:
+        chain.git_environment()
+    except chain.BaselineChainError:
+        pass
+    else:
+        raise RuntimeError("incomplete fresh baseline Git executable settings were accepted")
+    os.environ.pop("ALIGN_LLM_FRESH_COMPILER")
+    os.environ["ALIGN_LLM_TOOL_ROOT"] = "/host-tools"
+    try:
+        chain.git_environment()
+    except chain.BaselineChainError:
+        pass
+    else:
+        raise RuntimeError("different fresh baseline Git tool root was accepted")
+    for name in saved_fresh:
+        os.environ.pop(name, None)
+    if chain.git_environment()["PATH"] != "/usr/bin:/bin":
+        raise RuntimeError("ordinary baseline chain did not retain the host Git PATH")
+finally:
+    for name, value in saved_fresh.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
 module_path = Path("eval/runners/record-baseline.py").resolve()
 spec = importlib.util.spec_from_file_location("record_baseline", module_path)
 if spec is None or spec.loader is None:
@@ -354,8 +458,9 @@ fi
 mkdir -p "${git_common_dir}/${replacement_namespace}"
 git update-ref "${replacement_ref}" "${replacement_target}"
 ordinary_tree="$(
-  GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
-    git rev-parse "${source_commit}^{tree}"
+  env -u GIT_NO_REPLACE_OBJECTS \
+    GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
+      git rev-parse "${source_commit}^{tree}"
 )"
 source_tree="$(
   GIT_NO_REPLACE_OBJECTS=1 \

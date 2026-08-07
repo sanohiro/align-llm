@@ -1,0 +1,1415 @@
+#!/usr/bin/env python3
+"""Focused format, materialization, and failure-contract checks for FRESH-WORKER."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+from collections import OrderedDict
+from contextlib import contextmanager
+from pathlib import Path
+
+from fresh_attestation import (
+    IMAGE_KEY_ID,
+    INVOCATION_PREDICATE_TYPE,
+    RUN_KEY_ID,
+    ed25519_public_key,
+    signed_envelope,
+)
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+WORKER = REPOSITORY / "scripts/fresh-align-compiler"
+
+
+def load_worker():
+    loader = importlib.machinery.SourceFileLoader("fresh_align_compiler", str(WORKER))
+    specification = importlib.util.spec_from_loader(loader.name, loader)
+    if specification is None:
+        raise AssertionError("worker module specification is unavailable")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+@contextmanager
+def fake_cgroup(module, temporary: Path):
+    parent = temporary / "fake-cgroup-parent"
+    parent.mkdir(mode=0o700)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    parent_identity = module.snapshot_fd(parent_fd)
+    original_open = module.open_cgroup_lease
+    original_read = module.cgroup_file_read
+    original_write = module.cgroup_file_write
+    original_membership = module.cgroup_child_membership
+    counter = 0
+
+    def open_lease():
+        nonlocal counter
+        counter += 1
+        name = f"{module.ROOT_PREFIX}unit-{counter}"
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+        leaf_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        return module.CgroupLease(
+            os.dup(parent_fd),
+            parent_identity,
+            leaf_fd,
+            module.snapshot_fd(leaf_fd),
+            name,
+        )
+
+    def read_control(_leaf_fd: int, name: str, _limit: int = 4096) -> bytes:
+        if name == "cgroup.events":
+            return b"populated 0\n"
+        return b""
+
+    def write_control(_leaf_fd: int, _name: str, _raw: bytes) -> None:
+        return None
+
+    module.open_cgroup_lease = open_lease
+    module.cgroup_file_read = read_control
+    module.cgroup_file_write = write_control
+    module.cgroup_child_membership = lambda _lease, _pid: None
+    try:
+        yield
+    finally:
+        module.open_cgroup_lease = original_open
+        module.cgroup_file_read = original_read
+        module.cgroup_file_write = original_write
+        module.cgroup_child_membership = original_membership
+        os.close(parent_fd)
+        parent.rmdir()
+
+
+def digest_node(module, root: Path, staged_file_mode: str) -> OrderedDict:
+    entries = []
+    for child in sorted(root.iterdir(), key=lambda path: os.fsencode(path.name)):
+        value = child.lstat()
+        if stat.S_ISDIR(value.st_mode):
+            node = digest_node(module, child, staged_file_mode)
+        else:
+            raw = child.read_bytes()
+            node = OrderedDict(
+                (
+                    ("kind", "file"),
+                    ("mode", f"{stat.S_IMODE(value.st_mode):04o}"),
+                    ("staged_mode", staged_file_mode),
+                    ("size", len(raw)),
+                    ("sha256", hashlib.sha256(raw).hexdigest()),
+                    ("entries", []),
+                )
+            )
+        entries.append(OrderedDict((("name", child.name), *node.items())))
+    value = root.lstat()
+    node = OrderedDict(
+        (
+            ("kind", "dir"),
+            ("mode", f"{stat.S_IMODE(value.st_mode):04o}"),
+            ("staged_mode", "0700"),
+            ("size", 0),
+            ("sha256", "0" * 64),
+            ("entries", entries),
+        )
+    )
+    node["sha256"] = module.sha256(module.digest_tree_preimage(node))
+    return node
+
+
+def canonical_wire_cases(module) -> None:
+    value = OrderedDict(
+        (
+            ("schema_version", 1),
+            ("name", "a\n\t\"\\\b\f\r"),
+            ("values", [None, True, False, 0, 18446744073709551615]),
+        )
+    )
+    raw = module.canonical_json(value)
+    require(module.parse_canonical(raw, len(raw)) == value, "canonical round trip failed")
+    for invalid in (
+        b'{"a":1,"a":2}\n',
+        b'{"a": 1}',
+        b'{\n  "a": -1\n}\n',
+        b'{\n  "a": 1.0\n}\n',
+        b'{\n  "a": NaN\n}\n',
+    ):
+        try:
+            module.parse_canonical(invalid, 1024)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        raise AssertionError(f"invalid canonical JSON accepted: {invalid!r}")
+
+
+def digest_golden(module, temporary: Path) -> None:
+    source = temporary / "golden"
+    source.mkdir(mode=0o755)
+    (source / "a").write_bytes(b"abc")
+    (source / "a").chmod(0o644)
+    node = digest_node(module, source, "0444")
+    require(
+        node["sha256"] == "595f8a4c893a5e141d751b0c1e00d709790a5c7632edacf7fe26442a91c509be",
+        "digest-tree golden changed",
+    )
+    count, size = module.validate_tree_manifest(node, str(source))
+    require((count, size) == (2, 3), "digest-tree summary changed")
+    destination = temporary / "copy"
+    module.copy_tree_manifest(node, source, destination)
+    require((destination / "a").read_bytes() == b"abc", "runtime copy bytes changed")
+    require(stat.S_IMODE((destination / "a").stat().st_mode) == 0o444, "runtime staged mode changed")
+
+    single_source = temporary / "single-runtime"
+    single_source.write_bytes(b"single runtime file")
+    single_source.chmod(0o755)
+    single_node = OrderedDict(
+        (
+            ("kind", "file"),
+            ("mode", "0755"),
+            ("staged_mode", "0555"),
+            ("size", single_source.stat().st_size),
+            ("sha256", hashlib.sha256(single_source.read_bytes()).hexdigest()),
+            ("entries", []),
+        )
+    )
+    require(
+        module.validate_tree_manifest(single_node, str(single_source))
+        == (1, single_source.stat().st_size),
+        "single-file runtime manifest was rejected",
+    )
+    single_destination = temporary / "single-runtime-copy"
+    module.copy_tree_manifest(single_node, single_source, single_destination)
+    require(
+        single_destination.read_bytes() == single_source.read_bytes()
+        and stat.S_IMODE(single_destination.stat().st_mode) == 0o555,
+        "single-file runtime copy changed",
+    )
+
+    changed = OrderedDict(node)
+    changed["sha256"] = "0" * 64
+    try:
+        module.validate_tree_manifest(changed, str(source))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("wrong structural digest accepted")
+
+    runtime = temporary / "runtime-hardlinks"
+    runtime.mkdir(mode=0o755)
+    (runtime / "original").write_bytes(b"shared runtime bytes")
+    (runtime / "original").chmod(0o644)
+    os.link(runtime / "original", runtime / "alias")
+    runtime_node = digest_node(module, runtime, "0444")
+    require(
+        module.validate_tree_manifest(runtime_node, str(runtime)) == (3, 40),
+        "stable runtime hardlinks were rejected",
+    )
+    runtime_copy = temporary / "runtime-hardlinks-copy"
+    module.copy_tree_manifest(runtime_node, runtime, runtime_copy)
+    require(
+        (runtime_copy / "original").read_bytes()
+        == (runtime_copy / "alias").read_bytes()
+        == b"shared runtime bytes",
+        "runtime hardlink bytes changed during private copy",
+    )
+    cache_node = digest_node(module, runtime, "0600")
+    try:
+        module.validate_tree_manifest(cache_node, str(runtime), policy="cache")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("cache hardlinks were accepted")
+
+
+def cache_cases(module, temporary: Path) -> None:
+    root = temporary / "cargo"
+    path = root / "registry/index"
+    path.mkdir(parents=True, mode=0o755)
+    (root / "git/checkouts").mkdir(parents=True, mode=0o755)
+    (root / "git/db").mkdir(mode=0o755)
+    (root / "registry/cache").mkdir(mode=0o755)
+    (root / "registry/src").mkdir(mode=0o755)
+    (path / "a").write_bytes(b"abc")
+    (path / "a").chmod(0o644)
+    node = digest_node(module, root, "0600")
+    count, size = module.validate_tree_manifest(node, str(root), policy="cache")
+    manifest = OrderedDict(
+        (
+            ("schema_version", 2),
+            ("allowed_prefixes", list(module.ALLOWED_CACHE_PREFIXES)),
+            ("root", node),
+            ("entry_count", count - 1),
+            ("total_size", size),
+        )
+    )
+    manifest_path = temporary / "cache.json"
+    manifest_raw = module.canonical_json(manifest)
+    manifest_path.write_bytes(manifest_raw)
+    control = {
+        "cargo_cache": {
+            "root": str(root),
+            "manifest": str(manifest_path),
+            "manifest_sha256": module.sha256(manifest_raw),
+            "entry_count": count - 1,
+        }
+    }
+    module.validate_cache(control)
+    destination = temporary / "cargo-copy"
+    destination.mkdir(mode=0o700)
+    module.copy_cache(control, manifest, destination)
+    require((destination / "registry/index/a").read_bytes() == b"abc", "cache copy changed")
+    require(stat.S_IMODE((destination / "registry/index/a").stat().st_mode) == 0o600, "cache mode changed")
+
+
+def cgroup_membership_cases(module, temporary: Path) -> None:
+    parent = temporary / "membership-parent"
+    parent.mkdir(mode=0o700)
+    leaf_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    original_read = module.cgroup_file_read
+    try:
+        values = {"cgroup.procs": b"123\n456\n", "cgroup.threads": b"456\n123\n"}
+        module.cgroup_file_read = lambda _fd, name, _limit=4096: values[name]
+        require(
+            module.cgroup_members(leaf_fd, "cgroup.procs") == (123, 456),
+            "cgroup membership ordering changed",
+        )
+        try:
+            module.require_cgroup_empty_fd(leaf_fd)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("nonempty cgroup admission was accepted")
+        for raw in (b"0\n", b"bad\n", b"7\n7\n"):
+            module.cgroup_file_read = lambda _fd, _name, _limit=4096, raw=raw: raw
+            try:
+                module.cgroup_members(leaf_fd, "cgroup.procs")
+            except OSError:
+                pass
+            else:
+                raise AssertionError(f"malformed cgroup membership was accepted: {raw!r}")
+    finally:
+        module.cgroup_file_read = original_read
+        os.close(leaf_fd)
+
+
+def cgroup_removal_cases(module, temporary: Path) -> None:
+    parent = temporary / "cgroup-removal-parent"
+    parent.mkdir(mode=0o700)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    original_empty = module.require_cgroup_empty_fd
+    module.require_cgroup_empty_fd = lambda _fd: None
+    try:
+        leaf_name = module.ROOT_PREFIX + "removal"
+        leaf = parent / leaf_name
+        leaf.mkdir(mode=0o700)
+        leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        lease = module.CgroupLease(
+            parent_fd,
+            module.snapshot_fd(parent_fd),
+            leaf_fd,
+            module.snapshot_fd(leaf_fd),
+            leaf_name,
+        )
+        module.remove_cgroup_leaf(lease)
+        require(not leaf.exists(), "cgroup leaf remained after descriptor-relative rmdir")
+        os.close(leaf_fd)
+
+        leaf = parent / leaf_name
+        leaf.mkdir(mode=0o700)
+        leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        lease = module.CgroupLease(
+            parent_fd,
+            module.snapshot_fd(parent_fd),
+            leaf_fd,
+            module.snapshot_fd(leaf_fd),
+            leaf_name,
+        )
+        saved = parent / (leaf_name + "-saved")
+        leaf.rename(saved)
+        leaf.mkdir(mode=0o700)
+        try:
+            module.remove_cgroup_leaf(lease)
+        except module.CleanupError:
+            pass
+        else:
+            raise AssertionError("replaced cgroup leaf was accepted")
+        require(leaf.exists(), "replaced cgroup leaf was removed")
+        saved.rmdir()
+        leaf.rmdir()
+        os.close(leaf_fd)
+    finally:
+        module.require_cgroup_empty_fd = original_empty
+        os.close(parent_fd)
+        parent.rmdir()
+
+
+def materialization_mutation_cases(module, temporary: Path) -> None:
+    source = temporary / "materialization-race"
+    source.mkdir(mode=0o755)
+    (source / "nested").mkdir(mode=0o755)
+    (source / "nested" / "value").write_bytes(b"stable")
+    node = digest_node(module, source, "0444")
+    original_open = module.open_manifest_source
+    original_listdir = module.os.listdir
+    state: dict[str, int] = {}
+
+    def capture_open(path: Path):
+        descriptor, retained = original_open(path)
+        state["root_fd"] = descriptor
+        return descriptor, retained
+
+    def add_after_root_list(path):
+        result = original_listdir(path)
+        if path == state.get("root_fd") and "added" not in state:
+            (source / "added").write_bytes(b"late")
+            state["added"] = 1
+        return result
+
+    module.open_manifest_source = capture_open
+    module.os.listdir = add_after_root_list
+    try:
+        try:
+            module.copy_tree_manifest(node, source, temporary / "materialization-race-copy")
+        except OSError:
+            pass
+        else:
+            raise AssertionError("post-enumeration source addition was accepted")
+    finally:
+        module.open_manifest_source = original_open
+        module.os.listdir = original_listdir
+
+    replacement_source = temporary / "materialization-replace"
+    replacement_source.mkdir(mode=0o755)
+    (replacement_source / "value").write_bytes(b"before")
+    replacement_node = digest_node(module, replacement_source, "0444")
+    state = {}
+
+    def capture_replace_open(path: Path):
+        descriptor, retained = original_open(path)
+        state["root_fd"] = descriptor
+        return descriptor, retained
+
+    def replace_after_root_list(path):
+        result = original_listdir(path)
+        if path == state.get("root_fd") and "replaced" not in state:
+            replacement = replacement_source / "replacement"
+            replacement.write_bytes(b"after")
+            os.replace(replacement, replacement_source / "value")
+            state["replaced"] = 1
+        return result
+
+    module.open_manifest_source = capture_replace_open
+    module.os.listdir = replace_after_root_list
+    try:
+        try:
+            module.copy_tree_manifest(
+                replacement_node,
+                replacement_source,
+                temporary / "materialization-replace-copy",
+            )
+        except OSError:
+            pass
+        else:
+            raise AssertionError("post-enumeration source replacement was accepted")
+    finally:
+        module.open_manifest_source = original_open
+        module.os.listdir = original_listdir
+
+    read_fifo = temporary / "materialization-read-fifo"
+    os.mkfifo(read_fifo, 0o644)
+    original_os_open = module.os.open
+    read_fifo_opened = {}
+
+    def guard_read_fifo_open(path, flags, *args, **kwargs):
+        if os.fspath(path) == os.fspath(read_fifo):
+            require(flags & os.O_NONBLOCK, "read_path opened a raced FIFO without O_NONBLOCK")
+            read_fifo_opened["seen"] = True
+        return original_os_open(path, flags, *args, **kwargs)
+
+    module.os.open = guard_read_fifo_open
+    try:
+        try:
+            module.read_path(str(read_fifo), module.MAX_FILE_BYTES)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("read_path accepted a FIFO")
+        require(read_fifo_opened.get("seen"), "read_path FIFO fixture was not opened")
+    finally:
+        module.os.open = original_os_open
+        read_fifo.unlink()
+
+    fifo_source = temporary / "materialization-copy-fifo"
+    fifo_source.mkdir(mode=0o755)
+    os.mkfifo(fifo_source / "value", 0o644)
+    fifo_node = OrderedDict(
+        (
+            ("kind", "dir"),
+            ("mode", "0755"),
+            ("staged_mode", "0700"),
+            ("size", 0),
+            ("sha256", "0" * 64),
+            (
+                "entries",
+                [
+                    OrderedDict(
+                        (
+                            ("name", "value"),
+                            ("kind", "file"),
+                            ("mode", "0644"),
+                            ("staged_mode", "0444"),
+                            ("size", 0),
+                            ("sha256", "0" * 64),
+                            ("entries", []),
+                        )
+                    )
+                ],
+            ),
+        )
+    )
+    copy_fifo_opened = {}
+
+    def guard_copy_fifo_open(path, flags, *args, **kwargs):
+        if os.fsdecode(path) == "value" and "dir_fd" in kwargs:
+            require(flags & os.O_NONBLOCK, "manifest copy opened a raced FIFO without O_NONBLOCK")
+            copy_fifo_opened["seen"] = True
+        return original_os_open(path, flags, *args, **kwargs)
+
+    module.os.open = guard_copy_fifo_open
+    try:
+        try:
+            module.copy_tree_manifest(fifo_node, fifo_source, temporary / "materialization-copy-fifo-out")
+        except OSError:
+            pass
+        else:
+            raise AssertionError("manifest copy accepted a FIFO")
+        require(copy_fifo_opened.get("seen"), "manifest copy FIFO fixture was not opened")
+    finally:
+        module.os.open = original_os_open
+        (fifo_source / "value").unlink()
+
+    post_source = temporary / "materialization-post-write"
+    post_source.mkdir(mode=0o755)
+    (post_source / "value").write_bytes(b"stable")
+    post_node = digest_node(module, post_source, "0444")
+    post_destination = temporary / "materialization-post-write-copy"
+    original_os_close = module.os.close
+    original_os_write = module.os.write
+    post_state: dict[str, int] = {}
+
+    def capture_post_destination_open(path, flags, *args, **kwargs):
+        descriptor = original_os_open(path, flags, *args, **kwargs)
+        if os.fspath(path) == os.fspath(post_destination / "value"):
+            post_state["destination_fd"] = descriptor
+        return descriptor
+
+    def mutate_before_post_snapshot(descriptor):
+        if descriptor == post_state.get("destination_fd") and "mutated" not in post_state:
+            source_descriptor = original_os_open(
+                post_source / "value", os.O_WRONLY | os.O_CLOEXEC
+            )
+            try:
+                require(
+                    original_os_write(source_descriptor, b"mutate") == len(b"mutate"),
+                    "post-copy mutation fixture write was short",
+                )
+            finally:
+                original_os_close(source_descriptor)
+            post_state["mutated"] = 1
+        return original_os_close(descriptor)
+
+    module.os.open = capture_post_destination_open
+    module.os.close = mutate_before_post_snapshot
+    try:
+        try:
+            module.copy_tree_manifest(post_node, post_source, post_destination)
+        except (OSError, ValueError):
+            pass
+        else:
+            raise AssertionError("same-size post-write source mutation was accepted")
+        require(post_state.get("mutated"), "post-write mutation fixture did not run")
+    finally:
+        module.os.open = original_os_open
+        module.os.close = original_os_close
+
+
+def cleanup_quarantine_race_case(module, temporary: Path) -> None:
+    roots = temporary / "quarantine-roots"
+    roots.mkdir(mode=0o700)
+    root_name = module.ROOT_PREFIX + "quarantine-race"
+    admitted = roots / root_name
+    admitted.mkdir(mode=0o700)
+    (admitted / "owned").write_bytes(b"owned")
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    lock = temporary / "quarantine-lock"
+    lock.write_bytes(b"")
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        module.snapshot_fd(roots_fd),
+        root_fd,
+        module.snapshot_fd(root_fd),
+        root_name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    moved = roots / "quarantine-admitted-root"
+    original_rename = module.rename_noreplace
+    state = {"injected": False}
+
+    def replace_before_move(old_directory, old_name, new_directory, new_name):
+        if (
+            old_directory == roots_fd
+            and old_name == os.fsencode(root_name)
+            and not state["injected"]
+        ):
+            admitted.rename(moved)
+            admitted.mkdir(mode=0o700)
+            (admitted / "replacement-marker").write_bytes(b"replacement")
+            state["injected"] = True
+        return original_rename(old_directory, old_name, new_directory, new_name)
+
+    module.rename_noreplace = replace_before_move
+    try:
+        try:
+            module.cleanup(admission)
+        except module.CleanupError:
+            pass
+        else:
+            raise AssertionError("root replacement before quarantine was accepted")
+    finally:
+        module.rename_noreplace = original_rename
+    require((admitted / "replacement-marker").read_bytes() == b"replacement", "quarantine deleted replacement")
+    require((moved / "owned").read_bytes() == b"owned", "quarantine changed admitted root")
+
+
+def public_error_cases(module) -> None:
+    error = module.WorkerError("BUILD", "build")
+    require((error.category, error.phase, error.cleanup_failed) == ("BUILD", "build", False), "error envelope changed")
+    require("CLEANUP" not in module.PUBLIC_CATEGORIES, "cleanup became a primary category")
+    require(module.ROOT_CHILDREN[-1] == "descriptor", "private-root layout changed")
+
+
+def build_linker_case(module) -> None:
+    require(
+        module.RUST_LINKER_NAMESPACE_PATH == "/tools/cc",
+        "Rust linker entry point changed from the authenticated C driver",
+    )
+
+
+def compiler_materialization_case(module, temporary: Path) -> None:
+    source = temporary / "cargo-output"
+    source.write_bytes(b"cargo output with a stable hard link\n")
+    source.chmod(0o755)
+    alias = temporary / "cargo-output-alias"
+    os.link(source, alias)
+    target = temporary / "fresh-bundle-output"
+    size, digest = module.install_file(source, target, 0o555, single_link=False)
+    value = target.lstat()
+    require(source.lstat().st_nlink == 2, "Cargo hardlink fixture was not created")
+    require(value.st_nlink == 1, "compiler materialization retained a hard link")
+    require(stat.S_IMODE(value.st_mode) == 0o555, "compiler materialization mode changed")
+    target_raw = target.read_bytes()
+    require(
+        (size, digest) == (len(target_raw), module.sha256(target_raw)),
+        "compiler materialization digest changed",
+    )
+    try:
+        module.install_file(source, temporary / "single-link-reject", 0o444)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("default compiler copy accepted a hard-linked source")
+
+
+def run_attestation_cases(module) -> None:
+    seed = bytes(range(32))
+    public_key = ed25519_public_key(seed)
+    manifest_raw = module.canonical_json(OrderedDict((('schema_version', 2),)))
+    predicate = OrderedDict(
+        (
+            ("schema_version", 1),
+            ("image_attestation_sha256", "1" * 64),
+            ("manifest_sha256", module.sha256(manifest_raw)),
+            ("repository_object_format", "sha1"),
+            ("repository_head", "2" * 40),
+            ("align_repo_relative", "../align"),
+            ("controller_path", module.CONTROLLER_PATH),
+            ("controller_sha256", "3" * 64),
+            ("supervisor_identity", IMAGE_KEY_ID),
+            ("supervisor_version", module.SUPERVISOR_VERSION),
+            ("supervisor_key_id", RUN_KEY_ID),
+            ("supervisor_key_sha256", module.sha256(public_key)),
+        )
+    )
+
+    def envelope(value):
+        return signed_envelope(
+            value,
+            payload_type=INVOCATION_PREDICATE_TYPE,
+            key_id=RUN_KEY_ID,
+            seed=seed,
+        )
+
+    accepted = module.invocation_predicate(envelope(predicate), manifest_raw, public_key)
+    require(accepted == predicate, "signed invocation predicate changed")
+
+    invalid_signature = bytearray(envelope(predicate))
+    offset = invalid_signature.index(b'"sig": "') + len(b'"sig": "')
+    invalid_signature[offset] = ord("A") if invalid_signature[offset] != ord("A") else ord("B")
+    for raw, key in (
+        (bytes(invalid_signature), public_key),
+        (envelope(predicate), b"\0" * 32),
+    ):
+        try:
+            module.invocation_predicate(raw, manifest_raw, key)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid invocation signature accepted")
+
+    for field, value in (
+        ("image_attestation_sha256", "not-a-digest"),
+        ("supervisor_identity", "replayed-supervisor"),
+        ("supervisor_version", "2.0.0"),
+        ("supervisor_key_id", "wrong-key"),
+    ):
+        changed = OrderedDict(predicate)
+        changed[field] = value
+        try:
+            module.invocation_predicate(envelope(changed), manifest_raw, public_key)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid invocation tuple accepted: {field}")
+
+
+def cleanup_success_case(module, temporary: Path) -> None:
+    roots = temporary / "success-roots"
+    roots.mkdir(mode=0o700)
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    roots_identity = module.snapshot_fd(roots_fd)
+    root_name = module.ROOT_PREFIX + "success"
+    admitted = roots / root_name
+    admitted.mkdir(mode=0o700)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_identity = module.snapshot_fd(root_fd)
+    (admitted / "owned").write_bytes(b"owned")
+    read_only = admitted / "read-only"
+    read_only.mkdir(mode=0o700)
+    (read_only / "nested").write_bytes(b"nested")
+    (read_only / "nested").chmod(0o444)
+    read_only.chmod(0o500)
+    lock = temporary / "success-lock"
+    lock.write_bytes(b"")
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        roots_identity,
+        root_fd,
+        root_identity,
+        root_name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    module.cleanup(admission)
+    require(not admitted.exists(), "owned private root remained after cleanup")
+
+
+def overlay_work_cleanup_case(module, temporary: Path) -> None:
+    roots = temporary / "overlay-roots"
+    roots.mkdir(mode=0o700)
+    root_name = module.ROOT_PREFIX + "overlay"
+    admitted = roots / root_name
+    admitted.mkdir(mode=0o700)
+    (admitted / "aggregate-output/workspace-work/work").mkdir(parents=True, mode=0o700)
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    lock = temporary / "overlay-lock"
+    lock.write_bytes(b"")
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        module.snapshot_fd(roots_fd),
+        root_fd,
+        module.snapshot_fd(root_fd),
+        root_name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    admission.aggregate_started = True
+    module.cleanup(admission)
+    require(not admitted.exists(), "overlay work private root remained after cleanup")
+
+    rejected_name = module.ROOT_PREFIX + "overlay-unknown"
+    rejected = roots / rejected_name
+    rejected.mkdir(mode=0o700)
+    (rejected / "aggregate-output/workspace-work/unexpected").mkdir(parents=True, mode=0o700)
+    rejected_roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    rejected_root_fd = os.open(rejected, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    rejected_lock = temporary / "overlay-unknown-lock"
+    rejected_lock.write_bytes(b"")
+    rejected_lock_fd = os.open(rejected_lock, os.O_RDWR | os.O_CLOEXEC)
+    rejected_admission = module.Admission(
+        rejected_lock_fd,
+        rejected_roots_fd,
+        module.snapshot_fd(rejected_roots_fd),
+        rejected_root_fd,
+        module.snapshot_fd(rejected_root_fd),
+        rejected_name,
+        Path(f"/proc/{os.getpid()}/fd/{rejected_root_fd}"),
+    )
+    rejected_admission.aggregate_started = True
+    try:
+        module.cleanup(rejected_admission)
+    except module.CleanupError:
+        pass
+    else:
+        raise AssertionError("unknown overlay work entry was accepted")
+    require(rejected.exists(), "unknown overlay work root was removed")
+
+
+def aggregate_quota_case(module, temporary: Path) -> None:
+    roots = temporary / "quota-roots"
+    roots.mkdir(mode=0o700)
+    root_name = module.ROOT_PREFIX + "quota"
+    admitted = roots / root_name
+    (admitted / "aggregate-output/workspace-upper").mkdir(parents=True, mode=0o700)
+    opaque_work = admitted / "aggregate-output/workspace-work/work"
+    opaque_work.mkdir(parents=True, mode=0o700)
+    opaque_work.chmod(0o000)
+    (admitted / "aggregate-output/workspace-upper/main").write_bytes(b"output")
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    lock = temporary / "quota-lock"
+    lock.write_bytes(b"")
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        module.snapshot_fd(roots_fd),
+        root_fd,
+        module.snapshot_fd(root_fd),
+        root_name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    try:
+        try:
+            module.enforce_aggregate_quota(admission)
+        except module.WorkerError as error:
+            raise AssertionError("aggregate quota entered opaque overlay work directory") from error
+    finally:
+        for descriptor in (root_fd, roots_fd, lock_fd):
+            os.close(descriptor)
+
+
+def private_mount_case(module, temporary: Path) -> None:
+    roots = temporary / "mount-roots"
+    roots.mkdir(mode=0o700)
+    admitted = roots / "mount-root"
+    admitted.mkdir(mode=0o700)
+    directory = admitted / "directory"
+    directory.mkdir(mode=0o700)
+    regular = admitted / "regular"
+    regular.write_bytes(b"mount bytes")
+    regular.chmod(0o444)
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    lock_fd = os.open(regular, os.O_RDONLY | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        module.snapshot_fd(roots_fd),
+        root_fd,
+        module.snapshot_fd(root_fd),
+        admitted.name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    descriptors: tuple[int, ...] = ()
+    try:
+        arguments, descriptors = module.private_bind_arguments(
+            admission,
+            (
+                (admission.root_path / "directory", "/directory", "dir", True),
+                (admission.root_path / "regular", "/regular", "file", False),
+            ),
+        )
+        require(
+            arguments
+            == [
+                "--bind-fd",
+                str(descriptors[0]),
+                "/directory",
+                "--ro-bind-fd",
+                str(descriptors[1]),
+                "/regular",
+            ],
+            "private descriptor bind argv changed",
+        )
+        require(
+            stat.S_ISDIR(os.fstat(descriptors[0]).st_mode)
+            and stat.S_ISREG(os.fstat(descriptors[1]).st_mode),
+            "private mount descriptors did not retain source identity",
+        )
+        tree_descriptor = module.open_private_mount(
+            admission, admission.root_path / "directory", "tree"
+        )
+        try:
+            require(
+                stat.S_ISDIR(os.fstat(tree_descriptor).st_mode),
+                "runtime tree mount kind was not accepted as a directory",
+            )
+        finally:
+            os.close(tree_descriptor)
+        require(
+            module.overlay_arguments((17, 19, 23))
+            == [
+                "--overlay-src",
+                "/proc/self/fd/17",
+                "--overlay",
+                "/proc/self/fd/19",
+                "/proc/self/fd/23",
+                "/workspace",
+                "--ro-bind-fd",
+                "17",
+                "/fd-hold/lower",
+                "--ro-bind-fd",
+                "19",
+                "/fd-hold/upper",
+                "--ro-bind-fd",
+                "23",
+                "/fd-hold/work",
+                "--tmpfs",
+                "/fd-hold",
+            ],
+            "overlay descriptor-retention argv changed",
+        )
+        try:
+            module.open_private_mount(
+                admission, admission.root_path.parent / "escape", "dir"
+            )
+        except OSError:
+            pass
+        else:
+            raise AssertionError("private mount source escaped the admitted root")
+    finally:
+        module.close_private_mounts(descriptors)
+        os.close(root_fd)
+        os.close(roots_fd)
+        os.close(lock_fd)
+
+
+def cleanup_replacement_case(module, temporary: Path) -> None:
+    roots = temporary / "roots"
+    roots.mkdir(mode=0o700)
+    root_name = module.ROOT_PREFIX + "replacement"
+    admitted = roots / root_name
+    admitted.mkdir(mode=0o700)
+    (admitted / "owned").write_bytes(b"owned")
+    roots_fd = os.open(roots, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root_fd = os.open(admitted, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    lock = temporary / "lock"
+    lock.write_bytes(b"")
+    lock_fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+    admission = module.Admission(
+        lock_fd,
+        roots_fd,
+        module.snapshot_fd(roots_fd),
+        root_fd,
+        module.snapshot_fd(root_fd),
+        root_name,
+        Path(f"/proc/{os.getpid()}/fd/{root_fd}"),
+    )
+    moved = roots / "moved-admitted-root"
+    admitted.rename(moved)
+    admitted.mkdir(mode=0o700)
+    marker = admitted / "replacement-marker"
+    marker.write_bytes(b"replacement")
+    try:
+        module.cleanup(admission)
+    except module.CleanupError:
+        pass
+    else:
+        raise AssertionError("replacement private root was accepted for cleanup")
+    require(marker.read_bytes() == b"replacement", "cleanup deleted a replacement root")
+    require((moved / "owned").read_bytes() == b"owned", "cleanup changed the admitted root on mismatch")
+
+
+def bounded_tool_cases(module, temporary: Path) -> None:
+    python_fd = os.open("/usr/bin/python3", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        with fake_cgroup(module, temporary):
+            try:
+                module.run_tool(
+                    python_fd,
+                    ("python3", "-c", f"import os; os.write(1, b'x' * {module.MAX_STREAM_BYTES + 1})"),
+                    timeout=5,
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("tool stream cap-plus-one was buffered or accepted")
+            try:
+                module.run_tool(
+                    python_fd,
+                    ("python3", "-c", "import time; time.sleep(5)"),
+                    timeout=1,
+                )
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                raise AssertionError("tool deadline was not enforced")
+    finally:
+        os.close(python_fd)
+
+
+def published_elf_cases(module) -> None:
+    executable = Path("/bin/true")
+    require(executable.is_file(), "ELF closure fixture is unavailable")
+    raw = executable.read_bytes()
+    parsed = module.parse_elf(raw)
+    require(parsed.interpreter is not None, "ELF fixture lost its interpreter")
+    require(parsed.needed, "ELF fixture lost its DT_NEEDED entries")
+    ldd = subprocess.run(
+        ["ldd", str(executable)], check=True, capture_output=True, text=True
+    )
+    targets = {parsed.interpreter}
+    for line in ldd.stdout.splitlines():
+        if "=>" in line:
+            candidate = line.split("=>", 1)[1].strip().split(" ", 1)[0]
+        else:
+            candidate = line.strip().split(" ", 1)[0]
+        if candidate.startswith("/"):
+            targets.add(candidate)
+    runtime = []
+    for target in sorted(targets):
+        source = Path(target).resolve()
+        require(source.is_file(), f"ELF closure member is unavailable: {target}")
+        runtime.append((source, target, "file", {"kind": "file"}))
+    module.validate_published_elf(raw, runtime)
+
+    missing_name = parsed.needed[0]
+    missing_runtime = [
+        binding for binding in runtime if Path(binding[1]).name != missing_name
+    ]
+    try:
+        module.validate_published_elf(raw, missing_runtime)
+    except (OSError, ValueError):
+        pass
+    else:
+        raise AssertionError("missing ELF dependency was accepted")
+
+    malformed = bytearray(raw)
+    malformed[4] = 1
+    try:
+        module.parse_elf(bytes(malformed))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-64-bit ELF output was accepted")
+
+
+def derived_path_alias_cases(module) -> None:
+    shared_tree = OrderedDict(
+        (
+            ("kind", "dir"),
+            ("sha256", "1" * 64),
+            (
+                "entries",
+                [
+                    OrderedDict((("name", "libsame.so.1"), ("kind", "file"))),
+                    OrderedDict((("name", "libsame.a"), ("kind", "file"))),
+                    OrderedDict((("name", "same.pc"), ("kind", "file"))),
+                ],
+            ),
+        )
+    )
+    aliases = [
+        (Path("/runtime/first"), "/lib/first", "dir", shared_tree),
+        (Path("/runtime/second"), "/lib/second", "dir", shared_tree),
+    ]
+    require(
+        module.derived_paths(aliases)
+        == ("/lib/first", "/lib/first", "/lib/first"),
+        "identical runtime directory aliases were not collapsed",
+    )
+    distinct_tree = OrderedDict(shared_tree)
+    distinct_tree["sha256"] = "2" * 64
+    distinct_tree["entries"] = list(shared_tree["entries"]) + [
+        OrderedDict((("name", "libdifferent.so.1"), ("kind", "file")))
+    ]
+    distinct = aliases[:1] + [
+        (Path("/runtime/third"), "/lib/third", "dir", distinct_tree)
+    ]
+    require(
+        module.derived_paths(distinct)
+        == (
+            "/lib/first:/lib/third",
+            "/lib/first:/lib/third",
+            "/lib/first:/lib/third",
+        ),
+        "distinct runtime directory trees were collapsed",
+    )
+
+    executable = Path("/bin/true")
+    raw = executable.read_bytes()
+    parsed = module.parse_elf(raw)
+    ldd = subprocess.run(
+        ["ldd", str(executable)], check=True, capture_output=True, text=True
+    )
+    target_by_name = {}
+    for line in ldd.stdout.splitlines():
+        if "=>" in line:
+            candidate = line.split("=>", 1)[1].strip().split(" ", 1)[0]
+        else:
+            candidate = line.strip().split(" ", 1)[0]
+        if candidate.startswith("/"):
+            target_by_name.setdefault(Path(candidate).name, Path(candidate).resolve())
+    groups = {}
+    for name in parsed.needed:
+        source = target_by_name.get(name)
+        require(source is not None, f"ELF alias fixture lost {name}")
+        groups.setdefault(source.parent, []).append(name)
+    alias_runtime = [
+        (
+            Path(parsed.interpreter).resolve(),
+            parsed.interpreter,
+            "file",
+            {"kind": "file"},
+        )
+    ]
+    alias_nodes = []
+    for index, (source_parent, names) in enumerate(sorted(groups.items())):
+        node = OrderedDict(
+            (
+                ("kind", "dir"),
+                ("sha256", f"{index + 1:064x}"),
+                (
+                    "entries",
+                    [
+                        OrderedDict((("name", name), ("kind", "file")))
+                        for name in sorted(names)
+                    ],
+                ),
+            )
+        )
+        alias_nodes.append((source_parent, Path("/alias") / str(index), node))
+        alias_runtime.append((source_parent, str(source_parent), "dir", node))
+        alias_runtime.append((source_parent, str(Path("/alias") / str(index)), "dir", node))
+    module.validate_published_elf(raw, alias_runtime)
+
+    distinct_runtime = list(alias_runtime)
+    for index, (_, _, node) in enumerate(alias_nodes):
+        distinct = OrderedDict(node)
+        distinct["sha256"] = f"{index + 17:064x}"
+        distinct["entries"] = list(node["entries"]) + [
+            OrderedDict((("name", "libdifferent.so.1"), ("kind", "file")))
+        ]
+        alias_target = str(Path("/alias") / str(index))
+        for position, binding in enumerate(distinct_runtime):
+            if binding[1] == alias_target:
+                distinct_runtime[position] = (binding[0], binding[1], binding[2], distinct)
+                break
+    with tempfile.TemporaryDirectory(prefix="fresh-elf-file-alias-") as name:
+        file_alias_root = Path(name)
+        same_left = file_alias_root / "same-left"
+        same_right = file_alias_root / "same-right"
+        same_left.write_bytes(b"identical loader bytes")
+        same_right.write_bytes(same_left.read_bytes())
+        same_runtime_files = {
+            "/first/loader.so": same_left,
+            "/second/loader.so": same_right,
+        }
+        require(
+            module.resolve_elf_dependency(
+                "loader.so",
+                "/workspace/main",
+                ("/first", "/second"),
+                same_runtime_files,
+            )
+            == "/first/loader.so",
+            "identical ELF file aliases did not preserve candidate order",
+        )
+        same_right.write_bytes(b"byte-distinct loader bytes")
+        try:
+            module.resolve_elf_dependency(
+                "loader.so",
+                "/workspace/main",
+                ("/first", "/second"),
+                same_runtime_files,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("byte-distinct ELF file aliases were accepted")
+
+        source_parent, alias_path, node = alias_nodes[0]
+        for entry in node["entries"]:
+            source = source_parent / entry["name"]
+            (file_alias_root / entry["name"]).write_bytes(source.read_bytes())
+        mutated_name = node["entries"][0]["name"]
+        mutated = bytearray((file_alias_root / mutated_name).read_bytes())
+        require(mutated, "ELF alias fixture contains an empty dependency")
+        mutated[0] ^= 1
+        (file_alias_root / mutated_name).write_bytes(mutated)
+        distinct_runtime_position, distinct_alias_binding = next(
+            (position, binding)
+            for position, binding in enumerate(distinct_runtime)
+            if binding[1] == str(alias_path)
+        )
+        distinct_runtime[distinct_runtime_position] = (
+            file_alias_root,
+            str(alias_path),
+            "dir",
+            distinct_alias_binding[3],
+        )
+        try:
+            module.validate_published_elf(raw, distinct_runtime)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("byte-distinct runtime aliases were accepted")
+
+
+def source_identity_cases(module, temporary: Path) -> None:
+    git_path = Path("/usr/bin/git")
+    require(git_path.is_file(), "Git fixture executable is unavailable")
+    git_fd = os.open(git_path, os.O_RDONLY | os.O_CLOEXEC)
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "LC_ALL": "C",
+        "HOME": "/nonexistent",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_AUTHOR_NAME": "FRESH-WORKER",
+        "GIT_AUTHOR_EMAIL": "fresh-worker@example.invalid",
+        "GIT_COMMITTER_NAME": "FRESH-WORKER",
+        "GIT_COMMITTER_EMAIL": "fresh-worker@example.invalid",
+    }
+    try:
+        for object_format in ("sha1", "sha256"):
+            root = temporary / f"source-{object_format}"
+            root.mkdir(mode=0o700)
+            subprocess.run(
+                [str(git_path), "init", "-q", f"--object-format={object_format}"],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+            (root / "dir").mkdir(mode=0o755)
+            (root / "dir/file").write_bytes(b"source\n")
+            (root / "dir/file").chmod(0o644)
+            (root / "dir.file").write_bytes(b"source sibling\n")
+            (root / "dir.file").chmod(0o644)
+            os.symlink("dir/file", root / "link")
+            subprocess.run([str(git_path), "add", "--all"], cwd=root, env=environment, check=True)
+            subprocess.run([str(git_path), "commit", "-q", "-m", "fixture"], cwd=root, env=environment, check=True)
+            (root / "target").mkdir(mode=0o700)
+            (root / "main").write_bytes(b"output")
+            (root / "main").chmod(0o755)
+            root_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                identity = module.source_identity("project-source", root_fd, git_fd)
+            finally:
+                os.close(root_fd)
+            require(identity.object_format == object_format, "source object format changed")
+            require(
+                [entry.path for entry in identity.entries]
+                == [b"dir", b"dir.file", b"dir/file", b"link"],
+                "source entry raw-byte order changed",
+            )
+            require(identity.manifest_digest == module.sha256(identity.manifest_raw), "source manifest digest changed")
+            if object_format == "sha1":
+                linked = temporary / "source-linked"
+                subprocess.run(
+                    [str(git_path), "worktree", "add", "-q", "--detach", str(linked), "HEAD"],
+                    cwd=root,
+                    env=environment,
+                    check=True,
+                )
+                linked_fd = os.open(linked, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+                try:
+                    linked_identity = module.source_identity("project-source", linked_fd, git_fd)
+                    view = temporary / "baseline-view"
+                    view.mkdir(mode=0o700)
+                    module.copy_git_view(linked_identity, view)
+                finally:
+                    os.close(linked_fd)
+                require(linked_identity.revision == identity.revision, "linked source identity changed")
+                resolved = subprocess.run(
+                    [str(git_path), "--git-dir", str(view), "rev-parse", "HEAD"],
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                require(resolved == identity.revision, "linked baseline view changed")
+                admitted_git = root / ".git-admitted"
+                (root / ".git").rename(admitted_git)
+                (root / ".git").mkdir(mode=0o700)
+                try:
+                    try:
+                        module.assert_git_view(linked_identity.view)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError("linked common-directory replacement was accepted")
+                finally:
+                    (root / ".git").rmdir()
+                    admitted_git.rename(root / ".git")
+                module.close_git_view(linked_identity.view)
+            module.close_git_view(identity.view)
+
+            subprocess.run(
+                [str(git_path), "pack-refs", "--all"], cwd=root, env=environment, check=True
+            )
+            packed_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                packed_identity = module.source_identity("project-source", packed_fd, git_fd)
+            finally:
+                os.close(packed_fd)
+            require(packed_identity.revision, "packed Git ref identity was not retained")
+            module.close_git_view(packed_identity.view)
+
+            mutation_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                mutation_identity = module.source_identity("project-source", mutation_fd, git_fd)
+            finally:
+                os.close(mutation_fd)
+            (root / "dir/file").write_bytes(b"changed after capture\n")
+            rejected_copy = temporary / f"rejected-copy-{object_format}"
+            rejected_copy.mkdir(mode=0o700)
+            try:
+                module.copy_source(mutation_identity, rejected_copy)
+            except (OSError, ValueError):
+                pass
+            else:
+                raise AssertionError("source mutation during copy was accepted")
+            module.close_git_view(mutation_identity.view)
+            subprocess.run(
+                [str(git_path), "checkout", "--", "dir/file"], cwd=root, env=environment, check=True
+            )
+
+            marker = temporary / f"fsmonitor-{object_format}"
+            helper = temporary / f"fsmonitor-{object_format}.sh"
+            helper.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 0\n", encoding="utf-8")
+            helper.chmod(0o755)
+            subprocess.run(
+                [str(git_path), "config", "core.fsmonitor", str(helper)],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+            rejected_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                try:
+                    module.source_identity("project-source", rejected_fd, git_fd)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("local core.fsmonitor configuration was accepted")
+            finally:
+                os.close(rejected_fd)
+            require(not marker.exists(), "local core.fsmonitor executed before source admission")
+            subprocess.run(
+                [str(git_path), "config", "--unset", "core.fsmonitor"],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+
+            filter_marker = temporary / f"filter-{object_format}"
+            subprocess.run(
+                [
+                    str(git_path),
+                    "config",
+                    "filter.evil.clean",
+                    f"sh -c 'touch {filter_marker}'",
+                ],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+            filter_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                try:
+                    module.source_identity("project-source", filter_fd, git_fd)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("local filter configuration was accepted")
+            finally:
+                os.close(filter_fd)
+            require(not filter_marker.exists(), "local filter executed before source admission")
+            subprocess.run(
+                [str(git_path), "config", "--unset", "filter.evil.clean"],
+                cwd=root,
+                env=environment,
+                check=True,
+            )
+
+            alternates = root / ".git/objects/info/alternates"
+            alternates.write_text("/tmp\n", encoding="utf-8")
+            alternate_fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                try:
+                    module.source_identity("project-source", alternate_fd, git_fd)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Git object alternate was accepted")
+            finally:
+                os.close(alternate_fd)
+                alternates.unlink()
+    finally:
+        os.close(git_fd)
+
+
+def main() -> int:
+    require(stat.S_IMODE(WORKER.stat().st_mode) == 0o755, "worker mode is not 0755")
+    require(WORKER.stat().st_size <= 4_194_304, "worker exceeds bootstrap bound")
+    module = load_worker()
+    canonical_wire_cases(module)
+    run_attestation_cases(module)
+    published_elf_cases(module)
+    derived_path_alias_cases(module)
+    with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:
+        temporary = Path(name)
+        bounded_tool_cases(module, temporary)
+        digest_golden(module, temporary)
+        cache_cases(module, temporary)
+        with fake_cgroup(module, temporary):
+            source_identity_cases(module, temporary)
+        cgroup_membership_cases(module, temporary)
+        cgroup_removal_cases(module, temporary)
+        materialization_mutation_cases(module, temporary)
+        private_mount_case(module, temporary)
+        cleanup_success_case(module, temporary)
+        overlay_work_cleanup_case(module, temporary)
+        aggregate_quota_case(module, temporary)
+        cleanup_replacement_case(module, temporary)
+        cleanup_quarantine_race_case(module, temporary)
+        compiler_materialization_case(module, temporary)
+    public_error_cases(module)
+    build_linker_case(module)
+    print("fresh worker unit smoke: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

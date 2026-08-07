@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import struct
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ from fresh_image_control import (  # noqa: E402
     _reject_environment,
     _sealed_memfd,
 )
+import fresh_image_control as control  # noqa: E402
 
 
 def rejected(callback: object) -> None:
@@ -33,6 +35,14 @@ def rejected(callback: object) -> None:
     except ControlError:
         return
     raise AssertionError("case was accepted")
+
+
+def rejected_os(callback: object) -> None:
+    try:
+        callback()  # type: ignore[operator]
+    except OSError:
+        return
+    raise AssertionError("OS-level case was accepted")
 
 
 def build(output: Path) -> dict[str, str]:
@@ -69,6 +79,195 @@ def has_elf_interpreter(path: Path) -> bool:
     )
 
 
+def forwarder_descriptor_case(temporary: Path) -> None:
+    helper = temporary / "forwarder-helper"
+    helper.write_text(
+        "#!/usr/bin/python3\n"
+        "import os\n"
+        "for value in os.environ['EXPECTED_OPEN'].split(','):\n"
+        "    os.fstat(int(value))\n"
+        "for value in os.environ['EXPECTED_CLOSED'].split(','):\n"
+        "    try:\n"
+        "        os.fstat(int(value))\n"
+        "    except OSError:\n"
+        "        continue\n"
+        "    raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    forwarder = temporary / "bwrap-forwarder"
+    compiler = os.environ.get("CC", "cc")
+    subprocess.run(
+        [
+            compiler,
+            "-std=c11",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f'-DTOOL_TARGET="{helper}"',
+            "-DTOOL_BWRAP_FORWARDER=1",
+            "-o",
+            str(forwarder),
+            str(REPOSITORY / "image" / "fresh" / "tool-forwarder.c"),
+        ],
+        check=True,
+    )
+    opened = [os.open(temporary, os.O_PATH | os.O_CLOEXEC) for _ in range(5)]
+    try:
+        bind_fd, lower_fd, upper_fd, userns_fd, rejected_fd = opened
+        environment = {
+            "EXPECTED_OPEN": ",".join(str(value) for value in opened[:4]),
+            "EXPECTED_CLOSED": str(rejected_fd),
+        }
+        result = subprocess.run(
+            [
+                str(forwarder),
+                "--bind-fd",
+                str(bind_fd),
+                "/bind",
+                "--userns",
+                str(userns_fd),
+                "--overlay-src",
+                f"/proc/self/fd/{lower_fd}",
+                "--overlay",
+                f"/proc/self/fd/{upper_fd}",
+                str(temporary),
+                "/workspace",
+                "--",
+                f"/proc/self/fd/{rejected_fd}",
+            ],
+            env=environment,
+            pass_fds=tuple(opened),
+            close_fds=True,
+            check=False,
+        )
+        assert result.returncode == 0
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
+def cgroup_membership_case(temporary: Path) -> None:
+    leaf = temporary / "control-cgroup-membership"
+    leaf.mkdir(mode=0o700)
+    leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    original_read = control._control_cgroup_file_read
+    try:
+        values = {"cgroup.procs": b"17\n23\n", "cgroup.threads": b"23\n17\n"}
+        control._control_cgroup_file_read = lambda _fd, name, _limit=4096: values[name]
+        assert control._control_cgroup_members(leaf_fd, "cgroup.procs") == (17, 23)
+        rejected_os(lambda: control._control_cgroup_empty(leaf_fd))
+        for raw in (b"0\n", b"bad\n", b"7\n7\n"):
+            control._control_cgroup_file_read = lambda _fd, _name, _limit=4096, raw=raw: raw
+            rejected_os(lambda: control._control_cgroup_members(leaf_fd, "cgroup.procs"))
+    finally:
+        control._control_cgroup_file_read = original_read
+        os.close(leaf_fd)
+
+
+def cgroup_removal_case(temporary: Path) -> None:
+    parent = temporary / "control-cgroup-removal"
+    parent.mkdir(mode=0o700)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    original_empty = control._control_cgroup_empty
+    control._control_cgroup_empty = lambda _fd: None
+    try:
+        leaf_name = "control-cgroup-leaf"
+        leaf = parent / leaf_name
+        leaf.mkdir(mode=0o700)
+        leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        value = os.fstat(leaf_fd)
+        identity = (
+            value.st_dev,
+            value.st_ino,
+            stat.S_IFMT(value.st_mode),
+            stat.S_IMODE(value.st_mode),
+            value.st_uid,
+        )
+        control._control_remove_cgroup_leaf(parent_fd, leaf_fd, leaf_name, identity)
+        assert not leaf.exists()
+        os.close(leaf_fd)
+
+        leaf.mkdir(mode=0o700)
+        leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        value = os.fstat(leaf_fd)
+        identity = (
+            value.st_dev,
+            value.st_ino,
+            stat.S_IFMT(value.st_mode),
+            stat.S_IMODE(value.st_mode),
+            value.st_uid,
+        )
+        saved = parent / (leaf_name + "-saved")
+        leaf.rename(saved)
+        leaf.mkdir(mode=0o700)
+        rejected_os(
+            lambda: control._control_remove_cgroup_leaf(
+                parent_fd, leaf_fd, leaf_name, identity
+            )
+        )
+        assert leaf.exists()
+        saved.rmdir()
+        leaf.rmdir()
+        os.close(leaf_fd)
+    finally:
+        control._control_cgroup_empty = original_empty
+        os.close(parent_fd)
+        parent.rmdir()
+
+
+def cgroup_launch_failure_case(temporary: Path) -> None:
+    parent = temporary / "control-cgroup-launch-failure"
+    parent.mkdir(mode=0o700)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    leaf_name = "control-cgroup-launch-leaf"
+    leaf = parent / leaf_name
+    leaf.mkdir(mode=0o700)
+    leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    value = os.fstat(leaf_fd)
+    identity = (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        stat.S_IMODE(value.st_mode),
+        value.st_uid,
+    )
+    original_lease = control._control_cgroup_lease
+    original_empty = control._control_cgroup_empty
+    original_populated = control._control_cgroup_populated
+    original_popen = control.subprocess.Popen
+
+    def fail_popen(*_arguments: object, **_keywords: object) -> None:
+        raise OSError("synthetic child launch failure")
+
+    control._control_cgroup_lease = lambda: (parent_fd, leaf_fd, leaf_name, identity)
+    control._control_cgroup_empty = lambda _fd: None
+    control._control_cgroup_populated = lambda _fd: False
+    control.subprocess.Popen = fail_popen  # type: ignore[assignment]
+    try:
+        rejected_os(
+            lambda: control._run_controlled_child(
+                ["/missing-control-child"], environment={}, timeout=1
+            )
+        )
+        assert not leaf.exists()
+        assert not _fd_open(parent_fd)
+        assert not _fd_open(leaf_fd)
+    finally:
+        control._control_cgroup_lease = original_lease
+        control._control_cgroup_empty = original_empty
+        control._control_cgroup_populated = original_populated
+        control.subprocess.Popen = original_popen
+        if _fd_open(leaf_fd):
+            os.close(leaf_fd)
+        if _fd_open(parent_fd):
+            os.close(parent_fd)
+        if leaf.exists():
+            leaf.rmdir()
+        parent.rmdir()
+
+
 def main() -> int:
     assert _normalize_relative("../align") == "../align"
     assert _normalize_relative("a/./b/../c") == "a/c"
@@ -90,6 +289,10 @@ def main() -> int:
     rejected(
         lambda: _reject_environment({"ALIGN_REPO": "../align"}, mode="self-test")
     )
+    with tempfile.TemporaryDirectory(prefix="fresh-image-membership-") as name:
+        cgroup_membership_case(Path(name))
+        cgroup_removal_case(Path(name))
+        cgroup_launch_failure_case(Path(name))
 
     original = os.dup(31) if _fd_open(31) else None
     try:
@@ -106,6 +309,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="fresh-image-build-b-") as second_name:
             first = Path(first_name)
             second = Path(second_name)
+            forwarder_descriptor_case(first)
             assert build(first) == build(second)
             for name in ("fresh-supervise", "fresh-bootstrap"):
                 assert (first / name).read_bytes() == (second / name).read_bytes()

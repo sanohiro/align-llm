@@ -8,7 +8,7 @@ ARG BWRAP_COMMIT=1b80120ef26a28e065e67f89bfef873f13bdd317
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget gnupg xz-utils git make build-essential pkg-config \
       meson ninja-build libcap-dev libselinux1-dev libssl-dev zlib1g-dev libexpat1-dev \
-      gettext perl python3.12 python3.12-dev python3-pip jq file && \
+      libzstd-dev gettext perl python3.12 python3.12-dev python3-pip jq file && \
     rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -57,6 +57,7 @@ RUN python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
     mkdir -p /runtime/system && \
     cp -aL /usr/lib/x86_64-linux-gnu /runtime/system/usr-lib-x86_64 && \
     cp -aL /usr/lib/x86_64-linux-gnu /runtime/system/lib-x86_64 && \
+    cp -aL /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64 && \
     cp -aL /usr/lib/python3.12 /runtime/system/python3.12 && \
     cp -aL /usr/include /runtime/system/include && \
     cp -aL /usr/share/git-core /runtime/system/git-core && \
@@ -66,6 +67,7 @@ RUN python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
 COPY scripts/build-fresh-image-control scripts/fresh_attestation.py scripts/fresh_manifest.py \
      scripts/generate-fresh-toolchain-manifest /build/align-llm/scripts/
 COPY image/fresh /build/align-llm/image/fresh
+COPY .align-revision /build/align-llm/.align-revision
 
 RUN mkdir -p /usr/local/libexec/align-llm /usr/local/share/align-llm \
       /opt/align-llm/tool-bin /var/cache/align-llm/cargo \
@@ -134,9 +136,12 @@ system = {
     "touch": "/usr/bin/touch", "tr": "/usr/bin/tr", "wc": "/usr/bin/wc",
 }
 for name, target in forwarders.items():
+    definitions = [f'-DTOOL_TARGET="{target}"']
+    if name == "bwrap":
+        definitions.append("-DTOOL_BWRAP_FORWARDER=1")
     subprocess.run([
         cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIE", "-pie",
-        "-Wl,-z,relro,-z,now", "-Wl,--build-id=none", f'-DTOOL_TARGET="{target}"',
+        "-Wl,-z,relro,-z,now", "-Wl,--build-id=none", *definitions,
         "-o", str(root / name), str(source),
     ], check=True)
 for name, path in system.items():
@@ -145,6 +150,30 @@ for path in root.iterdir():
     path.chmod(0o755)
 PY
 
+RUN ALIGN_REVISION="$(tr -d '\n' </build/align-llm/.align-revision)" && \
+    test "$(printf '%s' "$ALIGN_REVISION" | wc -c)" = 40 && \
+    git clone --filter=blob:none https://github.com/sanohiro/align.git /tmp/align-cache-source && \
+    git -C /tmp/align-cache-source checkout --detach "$ALIGN_REVISION" && \
+    test "$(git -C /tmp/align-cache-source rev-parse HEAD)" = "$ALIGN_REVISION" && \
+    CARGO_HOME=/var/cache/align-llm/cargo \
+      RUSTC=/runtime/rust/bin/rustc \
+      /runtime/rust/bin/cargo fetch --locked \
+        --manifest-path /tmp/align-cache-source/Cargo.toml && \
+    rm -rf /tmp/align-cache-source && \
+    find /var/cache/align-llm/cargo -mindepth 1 -maxdepth 1 \
+      ! -name git ! -name registry -exec rm -rf -- {} + && \
+    mkdir -p /var/cache/align-llm/cargo/git/checkouts \
+      /var/cache/align-llm/cargo/git/db \
+      /var/cache/align-llm/cargo/registry/cache \
+      /var/cache/align-llm/cargo/registry/index \
+      /var/cache/align-llm/cargo/registry/src && \
+    find /var/cache/align-llm/cargo/git -mindepth 1 -maxdepth 1 \
+      ! -name checkouts ! -name db -exec rm -rf -- {} + && \
+    find /var/cache/align-llm/cargo/registry -mindepth 1 -maxdepth 1 \
+      ! -name cache ! -name index ! -name src -exec rm -rf -- {} + && \
+    find /var/cache/align-llm/cargo -type d -exec chmod 0755 {} + && \
+    find /var/cache/align-llm/cargo -type f -exec chmod 0644 {} +
+
 RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --bootstrap /usr/local/libexec/align-llm/fresh-bootstrap \
       --tool-root /opt/align-llm/tool-bin \
@@ -152,8 +181,13 @@ RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --runtime /runtime/rust=/runtime/rust \
       --runtime /runtime/cc-suite=/runtime/cc-suite \
       --runtime /runtime/bwrap=/runtime/bwrap \
+      --runtime /usr/bin/dash=/bin/sh \
+      --runtime /usr/bin/bash=/bin/bash \
+      --runtime /usr/bin/env=/usr/bin/env \
+      --runtime /usr/bin/python3.12=/usr/bin/python3 \
       --runtime /runtime/system/usr-lib-x86_64=/usr/lib/x86_64-linux-gnu \
       --runtime /runtime/system/lib-x86_64=/lib/x86_64-linux-gnu \
+      --runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu \
       --runtime /runtime/system/python3.12=/usr/lib/python3.12 \
       --runtime /runtime/system/include=/usr/include \
       --runtime /runtime/system/git-core=/usr/share/git-core \

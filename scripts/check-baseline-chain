@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""Verify the identity-bound coding-v1 baseline commit chain."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Sequence
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BASELINE = Path("eval/baselines/coding-v1-reference.json")
+ORACLE = Path("eval/expected/coding-v1-reference-oracle.json")
+DIGEST = Path("eval/expected/coding-v1-reference.sha256")
+PENDING = Path("eval/baselines/.coding-v1-reference.pending.json")
+FINALIZATION_PATHS = frozenset(
+    {
+        BASELINE.as_posix(),
+        DIGEST.as_posix(),
+    }
+)
+ORACLE_PATH = ORACLE.as_posix()
+COMMIT_ID = re.compile(r"[0-9a-f]{40}\Z")
+MAX_OUTPUT = 1024 * 1024
+FRESH_MARKER = "ALIGN_LLM_FRESH_COMPILER"
+TOOL_ROOT = "ALIGN_LLM_TOOL_ROOT"
+FRESH_BASELINE_GIT_NAMES = (
+    "ALIGN_LLM_BASELINE_GIT_DIR",
+    "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+    "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+)
+GIT_VIEW_NAMES = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE")
+FRESH_BASELINE_GIT_VALUES = ("/baseline-git", "/baseline-git", "/workspace")
+
+
+class BaselineChainError(Exception):
+    pass
+
+
+def git_environment() -> dict[str, str]:
+    marker = os.environ.get(FRESH_MARKER)
+    tool_root = os.environ.get(TOOL_ROOT)
+    baseline_values = tuple(os.environ.get(name) for name in FRESH_BASELINE_GIT_NAMES)
+    git_values = tuple(os.environ.get(name) for name in GIT_VIEW_NAMES)
+    all_profile_values = (*baseline_values, *git_values)
+    if marker is None and tool_root is None and all(value is None for value in all_profile_values):
+        path = "/usr/bin:/bin"
+    elif (
+        marker == "1"
+        and tool_root == "/tools"
+        and baseline_values == FRESH_BASELINE_GIT_VALUES
+        and git_values == FRESH_BASELINE_GIT_VALUES
+    ):
+        path = "/tools"
+    else:
+        raise BaselineChainError("fresh baseline Git executable environment is incomplete")
+    environment = {
+        "PATH": path,
+        "LC_ALL": "C",
+        "HOME": "/nonexistent",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_GRAFT_FILE": os.devnull,
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "XDG_CONFIG_HOME": os.devnull,
+    }
+    if path == "/tools":
+        environment.update(dict(zip(GIT_VIEW_NAMES, git_values)))
+    return environment
+
+
+def git(arguments: Sequence[str]) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=PROJECT_ROOT,
+            env=git_environment(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            check=False,
+        )
+    except OSError as error:
+        raise BaselineChainError(f"Git invocation failed: {error}") from error
+    if len(result.stdout) > MAX_OUTPUT or len(result.stderr) > MAX_OUTPUT:
+        raise BaselineChainError("Git diagnostic exceeds the 1 MiB bound")
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise BaselineChainError(
+            f"Git command failed ({result.returncode})"
+            + (f": {detail[:512]}" if detail else "")
+        )
+    return result.stdout
+
+
+def git_status(arguments: Sequence[str]) -> tuple[int, bytes, bytes]:
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=PROJECT_ROOT,
+            env=git_environment(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            check=False,
+        )
+    except OSError as error:
+        raise BaselineChainError(f"Git invocation failed: {error}") from error
+    if len(result.stdout) > MAX_OUTPUT or len(result.stderr) > MAX_OUTPUT:
+        raise BaselineChainError("Git diagnostic exceeds the 1 MiB bound")
+    return result.returncode, result.stdout, result.stderr
+
+
+def load_baseline() -> dict[str, Any]:
+    try:
+        value = json.loads((PROJECT_ROOT / BASELINE).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BaselineChainError(f"cannot load canonical baseline: {error}") from error
+    if not isinstance(value, dict):
+        raise BaselineChainError("canonical baseline must be an object")
+    return value
+
+
+def require_commit(label: str, value: Any) -> str:
+    if not isinstance(value, str) or COMMIT_ID.fullmatch(value) is None:
+        raise BaselineChainError(f"{label} must be a full lowercase 40-hex commit ID")
+    status, output, _ = git_status(["cat-file", "-t", value])
+    if status != 0 or output.strip() != b"commit":
+        raise BaselineChainError(f"{label} must name a raw commit object")
+    return value
+
+
+def require_ancestor(ancestor: str, descendant: str, label: str) -> None:
+    status, _, _ = git_status(["merge-base", "--is-ancestor", ancestor, descendant])
+    if status != 0:
+        raise BaselineChainError(f"{label} ancestry check failed")
+
+
+def commit_parent(commit: str) -> str:
+    parents = git(["rev-list", "--parents", "-n", "1", commit]).split()
+    if len(parents) != 2:
+        raise BaselineChainError("baseline chain commit does not have exactly one parent")
+    return parents[1].decode("ascii")
+
+
+def commit_paths(commit: str) -> frozenset[str]:
+    raw = git(["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
+    paths = [line.decode("utf-8", "strict") for line in raw.splitlines()]
+    if any(not path or "\x00" in path or "\n" in path or "\r" in path for path in paths):
+        raise BaselineChainError("baseline chain contains an invalid path")
+    return frozenset(paths)
+
+
+def show(commit: str, path: str) -> bytes:
+    return git(["show", f"{commit}:{path}"])
+
+
+def canonical_projection(baseline: dict[str, Any]) -> bytes:
+    fields = (
+        "schema_version",
+        "baseline_id",
+        "align_llm_commit",
+        "align_revision",
+        "corpus",
+        "artifacts",
+        "provider",
+        "environment",
+        "sample_count",
+        "runs",
+        "aggregate",
+    )
+    try:
+        projection = {field: baseline[field] for field in fields}
+    except KeyError as error:
+        raise BaselineChainError(f"baseline projection is missing {error.args[0]}") from error
+    return (json.dumps(projection, indent=2) + "\n").encode("utf-8")
+
+
+def artifact_paths(baseline: dict[str, Any]) -> tuple[str, ...]:
+    artifacts = baseline.get("artifacts")
+    if not isinstance(artifacts, dict) or not isinstance(artifacts.get("files"), list):
+        raise BaselineChainError("baseline artifact manifest is malformed")
+    paths: list[str] = []
+    for artifact in artifacts["files"]:
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
+            raise BaselineChainError("baseline artifact path is malformed")
+        path = artifact["path"]
+        if not path or "\n" in path or "\r" in path or path.startswith("/"):
+            raise BaselineChainError("baseline artifact path is not line-safe")
+        paths.append(path)
+    if not paths or len(set(paths)) != len(paths):
+        raise BaselineChainError("baseline artifact manifest is empty or duplicated")
+    return tuple(paths)
+
+
+def post_owner_changes(owner: str, head: str, paths: Sequence[str], label: str) -> None:
+    status, output, _ = git_status(
+        ["log", "--full-history", "--ancestry-path", "--format=%H", f"{owner}..{head}", "--", *paths]
+    )
+    if status != 0:
+        raise BaselineChainError(f"cannot inspect post-{label} history")
+    if output.strip():
+        raise BaselineChainError(f"{label} owned paths changed after their owner")
+
+
+def find_finalization(oracle: str, head: str) -> str:
+    status, output, _ = git_status(
+        [
+            "log",
+            "--full-history",
+            "--ancestry-path",
+            "--format=%H",
+            "--reverse",
+            f"{oracle}..{head}",
+            "--",
+            *sorted(FINALIZATION_PATHS),
+        ]
+    )
+    if status != 0:
+        raise BaselineChainError("cannot inspect finalization history")
+    candidates: list[str] = []
+    for raw in output.splitlines():
+        commit = raw.decode("ascii", "strict")
+        if COMMIT_ID.fullmatch(commit) is None:
+            raise BaselineChainError("finalization history contains an invalid commit ID")
+        if commit_paths(commit) == FINALIZATION_PATHS and commit_parent(commit) == oracle:
+            candidates.append(commit)
+        elif commit_paths(commit):
+            raise BaselineChainError("unexpected canonical baseline output mutation")
+    if len(candidates) != 1:
+        raise BaselineChainError("expected exactly one direct finalization commit")
+    return candidates[0]
+
+
+def verify() -> None:
+    unexpected_arguments = sys.argv[1:]
+    if unexpected_arguments:
+        raise BaselineChainError("baseline chain accepts no command-line overrides")
+    baseline = load_baseline()
+    source = require_commit("SOURCE_COMMIT", baseline.get("align_llm_commit"))
+    oracle = require_commit("ORACLE_COMMIT", baseline.get("canonical_oracle_commit"))
+    head_raw = git(["rev-parse", "--verify", "HEAD^{commit}"]).strip()
+    try:
+        head = head_raw.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise BaselineChainError("HEAD is not an ASCII commit ID") from error
+    require_commit("HEAD", head)
+
+    finalization = find_finalization(oracle, head)
+    require_commit("FINALIZATION_COMMIT", finalization)
+    require_ancestor(source, oracle, "source to oracle")
+    require_ancestor(oracle, finalization, "oracle to finalization")
+    require_ancestor(finalization, head, "finalization to HEAD")
+    if commit_parent(oracle) != source:
+        raise BaselineChainError("oracle commit is not the direct source child")
+
+    if commit_paths(oracle) != frozenset({ORACLE_PATH}):
+        raise BaselineChainError("oracle commit owns paths other than the immutable oracle")
+    if commit_paths(finalization) != FINALIZATION_PATHS:
+        raise BaselineChainError("finalization commit does not own exactly its two output paths")
+
+    current_oracle = (PROJECT_ROOT / ORACLE).read_bytes()
+    if current_oracle != canonical_projection(baseline):
+        raise BaselineChainError("working-tree oracle differs from the canonical projection")
+    if show(oracle, ORACLE_PATH) != current_oracle:
+        raise BaselineChainError("working-tree oracle differs from its oracle commit")
+    if show(finalization, BASELINE.as_posix()) != (PROJECT_ROOT / BASELINE).read_bytes():
+        raise BaselineChainError("working-tree baseline differs from its finalization commit")
+    if show(finalization, DIGEST.as_posix()) != (PROJECT_ROOT / DIGEST).read_bytes():
+        raise BaselineChainError("working-tree digest differs from its finalization commit")
+    if show(source, "Makefile") != (PROJECT_ROOT / "Makefile").read_bytes():
+        raise BaselineChainError("working-tree Makefile differs from the baseline source commit")
+
+    post_owner_changes(source, head, artifact_paths(baseline), "source")
+    post_owner_changes(oracle, head, (ORACLE_PATH,), "oracle")
+    post_owner_changes(finalization, head, tuple(sorted(FINALIZATION_PATHS)), "finalization")
+    if (PROJECT_ROOT / PENDING).exists():
+        raise BaselineChainError("pending baseline record remains")
+
+
+def main() -> int:
+    try:
+        verify()
+    except (BaselineChainError, OSError) as error:
+        print(f"baseline chain error: {error}", file=sys.stderr)
+        return 1
+    print("baseline chain: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

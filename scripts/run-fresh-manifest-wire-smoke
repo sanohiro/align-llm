@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import hashlib
+import runpy
 import sys
+import tempfile
 from collections import OrderedDict
 from copy import deepcopy
+from pathlib import Path
 
 from fresh_attestation import WireError, canonical_json_bytes, parse_canonical_json
 from fresh_manifest import (
@@ -181,6 +184,17 @@ def require_rejected(name: str, callback: object) -> None:
 
 
 def main() -> int:
+    generator = runpy.run_path("scripts/generate-fresh-toolchain-manifest")
+    with tempfile.TemporaryDirectory(prefix="fresh-cache-manifest-") as cache_name:
+        cache_root = Path(cache_name)
+        cache_file = cache_root / "registry" / "cache" / "crate"
+        cache_file.parent.mkdir(parents=True)
+        cache_file.write_bytes(b"abc")
+        generated_cache = generator["empty_cache_manifest"](cache_root)
+        assert generated_cache["entry_count"] == 3
+        assert generated_cache["total_size"] == 3
+        validate_cache_manifest(generated_cache)
+
     digest_root = dir_node(
         [
             file_node(

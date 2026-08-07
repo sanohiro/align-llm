@@ -191,7 +191,7 @@ jobs:
             else
               while IFS= read -r path; do
                 case "$path" in
-                  image/fresh/*|scripts/build-fresh-image-control|scripts/fresh-image-attest|scripts/fresh_attestation.py|scripts/fresh_manifest.py|scripts/generate-fresh-toolchain-manifest|scripts/materialize-fresh-tree|scripts/run-fresh-attestation-wire-smoke|scripts/run-fresh-image-control-smoke|scripts/run-fresh-image-profile-smoke|.github/workflows/ci.yml)
+                  .align-revision|Makefile|src/*|eval/*|image/fresh/*|scripts/alignc|scripts/build-fresh-image-control|scripts/fresh-align-compiler|scripts/fresh-alignc|scripts/fresh-image-attest|scripts/fresh_attestation.py|scripts/fresh_manifest.py|scripts/generate-fresh-toolchain-manifest|scripts/materialize-fresh-tree|scripts/run-baseline-*|scripts/run-coding-task-*|scripts/run-fresh-attestation-wire-smoke|scripts/run-fresh-image-control-smoke|scripts/run-fresh-image-profile-smoke|scripts/run-fresh-worker-*|scripts/run-loop-smoke|.github/workflows/ci.yml)
                     owned=true
                     break
                     ;;
@@ -206,8 +206,7 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          python3 scripts/run-fresh-attestation-wire-smoke
-          python3 scripts/run-fresh-image-control-smoke
+          python3 scripts/run-fresh-worker-qualification
 
       - name: Enable qualified nested user namespaces
         if: steps.scope.outputs.owned == 'true'
@@ -233,11 +232,11 @@ jobs:
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           unshare --user --map-root-user true
 
-      - name: Build and attest installed image profile
+      - name: Complete installed image profile qualification
         if: steps.scope.outputs.owned == 'true'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 scripts/run-fresh-image-profile-smoke
+        run: python3 scripts/run-fresh-worker-qualification --installed-profile
 
       - name: Restore user namespace restriction
         if: always() && steps.scope.outputs.owned == 'true' && steps.userns.outputs.changed == 'true'

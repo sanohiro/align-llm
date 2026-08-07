@@ -7,15 +7,147 @@
 #include <linux/stat.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/mount.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sched.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
 #define MAX_MOUNTPOINTS 32
+#define MAX_TMPFS_LIMITS 8
+#define USERNS_PATH_BYTES 64
 
 extern char **environ;
+
+static int write_all(int descriptor, const char *data, size_t size) {
+    size_t offset = 0;
+    while (offset < size) {
+        ssize_t count = write(descriptor, data + offset, size - offset);
+        if (count < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (count == 0) {
+            return -1;
+        }
+        offset += (size_t)count;
+    }
+    return 0;
+}
+
+static int write_proc_file(pid_t pid, const char *name, const char *data) {
+    char path[USERNS_PATH_BYTES];
+    int length = snprintf(path, sizeof(path), "/proc/%ld/%s", (long)pid, name);
+    int descriptor;
+    if (length < 0 || (size_t)length >= sizeof(path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    descriptor = open(path, O_WRONLY | O_CLOEXEC);
+    if (descriptor < 0) {
+        return -1;
+    }
+    if (write_all(descriptor, data, strlen(data)) < 0) {
+        close(descriptor);
+        return -1;
+    }
+    if (close(descriptor) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static void kill_and_reap(pid_t pid) {
+    if (pid <= 0) {
+        return;
+    }
+    if (kill(pid, SIGKILL) < 0 && errno != ESRCH) {
+        return;
+    }
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+    }
+}
+
+static int prepare_validation_userns(char *path, size_t path_size, pid_t *helper_pid) {
+    int ready[2];
+    pid_t parent_pid;
+    pid_t child;
+    char status;
+    ssize_t count;
+    int length;
+    int descriptor;
+
+    if (pipe2(ready, O_CLOEXEC) < 0) {
+        return -1;
+    }
+    parent_pid = getpid();
+    child = fork();
+    if (child < 0) {
+        close(ready[0]);
+        close(ready[1]);
+        return -1;
+    }
+    if (child == 0) {
+        int setgroups;
+        close(ready[0]);
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) < 0 || getppid() != parent_pid ||
+            syscall(SYS_unshare, CLONE_NEWUSER) < 0) {
+            close(ready[1]);
+            _exit(1);
+        }
+        setgroups = open("/proc/self/setgroups", O_WRONLY | O_CLOEXEC);
+        if (setgroups < 0 || write_all(setgroups, "deny\n", 5) < 0) {
+            if (setgroups >= 0) close(setgroups);
+            close(ready[1]);
+            _exit(1);
+        }
+        if (close(setgroups) < 0 || write_all(ready[1], "R", 1) < 0) {
+            close(ready[1]);
+            _exit(1);
+        }
+        close(ready[1]);
+        for (;;) {
+            pause();
+        }
+    }
+
+    close(ready[1]);
+    do {
+        count = read(ready[0], &status, 1);
+    } while (count < 0 && errno == EINTR);
+    close(ready[0]);
+    if (count != 1 || status != 'R' || write_proc_file(child, "uid_map", "0 0 1\n") < 0 ||
+        write_proc_file(child, "gid_map", "0 0 1\n") < 0) {
+        kill_and_reap(child);
+        return -1;
+    }
+
+    length = snprintf(path, path_size, "/proc/%ld/ns/user", (long)child);
+    if (length < 0 || (size_t)length >= path_size) {
+        kill_and_reap(child);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    descriptor = open(path, O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) {
+        kill_and_reap(child);
+        return -1;
+    }
+    if (close(descriptor) < 0 || setenv("ALIGN_LLM_VALIDATION_USERNS_PATH", path, 1) < 0) {
+        kill_and_reap(child);
+        return -1;
+    }
+    *helper_pid = child;
+    return 0;
+}
 
 static int mount_id(const char *path, unsigned long long *value) {
     struct statx result;
@@ -42,6 +174,17 @@ static int apply_no_symlink_follow(const char *path) {
     return 0;
 }
 
+static int apply_tmpfs_inode_limit(const char *path) {
+    unsigned long long before;
+    unsigned long long after;
+    if (mount_id(path, &before) < 0 ||
+        mount(NULL, path, "tmpfs", MS_REMOUNT, "nr_inodes=65536") < 0 ||
+        mount_id(path, &after) < 0 || before != after) {
+        return -1;
+    }
+    return 0;
+}
+
 static int drop_capabilities(void) {
     struct __user_cap_header_struct header;
     struct __user_cap_data_struct data[2];
@@ -49,6 +192,8 @@ static int drop_capabilities(void) {
     memset(data, 0, sizeof(data));
     header.version = _LINUX_CAPABILITY_VERSION_3;
     header.pid = 0;
+    data[0].effective = 1U << CAP_SETFCAP;
+    data[0].permitted = 1U << CAP_SETFCAP;
     if (syscall(SYS_capset, &header, data) < 0 || prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
         return -1;
     }
@@ -95,8 +240,13 @@ static int namespace_self_test(void) {
 
 int main(int argc, char **argv) {
     const char *mountpoints[MAX_MOUNTPOINTS];
+    const char *tmpfs_limits[MAX_TMPFS_LIMITS];
     int count = 0;
+    int tmpfs_count = 0;
     int command_index = -1;
+    int prepare_userns = 0;
+    pid_t helper_pid = -1;
+    char userns_path[USERNS_PATH_BYTES];
     int index;
 
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -115,6 +265,21 @@ int main(int argc, char **argv) {
         if (strcmp(argv[index], "--") == 0) {
             command_index = index + 1;
             break;
+        }
+        if (strcmp(argv[index], "--prepare-validation-userns") == 0) {
+            if (prepare_userns) {
+                return 2;
+            }
+            prepare_userns = 1;
+            continue;
+        }
+        if (strcmp(argv[index], "--tmpfs-inodes") == 0) {
+            if (index + 1 >= argc || tmpfs_count == MAX_TMPFS_LIMITS ||
+                argv[index + 1][0] != '/') {
+                return 2;
+            }
+            tmpfs_limits[tmpfs_count++] = argv[++index];
+            continue;
         }
         if (argv[index][0] != '/' || argv[index][1] == '\0' || count == MAX_MOUNTPOINTS) {
             return 2;
@@ -135,9 +300,20 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    for (index = 0; index < tmpfs_count; ++index) {
+        if (apply_tmpfs_inode_limit(tmpfs_limits[index]) < 0) {
+            return 1;
+        }
+    }
+    if (prepare_userns && prepare_validation_userns(
+            userns_path, sizeof(userns_path), &helper_pid) < 0) {
+        return 1;
+    }
     if (drop_capabilities() < 0) {
+        kill_and_reap(helper_pid);
         return 1;
     }
     execve(argv[command_index], &argv[command_index], environ);
+    kill_and_reap(helper_pid);
     return 1;
 }

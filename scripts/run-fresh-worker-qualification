@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Run the batched, non-aggregate FRESH-WORKER closure qualification."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+SPECIFICATION = REPOSITORY / "docs/specs/check-gate-topology.md"
+WORKER = REPOSITORY / "scripts/fresh-align-compiler"
+IMAGE_DOCKERFILE = REPOSITORY / "image/fresh/Dockerfile"
+
+FOCUSED_CHECKS = (
+    ("run-fresh-attestation-wire-smoke", ("fresh-v2-attestation-wire-golden",)),
+    (
+        "run-fresh-manifest-wire-smoke",
+        (
+            "fresh-v2-manifest-format-smoke",
+            "fresh-v2-digest-tree-golden",
+            "fresh-v2-cache-manifest-golden",
+        ),
+    ),
+    (
+        "run-fresh-source-manifest-wire-smoke",
+        (
+            "fresh-v2-source-manifest-golden",
+            "fresh-v2-source-manifest-symlink-golden",
+            "fresh-v2-source-manifest-object-format-golden",
+            "fresh-v2-source-manifest-output-exception-golden",
+        ),
+    ),
+    ("run-fresh-source-identity-smoke", ("fresh-v2-source-identity-smoke",)),
+    (
+        "run-fresh-image-control-smoke",
+        (
+            "fresh-v2-image-trust-smoke",
+            "fresh-v2-run-attestation-smoke",
+            "fresh-v2-pre-dispatch-source-smoke",
+        ),
+    ),
+    (
+        "run-fresh-worker-unit-smoke",
+        (
+            "fresh-v2-bwrap-trust-smoke",
+            "fresh-v2-tool-identity-smoke",
+            "fresh-v2-cache-smoke",
+            "fresh-v2-root-staging-smoke",
+            "fresh-v2-descriptor-file-smoke",
+            "fresh-v2-cleanup-smoke",
+            "fresh-v2-cleanup-failure-smoke",
+            "fresh-v2-status-grammar-smoke",
+        ),
+    ),
+    (
+        "run-coding-task-resource-scan-smoke",
+        ("fresh-v2-process-lifecycle-smoke",),
+    ),
+    ("run-baseline-failure-smoke", ("fresh-v2-baseline-scratch-smoke",)),
+    ("check-gate-topology --self-test", ("fresh-v2-aggregate-topology-smoke",)),
+)
+
+EXPECTED_CASES = {
+    "fresh-v2-image-trust-smoke",
+    "fresh-v2-run-attestation-smoke",
+    "fresh-v2-pre-dispatch-source-smoke",
+    "fresh-v2-bootstrap-snapshot-smoke",
+    "fresh-v2-attestation-wire-golden",
+    "fresh-v2-manifest-format-smoke",
+    "fresh-v2-digest-tree-golden",
+    "fresh-v2-cache-manifest-golden",
+    "fresh-v2-source-manifest-golden",
+    "fresh-v2-source-manifest-symlink-golden",
+    "fresh-v2-source-manifest-object-format-golden",
+    "fresh-v2-source-identity-smoke",
+    "fresh-v2-bwrap-trust-smoke",
+    "fresh-v2-tool-identity-smoke",
+    "fresh-v2-runtime-closure-smoke",
+    "fresh-v2-cache-smoke",
+    "fresh-v2-source-manifest-output-exception-golden",
+    "fresh-v2-root-staging-smoke",
+    "fresh-v2-temp-root-callsite-smoke",
+    "fresh-v2-aggregate-publication-smoke",
+    "fresh-v2-build-namespace-smoke",
+    "fresh-v2-descriptor-file-smoke",
+    "fresh-v2-direct-interposition-smoke",
+    "fresh-v2-callsite-smoke",
+    "fresh-v2-interpreter-boundary-smoke",
+    "fresh-v2-aggregate-topology-smoke",
+    "fresh-v2-process-lifecycle-smoke",
+    "fresh-v2-cleanup-smoke",
+    "fresh-v2-cleanup-failure-smoke",
+    "fresh-v2-baseline-scratch-smoke",
+    "fresh-v2-status-grammar-smoke",
+    "fresh-v2-baseline-integration-smoke",
+    "fresh-v2-concurrency-smoke",
+    "fresh-v2-platform-profile-smoke",
+}
+
+
+def run(*arguments: str) -> None:
+    subprocess.run(
+        arguments,
+        cwd=REPOSITORY,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "HOME": "/nonexistent",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        check=True,
+    )
+
+
+def verify_contract_inventory() -> None:
+    specification = SPECIFICATION.read_text(encoding="utf-8")
+    closure = specification[specification.index("### 9.10 Closure matrix") :]
+    observed = set(re.findall(r"`(fresh-v2-[a-z0-9-]+)`", closure))
+    if observed != EXPECTED_CASES:
+        missing = sorted(EXPECTED_CASES - observed)
+        unexpected = sorted(observed - EXPECTED_CASES)
+        raise RuntimeError(
+            f"FRESH-WORKER qualification inventory changed: missing={missing}, unexpected={unexpected}"
+        )
+
+    owners: dict[str, str] = {}
+    for command, cases in FOCUSED_CHECKS:
+        for case in cases:
+            if case in owners:
+                raise RuntimeError(f"FRESH-WORKER case has duplicate focused owners: {case}")
+            owners[case] = command
+        if command != "check-gate-topology --self-test":
+            path = REPOSITORY / "scripts" / command
+            if not path.is_file():
+                raise RuntimeError(f"FRESH-WORKER focused owner is missing: {path}")
+    if not set(owners) <= EXPECTED_CASES:
+        raise RuntimeError("FRESH-WORKER focused owner names are outside the contract inventory")
+
+    worker = WORKER.read_text(encoding="utf-8")
+    forbidden = {
+        ".communicate(": "unbounded child collection returned",
+        'Path(f"/proc/self/fd/{roots_fd}") / root_name': "mutable private-root pathname returned",
+        '("rev-parse", "--verify", "HEAD")': "mutable HEAD query returned",
+    }
+    for token, message in forbidden.items():
+        if token in worker:
+            raise RuntimeError(message)
+    required = (
+        "verify_ed25519(",
+        "assert_git_view(",
+        "require_parent_entry(",
+        "kill_cgroup(",
+        "set_subreaper(",
+        "MAX_SOURCE_DEPTH",
+    )
+    for token in required:
+        if token not in worker:
+            raise RuntimeError(f"worker closure owner is missing: {token}")
+    aggregate_start = worker.index("def run_aggregate")
+    aggregate_end = worker.index("\ndef scan_private_fd", aggregate_start)
+    aggregate = worker[aggregate_start:aggregate_end]
+    for token in (
+        '"--uid"',
+        '"--gid"',
+        '"--cap-add"',
+        '"CAP_SYS_ADMIN"',
+        '"CAP_SETFCAP"',
+        '"CAP_SETUID"',
+        '"CAP_SETGID"',
+        '"--prepare-validation-userns"',
+        '"--tmpfs-inodes"',
+        '"--size"',
+        "validate_published_elf",
+    ):
+        if token not in aggregate:
+            raise RuntimeError(f"aggregate capability boundary is missing: {token}")
+    for token in (
+        "MAX_AGGREGATE_OVERLAY_BYTES",
+        "assert_reachable_git_bound",
+        "GitCopyBudget",
+    ):
+        if token not in worker:
+            raise RuntimeError(f"worker resource boundary is missing: {token}")
+
+    runner = (REPOSITORY / "eval/runners/run-coding-task.py").read_text(encoding="utf-8")
+    prefix = runner[runner.index("def fresh_namespace_prefix"): runner.index("\ndef sandbox_probe_command", runner.index("def fresh_namespace_prefix"))]
+    if (
+        '"--cap-drop",\n        "ALL",\n        "--cap-add",\n        "CAP_SYS_ADMIN",\n        "--cap-add",\n        "CAP_SETFCAP"'
+        not in prefix
+    ):
+        raise RuntimeError("nested validation capability admission order changed")
+    for token in (
+        '"--userns"',
+        '"--unshare-ipc"',
+        '"--unshare-pid"',
+        '"--unshare-net"',
+        '"--unshare-uts"',
+    ):
+        if token not in prefix:
+            raise RuntimeError(f"nested validation namespace boundary is missing: {token}")
+    for token in ('"--unshare-all"', '"--unshare-user"'):
+        if token in prefix:
+            raise RuntimeError(f"nested validation namespace boundary is too broad: {token}")
+    guard = (REPOSITORY / "image/fresh/mount-guard.c").read_text(encoding="utf-8")
+    if '"--prepare-validation-userns"' not in guard:
+        raise RuntimeError("aggregate mount-guard user namespace preparation is missing")
+    alignc = (REPOSITORY / "scripts/alignc").read_text(encoding="utf-8")
+    if 'if [[ "${ALIGNC:-}" != "/tools/fresh-alignc" ]]; then' not in alignc:
+        raise RuntimeError("fresh compiler override authentication is missing")
+
+    directories_start = worker.index("def namespace_directories")
+    directories_end = worker.index("\ndef open_private_mount", directories_start)
+    directories = worker[directories_start:directories_end]
+    for token in ('"/tmp"', '"/dev/shm"', '"/workspace"'):
+        if token not in directories:
+            raise RuntimeError(f"nested sandbox parent is missing: {token}")
+
+    image = IMAGE_DOCKERFILE.read_text(encoding="utf-8")
+    for token in (
+        "libzstd-dev",
+        "cp -aL /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64",
+        "--runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu",
+        "--runtime /usr/bin/dash=/bin/sh",
+        "--runtime /usr/bin/bash=/bin/bash",
+        "--runtime /usr/bin/env=/usr/bin/env",
+        "--runtime /usr/bin/python3.12=/usr/bin/python3",
+    ):
+        if token not in image:
+            raise RuntimeError(f"image runtime closure is missing: {token}")
+
+
+def main() -> int:
+    installed_profile = "--installed-profile" in sys.argv[1:]
+    unexpected = [argument for argument in sys.argv[1:] if argument != "--installed-profile"]
+    if unexpected:
+        raise SystemExit(f"unsupported qualification option: {unexpected[0]}")
+    verify_contract_inventory()
+    for command, _ in FOCUSED_CHECKS:
+        if command == "check-gate-topology --self-test":
+            run(sys.executable, "scripts/check-gate-topology", "--self-test")
+        else:
+            run(sys.executable, f"scripts/{command}")
+    if installed_profile:
+        run(sys.executable, "scripts/run-fresh-image-profile-smoke")
+    print(
+        "fresh worker qualification: PASS "
+        + ("(focused and installed profile)" if installed_profile else "(focused; installed profile deferred)")
+    )
+    owners = {case: command for command, cases in FOCUSED_CHECKS for case in cases}
+    for name in sorted(EXPECTED_CASES):
+        if name in owners:
+            print(f"  {name}: owner={owners[name]} execution=focused")
+        elif installed_profile:
+            print(f"  {name}: owner=run-fresh-image-profile-smoke execution=installed-profile")
+        else:
+            print(
+                f"  {name}: owner=run-fresh-image-profile-smoke "
+                "execution=deferred-to-installed-profile"
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
