@@ -1377,8 +1377,10 @@ the runner-image envelope and fixed schema-2 manifest, opens the Request 6 dispa
 checks its manifest digest and complete interpreter/loader closure, and invokes that descriptor with
 `execveat(AT_EMPTY_PATH)` at fixed FD `14`. Its fixed child argv is
 `--mode ordinary-adoption --project-root-fd 4 --image-attestation-fd 6 --manifest-fd 8
---align-repo-absolute <normalized-absolute> --align-repo-relative <canonical-relative>`, with
-`close_fds=True, pass_fds=(4, 6, 8)` after the retained dispatcher descriptor is consumed. The two
+--align-repo-absolute <normalized-absolute> --align-repo-relative <canonical-relative>
+--invocation-nonce-fd 15`, with `close_fds=True, pass_fds=(4, 6, 8, 15)` after the retained
+dispatcher descriptor is consumed. FD `15` is a fresh supervisor-created sealed 32-byte nonce; it is
+never caller-selected. The two
 path values are supervisor-validated named inputs, not positional arguments or ambient environment;
 the dispatcher independently recomputes the relative value from the retained project-root identity
 and rejects a mismatch. A
@@ -1389,7 +1391,7 @@ check and cannot claim ordinary evidence. The dispatcher accepts no positional a
 authenticated dispatcher opens it descriptor-relatively, authenticates its bounded bytes and the current
 project HEAD/index/raw snapshot, and seals a worker snapshot only after those identities are bound into
 the signed `ordinary-adoption/v1` capsule. The capsule binds the
-request/API, project HEAD and object format, project index and raw-tree digests, canonical `ALIGN_REPO`
+request/API, fresh invocation nonce, project HEAD and object format, project index and raw-tree digests, canonical `ALIGN_REPO`
 relative path and Align identity, worker relative path and SHA-256, image digest, manifest digest, and
 entrypoint digest. The worker verifies the capsule and worker snapshot before staging the private source
 tree; no later child reopens the host pathname. The Make target remains an internal worker
@@ -1436,19 +1438,20 @@ Align identity, then opens `scripts/run-json-scan-row-ownership-adoption` as a b
 regular source file. It reads and hashes that file through the retained descriptor, rechecks its
 device, inode, type, link count, mode, and size, and seals the exact bytes into a read-only memfd.
 The authenticated dispatcher signs the `ordinary-adoption/v1` capsule only after all those checks and
-binds the capsule and worker snapshot to the fixed manifest and image-attestation digests. It passes
-the sealed capsule on FD `12` and the sealed worker bytes on FD `13` to the fixed repository-worker
-vector `/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12`. The worker
-executes only from that sealed descriptor, owns the bwrap/cgroup/staging setup, and passes the same
-sealed FDs to `adoption-namespace`; the namespace supervisor re-verifies both seals, the signature,
-the project/sibling identities, and the worker digest before source materialization but never executes
-the worker a second time. A worker replacement, same-size edit, dirty-tree swap, or later pathname
-restore therefore fails or executes only the already-authenticated bytes; the host repository script
-never runs before this boundary.
+binds the capsule and worker snapshot to the fixed manifest, image-attestation, and fresh nonce
+digests. It passes the sealed capsule on FD `12`, the sealed worker bytes on FD `13`, and the sealed
+nonce challenge on FD `15` to the fixed repository-worker vector
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15`.
+The worker executes only from that sealed descriptor, owns the bwrap/cgroup/staging setup, and passes
+the same sealed FDs to `adoption-namespace`; the namespace supervisor re-verifies the capsule,
+worker, nonce, signature, project/sibling identities, and worker digest before source materialization
+but never executes the worker a second time. A worker replacement, same-size edit, dirty-tree swap,
+replayed capsule, or later pathname restore therefore fails or executes only the already-authenticated
+bytes; the host repository script never runs before this boundary.
 
 The `ordinary-adoption/v1` capsule reuses the Section 9 DSSE envelope and pinned image-deployment
 key policy with predicate type `https://align-llm.dev/attestations/ordinary-adoption/v1`. Its canonical
-payload field order is `api`, `request`, `project_head`, `project_object_format`,
+payload field order is `api`, `request`, `invocation_nonce`, `project_head`, `project_object_format`,
 `project_index_sha256`, `project_raw_tree_sha256`, `align_head`, `align_object_format`,
 `align_repo_relative`, `worker_relative`, `worker_size`, `worker_sha256`, `image_digest`,
 `manifest_sha256`, and `entrypoint_sha256`; all digest values are lowercase SHA-256 or the fixed
@@ -1461,7 +1464,8 @@ The capsule predicate uses the Section 9 canonical JSON rules: UTF-8, the listed
 indentation, one final LF, no duplicate or unknown fields, and the complete JSON escape table. `api` is
 exactly `ordinary-adoption/v1`; `request` is exactly `json-scan-row-ownership-adoption`;
 `project_object_format` and `align_object_format` are exactly `sha1`; both heads are exactly 40 lowercase
-hexadecimal bytes; `project_index_sha256`, `project_raw_tree_sha256`, `worker_sha256`,
+hexadecimal bytes; `invocation_nonce` is exactly 43 unpadded base64url characters encoding the fresh
+32-byte supervisor challenge; `project_index_sha256`, `project_raw_tree_sha256`, `worker_sha256`,
 `manifest_sha256`, and `entrypoint_sha256` are exactly 64 lowercase hexadecimal bytes;
 `image_digest` is `sha256:` followed by 64 lowercase hexadecimal bytes; `worker_size` is an unsigned
 64-bit integer no larger than `fresh_worker_max_bytes = 4194304`; `align_repo_relative` is a non-empty
@@ -1470,17 +1474,26 @@ relative path with no NUL, empty component, or absolute prefix; and `worker_rela
 overlong values, and unpaired surrogates. The DSSE envelope uses the exact Section 9 `payloadType`,
 unpadded base64url, PAE, key-id, and signature grammar.
 
+The supervisor obtains the nonce from `getrandom`, seals the exact 32 bytes in FD `15`, and never
+accepts a caller-supplied nonce. The dispatcher copies no nonce from a path or environment: it checks
+FD `15`, places its unpadded base64url value in the signed capsule, and passes the same sealed FD to
+the worker and namespace helper. Both verify that FD `15` equals the capsule field before any Make
+child. A new nonce is generated for every supervisor admission, so replaying an old capsule, worker,
+or nonce against a new invocation fails before staging even when every stable project, image, and
+worker digest is unchanged.
+
 The checked-in `ordinary-adoption-v1-wire-golden` predicate uses deterministic zero-filled digests,
 project head `1111111111111111111111111111111111111111`, and Align head
 `2222222222222222222222222222222222222222`. Its canonical predicate SHA-256 is
-`26180541d90b07a3e12ac05396fcd503715149a689a1b9fc9e01843ae3cdb415`; the 55-byte predicate type
-DSSE pre-authentication encoding is 1,024 bytes and has SHA-256
-`0a1fc1d2213d80954baf8a8f7499711c926bd0638b314c63c81836d9a8a5dae8`. The golden predicate bytes are:
+`fb20041b1f2aecba78dee4fc13616ba7d101edd9b88582bebcf7d181aef09b50`; the 55-byte predicate type
+DSSE pre-authentication encoding is 1,094 bytes and has SHA-256
+`d06aa5cf9ae0643b4be9e7935e9993e49aa3bb5b4a195478b0263316cae8c022`. The golden predicate bytes are:
 
 ```json
 {
   "api": "ordinary-adoption/v1",
   "request": "json-scan-row-ownership-adoption",
+  "invocation_nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   "project_head": "1111111111111111111111111111111111111111",
   "project_object_format": "sha1",
   "project_index_sha256": "0000000000000000000000000000000000000000000000000000000000000001",
@@ -1553,7 +1566,7 @@ are never executable roots: `align-revision` invokes the script data as the exac
 `/tools/bash /private-project/scripts/check-align-revision`, the focused target invokes the exact vector
 `/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke`, and the
 authenticated dispatcher invokes the sealed worker bytes as the exact vector
-`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12`. In each case the
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15`. In each case the
 `/private-project/scripts/...` value is an argument to an authenticated interpreter, is copied from
 the reviewed source snapshot, and has no `execve` or shebang resolution of its own. A source/argv scan
 and child-exec smoke must reject every executable outside these classes before a Make child starts.
@@ -1626,7 +1639,7 @@ with the fixed shape; every read-only source is passed through a retained descri
 from a host pathname:
 
 ```text
-<bwrap-fd-27> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-fd 12 --worker-fd 13 ...
+<bwrap-fd-27> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-fd 12 --worker-fd 13 --invocation-nonce-fd 15 --mode ordinary-adoption
 ```
 
 The fixed inherited descriptor map is:
@@ -1635,6 +1648,7 @@ The fixed inherited descriptor map is:
 | --- | --- | --- |
 | 12 | sealed `ordinary-adoption/v1` capsule | inherited by `adoption-namespace --capsule-fd 12` |
 | 13 | sealed repository worker snapshot | inherited by `adoption-namespace --worker-fd 13` |
+| 15 | sealed per-invocation 32-byte nonce challenge | inherited by `adoption-namespace --invocation-nonce-fd 15` |
 | 20 | private project snapshot | `/input-project` |
 | 21 | private Align Git view | `/input-align` |
 | 22 | complete Rust prefix | `/input-rust` |
@@ -1655,12 +1669,14 @@ manifest order, and `<ordered-tool-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> /input-tools/<name>` triples for those retained no-follow descriptors. The
 wrapper admits the descriptor table before launch, checks every source identity and complete digest
 after staging, launches bwrap with
-`close_fds=True, pass_fds=(12, 13, 27) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`, and closes its parent copies only after the child is released. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The ellipsis is replaced only by the fixed namespace-helper arguments and one of the three child
-vectors below; no repository or caller argument is appended. The namespace helper remounts each
+`close_fds=True, pass_fds=(12, 13, 15, 27) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`, and closes its parent copies only after the child is released. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The bwrap argv contains only the fixed namespace-helper arguments
+`--capsule-fd 12 --worker-fd 13 --invocation-nonce-fd 15 --mode ordinary-adoption`; it contains no caller or Make vector.
+The image-owned namespace helper owns the exact three-row vector table below and runs those rows in
+order; no alternate vector encoding or fourth vector exists. The namespace helper remounts each
 writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
 entries between children. bwrap consumes the retained source descriptors before executing
 `/usr/bin/adoption-namespace`; FDs 12 and 13 remain sealed inherited inputs and are accepted only by
-the fixed `--capsule-fd 12 --worker-fd 13` helper arguments, so a same-UID rename or replacement of
+the fixed `--capsule-fd 12 --worker-fd 13 --invocation-nonce-fd 15` helper arguments, so a same-UID rename or replacement of
 any staging pathname cannot change a mounted source. The runtime bindings are image-owned root-owned immutable inputs and remain direct
 FD binds. Before the first Make child, the supervisor re-snapshots each `/input-*` tree against the
 wrapper-authenticated source digest, copies it descriptor-relatively into the matching
@@ -1670,8 +1686,10 @@ destination against the manifest, unmounts every `/input-*` bind, creates the re
 clone, remounts that clone read-only, and then unmounts the original `/private-tool-inventory` tmpfs.
 It proves that `/private-tool-inventory` is only the empty underlying directory and that no writable
 mount or alias of the inventory remains before a child starts; `/tools` is the sole visible inventory
-path. It then bind-mounts/remounts every other copied `/private-*` tree read-only. It verifies that no
-input mount or host pathname remains in the namespace. A same-UID host mutation after this seal cannot
+path. It then bind-mounts/remounts every other copied `/private-*` tree read-only, remounts the root
+`/` read-only, and proves that every writable child path is an independent explicitly mounted tmpfs.
+It verifies that no input mount, host pathname, or writable root directory remains in the namespace.
+A same-UID host mutation after this seal cannot
 affect a child. The
 supervisor starts with UID/GID 0 and only `CAP_SYS_ADMIN` retained by
 the explicit bwrap vector; each Make child drops all capabilities and sets `no_new_privs` before its
@@ -1681,11 +1699,12 @@ the explicit bwrap vector; each Make child drops all capabilities and sets `no_n
 handoff setup is `build`, before the focused child or compiler marker.
 
 The namespace helper is one trusted supervisor for this invocation. It first verifies the sealed
-`ordinary-adoption/v1` capsule on FD `12` and the sealed worker snapshot on FD `13`, proves that the
-worker digest equals the capsule, and verifies that the sealed worker was the exact descriptor used by
+`ordinary-adoption/v1` capsule on FD `12`, the sealed worker snapshot on FD `13`, and the sealed nonce
+on FD `15`, proves that the worker digest and nonce equal the capsule, and verifies that the sealed
+worker was the exact descriptor used by
 the dispatcher before any repository-controlled Make child starts; it does not execute or copy the
-worker a second time. It receives the three child vectors in the fixed order below, starts each as a
-separate session with its in-namespace bounded runner, and
+worker a second time. Its image-owned fixed vector table is exactly the three rows below; it starts
+each row as a separate session with its in-namespace bounded runner, and
 performs the compiler bundle handoff only after `align-build-only` succeeds and before the focused
 vector.
 In focused mode the handoff arguments are, in this fixed order, the namespace-owned source paths
@@ -1734,6 +1753,14 @@ dispatcher opens the absolute value with `O_DIRECTORY|O_NOFOLLOW`, recomputes th
 value from the retained project-root descriptor, and rejects any mismatch before signing or staging;
 the capsule records only the canonical relative value.
 
+The ordinary output boundary has two stages. A failure in `fresh-supervise` before it consumes the
+retained dispatcher descriptor (image, manifest, argument, nonce, or dispatcher-closure admission)
+returns exit `1`, empty stdout, and exactly `fresh compiler: ERROR TRUST supervisor\n` on stderr. After
+FD `14` dispatch, the Request 6 dispatcher owns the public stream: success is exit `0`, empty stderr,
+and exactly `json-scan adoption: PASS\n`; failure is exit `1`, empty stdout, and exactly one
+`json-scan adoption: ERROR <phase>\n` on stderr. The phase set and first-failure/cleanup precedence
+are the fixed values above, and no child stream is forwarded.
+
 Concurrency is explicit. The ordinary wrapper and every Section 9 fresh public mode use the same
 installed per-user mode-`0600` lock at `/run/user/<uid>/align-llm-fresh/lock`; the wrapper opens and
 identity-checks it with `LOCK_NB` before private-root creation, cgroup admission, or namespace
@@ -1775,7 +1802,7 @@ The Makefile implementation uses project scripts only as interpreter data argume
 the focused target recipe must execute
 `/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke`. The public worker
 is the sealed FD-13 data argument to the dispatcher vector
-`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12`; it is not a Make
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15`; it is not a Make
 script path. The source paths are read-only
 arguments inside the reviewed `/private-project` snapshot; a shebang, executable mode, PATH lookup, or
 direct `execve` of a project-script path is forbidden. The child-argv and exec-source smoke must record
