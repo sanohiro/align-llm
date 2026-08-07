@@ -12,7 +12,8 @@ attestations; this file records durable project state.
   smoke repair `8ff96a8c0db753a4b278a3b6e5186fcc5e8e4887`; the repaired baseline chain is source
   `83d9117f4519f4cb990d64089163713b8bbc749a`, oracle
   `271783e9f35eb7e3575c753ecbbb4e47a4b60a67`, and finalization
-  `09fde6c6f203c49ccd8eea743b8b2f466a0b1862`.
+  `09fde6c6f203c49ccd8eea743b8b2f466a0b1862`. The current head is
+  `c61995f`, after design commits `b9e4d37` and `baae181`.
 - Active goal: finish the reviewed FRESH-WORKER repair, complete PR review/fix/merge, then start
   the next eligible roadmap gate without waiting for a stop instruction.
 - The prior baseline tuple
@@ -40,6 +41,12 @@ attestations; this file records durable project state.
   `GIT_NO_REPLACE_OBJECTS` only for the probe that must demonstrate replacement resolution; the
   verifier remains isolated with replacement objects disabled. Hosted diagnostic run `31143014723`
   exposed this inherited-environment mismatch after the runtime repair.
+- The conditional final review against the earlier repair head found four valid P1 gaps: cgroup
+  admission lacked strict membership proof, cgroup cleanup had a pathname TOCTOU, private-root
+  cleanup had a pathname TOCTOU, and runtime/cache materialization did not prove a complete
+  descriptor-relative pre/post tree snapshot. The reviewed design was reopened in `b9e4d37` and
+  `baae181`; implementation `c61995f` adds cgroup membership/quarantine, private-root quarantine,
+  complete materialization verification, image-control parity, and deterministic regression cases.
 - The diagnostic branch `agent/fresh-worker-current-diagnostic` exposed only the hosted
   `filesystem` category before aggregate failure; diagnostic branch
   `agent/fresh-worker-aggregate-diagnostic-v5` isolated the runtime file-open failure and is
@@ -47,8 +54,8 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Push the baseline smoke repair and handoff, obtain passing hosted pinned and installed checks
-   for the complete repair, publish the final
+1. Push `c61995f` and this handoff, obtain passing hosted pinned and installed checks for the
+   complete repair, publish the final
    SHA-bound comprehensive review envelope and all finding dispositions, mark ready, and merge
    the exact head with method `merge`.
 2. Refresh `main`, perform the bounded retrospective, update this handoff for the post-merge
@@ -72,6 +79,13 @@ attestations; this file records durable project state.
   inherited-environment replacement-object regression.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after the hosted baseline
   smoke repair.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after the conditional
+  final-review repair, including cgroup membership, quarantine replacement, and materialization
+  mutation cases.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the conditional
+  final-review repair, including image-control membership parsing and rebuilt control bundles.
+- `python3 -m py_compile scripts/fresh-align-compiler image/fresh/control/fresh_image_control.py
+  scripts/run-fresh-worker-unit-smoke`: PASS; `git diff --check`: PASS.
 - Hosted run `31137327638` passed the pinned job but failed the installed aggregate with
   `filesystem`; diagnostic run `31142031436` exposed the underlying single-file runtime
   `NotADirectoryError`; diagnostic run `31143014723` then exposed the inherited replacement-object
