@@ -3948,13 +3948,45 @@ def resolve_elf_dependency(
         if candidate in runtime_files and candidate not in matches:
             matches.append(candidate)
     if not matches:
+        try:
+            os.write(
+                2,
+                (
+                    "diagnostic ELF resolve: "
+                    f"name={name!r} current={current!r} "
+                    f"search_paths={list(search_paths)!r} "
+                    f"candidates={candidates!r} matches={matches!r}\n"
+                ).encode("ascii", "backslashreplace"),
+            )
+        except OSError:
+            pass
         raise ValueError("published output ELF dependency is missing or ambiguous")
     if len(matches) > 1:
         first = read_path(str(runtime_files[matches[0]]), MAX_FILE_BYTES)
-        if any(
-            read_path(str(runtime_files[candidate]), MAX_FILE_BYTES) != first
-            for candidate in matches[1:]
-        ):
+        candidate_details = []
+        distinct = False
+        for candidate in matches:
+            value = first if candidate == matches[0] else read_path(
+                str(runtime_files[candidate]), MAX_FILE_BYTES
+            )
+            candidate_details.append(
+                (candidate, str(runtime_files[candidate]), len(value), sha256(value))
+            )
+            distinct = distinct or value != first
+        try:
+            os.write(
+                2,
+                (
+                    "diagnostic ELF resolve: "
+                    f"name={name!r} current={current!r} "
+                    f"search_paths={list(search_paths)!r} "
+                    f"candidates={candidates!r} matches={candidate_details!r} "
+                    f"distinct={distinct!r}\n"
+                ).encode("ascii", "backslashreplace"),
+            )
+        except OSError:
+            pass
+        if distinct:
             raise ValueError("published output ELF dependency is missing or ambiguous")
     return matches[0]
 
