@@ -1735,6 +1735,16 @@ def bootstrap(
         "self-test": b"fresh compiler self-test: PASS\n",
     }[mode]
     if result.returncode != 0 or result.stderr or result.stdout != expected:
+        try:
+            os.write(
+                2,
+                (
+                    "diagnostic worker result: "
+                    f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}\n"
+                ).encode("ascii", "backslashreplace"),
+            )
+        except OSError:
+            pass
         raise ControlError("CHILD", "aggregate", "worker result is not canonical")
     os.write(1, expected)
     return 0

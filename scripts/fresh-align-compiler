@@ -4781,10 +4781,38 @@ def main(arguments: Sequence[str] | None = None) -> int:
     except WorkerError as error:
         primary = error
         cleanup_failure = error.cleanup_failed
-    except CleanupError:
+        try:
+            os.write(
+                2,
+                (
+                    "diagnostic worker error: "
+                    f"{error.category} {error.phase} cleanup={error.cleanup_failed}\n"
+                ).encode("ascii", "backslashreplace"),
+            )
+        except OSError:
+            pass
+    except CleanupError as error:
         cleanup_failure = True
-    except Exception:
+        try:
+            os.write(
+                2,
+                f"diagnostic worker cleanup error: {error!r}\n".encode(
+                    "ascii", "backslashreplace"
+                ),
+            )
+        except OSError:
+            pass
+    except Exception as error:
         primary = WorkerError("INTERNAL", "internal")
+        try:
+            os.write(
+                2,
+                f"diagnostic worker exception: {type(error).__name__}: {error!r}\n".encode(
+                    "ascii", "backslashreplace"
+                ),
+            )
+        except OSError:
+            pass
     if primary is not None:
         category = primary.category if primary.category in PUBLIC_CATEGORIES else "INTERNAL"
         phase = primary.phase if primary.phase in PUBLIC_PHASES else "internal"
