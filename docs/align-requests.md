@@ -1345,6 +1345,20 @@ second owner for scanner eligibility.
 
 ### align-llm adoption gate
 
+Before the full installed `FRESH-IMAGE-REQUEST6` profile, align-llm may merge one enabling
+`FRESH-IMAGE-REQUEST6-BOUNDARY` checkpoint. This checkpoint is deliberately non-evidence and does
+not advance this request's lifecycle. It installs only the image-owned
+`/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint` and the exact
+`fresh-supervise --mode ordinary-adoption-boundary` selector. The boundary verifies the image and
+schema-2 manifest tuple, retains the absolute Align root as FD 18, dispatches the retained
+dispatcher through FD 14 with the strict reduced argv/env/fd contract, and rejects both an absent
+worker and any present or malformed worker as `json-scan adoption: ERROR revision\n` before source
+snapshot, signing, helper, namespace, Make, or compiler work. It creates no nonce, supervisor
+channel, capsule, worker memfd, proof, bwrap child, or namespace helper. Direct boundary-dispatcher
+paths and the full `ordinary-adoption` vector are untrusted or rejected. The boundary smoke may
+prove only those installed checks; it must not be recorded as ordinary adoption or as evidence for
+the full Request 6 transport.
+
 After `ALIGN_MERGED`, align-llm owns a consumer adoption checkpoint, but it must not update
 `.align-revision`, run a pin-changing verification, or advance this request to
 `ALIGN_LLM_VERIFIED` until the merged Section 9 contract's FRESH-IMAGE, FRESH-WORKER, and separately
