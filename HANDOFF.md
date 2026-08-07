@@ -9,9 +9,9 @@ The checkpoint below supersedes the older historical entries in this file. PR #6
 continue with the corrected Request 6 adoption design before implementation.
 
 - Branch: `agent/request6-adoption-contract-v2` at
-  `e4669561b7f1df6a92293e38a692bc707d81d1c9`, based on merged `main` at
+  `a4e62cc943c57d07a1ac6832026a0402a10dac83`, based on merged `main` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; the corrected design ledger and closure matrix are
-  complete and await the fresh independent design review of `e466956` before the replacement PR is
+  complete and await the fresh independent design review of `a4e62cc` before the replacement PR is
   opened.
 - PR #61 (`Install the authenticated fresh worker`) merged with method `merge` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; its exact-head review and hosted evidence remain
@@ -58,6 +58,11 @@ continue with the corrected Request 6 adoption design before implementation.
   again named an older head. Commit `e466956` adds canonical runtime bindings, namespace-helper
   final stat/hash-before-descriptor ordering, a namespace-owned compiler tmpfs with no host alias,
   and this current head.
+- The fresh independent review of exact head `c5cb554` found one P1 and two P2: the final launcher
+  copy was not bound by an expected digest, native aliases were not first on `PATH`, and the phase
+  map conflicted for post-build bundle setup; the handoff also named the prior head. Commit
+  `a4e62cc` adds `launcher_sha256` to the schema/golden vector and final-copy check, makes the
+  native path first, assigns post-build handoff failures to `build`, and records the new head.
 - A fresh independent adversarial review found four valid non-trivial gaps: tool/Git descendants
   were outside the shared worker owner, cgroup leaves were pathname-owned, private-root cleanup
   closed identity witnesses before removal, and `make baseline-check` did not execute the
@@ -137,7 +142,7 @@ continue with the corrected Request 6 adoption design before implementation.
 
 ## Next steps, in priority order
 
-1. Run one fresh independent adversarial review of `e466956`, then open the replacement design PR.
+1. Run one fresh independent adversarial review of `a4e62cc`, then open the replacement design PR.
    Do not merge PR #62 or consume its unrevised ordinary command.
 2. After the corrected design merges, refresh `main`, record the bounded retrospective, and create
    a new implementation branch from merged `main`; read the sibling Align instructions and shipped
@@ -148,12 +153,12 @@ continue with the corrected Request 6 adoption design before implementation.
 
 ## Latest verification
 
-- `make gate-topology-check`: PASS at `e466956`.
-- `git diff --check`: PASS at `e466956`.
+- `make gate-topology-check`: PASS at `a4e62cc`.
+- `git diff --check`: PASS at `a4e62cc`.
 - Markdown fence parity: PASS (`docs/align-requests.md` 94, `docs/specs/check-gate-topology.md` 76).
 - Author-side design consistency review: PASS; the Request 6 public vectors, phase map, compiler
   handoff schema/golden bytes, namespace boundary, closure owners, and acceptance rows agree at
-  `e466956`.
+  `a4e62cc`.
 
 - `make check`: PASS; only existing Align compiler warnings remain.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS.
