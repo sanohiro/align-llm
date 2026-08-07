@@ -3948,6 +3948,18 @@ def resolve_elf_dependency(
         if candidate in runtime_files and candidate not in matches:
             matches.append(candidate)
     if len(matches) != 1:
+        try:
+            os.write(
+                2,
+                (
+                    "diagnostic ELF resolve: "
+                    f"name={name!r} current={current!r} "
+                    f"search_paths={list(search_paths)!r} "
+                    f"candidates={candidates!r} matches={matches!r}\n"
+                ).encode("ascii", "backslashreplace"),
+            )
+        except OSError:
+            pass
         raise ValueError("published output ELF dependency is missing or ambiguous")
     return matches[0]
 
