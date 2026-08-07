@@ -10,6 +10,9 @@ attestations; this file records durable project state.
 - Active goal: correct the Request 6 delivery order after PR #64's independent review. The
   current design adds a separate non-evidence `FRESH-IMAGE-REQUEST6-BOUNDARY` enabling checkpoint;
   the full `ordinary-adoption` transport and consumer remain deferred.
+- PR #65 design head under review: `2fd22379902908f70cd3f09f37d2aadfcdd4417`. Its independent
+  review is complete; the recorded repair defines the direct-diagnostic limitation, exact post-exec
+  FD set, timeout/status mapping, and schema-2 runtime binding.
 - PR #64 was closed without merge after review found an unsafe partial worker/helper path, a weak
   parent-authentication fallback, a broken socket endpoint handoff, and inconsistent scope claims.
   Its review envelope and findings are recorded in GitHub PR #64; do not patch or merge that branch.
@@ -30,10 +33,10 @@ attestations; this file records durable project state.
 
 ## Latest verification
 
-- `git diff --check`: PASS after the design correction.
-- `make gate-topology-check`: PASS (`check gate topology: PASS`).
+- `git diff --check`: PASS after the design correction and review repair.
 - Markdown fence parity: PASS for `docs/align-requests.md` and
   `docs/specs/check-gate-topology.md`.
+- `make gate-topology-check`: PASS (`check gate topology: PASS`).
 - No executable source, image, compiler pin, or Align source has changed on this branch.
 
 ## Constraints and intentional state

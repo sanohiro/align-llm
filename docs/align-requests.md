@@ -1355,9 +1355,11 @@ dispatcher through FD 14 with the strict reduced argv/env/fd contract, and rejec
 worker and any present or malformed worker as `json-scan adoption: ERROR revision\n` before source
 snapshot, signing, helper, namespace, Make, or compiler work. It creates no nonce, supervisor
 channel, capsule, worker memfd, proof, bwrap child, or namespace helper. Direct boundary-dispatcher
-paths and the full `ordinary-adoption` vector are untrusted or rejected. The boundary smoke may
-prove only those installed checks; it must not be recorded as ordinary adoption or as evidence for
-the full Request 6 transport.
+paths are permitted only as untrusted diagnostics that can reach the same revision rejection; they
+have no supervisor-origin proof and can never produce ordinary evidence. Malformed boundary vectors
+and the full `ordinary-adoption` vector are rejected. The boundary smoke may prove only those
+installed checks; it must not be recorded as ordinary adoption or as evidence for the full Request 6
+transport.
 
 After `ALIGN_MERGED`, align-llm owns a consumer adoption checkpoint, but it must not update
 `.align-revision`, run a pin-changing verification, or advance this request to

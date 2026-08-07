@@ -3620,26 +3620,30 @@ descriptor; retains the final Align descriptor as FD 18; forks exactly one child
 retained dispatcher through FD 14. Its fixed dispatcher vector contains only the named mode,
 project/image/manifest/Align descriptors 4/6/8/18, and the normalized absolute/relative path pair.
 It creates no nonce or supervisor channel. The child passes exactly descriptors 4/6/8/18 and the
-dispatcher closes every other inherited descriptor before validation. A missing worker, a regular
+standard streams `{0,1,2}`; the dispatcher post-exec set is exactly `{0,1,2,4,6,8,18}` and it
+closes every other inherited descriptor before validation. A missing worker, a regular
 worker, and every malformed/replaced worker are all deterministic `revision` rejections; no worker
 bytes are signed, copied, executed, or handed to another process.
 
 The boundary dispatcher accepts only its exact vector and the five fixed image environment entries,
 verifies the sealed image/manifest inputs and retained FD 18 identity, and performs the bounded
 no-follow worker-presence check before any source snapshot, signer, capsule, helper, or child
-operation. Direct dispatcher invocation, a caller-created descriptor set, a caller-created channel
-or nonce, and any full `ordinary-adoption` vector are rejected before a repository-controlled
-process. Its only installed-profile positive gate is the exact pre-Make `revision` result for the
-absent worker; the present-worker case must prove the same rejection and must not reach host-root
-Python.
+operation. An exact direct invocation with caller-created image/manifest descriptors is permitted
+only as an untrusted diagnostic: it can reach the same pre-worker `revision` rejection, can never
+produce a success or ordinary evidence, and has no channel, nonce, parent proof, or other
+supervisor-origin authority. A malformed direct vector or any full `ordinary-adoption` vector is
+rejected as `input` before a repository-controlled process. Its only installed-profile positive gate
+is the exact pre-Make `revision` result for the absent worker; the present-worker case must prove
+the same rejection and must not reach host-root Python.
 
 The boundary public-contract ledger is:
 
 | Surface | Exact contract | Ownership and identity | Acceptance |
 | --- | --- | --- | --- |
 | Installed entrypoint | `execve("/usr/local/libexec/align-llm/fresh-supervise", ["fresh-supervise", "--mode", "ordinary-adoption-boundary"], ["PATH=/usr/bin:/bin", "LC_ALL=C", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp", "ALIGN_REPO=<absolute>"])`; caller cwd is the project root and no other environment entry is accepted | Image supervisor owns the first exec, validates the absolute path, and owns all child descriptors; no shell, repository executable, or ambient configuration is part of the contract | Installed boundary profile smoke, including missing, relative, and malformed `ALIGN_REPO` cases |
-| Dispatcher vector | `request6-adoption-boundary-entrypoint --mode ordinary-adoption-boundary --project-root-fd 4 --image-attestation-fd 6 --manifest-fd 8 --align-repo-root-fd 18 --align-repo-absolute <normalized-absolute> --align-repo-relative <canonical-relative>` | Supervisor owns FD 14 executable authority and passes only data/identity FDs `{4,6,8,18}`; the dispatcher owns validation and closes all other inherited descriptors; no nonce, socket, or worker FD exists in this slice | Direct argv/FD/env smoke plus installed retained-FD dispatch |
-| Result | Missing, present, malformed, or replaced worker: exit `1`, empty stdout, exactly `json-scan adoption: ERROR revision\n`; malformed boundary argv/env/FD set: exit `1`, empty stdout, exactly `json-scan adoption: ERROR input\n`; pre-FD14 image/manifest/path failure: exit `1`, empty stdout, exactly `fresh compiler: ERROR TRUST supervisor\n` | Supervisor/dispatcher own the public stream; no repository child stream is forwarded and no status other than `1` is a success signal | Exact byte/status assertions for every negative vector |
+| Dispatcher vector | `request6-adoption-boundary-entrypoint --mode ordinary-adoption-boundary --project-root-fd 4 --image-attestation-fd 6 --manifest-fd 8 --align-repo-root-fd 18 --align-repo-absolute <normalized-absolute> --align-repo-relative <canonical-relative>` | Supervisor owns FD 14 executable authority and consumes it at `execveat(AT_EMPTY_PATH)`; the dispatcher post-exec set is exactly `{0,1,2,4,6,8,18}`. Standard streams remain the supervisor-owned pipes; FD 14 is not present after exec, and the dispatcher closes every other inherited descriptor. No nonce, socket, or worker FD exists in this slice | Direct argv/FD/env smoke plus installed retained-FD dispatch |
+| Result | Missing, present, malformed, or replaced worker: child exit `1`, empty stdout, exactly `json-scan adoption: ERROR revision\n`; malformed boundary argv/env/FD set: child exit `1`, empty stdout, exactly `json-scan adoption: ERROR input\n`; pre-FD14 image/manifest/path failure: supervisor exit `1`, empty stdout, exactly `fresh compiler: ERROR TRUST supervisor\n`; dispatcher timeout, signal death, unknown status, or incomplete child output: supervisor kills/reaps the one child and emits the same trust line | The supervisor captures child stdout/stderr in bounded pipes and forwards only one validated complete boundary line; no child stream is forwarded on timeout, signal, or cleanup failure. The boundary has a fixed 5-second child deadline, and every failure exits `1`; there is no boundary success status | Exact byte/status assertions for every negative, timeout, signal, and cleanup vector |
+| Dispatcher runtime binding | One schema-2 `runtime_bindings` record with `target` and `source` both `/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint`, `kind=file`, root owner, mode `0755`, full-byte `manifest.sha256`, and canonical serialized `manifest_sha256`; the deterministic static-PIE ELF has no interpreter or mutable runtime closure | Image build owns the bytes and manifest; supervisor opens the no-follow source, checks owner/mode/link-count/size, verifies both digests, and dispatches the retained descriptor rather than reopening the pathname | Manifest-wire assertion, two deterministic ELF builds, and replacement-before-dispatch rejection |
 | Persisted identity | N/A: the boundary creates no capsule, nonce, worker snapshot, cache, or other persisted artifact | Image manifest and attestation remain the only authenticated inputs; future `ordinary-adoption` identity is owned by the consumer-complete slice | N/A with the concrete reason that this slice has no persisted output |
 
 The boundary closure matrix is intentionally limited to the following paths: construction and
