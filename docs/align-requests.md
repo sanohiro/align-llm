@@ -1375,14 +1375,22 @@ The ordinary profile's evidence-bearing public request enters through the alread
 the runner-image envelope and fixed schema-2 manifest, opens the Request 6 dispatcher
 `/usr/local/libexec/align-llm/request6-adoption-entrypoint` through a retained no-follow descriptor,
 checks its manifest digest and complete interpreter/loader closure, and creates a
-`SOCK_SEQPACKET|SOCK_CLOEXEC` supervisor channel. It forks exactly one dispatcher child; the
-fresh-supervise parent keeps one channel endpoint, and the child receives the other as FD `16`.
+`SOCK_SEQPACKET|SOCK_CLOEXEC` supervisor channel. It validates the absolute `ALIGN_REPO` walk and
+retains the final descriptor as FD `18` before creating the channel. It forks exactly one dispatcher
+child; the fresh-supervise parent keeps one channel endpoint, and the child receives the other as FD
+`16` plus the retained Align-root descriptor as FD `18`.
 Only the child then invokes the retained dispatcher descriptor with
 `execveat(AT_EMPTY_PATH)` at fixed FD `14`. The parent first sends one fresh 32-byte dispatch
 ticket `T` and remains alive with the channel open. The dispatcher accepts that channel only when
 `SO_PEERCRED` identifies its current parent, the peer PID's `/proc/<pid>/stat` start-time remains
-unchanged through the complete admission, a no-follow `/proc/<pid>/exe` descriptor hashes to the
-image-attested supervisor digest, the bounded `/proc/<pid>/cmdline` bytes are exactly
+unchanged through the complete admission, `/proc/<pid>/stat` and `/proc/<pid>/cmdline` are opened
+with no-follow flags, and the one explicitly permitted procfs magic-link operation opens
+`/proc/<pid>/exe` with `O_RDONLY|O_CLOEXEC` and hashes the retained executable bytes to the
+image-attested supervisor digest. The dispatcher fstats that descriptor, rechecks the peer start-time
+and executable device/inode after hashing, and rejects an exec transition, short read, replacement,
+or digest mismatch. This controlled `/proc/<pid>/exe` exception is the only symlink-like path
+operation in the peer predicate; ordinary paths retain the no-follow rule. The bounded
+`/proc/<pid>/cmdline` bytes are exactly
 `fresh-supervise\0--mode\0ordinary-adoption\0`, and the first message is exactly `T`. A direct
 dispatcher invocation cannot satisfy the parent-PID, executable, command-line, and one-time-channel
 conjunction.
@@ -1391,13 +1399,14 @@ including the required `argv[0]`, is:
 
 ```text
 ["request6-adoption-entrypoint", "--mode", "ordinary-adoption", "--project-root-fd", "4",
- "--image-attestation-fd", "6", "--manifest-fd", "8", "--align-repo-absolute",
+ "--image-attestation-fd", "6", "--manifest-fd", "8", "--align-repo-root-fd", "18",
+ "--align-repo-absolute",
  "<normalized-absolute>", "--align-repo-relative", "<canonical-relative>",
  "--invocation-nonce-fd", "15", "--supervisor-channel-fd", "16"]
 ```
 
 After the retained dispatcher descriptor is consumed, the child clears `FD_CLOEXEC` on FDs `4`, `6`,
-`8`, `15`, and `16`, closes every other inherited data descriptor, and invokes `execveat(AT_EMPTY_PATH)`
+`8`, `15`, `16`, and `18`, closes every other inherited data descriptor, and invokes `execveat(AT_EMPTY_PATH)`
 on FD `14`; FD `14` is the only executable authority and is not a data descriptor. FD `15` is a fresh
 supervisor-created sealed 32-byte nonce; it is
 never caller-selected. The two
@@ -1412,16 +1421,16 @@ dispatcher accepts no positional arguments. The repository
 `scripts/run-json-scan-row-ownership-adoption` file is source data, not a public executable: the
 authenticated dispatcher opens it descriptor-relatively, authenticates its bounded bytes and the current
 project HEAD/index/raw snapshot, and seals a worker snapshot only after those identities are bound into
-the signed `ordinary-adoption/v1` capsule. The capsule binds the
+the signed `ordinary-adoption/v2` capsule. The capsule binds the
 request/API, fresh invocation nonce, supervisor dispatch-ticket digest, project HEAD and object format,
-project index and raw-tree digests, canonical `ALIGN_REPO` relative path and Align identity, worker
+project index, raw-tree, and complete source-exception digests, canonical `ALIGN_REPO` relative path and Align identity, worker
 relative path and SHA-256, image digest, image-attestation digest, manifest digest, and entrypoint
 digest. The dispatcher verifies the supervisor channel before signing, so it is the only producer
 allowed to create this capsule on the evidence-bearing path. The worker verifies the capsule and
 worker snapshot before staging the private source. After signing, the dispatcher computes
 `C = SHA-256(complete DSSE envelope bytes)` and sends the raw 32-byte `C` to the still-live
 supervisor parent. The parent replies on FD `16` with exactly one raw 32-byte worker-admission proof
-`P = SHA-256("align-llm/ordinary-adoption/worker-admission/v1\0" ||
+`P = SHA-256("align-llm/ordinary-adoption/worker-admission/v2\0" ||
 dispatch_ticket_sha256_bytes || invocation_nonce_bytes || C)`, where the three binary operands
 `dispatch_ticket_sha256_bytes`, `invocation_nonce_bytes`, and `C` are each exactly 32 bytes and the
 domain prefix is the literal UTF-8 string including its trailing NUL. The proof remains queued on the
@@ -1449,7 +1458,7 @@ Git view, config, helper, alternate-object, and linked-worktree metadata; (5) to
 cleanup. The phase mapping is exact. `input` covers the dispatcher parent/channel peer admission,
 the one-time ticket length/order/digest, named-option and environment grammar, cwd, the absolute and
 relative path pair, nonce descriptor shape/value/freshness, and Make-control-variable rejection.
-`revision` covers project, Align, and worker identity or source-content failures at any step,
+`revision` covers project, Align, worker, and source-exception identity or source-content failures at any step,
 including a mutation detected during staging or a final pre-child snapshot, an `ALIGN_REPO` mismatch
 after FD 14 dispatch, and a capsule field whose retained project/Align/worker identity differs from
 the independently observed source. `toolchain` covers fixed image attestation, manifest, entrypoint
@@ -1479,43 +1488,58 @@ cache manifest. Ordinary host evidence is valid only on that declared installed 
 arbitrary local machine may run the smoke as an untrusted developer check but may not claim the
 ordinary adoption result until the fixed manifest and attestation are present.
 
-The authenticated dispatcher opens the current project root from its actual cwd and the caller-selected
-`ALIGN_REPO` through retained component-walked `O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC` descriptors.
-Before it starts bwrap or the
-namespace supervisor, it proves the project HEAD, index, raw-tree digest, clean-tree exception, and
-Align identity, then opens `scripts/run-json-scan-row-ownership-adoption` as a bounded single-link
+The trusted supervisor opens the current project root from its actual cwd and the caller-selected
+absolute `ALIGN_REPO` before it creates the supervisor channel. It lexically validates the absolute
+path, walks every component from the retained project root with
+`openat(O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)`, records and rechecks each ancestor device/inode,
+and retains the final descriptor as FD `18`; a missing, symlinked, replaced, non-directory, or
+identity-changing component is a pre-FD-14 `fresh compiler: ERROR TRUST supervisor\n` failure.
+The dispatcher receives FD `18`, verifies its retained identity against the signed canonical relative
+path, and uses that descriptor for every later Git and copy operation; it never reopens the absolute
+pathname. Before it starts bwrap or the namespace supervisor, it proves the project HEAD, index,
+raw-tree digest, clean-tree exception, and Align identity, then opens
+`scripts/run-json-scan-row-ownership-adoption` as a bounded single-link
 regular source file. It reads and hashes that file through the retained descriptor, rechecks its
 device, inode, type, link count, mode, and size, and seals the exact bytes into a read-only memfd.
-The authenticated dispatcher signs the `ordinary-adoption/v1` capsule only after all those checks,
+The authenticated dispatcher signs the `ordinary-adoption/v2` capsule only after all those checks,
 after verifying the supervisor channel and one-time dispatch ticket, and binds the capsule and worker
-snapshot to the fixed manifest, image-attestation, supervisor, and fresh nonce digests. It passes the
-sealed capsule on FD `12`, the sealed worker bytes on FD `13`, and the sealed nonce challenge on FD
-`15` to the fixed repository-worker vector
-`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15
---supervisor-channel-fd 16`. Before this exec it clears `FD_CLOEXEC` on FDs `4`, `12`, `13`, `15`,
-and `16` and uses `close_fds=True, pass_fds=(4, 12, 13, 15, 16)`; the memfd creator's
+snapshot to the fixed manifest, image-attestation, supervisor, fresh nonce, and complete
+source-exception digests. It passes the
+sealed capsule on FD `12`, the sealed worker bytes on FD `13`, the sealed nonce challenge on FD
+`15`, the retained Align-root descriptor on FD `18`, and the supervisor channel on FD `16` to the
+fixed repository-worker vector
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --align-root-fd 18 --capsule-fd 12
+--invocation-nonce-fd 15 --supervisor-channel-fd 16`. Before this exec it clears `FD_CLOEXEC` on FDs
+`4`, `12`, `13`, `15`, `16`, and `18` and uses
+`close_fds=True, pass_fds=(4, 12, 13, 15, 16, 18)`; the memfd creator's
 `MFD_CLOEXEC` trace remains recorded even though the required inheritance edge clears the descriptor
 flag.
-The dispatcher leaves the supervisor channel open and passes it to the worker. The worker executes
-only from that sealed descriptor, owns the bwrap/cgroup/staging setup, and supplies the three sealed FDs to bwrap as
+The dispatcher leaves the supervisor channel open and passes it to the worker. The worker verifies
+the inherited peer while it remains in the outer PID namespace, then closes FD `18` after its final
+source identity check. It executes only from that sealed descriptor, owns the bwrap/cgroup/staging
+setup, and supplies the three sealed FDs to bwrap as
 `--ro-bind-fd 12 /authority/capsule`, `--ro-bind-fd 13 /authority/worker`, and
 `--ro-bind-fd 15 /authority/nonce`; it also passes FD `16` as the fixed supervisor channel. The
-pinned bwrap consumes the three authority source descriptors while making read-only bind paths and
-keeps FD `16` open through `--as-pid-1 --sync-fd 16`; it does not forward arbitrary FDs. The
+pinned bwrap consumes the three authority source descriptors while making read-only bind paths. The
+exact vector includes `--as-pid-1 --sync-fd 16`: on the pinned bwrap this makes FD `16` part of the
+PID-1 helper's inherited descriptor set; `--sync-fd` without `--as-pid-1` is not an accepted vector
+and its non-forwarding behavior is a negative platform test. Bwrap does not forward arbitrary FDs. The
 namespace supervisor opens only those fixed bind paths, re-verifies their bounded bytes against the
 capsule, consumes and verifies the one queued worker-admission proof on FD `16`, rehydrates local
 fixed-name sealed memfds for its own observable predicate checks, and never executes the worker a
-second time. It rechecks the peer identity and channel liveness before setup, before every Make row,
-and while any row is active; a supervisor hangup terminates owned children and reports the owning
-phase.
+second time. The dispatcher and worker perform all peer PID, start-time, executable, and command-line
+authentication before entering the PID namespace. The namespace helper does not attempt to resolve an
+outer PID through its private `/proc`; it checks the already-authenticated channel for `POLLHUP`, EOF,
+or protocol violation before setup, before every Make row, and while any row is active. A supervisor
+hangup terminates owned children and reports the owning phase.
 A worker replacement, same-size edit, dirty-tree swap, replayed capsule, or later pathname restore
 therefore fails or executes only the already-authenticated bytes; the host repository script never
 runs before this boundary.
 
-The `ordinary-adoption/v1` capsule reuses the Section 9 DSSE envelope and pinned image-deployment
-key policy with predicate type `https://align-llm.dev/attestations/ordinary-adoption/v1`. Its canonical
+The `ordinary-adoption/v2` capsule reuses the Section 9 DSSE envelope and pinned image-deployment
+key policy with predicate type `https://align-llm.dev/attestations/ordinary-adoption/v2`. Its canonical
 payload field order is `api`, `request`, `invocation_nonce`, `dispatch_ticket_sha256`, `project_head`,
-`project_object_format`, `project_index_sha256`, `project_raw_tree_sha256`, `align_head`,
+`project_object_format`, `project_index_sha256`, `project_raw_tree_sha256`, `source_exception_sha256`, `align_head`,
 `align_object_format`, `align_repo_relative`, `worker_relative`, `worker_size`, `worker_sha256`,
 `image_digest`, `image_attestation_sha256`, `manifest_sha256`, and `entrypoint_sha256`; all digest values are lowercase SHA-256 or the fixed
 SHA-1 head grammar, and no unknown, duplicate, NUL-bearing, or out-of-order field is accepted. The
@@ -1525,11 +1549,11 @@ environment or command line.
 
 The capsule predicate uses the Section 9 canonical JSON rules: UTF-8, the listed field order, two-space
 indentation, one final LF, no duplicate or unknown fields, and the complete JSON escape table. `api` is
-exactly `ordinary-adoption/v1`; `request` is exactly `json-scan-row-ownership-adoption`;
+exactly `ordinary-adoption/v2`; `request` is exactly `json-scan-row-ownership-adoption`;
 `project_object_format` and `align_object_format` are exactly `sha1`; both heads are exactly 40 lowercase
 hexadecimal bytes; `invocation_nonce` is exactly 43 unpadded base64url characters encoding the fresh
 32-byte supervisor challenge; `dispatch_ticket_sha256`, `project_index_sha256`,
-`project_raw_tree_sha256`, `worker_sha256`, `image_attestation_sha256`, `manifest_sha256`, and
+`project_raw_tree_sha256`, `source_exception_sha256`, `worker_sha256`, `image_attestation_sha256`, `manifest_sha256`, and
 `entrypoint_sha256` are exactly 64 lowercase hexadecimal bytes; `image_digest` is `sha256:` followed
 by 64 lowercase hexadecimal bytes; `worker_size` is an unsigned
 64-bit integer no larger than `fresh_worker_max_bytes = 4194304`; `align_repo_relative` is a non-empty
@@ -1574,7 +1598,8 @@ complete seal set before bwrap consumes the sources. The namespace helper checks
 bind path byte-for-byte, then creates and checks local fixed-name sealed memfds before using the bytes.
 A caller-provided regular file, tmpfs file, wrong memfd name, missing `MFD_ALLOW_SEALING` or
 `MFD_CLOEXEC` construction trace, extra or missing seal, nonzero offset, short read, or appended byte
-is a `TRUST` failure before a Make child. The acceptance matrix
+is a `toolchain` failure after FD 14 dispatch and before a Make child; only the corresponding
+pre-dispatch supervisor failure uses `TRUST`. The acceptance matrix
 must include ordinary regular files, unlinked tmpfs files, a correctly sealed memfd with each fixed
 name, wrong-name memfds, every missing/extra seal, and a creator that did not use the required flags;
 the last case is rejected by the creator trace. The test must not claim that the receiver can recover
@@ -1588,27 +1613,28 @@ next edge:
 
 | Edge | Sender action at offset zero | Receiver action before use |
 | --- | --- | --- |
-| supervisor -> FD-14 dispatcher | Rewind FD `15`; pass FD `15`, the named project/image/manifest descriptors, and the connected supervisor-channel FD `16`; FD `14` is an executable descriptor and has no data offset contract | Dispatcher validates the channel peer/ticket, rewinds and verifies FD `15` before nonce read |
-| dispatcher -> sealed worker Python | Rewind FD `12`, `13`, and `15` after capsule construction; clear `FD_CLOEXEC` on `4`, `12`, `13`, `15`, and `16`; invoke `/usr/bin/python3 -I -B /proc/self/fd/13` with `close_fds=True, pass_fds=(4,12,13,15,16)` | Worker rewinds all three after Python has opened the `/proc/self/fd/13` source, verifies them, and peeks the queued proof on FD `16` |
-| worker -> bwrap | Rewind FD `12`, `13`, and `15` after worker verification; clear `FD_CLOEXEC` on `12`, `13`, `15`, and `16`; FD `27` is the worker-owned executable descriptor for `execveat(AT_EMPTY_PATH)` and is not a `pass_fds` member | Pinned bwrap consumes the three sources through fixed `--ro-bind-fd` operations, keeps FD `16` through `--as-pid-1 --sync-fd 16`, closes the source descriptors after mounting `/authority/{capsule,worker,nonce}`, and performs no arbitrary-FD forwarding |
+| supervisor -> FD-14 dispatcher | Rewind FD `15`; pass FD `15`, the named project/image/manifest descriptors, retained Align-root FD `18`, and the connected supervisor-channel FD `16`; FD `14` is an executable descriptor and has no data offset contract | Dispatcher validates the channel peer/ticket and retained FD `18`, rewinds and verifies FD `15` before nonce read |
+| dispatcher -> sealed worker Python | Rewind FD `12`, `13`, `15`, and `18` after capsule construction; clear `FD_CLOEXEC` on `4`, `12`, `13`, `15`, `16`, and `18`; invoke `/usr/bin/python3 -I -B /proc/self/fd/13` with `close_fds=True, pass_fds=(4,12,13,15,16,18)` | Worker rewinds all three authority fds and FD `18` after Python has opened the `/proc/self/fd/13` source, verifies them, peeks the queued proof on FD `16`, then closes FD `18` after the final source check |
+| worker -> bwrap | Rewind FD `12`, `13`, and `15` after worker verification; clear `FD_CLOEXEC` on `12`, `13`, `15`, and `16`; FD `18` is closed before this edge; FD `27` is retained only by the forked bwrap launcher child for direct `execveat(AT_EMPTY_PATH)` and is not a Python `pass_fds` member | Pinned bwrap consumes the three sources through fixed `--ro-bind-fd` operations, retains FD `16` because the exact vector includes `--as-pid-1 --sync-fd 16`, closes the source descriptors after mounting `/authority/{capsule,worker,nonce}`, and performs no arbitrary-FD forwarding |
 | bwrap -> namespace helper | The PID-1 helper receives only fixed path arguments plus the inherited supervisor channel FD `16`; FD `27` was closed by the successful bwrap exec | Helper opens the three fixed read-only bind paths with no-follow flags, consumes and verifies the one queued proof on FD `16`, and uses `pread`; it then rehydrates and rewinds local sealed memfds before verification |
-| namespace helper verification | Use `pread` and require offset zero after each read; no authority descriptor, proof channel, or bind-path fd is passed to a Make child | Close all local authority memfds, FD `16`, and bind-path descriptors only after the final row and reverse cleanup; every Make child sees exactly `{0,1,2}` |
+| namespace helper verification | Use `pread` and require offset zero after each read; no authority descriptor, proof channel, or bind-path fd is passed to a Make child; peer PID/procfs checks are N/A inside the private PID namespace and are completed by dispatcher/worker before bwrap | Close all local authority memfds, FD `16`, and bind-path descriptors only after the final row and reverse cleanup; every Make child sees exactly `{0,1,2}` |
 
 Any failed seek, changed offset, unexpected short read, or authority descriptor present after the
-close boundary is a `TRUST` failure. FD `14` and FD `27` are executable authorities: their contract
+close boundary is a `toolchain` failure after FD 14 dispatch. FD `14` and FD `27` are executable
+authorities: their contract
 is the retained identity, closure, and `execveat(AT_EMPTY_PATH)` edge, and any attempt to read their
-data through a path is a `TRUST` failure rather than an offset exception.
+data through a path is a `toolchain` failure rather than an offset exception once FD 14 has started.
 
-The checked-in `ordinary-adoption-v1-wire-golden` predicate uses deterministic zero-filled digests,
+The checked-in `ordinary-adoption-v2-wire-golden` predicate uses deterministic zero-filled digests,
 project head `1111111111111111111111111111111111111111`, and Align head
 `2222222222222222222222222222222222222222`. Its canonical predicate SHA-256 is
-`cf78d4b749ae37d850cca9dbb3751c5cb0080b23b8f1611cb59e6392117e5dd5`; the 55-byte predicate type
-DSSE pre-authentication encoding is 1,288 bytes and has SHA-256
-`4a83ad037ca2bf99fb18f083d2beb9d2f9596b93b07fcb73ae4dada30c510467`. The golden predicate bytes are:
+`2c1cc89bfdc4f48c97a44e7cbf6ec1e9d34daff710ce40972fe37e1f6741f1fd`; the 55-byte predicate type
+DSSE pre-authentication encoding is 1,385 bytes and has SHA-256
+`92ef881cc93e610563883f54cf06311985caedc9925736a4fca90067c6687f64`. The golden predicate bytes are:
 
 ```json
 {
-  "api": "ordinary-adoption/v1",
+  "api": "ordinary-adoption/v2",
   "request": "json-scan-row-ownership-adoption",
   "invocation_nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   "dispatch_ticket_sha256": "0000000000000000000000000000000000000000000000000000000000000008",
@@ -1616,6 +1642,7 @@ DSSE pre-authentication encoding is 1,288 bytes and has SHA-256
   "project_object_format": "sha1",
   "project_index_sha256": "0000000000000000000000000000000000000000000000000000000000000001",
   "project_raw_tree_sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+  "source_exception_sha256": "0c685027b378e6ef448e8efd807532eb8f056de04f550e884d56a5ef0834ead0",
   "align_head": "2222222222222222222222222222222222222222",
   "align_object_format": "sha1",
   "align_repo_relative": "../align",
@@ -1686,7 +1713,7 @@ are never executable roots: `align-revision` invokes the script data as the exac
 `/tools/bash /private-project/scripts/check-align-revision`, the focused target invokes the exact vector
 `/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke`, and the
 authenticated dispatcher invokes the sealed worker bytes as the exact vector
-`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15 --supervisor-channel-fd 16`. In each case the
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --align-root-fd 18 --capsule-fd 12 --invocation-nonce-fd 15 --supervisor-channel-fd 16`. In each case the
 `/private-project/scripts/...` value is an argument to an authenticated interpreter, is copied from
 the reviewed source snapshot, and has no `execve` or shebang resolution of its own. A source/argv scan
 and child-exec smoke must reject every executable outside these classes before a Make child starts.
@@ -1717,11 +1744,13 @@ views; a SHA-256 object-format checkout is rejected in the `revision` phase befo
 The ordinary schema therefore uses the fixed 40-hex `project_head` width; the authenticated fresh
 profile retains Section 9's separate SHA-1/SHA-256 support. The project snapshot requires the
 project index and raw tree to match that commit before and after the copy; the
-only permitted working-tree exceptions are the reserved root `.git` control entry, the intentional
-uncommitted root `HANDOFF.md`, the untracked root `target/` output subtree, and the untracked
-project-root `main` output; none is copied into the product snapshot. The fixed exception metadata
-vector binds their type/mode/link-count state while `bytes_consumed=false`. Untracked files and
-every other tracked modification reject.
+only permitted working-tree exceptions are the reserved root `.git` control entry, the root
+`HANDOFF.md` control file (tracked in the pinned source and allowed to be uncommitted in the project
+checkout), the untracked root `target/` output subtree, and the untracked project-root `main` output;
+none is copied into the product snapshot. The fixed exception metadata vector records type, mode,
+link-count, and a content digest for each present handoff; it records `bytes_consumed=true` only for
+that bounded handoff read and `false` for control/output rows. Untracked files and every other tracked
+modification reject.
 The adoption PR binds the recorded project `HEAD` to the exact reviewed implementation head before
 ordinary evidence is accepted.
 
@@ -1739,27 +1768,33 @@ symlink-target bytes (the digest of zero bytes for a directory), and `target_b64
 for the unpadded base64url symlink target. Paths contain no NUL, empty, `.`, or `..` component;
 directory and file metadata not listed here, including timestamps, owners, device/inode numbers,
 and link counts, is not part of the preimage. The root `.git` control entry, root `target/` subtree,
-root `main`, and the project root `HANDOFF.md` exception are excluded before enumeration; every
+root `main`, and the root `HANDOFF.md` exception for either source are excluded before enumeration; every
 other accepted entry is represented, and an untracked or modified entry cannot be silently omitted.
-For `align-source`, the same wire uses `source = align-source` and excludes only the root `.git` and
-root `target/`; root `main` and root `HANDOFF.md` are rejected rather than exceptions. The fixed
+For `align-source`, the same wire uses `source = align-source` and excludes the root `.git`, root
+`HANDOFF.md`, and root `target/`; root `main` is rejected rather than an exception. The fixed
 source-exception metadata vector is checked separately and is not included in `entries` or this
 digest. The dispatcher computes the project digest from the retained descriptor snapshot before
 signing, and the worker recomputes the identical bytes and exception vector before source acceptance.
 
-The source-exception metadata is a separate canonical JSON array with one final LF, fixed row order,
-and fields `source`, `label`, `present`, `type`, `mode`, `link_count`, `bytes_consumed`. Its rows are
+The source-exception/v2 metadata is a separate canonical JSON array with one final LF, fixed row order,
+and fields `source`, `label`, `present`, `type`, `mode`, `link_count`, `bytes_consumed`,
+`content_sha256`. Its rows are
 `project-source/{git,handoff,target,main}` followed by
 `align-source/{git,handoff,target,main}`. `git` is always present and is either the retained
-directory or linked-worktree regular file; project `handoff` is an optional root regular file with
-mode `0644` or `0755`, Align `handoff` and both `main` rows are always absent, and each `target` is
-absent or an ordinary owner-rwx/no-other-write/no-special directory. `bytes_consumed` is always
-false, absent rows use `type=null`, `mode=null`, and `link_count=null`, and present rows record the
-observed type, raw mode, and link count. The exception vector is compared before and after every
-source snapshot and is never silently folded into `entries`.
+directory or linked-worktree regular file; both project and Align `handoff` rows are present root
+regular files with mode `0644` or `0755`, and each `target` is absent or an ordinary
+owner-rwx/no-other-write/no-special directory. Project `main` is absent or an untracked regular file
+with mode `0644` or `0755`; Align `main` is always absent. A present `handoff` row is bounded-read
+and hashed into `content_sha256`, so only those rows use `bytes_consumed=true`; all other rows use
+`false` and `content_sha256=null`. The present `.git` rows use `link_count=null` by explicit policy
+because their identity is carried by the retained Git descriptor set, not by the exception vector.
+Absent rows use `type=null`, `mode=null`, `link_count=null`, and `content_sha256=null`. The dispatcher
+includes the SHA-256 of this complete vector as `source_exception_sha256` in the signed v2 capsule;
+the worker recomputes and compares it before staging and again after every source snapshot. The
+exception vector is never silently folded into `entries`.
 
 The `raw-tree-v1-output-exception-golden` semantic vector has project `HANDOFF.md`, `target/`, and
-`main` present, Align `target/` absent, and the six displayed source entries unchanged. Its
+`main` present, Align `HANDOFF.md` present and `target/` absent, and the six displayed source entries unchanged. Its
 canonical exception bytes are:
 
 ```json
@@ -1771,7 +1806,8 @@ canonical exception bytes are:
     "type": "directory",
     "mode": "0755",
     "link_count": null,
-    "bytes_consumed": false
+    "bytes_consumed": false,
+    "content_sha256": null
   },
   {
     "source": "project-source",
@@ -1780,7 +1816,8 @@ canonical exception bytes are:
     "type": "regular",
     "mode": "0644",
     "link_count": 1,
-    "bytes_consumed": false
+    "bytes_consumed": true,
+    "content_sha256": "c1d73659b427ed35aa922d857055638e99574128d50e91ad2f0b28b8691865c8"
   },
   {
     "source": "project-source",
@@ -1789,7 +1826,8 @@ canonical exception bytes are:
     "type": "directory",
     "mode": "0755",
     "link_count": 1,
-    "bytes_consumed": false
+    "bytes_consumed": false,
+    "content_sha256": null
   },
   {
     "source": "project-source",
@@ -1798,7 +1836,8 @@ canonical exception bytes are:
     "type": "regular",
     "mode": "0755",
     "link_count": 1,
-    "bytes_consumed": false
+    "bytes_consumed": false,
+    "content_sha256": null
   },
   {
     "source": "align-source",
@@ -1807,16 +1846,18 @@ canonical exception bytes are:
     "type": "directory",
     "mode": "0755",
     "link_count": null,
-    "bytes_consumed": false
+    "bytes_consumed": false,
+    "content_sha256": null
   },
   {
     "source": "align-source",
     "label": "handoff",
-    "present": false,
-    "type": null,
-    "mode": null,
-    "link_count": null,
-    "bytes_consumed": false
+    "present": true,
+    "type": "regular",
+    "mode": "0644",
+    "link_count": 1,
+    "bytes_consumed": true,
+    "content_sha256": "c1d73659b427ed35aa922d857055638e99574128d50e91ad2f0b28b8691865c8"
   },
   {
     "source": "align-source",
@@ -1825,7 +1866,8 @@ canonical exception bytes are:
     "type": null,
     "mode": null,
     "link_count": null,
-    "bytes_consumed": false
+    "bytes_consumed": false,
+    "content_sha256": null
   },
   {
     "source": "align-source",
@@ -1834,16 +1876,19 @@ canonical exception bytes are:
     "type": null,
     "mode": null,
     "link_count": null,
-    "bytes_consumed": false
+    "bytes_consumed": false,
+    "content_sha256": null
   }
 ]
 ```
 
 The output-exception test proves that adding or changing only those admitted exception objects leaves
 the raw-tree bytes and digest unchanged while changing any non-exception entry changes the digest;
-tracked output names, symlinked exception roots, wrong modes/types/link counts, and an Align
-`HANDOFF.md` reject before capsule signing. The exception-array serializer and its semantic-to-byte
-round trip are independently golden-checked.
+tracked output names, symlinked exception roots, wrong modes/types/link counts, a changed handoff
+content digest, and any exception mutation that is not reflected in the signed capsule reject before
+staging. The exception-array serializer and its semantic-to-byte round trip are independently
+golden-checked; its fixture is 1755 bytes with SHA-256
+`0c685027b378e6ef448e8efd807532eb8f056de04f550e884d56a5ef0834ead0`.
 
 The independent `raw-tree-v1-golden` fixture below is the semantic-to-byte and byte-to-semantic
 oracle. Its root, `.align-revision`, ASCII `a`, non-UTF-8 `a\x80`, `docs`, and `docs/link` entries
@@ -1947,10 +1992,11 @@ The fixed inherited descriptor map is:
 
 | FD | Retained source owner and identity | Namespace target |
 | --- | --- | --- |
-| 12 | sealed `ordinary-adoption/v1` capsule | consumed by bwrap `--ro-bind-fd 12 /authority/capsule`; no FD 12 reaches the helper |
+| 12 | sealed `ordinary-adoption/v2` capsule | consumed by bwrap `--ro-bind-fd 12 /authority/capsule`; no FD 12 reaches the helper |
 | 13 | sealed repository worker snapshot | consumed by bwrap `--ro-bind-fd 13 /authority/worker`; no FD 13 reaches the helper |
 | 15 | sealed per-invocation 32-byte nonce challenge | consumed by bwrap `--ro-bind-fd 15 /authority/nonce`; no FD 15 reaches the helper |
 | 16 | connected supervisor channel with the queued worker-admission proof | retained by bwrap `--sync-fd 16` and inherited by the PID-1 helper; the helper retains it through every row and reverse cleanup, excludes it from each Make child, and closes it before helper exit |
+| 18 | retained absolute `ALIGN_REPO` root descriptor, revalidated by dispatcher and worker | used only through dispatcher/worker source checks, then closed before bwrap; no host Align descriptor reaches the helper |
 | 20 | private project snapshot | `/input-project` |
 | 21 | private Align Git view | `/input-align` |
 | 22 | complete Rust prefix | `/input-rust` |
@@ -1970,8 +2016,11 @@ caller argument, pathname bind, or ambient host bind. The tool sources occupy FD
 manifest order, and `<ordered-tool-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> /input-tools/<name>` triples for those retained no-follow descriptors. The
 wrapper admits the descriptor table before launch, checks every source identity and complete digest
-after staging, clears `FD_CLOEXEC` on FDs `12`, `13`, `15`, and `16`, and launches bwrap with
-`close_fds=True, pass_fds=(12, 13, 15, 16) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`; FD `27` is not in this tuple because the worker invokes bwrap itself with `execveat(AT_EMPTY_PATH)`. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The bwrap argv contains only the fixed authority bind paths, `--sync-fd 16`, and helper arguments
+after staging, clears `FD_CLOEXEC` on FDs `12`, `13`, `15`, and `16`, and forks the bwrap launcher
+child directly; no Python `close_fds/pass_fds` subprocess boundary is used for this edge. The child
+inherits FD `27` only for its immediate `execveat` call, and the bwrap argv contains only the fixed
+authority bind paths, `--as-pid-1 --sync-fd 16`, and helper arguments. Here `N` is the ordered
+runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest.
 `--ro-bind-fd 12 /authority/capsule --ro-bind-fd 13 /authority/worker --ro-bind-fd 15 /authority/nonce --supervisor-channel-fd 16 --mode ordinary-adoption`; it contains no caller or Make vector.
 The image-owned namespace helper owns the exact three-row vector table below and runs those rows in
 order; no alternate vector encoding or fourth vector exists. The namespace helper remounts each
@@ -2176,7 +2225,7 @@ The Makefile implementation uses project scripts only as interpreter data argume
 the focused target recipe must execute
 `/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke`. The public worker
 is the sealed FD-13 data argument to the dispatcher vector
-`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15`; it is not a Make
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --align-root-fd 18 --capsule-fd 12 --invocation-nonce-fd 15 --supervisor-channel-fd 16`; it is not a Make
 script path. The source paths are read-only
 arguments inside the reviewed `/private-project` snapshot; a shebang, executable mode, PATH lookup, or
 direct `execve` of a project-script path is forbidden. The child-argv and exec-source smoke must record
@@ -2189,7 +2238,7 @@ cache, and empty Make-control environment. The `align-build-only` child addition
 `CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=/private-llvm/bin/llvm-config`,
 `LLVM_SYS_221_PREFIX=/private-llvm`, `CC=/private-native/bin/cc`,
 `CXX=/private-native/bin/cxx`, and the authenticated native search paths. The wrapper materializes
-`private-native-bin/cc` and `private-native-bin/cxx` as create-exclusive copies of the authenticated
+`/private-native/bin/cc` and `/private-native/bin/cxx` as create-exclusive copies of the authenticated
 `clang` and `clang++` runtime bytes, with their complete ELF closure; the manifest's `cc` and `cxx`
 forwarders are identity records, not executed aliases. These are explicit staged aliases, not an
 unlisted `c++` name. Every focused child
@@ -2253,12 +2302,17 @@ performs the equivalent source and compiler-build checks inside the worker-owned
 supplies only its fixed `/tools/fresh-alignc` and `ALIGNC_CACHE=off` vector; it does not run the
 ordinary host wrapper or trust its artifacts.
 
-The outer wrapper owns the single bwrap/namespace-supervisor process, the cgroup admission, and the
-host staging root. Before bwrap exec, it creates the unique cgroup leaf and start-gate pipe, forks a
-launcher child that blocks on the gate at fixed launcher-child FD `10`, attaches that child's
-recorded PID and start time to the empty leaf with `pids.max=512`, proves membership, and only then
-releases the gate through the parent FD `11`. FDs `10` and `11` are closed before bwrap exec and are
-never included in the bind `pass_fds` tuple. bwrap and every
+The worker remains the outer wrapper process that owns the single bwrap/namespace-supervisor child,
+the cgroup admission, and the host staging root. It opens and authenticates image-owned bwrap as FD
+`27`, creates the unique cgroup leaf and start-gate pipe, and forks exactly one bwrap launcher child.
+The launcher child blocks on the gate at fixed launcher-child FD `10`, attaches that child's recorded
+PID and start time to the empty leaf with `pids.max=512`, proves membership, and only then releases the
+gate through the parent FD `11`. The child closes every unrelated descriptor, retains the required
+authority/source descriptors and FD `27`, and invokes the bwrap image directly with
+`execveat(AT_EMPTY_PATH)`; the successful exec closes FD `27` through its construction
+`FD_CLOEXEC` flag. The worker parent retains the cgroup and staging ownership, waits for that child,
+and owns reverse cleanup. FDs `10` and `11` are closed before bwrap exec and are never included in
+any bind tuple. bwrap and every
 inner descendant inherit that leaf from their first executable instruction; `/sys/fs/cgroup` is not
 mounted into the empty namespace. The outer wrapper does not enumerate or reap Make descendants
 across the private PID namespace. The namespace supervisor's owned-child runner sets Linux
