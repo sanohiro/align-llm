@@ -7,9 +7,11 @@ attestations; this file records durable project state.
 
 - Branch: `agent/fresh-worker-capability`, based on PR #61 base
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
-- PR #61 is draft and must merge with method `merge`. The current product head before this
-  handoff update is `aeee406fa06248d45fc46dc6d29c62087158e913`; the reviewed product includes
-  the cgroup-v2 cleanup, ELF alias, identical-file alias, and bounded materialization repairs.
+- PR #61 is draft and must merge with method `merge`. The preceding pushed product head was
+  `ddb6a23f6090d35704ab7e67d1779c789570a9a9`; the current repair commits are design
+  `8432374` and implementation `03d77bb`. The reviewed product includes the cgroup-v2 cleanup,
+  ELF alias, identical-file alias, bounded materialization, and image-control launch-cleanup
+  repairs.
   The current identity-bound baseline is source
   `d4cc7da8e5f104a81ef6c86d25cc5a3e66f9848e`, oracle
   `4831aa98e33edb2afdd5033031870bea67fea6b7`, and finalization
@@ -89,6 +91,13 @@ attestations; this file records durable project state.
   contract to the full executable/private-view tuple; implementation `d4cc7da` and baseline
   refresh `4831aa9`/`aeee406` propagate and regression-test those exact values. Diagnostic
   instrumentation remains off the product branch.
+- The final exact-head comprehensive review of `ddb6a23` found one valid P1: image-control child
+  launch and early setup failures could bypass cleanup after cgroup lease acquisition, leaving the
+  cgroup leaf and retained descriptors. The closure matrix was reopened in `8432374`; implementation
+  `03d77bb` routes every post-lease path, including `Popen` failure, through one cgroup/descriptor
+  finalizer and adds the injected launch-failure regression. The focused image-control and worker
+  smokes plus `make baseline-check` pass after this repair; exact-head hosted evidence and the final
+  review envelope are still pending.
 - The diagnostic branch `agent/fresh-worker-current-diagnostic` exposed only the hosted
   `filesystem` category before aggregate failure; diagnostic branch
   `agent/fresh-worker-aggregate-diagnostic-v5` isolated the runtime file-open failure and is
@@ -97,9 +106,9 @@ attestations; this file records durable project state.
 ## Next steps, in priority order
 
 1. Push the current product head and this handoff, obtain passing hosted pinned and installed
-   checks for the complete repair, publish the final
-   SHA-bound comprehensive review envelope and all finding dispositions, mark ready, and merge
-   the exact head with method `merge`.
+   checks for the complete repair, publish the final SHA-bound comprehensive review envelope with
+   the P1 disposition and consolidated repair `03d77bb`, mark ready, and merge the exact head with
+   method `merge`.
 2. Refresh `main`, perform the bounded retrospective, update this handoff for the post-merge
    checkpoint, and start the next roadmap gate.
 
@@ -137,6 +146,12 @@ attestations; this file records durable project state.
   cleanup repair, including descriptor-relative leaf removal and replacement-before-removal.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the cgroup-v2
   cleanup repair, including mirrored descriptor-relative removal and replacement-before-removal.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the final-review
+  launch-cleanup repair, including injected `Popen` failure, cgroup removal, and descriptor close.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after the final-review
+  launch-cleanup repair.
+- `PYTHONDONTWRITEBYTECODE=1 make baseline-check`: PASS after the final-review launch-cleanup
+  repair; the existing identity-bound baseline tuple remains valid.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after the ELF alias
   repair, including identical structural alias collapse, distinct-alias rejection, and real
   `/bin/true` closure validation.
