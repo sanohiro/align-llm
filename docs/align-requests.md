@@ -1410,16 +1410,18 @@ variables, cwd, and allowed `HANDOFF.md` exception; (2) project HEAD, index, cle
 snapshot; (3) fixed entrypoint, attestation, capsule, and manifest bytes; (4) worker snapshot and Align
 Git view, config, helper, alternate-object, and linked-worktree metadata; (5) tool/runtime/cache identity;
 (6) private-root staging and final pre-child snapshots; (7) the three child vectors; and (8) reverse
-cleanup. The phase mapping is exact: steps 1–2 and every pre-child project/Align failure
-are `revision` except the initial argv/env/cwd grammar, which is `input`; fixed attestation,
-manifest, lock/cgroup admission, tool, runtime, cache, and private-root staging failures are
-`toolchain`;
-`.align-revision` mismatch is `revision`; the build-only child, compiler/archive/launcher source copy,
-and post-build namespace bundle/handoff setup are `build`; the focused child and fixture/compiler
-result are `fixture`; and cleanup is
-`cleanup` only when every earlier phase and child succeeded. The first failed phase wins. After an earlier failure,
-cleanup still runs but cannot overwrite the primary phase. No later validation or cleanup side
-effect changes that precedence.
+cleanup. The phase mapping is exact: the initial argv/env/cwd grammar is `input`; project, Align, and
+worker identity or source-content failures at any step, including a mutation detected during staging
+or a final pre-child snapshot, are `revision`; fixed attestation, manifest, lock/cgroup admission,
+tool, runtime, cache, private-root mount, quota, descriptor, and other staging-infrastructure failures
+are `toolchain`; `.align-revision` mismatch and every `align-revision` launch, timeout, output-overflow,
+nonzero, or cancellation outcome are `revision`; a failed `execveat(AT_EMPTY_PATH)` of FD 14 before the
+dispatcher starts is `fresh compiler: ERROR TRUST supervisor\n`; after FD 14 has started, the dispatcher
+and its worker validation failures use the ordinary phase set; the build-only child, compiler/archive/
+launcher source copy, and post-build namespace bundle/handoff setup are `build`; the focused child and
+fixture/compiler result are `fixture`; and cleanup is `cleanup` only when every earlier phase and child
+succeeded. The first failed phase wins. After an earlier failure, cleanup still runs but cannot
+overwrite the primary phase. No later validation or cleanup side effect changes that precedence.
 
 The ordinary wrapper's only caller-selected source input is `ALIGN_REPO`, the absolute clean Align
 worktree. Toolchain and dependency inputs come from the fixed installed-profile manifest at
@@ -1481,6 +1483,18 @@ the worker and namespace helper. Both verify that FD `15` equals the capsule fie
 child. A new nonce is generated for every supervisor admission, so replaying an old capsule, worker,
 or nonce against a new invocation fails before staging even when every stable project, image, and
 worker digest is unchanged.
+
+The authority descriptors have one exact wire and lifetime contract. FD `12` (the DSSE capsule) and
+FD `13` (the repository-worker snapshot) are `memfd_create(..., MFD_ALLOW_SEALING|MFD_CLOEXEC)` objects;
+FD `15` (the nonce) is created with the same flags. Each object is written once from offset zero,
+rewound to offset zero before handoff, and accepted only when `fstat` reports a regular memfd with
+one link, the expected byte length, and no trailing bytes, and `F_GET_SEALS` returns exactly
+`F_SEAL_WRITE|F_SEAL_GROW|F_SEAL_SHRINK|F_SEAL_SEAL`. FD `12` has an exact size in
+`1..ordinary_capsule_max_bytes` where `ordinary_capsule_max_bytes` is `1048576`; FD `13` has an exact
+size in `1..fresh_worker_max_bytes` (`4194304`); FD `15` has exactly `32` bytes. The dispatcher,
+worker, and namespace helper each check the object type, offset, size, and complete seal set before
+using the bytes; a missing `MFD_ALLOW_SEALING` origin, extra seal, missing seal, nonzero offset,
+short read, or appended byte is a `TRUST` failure before a Make child.
 
 The checked-in `ordinary-adoption-v1-wire-golden` predicate uses deterministic zero-filled digests,
 project head `1111111111111111111111111111111111111111`, and Align head
@@ -1559,8 +1573,7 @@ The executable-resolution ledger is closed: `/usr/local/libexec/align-llm/fresh-
 runtime bindings. `/usr/bin/bwrap` is retained as the image-authenticated FD `27` executable and
 invoked with `execveat(AT_EMPTY_PATH)` before the namespace exists; its complete ELF interpreter and
 library closure is part of the fixed runtime binding and FD `27` is consumed before the namespace
-helper starts. Every bare tool name resolves to `/tools/<name>`;
-every bare tool name resolves to `/tools/<name>`; the fixed absolute `/private-rust`, `/private-llvm`,
+helper starts. Every bare tool name resolves to `/tools/<name>`; the fixed absolute `/private-rust`, `/private-llvm`,
 `/private-native`, and `/private-tool-bin` paths are the other executable roots. Repository scripts
 are never executable roots: `align-revision` invokes the script data as the exact vector
 `/tools/bash /private-project/scripts/check-align-revision`, the focused target invokes the exact vector
@@ -1719,6 +1732,61 @@ descriptor bytes, remounts the tmpfs read-only, and drops all capabilities in th
 before `execve`-ing its Make vector. The first two vectors pass `--no-compiler-handoff` in the same
 fixed helper position. No repository Makefile or fixture code runs before this setup sequence
 completes, and no fourth vector is accepted.
+
+The helper's complete child-plan contract is fixed below. The first line is the one image-owned helper
+argv consumed by bwrap; the three following rows are helper-owned plan arrays, not caller arguments or
+additional public entrypoints. In each row the literal `--` separates helper controls from the exact
+argv passed to the child `execve`; `--no-compiler-handoff` is a control token in the first two rows at
+the same position, and the third row replaces it with the fixed handoff tuple. The helper does not
+re-exec itself for a row. It validates FD `12/13/15`, performs setup, then passes the post-`--` array
+to one child with the row's environment:
+
+```text
+helper_argv = [
+  "/usr/bin/adoption-namespace", "--capsule-fd", "12", "--worker-fd", "13",
+  "--invocation-nonce-fd", "15", "--mode", "ordinary-adoption"
+]
+
+row_1.argv = [
+  "/usr/bin/adoption-namespace", "--child-index", "1", "--no-compiler-handoff", "--",
+  "/tools/make", "--no-print-directory", "-C", "/private-project", "-f",
+  "/private-project/Makefile", "align-revision"
+]
+row_2.argv = [
+  "/usr/bin/adoption-namespace", "--child-index", "2", "--no-compiler-handoff", "--",
+  "/tools/make", "--no-print-directory", "-C", "/private-project", "-f",
+  "/private-project/Makefile", "align-build-only"
+]
+row_3.argv = [
+  "/usr/bin/adoption-namespace", "--child-index", "3", "--compiler-handoff",
+  "/private-cargo-target/release/alignc", "/private-cargo-target/release/libalign_runtime.a",
+  "/private-launcher-source/adoption-alignc", "<launcher-sha256>", "<align-revision>",
+  "<project-head>", "--", "/tools/make", "--no-print-directory", "-C", "/private-project",
+  "-f", "/private-project/Makefile", "json-scan-row-ownership-adoption"
+]
+```
+
+The row environment is also fixed. Every row receives exactly the common set
+`ALIGN_REPO=/private-align`, `CARGO_NET_OFFLINE=true`, `HOME=/nonexistent`, `LANG=C`, `LC_ALL=C`,
+`MAKEFLAGS=`, `GNUMAKEFLAGS=`, `MAKEOVERRIDES=`, `PATH=/private-native/bin:/private-rust/bin:/private-llvm/bin:/tools:/usr/bin:/bin`,
+`PYTHONDONTWRITEBYTECODE=1`, and `TMPDIR=/tmp`. Row 2 adds
+`CARGO=/private-rust/bin/cargo`, `RUSTC=/private-rust/bin/rustc`, `CARGO_HOME=/private-cargo-home`,
+`CARGO_TARGET_DIR=/private-cargo-target`, `LLVM_CONFIG=/private-llvm/bin/llvm-config`,
+`LLVM_SYS_221_PREFIX=/private-llvm`, `CC=/private-native/bin/cc`, `CXX=/private-native/bin/cxx`,
+`AR=/private-native/bin/ar`, `RANLIB=/private-native/bin/ranlib`, `LD=/private-llvm/bin/ld.lld`,
+`LIBRARY_PATH=<authenticated-native-library-path>`, `LD_LIBRARY_PATH=<authenticated-loader-path>`,
+and `PKG_CONFIG_PATH=<authenticated-pkg-config-path>`. Row 3 adds the same build variables plus
+`ALIGNC=/private-tool-bin/adoption-alignc`, `ALIGNC_DESCRIPTOR=/private-tool-bin/adoption-handoff`,
+and `ALIGNC_CACHE=/private-compiler-cache`. No other variable or descriptor is inherited, and the
+golden child-plan test compares all three arrays and environment sets byte-for-byte before any child.
+
+The authority lifetime is equally fixed: after helper verification and namespace setup, and before
+row 1, the helper closes FD `12`, FD `13`, FD `15`, FD `27`, every setup bind descriptor `20..26`,
+every runtime descriptor `40..(40+N-1)`, every tool descriptor `400..(400+T-1)`, and every private
+directory or compiler-bundle descriptor not needed by the selected row. Before each Make `execve`,
+it performs `close_fds=True, pass_fds=()`; the child descriptor allowlist is exactly `{0,1,2}`. The
+helper records `/proc/self/fd` from each Make child and rejects any authority, identity, setup, or
+worker descriptor, including FD `12`, `13`, or `15`, before accepting the row result.
 
 The trusted installed runner starts the public profile with one direct kernel `execve`; no shell,
 `/usr/bin/env`, or repository executable runs before the image-owned supervisor. This is the exact
