@@ -6,19 +6,20 @@ attestations; this file records durable project state.
 ## Active checkpoint (2026-08-07)
 
 - Branch: `agent/request6-adoption-contract-v2`, with design content complete at
-  `4b0c5404b2f91f54b114707a8e367d496e794d74`, based on merged `main` at
+  `3e0d10f7c641718f4abdb81b5e142e6e07394f0b`, based on merged `main` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. This handoff-only metadata update follows that
   design commit; no design content follows it.
 - Active goal: finish and merge the corrected Request 6 focused-adoption design, then implement
   the ordinary launcher, focused target and fixtures, shipped Align pin, fresh adoption vector,
   baseline ancestry, and final fresh `make ci` on a new branch. Request 7 and later consumers stay
   blocked on this gate.
-- The latest design repair adds the private no-prerequisite `align-build-only` vector, assigns
-  Make-child lifecycle ownership to the in-namespace supervisor, passes staging inputs through
-  retained `--ro-bind-fd` descriptors, copies and seals them in namespace-owned read-only trees
-  under a `CAP_SYS_ADMIN` supervisor, gives cgroup admission and host-root cleanup to the outer
-  wrapper, and computes compiler/archive digests after the build. A fresh independent review is
-  required.
+- The latest design repair additionally binds `/usr/bin/make` and `/usr/bin/adoption-namespace`
+  through exact authenticated schema-2 runtime records, requires the `make` binding digest to
+  equal its tool record, raises Cargo home to 20 GiB, and sets explicit 48 GiB/1,500,000-entry
+  sealed-input and per-tmpfs inode boundaries. The earlier private `align-build-only` vector,
+  in-namespace child ownership, retained `--ro-bind-fd` staging inputs, namespace-owned sealing,
+  outer cgroup/host-root ownership, and post-build compiler digest handoff remain in force. A
+  fresh independent review is required.
 - PR #62 is superseded and must not be merged. The replacement design PR must include the corrected
   vectors and current handoff state.
 - Expected post-merge checkpoint: refresh `main` safely, perform the bounded design retrospective,
@@ -27,7 +28,7 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Run one fresh independent adversarial review of `4b0c540`, then update the design PR with its
+1. Run one fresh independent adversarial review of `3e0d10f`, then update the design PR with its
    SHA-bound review envelope and merge it only after checks and all findings are resolved.
 2. Close PR #62 as superseded, publish the replacement design PR, and complete its review/fix/merge
    evidence.
@@ -36,8 +37,8 @@ attestations; this file records durable project state.
 
 ## Latest verification
 
-- `make gate-topology-check`: PASS at `4b0c540`.
-- `git diff --check`: PASS at `4b0c540`.
+- `make gate-topology-check`: PASS at `3e0d10f`.
+- `git diff --check`: PASS at `3e0d10f`.
 - Markdown fence parity: PASS (`docs/align-requests.md` 94, `docs/specs/check-gate-topology.md` 76).
 - The design-only gate does not run source tests, `make check`, `make build`, or `make ci`; those
   checks are deferred until executable implementation or an executable contract boundary exists.
