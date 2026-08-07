@@ -17,6 +17,7 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPOSITORY / "scripts"))
 
 from fresh_attestation import ed25519_public_key  # noqa: E402
+from fresh_manifest import serialized_digest, validate_manifest_bytes  # noqa: E402
 
 
 PROVENANCE_SCRIPTS = (
@@ -208,6 +209,102 @@ os._exit(128 + os.WTERMSIG(status))
     return run(arguments, check=False)
 
 
+def boundary_profile_run(
+    image: str,
+    volume: str,
+    runtime_volume: str,
+    source_volume: str,
+    cgroup_driver: str,
+    *,
+    align_repo: str | None = "/work/align",
+    extra_environment: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[bytes]:
+    arguments = [
+        "docker",
+        "run",
+        "--rm",
+        "--privileged",
+        "--cgroupns=host",
+        "--network=none",
+        "--workdir",
+        "/work/project",
+    ]
+    if align_repo is not None:
+        arguments.extend(["--env", f"ALIGN_REPO={align_repo}"])
+    for entry in extra_environment:
+        name, separator, _ = entry.partition("=")
+        if not separator or not name:
+            raise ValueError(f"invalid boundary test environment entry: {entry!r}")
+        arguments.extend(["--env", entry])
+    command = [image, "--mode", "ordinary-adoption-boundary"]
+    if cgroup_driver == "cgroupfs":
+        arguments.extend(
+            [
+                "--cgroup-parent",
+                f"/align-llm-fresh/{TEST_UID}",
+                "--user",
+                f"{TEST_UID}:{TEST_UID}",
+            ]
+        )
+    elif cgroup_driver == "systemd":
+        environment_values: dict[str, str] = {}
+        if align_repo is not None:
+            environment_values["ALIGN_REPO"] = align_repo
+        for entry in extra_environment:
+            name, _, value = entry.partition("=")
+            environment_values[name] = value
+        environment = repr(environment_values)
+        launcher = f"""\
+import os
+parent = '/sys/fs/cgroup/align-llm-fresh/{TEST_UID}'
+leaf = parent + '/docker-boundary-' + str(os.getpid())
+os.mkdir(leaf, 0o700)
+child = os.fork()
+if child == 0:
+    try:
+        with open(leaf + '/cgroup.procs', 'w', encoding='ascii') as target:
+            target.write('0\\n')
+        os.setgroups([])
+        os.setgid({TEST_UID})
+        os.setuid({TEST_UID})
+        os.chdir('/work/project')
+        os.execve('/usr/local/libexec/align-llm/fresh-supervise',
+                  ['fresh-supervise', '--mode', 'ordinary-adoption-boundary'], {environment})
+    except BaseException:
+        os._exit(127)
+try:
+    _, status = os.waitpid(child, 0)
+finally:
+    os.rmdir(leaf)
+if os.WIFEXITED(status):
+    os._exit(os.WEXITSTATUS(status))
+os._exit(128 + os.WTERMSIG(status))
+"""
+        arguments.extend(
+            [
+                "--user",
+                "0:0",
+                "--entrypoint",
+                "/usr/bin/python3.12",
+            ]
+        )
+        command = [image, "-I", "-c", launcher]
+    else:
+        raise RuntimeError(f"unsupported Docker cgroup driver: {cgroup_driver}")
+    arguments.extend(
+        [
+            "--mount",
+            f"type=volume,src={volume},dst=/run/align-llm-fresh,readonly",
+            "--mount",
+            f"type=volume,src={runtime_volume},dst=/run/user",
+            "--mount",
+            f"type=volume,src={source_volume},dst=/work,readonly",
+            *command,
+        ]
+    )
+    return run(arguments, check=False)
+
+
 def worker_profile_run(
     image: str,
     volume: str,
@@ -349,6 +446,7 @@ def main() -> int:
     volume = f"align-llm-fresh-secrets-{unique}"
     runtime_volume = f"align-llm-fresh-runtime-{unique}"
     source_volume = f"align-llm-fresh-source-{unique}"
+    boundary_source_volume = f"align-llm-fresh-boundary-source-{unique}"
     cgroup_ready = False
     with tempfile.TemporaryDirectory(prefix="fresh-image-profile-") as temporary_name:
         temporary = Path(temporary_name)
@@ -390,10 +488,35 @@ def main() -> int:
             provenance = source_provenance()
             supervisor = temporary / "fresh-supervise"
             bootstrap = temporary / "fresh-bootstrap"
+            dispatcher = temporary / "request6-adoption-boundary-entrypoint"
             manifest = temporary / "fresh-toolchain.json"
             copy_from_image(image, "/usr/local/libexec/align-llm/fresh-supervise", supervisor)
             copy_from_image(image, "/usr/local/libexec/align-llm/fresh-bootstrap", bootstrap)
+            copy_from_image(
+                image,
+                "/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint",
+                dispatcher,
+            )
             copy_from_image(image, "/usr/local/share/align-llm/fresh-toolchain.json", manifest)
+            manifest_value = validate_manifest_bytes(manifest.read_bytes())
+            bindings = [
+                binding
+                for binding in manifest_value["runtime_bindings"]
+                if binding["target"]
+                == "/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint"
+            ]
+            if len(bindings) != 1:
+                raise RuntimeError("boundary dispatcher binding is missing")
+            binding = bindings[0]
+            if (
+                binding["source"] != binding["target"]
+                or binding["kind"] != "file"
+                or binding["manifest"]["kind"] != "file"
+                or binding["manifest"]["mode"] != "0755"
+                or binding["manifest"]["sha256"] != hashlib.sha256(dispatcher.read_bytes()).hexdigest()
+                or binding["manifest_sha256"] != serialized_digest(binding["manifest"])
+            ):
+                raise RuntimeError("boundary dispatcher binding is not canonical")
             attestation = temporary / "image-attestation.dsse"
             run(
                 [
@@ -566,19 +689,30 @@ def main() -> int:
             replaced_manifest = temporary / "replaced-manifest"
             replaced_manifest.write_bytes(manifest.read_bytes() + b" ")
             replaced_manifest.chmod(0o444)
-            for name, source, target in (
+            replaced_dispatcher = temporary / "replaced-boundary-dispatcher"
+            replaced_dispatcher.write_bytes(dispatcher.read_bytes() + b"\x00")
+            replaced_dispatcher.chmod(0o755)
+            for name, source, target, expected in (
                 (
                     "replaced bootstrap",
                     replaced_bootstrap,
                     "/usr/local/libexec/align-llm/fresh-bootstrap",
+                    b"fresh compiler: ERROR TRUST supervisor\n",
                 ),
                 (
                     "replaced manifest",
                     replaced_manifest,
                     "/usr/local/share/align-llm/fresh-toolchain.json",
+                    b"fresh compiler: ERROR TRUST supervisor\n",
+                ),
+                (
+                    "replaced boundary dispatcher",
+                    replaced_dispatcher,
+                    "/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint",
+                    b"fresh compiler: ERROR TOOL tools\n",
                 ),
             ):
-                require_trust_rejection(
+                require_rejection(
                     profile_run(
                         image,
                         volume,
@@ -587,6 +721,7 @@ def main() -> int:
                         replacements=((source, target),),
                     ),
                     name,
+                    expected,
                 )
             runtime_replacement = temporary / "runtime-replacement"
             runtime_replacement.write_bytes(b"not the installed runtime\n")
@@ -648,6 +783,139 @@ def main() -> int:
             run(["git", "-C", str(source / "align"), "checkout", "--detach", (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()])
             run(["docker", "volume", "create", source_volume])
             populate_source_volume(image, source_volume, source)
+            run(["docker", "volume", "create", boundary_source_volume])
+            populate_source_volume(image, boundary_source_volume, source)
+            missing_worker = boundary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                boundary_source_volume,
+                cgroup_driver,
+            )
+            require_rejection(
+                missing_worker,
+                "boundary missing worker",
+                b"json-scan adoption: ERROR revision\n",
+            )
+            missing_align = boundary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                boundary_source_volume,
+                cgroup_driver,
+                align_repo=None,
+            )
+            require_rejection(
+                missing_align,
+                "boundary missing ALIGN_REPO",
+                b"fresh compiler: ERROR ARGUMENT input\n",
+            )
+            malformed_align = boundary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                boundary_source_volume,
+                cgroup_driver,
+                align_repo="/work/../align",
+            )
+            require_rejection(
+                malformed_align,
+                "boundary malformed ALIGN_REPO",
+                b"fresh compiler: ERROR ARGUMENT input\n",
+            )
+            relative_align = boundary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                boundary_source_volume,
+                cgroup_driver,
+                align_repo="align",
+            )
+            require_rejection(
+                relative_align,
+                "boundary relative ALIGN_REPO",
+                b"fresh compiler: ERROR ARGUMENT input\n",
+            )
+            extra_environment = boundary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                boundary_source_volume,
+                cgroup_driver,
+                extra_environment=("BOUNDARY_EXTRA=1",),
+            )
+            require_rejection(
+                extra_environment,
+                "boundary extra environment",
+                b"fresh compiler: ERROR ARGUMENT input\n",
+            )
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--entrypoint",
+                    "/bin/sh",
+                    "--mount",
+                    f"type=volume,src={boundary_source_volume},dst=/work",
+                    image,
+                    "-eu",
+                    "-c",
+                    "printf 'consumer worker\\n' > /work/project/scripts/run-json-scan-row-ownership-adoption; "
+                    "chmod 0755 /work/project/scripts/run-json-scan-row-ownership-adoption",
+                ]
+            )
+            present_worker = boundary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                boundary_source_volume,
+                cgroup_driver,
+            )
+            require_rejection(
+                present_worker,
+                "boundary present worker",
+                b"json-scan adoption: ERROR revision\n",
+            )
+            for name, mutation in (
+                (
+                    "boundary symlink worker",
+                    "rm -f /work/project/scripts/run-json-scan-row-ownership-adoption; "
+                    "ln -s missing-worker /work/project/scripts/run-json-scan-row-ownership-adoption",
+                ),
+                (
+                    "boundary FIFO worker",
+                    "rm -f /work/project/scripts/run-json-scan-row-ownership-adoption; "
+                    "mkfifo /work/project/scripts/run-json-scan-row-ownership-adoption",
+                ),
+            ):
+                run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--entrypoint",
+                        "/bin/sh",
+                        "--mount",
+                        f"type=volume,src={boundary_source_volume},dst=/work",
+                        image,
+                        "-eu",
+                        "-c",
+                        mutation,
+                    ]
+                )
+                malformed_worker = boundary_profile_run(
+                    image,
+                    volume,
+                    runtime_volume,
+                    boundary_source_volume,
+                    cgroup_driver,
+                )
+                require_rejection(
+                    malformed_worker,
+                    name,
+                    b"json-scan adoption: ERROR revision\n",
+                )
             worker_result = worker_profile_run(
                 image, volume, runtime_volume, source_volume, cgroup_driver
             )
@@ -681,6 +949,7 @@ def main() -> int:
             run(["docker", "volume", "rm", "-f", volume], check=False)
             run(["docker", "volume", "rm", "-f", runtime_volume], check=False)
             run(["docker", "volume", "rm", "-f", source_volume], check=False)
+            run(["docker", "volume", "rm", "-f", boundary_source_volume], check=False)
             run(["docker", "image", "rm", "-f", image], check=False)
     print("fresh image profile smoke: PASS")
     return 0

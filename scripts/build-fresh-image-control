@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build deterministic FRESH-IMAGE supervisor and bootstrap ELF launchers."""
+"""Build deterministic FRESH-IMAGE control and boundary ELF launchers."""
 
 from __future__ import annotations
 
@@ -90,10 +90,13 @@ def main() -> int:
 
     repository = Path(__file__).resolve().parent.parent
     control = repository / "image" / "fresh" / "control"
-    modules = [
+    common_modules = [
         ("fresh_attestation.py", repository / "scripts" / "fresh_attestation.py"),
         ("fresh_manifest.py", repository / "scripts" / "fresh_manifest.py"),
         ("fresh_image_control.py", control / "fresh_image_control.py"),
+    ]
+    dispatcher_modules = common_modules + [
+        ("request6_boundary.py", control / "request6_boundary.py"),
     ]
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="fresh-image-control-") as temporary:
@@ -103,12 +106,18 @@ def main() -> int:
         build_bundle(
             supervisor_bundle,
             main=control / "supervisor_main.py",
-            modules=modules,
+            modules=common_modules,
         )
         build_bundle(
             bootstrap_bundle,
             main=control / "bootstrap_main.py",
-            modules=modules,
+            modules=common_modules,
+        )
+        boundary_bundle = build / "request6-adoption-boundary.pyz"
+        build_bundle(
+            boundary_bundle,
+            main=control / "dispatcher_main.py",
+            modules=dispatcher_modules,
         )
         write_header(
             build / "supervisor_payload.inc",
@@ -119,6 +128,11 @@ def main() -> int:
             build / "bootstrap_payload.inc",
             symbol="bootstrap_payload",
             raw=bootstrap_bundle.read_bytes(),
+        )
+        write_header(
+            build / "dispatcher_payload.inc",
+            symbol="dispatcher_payload",
+            raw=boundary_bundle.read_bytes(),
         )
         compile_launcher(
             compiler=arguments.cc,
@@ -133,6 +147,13 @@ def main() -> int:
             include_dir=build,
             output=arguments.output_dir / "fresh-bootstrap",
         )
+        compile_launcher(
+            compiler=arguments.cc,
+            source=repository / "image" / "fresh" / "request6-adoption-boundary-entrypoint.c",
+            include_dir=build,
+            output=arguments.output_dir / "request6-adoption-boundary-entrypoint",
+            static=True,
+        )
         if arguments.keep_bundles:
             (arguments.output_dir / "fresh-supervise.pyz").write_bytes(
                 supervisor_bundle.read_bytes()
@@ -140,8 +161,15 @@ def main() -> int:
             (arguments.output_dir / "fresh-bootstrap.pyz").write_bytes(
                 bootstrap_bundle.read_bytes()
             )
+            (arguments.output_dir / "request6-adoption-boundary-entrypoint.pyz").write_bytes(
+                boundary_bundle.read_bytes()
+            )
 
-    for name in ("fresh-supervise", "fresh-bootstrap"):
+    for name in (
+        "fresh-supervise",
+        "fresh-bootstrap",
+        "request6-adoption-boundary-entrypoint",
+    ):
         raw = (arguments.output_dir / name).read_bytes()
         print(f"{hashlib.sha256(raw).hexdigest()}  {name}")
     return 0
