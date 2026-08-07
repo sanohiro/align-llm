@@ -383,8 +383,9 @@ fi
 mkdir -p "${git_common_dir}/${replacement_namespace}"
 git update-ref "${replacement_ref}" "${replacement_target}"
 ordinary_tree="$(
-  GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
-    git rev-parse "${source_commit}^{tree}"
+  env -u GIT_NO_REPLACE_OBJECTS \
+    GIT_REPLACE_REF_BASE="${replacement_namespace}/" \
+      git rev-parse "${source_commit}^{tree}"
 )"
 source_tree="$(
   GIT_NO_REPLACE_OBJECTS=1 \
