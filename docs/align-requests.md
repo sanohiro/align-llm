@@ -1382,9 +1382,14 @@ fixed: (1) argv, Make-control variables, cwd, and allowed `HANDOFF.md` exception
 index, clean-tree, and raw snapshot; (3) fixed attestation and manifest bytes; (4) Align Git view,
 config, helper, alternate-object, and linked-worktree metadata; (5) tool/runtime/cache identity;
 (6) private-root staging and final pre-child snapshots; (7) the three child vectors; and (8)
-reverse cleanup. The first failed phase wins. Cleanup selects `cleanup` only when every earlier
-phase and child succeeded; after an earlier failure, cleanup still runs but cannot overwrite the
-primary phase. No later validation or cleanup side effect changes that precedence.
+reverse cleanup. The phase mapping is exact: steps 1–2 and every pre-child project/Align failure
+are `revision` except the initial argv/env/cwd grammar, which is `input`; fixed attestation,
+manifest, tool, runtime, cache, and private-root staging failures are `toolchain`;
+`.align-revision` mismatch is `revision`; the build child and its compiler handoff are `build`;
+the focused child and fixture/compiler result are `fixture`; and cleanup is `cleanup` only when
+every earlier phase and child succeeded. The first failed phase wins. After an earlier failure,
+cleanup still runs but cannot overwrite the primary phase. No later validation or cleanup side
+effect changes that precedence.
 
 The ordinary wrapper's only caller-selected source input is `ALIGN_REPO`, the absolute clean Align
 worktree. Toolchain and dependency inputs come from the fixed installed-profile manifest at
@@ -1451,9 +1456,9 @@ After its preflight, the wrapper alone launches these fixed child vectors with t
 toolchain environment and empty Make-control variables:
 
 ```text
-/usr/bin/make --no-print-directory -f <private-project>/Makefile align-revision
-/usr/bin/make --no-print-directory -f <private-project>/Makefile align-build
-/usr/bin/make --no-print-directory -f <private-project>/Makefile json-scan-row-ownership-adoption
+/usr/bin/make --no-print-directory -C <private-project> -f <private-project>/Makefile align-revision
+/usr/bin/make --no-print-directory -C <private-project> -f <private-project>/Makefile align-build
+/usr/bin/make --no-print-directory -C <private-project> -f <private-project>/Makefile json-scan-row-ownership-adoption
 ```
 
 Each child receives `ALIGN_REPO=<private-align>` and the same authenticated read-only toolchain,
@@ -1463,16 +1468,43 @@ cache, and empty Make-control environment. The `align-build` child additionally 
 `CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=<private-llvm>/bin/llvm-config`,
 `LLVM_SYS_221_PREFIX=<private-llvm>`, `CC=<private-native-bin>/cc`,
 `CXX=<private-native-bin>/cxx`, and the authenticated native search paths. The wrapper materializes
-`private-native-bin/cc` from the manifest's `cc` tool record and `private-native-bin/cxx` from its
-`cxx` record; these are explicit staged aliases, not an unlisted `c++` name. Every focused child
+`private-native-bin/cc` and `private-native-bin/cxx` as create-exclusive copies of the authenticated
+`clang` and `clang++` runtime bytes, with their complete ELF closure; the manifest's `cc` and `cxx`
+forwarders are identity records, not executed aliases. These are explicit staged aliases, not an
+unlisted `c++` name. Every focused child
 receives `PATH=<private-rust>/bin:<private-llvm>/bin:<private-native-bin>:/usr/bin:/bin`, with the
 staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
-must never reach ambient `/usr/bin/cc`. After the build,
-the wrapper verifies the new `release/alignc` and adjacent runtime archive by no-follow type,
-mode, link count, revision, version, and complete bytes, then supplies the exact absolute
-`ALIGNC=<private-cargo-target>/release/alignc` and `ALIGNC_CACHE=<private-compiler-cache>` values
-to the focused child. The target rejects a missing, relative, symlinked, stale, or digest-mismatched
-`ALIGNC` before any fixture compiler call; it never searches sibling release/debug paths or `PATH`.
+must never reach ambient `/usr/bin/cc`. After the build, the wrapper verifies the new `release/alignc`
+and adjacent runtime archive by no-follow type, mode, link count, revision, version, and complete
+bytes, then writes a canonical schema-1, mode-`0444` compiler handoff descriptor containing the
+exact compiler/archive paths, device/inode, mode, link-count, size, SHA-256, Align revision, and
+project HEAD. The fixed `scripts/adoption-alignc` launcher reads that descriptor before every
+compiler call, rechecks both retained private files, and `execve`s only the verified compiler path;
+its descriptor and launcher are copied into the private read-only tool bin before the focused child
+starts. The focused child receives `ALIGNC=<private-tool-bin>/adoption-alignc`,
+`ALIGNC_DESCRIPTOR=<private-handoff>`, and `ALIGNC_CACHE=<private-compiler-cache>`, and rejects a
+missing, relative, symlinked, stale, replaced, or digest-mismatched handoff before any fixture
+compiler call. It never searches sibling release/debug paths or `PATH` for the compiler.
+The handoff descriptor is canonical UTF-8 JSON with one final LF, no duplicate or unknown fields,
+decimal unsigned integers, and this exact field order and width: `schema_version` (`u64`),
+`compiler_path` (absolute UTF-8 string), `compiler_dev` (`u64`), `compiler_ino` (`u64`),
+`compiler_mode` (`u32`), `compiler_nlink` (`u64`), `compiler_size` (`u64`),
+`compiler_sha256` (64 lowercase hexadecimal bytes), `archive_path` (absolute UTF-8 string),
+`archive_dev` (`u64`), `archive_ino` (`u64`), `archive_mode` (`u32`), `archive_nlink` (`u64`),
+`archive_size` (`u64`), `archive_sha256` (64 lowercase hexadecimal bytes),
+`align_revision` (40 lowercase hexadecimal bytes), and `project_head` (40 lowercase hexadecimal
+bytes). The schema version is `1`; paths must remain below the private root and are checked against
+the recorded device/inode/type/mode/link-count/size/digest tuple before every `execve`. The
+implementation records a checked-in golden descriptor byte vector and rejects a reordered,
+whitespace-normalized, truncated, or trailing-byte variant before the first compiler call.
+The semantic-to-byte and byte-to-semantic acceptance vector is named
+`adoption-compiler-handoff-v1-golden`; its exact UTF-8 bytes, including the final LF, are:
+
+```text
+{"schema_version":1,"compiler_path":"/private/tool-bin/alignc","compiler_dev":7,"compiler_ino":11,"compiler_mode":365,"compiler_nlink":1,"compiler_size":123,"compiler_sha256":"0000000000000000000000000000000000000000000000000000000000000000","archive_path":"/private/tool-bin/libalign_runtime.a","archive_dev":7,"archive_ino":13,"archive_mode":292,"archive_nlink":1,"archive_size":456,"archive_sha256":"1111111111111111111111111111111111111111111111111111111111111111","align_revision":"2222222222222222222222222222222222222222","project_head":"3333333333333333333333333333333333333333"}
+```
+The golden test parses those bytes into the declared typed object and serializes that object back to
+the identical byte sequence; each individual field mutation has a separately checked rejection.
 The ordinary profile records the staged project/Align identities, exact revision, authenticated
 toolchain and cache file identities and versions, build-target identity, compiler/archive digest,
 compiler selector, cache identity, and all three internal vectors. The authenticated fresh profile
@@ -1540,7 +1572,7 @@ The fixture directory contains:
 
 The adoption script has two explicit execution profiles. In the ordinary adoption profile,
 `owned-direct.align`, `owned-nested.align`, and `owned-union.align` use
-`ALIGNC=<private-cargo-target>/release/alignc ALIGNC_CACHE=<private-compiler-cache> <private-cargo-target>/release/alignc check <file>` in that fixed filename order. In the
+`ALIGNC=<private-tool-bin>/adoption-alignc ALIGNC_DESCRIPTOR=<private-handoff> ALIGNC_CACHE=<private-compiler-cache> <private-tool-bin>/adoption-alignc check <file>` in that fixed filename order. In the
 Section 9 fresh-capable profile, the same calls use the controller-owned fixed vector
 `ALIGNC_CACHE=off /tools/fresh-alignc check <file>`; `/tools/fresh-alignc` opens the authenticated
 handoff files and cannot be replaced by a caller-selected compiler. Both profiles require a
@@ -1552,13 +1584,13 @@ nonzero status, require empty stdout, and match exactly once:
 
 It rejects a panic, backtrace, or any unexpected file under the selected cache. It checks
 `owned-option.align` against the fixed scanner diagnostic above, then invokes the same absolute
-private compiler with `run copy-row.align` and `run decode-owned.align` in that order with the
-same named cache in the ordinary profile. In the Section 9 fresh-capable profile, those exact vectors are
+private launcher with `run copy-row.align` and `run decode-owned.align` in that order with the same
+descriptor and named cache in the ordinary profile. In the Section 9 fresh-capable profile, those exact vectors are
 `ALIGNC_CACHE=off /tools/fresh-alignc run copy-row.align` and
 `ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned.align`; the worker's `ALIGNC_CACHE=off`
 setting is fixed and caller cache overrides are rejected. It then invokes
 `decode-owned-option.align` with
-`ALIGNC=<private-cargo-target>/release/alignc ALIGNC_CACHE=<private-compiler-cache> <private-cargo-target>/release/alignc run decode-owned-option.align`
+`ALIGNC=<private-tool-bin>/adoption-alignc ALIGNC_DESCRIPTOR=<private-handoff> ALIGNC_CACHE=<private-compiler-cache> <private-tool-bin>/adoption-alignc run decode-owned-option.align`
 in the ordinary profile, or with
 `ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned-option.align` in the Section 9 fresh-capable
 profile. The selected profile vector is fixed in both profiles; only a future Align cleanup that
