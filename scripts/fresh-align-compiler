@@ -4156,8 +4156,8 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
                     (
                         "diagnostic aggregate result: "
                         f"rc={aggregate_result.returncode} "
-                        f"stdout={aggregate_result.stdout[:4096]!r} "
-                        f"stderr={aggregate_result.stderr[:4096]!r}\n"
+                        f"stdout_tail={aggregate_result.stdout[-8192:]!r} "
+                        f"stderr_tail={aggregate_result.stderr[-8192:]!r}\n"
                     ).encode("ascii", "backslashreplace"),
                 )
             except OSError:
