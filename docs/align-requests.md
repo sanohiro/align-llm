@@ -1378,14 +1378,14 @@ checks its manifest digest and complete interpreter/loader closure, and creates 
 `SOCK_SEQPACKET|SOCK_CLOEXEC` supervisor channel. It forks exactly one dispatcher child; the
 fresh-supervise parent keeps one channel endpoint, and the child receives the other as FD `16`.
 Only the child then invokes the retained dispatcher descriptor with
-`execveat(AT_EMPTY_PATH)` at fixed FD `14`. The parent sends one fresh 32-byte dispatch ticket,
-shuts down its write side, and remains alive until the dispatcher child exits. The dispatcher
-accepts that channel only when `SO_PEERCRED` identifies its current parent, the peer PID's
-`/proc/<pid>/stat` start-time remains unchanged through ticket receipt, a no-follow
-`/proc/<pid>/exe` descriptor hashes to the image-attested supervisor digest, the bounded
-`/proc/<pid>/cmdline` bytes are exactly `fresh-supervise\0--mode\0ordinary-adoption\0`, and exactly
-one 32-byte ticket message is received before EOF. A direct dispatcher invocation cannot satisfy
-the parent-PID, executable, command-line, and one-time-channel conjunction.
+`execveat(AT_EMPTY_PATH)` at fixed FD `14`. The parent first sends one fresh 32-byte dispatch
+ticket `T` and remains alive with the channel open. The dispatcher accepts that channel only when
+`SO_PEERCRED` identifies its current parent, the peer PID's `/proc/<pid>/stat` start-time remains
+unchanged through the complete admission, a no-follow `/proc/<pid>/exe` descriptor hashes to the
+image-attested supervisor digest, the bounded `/proc/<pid>/cmdline` bytes are exactly
+`fresh-supervise\0--mode\0ordinary-adoption\0`, and the first message is exactly `T`. A direct
+dispatcher invocation cannot satisfy the parent-PID, executable, command-line, and one-time-channel
+conjunction.
 Its fixed child argv,
 including the required `argv[0]`, is:
 
@@ -1396,8 +1396,10 @@ including the required `argv[0]`, is:
  "--invocation-nonce-fd", "15", "--supervisor-channel-fd", "16"]
 ```
 
-It uses `close_fds=True, pass_fds=(4, 6, 8, 15, 16)` after the retained dispatcher descriptor is
-consumed. FD `15` is a fresh supervisor-created sealed 32-byte nonce; it is
+After the retained dispatcher descriptor is consumed, the child clears `FD_CLOEXEC` on FDs `4`, `6`,
+`8`, `15`, and `16`, closes every other inherited data descriptor, and invokes `execveat(AT_EMPTY_PATH)`
+on FD `14`; FD `14` is the only executable authority and is not a data descriptor. FD `15` is a fresh
+supervisor-created sealed 32-byte nonce; it is
 never caller-selected. The two
 path values are supervisor-validated named inputs, not positional arguments or ambient environment;
 the dispatcher independently recomputes the relative value from the retained project-root identity
@@ -1415,8 +1417,20 @@ request/API, fresh invocation nonce, supervisor dispatch-ticket digest, project 
 project index and raw-tree digests, canonical `ALIGN_REPO` relative path and Align identity, worker
 relative path and SHA-256, image digest, image-attestation digest, manifest digest, and entrypoint
 digest. The dispatcher verifies the supervisor channel before signing, so it is the only producer
-allowed to create this capsule on the evidence-bearing path. The worker verifies the capsule and worker snapshot before staging the private source
-tree; no later child reopens the host pathname. The Make target remains an internal worker
+allowed to create this capsule on the evidence-bearing path. The worker verifies the capsule and
+worker snapshot before staging the private source. After signing, the dispatcher computes
+`C = SHA-256(complete DSSE envelope bytes)` and sends the raw 32-byte `C` to the still-live
+supervisor parent. The parent replies on FD `16` with exactly one raw 32-byte worker-admission proof
+`P = SHA-256("align-llm/ordinary-adoption/worker-admission/v1\0" ||
+dispatch_ticket_sha256_bytes || invocation_nonce_bytes || C)`, where the three binary operands
+`dispatch_ticket_sha256_bytes`, `invocation_nonce_bytes`, and `C` are each exactly 32 bytes and the
+domain prefix is the literal UTF-8 string including its trailing NUL. The proof remains queued on the
+channel; the dispatcher does not consume it. The worker
+peeks and verifies `P` without consuming it, and the namespace helper consumes and verifies the same
+single proof before any Make child. The parent keeps FD `16` open until the dispatcher/worker/helper
+exits; a channel hangup, peer identity change, extra message, missing proof, or proof mismatch fails
+closed. A replayed capsule, worker, or nonce therefore cannot pass with a new admission channel
+because the new parent proof binds the current capsule envelope digest and ticket digest. The Make target remains an internal worker
 target for the authenticated fresh vector. The implementation also adds the private Make target
 `align-build-only`: it has no prerequisites, has the same authenticated `$(CARGO)` build recipe as
 `align-build`, and is invocable by the ordinary wrapper's fixed second vector only. The existing
@@ -1432,18 +1446,28 @@ variables, cwd, and allowed `HANDOFF.md` exception; (2) project HEAD, index, cle
 snapshot; (3) fixed entrypoint, attestation, capsule, and manifest bytes; (4) worker snapshot and Align
 Git view, config, helper, alternate-object, and linked-worktree metadata; (5) tool/runtime/cache identity;
 (6) private-root staging and final pre-child snapshots; (7) the three child vectors; and (8) reverse
-cleanup. The phase mapping is exact: the initial argv/env/cwd grammar is `input`; project, Align, and
-worker identity or source-content failures at any step, including a mutation detected during staging
-or a final pre-child snapshot, are `revision`; fixed attestation, manifest, lock/cgroup admission,
-tool, runtime, cache, private-root mount, quota, descriptor, and other staging-infrastructure failures
-are `toolchain`; `.align-revision` mismatch and every `align-revision` launch, timeout, output-overflow,
-nonzero, or cancellation outcome are `revision`; a failed `execveat(AT_EMPTY_PATH)` of FD 14 before the
-dispatcher starts is `fresh compiler: ERROR TRUST supervisor\n`; after FD 14 has started, the dispatcher
-and its worker validation failures use the ordinary phase set; the build-only child, compiler/archive/
-launcher source copy, and post-build namespace bundle/handoff setup are `build`; the focused child and
-fixture/compiler result are `fixture`; and cleanup is `cleanup` only when every earlier phase and child
-succeeded. The first failed phase wins. After an earlier failure, cleanup still runs but cannot
-overwrite the primary phase. No later validation or cleanup side effect changes that precedence.
+cleanup. The phase mapping is exact. `input` covers the dispatcher parent/channel peer admission,
+the one-time ticket length/order/digest, named-option and environment grammar, cwd, the absolute and
+relative path pair, nonce descriptor shape/value/freshness, and Make-control-variable rejection.
+`revision` covers project, Align, and worker identity or source-content failures at any step,
+including a mutation detected during staging or a final pre-child snapshot, an `ALIGN_REPO` mismatch
+after FD 14 dispatch, and a capsule field whose retained project/Align/worker identity differs from
+the independently observed source. `toolchain` covers fixed image attestation, manifest, entrypoint
+closure, capsule signer/DSSE construction or key policy, authority memfd predicates and descriptor
+handoffs, lock/cgroup admission, bwrap and namespace setup, runtime/tool/cache identity, private-root
+mount/quota, and every other staging-infrastructure failure; a malformed capsule wire from an
+otherwise trusted signer is also `toolchain`, while a capsule/source identity mismatch is `revision`.
+`.align-revision` mismatch and every `align-revision` launch, timeout, output-overflow, nonzero, or
+cancellation outcome are `revision`. A failed `execveat(AT_EMPTY_PATH)` of FD 14 before the dispatcher
+starts is `fresh compiler: ERROR TRUST supervisor\n`; after FD 14 has started, dispatcher and worker
+validation failures use the ordinary phase set. Before the first child, a supervisor-channel hangup
+is `toolchain`; while a child row is active it is that row's phase (`revision` for the revision row,
+`build` for the build row, or `fixture` for the focused row); during reverse cleanup it is `cleanup`.
+The build-only child, compiler/archive/launcher source copy, and post-build namespace bundle/handoff
+setup are `build`; the focused child and fixture/compiler result are `fixture`; and cleanup is
+`cleanup` only when every earlier phase and child succeeded. The first failed phase wins. After an
+earlier failure, cleanup still runs but cannot overwrite the primary phase. No later validation or
+cleanup side effect changes that precedence.
 
 The ordinary wrapper's only caller-selected source input is `ALIGN_REPO`, the absolute clean Align
 worktree. Toolchain and dependency inputs come from the fixed installed-profile manifest at
@@ -1456,7 +1480,8 @@ arbitrary local machine may run the smoke as an untrusted developer check but ma
 ordinary adoption result until the fixed manifest and attestation are present.
 
 The authenticated dispatcher opens the current project root from its actual cwd and the caller-selected
-`ALIGN_REPO` through retained `O_DIRECTORY|O_NOFOLLOW` descriptors. Before it starts bwrap or the
+`ALIGN_REPO` through retained component-walked `O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC` descriptors.
+Before it starts bwrap or the
 namespace supervisor, it proves the project HEAD, index, raw-tree digest, clean-tree exception, and
 Align identity, then opens `scripts/run-json-scan-row-ownership-adoption` as a bounded single-link
 regular source file. It reads and hashes that file through the retained descriptor, rechecks its
@@ -1466,14 +1491,23 @@ after verifying the supervisor channel and one-time dispatch ticket, and binds t
 snapshot to the fixed manifest, image-attestation, supervisor, and fresh nonce digests. It passes the
 sealed capsule on FD `12`, the sealed worker bytes on FD `13`, and the sealed nonce challenge on FD
 `15` to the fixed repository-worker vector
-`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15`.
-The dispatcher closes the supervisor channel after signing. The worker executes only from that sealed
-descriptor, owns the bwrap/cgroup/staging setup, and supplies the three sealed FDs to bwrap as
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15
+--supervisor-channel-fd 16`. Before this exec it clears `FD_CLOEXEC` on FDs `4`, `12`, `13`, `15`,
+and `16` and uses `close_fds=True, pass_fds=(4, 12, 13, 15, 16)`; the memfd creator's
+`MFD_CLOEXEC` trace remains recorded even though the required inheritance edge clears the descriptor
+flag.
+The dispatcher leaves the supervisor channel open and passes it to the worker. The worker executes
+only from that sealed descriptor, owns the bwrap/cgroup/staging setup, and supplies the three sealed FDs to bwrap as
 `--ro-bind-fd 12 /authority/capsule`, `--ro-bind-fd 13 /authority/worker`, and
-`--ro-bind-fd 15 /authority/nonce`; the pinned bwrap consumes those source descriptors while making
-read-only bind paths and does not forward arbitrary FDs. The namespace supervisor opens only those
-fixed bind paths, re-verifies their bounded bytes against the capsule, rehydrates local fixed-name
-sealed memfds for its own observable predicate checks, and never executes the worker a second time.
+`--ro-bind-fd 15 /authority/nonce`; it also passes FD `16` as the fixed supervisor channel. The
+pinned bwrap consumes the three authority source descriptors while making read-only bind paths and
+keeps FD `16` open through `--as-pid-1 --sync-fd 16`; it does not forward arbitrary FDs. The
+namespace supervisor opens only those fixed bind paths, re-verifies their bounded bytes against the
+capsule, consumes and verifies the one queued worker-admission proof on FD `16`, rehydrates local
+fixed-name sealed memfds for its own observable predicate checks, and never executes the worker a
+second time. It rechecks the peer identity and channel liveness before setup, before every Make row,
+and while any row is active; a supervisor hangup terminates owned children and reports the owning
+phase.
 A worker replacement, same-size edit, dirty-tree swap, replayed capsule, or later pathname restore
 therefore fails or executes only the already-authenticated bytes; the host repository script never
 runs before this boundary.
@@ -1555,10 +1589,10 @@ next edge:
 | Edge | Sender action at offset zero | Receiver action before use |
 | --- | --- | --- |
 | supervisor -> FD-14 dispatcher | Rewind FD `15`; pass FD `15`, the named project/image/manifest descriptors, and the connected supervisor-channel FD `16`; FD `14` is an executable descriptor and has no data offset contract | Dispatcher validates the channel peer/ticket, rewinds and verifies FD `15` before nonce read |
-| dispatcher -> sealed worker Python | Rewind FD `12`, `13`, and `15` after capsule construction and before `execve` of `/usr/bin/python3 -I -B /proc/self/fd/13`; close channel FD `16` after signing | Worker rewinds all three after Python has opened the `/proc/self/fd/13` source, then verifies them |
-| worker -> bwrap | Rewind FD `12`, `13`, and `15` after worker verification and immediately before bwrap `execve`; FD `27` is an executable descriptor with no data offset contract | Pinned bwrap consumes the three sources through fixed `--ro-bind-fd` operations, closes them after mounting `/authority/{capsule,worker,nonce}`, and performs no authority-FD rewind or arbitrary-FD forwarding |
-| bwrap -> namespace helper | No authority descriptor crosses this edge; bwrap starts `/usr/bin/adoption-namespace` with only fixed path arguments | Helper opens the three fixed read-only bind paths with no-follow flags and uses `pread`; it then rehydrates and rewinds local sealed memfds before verification |
-| namespace helper verification | Use `pread` and require offset zero after each read; no authority descriptor or bind-path fd is passed to a Make child | Close all local authority memfds and bind-path descriptors before the first Make `execve`; the child sees none of them |
+| dispatcher -> sealed worker Python | Rewind FD `12`, `13`, and `15` after capsule construction; clear `FD_CLOEXEC` on `4`, `12`, `13`, `15`, and `16`; invoke `/usr/bin/python3 -I -B /proc/self/fd/13` with `close_fds=True, pass_fds=(4,12,13,15,16)` | Worker rewinds all three after Python has opened the `/proc/self/fd/13` source, verifies them, and peeks the queued proof on FD `16` |
+| worker -> bwrap | Rewind FD `12`, `13`, and `15` after worker verification; clear `FD_CLOEXEC` on `12`, `13`, `15`, and `16`; FD `27` is the worker-owned executable descriptor for `execveat(AT_EMPTY_PATH)` and is not a `pass_fds` member | Pinned bwrap consumes the three sources through fixed `--ro-bind-fd` operations, keeps FD `16` through `--as-pid-1 --sync-fd 16`, closes the source descriptors after mounting `/authority/{capsule,worker,nonce}`, and performs no arbitrary-FD forwarding |
+| bwrap -> namespace helper | The PID-1 helper receives only fixed path arguments plus the inherited supervisor channel FD `16`; FD `27` was closed by the successful bwrap exec | Helper opens the three fixed read-only bind paths with no-follow flags, consumes and verifies the one queued proof on FD `16`, and uses `pread`; it then rehydrates and rewinds local sealed memfds before verification |
+| namespace helper verification | Use `pread` and require offset zero after each read; no authority descriptor, proof channel, or bind-path fd is passed to a Make child | Close all local authority memfds, FD `16`, and bind-path descriptors only after the final row and reverse cleanup; every Make child sees exactly `{0,1,2}` |
 
 Any failed seek, changed offset, unexpected short read, or authority descriptor present after the
 close boundary is a `TRUST` failure. FD `14` and FD `27` are executable authorities: their contract
@@ -1641,16 +1675,18 @@ handoff remains separate in `/private-tool-bin` and is not mixed with the invent
 The executable-resolution ledger is closed: `/usr/local/libexec/align-llm/fresh-supervise`,
 `/usr/local/libexec/align-llm/request6-adoption-entrypoint`, `/usr/bin/python3`,
 `/usr/bin/adoption-namespace`, `/usr/bin/bwrap`, `/usr/bin/env`, and `/bin/sh` are the named direct
-runtime bindings. `/usr/bin/bwrap` is retained as the image-authenticated FD `27` executable and
-invoked with `execveat(AT_EMPTY_PATH)` before the namespace exists; its complete ELF interpreter and
-library closure is part of the fixed runtime binding and FD `27` is consumed before the namespace
-helper starts. Every bare tool name resolves to `/tools/<name>`; the fixed absolute `/private-rust`, `/private-llvm`,
+runtime bindings. `/usr/bin/bwrap` is opened by the worker from the image-attested runtime-binding
+table through a retained no-follow descriptor, checked against the fixed owner/mode/link-count/ELF
+closure, and retained as the worker-owned FD `27`; it is not inherited from the dispatcher or an
+authority bind. The worker invokes that descriptor with `execveat(AT_EMPTY_PATH)` before the namespace
+exists; its complete ELF interpreter and library closure is part of the fixed runtime binding, and successful exec closes FD
+`27` through its construction `FD_CLOEXEC` flag before the helper starts. Every bare tool name resolves to `/tools/<name>`; the fixed absolute `/private-rust`, `/private-llvm`,
 `/private-native`, and `/private-tool-bin` paths are the other executable roots. Repository scripts
 are never executable roots: `align-revision` invokes the script data as the exact vector
 `/tools/bash /private-project/scripts/check-align-revision`, the focused target invokes the exact vector
 `/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke`, and the
 authenticated dispatcher invokes the sealed worker bytes as the exact vector
-`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15`. In each case the
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12 --invocation-nonce-fd 15 --supervisor-channel-fd 16`. In each case the
 `/private-project/scripts/...` value is an argument to an authenticated interpreter, is copied from
 the reviewed source snapshot, and has no `execve` or shebang resolution of its own. A source/argv scan
 and child-exec smoke must reject every executable outside these classes before a Make child starts.
@@ -1681,16 +1717,20 @@ views; a SHA-256 object-format checkout is rejected in the `revision` phase befo
 The ordinary schema therefore uses the fixed 40-hex `project_head` width; the authenticated fresh
 profile retains Section 9's separate SHA-1/SHA-256 support. The project snapshot requires the
 project index and raw tree to match that commit before and after the copy; the
-only permitted working-tree exception is the intentional uncommitted `HANDOFF.md`, which is not
-copied into the product snapshot. Untracked files and every other tracked modification reject.
+only permitted working-tree exceptions are the reserved root `.git` control entry, the intentional
+uncommitted root `HANDOFF.md`, the untracked root `target/` output subtree, and the untracked
+project-root `main` output; none is copied into the product snapshot. The fixed exception metadata
+vector binds their type/mode/link-count state while `bytes_consumed=false`. Untracked files and
+every other tracked modification reject.
 The adoption PR binds the recorded project `HEAD` to the exact reviewed implementation head before
 ordinary evidence is accepted.
 
 The ordinary capsule's `project_raw_tree_sha256` has an independent canonical preimage. It is the
 SHA-256 of a UTF-8 `raw-tree/v1` JSON document using the Section 9 canonical JSON rules (fixed field
 order, two-space indentation, complete JSON escaping, and one final LF). The document fields are
-`schema` followed by `entries`; `schema` is exactly `raw-tree/v1`. The first entry is the project
-root with an empty `path_b64`, followed by every accepted root-relative entry in raw-byte
+`schema`, `source`, and `entries` in that order; `schema` is exactly `raw-tree/v1` and `source` is
+exactly `project-source` for the capsule. The first entry is the project root with an empty
+`path_b64`, followed by every accepted root-relative entry outside the fixed exception set in raw-byte
 lexicographic path order. Each entry has fields in the exact order `path_b64`, `kind`, `mode`,
 `size`, `sha256`, `target_b64`: `path_b64` is unpadded base64url of the raw path bytes, `kind` is
 exactly `dir`, `file`, or `symlink`, `mode` is the four-octal permission mode, `size` is the raw
@@ -1698,21 +1738,123 @@ file or symlink-target byte length (zero for a directory), `sha256` is the diges
 symlink-target bytes (the digest of zero bytes for a directory), and `target_b64` is empty except
 for the unpadded base64url symlink target. Paths contain no NUL, empty, `.`, or `..` component;
 directory and file metadata not listed here, including timestamps, owners, device/inode numbers,
-and link counts, is not part of the preimage. The root `.git` control entry and the exact root
-`HANDOFF.md` exception are excluded before enumeration; every other accepted entry is represented,
-and an untracked or modified entry cannot be silently omitted. The dispatcher computes this digest
-from the retained descriptor snapshot before signing, and the worker recomputes the identical bytes
-before source acceptance.
+and link counts, is not part of the preimage. The root `.git` control entry, root `target/` subtree,
+root `main`, and the project root `HANDOFF.md` exception are excluded before enumeration; every
+other accepted entry is represented, and an untracked or modified entry cannot be silently omitted.
+For `align-source`, the same wire uses `source = align-source` and excludes only the root `.git` and
+root `target/`; root `main` and root `HANDOFF.md` are rejected rather than exceptions. The fixed
+source-exception metadata vector is checked separately and is not included in `entries` or this
+digest. The dispatcher computes the project digest from the retained descriptor snapshot before
+signing, and the worker recomputes the identical bytes and exception vector before source acceptance.
+
+The source-exception metadata is a separate canonical JSON array with one final LF, fixed row order,
+and fields `source`, `label`, `present`, `type`, `mode`, `link_count`, `bytes_consumed`. Its rows are
+`project-source/{git,handoff,target,main}` followed by
+`align-source/{git,handoff,target,main}`. `git` is always present and is either the retained
+directory or linked-worktree regular file; project `handoff` is an optional root regular file with
+mode `0644` or `0755`, Align `handoff` and both `main` rows are always absent, and each `target` is
+absent or an ordinary owner-rwx/no-other-write/no-special directory. `bytes_consumed` is always
+false, absent rows use `type=null`, `mode=null`, and `link_count=null`, and present rows record the
+observed type, raw mode, and link count. The exception vector is compared before and after every
+source snapshot and is never silently folded into `entries`.
+
+The `raw-tree-v1-output-exception-golden` semantic vector has project `HANDOFF.md`, `target/`, and
+`main` present, Align `target/` absent, and the six displayed source entries unchanged. Its
+canonical exception bytes are:
+
+```json
+[
+  {
+    "source": "project-source",
+    "label": "git",
+    "present": true,
+    "type": "directory",
+    "mode": "0755",
+    "link_count": null,
+    "bytes_consumed": false
+  },
+  {
+    "source": "project-source",
+    "label": "handoff",
+    "present": true,
+    "type": "regular",
+    "mode": "0644",
+    "link_count": 1,
+    "bytes_consumed": false
+  },
+  {
+    "source": "project-source",
+    "label": "target",
+    "present": true,
+    "type": "directory",
+    "mode": "0755",
+    "link_count": 1,
+    "bytes_consumed": false
+  },
+  {
+    "source": "project-source",
+    "label": "main",
+    "present": true,
+    "type": "regular",
+    "mode": "0755",
+    "link_count": 1,
+    "bytes_consumed": false
+  },
+  {
+    "source": "align-source",
+    "label": "git",
+    "present": true,
+    "type": "directory",
+    "mode": "0755",
+    "link_count": null,
+    "bytes_consumed": false
+  },
+  {
+    "source": "align-source",
+    "label": "handoff",
+    "present": false,
+    "type": null,
+    "mode": null,
+    "link_count": null,
+    "bytes_consumed": false
+  },
+  {
+    "source": "align-source",
+    "label": "target",
+    "present": false,
+    "type": null,
+    "mode": null,
+    "link_count": null,
+    "bytes_consumed": false
+  },
+  {
+    "source": "align-source",
+    "label": "main",
+    "present": false,
+    "type": null,
+    "mode": null,
+    "link_count": null,
+    "bytes_consumed": false
+  }
+]
+```
+
+The output-exception test proves that adding or changing only those admitted exception objects leaves
+the raw-tree bytes and digest unchanged while changing any non-exception entry changes the digest;
+tracked output names, symlinked exception roots, wrong modes/types/link counts, and an Align
+`HANDOFF.md` reject before capsule signing. The exception-array serializer and its semantic-to-byte
+round trip are independently golden-checked.
 
 The independent `raw-tree-v1-golden` fixture below is the semantic-to-byte and byte-to-semantic
 oracle. Its root, `.align-revision`, ASCII `a`, non-UTF-8 `a\x80`, `docs`, and `docs/link` entries
 are already in raw-byte lexicographic order; the root `.git` control entry and root `HANDOFF.md`
 are intentionally absent. Its exact canonical bytes have SHA-256
-`820d928b48c7c8fd88ce69230608143310caa17f020e72f8f2ceb23ff2354f4f`:
+`8b30014d36e10e32e230fcbbcbe12b6933903da48c8569140cadd62795caad77` (1348 bytes):
 
 ```json
 {
   "schema": "raw-tree/v1",
+  "source": "project-source",
   "entries": [
     {
       "path_b64": "",
@@ -1791,7 +1933,7 @@ with the fixed shape; every read-only source is passed through a retained descri
 from a host pathname:
 
 ```text
-<bwrap-fd-27> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /authority --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 12 /authority/capsule --ro-bind-fd 13 /authority/worker --ro-bind-fd 15 /authority/nonce --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-path /authority/capsule --worker-path /authority/worker --nonce-path /authority/nonce --mode ordinary-adoption
+<bwrap-fd-27> --clearenv --die-with-parent --new-session --as-pid-1 --unshare-user --unshare-pid --unshare-net --unshare-ipc --sync-fd 16 --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /authority --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 12 /authority/capsule --ro-bind-fd 13 /authority/worker --ro-bind-fd 15 /authority/nonce --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-path /authority/capsule --worker-path /authority/worker --nonce-path /authority/nonce --supervisor-channel-fd 16 --mode ordinary-adoption
 ```
 
 The pinned-bwrap acceptance fixture uses a sealed regular-file memfd for each authority source and
@@ -1808,6 +1950,7 @@ The fixed inherited descriptor map is:
 | 12 | sealed `ordinary-adoption/v1` capsule | consumed by bwrap `--ro-bind-fd 12 /authority/capsule`; no FD 12 reaches the helper |
 | 13 | sealed repository worker snapshot | consumed by bwrap `--ro-bind-fd 13 /authority/worker`; no FD 13 reaches the helper |
 | 15 | sealed per-invocation 32-byte nonce challenge | consumed by bwrap `--ro-bind-fd 15 /authority/nonce`; no FD 15 reaches the helper |
+| 16 | connected supervisor channel with the queued worker-admission proof | retained by bwrap `--sync-fd 16` and inherited by the PID-1 helper; the helper retains it through every row and reverse cleanup, excludes it from each Make child, and closes it before helper exit |
 | 20 | private project snapshot | `/input-project` |
 | 21 | private Align Git view | `/input-align` |
 | 22 | complete Rust prefix | `/input-rust` |
@@ -1815,7 +1958,7 @@ The fixed inherited descriptor map is:
 | 24 | native tool/runtime tree | `/input-native` |
 | 25 | authenticated Cargo cache snapshot | `/input-cargo-cache` |
 | 26 | fixed launcher source | `/input-launcher-source` |
-| 27 | image-owned `/usr/bin/bwrap` executable, retained for `execveat(AT_EMPTY_PATH)` | consumed by the outer launcher before the namespace helper; no namespace target |
+| 27 | image-owned `/usr/bin/bwrap` executable, retained by the worker for `execveat(AT_EMPTY_PATH)` | consumed by the worker's bwrap exec edge; `FD_CLOEXEC` closes it across exec and it never reaches bwrap or the helper |
 | 400 onward | ordered schema-2 tool records | `/input-tools/<tool-name>` |
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
@@ -1827,15 +1970,16 @@ caller argument, pathname bind, or ambient host bind. The tool sources occupy FD
 manifest order, and `<ordered-tool-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> /input-tools/<name>` triples for those retained no-follow descriptors. The
 wrapper admits the descriptor table before launch, checks every source identity and complete digest
-after staging, launches bwrap with
-`close_fds=True, pass_fds=(12, 13, 15, 27) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`, and closes its parent copies only after the child is released. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The bwrap argv contains only the fixed authority bind paths and helper arguments
-`--ro-bind-fd 12 /authority/capsule --ro-bind-fd 13 /authority/worker --ro-bind-fd 15 /authority/nonce --mode ordinary-adoption`; it contains no caller or Make vector.
+after staging, clears `FD_CLOEXEC` on FDs `12`, `13`, `15`, and `16`, and launches bwrap with
+`close_fds=True, pass_fds=(12, 13, 15, 16) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`; FD `27` is not in this tuple because the worker invokes bwrap itself with `execveat(AT_EMPTY_PATH)`. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The bwrap argv contains only the fixed authority bind paths, `--sync-fd 16`, and helper arguments
+`--ro-bind-fd 12 /authority/capsule --ro-bind-fd 13 /authority/worker --ro-bind-fd 15 /authority/nonce --supervisor-channel-fd 16 --mode ordinary-adoption`; it contains no caller or Make vector.
 The image-owned namespace helper owns the exact three-row vector table below and runs those rows in
 order; no alternate vector encoding or fourth vector exists. The namespace helper remounts each
 writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
 entries between children. bwrap consumes the retained source descriptors before executing
 `/usr/bin/adoption-namespace`; each source becomes a fixed read-only `/authority/{capsule,worker,nonce}`
-bind, and no authority FD is inherited by the helper. The helper accepts only those fixed bind paths,
+bind, and the PID-1 helper inherits only the live channel FD `16` in addition to its fixed path
+arguments. No authority FD is inherited by the helper. The helper accepts only those fixed bind paths,
 hashes their bytes against the capsule, and creates local sealed memfds for its checks, so a same-UID
 rename or replacement of any staging pathname cannot change a mounted source. The runtime bindings are image-owned root-owned immutable inputs and remain direct
 FD binds. Before the first Make child, the supervisor re-snapshots each `/input-*` tree against the
@@ -1858,12 +2002,15 @@ the explicit bwrap vector; each Make child drops all capabilities and sets `no_n
 `toolchain`, while a failed post-build compiler copy, namespace bundle, descriptor, remount, or
 handoff setup is `build`, before the focused child or compiler marker.
 
-The namespace helper is one trusted supervisor for this invocation. It first opens the three fixed
-read-only bind paths `/authority/capsule`, `/authority/worker`, and `/authority/nonce` with no-follow
-flags, reads bounded bytes with `pread`, and proves that the worker digest and nonce equal the signed
-capsule. It creates local fixed-name sealed memfds from those bytes and checks their complete
-observable predicates, then closes the bind-path descriptors before any repository-controlled Make
-child starts; it does not execute or copy the worker a second time. Its image-owned fixed vector table is exactly the three rows below; it starts
+The namespace helper is one trusted supervisor for this invocation. It first authenticates the live
+supervisor channel on FD `16`, consumes exactly one queued worker-admission proof, and checks the peer
+PID, stable start-time, no-follow executable digest, exact supervisor command line, and channel
+liveness. It then opens the three fixed read-only bind paths `/authority/capsule`, `/authority/worker`,
+and `/authority/nonce` with no-follow flags, reads bounded bytes with `pread`, and proves that the
+worker digest and nonce equal the signed capsule and that the proof equals the capsule envelope
+digest/ticket/nonce tuple. It creates local fixed-name sealed memfds from those bytes and checks their
+complete observable predicates, then closes the bind-path descriptors before any repository-controlled
+Make child starts; it does not execute or copy the worker a second time. Its image-owned fixed vector table is exactly the three rows below; it starts
 each row as a separate session with its in-namespace bounded runner, and
 performs the compiler bundle handoff only after `align-build-only` succeeds and before the focused
 vector.
@@ -1892,7 +2039,7 @@ the post-`--` array to one child with the row's environment:
 helper_argv = [
   "/usr/bin/adoption-namespace", "--capsule-path", "/authority/capsule",
   "--worker-path", "/authority/worker", "--nonce-path", "/authority/nonce",
-  "--mode", "ordinary-adoption"
+  "--supervisor-channel-fd", "16", "--mode", "ordinary-adoption"
 ]
 
 row_1.argv = [
@@ -1929,12 +2076,14 @@ and `ALIGNC_CACHE=/private-compiler-cache`. No other variable or descriptor is i
 golden child-plan test compares all three arrays and environment sets byte-for-byte before any child.
 
 The authority lifetime is equally fixed: bwrap closes source FD `12`, FD `13`, and FD `15` after
-creating the three read-only `/authority/*` binds. After helper verification and namespace setup, and
-before row 1, the helper closes the three bind-path descriptors, FD `27`, every setup bind descriptor
+creating the three read-only `/authority/*` binds, while `--as-pid-1 --sync-fd 16` leaves the live
+supervisor channel in the helper. After helper verification and namespace setup, and before row 1,
+the helper closes the three bind-path descriptors, every setup bind descriptor
 `20..26`, every runtime descriptor `40..(40+N-1)`, every tool descriptor `400..(400+T-1)`, and every
 private directory or compiler-bundle descriptor not needed by the selected row. Before each Make
 `execve`, it performs `close_fds=True, pass_fds=()`; the child descriptor allowlist is exactly
-`{0,1,2}`. The helper records `/proc/self/fd` from each Make child and rejects any authority,
+`{0,1,2}`. The helper retains FD `16` until the final row and reverse cleanup complete, records
+`/proc/self/fd` from each Make child, and rejects any authority,
 identity, setup, bind-path, or worker descriptor before accepting the row result.
 
 The trusted installed runner starts the public profile with one direct kernel `execve`; no shell,
@@ -1965,10 +2114,18 @@ absolute physical spelling of the retained project-root descriptor without consu
 the same lexical normalization to the Align input, and computes the POSIX relative path from project
 root to Align. It rejects an empty or `.` result, an absolute result, or any result with an empty
 component; `..` components are permitted only when produced by this conversion (the golden sibling
-value is `../align`). It passes both normalized values in the fixed named-option vector. The
-dispatcher opens the absolute value with `O_DIRECTORY|O_NOFOLLOW`, recomputes the same relative
-value from the retained project-root descriptor, and rejects any mismatch before signing or staging;
-the capsule records only the canonical relative value.
+value is `../align`). It passes both normalized values in the fixed named-option vector. Before FD 14
+dispatch or capsule signing, the dispatcher opens a retained
+`O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC` descriptor for `/` and walks every absolute path component
+with `openat` relative to the retained parent. For each component it records
+`fstatat(AT_SYMLINK_NOFOLLOW)` before the open, opens it with
+`O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, and compares the opened descriptor plus a second
+`fstatat` result; device, inode, type, mode, and link-count identity must be unchanged. An
+intermediate or final symlink, replacement, non-directory, missing component, or identity change
+rejects before any FD 14 dispatch, worker snapshot, capsule signing, or staging. The dispatcher
+recomputes the same relative value from the retained project-root identity and rejects any mismatch
+before signing or staging; all later Git and copy operations reuse the retained Align descriptor
+rather than reopening the absolute spelling, and the capsule records only the canonical relative value.
 
 The ordinary output boundary has two stages. A failure in `fresh-supervise` before it consumes the
 retained dispatcher descriptor (image, manifest, argument, nonce, or dispatcher-closure admission)
