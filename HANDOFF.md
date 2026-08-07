@@ -9,9 +9,10 @@ The checkpoint below supersedes the older historical entries in this file. PR #6
 continue with the corrected Request 6 adoption design before implementation.
 
 - Branch: `agent/request6-adoption-contract-v2` at
-  `5528cf0a4357d693e1658277edb52aeda59a951c`, based on merged `main` at
+  `bc8432f78cee297de34c15f0bee3b8d98c4f58dd`, based on merged `main` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; the corrected design ledger and closure matrix are
-  complete and await the fresh independent design review before the replacement PR is opened.
+  complete and await the fresh independent design review of `bc8432f` before the replacement PR is
+  opened.
 - PR #61 (`Install the authenticated fresh worker`) merged with method `merge` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; its exact-head review and hosted evidence remain
   recorded in GitHub comment `5214227839` and run `31159427993`.
@@ -46,6 +47,11 @@ continue with the corrected Request 6 adoption design before implementation.
   to `-C` the private project, adding the schema-1 launcher and descriptor with golden bytes,
   materializing aliases from authenticated compiler bytes, defining phase mapping, and recording
   the current head here.
+- The fresh independent review of exact head `14eadde` found one P1 and one P2: ordinary mode bits
+  did not protect the compiler handoff from same-UID mutation, and this handoff pointed at the older
+  `5528cf0` head. Commit `bc8432f` adds the empty-root read-only namespace, fixed `/private-tool-bin`
+  bind, retained-file `execveat` launcher contract, and the corrected design head; the next review
+  must cover this new namespace boundary.
 - A fresh independent adversarial review found four valid non-trivial gaps: tool/Git descendants
   were outside the shared worker owner, cgroup leaves were pathname-owned, private-root cleanup
   closed identity witnesses before removal, and `make baseline-check` did not execute the
@@ -125,7 +131,7 @@ continue with the corrected Request 6 adoption design before implementation.
 
 ## Next steps, in priority order
 
-1. Run one fresh independent adversarial review of `5528cf0`, then open the replacement design PR.
+1. Run one fresh independent adversarial review of `bc8432f`, then open the replacement design PR.
    Do not merge PR #62 or consume its unrevised ordinary command.
 2. After the corrected design merges, refresh `main`, record the bounded retrospective, and create
    a new implementation branch from merged `main`; read the sibling Align instructions and shipped
@@ -136,10 +142,11 @@ continue with the corrected Request 6 adoption design before implementation.
 
 ## Latest verification
 
-- `git diff --check`: PASS at `5528cf0`.
-- Markdown fence parity: PASS (`docs/align-requests.md` 92, `docs/specs/check-gate-topology.md` 76).
+- `git diff --check`: PASS at `bc8432f`.
+- Markdown fence parity: PASS (`docs/align-requests.md` 94, `docs/specs/check-gate-topology.md` 76).
 - Author-side design consistency review: PASS; the Request 6 public vectors, phase map, compiler
-  handoff schema/golden bytes, closure owners, and acceptance rows agree at `5528cf0`.
+  handoff schema/golden bytes, namespace boundary, closure owners, and acceptance rows agree at
+  `bc8432f`.
 
 - `make check`: PASS; only existing Align compiler warnings remain.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS.
