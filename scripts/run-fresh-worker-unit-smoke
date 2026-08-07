@@ -1008,12 +1008,65 @@ def derived_path_alias_cases(module) -> None:
             if binding[1] == alias_target:
                 distinct_runtime[position] = (binding[0], binding[1], binding[2], distinct)
                 break
-    try:
-        module.validate_published_elf(raw, distinct_runtime)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("byte-distinct runtime aliases were accepted")
+    with tempfile.TemporaryDirectory(prefix="fresh-elf-file-alias-") as name:
+        file_alias_root = Path(name)
+        same_left = file_alias_root / "same-left"
+        same_right = file_alias_root / "same-right"
+        same_left.write_bytes(b"identical loader bytes")
+        same_right.write_bytes(same_left.read_bytes())
+        same_runtime_files = {
+            "/first/loader.so": same_left,
+            "/second/loader.so": same_right,
+        }
+        require(
+            module.resolve_elf_dependency(
+                "loader.so",
+                "/workspace/main",
+                ("/first", "/second"),
+                same_runtime_files,
+            )
+            == "/first/loader.so",
+            "identical ELF file aliases did not preserve candidate order",
+        )
+        same_right.write_bytes(b"byte-distinct loader bytes")
+        try:
+            module.resolve_elf_dependency(
+                "loader.so",
+                "/workspace/main",
+                ("/first", "/second"),
+                same_runtime_files,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("byte-distinct ELF file aliases were accepted")
+
+        source_parent, alias_path, node = alias_nodes[0]
+        for entry in node["entries"]:
+            source = source_parent / entry["name"]
+            (file_alias_root / entry["name"]).write_bytes(source.read_bytes())
+        mutated_name = node["entries"][0]["name"]
+        mutated = bytearray((file_alias_root / mutated_name).read_bytes())
+        require(mutated, "ELF alias fixture contains an empty dependency")
+        mutated[0] ^= 1
+        (file_alias_root / mutated_name).write_bytes(mutated)
+        distinct_runtime_position, distinct_alias_binding = next(
+            (position, binding)
+            for position, binding in enumerate(distinct_runtime)
+            if binding[1] == str(alias_path)
+        )
+        distinct_runtime[distinct_runtime_position] = (
+            file_alias_root,
+            str(alias_path),
+            "dir",
+            distinct_alias_binding[3],
+        )
+        try:
+            module.validate_published_elf(raw, distinct_runtime)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("byte-distinct runtime aliases were accepted")
 
 
 def source_identity_cases(module, temporary: Path) -> None:
