@@ -28,6 +28,7 @@ import struct
 import subprocess
 import sys
 import time
+import traceback
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -4348,7 +4349,14 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
                 run_aggregate(admission, runtime)
         except WorkerError as error:
             primary = error
-        except (CleanupError, OSError, ValueError, subprocess.SubprocessError):
+        except (CleanupError, OSError, ValueError, subprocess.SubprocessError) as error:
+            os.write(
+                2,
+                (
+                    "fresh compiler diagnostic: worker filesystem exception: "
+                    + traceback.format_exc()
+                ).encode("utf-8", "replace")[-64 * 1024 :],
+            )
             primary = WorkerError("FILESYSTEM", "filesystem")
         finally:
             try:
