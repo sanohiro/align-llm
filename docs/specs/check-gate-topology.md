@@ -3020,22 +3020,29 @@ only permitted compiler execution path is the launcher-verified `/tools/alignc` 
 
 ### 9.7 Exact aggregate namespace and interpreter boundary
 
-The capable aggregate is not a host-side process. It runs in a second bwrap namespace so its shell,
-Python, `env`, nested bwrap, loader, and compiler all use the authenticated staged copies. The worker
-first creates `aggregate-work` from the immutable source copy, then creates two owner-only directories
-`aggregate-output/workspace-upper` and `aggregate-output/workspace-work` on the same filesystem. The
-second directory is empty before the mount and is used only as the overlayfs work directory. bwrap
-mounts `aggregate-work` as the immutable lower layer and the two aggregate-output directories as the
-overlay upper/work pair at `/workspace`. There is no standalone `/workspace/main` file bind: the
-writable parent directory is intentional because the Align compiler stages `.align-publish-*`
-beside `main` and atomically renames the staged executable into place. The upper layer, not the
-lower source copy, receives that publication. All current smoke scripts must direct temporary
-fixtures, invalid task files, markers, and baseline scratch files to `/target/tmp` before the
-FRESH-WORKER capability can pass its call-site audit. The exact workspace output allowlist is therefore:
+The capable `ci` aggregate is not a host-side process. It runs in a second bwrap namespace so its
+shell, Python, `env`, nested bwrap, loader, and compiler all use the authenticated staged copies.
+The worker first creates `aggregate-work` from the immutable source copy, then creates two owner-only
+directories `aggregate-output/workspace-upper` and `aggregate-output/workspace-work` on the same
+filesystem. The second directory is empty before the mount and is used only as the overlayfs work
+directory. bwrap mounts `aggregate-work` as the immutable lower layer and the two aggregate-output
+directories as the overlay upper/work pair at `/workspace`. There is no standalone `/workspace/main`
+file bind: the writable parent directory is intentional because the Align compiler stages
+`.align-publish-*` beside `main` and atomically renames the staged executable into place. The upper
+layer, not the lower source copy, receives that publication.
+
+The focused `adoption` mode uses the same authenticated staged shell, Python, `env`, loader, compiler,
+private source, cache, process, temporary-filesystem, and cleanup boundary, but it has a distinct
+namespace profile: it binds the immutable private project source read-only at `/workspace`, creates
+no overlay upper/work pair, runs no aggregate, and publishes no `/workspace/main`. All current smoke
+scripts must direct temporary fixtures, invalid task files, markers, and baseline scratch files to
+`/target/tmp` before the FRESH-WORKER capability can pass its call-site audit. The mode-specific
+workspace output allowlists are therefore:
 
 ```text
-/workspace/main                         one regular compiler output file
-/target/tmp/**                          bounded namespace-owned temporary files and directories
+ci:       /workspace/main                one regular compiler output file
+adoption: /workspace/**                  immutable private source only; no new or changed entry
+both:     /target/tmp/**                 bounded namespace-owned temporary files and directories
 ```
 
 No `eval/`, `scripts/`, `src/`, `tests/`, `Makefile`, or source-control path is writable in the
@@ -3064,9 +3071,9 @@ namespace mount and reapplies the same attribute before its task starts. Namespa
 unmount; the worker scans only the lower tree, overlay upper tree, and overlay work directory after
 unmount, and requires the temporary mount to be gone.
 
-The upper tree may contain no entry when publication never started, or exactly the final regular
-`main` output when publication occurred; a successful aggregate requires exactly that one `main`.
-The final `main` must be an x86_64 Linux ELF regular file with `st_nlink == 1`, exact mode `0755`
+For `ci`, the upper tree may contain no entry when publication never started, or exactly the final
+regular `main` output when publication occurred; a successful aggregate requires exactly that one
+`main`. The final `main` must be an x86_64 Linux ELF regular file with `st_nlink == 1`, exact mode `0755`
 (read/execute for owner, group, and other; no write or special bits), and a size from 1 through the fixed
 `generated_main_max_bytes = 268435456`. Before accepting aggregate success, the worker opens the
 output with `O_RDONLY|O_NOFOLLOW|O_CLOEXEC`, records its device/inode/mode/size, reads and hashes all
@@ -3094,7 +3101,10 @@ directory without following a symlink, and removes it with one descriptor-relati
 recursively enters or deletes that internal directory. Any lower-tree mutation, upper entry other
 than `main`, unknown work entry, source-control write, surviving temporary mount, or unbounded
 temporary growth rejects. A failed aggregate is still rescanned and cleaned with the same allowlist;
-it is not granted a wider write set because it failed.
+it is not granted a wider write set because it failed. For `adoption`, the worker instead rechecks
+the read-only `/workspace` source identity and requires no overlay directories, no `.align-publish-*`
+entry, no `main` publication, and no source mutation; a failed focused run uses the same bounded
+temporary and process cleanup path.
 
 The generated-output and temporary bounds are fixed: the aggregate namespace tmpfs is 256 MiB, the
 overlay upper/work pair is 512 MiB combined, and the post-build ELF dependency graph has at most
@@ -3117,7 +3127,7 @@ existing workspace-temp paths must be changed to the worker-provided temporary r
 The worker sets `ALIGN_LLM_TEMP_ROOT=/target/tmp` and the aggregate namespace rejects any alternate
 value. This table is part of the public implementation ledger, not an optional cleanup optimization.
 
-The exact aggregate argv shape is:
+The exact `ci` aggregate argv shape is:
 
 ```text
 bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net \
@@ -3164,6 +3174,24 @@ bwrap --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --
        --tmpfs-inodes / --tmpfs-inodes /target/tmp --prepare-validation-userns -- \
        /tools/make --silent --no-print-directory -j1 -f /workspace/Makefile capable-checks
 ```
+
+The focused adoption argv uses the same `--clearenv`, namespace, staged runtime, temporary-root,
+cache-off, Git-hardening, compiler, and mount-guard fields in the same order as the `ci` vector
+above, with these exact mode-specific substitutions: it omits the `aggregate-work`, workspace-upper,
+workspace-work, and `/fd-hold` overlay fields; it binds the retained immutable private project-source
+descriptor read-only as `/workspace`; it does not pass `--prepare-validation-userns`; and its final
+command is:
+
+```text
+/tools/mount-guard --no-symlink-follow /target/tmp --tmpfs-inodes / --tmpfs-inodes /target/tmp -- \
+  /tools/make --silent --no-print-directory -j1 -f /workspace/Makefile \
+  json-scan-row-ownership-adoption
+```
+
+The adoption vector therefore has no writable `/workspace` or aggregate overlay descriptor, and its
+success proof applies the `adoption` output allowlist above. The implementation must exercise both
+vectors from the same authenticated worker and verify that the omitted overlay and prepared-userns
+objects are absent before the focused child starts.
 
 The image manifest contributes regular staged copies from `/usr/bin/env`, `/usr/bin/python3.12`,
 `/usr/bin/dash`, and `/usr/bin/bash` at the exact namespace paths `/usr/bin/env`, `/usr/bin/python3`,
@@ -3257,11 +3285,14 @@ common directory. The worker postscan proves that project source-control paths r
 that both private Git views are removed during cleanup. No host baseline or sibling Align repository
 is visible to the aggregate.
 
-The child Make vector clears `MAKEFLAGS`, `GNUMAKEFLAGS`, and `MAKEOVERRIDES`, supplies
-`SHELL=/bin/sh`, fixes `-f /workspace/Makefile`, and passes only the ordered `capable-checks` goal. The worker owns one aggregate
-process; it does not launch a second host aggregate. The aggregate plus any focused goal, aggregate
-plus aggregate, or direct compiler call with an incompatible fd set is rejected by the parse and
-identity fixtures before an output marker can run.
+The `ci` child Make vector clears `MAKEFLAGS`, `GNUMAKEFLAGS`, and `MAKEOVERRIDES`, supplies
+`SHELL=/bin/sh`, fixes `-f /workspace/Makefile`, and passes only the ordered `capable-checks` goal.
+The `adoption` child vector uses the same cleared control variables and fixed Makefile, but passes
+only `json-scan-row-ownership-adoption` and runs without an aggregate overlay or prepared validation
+user namespace. The worker owns one mode-specific process tree; it does not launch a second host
+aggregate. The aggregate plus any focused goal, aggregate plus aggregate, adoption plus any other
+goal, or direct compiler call with an incompatible fd set is rejected by the parse and identity
+fixtures before an output marker can run.
 
 ### 9.8 Process ownership, status, and cleanup
 
@@ -3421,7 +3452,7 @@ the public line.
 | Focused adoption request | supervisor/worker/Makefile plus Request 6 smoke | Admit only `make --no-print-directory json-scan-row-ownership-adoption`, map it to `adoption`, run only the fixed `json-scan-row-ownership-adoption` goal from the private `/workspace/Makefile`, preserve the same authenticated source/runtime/cache/process/tmpfs/cleanup boundary as `ci`, force `ALIGNC_CACHE=off` and `/tools/fresh-alignc`, publish no `/workspace/main`, and keep the target outside every routine aggregate | `fresh-v2-focused-adoption-request-smoke` exercises exact request admission and rejection before side effects, mode/argv/env/fd mapping, source mutation/FIFO/symlink/worker snapshot failures, fixed target and no-aggregate membership, cache-off/compiler identity, exact PASS/error bytes, cleanup and signal/timeout paths; `run-json-scan-row-ownership-adoption-smoke` proves the Copy-row diagnostic, fixed optional-schema outcome, ordinary decode, fixture preflight, fixed file order, cache closure, and ordinary/fresh vectors. |
 | Internal compiler call | Makefile/scripts/Python runners | All consumers use the fresh launcher and fixed read-only handoff paths; every Python boundary uses `close_fds=True, pass_fds=()` except the coding-task sandbox probe and its two validation invocations, which pass exactly the prepared user-namespace fd; the fresh environment disables bytecode writes; no bare compiler, sibling, mutable path, or fallback | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, handoff-file replacement, workspace `__pycache__` prevention, absence of worker identity fds, and the Section 9 Request 6 fresh-profile branch. |
 | Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python plus stdlib/extension roots, Bash, `mount-guard`, `/tools`, no-symlink aggregate `/target/tmp` plus nested validation `/tmp` and `/dev/shm`, derived linker/loader paths, `PYTHONDONTWRITEBYTECODE=1`, PATH, and the single prepared user-namespace descriptor as the only permitted nested input fd | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools/modules, runs nested validation, exercises the independent 64 MiB `/tmp` and `/dev/shm` mounts, attempts a temp-to-workspace symlink and a contained source symlink, creates an importable runner module, and verifies staged identities, temp-root propagation, mount attributes, no `__pycache__`, and no worker identity fd; all other aggregate child launches retain the empty descriptor set. |
-| Aggregate topology | supervisor/worker/Makefile | Exactly one bwrap aggregate, UID/GID 0 with `CAP_SYS_ADMIN`/`CAP_SETFCAP` plus temporary setup-only `CAP_SETUID`/`CAP_SETGID`, mount-guard preparation of the one descendant validation user namespace, reduction to `CAP_SETFCAP` plus `no_new_privs` before Make, closed executable inventory including `seq`, supervisor exact request validation and direct-bootstrap argv/env/fd-4/5/6 boundary, private-source-only Make parsing, fixed internal `-f /workspace/Makefile`, complete normalized GNU Make 4.3 option/alias matrix with a separate accepted `--no-print-directory` row, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, accepted-request and newer-option rejection, tracked and untracked alternate makefile bypass, fixed internal Makefile selection, repository Makefile supervisor bypass, loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation except for the single prepared user-namespace fd at the nested coding-task boundary; the qualification inventory additionally asserts the nested `--cap-drop ALL --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP` order, no nested `--unshare-all`/`--unshare-user`, prepared `--userns` descriptor use, the aggregate `--prepare-validation-userns` flag, root `--size 268435456`, authenticated `/tools/fresh-alignc`, bounded Git view, and published-ELF closure owners. |
+| Aggregate topology | supervisor/worker/Makefile | For `ci`, exactly one bwrap aggregate, UID/GID 0 with `CAP_SYS_ADMIN`/`CAP_SETFCAP` plus temporary setup-only `CAP_SETUID`/`CAP_SETGID`, mount-guard preparation of the one descendant validation user namespace, reduction to `CAP_SETFCAP` plus `no_new_privs` before Make, closed executable inventory including `seq`, supervisor exact request validation and direct-bootstrap argv/env/fd-4/5/6 boundary, private-source-only Make parsing, fixed internal `-f /workspace/Makefile`, complete normalized GNU Make 4.3 option/alias matrix with a separate accepted `--no-print-directory` row, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order; for `adoption`, exactly one focused bwrap with the same staged process/tool/source/cache/tmpfs boundary, no overlay upper/work, no prepared validation user namespace, no `/workspace/main`, and the fixed focused goal | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, accepted-request and newer-option rejection, tracked and untracked alternate makefile bypass, fixed internal Makefile selection, repository Makefile supervisor bypass, loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation except for the single prepared user-namespace fd at the nested coding-task boundary; the qualification inventory additionally asserts the nested `--cap-drop ALL --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP` order, no nested `--unshare-all`/`--unshare-user`, prepared `--userns` descriptor use, the aggregate `--prepare-validation-userns` flag, root `--size 268435456`, authenticated `/tools/fresh-alignc`, bounded Git view, and published-ELF closure owners. `fresh-v2-focused-adoption-request-smoke` covers the adoption vector's omitted overlay/userns objects, read-only source workspace, fixed goal, no-publication proof, and focused cleanup. |
 | Process ownership | worker plus per-invocation cgroup/rlimit boundary | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap, a unique worker-owned delegated cgroup leaf with strict empty admission and post-attach membership proof, cgroup-v2 unique-leaf/rmdir cleanup under the protected writer boundary, `pids.max=512`, `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, `RLIMIT_FSIZE=536870912`, source active-window accounting, and bounded worker fd scans | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, stream overflow, double fork, signal, PID reuse, reader closure, process cap-plus-one, source-window cap-plus-one, total-fd cap-plus-one, exact file-size-limit boundary, cgroup leaf replacement-before-cleanup/nonempty cleanup, admission nonempty/malformed/foreign membership, successful descriptor-relative rmdir, uncatchable worker death, and missing cgroup delegation. |
 | Cleanup success | worker | Reverse descriptor-relative quarantine removal, stable parent/root device-inode/type/mode/owner identity while owned content metadata changes, destination identity proof after every move, root absent before PASS | `fresh-v2-cleanup-smoke` proves normal staging metadata changes are accepted, while no private root, handoff file, cache copy, target, marker, or child remains; deterministic replacement-before-move cases leave the replacement and the admitted tree untouched. |
 | Cleanup failure | worker plus admission lock | Never delete replacement/unowned path within the protected writer boundary; atomic no-replace private-root moves, cgroup-v2 unique-leaf/rmdir identity and empty proofs, exact primary/cleanup precedence; uncatchable death leaves one bounded root, releases only the kernel lock, and makes the next invocation fail closed before root creation | `fresh-v2-cleanup-failure-smoke` injects close, private quarantine move and identity mismatch, cgroup leaf identity/nonempty/rmdir failures, unlink, parent replacement, live child, catchable signal, successful-phase cleanup failures, worker `SIGKILL`, repeated death attempts, and later invocations that must leave the unprovable root untouched and refuse a second root. |

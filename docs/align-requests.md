@@ -1381,10 +1381,17 @@ proof leaves the path untouched and fails closed.
 The ordinary preparation sequence is explicit and is not satisfied by a stale sibling binary:
 
 ```text
-ALIGN_REPO=<absolute-clean-align-worktree> make --no-print-directory align-revision
-ALIGN_REPO=<absolute-clean-align-worktree> CARGO_TARGET_DIR=<unique-build-dir> \
+env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
+  MAKEFLAGS= GNUMAKEFLAGS= MAKEOVERRIDES= \
+  ALIGN_REPO=<absolute-clean-align-worktree> \
+  make --no-print-directory align-revision
+env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
+  MAKEFLAGS= GNUMAKEFLAGS= MAKEOVERRIDES= \
+  ALIGN_REPO=<absolute-clean-align-worktree> CARGO_TARGET_DIR=<unique-build-dir> \
   make --no-print-directory align-build
-ALIGN_REPO=<absolute-clean-align-worktree> ALIGNC=<unique-build-dir>/release/alignc \
+env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
+  MAKEFLAGS= GNUMAKEFLAGS= MAKEOVERRIDES= \
+  ALIGN_REPO=<absolute-clean-align-worktree> ALIGNC=<unique-build-dir>/release/alignc \
   ALIGNC_CACHE=<unique-cache-dir> make --no-print-directory json-scan-row-ownership-adoption
 ```
 
@@ -1392,7 +1399,11 @@ The first command must verify the exact `.align-revision` commit and clean raw s
 second builds the locked release packages into the unique target directory; the third accepts only
 that newly built, no-follow regular executable and never searches the sibling release/debug paths
 or `PATH`. A missing, symlinked, non-executable, or otherwise unverified release artifact fails
-before any fixture compiler call. The ordinary profile records the absolute Align worktree, the
+before any fixture compiler call. Each `env -i` vector is mandatory: a non-empty inherited
+`MAKEFLAGS`, `GNUMAKEFLAGS`, or `MAKEOVERRIDES` is rejected before Make starts, and the ordinary
+`run-json-scan-row-ownership-adoption-smoke` ordinary-profile option-isolation regression exercises
+`-n`, `-i`, `-e`, an alternate goal, and an alternate makefile under those variables. The ordinary
+profile records the absolute Align worktree, the
 exact revision, build-target identity, compiler digest, cache identity, and all three command
 vectors. The authenticated fresh profile performs the equivalent source and compiler-build checks
 inside the worker-owned private root and supplies only its fixed `/tools/fresh-alignc` and
