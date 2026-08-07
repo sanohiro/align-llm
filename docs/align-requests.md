@@ -1371,7 +1371,11 @@ fresh `make --no-print-directory ci` is a separate required gate.
 The ordinary profile has a non-Make public entrypoint:
 `scripts/run-json-scan-row-ownership-adoption`. It accepts no positional arguments and is the only
 host command that launches the ordinary preparation and focused target. The Make target remains an
-internal worker target for the authenticated fresh vector. The ordinary wrapper validates its
+internal worker target for the authenticated fresh vector. The implementation also adds the private
+Make target `align-build-only`: it has no prerequisites, has the same authenticated `$(CARGO)` build
+recipe as `align-build`, and is invocable by the ordinary wrapper's fixed second vector only. The
+existing `align-build: align-revision` prerequisite remains the developer-facing Make contract; the
+wrapper does not invoke that target after its separate revision child. The ordinary wrapper validates its
 arguments and inherited Make-control variables before it starts the namespace launcher; a non-empty
 `MAKEFLAGS`, `GNUMAKEFLAGS`, or `MAKEOVERRIDES`, an alternate goal, an alternate makefile, or any
 other argument is rejected in the wrapper's input phase, not consumed by GNU Make. Its success
@@ -1386,7 +1390,7 @@ reverse cleanup. The phase mapping is exact: steps 1–2 and every pre-child pro
 are `revision` except the initial argv/env/cwd grammar, which is `input`; fixed attestation,
 manifest, lock/cgroup admission, tool, runtime, cache, and private-root staging failures are
 `toolchain`;
-`.align-revision` mismatch is `revision`; the build child, compiler/archive/launcher source copy,
+`.align-revision` mismatch is `revision`; the build-only child, compiler/archive/launcher source copy,
 and post-build namespace bundle/handoff setup are `build`; the focused child and fixture/compiler
 result are `fixture`; and cleanup is
 `cleanup` only when every earlier phase and child succeeded. The first failed phase wins. After an earlier failure,
@@ -1422,9 +1426,10 @@ staged runtime root containing `make`, `git`, the shell, and the required core u
 user/mount namespace capability or any incomplete
 launcher/runtime closure is a `toolchain` failure; the wrapper never invokes an ambient host
 `bwrap`, `make`, `git`, or shell.
-The adoption implementation changes the `align-build` recipe to invoke `$(CARGO)` with the
-Makefile default `CARGO ?= cargo`; the wrapper always supplies the authenticated absolute Cargo
-path, so the ordinary build never falls back to a bare or rustup-selected executable.
+The adoption implementation changes the build recipe to invoke `$(CARGO)` with the Makefile default
+`CARGO ?= cargo`; both `align-build` and the private `align-build-only` target use that recipe. The
+wrapper always supplies the authenticated absolute Cargo path, so the ordinary build never falls
+back to a bare or rustup-selected executable.
 
 Before any child starts, the wrapper creates descriptor-relative, no-follow, mode-`0555` snapshots
 of the invocation project and `ALIGN_REPO`, including a private Git view for the Align snapshot so
@@ -1492,13 +1497,14 @@ compiler or remount `/private-tool-bin`. A failed namespace setup before the fir
 handoff setup is `build`, before the focused child or compiler marker.
 
 The namespace helper is one trusted supervisor for this invocation. It receives the three child
-vectors in the fixed order below, starts each as a separate session with the bounded runner, and
-performs the compiler bundle handoff only after `align-build` succeeds and before the focused vector.
+vectors in the fixed order below, starts each as a separate session with its in-namespace bounded
+runner, and performs the compiler bundle handoff only after `align-build-only` succeeds and before
+the focused vector.
 In focused mode the handoff arguments are, in this fixed order, the namespace-owned source paths
 `/private-cargo-target/release/alignc`, `/private-cargo-target/release/libalign_runtime.a`, and
 `/private-launcher-source/adoption-alignc`, the expected compiler, archive, and launcher SHA-256
 values, the Align revision, the project HEAD, and then `--` followed by the focused Make vector. The
-supervisor opens and verifies the two newly built files after `align-build`, copies their bytes into
+supervisor opens and verifies the two newly built files after `align-build-only`, copies their bytes into
 the namespace-owned `/private-tool-bin` tmpfs with create-exclusive files, copies and verifies the
 launcher before writing the schema-1 descriptor, stats/hashes every final destination, verifies the
 descriptor bytes, remounts the tmpfs read-only, and drops all capabilities in the focused child
@@ -1541,12 +1547,12 @@ Make-control variables:
 
 ```text
 /usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-revision
-/usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-build
+/usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-build-only
 /usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile json-scan-row-ownership-adoption
 ```
 
 Each child receives `ALIGN_REPO=/private-align` and the same authenticated read-only toolchain,
-cache, and empty Make-control environment. The `align-build` child additionally receives
+cache, and empty Make-control environment. The `align-build-only` child additionally receives
 `CARGO=/private-rust/bin/cargo`, `RUSTC=/private-rust/bin/rustc`,
 `CARGO_HOME=/private-cargo-home`, `CARGO_TARGET_DIR=/private-cargo-target`,
 `CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=/private-llvm/bin/llvm-config`,
@@ -1558,7 +1564,7 @@ forwarders are identity records, not executed aliases. These are explicit staged
 unlisted `c++` name. Every focused child
 receives `PATH=/private-native/bin:/private-rust/bin:/private-llvm/bin:/usr/bin:/bin`, with the
 staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
-must never reach ambient `/usr/bin/cc`. After `align-build`, the namespace supervisor itself opens
+must never reach ambient `/usr/bin/cc`. After `align-build-only`, the namespace supervisor itself opens
 the newly built `/private-cargo-target/release/alignc` and adjacent runtime archive with retained
 no-follow descriptors, verifies type, mode, link count, revision, version, and complete bytes, and
 copies them create-exclusively into the namespace-owned `/private-tool-bin` tmpfs. It copies the
@@ -1615,16 +1621,19 @@ performs the equivalent source and compiler-build checks inside the worker-owned
 supplies only its fixed `/tools/fresh-alignc` and `ALIGNC_CACHE=off` vector; it does not run the
 ordinary host wrapper or trust its artifacts.
 
-The wrapper's owned-child runner sets Linux child-subreaper mode before its first child, starts
-each Make child in a new session, enumerates and adopts descendants through `/proc` using recorded
-PID start times and process-group identities, and drains stdout and stderr concurrently with a
-65,536-byte cap per stream. The fixed deadlines are 10 seconds for
-`align-revision`, 1,800 seconds for `align-build`, and 120 seconds for the focused target. Timeout,
-cancellation, reader failure, launch failure, nonzero exit, and cleanup use one order: stop new
-children, send TERM to the owned process group, wait one second, send KILL to remaining owned
-descendants, reap them, close pipes/descriptors, re-snapshot the private tree, and remove only the
-wrapper-owned private root. A failure leaves no child and emits the one phase error; a failed
-cleanup emits `json-scan adoption: ERROR cleanup\n` and leaves the unprovable path untouched.
+The outer wrapper owns only the single bwrap/namespace-supervisor process and its launch, deadline,
+and early-setup cleanup; it does not enumerate or reap Make descendants across the private PID
+namespace. The namespace supervisor's owned-child runner sets Linux child-subreaper mode before its
+first child, starts each Make child in a new session, enumerates and adopts descendants through
+`/proc` using recorded PID start times and process-group identities, and drains stdout and stderr
+concurrently with a 65,536-byte cap per stream. The fixed deadlines are 10 seconds for
+`align-revision`, 1,800 seconds for `align-build-only`, and 120 seconds for the focused target.
+Timeout, cancellation, reader failure, launch failure, nonzero exit, and cleanup use one order:
+stop new children, send TERM to the owned process group, wait one second, send KILL to remaining
+owned descendants, reap them, close pipes/descriptors, re-snapshot the private tree, and remove only
+the supervisor-owned private root. The outer wrapper then waits for the supervisor and reports its
+bounded status. A failure leaves no child and emits the one phase error; a failed cleanup emits
+`json-scan adoption: ERROR cleanup\n` and leaves the unprovable path untouched.
 
 The ordinary namespace has enforceable resource bounds, not only post-run accounting. The fixed
 installed profile provisions the delegated cgroup-v2 parent
