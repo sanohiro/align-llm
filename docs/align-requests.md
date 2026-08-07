@@ -1475,21 +1475,40 @@ into that tmpfs, remounts it read-only before the focused child, and launches ea
 a capability-dropping child boundary. The supervisor retains `CAP_SYS_ADMIN` only for its own
 descriptor-relative tmpfs setup/remount operations and never interprets repository code. The final
 bundle has no host pathname or same-UID alias. The wrapper uses the attested namespace launcher
-with the fixed shape
+with the fixed shape; every read-only source is passed through a retained descriptor, never reopened
+from a host pathname:
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 8589934592 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-binding-argv> --ro-bind <private-project> /private-project --ro-bind <private-align> /private-align --ro-bind <private-rust> /private-rust --ro-bind <private-llvm> /private-llvm --ro-bind <private-native> /private-native --ro-bind <private-cargo-cache> /private-cargo-cache --ro-bind <private-launcher-source> /private-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 8589934592 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> --ro-bind-fd 20 /private-project --ro-bind-fd 21 /private-align --ro-bind-fd 22 /private-rust --ro-bind-fd 23 /private-llvm --ro-bind-fd 24 /private-native --ro-bind-fd 25 /private-cargo-cache --ro-bind-fd 26 /private-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
 ```
 
+The fixed inherited descriptor map is:
+
+| FD | Retained source owned by the wrapper | Namespace target |
+| --- | --- | --- |
+| 20 | private project snapshot | `/private-project` |
+| 21 | private Align Git view | `/private-align` |
+| 22 | complete Rust prefix | `/private-rust` |
+| 23 | LLVM prefix | `/private-llvm` |
+| 24 | native tool/runtime tree | `/private-native` |
+| 25 | authenticated Cargo cache snapshot | `/private-cargo-cache` |
+| 26 | fixed launcher source | `/private-launcher-source` |
+
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
-`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets; it is not a caller argument or
-an ambient host bind. The ellipsis is replaced only by the fixed namespace-helper arguments and one
-of the three child vectors below; no repository or caller argument is appended. The namespace helper
-remounts each writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously
-counts bytes and entries between children. The wrapper verifies
-every read-only mount source before the namespace starts, and the trusted helper verifies the
-namespace-owned `/private-tool-bin` mount is read-only before opening the handoff files. Thus a
-focused child or another same-UID host process cannot reach or modify the final compiler bundle.
+`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets. Its sources occupy FD 40
+onward in manifest order, and `<ordered-runtime-fd-bind-argv>` contains only
+`--ro-bind-fd <fd> <canonical-target>` triples for those retained no-follow descriptors; it is not a
+caller argument, pathname bind, or ambient host bind. The wrapper admits the descriptor table before
+launch, checks every source identity and complete digest after staging, launches bwrap with
+`close_fds=True, pass_fds=tuple(range(20, 27)) + tuple(range(40, 40 + N))`, and closes its parent copies only after the child is
+released. The ellipsis is replaced only by the fixed namespace-helper arguments and one of the three
+child vectors below; no repository or caller argument is appended. The namespace helper remounts each
+writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
+entries between children. bwrap consumes the retained descriptors before executing
+`adoption-namespace`, so a same-UID rename or replacement of any staging pathname cannot change a
+mounted source. The trusted helper verifies the namespace-owned `/private-tool-bin` mount is
+read-only before opening the handoff files. Thus a focused child or another same-UID host process
+cannot reach or modify the final compiler bundle.
 Each Make child drops all capabilities and sets `no_new_privs` before its `execve`; the supervisor
 retains its setup capability between children and is the only process allowed to copy the post-build
 compiler or remount `/private-tool-bin`. A failed namespace setup before the first child is
@@ -1502,9 +1521,10 @@ runner, and performs the compiler bundle handoff only after `align-build-only` s
 the focused vector.
 In focused mode the handoff arguments are, in this fixed order, the namespace-owned source paths
 `/private-cargo-target/release/alignc`, `/private-cargo-target/release/libalign_runtime.a`, and
-`/private-launcher-source/adoption-alignc`, the expected compiler, archive, and launcher SHA-256
-values, the Align revision, the project HEAD, and then `--` followed by the focused Make vector. The
-supervisor opens and verifies the two newly built files after `align-build-only`, copies their bytes into
+`/private-launcher-source/adoption-alignc`, the expected launcher SHA-256 value, the Align revision,
+the project HEAD, and then `--` followed by the focused Make vector. No compiler or archive digest is
+an input before the build: the supervisor opens and verifies the two newly built files after
+`align-build-only`, computes their complete SHA-256 digests, and copies their bytes into
 the namespace-owned `/private-tool-bin` tmpfs with create-exclusive files, copies and verifies the
 launcher before writing the schema-1 descriptor, stats/hashes every final destination, verifies the
 descriptor bytes, remounts the tmpfs read-only, and drops all capabilities in the focused child
@@ -1533,11 +1553,14 @@ entrypoint combinations are:
 | fresh + ordinary | the same common-lock rejection in the opposite arrival order | the result for the second entrypoint above |
 | recursive ordinary entrypoint in one process tree | reject before a second root or child | `json-scan adoption: ERROR toolchain\n` |
 
-Independent processes do not wait or share roots. On cancellation or normal exit the owner releases
-the lock only after child, cgroup-leaf, namespace, and private-root cleanup. A wrapper `SIGKILL`
-leaves no writable namespace mount; `--die-with-parent` empties the cgroup leaf, the kernel releases
-the lock, and the next invocation scans the bounded candidate quarantine. If identity or emptiness
-cannot be proved, it rejects before root creation and leaves the candidate untouched. The
+Independent processes do not wait or share roots. On cancellation or normal exit the outer wrapper
+releases the lock only after the namespace supervisor has exited, the cgroup leaf is empty and
+removed, and the host staging root has passed its final identity proof and cleanup. A wrapper
+`SIGKILL` leaves no writable namespace mount; `--die-with-parent` empties the cgroup leaf, the kernel
+releases the lock, and the next invocation scans both the bounded host-root quarantine and the
+unique cgroup-leaf quarantine. It removes an orphaned leaf only after parent/leaf identity and empty
+membership proofs; if either quarantine cannot be proved safe, it rejects before root creation and
+leaves the candidate untouched. The
 concurrency smoke runs every listed pair, failed-second marker, orphaned-leaf, orphaned-root, and
 replacement-before-admission case.
 
@@ -1621,36 +1644,49 @@ performs the equivalent source and compiler-build checks inside the worker-owned
 supplies only its fixed `/tools/fresh-alignc` and `ALIGNC_CACHE=off` vector; it does not run the
 ordinary host wrapper or trust its artifacts.
 
-The outer wrapper owns only the single bwrap/namespace-supervisor process and its launch, deadline,
-and early-setup cleanup; it does not enumerate or reap Make descendants across the private PID
-namespace. The namespace supervisor's owned-child runner sets Linux child-subreaper mode before its
-first child, starts each Make child in a new session, enumerates and adopts descendants through
-`/proc` using recorded PID start times and process-group identities, and drains stdout and stderr
-concurrently with a 65,536-byte cap per stream. The fixed deadlines are 10 seconds for
+The outer wrapper owns the single bwrap/namespace-supervisor process, the cgroup admission, and the
+host staging root. Before bwrap exec, it creates the unique cgroup leaf and start-gate pipe, forks a
+launcher child that blocks on the gate at fixed launcher-child FD `10`, attaches that child's
+recorded PID and start time to the empty leaf with `pids.max=512`, proves membership, and only then
+releases the gate through the parent FD `11`. FDs `10` and `11` are closed before bwrap exec and are
+never included in the bind `pass_fds` tuple. bwrap and every
+inner descendant inherit that leaf from their first executable instruction; `/sys/fs/cgroup` is not
+mounted into the empty namespace. The outer wrapper does not enumerate or reap Make descendants
+across the private PID namespace. The namespace supervisor's owned-child runner sets Linux
+child-subreaper mode before its first child, starts each Make child in a new session, enumerates and
+adopts descendants through `/proc` using recorded PID start times and process-group identities, and
+drains stdout and stderr concurrently with a 65,536-byte cap per stream. The fixed deadlines are 10 seconds for
 `align-revision`, 1,800 seconds for `align-build-only`, and 120 seconds for the focused target.
 Timeout, cancellation, reader failure, launch failure, nonzero exit, and cleanup use one order:
 stop new children, send TERM to the owned process group, wait one second, send KILL to remaining
 owned descendants, reap them, close pipes/descriptors, re-snapshot the private tree, and remove only
-the supervisor-owned private root. The outer wrapper then waits for the supervisor and reports its
-bounded status. A failure leaves no child and emits the one phase error; a failed cleanup emits
-`json-scan adoption: ERROR cleanup\n` and leaves the unprovable path untouched.
+namespace-owned temporary paths. The outer wrapper then waits for the supervisor, proves the cgroup
+leaf empty and unchanged, removes that leaf descriptor-relatively, rescans the host staging root,
+and performs its descriptor-relative cleanup/quarantine; it never asks the namespace supervisor to
+remove a host pathname. A failure leaves no child and emits the one phase error; a failed cleanup
+emits `json-scan adoption: ERROR cleanup\n` and leaves the unprovable path untouched.
 
 The ordinary namespace has enforceable resource bounds, not only post-run accounting. The fixed
 installed profile provisions the delegated cgroup-v2 parent
-`/sys/fs/cgroup/align-llm-fresh/<uid>` already used by Section 9; the namespace supervisor creates
-one unique leaf, requires an empty admission, sets `pids.max=512`, and keeps that leaf until every
-child and cleanup step has completed. Memory cgroup enforcement is `N/A`: the installed profile
-delegates only the pids controller, so the ordinary contract does not claim a `memory.max` boundary.
-Before the bwrap boundary it applies hard and soft
+`/sys/fs/cgroup/align-llm-fresh/<uid>` already used by Section 9; the outer wrapper creates one
+unique leaf, requires empty `cgroup.procs` and `cgroup.threads`, sets `pids.max=512`, attaches the
+bwrap launcher through the start gate, and retains the parent/leaf descriptors until every child and
+cleanup step has completed. The namespace supervisor never opens the host cgroup path; the outer
+wrapper proves membership before releasing bwrap and proves empty membership before descriptor-relative
+leaf removal. Memory cgroup enforcement is `N/A`: the installed profile delegates only the pids
+controller, so the ordinary contract does not claim a `memory.max` boundary. Before the bwrap boundary
+it applies hard and soft
 `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and `RLIMIT_FSIZE=536870912`; the child-side probe verifies
-the values and cgroup membership before admitting the first vector. The namespace-owned writable
+the exact inherited rlimits before admitting the first vector. The namespace-owned writable
 tmpfs bounds are fixed: root `68719476736` bytes, Cargo home `8589934592`, Cargo target
 `68719476736`, compiler cache `8589934592`, tool bundle `268435456`, and `/tmp` `268435456`, with
 `nr_inodes=400000` on persistent trees and `nr_inodes=65536` on temporary/tool trees. The helper
 counts every admitted entry and byte between vectors and during active children, rejects cap-plus-one
 before the next side effect, and never binds a host-writable target or cache. A process, descriptor,
-file-size, cgroup, inode, or byte-cap failure is `build` for the build vector or `fixture` for the
-focused vector; the cgroup leaf is removed only after descriptor-relative empty and identity proofs.
+file-size, inode, or byte-cap failure is `build` for the build vector or `fixture` for the focused
+vector; cgroup admission is `toolchain`, and a failed post-run cgroup or host-root proof is
+`cleanup`. The outer wrapper removes the cgroup leaf only after descriptor-relative empty and identity
+proofs.
 
 The focused target accepts no positional arguments and its preflight rejects missing, extra, or
 unexpected fixture entries before starting the compiler. It opens the project root from the
