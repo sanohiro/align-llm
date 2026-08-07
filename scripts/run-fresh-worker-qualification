@@ -41,6 +41,7 @@ FOCUSED_CHECKS = (
             "fresh-v2-pre-dispatch-source-smoke",
         ),
     ),
+    ("run-fresh-focused-adoption-smoke", ("fresh-v2-focused-adoption-request-smoke",)),
     (
         "run-fresh-worker-unit-smoke",
         (
@@ -98,6 +99,8 @@ EXPECTED_CASES = {
     "fresh-v2-concurrency-smoke",
     "fresh-v2-platform-profile-smoke",
 }
+
+PARTIAL_CASES = {"fresh-v2-focused-adoption-request-smoke"}
 
 
 def run(*arguments: str) -> None:
@@ -251,7 +254,8 @@ def main() -> int:
     owners = {case: command for command, cases in FOCUSED_CHECKS for case in cases}
     for name in sorted(EXPECTED_CASES):
         if name in owners:
-            print(f"  {name}: owner={owners[name]} execution=focused")
+            execution = "focused-profile-transport" if name in PARTIAL_CASES else "focused"
+            print(f"  {name}: owner={owners[name]} execution={execution}")
         elif installed_profile:
             print(f"  {name}: owner=run-fresh-image-profile-smoke execution=installed-profile")
         else:

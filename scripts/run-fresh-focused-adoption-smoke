@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""Exercise the image-side Request 6 admission owner without Docker."""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from collections import OrderedDict
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPOSITORY / "image" / "fresh" / "control"))
+
+from fresh_image_control import (  # noqa: E402
+    ControlError,
+    _mode_from_arguments,
+    _normalize_absolute,
+    _reject_environment,
+)
+from request6_adoption import (  # noqa: E402
+    AdoptionFailure,
+    _raw_tree,
+    _validate_status_bytes,
+)
+from fresh_attestation import (  # noqa: E402
+    ORDINARY_ADOPTION_PREDICATE_TYPE,
+    WireError,
+    canonical_json_bytes,
+    canonical_json_value_bytes,
+    dsse_pae,
+    parse_canonical_json,
+    sha256_hex,
+    validate_ordinary_adoption_predicate,
+)
+
+
+def rejected(callback: object) -> None:
+    try:
+        callback()  # type: ignore[operator]
+    except (AdoptionFailure, ControlError, WireError):
+        return
+    raise AssertionError("invalid ordinary-adoption input was accepted")
+
+
+def check_raw_tree_golden() -> None:
+    empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    entries = [
+        OrderedDict(
+            [
+                ("path_b64", ""),
+                ("kind", "dir"),
+                ("mode", "0755"),
+                ("size", 0),
+                ("sha256", empty_sha256),
+                ("target_b64", ""),
+            ]
+        ),
+        OrderedDict(
+            [
+                ("path_b64", "LmFsaWduLXJldmlzaW9u"),
+                ("kind", "file"),
+                ("mode", "0644"),
+                ("size", 15),
+                ("sha256", "24e971fd7fe565b764425e0374b3b15f3c46e6a60cde0067e2863c9c739f0a29"),
+                ("target_b64", ""),
+            ]
+        ),
+        OrderedDict(
+            [
+                ("path_b64", "YQ"),
+                ("kind", "file"),
+                ("mode", "0644"),
+                ("size", 1),
+                ("sha256", "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"),
+                ("target_b64", ""),
+            ]
+        ),
+        OrderedDict(
+            [
+                ("path_b64", "YYA"),
+                ("kind", "file"),
+                ("mode", "0644"),
+                ("size", 1),
+                ("sha256", "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"),
+                ("target_b64", ""),
+            ]
+        ),
+        OrderedDict(
+            [
+                ("path_b64", "ZG9jcw"),
+                ("kind", "dir"),
+                ("mode", "0755"),
+                ("size", 0),
+                ("sha256", empty_sha256),
+                ("target_b64", ""),
+            ]
+        ),
+        OrderedDict(
+            [
+                ("path_b64", "ZG9jcy9saW5r"),
+                ("kind", "symlink"),
+                ("mode", "0777"),
+                ("size", 4),
+                ("sha256", "61b4c98bfb92bdc9391613020e5b8cbf68460066e4af7ef9708da61728f61156"),
+                ("target_b64", "Li4vYQ"),
+            ]
+        ),
+    ]
+    value = OrderedDict(
+        [("schema", "raw-tree/v1"), ("source", "project-source"), ("entries", entries)]
+    )
+    raw = canonical_json_bytes(value)
+    assert len(raw) == 1348
+    assert sha256_hex(raw) == "8b30014d36e10e32e230fcbbcbe12b6933903da48c8569140cadd62795caad77"
+    assert parse_canonical_json(raw) == value
+    raw_paths = [base64.urlsafe_b64decode(item["path_b64"] + "==") for item in entries]
+    assert raw_paths == [b"", b".align-revision", b"a", b"a\x80", b"docs", b"docs/link"]
+    assert entries[-1]["target_b64"] == "Li4vYQ"
+    assert base64.urlsafe_b64decode(entries[-1]["target_b64"] + "==") == b"../a"
+    for forbidden in (b".git", b"HANDOFF.md"):
+        assert forbidden not in raw_paths
+
+
+def check_source_exception_golden() -> None:
+    rows = []
+    for source in ("project-source", "align-source"):
+        rows.extend(
+            [
+                OrderedDict(
+                    [
+                        ("source", source),
+                        ("label", "git"),
+                        ("present", True),
+                        ("type", "directory"),
+                        ("mode", "0755"),
+                        ("link_count", None),
+                        ("bytes_consumed", False),
+                        ("content_sha256", None),
+                    ]
+                ),
+                OrderedDict(
+                    [
+                        ("source", source),
+                        ("label", "handoff"),
+                        ("present", True),
+                        ("type", "regular"),
+                        ("mode", "0644"),
+                        ("link_count", 1),
+                        ("bytes_consumed", True),
+                        ("content_sha256", "c1d73659b427ed35aa922d857055638e99574128d50e91ad2f0b28b8691865c8"),
+                    ]
+                ),
+                OrderedDict(
+                    [
+                        ("source", source),
+                        ("label", "target"),
+                        ("present", source == "project-source"),
+                        ("type", "directory" if source == "project-source" else None),
+                        ("mode", "0755" if source == "project-source" else None),
+                        ("link_count", 1 if source == "project-source" else None),
+                        ("bytes_consumed", False),
+                        ("content_sha256", None),
+                    ]
+                ),
+                OrderedDict(
+                    [
+                        ("source", source),
+                        ("label", "main"),
+                        ("present", source == "project-source"),
+                        ("type", "regular" if source == "project-source" else None),
+                        ("mode", "0755" if source == "project-source" else None),
+                        ("link_count", 1 if source == "project-source" else None),
+                        ("bytes_consumed", False),
+                        ("content_sha256", None),
+                    ]
+                ),
+            ]
+        )
+    raw = canonical_json_value_bytes(rows)
+    assert len(raw) == 1755
+    assert sha256_hex(raw) == "0c685027b378e6ef448e8efd807532eb8f056de04f550e884d56a5ef0834ead0"
+    parsed = json.loads(raw.decode("utf-8"))
+    assert parsed == rows
+    assert canonical_json_value_bytes(parsed) == raw
+
+
+def check_raw_tree_implementation() -> None:
+    with tempfile.TemporaryDirectory(prefix="fresh-raw-tree-") as name:
+        root = Path(name)
+        (root / "file").write_bytes(b"data")
+        (root / "file").chmod(0o755)
+        (root / "nested").mkdir()
+        (root / "nested" / "link").symlink_to("../file")
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            value = parse_canonical_json(_raw_tree(descriptor, "project-source"))
+        finally:
+            os.close(descriptor)
+        assert value["schema"] == "raw-tree/v1"
+        assert value["source"] == "project-source"
+        assert [entry["kind"] for entry in value["entries"]] == [
+            "dir",
+            "file",
+            "dir",
+            "symlink",
+        ]
+
+
+def check_clean_status_implementation() -> None:
+    _validate_status_bytes(b"", allow_main=False)
+    _validate_status_bytes(
+        b" M HANDOFF.md\0?? target/build.o\0!! target/cache\0?? main\0",
+        allow_main=True,
+    )
+    _validate_status_bytes(
+        b"?? target/build.o\0!! HANDOFF.md\0", allow_main=False
+    )
+    for raw, allow_main in (
+        (b"?? extra.txt\0", True),
+        (b"!! extra.txt\0", False),
+        (b" D HANDOFF.md\0", True),
+        (b"?? main\0", False),
+        (b"?? main/marker\0", True),
+        (b" M target/tracked\0", True),
+    ):
+        rejected(lambda raw=raw, allow_main=allow_main: _validate_status_bytes(raw, allow_main=allow_main))
+
+
+def main() -> int:
+    check_raw_tree_golden()
+    check_source_exception_golden()
+    check_raw_tree_implementation()
+    check_clean_status_implementation()
+    golden = OrderedDict(
+        [
+            ("api", "ordinary-adoption/v2"),
+            ("request", "json-scan-row-ownership-adoption"),
+            ("invocation_nonce", "A" * 43),
+            ("dispatch_ticket_sha256", "0" * 63 + "8"),
+            ("project_head", "1" * 40),
+            ("project_object_format", "sha1"),
+            ("project_index_sha256", "0" * 63 + "1"),
+            ("project_raw_tree_sha256", "0" * 63 + "2"),
+            ("source_exception_sha256", "0c685027b378e6ef448e8efd807532eb8f056de04f550e884d56a5ef0834ead0"),
+            ("align_head", "2" * 40),
+            ("align_object_format", "sha1"),
+            ("align_repo_relative", "../align"),
+            ("worker_relative", "scripts/run-json-scan-row-ownership-adoption"),
+            ("worker_size", 123),
+            ("worker_sha256", "0" * 63 + "3"),
+            ("image_digest", "sha256:" + "0" * 63 + "4"),
+            ("image_attestation_sha256", "0" * 63 + "7"),
+            ("manifest_sha256", "0" * 63 + "5"),
+            ("entrypoint_sha256", "0" * 63 + "6"),
+        ]
+    )
+    golden_bytes = canonical_json_bytes(golden)
+    validate_ordinary_adoption_predicate(golden)
+    assert sha256_hex(golden_bytes) == "2c1cc89bfdc4f48c97a44e7cbf6ec1e9d34daff710ce40972fe37e1f6741f1fd"
+    assert sha256_hex(dsse_pae(ORDINARY_ADOPTION_PREDICATE_TYPE, golden_bytes)) == "92ef881cc93e610563883f54cf06311985caedc9925736a4fca90067c6687f64"
+    rejected(lambda: validate_ordinary_adoption_predicate(OrderedDict(golden, worker_size=0)))
+    assert _mode_from_arguments(["--mode", "ordinary-adoption"]) == "ordinary-adoption"
+    for vector in (
+        [],
+        ["--mode", "adoption"],
+        ["--mode", "ordinary-adoption", "extra"],
+        ["make", "--no-print-directory", "json-scan-row-ownership-adoption"],
+    ):
+        rejected(lambda vector=vector: _mode_from_arguments(vector))
+    assert _normalize_absolute("/work/align") == "/work/align"
+    rejected(lambda: _normalize_absolute("/work/../align"))
+    assert _reject_environment({"ALIGN_REPO": "/work/align"}, mode="ordinary-adoption") == "/work/align"
+    rejected(lambda: _reject_environment({}, mode="ordinary-adoption"))
+    rejected(
+        lambda: _reject_environment(
+            {"ALIGN_REPO": "/work/align", "MAKEFLAGS": "-n"},
+            mode="ordinary-adoption",
+        )
+    )
+
+    with tempfile.TemporaryDirectory(prefix="fresh-focused-adoption-") as name:
+        output = Path(name)
+        subprocess.run(
+            [
+                sys.executable,
+                str(REPOSITORY / "scripts" / "build-fresh-image-control"),
+                "--output-dir",
+                str(output),
+            ],
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        result = subprocess.run(
+            [str(output / "request6-adoption-entrypoint"), "--mode", "ordinary-adoption"],
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert result.returncode == 1
+        assert result.stdout == b""
+        assert result.stderr == b"json-scan adoption: ERROR input\n"
+    print("fresh focused adoption smoke: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

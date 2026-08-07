@@ -218,6 +218,7 @@ def boundary_profile_run(
     *,
     align_repo: str | None = "/work/align",
     extra_environment: tuple[str, ...] = (),
+    mode: str = "ordinary-adoption-boundary",
 ) -> subprocess.CompletedProcess[bytes]:
     arguments = [
         "docker",
@@ -236,7 +237,7 @@ def boundary_profile_run(
         if not separator or not name:
             raise ValueError(f"invalid boundary test environment entry: {entry!r}")
         arguments.extend(["--env", entry])
-    command = [image, "--mode", "ordinary-adoption-boundary"]
+    command = [image, "--mode", mode]
     if cgroup_driver == "cgroupfs":
         arguments.extend(
             [
@@ -269,7 +270,7 @@ if child == 0:
         os.setuid({TEST_UID})
         os.chdir('/work/project')
         os.execve('/usr/local/libexec/align-llm/fresh-supervise',
-                  ['fresh-supervise', '--mode', 'ordinary-adoption-boundary'], {environment})
+                  ['fresh-supervise', '--mode', {mode!r}], {environment})
     except BaseException:
         os._exit(127)
 try:
@@ -303,6 +304,28 @@ os._exit(128 + os.WTERMSIG(status))
         ]
     )
     return run(arguments, check=False)
+
+
+def ordinary_profile_run(
+    image: str,
+    volume: str,
+    runtime_volume: str,
+    source_volume: str,
+    cgroup_driver: str,
+    *,
+    align_repo: str | None = "/work/align",
+    extra_environment: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[bytes]:
+    return boundary_profile_run(
+        image,
+        volume,
+        runtime_volume,
+        source_volume,
+        cgroup_driver,
+        align_repo=align_repo,
+        extra_environment=extra_environment,
+        mode="ordinary-adoption",
+    )
 
 
 def worker_profile_run(
@@ -446,6 +469,7 @@ def main() -> int:
     volume = f"align-llm-fresh-secrets-{unique}"
     runtime_volume = f"align-llm-fresh-runtime-{unique}"
     source_volume = f"align-llm-fresh-source-{unique}"
+    positive_source_volume = f"align-llm-fresh-positive-source-{unique}"
     boundary_source_volume = f"align-llm-fresh-boundary-source-{unique}"
     cgroup_ready = False
     with tempfile.TemporaryDirectory(prefix="fresh-image-profile-") as temporary_name:
@@ -489,6 +513,9 @@ def main() -> int:
             supervisor = temporary / "fresh-supervise"
             bootstrap = temporary / "fresh-bootstrap"
             dispatcher = temporary / "request6-adoption-boundary-entrypoint"
+            adoption_dispatcher = temporary / "request6-adoption-entrypoint"
+            adoption_namespace = temporary / "adoption-namespace"
+            bwrap = temporary / "bwrap"
             manifest = temporary / "fresh-toolchain.json"
             copy_from_image(image, "/usr/local/libexec/align-llm/fresh-supervise", supervisor)
             copy_from_image(image, "/usr/local/libexec/align-llm/fresh-bootstrap", bootstrap)
@@ -497,6 +524,13 @@ def main() -> int:
                 "/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint",
                 dispatcher,
             )
+            copy_from_image(
+                image,
+                "/usr/local/libexec/align-llm/request6-adoption-entrypoint",
+                adoption_dispatcher,
+            )
+            copy_from_image(image, "/usr/bin/adoption-namespace", adoption_namespace)
+            copy_from_image(image, "/runtime/bwrap/bin/bwrap", bwrap)
             copy_from_image(image, "/usr/local/share/align-llm/fresh-toolchain.json", manifest)
             manifest_value = validate_manifest_bytes(manifest.read_bytes())
             bindings = [
@@ -517,6 +551,45 @@ def main() -> int:
                 or binding["manifest_sha256"] != serialized_digest(binding["manifest"])
             ):
                 raise RuntimeError("boundary dispatcher binding is not canonical")
+            for target, path, label, expected_source in (
+                (
+                    "/usr/local/libexec/align-llm/request6-adoption-entrypoint",
+                    adoption_dispatcher,
+                    "ordinary dispatcher",
+                    "/usr/local/libexec/align-llm/request6-adoption-entrypoint",
+                ),
+                (
+                    "/usr/bin/adoption-namespace",
+                    adoption_namespace,
+                    "adoption namespace",
+                    "/usr/bin/adoption-namespace",
+                ),
+                (
+                    "/usr/bin/bwrap",
+                    bwrap,
+                    "ordinary bwrap",
+                    "/runtime/bwrap/bin/bwrap",
+                ),
+            ):
+                matches = [
+                    candidate
+                    for candidate in manifest_value["runtime_bindings"]
+                    if candidate["target"] == target
+                ]
+                if len(matches) != 1:
+                    raise RuntimeError(f"{label} binding is missing")
+                candidate = matches[0]
+                if (
+                    candidate["source"] != expected_source
+                    or candidate["kind"] != "file"
+                    or candidate["manifest"]["kind"] != "file"
+                    or candidate["manifest"]["mode"] != "0755"
+                    or candidate["manifest"]["size"] != path.stat().st_size
+                    or candidate["manifest"]["sha256"]
+                    != hashlib.sha256(path.read_bytes()).hexdigest()
+                    or candidate["manifest_sha256"] != serialized_digest(candidate["manifest"])
+                ):
+                    raise RuntimeError(f"{label} binding is not canonical")
             attestation = temporary / "image-attestation.dsse"
             run(
                 [
@@ -641,6 +714,8 @@ def main() -> int:
                 )
             if result.stdout != b"fresh compiler self-test: PASS\n" or result.stderr:
                 raise RuntimeError("profile self-test output is not canonical")
+            if b"ordinary-adoption" in result.stdout + result.stderr:
+                raise RuntimeError("legacy self-test reached ordinary adoption")
 
             mutations = []
             corrupt = temporary / "corrupt-attestation"
@@ -710,6 +785,12 @@ def main() -> int:
                     replaced_dispatcher,
                     "/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint",
                     b"fresh compiler: ERROR TOOL tools\n",
+                ),
+                (
+                    "replaced ordinary dispatcher",
+                    replaced_dispatcher,
+                    "/usr/local/libexec/align-llm/request6-adoption-entrypoint",
+                    b"fresh compiler: ERROR TRUST supervisor\n",
                 ),
             ):
                 require_rejection(
@@ -783,6 +864,11 @@ def main() -> int:
             run(["git", "-C", str(source / "align"), "checkout", "--detach", (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()])
             run(["docker", "volume", "create", source_volume])
             populate_source_volume(image, source_volume, source)
+            positive_source = temporary / "positive-source"
+            shutil.copytree(source, positive_source)
+            add_positive_transport_worker(positive_source)
+            run(["docker", "volume", "create", positive_source_volume])
+            populate_source_volume(image, positive_source_volume, positive_source)
             run(["docker", "volume", "create", boundary_source_volume])
             populate_source_volume(image, boundary_source_volume, source)
             missing_worker = boundary_profile_run(
@@ -916,6 +1002,53 @@ def main() -> int:
                     name,
                     b"json-scan adoption: ERROR revision\n",
                 )
+            ordinary_missing_worker = ordinary_profile_run(
+                image, volume, runtime_volume, source_volume, cgroup_driver
+            )
+            require_rejection(
+                ordinary_missing_worker,
+                "ordinary adoption missing worker",
+                b"json-scan adoption: ERROR revision\n",
+            )
+            ordinary_missing_align = ordinary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                source_volume,
+                cgroup_driver,
+                align_repo=None,
+            )
+            require_rejection(
+                ordinary_missing_align,
+                "ordinary adoption missing ALIGN_REPO",
+                b"fresh compiler: ERROR ARGUMENT input\n",
+            )
+            ordinary_extra_environment = ordinary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                source_volume,
+                cgroup_driver,
+                extra_environment=("ORDINARY_EXTRA=1",),
+            )
+            require_rejection(
+                ordinary_extra_environment,
+                "ordinary adoption extra environment",
+                b"fresh compiler: ERROR ARGUMENT input\n",
+            )
+            ordinary_positive = ordinary_profile_run(
+                image, volume, runtime_volume, positive_source_volume, cgroup_driver
+            )
+            if (
+                ordinary_positive.returncode != 0
+                or ordinary_positive.stdout != b"json-scan adoption: PASS\n"
+                or ordinary_positive.stderr
+            ):
+                raise RuntimeError(
+                    "ordinary adoption transport fixture failed:\n"
+                    + ordinary_positive.stdout.decode("utf-8", "replace")
+                    + ordinary_positive.stderr.decode("utf-8", "replace")
+                )
             worker_result = worker_profile_run(
                 image, volume, runtime_volume, source_volume, cgroup_driver
             )
@@ -949,10 +1082,134 @@ def main() -> int:
             run(["docker", "volume", "rm", "-f", volume], check=False)
             run(["docker", "volume", "rm", "-f", runtime_volume], check=False)
             run(["docker", "volume", "rm", "-f", source_volume], check=False)
+            run(["docker", "volume", "rm", "-f", positive_source_volume], check=False)
             run(["docker", "volume", "rm", "-f", boundary_source_volume], check=False)
             run(["docker", "image", "rm", "-f", image], check=False)
     print("fresh image profile smoke: PASS")
     return 0
+
+
+def add_positive_transport_worker(source: Path) -> None:
+    worker = source / "project" / "scripts" / "run-json-scan-row-ownership-adoption"
+    worker.write_text(
+        r'''#!/usr/bin/env python3
+import base64
+import ctypes
+import hashlib
+import json
+import os
+import socket
+
+
+def read_fd(fd, limit):
+    value = os.fstat(fd)
+    if value.st_size > limit:
+        raise RuntimeError("authority input is too large")
+    return os.pread(fd, value.st_size, 0)
+
+
+def execveat(fd, arguments, environment):
+    libc = ctypes.CDLL(None, use_errno=True)
+    function = libc.execveat
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_char_p),
+        ctypes.POINTER(ctypes.c_char_p),
+        ctypes.c_int,
+    ]
+    function.restype = ctypes.c_int
+    encoded_arguments = [value.encode("utf-8") for value in arguments]
+    encoded_environment = [
+        f"{name}={value}".encode("utf-8")
+        for name, value in environment.items()
+    ]
+    argv = (ctypes.c_char_p * (len(encoded_arguments) + 1))(
+        *(encoded_arguments + [None])
+    )
+    envp = (ctypes.c_char_p * (len(encoded_environment) + 1))(
+        *(encoded_environment + [None])
+    )
+    result = function(fd, b"", argv, envp, 0x1000)
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+capsule_raw = read_fd(12, 262144)
+worker_raw = read_fd(13, 4194304)
+nonce = read_fd(15, 32)
+manifest = json.loads(read_fd(8, 67108864).decode("utf-8"))
+envelope = json.loads(capsule_raw.decode("utf-8"))
+predicate = json.loads(
+    base64.urlsafe_b64decode(envelope["payload"] + "==").decode("utf-8")
+)
+if predicate["worker_size"] != len(worker_raw):
+    raise SystemExit(3)
+if predicate["worker_sha256"] != hashlib.sha256(worker_raw).hexdigest():
+    raise SystemExit(3)
+if predicate["invocation_nonce"] != base64.urlsafe_b64encode(nonce).rstrip(b"=").decode("ascii"):
+    raise SystemExit(4)
+channel = socket.socket(fileno=16)
+try:
+    proof, _, flags, _ = channel.recvmsg(33, socket.MSG_PEEK)
+finally:
+    channel.close()
+if flags & socket.MSG_TRUNC or len(proof) != 32:
+    raise SystemExit(5)
+expected = hashlib.sha256(
+    b"align-llm/ordinary-adoption/worker-admission/v2\0"
+    + bytes.fromhex(predicate["dispatch_ticket_sha256"])
+    + nonce
+    + hashlib.sha256(capsule_raw).digest()
+).digest()
+if proof != expected:
+    raise SystemExit(5)
+binding = next(
+    item for item in manifest["runtime_bindings"] if item["target"] == "/usr/bin/bwrap"
+)
+bwrap = os.open(binding["source"], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+try:
+    bwrap_raw = read_fd(bwrap, 536870912)
+    if (
+        len(bwrap_raw) != binding["manifest"]["size"]
+        or hashlib.sha256(bwrap_raw).hexdigest() != binding["manifest"]["sha256"]
+    ):
+        raise SystemExit(6)
+    os.dup2(bwrap, 27, inheritable=False)
+finally:
+    if bwrap != 27:
+        os.close(bwrap)
+child = os.fork()
+if child == 0:
+    try:
+        execveat(27, ["/usr/bin/bwrap", "--version"], {"PATH": "/tools", "LC_ALL": "C"})
+    except BaseException:
+        os._exit(127)
+_, status = os.waitpid(child, 0)
+if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+    raise SystemExit(6)
+os.write(1, b"json-scan adoption: PASS\n")
+''',
+        encoding="utf-8",
+    )
+    worker.chmod(0o755)
+    run(["git", "-C", str(source / "project"), "add", "--", worker.relative_to(source / "project").as_posix()])
+    run(
+        [
+            "git",
+            "-C",
+            str(source / "project"),
+            "-c",
+            "user.name=FRESH-IMAGE",
+            "-c",
+            "user.email=fresh-image@example.invalid",
+            "commit",
+            "--no-gpg-sign",
+            "-m",
+            "Install transport smoke worker",
+        ]
+    )
 
 
 if __name__ == "__main__":

@@ -96,13 +96,13 @@ def boundary_runtime_binding_case(temporary: Path) -> None:
     }
     binding = {
         "source": str(dispatcher),
-        "target": str(dispatcher),
+        "target": "/virtual/runtime-dispatcher",
         "kind": "file",
         "manifest": tree,
         "manifest_sha256": serialized_digest(tree),
     }
     descriptor, _, _ = control._runtime_file_binding(
-        {"runtime_bindings": [binding]}, str(dispatcher), owner=os.geteuid()
+        {"runtime_bindings": [binding]}, "/virtual/runtime-dispatcher", owner=os.geteuid()
     )
     os.close(descriptor)
 
@@ -113,7 +113,9 @@ def boundary_runtime_binding_case(temporary: Path) -> None:
     wrong_binding["manifest_sha256"] = serialized_digest(wrong_tree)
     try:
         control._runtime_file_binding(
-            {"runtime_bindings": [wrong_binding]}, str(dispatcher), owner=os.geteuid()
+            {"runtime_bindings": [wrong_binding]},
+            "/virtual/runtime-dispatcher",
+            owner=os.geteuid(),
         )
     except ControlError as error:
         assert error.category == "TRUST"
@@ -538,6 +540,9 @@ def main() -> int:
     assert _mode_from_arguments(["--mode", "ordinary-adoption-boundary"]) == (
         "ordinary-adoption-boundary"
     )
+    assert _mode_from_arguments(["--mode", "ordinary-adoption"]) == (
+        "ordinary-adoption"
+    )
     assert _normalize_absolute("/work/align") == "/work/align"
     for invalid in (
         "",
@@ -564,6 +569,16 @@ def main() -> int:
             mode="ordinary-adoption-boundary",
         )
     )
+    assert _reject_environment(
+        {"ALIGN_REPO": "/work/align"}, mode="ordinary-adoption"
+    ) == "/work/align"
+    rejected(
+        lambda: _reject_environment(
+            {"ALIGN_REPO": "/work/align", "ORDINARY_EXTRA": "1"},
+            mode="ordinary-adoption",
+        )
+    )
+    rejected(lambda: _reject_environment({}, mode="ordinary-adoption"))
     rejected(
         lambda: _reject_environment({"ALIGN_REPO": "../align"}, mode="self-test")
     )
@@ -599,6 +614,8 @@ def main() -> int:
                 "fresh-supervise",
                 "fresh-bootstrap",
                 "request6-adoption-boundary-entrypoint",
+                "request6-adoption-entrypoint",
+                "adoption-namespace",
             ):
                 assert (first / name).read_bytes() == (second / name).read_bytes()
                 assert (first / name).read_bytes().startswith(b"\x7fELF")
@@ -606,6 +623,8 @@ def main() -> int:
             assert not has_elf_interpreter(
                 first / "request6-adoption-boundary-entrypoint"
             )
+            assert not has_elf_interpreter(first / "request6-adoption-entrypoint")
+            assert not has_elf_interpreter(first / "adoption-namespace")
             fifo = first / "worker-fifo"
             os.mkfifo(fifo, 0o755)
             started = time.monotonic()
@@ -733,6 +752,23 @@ def main() -> int:
             assert boundary.returncode == 1
             assert boundary.stdout == b""
             assert boundary.stderr == b"json-scan adoption: ERROR input\n"
+            ordinary = subprocess.run(
+                [str(first / "request6-adoption-entrypoint"), "--mode", "ordinary-adoption"],
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "LANG": "C",
+                    "HOME": "/nonexistent",
+                    "TMPDIR": "/tmp",
+                },
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            assert ordinary.returncode == 1
+            assert ordinary.stdout == b""
+            assert ordinary.stderr == b"json-scan adoption: ERROR input\n"
 
     print("fresh image control smoke: PASS")
     return 0

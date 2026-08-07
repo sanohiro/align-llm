@@ -191,7 +191,7 @@ jobs:
             else
               while IFS= read -r path; do
                 case "$path" in
-                  .align-revision|Makefile|src/*|eval/*|image/fresh/*|scripts/alignc|scripts/build-fresh-image-control|scripts/fresh-align-compiler|scripts/fresh-alignc|scripts/fresh-image-attest|scripts/fresh_attestation.py|scripts/fresh_manifest.py|scripts/generate-fresh-toolchain-manifest|scripts/materialize-fresh-tree|scripts/run-baseline-*|scripts/run-coding-task-*|scripts/run-fresh-attestation-wire-smoke|scripts/run-fresh-image-control-smoke|scripts/run-fresh-image-profile-smoke|scripts/run-fresh-worker-*|scripts/run-loop-smoke|.github/workflows/ci.yml)
+                  .align-revision|Makefile|src/*|eval/*|image/fresh/*|scripts/alignc|scripts/build-fresh-image-control|scripts/fresh-align-compiler|scripts/fresh-alignc|scripts/fresh-image-attest|scripts/fresh_attestation.py|scripts/fresh_manifest.py|scripts/generate-fresh-toolchain-manifest|scripts/materialize-fresh-tree|scripts/run-baseline-*|scripts/run-coding-task-*|scripts/run-fresh-attestation-wire-smoke|scripts/run-fresh-focused-adoption-smoke|scripts/run-fresh-image-control-smoke|scripts/run-fresh-image-profile-smoke|scripts/run-fresh-worker-*|scripts/run-loop-smoke|.github/workflows/ci.yml)
                     owned=true
                     break
                     ;;
