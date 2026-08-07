@@ -9,9 +9,9 @@ The checkpoint below supersedes the older historical entries in this file. PR #6
 continue with the corrected Request 6 adoption design before implementation.
 
 - Branch: `agent/request6-adoption-contract-v2` at
-  `4330bf594a5f4cce19a1c970bcc4359a97335f3f`, based on merged `main` at
+  `6a81dbe3a8b468de5f92caa5a1d90b2cd441104b`, based on merged `main` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; the corrected design ledger and closure matrix are
-  complete and await the fresh independent design review of `4330bf5` before the replacement PR is
+  complete and await the fresh independent design review of `6a81dbe` before the replacement PR is
   opened.
 - PR #61 (`Install the authenticated fresh worker`) merged with method `merge` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; its exact-head review and hosted evidence remain
@@ -69,6 +69,12 @@ continue with the corrected Request 6 adoption design before implementation.
   `4330bf5` adds the delegated cgroup/rlimit/tmpfs/entry bounds, orders final launcher copy before
   descriptor publication, explicitly rejects SHA-256 ordinary inputs, and shares the fixed lock with
   fresh modes for all concurrency and orphan cases.
+- The fresh independent review of exact head `f8732fd` found three P1 and one P2: the supervisor
+  dropped setup privilege before the post-build remount, outer code was assigned a namespace-only
+  compiler transfer, the ordinary cgroup/memory contract was not provisioned by the installed
+  profile, and the handoff named the older head. Commit `6a81dbe` keeps setup privilege only in the
+  trusted supervisor, performs compiler materialization in that namespace, reuses the existing
+  pids-only Section 9 cgroup parent, marks memory enforcement N/A, and records the new head.
 - A fresh independent adversarial review found four valid non-trivial gaps: tool/Git descendants
   were outside the shared worker owner, cgroup leaves were pathname-owned, private-root cleanup
   closed identity witnesses before removal, and `make baseline-check` did not execute the
@@ -148,7 +154,7 @@ continue with the corrected Request 6 adoption design before implementation.
 
 ## Next steps, in priority order
 
-1. Run one fresh independent adversarial review of `4330bf5`, then open the replacement design PR.
+1. Run one fresh independent adversarial review of `6a81dbe`, then open the replacement design PR.
    Do not merge PR #62 or consume its unrevised ordinary command.
 2. After the corrected design merges, refresh `main`, record the bounded retrospective, and create
    a new implementation branch from merged `main`; read the sibling Align instructions and shipped
@@ -159,12 +165,12 @@ continue with the corrected Request 6 adoption design before implementation.
 
 ## Latest verification
 
-- `make gate-topology-check`: PASS at `4330bf5`.
-- `git diff --check`: PASS at `4330bf5`.
+- `make gate-topology-check`: PASS at `6a81dbe`.
+- `git diff --check`: PASS at `6a81dbe`.
 - Markdown fence parity: PASS (`docs/align-requests.md` 94, `docs/specs/check-gate-topology.md` 76).
 - Author-side design consistency review: PASS; the Request 6 public vectors, phase map, compiler
   handoff schema/golden bytes, namespace boundary, closure owners, and acceptance rows agree at
-  `4330bf5`.
+  `6a81dbe`.
 
 - `make check`: PASS; only existing Align compiler warnings remain.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS.
