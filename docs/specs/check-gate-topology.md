@@ -3606,6 +3606,66 @@ the public line.
 | Concurrent independent invocations | worker and image/profile lock parent | The worker owns a descriptor-relative `flock` on `/run/user/<uid>/align-llm-fresh/lock`, validates every protected parent component and `0600` lock identity, opens the profile-created `roots` child with mode `0700` and stable identity, then performs a bounded per-user candidate-name scan; a second `ci`, `adoption`, `build`, or `self-test` is rejected before private-root creation and no process classifies or deletes another root | `fresh-v2-concurrency-smoke` runs every pair of simultaneous modes, checks exact `PLATFORM concurrency`/`FILESYSTEM filesystem` status, replaces or weakens each lock-parent or `roots` component, proves only one root can exist per user, exercises the 65,536-entry/one-second fail-closed scan without shared-`/tmp` interference, and injects cross-root replacement/deletion attempts. |
 | Platform boundary | topology plan | x86-only claim; executable `/tmp`; authenticated-retained-bwrap namespace/overlay/read-only-tools and `/target/tmp`-only no-symlink self-tests; delegated cgroup limits; non-x86 requires separate profile | `fresh-v2-platform-profile-smoke` rejects unsupported or `noexec` `/tmp`, missing cgroup delegation, replaces the mutable bwrap pathname and tool staging source, proves the read-only bundle survives replacement, checks a contained source symlink remains usable, and prevents C7 non-x86 evidence reuse. |
 
+### 9.10.1 Current FRESH-IMAGE-REQUEST6-BOUNDARY enabling slice
+
+The complete Request 6 rows above remain the future consumer contract. The current enabling slice
+must not install a partially reachable worker, capsule, proof, bwrap, or namespace-helper path and
+must not claim ordinary-adoption evidence. Its independent installed-image contract is the
+non-evidence selector `--mode ordinary-adoption-boundary` and the separate image-owned dispatcher
+`/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint`.
+
+The boundary supervisor verifies the image envelope, schema-2 manifest, and dispatcher runtime
+binding; opens the project root and walks the caller's absolute Align path from a retained root
+descriptor; retains the final Align descriptor as FD 18; forks exactly one child; and invokes the
+retained dispatcher through FD 14. Its fixed dispatcher vector contains only the named mode,
+project/image/manifest/Align descriptors 4/6/8/18, and the normalized absolute/relative path pair.
+It creates no nonce or supervisor channel. The child passes exactly descriptors 4/6/8/18 and the
+standard streams `{0,1,2}`; the dispatcher post-exec set is exactly `{0,1,2,4,6,8,18}` and it
+closes every other inherited descriptor before validation. A missing worker, a regular
+worker, and every malformed/replaced worker are all deterministic `revision` rejections; no worker
+bytes are signed, copied, executed, or handed to another process.
+
+The boundary dispatcher accepts only its exact vector and the five fixed image environment entries,
+verifies the sealed image/manifest inputs and retained FD 18 identity, and performs the bounded
+no-follow worker-presence check before any source snapshot, signer, capsule, helper, or child
+operation. An exact direct invocation with caller-created image/manifest descriptors is permitted
+only as an untrusted diagnostic: it can reach the same pre-worker `revision` rejection, can never
+produce a success or ordinary evidence, and has no channel, nonce, parent proof, or other
+supervisor-origin authority. A malformed direct vector or any full `ordinary-adoption` vector is
+rejected as `input` before a repository-controlled process. Its only installed-profile positive gate
+is the exact pre-Make `revision` result for the absent worker; the present-worker case must prove
+the same rejection and must not reach host-root Python.
+
+The boundary public-contract ledger is:
+
+| Surface | Exact contract | Ownership and identity | Acceptance |
+| --- | --- | --- | --- |
+| Installed entrypoint | `execve("/usr/local/libexec/align-llm/fresh-supervise", ["fresh-supervise", "--mode", "ordinary-adoption-boundary"], ["PATH=/usr/bin:/bin", "LC_ALL=C", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp", "ALIGN_REPO=<absolute>"])`; caller cwd is the project root and no other environment entry is accepted | Image supervisor owns the first exec, validates the absolute path, and owns all child descriptors; no shell, repository executable, or ambient configuration is part of the contract | Installed boundary profile smoke, including missing, relative, and malformed `ALIGN_REPO` cases |
+| Dispatcher vector | `request6-adoption-boundary-entrypoint --mode ordinary-adoption-boundary --project-root-fd 4 --image-attestation-fd 6 --manifest-fd 8 --align-repo-root-fd 18 --align-repo-absolute <normalized-absolute> --align-repo-relative <canonical-relative>` | Supervisor owns FD 14 executable authority and consumes it at `execveat(AT_EMPTY_PATH)`; the dispatcher post-exec set is exactly `{0,1,2,4,6,8,18}`. Standard streams remain the supervisor-owned pipes; FD 14 is not present after exec, and the dispatcher closes every other inherited descriptor. No nonce, socket, or worker FD exists in this slice | Direct argv/FD/env smoke plus installed retained-FD dispatch |
+| Result | Missing, present, malformed, or replaced worker: child exit `1`, empty stdout, exactly `json-scan adoption: ERROR revision\n`; malformed boundary argv/env/FD set: child exit `1`, empty stdout, exactly `json-scan adoption: ERROR input\n`; pre-FD14 image/manifest/path failure: supervisor exit `1`, empty stdout, exactly `fresh compiler: ERROR TRUST supervisor\n`; dispatcher timeout, signal death, unknown status, or incomplete child output: supervisor kills/reaps the one child and emits the same trust line | The supervisor captures child stdout/stderr in bounded pipes and forwards only one validated complete boundary line; no child stream is forwarded on timeout, signal, or cleanup failure. The boundary has a fixed 5-second child deadline, and every failure exits `1`; there is no boundary success status | Exact byte/status assertions for every negative, timeout, signal, and cleanup vector |
+| Dispatcher runtime binding | One schema-2 `runtime_bindings` record with `target` and `source` both `/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint`, `kind=file`, root owner, mode `0755`, full-byte `manifest.sha256`, and canonical serialized `manifest_sha256`; the deterministic static-PIE ELF has no interpreter or mutable runtime closure | Image build owns the bytes and manifest; supervisor opens the no-follow source, checks owner/mode/link-count/size, verifies both digests, and dispatches the retained descriptor rather than reopening the pathname | Manifest-wire assertion, two deterministic ELF builds, and replacement-before-dispatch rejection |
+| Persisted identity | N/A: the boundary creates no capsule, nonce, worker snapshot, cache, or other persisted artifact | Image manifest and attestation remain the only authenticated inputs; future `ordinary-adoption` identity is owned by the consumer-complete slice | N/A with the concrete reason that this slice has no persisted output |
+
+The boundary closure matrix is intentionally limited to the following paths: construction and
+manifest binding (image Dockerfile/generator, deterministic ELF and manifest smoke); successful
+retained dispatch (supervisor and boundary dispatcher, installed profile positive vector); malformed
+input and direct invocation (dispatcher, focused boundary smoke); missing/present/replaced worker
+(dispatcher, revision smoke); early exit, timeout, signal, and cleanup (supervisor reaps its one
+dispatcher child and closes FDs 4/6/8/14/18, with no descendant worker to reap); and malformed
+image/manifest/path inputs (supervisor trust smoke). Capsule, proof, namespace, worker, source,
+resource, and consumer cleanup cells are N/A here because the slice deliberately creates none; each
+is named as an owner and acceptance test in the full consumer-complete row rather than silently
+omitted.
+
+The applicable closure cells for this slice are therefore selector/argv/env validation, descriptor
+closure, image manifest binding, retained absolute-path identity, worker-presence rejection, exact
+failure bytes, deterministic ELF installation, and direct-entrypoint rejection. Their owners are
+`fresh_image_control.py`, the boundary dispatcher, the image Dockerfile/manifest generator, and
+the boundary profile smoke. The ordinary admission proof, capsule and worker memfds, source
+identity vectors, bwrap FD 27, namespace helper, process ownership, resource limits, cleanup
+quarantine, and focused Make vectors are explicitly deferred to the consumer-complete
+FRESH-IMAGE-REQUEST6 slice below; no boundary check or HANDOFF may claim them as passed.
+
 ### 9.11 Compatibility, verification, and delivery order
 
 This design-only gate executes exactly `git diff --check`, the balanced Markdown fence parity check,
@@ -3621,8 +3681,8 @@ evidence.
 
 The successor design and its wire/source-identity foundations are merged. They are internal
 checkpoints, not a precedent for more helper-only pull requests. Delivery now has two independently
-owned base capabilities, one separately verified Request 6 image-profile extension, and one
-dependent adoption wave:
+owned base capabilities, one separately verified Request 6 boundary checkpoint, one
+consumer-complete Request 6 image-profile extension, and one dependent adoption wave:
 
 1. **FRESH-IMAGE — installed minimum-platform profile.** Install and attest the image-owned
    supervisor, fixed bootstrap, Python runtime, bwrap image, canonical schema-2 manifest, signed
@@ -3665,8 +3725,17 @@ dependent adoption wave:
    deferred row passed. Because this capability changes the Makefile and compiler
    consumers, its branch also performs the Section 2.4 identity-bound baseline source, oracle,
    finalization, and merge-ancestry sequence.
-3. **FRESH-IMAGE-REQUEST6 — installed focused-adoption profile extension.** After FRESH-IMAGE and
-   FRESH-WORKER merge, extend the trusted `fresh-supervise` with the exact `--mode ordinary-adoption` dispatch,
+3. **FRESH-IMAGE-REQUEST6-BOUNDARY — installed pre-consumer dispatch boundary.** After FRESH-IMAGE
+   and FRESH-WORKER merge, install the separate `--mode ordinary-adoption-boundary` selector and
+   image-owned boundary dispatcher described in Section 9.10.1. It verifies only the fixed image
+   and manifest tuple, retained FD14/FD18 dispatch, strict input closure, and fail-closed worker
+   presence rejection. It does not install or bind a namespace helper, create a nonce or channel,
+   sign a capsule, copy worker bytes, or execute repository-controlled Python. Its acceptance is
+   the installed boundary smoke and it is an enabling checkpoint for the consumer-complete slice;
+   it does not advance Request 6 to `ALIGN_LLM_VERIFIED` or claim ordinary evidence.
+4. **FRESH-IMAGE-REQUEST6 — installed focused-adoption profile extension.** After the boundary,
+   FRESH-IMAGE, and FRESH-WORKER merge, extend the trusted `fresh-supervise` with the exact
+   `--mode ordinary-adoption` dispatch,
    install and attest the image-owned
    `/usr/local/libexec/align-llm/request6-adoption-entrypoint`, its complete interpreter/loader
    closure, the `/usr/bin/adoption-namespace` runtime binding, the ordinary-adoption capsule signer
@@ -3701,7 +3770,8 @@ dependent adoption wave:
    worker independently, replay or edit the capsule, and prove rejection before any Make or compiler
    marker. It must pass against the exact installed manifest before this extension is considered
    merged; it records a new image/profile identity and does not change `.align-revision`.
-4. **Fresh adoption wave.** After FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6 all pass
+5. **Fresh adoption wave.** After FRESH-IMAGE, FRESH-WORKER, the boundary, and the full
+   FRESH-IMAGE-REQUEST6 all pass
    and merge, batch the merged Align requests
    required by the next real consumer into one `.align-revision` update, rebuild, and the original
    focused acceptance gate through the authenticated focused request, followed by one final fresh
@@ -3715,10 +3785,13 @@ dependent adoption wave:
    routine hosted/capable aggregate membership, and a host command that only names
    `/tools/fresh-alignc` is not fresh evidence.
 
-The FRESH-IMAGE-REQUEST6 profile extension is prerequisite infrastructure and is explicitly allowed
-to implement this installed-profile contract after FRESH-IMAGE and FRESH-WORKER merge; it is not the
-Request 6 adoption consumer. No Request 6 adoption consumer may implement against or claim this
-redesign before FRESH-WORKER, FRESH-IMAGE, and FRESH-IMAGE-REQUEST6 merge. Request 7 registration,
+The FRESH-IMAGE-REQUEST6 boundary is prerequisite infrastructure for the consumer-complete
+FRESH-IMAGE-REQUEST6 profile and is explicitly allowed to implement only its installed boundary
+contract after FRESH-IMAGE and FRESH-WORKER merge; it is not the Request 6 adoption consumer. The
+full FRESH-IMAGE-REQUEST6 profile remains prerequisite infrastructure and is explicitly allowed to
+implement the complete installed transport after the boundary, FRESH-IMAGE, and FRESH-WORKER
+merge. No Request 6 adoption consumer may implement against or claim this redesign before
+FRESH-WORKER, FRESH-IMAGE, the boundary, and full FRESH-IMAGE-REQUEST6 merge. Request 7 registration,
 Request 9 design, C7 design, and other independent planning may continue, while their consumer
 implementations remain governed by their own applicable image and worker profiles. A proposed
 descriptor, manifest, host image, or platform profile is not an input. The request register remains

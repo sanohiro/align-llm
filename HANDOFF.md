@@ -5,77 +5,45 @@ attestations; this file records durable project state.
 
 ## Active checkpoint (2026-08-07)
 
-- Branch: `agent/request6-adoption-contract-v11`, based on merged `main` at
-  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. The v11 design content is committed at
-  `cf9165c`; this Handoff update records the current continuity commit and the branch is not yet
-  published.
-- Active goal: finish and merge the redesigned Request 6 focused-adoption contract, then implement
-  the separately gated installed profile and authenticated adoption. Request 6 adoption and consumer
-  implementations remain blocked until their named image and worker profiles merge.
-- v11 keeps all supervisor peer/PID/procfs authentication outside the private PID namespace. The
-  namespace helper receives the live channel through the exact `--as-pid-1 --sync-fd 16` bwrap vector,
-  consumes the queued proof, and checks only HUP/EOF/protocol liveness. The supervisor opens `/` as
-  temporary FD 17, component-walks absolute `ALIGN_REPO` before channel/FD-14 dispatch, retains the
-  final root as FD 18, and closes FD 17 before channel creation.
-- v11 defines the exact bwrap inheritance set `B` for authority, setup, runtime, and tool descriptors;
-  the worker parent forks and starts the cgroup-gated bwrap launcher, while the child only waits and
-  executes FD 27 with `execveat`. The worker retains outer cgroup/staging/cleanup ownership.
-- v11 defines worker exit statuses `1..6`, the dispatcher-owned `UNOBSERVED_EXIT` result for signal or
-  unknown worker death before a final phase result, and the complete source-exception vector bound into
-  the signed `ordinary-adoption/v2` capsule.
-- Request 6 uses separate `raw-tree/v1` and `source-exception/v2` wires. Legacy source-manifest/v1
-  goldens and readers remain unchanged; both project and Align root `HANDOFF.md` are explicit ordinary
-  control exceptions, project `main` is optional, and Align `main` is absent.
-- v11 limits the offset ledger to byte-bearing memfds `12`, `13`, `15`, and local rehydrated memfds;
-  O_PATH FD 18 and other identity-only descriptors use identity, bind, protocol, or exec checks
-  without `lseek`/`pread`. The fixed bwrap launcher invokes retained FD 27 with `argv[0] = bwrap`.
-  The dispatcher retains executable FD 14 separately from data/protocol FDs `4/6/8/15/16/18` until
-  its successful `execveat(AT_EMPTY_PATH)` or failed cleanup.
-- PR #62 is superseded and must not be merged. Its recorded findings and dispositions remain a GitHub
-  PR-metadata task; do not patch the superseded branches. v8, v9, and v10 are unpublished superseded
-  designs; v11 must receive one fresh comprehensive review before publication.
-- Expected post-merge checkpoint: refresh `main`, perform the bounded design retrospective, and
-  create `agent/request6-image-profile-extension` for the separately reviewed installed-profile gate.
-  After that profile extension merges, create `agent/request6-adoption-implementation`.
+- Branch: `agent/request6-boundary-design`, based on merged `main` commit
+  `11262a785f4c994ecfae2d9d95f67f32d7056108`.
+- Active goal: correct the Request 6 delivery order after PR #64's independent review. The
+  current design adds a separate non-evidence `FRESH-IMAGE-REQUEST6-BOUNDARY` enabling checkpoint;
+  the full `ordinary-adoption` transport and consumer remain deferred.
+- PR #65 current design head: `2b2f20043fa1d7d78c15a5fb6ef64b2451f85710` (repair commit
+  `2b2f20043fa1d7d78c15a5fb6ef64b2451f85710` follows the independently reviewed
+  head `2fd22379902908f70cd3f09f37d2aadfcdd4417`). The recorded repair defines the direct-diagnostic
+  limitation, exact post-exec FD set, timeout/status mapping, and schema-2 runtime binding.
+- PR #64 was closed without merge after review found an unsafe partial worker/helper path, a weak
+  parent-authentication fallback, a broken socket endpoint handoff, and inconsistent scope claims.
+  Its review envelope and findings are recorded in GitHub PR #64; do not patch or merge that branch.
+- The boundary contract is intentionally limited to image/manifest binding, strict
+  `ordinary-adoption-boundary` argv/env/fd validation, retained FD14 dispatch, absolute Align FD18
+  identity, and pre-Make rejection of absent, present, or malformed workers. It creates no nonce,
+  channel, capsule, worker memfd, proof, bwrap child, namespace helper, or repository-controlled
+  child.
 
 ## Next steps, in priority order
 
-1. Run the required fresh independent adversarial comprehensive review on exact v11 HEAD, then publish
-   the reviewed design branch.
-2. Record all superseded PR #62/v8/v9/v10 finding dispositions, close PR #62 as superseded, push v11, create
-   its replacement PR, and complete the review/check/fix/merge workflow.
-3. Refresh `main`, record the bounded retrospective, implement and merge the FRESH-IMAGE-REQUEST6
-   profile extension on its own branch, then implement authenticated Request 6; review, repair,
-   merge, refresh `main`, and continue to the next eligible roadmap gate.
+1. Run the design checks and one fresh independent adversarial review of this correction.
+2. Open and merge the design correction PR, then create a new implementation branch from its merge.
+3. Implement only the boundary contract, run the focused and hosted installed boundary checks, and
+   complete one comprehensive implementation review before merging.
+4. Refresh `main`, perform the bounded retrospective, and start the full consumer-complete
+   FRESH-IMAGE-REQUEST6 slice only after its prerequisites remain satisfied.
 
 ## Latest verification
 
-- v11 required design-gate checks passed: `git diff --check`, Markdown fence parity (`104` and `76`
-  fence delimiters), and `make gate-topology-check`.
-- v11 supplemental author checks passed: `python3 scripts/check-gate-topology --self-test` and
-  `python3 scripts/run-fresh-source-manifest-wire-smoke`; these do not claim deferred implementation
-  owners.
-- The v11 golden vectors are unchanged; prior recomputation passed for the 1314-byte capsule predicate,
-  1385-byte DSSE PAE,
-  1348-byte raw-tree vector, and 1755-byte source-exception vector with the hashes recorded below.
-- The pinned bwrap source and host probe confirm that FD 16 is inherited only when the exact vector
-  includes `--as-pid-1 --sync-fd 16`; the negative vector without `--as-pid-1` does not forward it.
-- The exception fixture is designed as 1755 canonical bytes with SHA-256
-  `0c685027b378e6ef448e8efd807532eb8f056de04f550e884d56a5ef0834ead0`; the raw-tree fixture remains
-  1348 bytes with SHA-256
-  `8b30014d36e10e32e230fcbbcbe12b6933903da48c8569140cadd62795caad77`.
-- The ordinary capsule golden is designed as a 1314-byte predicate with SHA-256
-  `2c1cc89bfdc4f48c97a44e7cbf6ec1e9d34daff710ce40972fe37e1f6741f1fd`; its 1385-byte DSSE PAE has
-  SHA-256 `92ef881cc93e610563883f54cf06311985caedc9925736a4fca90067c6687f64`.
-- This remains a docs/specification-only gate. Source tests, `make check`, `make build`, and `make ci`
-  are N/A and remain deferred to executable implementation/profile slices.
+- `git diff --check`: PASS after the design correction and review repair.
+- Markdown fence parity: PASS for `docs/align-requests.md` and
+  `docs/specs/check-gate-topology.md`.
+- `make gate-topology-check`: PASS (`check gate topology: PASS`).
+- No executable source, image, compiler pin, or Align source has changed on this branch.
 
 ## Constraints and intentional state
 
 - Keep repository source, documentation, commits, PR metadata, and diagnostics in English.
-- The shipped Align revision for Request 6 is
-  `e65448b744c04e3868d079eef8b45ce0d43ac8ee`; `.align-revision` remains
-  `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` until the reviewed implementation branch consumes it.
+- Do not change `.align-revision` in the boundary design or implementation slices.
 - The primary worktree `/home/hiro/prj/align-llm` has an intentional uncommitted `HANDOFF.md`; do
   not discard or overwrite it.
 - Diagnostic worktrees and branches are retained for evidence; never merge diagnostic-only
