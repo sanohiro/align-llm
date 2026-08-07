@@ -1377,7 +1377,14 @@ arguments and inherited Make-control variables before it starts `/usr/bin/make`;
 other argument is rejected in the wrapper's input phase, not consumed by GNU Make. Its success
 stdout is exactly `json-scan adoption: PASS\n`, stderr is empty, and failures suppress child
 streams and emit exactly one bounded `json-scan adoption: ERROR <phase>\n` line where `phase` is
-one of `input`, `toolchain`, `revision`, `build`, `fixture`, or `cleanup`.
+one of `input`, `toolchain`, `revision`, `build`, `fixture`, or `cleanup`. Validation order is
+fixed: (1) argv, Make-control variables, cwd, and allowed `HANDOFF.md` exception; (2) project HEAD,
+index, clean-tree, and raw snapshot; (3) fixed attestation and manifest bytes; (4) Align Git view,
+config, helper, alternate-object, and linked-worktree metadata; (5) tool/runtime/cache identity;
+(6) private-root staging and final pre-child snapshots; (7) the three child vectors; and (8)
+reverse cleanup. The first failed phase wins. Cleanup selects `cleanup` only when every earlier
+phase and child succeeded; after an earlier failure, cleanup still runs but cannot overwrite the
+primary phase. No later validation or cleanup side effect changes that precedence.
 
 The ordinary wrapper's only caller-selected source input is `ALIGN_REPO`, the absolute clean Align
 worktree. Toolchain and dependency inputs come from the fixed installed-profile manifest at
@@ -1413,14 +1420,24 @@ copies `.git` objects, refs, index, and metadata into the snapshot. For a linked
 resolves the root `.git` file and its `gitdir`/`commondir` entries through retained descriptors,
 copies both the worktree metadata and common object/ref directory into private siblings, rewrites
 the private `commondir` to a canonical relative private path, and sets the matching private Git
-environment; no original common directory or absolute Git path crosses the child boundary. It also
+environment; no original common directory or absolute Git path crosses the child boundary. Before
+copying either view, the wrapper rejects local `include.path`, `core.fsmonitor`, fsmonitor hooks,
+alternates, replacement refs, grafts, hooks, config includes, and every other helper/configuration
+channel outside the fixed Section 9 Git allowlist; it sets the private `GIT_DIR`, `GIT_COMMON_DIR`,
+`GIT_WORK_TREE`, `GIT_CONFIG_NOSYSTEM`, `GIT_ATTR_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`GIT_NO_REPLACE_OBJECTS=1`, and `GIT_GRAFT_FILE=/dev/null` values for all children. It also
 stages the complete authenticated Rust prefix, LLVM/native runtime trees, and Cargo-cache inputs
 into the private root, hashes every accepted regular file, and performs complete pre-copy,
 post-copy, and final pre-child tree snapshots. Children see only these retained read-only inputs
 and private writable `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and temporary paths. A
 source, tool, native, or cache replacement, mutation, extra entry, type, mode, size, link-count, or
 digest mismatch fails before the next child and leaves the private root for diagnostic cleanup
-rather than reopening the original path.
+rather than reopening the original path. The project snapshot records the current project `HEAD`
+and requires the project index and raw tree to match that commit before and after the copy; the
+only permitted working-tree exception is the intentional uncommitted `HANDOFF.md`, which is not
+copied into the product snapshot. Untracked files and every other tracked modification reject.
+The adoption PR binds the recorded project `HEAD` to the exact reviewed implementation head before
+ordinary evidence is accepted.
 
 The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
 
@@ -1444,9 +1461,11 @@ cache, and empty Make-control environment. The `align-build` child additionally 
 `CARGO=<private-rust>/bin/cargo`, `RUSTC=<private-rust>/bin/rustc`,
 `CARGO_HOME=<private-cargo-home>`, `CARGO_TARGET_DIR=<private-cargo-target>`,
 `CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=<private-llvm>/bin/llvm-config`,
-`LLVM_SYS_221_PREFIX=<private-llvm>`, `CC=<private-native>/bin/cc`,
-`CXX=<private-native>/bin/c++`, and the authenticated native search paths. Every focused child
-receives `PATH=<private-rust>/bin:<private-llvm>/bin:<private-native>/bin:/usr/bin:/bin`, with the
+`LLVM_SYS_221_PREFIX=<private-llvm>`, `CC=<private-native-bin>/cc`,
+`CXX=<private-native-bin>/cxx`, and the authenticated native search paths. The wrapper materializes
+`private-native-bin/cc` from the manifest's `cc` tool record and `private-native-bin/cxx` from its
+`cxx` record; these are explicit staged aliases, not an unlisted `c++` name. Every focused child
+receives `PATH=<private-rust>/bin:<private-llvm>/bin:<private-native-bin>:/usr/bin:/bin`, with the
 staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
 must never reach ambient `/usr/bin/cc`. After the build,
 the wrapper verifies the new `release/alignc` and adjacent runtime archive by no-follow type,
