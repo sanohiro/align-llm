@@ -5,55 +5,61 @@ attestations; this file records durable project state.
 
 ## Active checkpoint (2026-08-07)
 
-- Branch: `agent/request6-adoption-contract-v8`, based on merged `main` at
-  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. The v8 design content is committed at
-  `7eb4b2e7b6c6c98ea9b8362c37f3e1d1433e94ee`; this Handoff update records the current continuity
-  commit and the branch is not yet published.
+- Branch: `agent/request6-adoption-contract-v9`, based on merged `main` at
+  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. The v9 design content is committed at
+  `e3e3ca8`; this Handoff update records the current continuity commit and the branch is not yet
+  published.
 - Active goal: finish and merge the redesigned Request 6 focused-adoption contract, then implement
   the separately gated installed profile and authenticated adoption. Request 6 adoption and consumer
   implementations remain blocked until their named image and worker profiles merge.
-- v8 moves all supervisor peer/PID/procfs authentication outside the private PID namespace. The
+- v9 keeps all supervisor peer/PID/procfs authentication outside the private PID namespace. The
   namespace helper receives the live channel through the exact `--as-pid-1 --sync-fd 16` bwrap vector,
-  consumes the queued proof, and checks only HUP/EOF/protocol liveness. The supervisor component-walks
-  absolute `ALIGN_REPO` before channel/FD-14 dispatch and passes the retained root as FD 18.
-- v8 replaces the impossible no-follow `/proc/<pid>/exe` hash with one explicitly controlled procfs
-  magic-link read, adds a worker-owned fork/`execveat` bwrap launcher so the outer worker retains cgroup
-  and cleanup ownership, and binds the complete source-exception vector into the signed
-  `ordinary-adoption/v2` capsule.
+  consumes the queued proof, and checks only HUP/EOF/protocol liveness. The supervisor opens `/` as
+  temporary FD 17, component-walks absolute `ALIGN_REPO` before channel/FD-14 dispatch, retains the
+  final root as FD 18, and closes FD 17 before channel creation.
+- v9 defines the exact bwrap inheritance set `B` for authority, setup, runtime, and tool descriptors;
+  the worker parent forks and starts the cgroup-gated bwrap launcher, while the child only waits and
+  executes FD 27 with `execveat`. The worker retains outer cgroup/staging/cleanup ownership.
+- v9 defines worker exit statuses `1..6`, the dispatcher-owned `UNOBSERVED_EXIT` result for signal or
+  unknown worker death before a final phase result, and the complete source-exception vector bound into
+  the signed `ordinary-adoption/v2` capsule.
 - Request 6 uses separate `raw-tree/v1` and `source-exception/v2` wires. Legacy source-manifest/v1
   goldens and readers remain unchanged; both project and Align root `HANDOFF.md` are explicit ordinary
   control exceptions, project `main` is optional, and Align `main` is absent.
-- PR #62 is superseded and must not be merged. Its v2-v6 findings remain for the PR disposition step;
-  do not patch the superseded branches. The v8 branch must receive one fresh comprehensive review
-  before publication.
+- PR #62 is superseded and must not be merged. Its recorded findings and dispositions remain a GitHub
+  PR-metadata task; do not patch the superseded branches. v8 is also superseded by v9 after its local
+  and independent reviews; the v9 branch must receive one fresh comprehensive review before publication.
 - Expected post-merge checkpoint: refresh `main`, perform the bounded design retrospective, and
   create `agent/request6-image-profile-extension` for the separately reviewed installed-profile gate.
   After that profile extension merges, create `agent/request6-adoption-implementation`.
 
 ## Next steps, in priority order
 
-1. Run the required local and independent adversarial comprehensive reviews on the exact v8 HEAD,
-   then publish the reviewed design branch.
-2. Record all v6 comprehensive-review findings and dispositions on PR #62, close it as superseded,
-   push v8, create its replacement PR, and complete the review/check/fix/merge workflow.
+1. Run the required fresh independent adversarial comprehensive review on exact v9 HEAD, then publish
+   the reviewed design branch.
+2. Record all superseded PR #62/v8 finding dispositions, close PR #62 as superseded, push v9, create
+   its replacement PR, and complete the review/check/fix/merge workflow.
 3. Refresh `main`, record the bounded retrospective, implement and merge the FRESH-IMAGE-REQUEST6
    profile extension on its own branch, then implement authenticated Request 6; review, repair,
    merge, refresh `main`, and continue to the next eligible roadmap gate.
 
 ## Latest verification
 
-- v8 author checks passed: `git diff --check`, `make gate-topology-check`,
-  `python3 scripts/check-gate-topology --self-test`, and
-  `python3 scripts/run-fresh-source-manifest-wire-smoke`.
-- v8 golden recomputation passed for the 1314-byte capsule predicate, 1385-byte DSSE PAE,
+- v9 required design-gate checks passed: `git diff --check`, Markdown fence parity (`104` and `76`
+  fence delimiters), and `make gate-topology-check`.
+- v9 supplemental author checks passed: `python3 scripts/check-gate-topology --self-test` and
+  `python3 scripts/run-fresh-source-manifest-wire-smoke`; these do not claim deferred implementation
+  owners.
+- The v9 golden vectors are unchanged; prior recomputation passed for the 1314-byte capsule predicate,
+  1385-byte DSSE PAE,
   1348-byte raw-tree vector, and 1755-byte source-exception vector with the hashes recorded below.
 - The pinned bwrap source and host probe confirm that FD 16 is inherited only when the exact vector
   includes `--as-pid-1 --sync-fd 16`; the negative vector without `--as-pid-1` does not forward it.
-- The v8 exception fixture is designed as 1755 canonical bytes with SHA-256
+- The exception fixture is designed as 1755 canonical bytes with SHA-256
   `0c685027b378e6ef448e8efd807532eb8f056de04f550e884d56a5ef0834ead0`; the raw-tree fixture remains
   1348 bytes with SHA-256
   `8b30014d36e10e32e230fcbbcbe12b6933903da48c8569140cadd62795caad77`.
-- The v8 ordinary capsule golden is designed as a 1314-byte predicate with SHA-256
+- The ordinary capsule golden is designed as a 1314-byte predicate with SHA-256
   `2c1cc89bfdc4f48c97a44e7cbf6ec1e9d34daff710ce40972fe37e1f6741f1fd`; its 1385-byte DSSE PAE has
   SHA-256 `92ef881cc93e610563883f54cf06311985caedc9925736a4fca90067c6687f64`.
 - This remains a docs/specification-only gate. Source tests, `make check`, `make build`, and `make ci`
