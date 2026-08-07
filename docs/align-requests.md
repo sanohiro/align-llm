@@ -1385,9 +1385,10 @@ config, helper, alternate-object, and linked-worktree metadata; (5) tool/runtime
 reverse cleanup. The phase mapping is exact: steps 1–2 and every pre-child project/Align failure
 are `revision` except the initial argv/env/cwd grammar, which is `input`; fixed attestation,
 manifest, tool, runtime, cache, and private-root staging failures are `toolchain`;
-`.align-revision` mismatch is `revision`; the build child and its compiler handoff are `build`;
-the focused child and fixture/compiler result are `fixture`; and cleanup is `cleanup` only when
-every earlier phase and child succeeded. The first failed phase wins. After an earlier failure,
+`.align-revision` mismatch is `revision`; the build child, compiler/archive/launcher source copy,
+and post-build namespace bundle/handoff setup are `build`; the focused child and fixture/compiler
+result are `fixture`; and cleanup is
+`cleanup` only when every earlier phase and child succeeded. The first failed phase wins. After an earlier failure,
 cleanup still runs but cannot overwrite the primary phase. No later validation or cleanup side
 effect changes that precedence.
 
@@ -1473,13 +1474,15 @@ of the three child vectors below; no repository or caller argument is appended. 
 every read-only mount source before the namespace starts, and the trusted helper verifies the
 namespace-owned `/private-tool-bin` mount is read-only before opening the handoff files. Thus a
 focused child or another same-UID host process cannot reach or modify the final compiler bundle.
-The helper drops all capabilities and sets `no_new_privs` before Make starts; a failed namespace or
-bundle setup is reported as `toolchain` before any Make or compiler marker.
+The helper drops all capabilities and sets `no_new_privs` before Make starts; a failed namespace
+setup before the first child is `toolchain`, while a failed post-build compiler-input copy,
+namespace bundle, descriptor, remount, or handoff setup is `build`, before the focused child or
+compiler marker.
 
 In focused mode the namespace helper receives, in this fixed order, the read-only source paths
 `/private-tool-input/alignc`, `/private-tool-input/libalign_runtime.a`, and
-`/private-launcher-source/adoption-alignc`, the expected compiler and archive SHA-256 values, the
-Align revision, the project HEAD, and then `--` followed by the selected Make vector. It copies the
+`/private-launcher-source/adoption-alignc`, the expected compiler, archive, and launcher SHA-256
+values, the Align revision, the project HEAD, and then `--` followed by the selected Make vector. It copies the
 source bytes into the namespace-owned `/private-tool-bin` tmpfs with create-exclusive files, hashes
 and stats those final destination files, writes the schema-1 descriptor only after that final
 materialization, copies the launcher, verifies the descriptor bytes, remounts the tmpfs read-only,
@@ -1515,7 +1518,7 @@ cache, and empty Make-control environment. The `align-build` child additionally 
 `clang` and `clang++` runtime bytes, with their complete ELF closure; the manifest's `cc` and `cxx`
 forwarders are identity records, not executed aliases. These are explicit staged aliases, not an
 unlisted `c++` name. Every focused child
-receives `PATH=/private-rust/bin:/private-llvm/bin:/private-native/bin:/usr/bin:/bin`, with the
+receives `PATH=/private-native/bin:/private-rust/bin:/private-llvm/bin:/usr/bin:/bin`, with the
 staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
 must never reach ambient `/usr/bin/cc`. After the build, the wrapper verifies the new `release/alignc`
 and adjacent runtime archive by no-follow type, mode, link count, revision, version, and complete
@@ -1533,7 +1536,9 @@ published, and the helper exposes that bundle only through the read-only `/priva
 The launcher opens exactly
 `/private-tool-bin/adoption-handoff`, `/private-tool-bin/alignc`, and
 `/private-tool-bin/libalign_runtime.a` with `O_RDONLY|O_NOFOLLOW`, rechecks the mount identity and
-all declared tuples, and executes the already-open compiler with `execveat(AT_EMPTY_PATH)`. The
+all declared tuples plus the launcher SHA-256 against its own fixed
+`/private-tool-bin/adoption-alignc` bytes, and executes the already-open compiler with
+`execveat(AT_EMPTY_PATH)`. The
 read-only namespace tmpfs is the immutability boundary; a focused child cannot chmod, replace, or
 restore any handoff or sibling bundle member through its visible path, and no host alias exists.
 The focused child receives
@@ -1550,6 +1555,8 @@ decimal unsigned integers, and this exact field order and width: `schema_version
 `/private-tool-bin/libalign_runtime.a`),
 `archive_dev` (`u64`), `archive_ino` (`u64`), `archive_mode` (`u32`), `archive_nlink` (`u64`),
 `archive_size` (`u64`), `archive_sha256` (64 lowercase hexadecimal bytes),
+`launcher_sha256` (64 lowercase hexadecimal bytes for the fixed
+`/private-tool-bin/adoption-alignc` path),
 `align_revision` (40 lowercase hexadecimal bytes), and `project_head` (40 lowercase hexadecimal
 bytes). The schema version is `1`; paths must remain below the private root and are checked against
 the recorded device/inode/type/mode/link-count/size/digest tuple before every `execve`. The
@@ -1559,7 +1566,7 @@ The semantic-to-byte and byte-to-semantic acceptance vector is named
 `adoption-compiler-handoff-v1-golden`; its exact UTF-8 bytes, including the final LF, are:
 
 ```text
-{"schema_version":1,"compiler_path":"/private-tool-bin/alignc","compiler_dev":7,"compiler_ino":11,"compiler_mode":365,"compiler_nlink":1,"compiler_size":123,"compiler_sha256":"0000000000000000000000000000000000000000000000000000000000000000","archive_path":"/private-tool-bin/libalign_runtime.a","archive_dev":7,"archive_ino":13,"archive_mode":292,"archive_nlink":1,"archive_size":456,"archive_sha256":"1111111111111111111111111111111111111111111111111111111111111111","align_revision":"2222222222222222222222222222222222222222","project_head":"3333333333333333333333333333333333333333"}
+{"schema_version":1,"compiler_path":"/private-tool-bin/alignc","compiler_dev":7,"compiler_ino":11,"compiler_mode":365,"compiler_nlink":1,"compiler_size":123,"compiler_sha256":"0000000000000000000000000000000000000000000000000000000000000000","archive_path":"/private-tool-bin/libalign_runtime.a","archive_dev":7,"archive_ino":13,"archive_mode":292,"archive_nlink":1,"archive_size":456,"archive_sha256":"1111111111111111111111111111111111111111111111111111111111111111","launcher_sha256":"2222222222222222222222222222222222222222222222222222222222222222","align_revision":"3333333333333333333333333333333333333333","project_head":"4444444444444444444444444444444444444444"}
 ```
 The golden test parses those bytes into the declared typed object and serializes that object back to
 the identical byte sequence; each individual field mutation has a separately checked rejection.
