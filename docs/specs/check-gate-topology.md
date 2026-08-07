@@ -474,6 +474,41 @@ no-later-change checks above must still pass with `HEAD` replaced by refreshed `
 isolated Git environment. The pending-record absence check must also pass in the refreshed `main`
 worktree.
 
+### 2.4.1 Post-review repair closure
+
+The implementation repair keeps the public Section 9 contract and closes the four missed owner
+boundaries as one consolidated repair, with no direct child-process implementation left outside the
+worker controller:
+
+1. `scripts/fresh-align-compiler` uses one bounded owned-child runner for tool probes, Git
+   identity commands, the build bwrap, and the aggregate bwrap. Every launch gets a new session,
+   binary bounded streams, captured PID start-time and process-group identity, the fixed rlimits,
+   and a retained descriptor-bound cgroup lease. Timeout, cancellation, reader failure, launch
+   failure, nonzero exit, and cleanup all use the same terminate, escalate, reap, join, and close
+   order. The tool and Git callers consume the runner's bounded `CompletedProcess` result and may
+   not call `subprocess.Popen` directly.
+2. The cgroup lease owns retained descriptors for both the delegated parent and random leaf. Every
+   read, write, membership check, kill, and removal is relative to those descriptors and rechecks
+   parent and leaf device/inode identity. A replaced or unprovable leaf is left in place and is a
+   cleanup failure. The image control self-test uses the same descriptor-relative sequence and
+   propagates every cleanup failure instead of ignoring it.
+3. Private-root cleanup holds each opened child descriptor through its final identity check and
+   descriptor-relative unlink/rmdir operation, and holds the root descriptor through the final
+   parent-entry check and root removal. A changed entry is left untouched and reports cleanup
+   failure; a successful cleanup closes the retained descriptors only after root absence is proved.
+4. `scripts/check-baseline-chain` is the executable owner of the Section 2.4 positive chain. The
+   `baseline-check` target invokes it after the schema verifier and failure smokes. It derives the
+   source and oracle IDs only from the finalized baseline, identifies exactly one finalization
+   commit as the direct oracle child with the exact two output paths, and validates raw object type,
+   exact bytes, strict ancestry, complete post-owner history, and pending-record absence using the
+   isolated Git environment. It has no caller-controlled ambient commit or repository input.
+
+The implementation sequence is therefore: closure-plan update, shared runner and descriptor
+ownership repair, baseline-chain gate and its focused regressions, a fresh identity-bound baseline
+refresh for every recorded input change, then the final exact-head review and hosted checks. A
+repair may not claim the affected gate until each owner and regression row below points to the
+implemented path and passing command.
+
 ### 2.5 Measurement interpretation
 
 The refreshed record uses the same `coding-v1` corpus, deterministic-reference provider,
@@ -649,6 +684,9 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Locked-input Make control plane | `Makefile` plus script self-test | target-specific override `/bin/sh` and `-eu -c`; no audit-data expansion; exact option-free direct invocation or canonical option-cleared aggregate child only | Hostile `SHELL` and `.SHELLFLAGS` assignments cannot replace the recipe shell. A synthetic unit failure propagates through both admitted invocations. Ignore/dry-run/question/touch/keep-going/silent modes, inherited `MAKEFLAGS`/`GNUMAKEFLAGS`, alternate makefiles, `--eval`, assignments, and extra goals are classified as unsupported diagnostics rather than valid gate evidence. |
 | Self-test child output and lifecycle | `scripts/check-gate-topology` | own a new-session child group; concurrently drain binary pipes in fixed chunks; retain at most 4,096 bytes per stream; enforce the deadline; terminate, kill, reap, join, and close in order; reject overflow or non-UTF-8 | A simultaneous two-pipe overflow child sets both overflow bits with exactly 4,096 retained bytes per stream; after a bounded readiness handshake, a hanging child plus descendant is terminated without a live process-group member or pipe reader; missing readiness plus synthetic launch, nonzero, invalid-UTF-8, stderr, and wrong-stdout cases reject; the real Make child returns exact PASS stdout and empty stderr within 10 seconds. |
 | Self-test child OS-operation faults | `scripts/check-gate-topology` | put every operation after successful `Popen` inside the cleanup guard and track only successfully started readers | Injected first-reader start failure enters cleanup, reaps the direct child, closes both pipes, and leaves no process-group member. DEFERRED: deterministic injection of pipe-read, wait, signal, thread-join, and pipe-close failures requires a substitutable process-operation seam that this repository does not otherwise need. The implementation review audits the remaining post-launch exception paths against the specified cleanup order; timeout plus descendant and launch-failure regressions cover the executable lifecycle. A separate child-runner hardening slice must add the seam before claiming the remaining fault-injection coverage. |
+| Worker tool/Git child ownership | `scripts/fresh-align-compiler` | route `run_tool` and `git` through the same descriptor-bound owned-child runner as build and aggregate; no direct `Popen` remains in probe or source identity paths | Unit smoke starts a probe and a Git child that create a session-breaking descendant, exceed each stream cap, and time out; the runner records start/group identity, terminates the group and cgroup, reaps descendants, closes pipes, and leaves no owned member. Static inspection rejects a direct probe/source `Popen` call outside the runner. |
+| Cgroup leaf ownership | `scripts/fresh-align-compiler` and `image/fresh/control/fresh_image_control.py` | retain parent/leaf descriptors and snapshots; use descriptor-relative cgroup controls, identity checks, and non-ignored cleanup in both worker and image self-test | The worker lifecycle smoke exercises leaf replacement, nonempty membership, PID reuse, and failed removal; the image control smoke exercises the same replacement and cleanup-failure cases and requires the platform error. |
+| Private-root entry cleanup ownership | `scripts/fresh-align-compiler` | retain opened child/root descriptors through final identity validation and descriptor-relative removal; never close the identity witness before removal | Unit smoke injects replacement before and during child/root removal, verifies the replacement marker and moved original remain unchanged, and requires cleanup failure with all retained descriptors closed. |
 | Direct hosted success | `Makefile` | one explicit `-j1` child Make over the ordered hosted goals | Run with the pinned compiler; the offline Git 2.45 locked-input unit and all existing hosted-compatible focused smokes pass. |
 | Direct hosted failure | owning focused target | Make propagates nonzero | Invoke the aggregate with an invalid `ALIGNC`; the graph fails nonzero without fallback. |
 | Direct capable success | `Makefile` | one explicit `-j1` child Make over hosted then capable-only goals | Run `make ci` on a capable Linux host; the locked-input unit, coding and baseline gates, and C1-C5 focused gates pass. |
@@ -666,6 +704,7 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Immutable oracle | oracle commit | exact canonical projection of the pending record | Independently regenerate the ordered, indented UTF-8 projection with its final LF from the finalized baseline and compare exact bytes; the oracle commit contains only that projection; the existing direct timing-mutation regression proves whole-projection equality is enforced; final-tree bytes equal the oracle commit. |
 | Canonical finalization | finalization commit and final reviewed/merged worktree | finalizer binds full oracle commit and writes digest; the pending record is removed before the finalization commit and remains absent | `make baseline-check` passes; an explicit path check rejects a pending file at the reviewed head and refreshed `main`; canonical digest matches. |
 | Baseline commit chain | finalized baseline, source, oracle, finalization, final reviewed head, and merge result | one fail-fast Bash process validates persisted source/oracle fields, full lowercase 40-hex raw commit objects for all three identities, and strict source → oracle → finalization → head/main ancestry in an isolated Git environment; merge method is `merge` | Exact identity, width, raw-object type, ancestry, and Git-command status checks pass without replacement objects or ambient Git configuration; the three annotated-tag regressions reach the type guard and require their exact diagnostics; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
+| Executable baseline chain gate | `scripts/check-baseline-chain` plus `Makefile` | `baseline-check` invokes the complete isolated chain checker after schema validation; source/oracle come from the canonical record and finalization is the unique direct oracle child with exact output paths | The target passes on the recorded tuple and fails on source/oracle/finalization identity, raw-object, ancestry, exact-byte, post-owner, pending-file, and Git-command failure injections. |
 | Post-record input change | author/reviewer | re-record from a new clean source commit | The fail-fast block derives the complete path list from the finalized baseline artifact manifest and uses full ancestry-path history to reject any post-source change, including both linear modify-then-restore and TREESAME merge-hidden regressions for a recorded artifact other than `Makefile`; pre-owner side history does not create a false rejection. |
 | Post-record output change | author/reviewer | regenerate through the owning projection/finalizer before finalization; restart the full sequence afterward | Final-tree oracle, baseline, and digest bytes equal their named owner commits; full ancestry-path history shows no later change. Separate TREESAME merge-hidden regressions cover the oracle, canonical baseline, and digest. |
 | Measurement interpretation | pull request evidence | fixed deterministic-reference provider identity and exactly two samples on the recorded environment; each contains the single fixed task and passing summary | An explicit structural assertion requires the provider/model/prompt and both `python-inclusive-range` results and summaries to match and PASS; prior and refreshed timings are reported without a performance claim. |
