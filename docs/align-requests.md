@@ -1369,24 +1369,31 @@ sets `ALIGNC=/tools/fresh-alignc` is not fresh evidence. The focused target rema
 `HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and `SERIAL_CHECK_AGGREGATES`; the final
 fresh `make --no-print-directory ci` is a separate required gate.
 
-The ordinary profile has an image-owned fixed public entrypoint at
-`/usr/local/libexec/align-llm/request6-adoption-entrypoint`. The installed profile records its
-mode-`0755` bytes, interpreter/loader closure, and SHA-256 in the image manifest and runner-image
-attestation; a repository checkout cannot replace or supply this entrypoint. It accepts no positional
-arguments and is the only host command that can claim ordinary adoption evidence. The repository
+The ordinary profile's evidence-bearing public request enters through the already trusted image-owned
+`/usr/local/libexec/align-llm/fresh-supervise`. FRESH-IMAGE-REQUEST6 adds the exact
+`--mode ordinary-adoption` request to that supervisor. Before dispatch, `fresh-supervise` authenticates
+the runner-image envelope and fixed schema-2 manifest, opens the Request 6 dispatcher
+`/usr/local/libexec/align-llm/request6-adoption-entrypoint` through a retained no-follow descriptor,
+checks its manifest digest and complete interpreter/loader closure, and invokes that descriptor with
+`execveat(AT_EMPTY_PATH)` at fixed FD `14`. Its fixed child argv is
+`--mode ordinary-adoption --project-root-fd 4 --image-attestation-fd 6 --manifest-fd 8`, with
+`close_fds=True, pass_fds=(4, 6, 8)` after the retained dispatcher descriptor is consumed. A
+repository checkout cannot replace the first executable
+or the retained dispatcher bytes; invoking the dispatcher pathname directly is an untrusted developer
+check and cannot claim ordinary evidence. The dispatcher accepts no positional arguments. The repository
 `scripts/run-json-scan-row-ownership-adoption` file is source data, not a public executable: the
-image-owned entrypoint opens it descriptor-relatively, authenticates its bounded bytes and the current
-project HEAD/index/raw snapshot, and passes a sealed worker snapshot to the namespace supervisor only
-after those identities are bound into the signed `ordinary-adoption/v1` capsule. The capsule binds the
+authenticated dispatcher opens it descriptor-relatively, authenticates its bounded bytes and the current
+project HEAD/index/raw snapshot, and seals a worker snapshot only after those identities are bound into
+the signed `ordinary-adoption/v1` capsule. The capsule binds the
 request/API, project HEAD and object format, project index and raw-tree digests, canonical `ALIGN_REPO`
 relative path and Align identity, worker relative path and SHA-256, image digest, manifest digest, and
-entrypoint digest. The supervisor verifies the capsule and worker snapshot before copying them into the
-private source tree; no later child reopens the host pathname. The Make target remains an internal worker
+entrypoint digest. The worker verifies the capsule and worker snapshot before staging the private source
+tree; no later child reopens the host pathname. The Make target remains an internal worker
 target for the authenticated fresh vector. The implementation also adds the private Make target
 `align-build-only`: it has no prerequisites, has the same authenticated `$(CARGO)` build recipe as
 `align-build`, and is invocable by the ordinary wrapper's fixed second vector only. The existing
 `align-build: align-revision` prerequisite remains the developer-facing Make contract; the wrapper does
-not invoke that target after its separate revision child. The image-owned entrypoint validates its
+not invoke that target after its separate revision child. The authenticated dispatcher validates its
 arguments and inherited Make-control variables before it starts the namespace launcher; a non-empty
 `MAKEFLAGS`, `GNUMAKEFLAGS`, or `MAKEOVERRIDES`, an alternate goal, an alternate makefile, or any other
 argument is rejected in the input phase, not consumed by GNU Make. Its success stdout is exactly
@@ -1418,19 +1425,22 @@ cache manifest. Ordinary host evidence is valid only on that declared installed 
 arbitrary local machine may run the smoke as an untrusted developer check but may not claim the
 ordinary adoption result until the fixed manifest and attestation are present.
 
-The image-owned entrypoint opens the current project root from its actual cwd and the caller-selected
+The authenticated dispatcher opens the current project root from its actual cwd and the caller-selected
 `ALIGN_REPO` through retained `O_DIRECTORY|O_NOFOLLOW` descriptors. Before it starts bwrap or the
 namespace supervisor, it proves the project HEAD, index, raw-tree digest, clean-tree exception, and
 Align identity, then opens `scripts/run-json-scan-row-ownership-adoption` as a bounded single-link
 regular source file. It reads and hashes that file through the retained descriptor, rechecks its
 device, inode, type, link count, mode, and size, and seals the exact bytes into a read-only memfd.
-The image-owned entrypoint signs the `ordinary-adoption/v1` capsule only after all those checks and
+The authenticated dispatcher signs the `ordinary-adoption/v1` capsule only after all those checks and
 binds the capsule and worker snapshot to the fixed manifest and image-attestation digests. It passes
-the sealed capsule on FD `10` and the sealed worker bytes on FD `11` to the authenticated namespace
-supervisor; the supervisor re-verifies both seals, the signature, the project/sibling identities, and
-the worker digest before source materialization. A worker replacement, same-size edit, dirty-tree
-swap, or later pathname restore therefore fails or executes only the already-authenticated bytes; the
-host repository script never runs before this boundary.
+the sealed capsule on FD `12` and the sealed worker bytes on FD `13` to the fixed repository-worker
+vector `/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12`. The worker
+executes only from that sealed descriptor, owns the bwrap/cgroup/staging setup, and passes the same
+sealed FDs to `adoption-namespace`; the namespace supervisor re-verifies both seals, the signature,
+the project/sibling identities, and the worker digest before source materialization but never executes
+the worker a second time. A worker replacement, same-size edit, dirty-tree swap, or later pathname
+restore therefore fails or executes only the already-authenticated bytes; the host repository script
+never runs before this boundary.
 
 The `ordinary-adoption/v1` capsule reuses the Section 9 DSSE envelope and pinned image-deployment
 key policy with predicate type `https://align-llm.dev/attestations/ordinary-adoption/v1`. Its canonical
@@ -1442,6 +1452,46 @@ SHA-1 head grammar, and no unknown, duplicate, NUL-bearing, or out-of-order fiel
 capsule signer is the installed profile's invoking-UID seed and its verifier/key policy are image-owned
 deployment inputs; callers cannot provide a capsule, signer, digest, or alternate predicate through the
 environment or command line.
+
+The capsule predicate uses the Section 9 canonical JSON rules: UTF-8, the listed field order, two-space
+indentation, one final LF, no duplicate or unknown fields, and the complete JSON escape table. `api` is
+exactly `ordinary-adoption/v1`; `request` is exactly `json-scan-row-ownership-adoption`;
+`project_object_format` and `align_object_format` are exactly `sha1`; both heads are exactly 40 lowercase
+hexadecimal bytes; `project_index_sha256`, `project_raw_tree_sha256`, `worker_sha256`,
+`manifest_sha256`, and `entrypoint_sha256` are exactly 64 lowercase hexadecimal bytes;
+`image_digest` is `sha256:` followed by 64 lowercase hexadecimal bytes; `worker_size` is an unsigned
+64-bit integer no larger than `fresh_worker_max_bytes = 4194304`; `align_repo_relative` is a non-empty
+relative path with no NUL, empty component, or absolute prefix; and `worker_relative` is exactly
+`scripts/run-json-scan-row-ownership-adoption`. Strings reject non-UTF-8, NUL, control characters,
+overlong values, and unpaired surrogates. The DSSE envelope uses the exact Section 9 `payloadType`,
+unpadded base64url, PAE, key-id, and signature grammar.
+
+The checked-in `ordinary-adoption-v1-wire-golden` predicate uses deterministic zero-filled digests,
+project head `1111111111111111111111111111111111111111`, and Align head
+`2222222222222222222222222222222222222222`. Its canonical predicate SHA-256 is
+`26180541d90b07a3e12ac05396fcd503715149a689a1b9fc9e01843ae3cdb415`; the 55-byte predicate type
+DSSE pre-authentication encoding is 1,024 bytes and has SHA-256
+`0a1fc1d2213d80954baf8a8f7499711c926bd0638b314c63c81836d9a8a5dae8`. The golden predicate bytes are:
+
+```json
+{
+  "api": "ordinary-adoption/v1",
+  "request": "json-scan-row-ownership-adoption",
+  "project_head": "1111111111111111111111111111111111111111",
+  "project_object_format": "sha1",
+  "project_index_sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "project_raw_tree_sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+  "align_head": "2222222222222222222222222222222222222222",
+  "align_object_format": "sha1",
+  "align_repo_relative": "../align",
+  "worker_relative": "scripts/run-json-scan-row-ownership-adoption",
+  "worker_size": 123,
+  "worker_sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+  "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+  "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000005",
+  "entrypoint_sha256": "0000000000000000000000000000000000000000000000000000000000000006"
+}
+```
 
 The installed manifest's runtime-binding list has two additional fixed ordinary-adoption records: the
 image-owned executable at target `/usr/local/libexec/align-llm/request6-adoption-entrypoint` and the
@@ -1468,29 +1518,33 @@ precede the manifest tool inventory, and `/usr/bin` and `/bin` contain only the 
 bindings. The wrapper creates unique mode-`0700`
 `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
 The fixed manifest also authenticates the ordinary namespace launcher (`bwrap` or its equivalent),
-the `/usr/bin/adoption-namespace` runtime binding, their complete loader/library closure, and the
-staged runtime files containing `/usr/bin/env`, `/bin/sh`, and the required loader/library roots.
+the Request 6 dispatcher and `/usr/bin/adoption-namespace` runtime bindings, their complete
+loader/library closures, and the staged runtime files containing `/usr/bin/env`, `/bin/sh`, and the
+required loader/library roots.
 The wrapper never invokes an ambient host `bwrap`, `make`, `git`, or shell. A missing user/mount
 namespace capability or any incomplete launcher/runtime closure is a `toolchain` failure.
 The adoption implementation changes the build recipe to invoke `$(CARGO)` with the Makefile default
 `CARGO ?= cargo`; both `align-build` and the private `align-build-only` target use that recipe. The
 wrapper always supplies the authenticated absolute Cargo path, so the ordinary build never falls
 back to a bare or rustup-selected executable. Before the first child, the namespace supervisor
-copies every ordered manifest tool record from retained descriptors into the namespace-owned
-`/private-tool-inventory`, verifies each copy against its record, unmounts the setup view, and
-bind-mounts that directory read-only at `/tools`. The inventory is the only resolution source for
+copies every ordered manifest tool record from retained descriptors into the setup-only
+`/private-tool-inventory`, verifies each copy against its record, unmounts the setup view, creates a
+read-only `/tools` bind clone, and unmounts the original `/private-tool-inventory` tmpfs before a
+child starts. It proves that `/private-tool-inventory` is only the empty underlying directory and
+that no writable mount or alias of the inventory remains; `/tools` is the only resolution source for
 bare `git`, `tr`, `bash`, `python3`, and other tool names; the complete manifest tool inventory is
 therefore in scope even when a particular vector does not use every record. The compiler/archive
 handoff remains separate in `/private-tool-bin` and is not mixed with the inventory mount.
-The executable-resolution ledger is closed: `/usr/local/libexec/align-llm/request6-adoption-entrypoint`,
+The executable-resolution ledger is closed: `/usr/local/libexec/align-llm/fresh-supervise`,
+`/usr/local/libexec/align-llm/request6-adoption-entrypoint`, `/usr/bin/python3`,
 `/usr/bin/adoption-namespace`, `/usr/bin/env`, and `/bin/sh` are the named direct runtime bindings;
 every bare tool name resolves to `/tools/<name>`; the fixed absolute `/private-rust`, `/private-llvm`,
 `/private-native`, and `/private-tool-bin` paths are the other executable roots. Repository scripts
 are never executable roots: `align-revision` invokes the script data as the exact vector
 `/tools/bash /private-project/scripts/check-align-revision`, the focused target invokes the exact vector
 `/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke`, and the
-image-owned entrypoint invokes the sealed worker bytes as
-`/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption`. In each case the
+authenticated dispatcher invokes the sealed worker bytes as the exact vector
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12`. In each case the
 `/private-project/scripts/...` value is an argument to an authenticated interpreter, is copied from
 the reviewed source snapshot, and has no `execve` or shebang resolution of its own. A source/argv scan
 and child-exec smoke must reject every executable outside these classes before a Make child starts.
@@ -1531,8 +1585,9 @@ namespace starts with an empty root, the authenticated runtime bindings at their
 `/lib`, `/lib64`, and `/usr` targets, and namespace-owned sealed read-only copies of the project,
 Align, Rust, LLVM, native, Cargo-cache, launcher-source, and ordered tool-inventory inputs; it has
 the namespace-owned sealed read-only `/tools` inventory plus writable tmpfs mounts for
-`/private-cargo-home`, `/private-cargo-target`, `/private-compiler-cache`, `/private-tool-inventory`,
-`/private-tool-bin`, and `/tmp`, each with a fixed byte and inode cap. It has a private `/proc`,
+`/private-cargo-home`, `/private-cargo-target`, `/private-compiler-cache`, `/private-tool-bin`, and
+`/tmp`, plus a setup-only `/private-tool-inventory` tmpfs that is unmounted before any child, each
+with a fixed byte and inode cap. It has a private `/proc`,
 minimal `/dev`, no host root, and no original host pathname.
 The focused mode additionally gives the trusted namespace setup helper a namespace-owned tmpfs at
 `/private-tool-bin`; the trusted helper copies the compiler, archive, launcher, and final descriptor
@@ -1544,15 +1599,15 @@ with the fixed shape; every read-only source is passed through a retained descri
 from a host pathname:
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-fd 10 --worker-fd 11 ...
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-fd 12 --worker-fd 13 ...
 ```
 
 The fixed inherited descriptor map is:
 
 | FD | Retained source owner and identity | Namespace target |
 | --- | --- | --- |
-| 10 | sealed `ordinary-adoption/v1` capsule | inherited by `adoption-namespace --capsule-fd 10` |
-| 11 | sealed repository worker snapshot | inherited by `adoption-namespace --worker-fd 11` |
+| 12 | sealed `ordinary-adoption/v1` capsule | inherited by `adoption-namespace --capsule-fd 12` |
+| 13 | sealed repository worker snapshot | inherited by `adoption-namespace --worker-fd 13` |
 | 20 | private project snapshot | `/input-project` |
 | 21 | private Align Git view | `/input-align` |
 | 22 | complete Rust prefix | `/input-rust` |
@@ -1572,21 +1627,24 @@ manifest order, and `<ordered-tool-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> /input-tools/<name>` triples for those retained no-follow descriptors. The
 wrapper admits the descriptor table before launch, checks every source identity and complete digest
 after staging, launches bwrap with
-`close_fds=True, pass_fds=(10, 11) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`, and closes its parent copies only after the child is released. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The ellipsis is replaced only by the fixed namespace-helper arguments and one of the three child
+`close_fds=True, pass_fds=(12, 13) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`, and closes its parent copies only after the child is released. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The ellipsis is replaced only by the fixed namespace-helper arguments and one of the three child
 vectors below; no repository or caller argument is appended. The namespace helper remounts each
 writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
 entries between children. bwrap consumes the retained source descriptors before executing
-`/usr/bin/adoption-namespace`; FDs 10 and 11 remain sealed inherited inputs and are accepted only by
-the fixed `--capsule-fd 10 --worker-fd 11` helper arguments, so a same-UID rename or replacement of
+`/usr/bin/adoption-namespace`; FDs 12 and 13 remain sealed inherited inputs and are accepted only by
+the fixed `--capsule-fd 12 --worker-fd 13` helper arguments, so a same-UID rename or replacement of
 any staging pathname cannot change a mounted source. The runtime bindings are image-owned root-owned immutable inputs and remain direct
 FD binds. Before the first Make child, the supervisor re-snapshots each `/input-*` tree against the
 wrapper-authenticated source digest, copies it descriptor-relatively into the matching
 namespace-owned `/private-*` directory, verifies source and destination pre/post trees, copies the
-ordered `/input-tools/<name>` files into `/private-tool-inventory`, verifies each destination against
-the manifest, unmounts every `/input-*` bind, bind-mounts/remounts that inventory read-only at
-`/tools`, and then bind-mounts/remounts every other copied `/private-*` tree read-only. It verifies
-that no input mount or host pathname remains in the namespace. A same-UID host mutation after this
-seal cannot affect a child. The
+ordered `/input-tools/<name>` files into the setup-only `/private-tool-inventory`, verifies each
+destination against the manifest, unmounts every `/input-*` bind, creates the read-only `/tools` bind
+clone, remounts that clone read-only, and then unmounts the original `/private-tool-inventory` tmpfs.
+It proves that `/private-tool-inventory` is only the empty underlying directory and that no writable
+mount or alias of the inventory remains before a child starts; `/tools` is the sole visible inventory
+path. It then bind-mounts/remounts every other copied `/private-*` tree read-only. It verifies that no
+input mount or host pathname remains in the namespace. A same-UID host mutation after this seal cannot
+affect a child. The
 supervisor starts with UID/GID 0 and only `CAP_SYS_ADMIN` retained by
 the explicit bwrap vector; each Make child drops all capabilities and sets `no_new_privs` before its
 `execve`, and the supervisor is the only process allowed to copy the post-build compiler or remount
@@ -1595,10 +1653,11 @@ the explicit bwrap vector; each Make child drops all capabilities and sets `no_n
 handoff setup is `build`, before the focused child or compiler marker.
 
 The namespace helper is one trusted supervisor for this invocation. It first verifies the sealed
-`ordinary-adoption/v1` capsule on FD `10` and the sealed worker snapshot on FD `11`, copies the worker
-bytes into the private source tree, and proves that the copied digest equals the capsule before any
-repository-controlled interpreter or Make child starts. It receives the three child vectors in the
-fixed order below, starts each as a separate session with its in-namespace bounded runner, and
+`ordinary-adoption/v1` capsule on FD `12` and the sealed worker snapshot on FD `13`, proves that the
+worker digest equals the capsule, and verifies that the sealed worker was the exact descriptor used by
+the dispatcher before any repository-controlled Make child starts; it does not execute or copy the
+worker a second time. It receives the three child vectors in the fixed order below, starts each as a
+separate session with its in-namespace bounded runner, and
 performs the compiler bundle handoff only after `align-build-only` succeeds and before the focused
 vector.
 In focused mode the handoff arguments are, in this fixed order, the namespace-owned source paths
@@ -1619,11 +1678,13 @@ The caller starts the wrapper from a cleared environment; this is the exact ordi
 ```text
 env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
   ALIGN_REPO=<absolute-clean-align-worktree> \
-  /usr/local/libexec/align-llm/request6-adoption-entrypoint
+  /usr/local/libexec/align-llm/fresh-supervise --mode ordinary-adoption
 ```
 
-The command must run with the project checkout as its cwd. The fixed image entrypoint, rather than
-the repository path shown in the capsule, is the first executable on this ordinary path; invoking
+The command must run with the project checkout as its cwd. `fresh-supervise` is the first executable
+and the only public path that can claim ordinary adoption evidence; it verifies and dispatches the
+Request 6 child by retained FD `14`. Invoking either
+`/usr/local/libexec/align-llm/request6-adoption-entrypoint` or
 `./scripts/run-json-scan-row-ownership-adoption` directly is an untrusted developer check and cannot
 emit ordinary adoption evidence.
 
@@ -1667,8 +1728,9 @@ The Makefile implementation uses project scripts only as interpreter data argume
 `align-revision` recipe must execute `/tools/bash /private-project/scripts/check-align-revision`, and
 the focused target recipe must execute
 `/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke`. The public worker
-uses the same rule through `/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption`
-after the image-owned entrypoint has authenticated and sealed its bytes. The source paths are read-only
+is the sealed FD-13 data argument to the dispatcher vector
+`/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12`; it is not a Make
+script path. The source paths are read-only
 arguments inside the reviewed `/private-project` snapshot; a shebang, executable mode, PATH lookup, or
 direct `execve` of a project-script path is forbidden. The child-argv and exec-source smoke must record
 the interpreter and data argument separately and reject any project-script path in an executable slot.
