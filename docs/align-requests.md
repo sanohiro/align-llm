@@ -1465,13 +1465,15 @@ namespace-owned writable tmpfs mounts for `/private-cargo-home`, `/private-cargo
 `/private-compiler-cache`, `/private-tool-bin`, and `/tmp`, each with a fixed byte and inode cap. It
 has a private `/proc`, minimal `/dev`, no host root, and no original host pathname.
 The focused mode additionally gives the trusted namespace setup helper a namespace-owned tmpfs at
-`/private-tool-bin`; the helper copies the compiler, archive, launcher, and final descriptor into
-that tmpfs, remounts it read-only, drops every capability, and only then starts Make. The final
+`/private-tool-bin`; the trusted helper copies the compiler, archive, launcher, and final descriptor
+into that tmpfs, remounts it read-only before the focused child, and launches each Make child through
+a capability-dropping child boundary. The supervisor retains `CAP_SYS_ADMIN` only for its own
+descriptor-relative tmpfs setup/remount operations and never interprets repository code. The final
 bundle has no host pathname or same-UID alias. The wrapper uses the attested namespace launcher
 with the fixed shape
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 8589934592 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-binding-argv> --ro-bind <private-project> /private-project --ro-bind <private-align> /private-align --ro-bind <private-rust> /private-rust --ro-bind <private-llvm> /private-llvm --ro-bind <private-native> /private-native --ro-bind <private-cargo-cache> /private-cargo-cache --ro-bind <private-tool-input> /private-tool-input --ro-bind <private-launcher-source> /private-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 8589934592 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-binding-argv> --ro-bind <private-project> /private-project --ro-bind <private-align> /private-align --ro-bind <private-rust> /private-rust --ro-bind <private-llvm> /private-llvm --ro-bind <private-native> /private-native --ro-bind <private-cargo-cache> /private-cargo-cache --ro-bind <private-launcher-source> /private-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
 ```
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
@@ -1483,24 +1485,26 @@ counts bytes and entries between children. The wrapper verifies
 every read-only mount source before the namespace starts, and the trusted helper verifies the
 namespace-owned `/private-tool-bin` mount is read-only before opening the handoff files. Thus a
 focused child or another same-UID host process cannot reach or modify the final compiler bundle.
-The helper drops all capabilities and sets `no_new_privs` before Make starts; a failed namespace
-setup before the first child is `toolchain`, while a failed post-build compiler-input copy,
-namespace bundle, descriptor, remount, or handoff setup is `build`, before the focused child or
-compiler marker.
+Each Make child drops all capabilities and sets `no_new_privs` before its `execve`; the supervisor
+retains its setup capability between children and is the only process allowed to copy the post-build
+compiler or remount `/private-tool-bin`. A failed namespace setup before the first child is
+`toolchain`, while a failed post-build compiler copy, namespace bundle, descriptor, remount, or
+handoff setup is `build`, before the focused child or compiler marker.
 
 The namespace helper is one trusted supervisor for this invocation. It receives the three child
 vectors in the fixed order below, starts each as a separate session with the bounded runner, and
 performs the compiler bundle handoff only after `align-build` succeeds and before the focused vector.
-In focused mode the handoff arguments are, in this fixed order, the read-only source paths
-`/private-tool-input/alignc`, `/private-tool-input/libalign_runtime.a`, and
+In focused mode the handoff arguments are, in this fixed order, the namespace-owned source paths
+`/private-cargo-target/release/alignc`, `/private-cargo-target/release/libalign_runtime.a`, and
 `/private-launcher-source/adoption-alignc`, the expected compiler, archive, and launcher SHA-256
-values, the Align revision, the project HEAD, and then `--` followed by the focused Make vector. It copies the
-source bytes into the namespace-owned `/private-tool-bin` tmpfs with create-exclusive files, hashes
-and stats those final destination files, copies and verifies the launcher before writing the schema-1
-descriptor, verifies the descriptor bytes, remounts the tmpfs read-only, and drops all capabilities
-before `execve`-ing the focused Make vector. The first two vectors pass `--no-compiler-handoff` in
-the same fixed helper position. No repository Makefile or fixture code runs before this setup
-sequence completes, and no fourth vector is accepted.
+values, the Align revision, the project HEAD, and then `--` followed by the focused Make vector. The
+supervisor opens and verifies the two newly built files after `align-build`, copies their bytes into
+the namespace-owned `/private-tool-bin` tmpfs with create-exclusive files, copies and verifies the
+launcher before writing the schema-1 descriptor, stats/hashes every final destination, verifies the
+descriptor bytes, remounts the tmpfs read-only, and drops all capabilities in the focused child
+before `execve`-ing its Make vector. The first two vectors pass `--no-compiler-handoff` in the same
+fixed helper position. No repository Makefile or fixture code runs before this setup sequence
+completes, and no fourth vector is accepted.
 
 The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
 
@@ -1554,16 +1558,16 @@ forwarders are identity records, not executed aliases. These are explicit staged
 unlisted `c++` name. Every focused child
 receives `PATH=/private-native/bin:/private-rust/bin:/private-llvm/bin:/usr/bin:/bin`, with the
 staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
-must never reach ambient `/usr/bin/cc`. After the build, the wrapper verifies the new `release/alignc`
-and adjacent runtime archive by no-follow type, mode, link count, revision, version, and complete
-bytes, then create-exclusively copies the verified compiler, archive, and fixed
-`scripts/adoption-alignc` launcher into the separate read-only `/private-tool-input` source using
-retained no-follow descriptors. It hashes and records those source bytes, but does not write the
-compiler handoff descriptor on the host. The trusted namespace helper materializes the final bundle
-inside its namespace-owned `/private-tool-bin` tmpfs, stats and hashes those final destination
-files, and only then writes a canonical schema-1, mode-`0444` compiler handoff descriptor containing
-the exact compiler/archive paths, device/inode, mode, link-count, size, SHA-256, Align revision, and
-project HEAD. The descriptor paths are fixed namespace paths `/private-tool-bin/alignc` and
+must never reach ambient `/usr/bin/cc`. After `align-build`, the namespace supervisor itself opens
+the newly built `/private-cargo-target/release/alignc` and adjacent runtime archive with retained
+no-follow descriptors, verifies type, mode, link count, revision, version, and complete bytes, and
+copies them create-exclusively into the namespace-owned `/private-tool-bin` tmpfs. It copies the
+authenticated fixed `scripts/adoption-alignc` source from `/private-launcher-source`, verifies its
+expected SHA-256, stats and hashes every final destination, and only then writes the canonical
+schema-1, mode-`0444` compiler handoff descriptor containing the exact compiler/archive paths,
+device/inode, mode, link-count, size, SHA-256, Align revision, and project HEAD. The outer wrapper
+never opens or transfers a compiler from the namespace target and never writes the handoff
+descriptor. The descriptor paths are fixed namespace paths `/private-tool-bin/alignc` and
 `/private-tool-bin/libalign_runtime.a`, never host staging paths or caller input. The fixed
 `scripts/adoption-alignc` launcher is copied into the same final bundle before the descriptor is
 published, and the helper exposes that bundle only through the read-only `/private-tool-bin` mount.
@@ -1624,9 +1628,11 @@ cleanup emits `json-scan adoption: ERROR cleanup\n` and leaves the unprovable pa
 
 The ordinary namespace has enforceable resource bounds, not only post-run accounting. The fixed
 installed profile provisions the delegated cgroup-v2 parent
-`/sys/fs/cgroup/align-llm-adoption/<uid>`; the namespace supervisor creates one unique leaf,
-requires an empty admission, sets `pids.max=512` and `memory.max=17179869184`, and keeps that leaf
-until every child and cleanup step has completed. Before the bwrap boundary it applies hard and soft
+`/sys/fs/cgroup/align-llm-fresh/<uid>` already used by Section 9; the namespace supervisor creates
+one unique leaf, requires an empty admission, sets `pids.max=512`, and keeps that leaf until every
+child and cleanup step has completed. Memory cgroup enforcement is `N/A`: the installed profile
+delegates only the pids controller, so the ordinary contract does not claim a `memory.max` boundary.
+Before the bwrap boundary it applies hard and soft
 `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and `RLIMIT_FSIZE=536870912`; the child-side probe verifies
 the values and cgroup membership before admitting the first vector. The namespace-owned writable
 tmpfs bounds are fixed: root `68719476736` bytes, Cargo home `8589934592`, Cargo target
