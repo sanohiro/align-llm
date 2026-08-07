@@ -907,6 +907,115 @@ def published_elf_cases(module) -> None:
         raise AssertionError("non-64-bit ELF output was accepted")
 
 
+def derived_path_alias_cases(module) -> None:
+    shared_tree = OrderedDict(
+        (
+            ("kind", "dir"),
+            ("sha256", "1" * 64),
+            (
+                "entries",
+                [
+                    OrderedDict((("name", "libsame.so.1"), ("kind", "file"))),
+                    OrderedDict((("name", "libsame.a"), ("kind", "file"))),
+                    OrderedDict((("name", "same.pc"), ("kind", "file"))),
+                ],
+            ),
+        )
+    )
+    aliases = [
+        (Path("/runtime/first"), "/lib/first", "dir", shared_tree),
+        (Path("/runtime/second"), "/lib/second", "dir", shared_tree),
+    ]
+    require(
+        module.derived_paths(aliases)
+        == ("/lib/first", "/lib/first", "/lib/first"),
+        "identical runtime directory aliases were not collapsed",
+    )
+    distinct_tree = OrderedDict(shared_tree)
+    distinct_tree["sha256"] = "2" * 64
+    distinct_tree["entries"] = list(shared_tree["entries"]) + [
+        OrderedDict((("name", "libdifferent.so.1"), ("kind", "file")))
+    ]
+    distinct = aliases[:1] + [
+        (Path("/runtime/third"), "/lib/third", "dir", distinct_tree)
+    ]
+    require(
+        module.derived_paths(distinct)
+        == (
+            "/lib/first:/lib/third",
+            "/lib/first:/lib/third",
+            "/lib/first:/lib/third",
+        ),
+        "distinct runtime directory trees were collapsed",
+    )
+
+    executable = Path("/bin/true")
+    raw = executable.read_bytes()
+    parsed = module.parse_elf(raw)
+    ldd = subprocess.run(
+        ["ldd", str(executable)], check=True, capture_output=True, text=True
+    )
+    target_by_name = {}
+    for line in ldd.stdout.splitlines():
+        if "=>" in line:
+            candidate = line.split("=>", 1)[1].strip().split(" ", 1)[0]
+        else:
+            candidate = line.strip().split(" ", 1)[0]
+        if candidate.startswith("/"):
+            target_by_name.setdefault(Path(candidate).name, Path(candidate).resolve())
+    groups = {}
+    for name in parsed.needed:
+        source = target_by_name.get(name)
+        require(source is not None, f"ELF alias fixture lost {name}")
+        groups.setdefault(source.parent, []).append(name)
+    alias_runtime = [
+        (
+            Path(parsed.interpreter).resolve(),
+            parsed.interpreter,
+            "file",
+            {"kind": "file"},
+        )
+    ]
+    alias_nodes = []
+    for index, (source_parent, names) in enumerate(sorted(groups.items())):
+        node = OrderedDict(
+            (
+                ("kind", "dir"),
+                ("sha256", f"{index + 1:064x}"),
+                (
+                    "entries",
+                    [
+                        OrderedDict((("name", name), ("kind", "file")))
+                        for name in sorted(names)
+                    ],
+                ),
+            )
+        )
+        alias_nodes.append((source_parent, Path("/alias") / str(index), node))
+        alias_runtime.append((source_parent, str(source_parent), "dir", node))
+        alias_runtime.append((source_parent, str(Path("/alias") / str(index)), "dir", node))
+    module.validate_published_elf(raw, alias_runtime)
+
+    distinct_runtime = list(alias_runtime)
+    for index, (_, _, node) in enumerate(alias_nodes):
+        distinct = OrderedDict(node)
+        distinct["sha256"] = f"{index + 17:064x}"
+        distinct["entries"] = list(node["entries"]) + [
+            OrderedDict((("name", "libdifferent.so.1"), ("kind", "file")))
+        ]
+        alias_target = str(Path("/alias") / str(index))
+        for position, binding in enumerate(distinct_runtime):
+            if binding[1] == alias_target:
+                distinct_runtime[position] = (binding[0], binding[1], binding[2], distinct)
+                break
+    try:
+        module.validate_published_elf(raw, distinct_runtime)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("byte-distinct runtime aliases were accepted")
+
+
 def source_identity_cases(module, temporary: Path) -> None:
     git_path = Path("/usr/bin/git")
     require(git_path.is_file(), "Git fixture executable is unavailable")
@@ -1108,6 +1217,7 @@ def main() -> int:
     canonical_wire_cases(module)
     run_attestation_cases(module)
     published_elf_cases(module)
+    derived_path_alias_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:
         temporary = Path(name)
         bounded_tool_cases(module, temporary)

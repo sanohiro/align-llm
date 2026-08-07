@@ -2778,24 +2778,37 @@ def derived_paths(runtime: Sequence[RuntimeBinding]) -> tuple[str, str, str]:
     libraries: list[str] = []
     loaders: list[str] = []
     pkgconfig: list[str] = []
+    library_aliases: set[str] = set()
+    loader_aliases: set[str] = set()
+    pkgconfig_aliases: set[str] = set()
 
-    def add(values: list[str], value: str) -> None:
-        if value not in values:
-            values.append(value)
+    def add(
+        values: list[str], aliases: set[str], value: str, directory_digest: str | None
+    ) -> None:
+        if value in values:
+            return
+        if directory_digest is not None and directory_digest in aliases:
+            return
+        values.append(value)
+        if directory_digest is not None:
+            aliases.add(directory_digest)
 
-    def visit(node: Mapping[str, Any], namespace: Path) -> None:
+    def visit(
+        node: Mapping[str, Any], namespace: Path, parent_directory_digest: str | None = None
+    ) -> None:
         if node["kind"] == "file":
             name = namespace.name
             directory = str(namespace.parent)
             if name.endswith(".a") or name.endswith(".so") or ".so." in name:
-                add(libraries, directory)
+                add(libraries, library_aliases, directory, parent_directory_digest)
             if name.endswith(".so") or ".so." in name:
-                add(loaders, directory)
+                add(loaders, loader_aliases, directory, parent_directory_digest)
             if name.endswith(".pc"):
-                add(pkgconfig, directory)
+                add(pkgconfig, pkgconfig_aliases, directory, parent_directory_digest)
             return
+        directory_digest = node["sha256"]
         for child in node["entries"]:
-            visit(child, namespace / child["name"])
+            visit(child, namespace / child["name"], directory_digest)
 
     for _, target, _, node in runtime:
         visit(node, Path(target))
