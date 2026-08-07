@@ -1485,16 +1485,50 @@ or nonce against a new invocation fails before staging even when every stable pr
 worker digest is unchanged.
 
 The authority descriptors have one exact wire and lifetime contract. FD `12` (the DSSE capsule) and
-FD `13` (the repository-worker snapshot) are `memfd_create(..., MFD_ALLOW_SEALING|MFD_CLOEXEC)` objects;
-FD `15` (the nonce) is created with the same flags. Each object is written once from offset zero,
-rewound to offset zero before handoff, and accepted only when `fstat` reports a regular memfd with
-one link, the expected byte length, and no trailing bytes, and `F_GET_SEALS` returns exactly
-`F_SEAL_WRITE|F_SEAL_GROW|F_SEAL_SHRINK|F_SEAL_SEAL`. FD `12` has an exact size in
-`1..ordinary_capsule_max_bytes` where `ordinary_capsule_max_bytes` is `1048576`; FD `13` has an exact
-size in `1..fresh_worker_max_bytes` (`4194304`); FD `15` has exactly `32` bytes. The dispatcher,
-worker, and namespace helper each check the object type, offset, size, and complete seal set before
-using the bytes; a missing `MFD_ALLOW_SEALING` origin, extra seal, missing seal, nonzero offset,
-short read, or appended byte is a `TRUST` failure before a Make child.
+FD `13` (the repository-worker snapshot) are created with
+`memfd_create(<fixed-name>, MFD_ALLOW_SEALING|MFD_CLOEXEC)`; FD `15` (the nonce) is created with the
+same flags. The names are respectively
+`align-llm-ordinary-adoption-capsule`, `align-llm-ordinary-adoption-worker`, and
+`align-llm-ordinary-adoption-nonce`; they are image-owned constants, not caller input. Linux does not
+expose a post-hoc `MFD_ALLOW_SEALING` origin bit, so the contract does not pretend that creation flags
+can be recovered from `fstat`. The creator's construction trace must record that exact syscall and
+the receiver accepts only the following complete, observable memfd predicate: `fstat` reports
+`S_IFREG` and `st_nlink == 0`, `fstatfs` reports `TMPFS_MAGIC == 0x01021994`, `F_GET_SEALS` succeeds
+with exactly `F_SEAL_WRITE|F_SEAL_GROW|F_SEAL_SHRINK|F_SEAL_SEAL`, and
+`readlink(/proc/self/fd/<fd>)` is exactly `/memfd:<fixed-name> (deleted)`. The fixed name and proc
+link check reject an unlinked ordinary or tmpfs file even if a future kernel permits seals on that
+file; the filesystem/type, zero-link, and exact-seal checks reject every other regular-file shape.
+Each object is written once from offset zero, sealed, and rewound to offset zero before its first
+handoff. FD `12` has an exact size in `1..ordinary_capsule_max_bytes` where
+`ordinary_capsule_max_bytes` is `1048576`; FD `13` has an exact size in
+`1..fresh_worker_max_bytes` (`4194304`); FD `15` has exactly `32` bytes. There are no trailing bytes.
+The dispatcher, worker, and namespace helper each check the complete predicate, current offset,
+size, and complete seal set before using the bytes. A caller-provided regular file, tmpfs file,
+wrong memfd name, missing `MFD_ALLOW_SEALING` construction trace, extra or missing seal, nonzero
+offset, short read, or appended byte is a `TRUST` failure before a Make child. The acceptance matrix
+must include ordinary regular files, unlinked tmpfs files, a correctly sealed memfd with each fixed
+name, wrong-name memfds, every missing/extra seal, and a creator that did not use the required flags;
+the last case is rejected by the creator trace and any resulting descriptor is rejected by the
+observable predicate.
+
+The authority offset ledger is normative. All byte validation uses `pread` where available and
+never relies on an inherited offset; after every verifier or interpreter read, the owner executes
+`lseek(fd, 0, SEEK_SET)` and requires a zero result. Immediately before each edge below, it repeats
+that seek and records offset zero; the receiver repeats it before verification and again before the
+next edge:
+
+| Edge | Sender action at offset zero | Receiver action before use |
+| --- | --- | --- |
+| supervisor -> FD-14 dispatcher | Rewind FD `15`; pass only FD `15` plus the named project/image/manifest descriptors; FD `14` is an executable descriptor and has no data offset contract | Dispatcher rewinds and verifies FD `15` before nonce read |
+| dispatcher -> sealed worker Python | Rewind FD `12`, `13`, and `15` after capsule construction and before `execve` of `/usr/bin/python3 -I -B /proc/self/fd/13` | Worker rewinds all three after Python has opened the `/proc/self/fd/13` source, then verifies them |
+| worker -> bwrap | Rewind FD `12`, `13`, and `15` after worker verification and immediately before bwrap `execve`; FD `27` is an executable descriptor with no data offset contract | bwrap preserves those three descriptors and rewinds them immediately before its helper `execve` |
+| bwrap -> namespace helper | Rewind FD `12`, `13`, and `15` immediately before `/usr/bin/adoption-namespace` starts | Helper rewinds all three before its own `fstat`/`fstatfs`/`pread` checks |
+| namespace helper verification | Use `pread` and require offset zero after each read; no authority descriptor is passed to a Make child | Close FD `12`, `13`, and `15` before the first Make `execve`; the child sees none of them |
+
+Any failed seek, changed offset, unexpected short read, or authority descriptor present after the
+close boundary is a `TRUST` failure. FD `14` and FD `27` are executable authorities: their contract
+is the retained identity, closure, and `execveat(AT_EMPTY_PATH)` edge, and any attempt to read their
+data through a path is a `TRUST` failure rather than an offset exception.
 
 The checked-in `ordinary-adoption-v1-wire-golden` predicate uses deterministic zero-filled digests,
 project head `1111111111111111111111111111111111111111`, and Align head
@@ -1632,6 +1666,74 @@ and link counts, is not part of the preimage. The root `.git` control entry and 
 and an untracked or modified entry cannot be silently omitted. The dispatcher computes this digest
 from the retained descriptor snapshot before signing, and the worker recomputes the identical bytes
 before source acceptance.
+
+The independent `raw-tree-v1-golden` fixture below is the semantic-to-byte and byte-to-semantic
+oracle. Its root, `.align-revision`, ASCII `a`, non-UTF-8 `a\x80`, `docs`, and `docs/link` entries
+are already in raw-byte lexicographic order; the root `.git` control entry and root `HANDOFF.md`
+are intentionally absent. Its exact canonical bytes have SHA-256
+`820d928b48c7c8fd88ce69230608143310caa17f020e72f8f2ceb23ff2354f4f`:
+
+```json
+{
+  "schema": "raw-tree/v1",
+  "entries": [
+    {
+      "path_b64": "",
+      "kind": "dir",
+      "mode": "0755",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "target_b64": ""
+    },
+    {
+      "path_b64": "LmFsaWduLXJldmlzaW9u",
+      "kind": "file",
+      "mode": "0644",
+      "size": 15,
+      "sha256": "24e971fd7fe565b764425e0374b3b15f3c46e6a60cde0067e2863c9c739f0a29",
+      "target_b64": ""
+    },
+    {
+      "path_b64": "YQ",
+      "kind": "file",
+      "mode": "0644",
+      "size": 1,
+      "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd",
+      "target_b64": ""
+    },
+    {
+      "path_b64": "YYA",
+      "kind": "file",
+      "mode": "0644",
+      "size": 1,
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "target_b64": ""
+    },
+    {
+      "path_b64": "ZG9jcw",
+      "kind": "dir",
+      "mode": "0755",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "target_b64": ""
+    },
+    {
+      "path_b64": "ZG9jcy9saW5r",
+      "kind": "symlink",
+      "mode": "0777",
+      "size": 4,
+      "sha256": "61b4c98bfb92bdc9391613020e5b8cbf68460066e4af7ef9708da61728f61156",
+      "target_b64": "Li4vYQ"
+    }
+  ]
+}
+```
+
+The golden test must parse and re-emit those bytes byte-for-byte, verify the recorded digest, and
+exercise semantic negatives for root omission, `.git` or `HANDOFF.md` inclusion, raw-byte order,
+duplicate/prefix paths, invalid NUL/dot/dotdot components, non-UTF-8 names, symlink targets, and
+wrong kind/mode/size/content digests. A zero-filled capsule field is not a substitute for this
+independent source-manifest vector.
 
 The three ordinary Make children run inside a fresh authenticated private mount namespace. The
 namespace starts with an empty root, the authenticated runtime bindings at their canonical `/bin`,
