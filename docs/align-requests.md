@@ -1372,7 +1372,7 @@ The ordinary profile has a non-Make public entrypoint:
 `scripts/run-json-scan-row-ownership-adoption`. It accepts no positional arguments and is the only
 host command that launches the ordinary preparation and focused target. The Make target remains an
 internal worker target for the authenticated fresh vector. The ordinary wrapper validates its
-arguments and inherited Make-control variables before it starts `/usr/bin/make`; a non-empty
+arguments and inherited Make-control variables before it starts the namespace launcher; a non-empty
 `MAKEFLAGS`, `GNUMAKEFLAGS`, or `MAKEOVERRIDES`, an alternate goal, an alternate makefile, or any
 other argument is rejected in the wrapper's input phase, not consumed by GNU Make. Its success
 stdout is exactly `json-scan adoption: PASS\n`, stderr is empty, and failures suppress child
@@ -1414,6 +1414,11 @@ derives the exact `CARGO`, `RUSTC`, `LLVM_CONFIG`, `LLVM_SYS_221_PREFIX`, `CC`, 
 variables. `PATH` begins with the staged authenticated Rust/LLVM/native tool directories and has no
 ambient fallback before the fixed interpreter directories. The wrapper creates unique mode-`0700`
 `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
+The fixed manifest also authenticates the ordinary namespace launcher (`bwrap` or its equivalent),
+its complete loader/library closure, and the staged runtime root containing `make`, `git`, the shell,
+and the required core utilities. A missing user/mount namespace capability or any incomplete
+launcher/runtime closure is a `toolchain` failure; the wrapper never invokes an ambient host
+`bwrap`, `make`, `git`, or shell.
 The adoption implementation changes the `align-build` recipe to invoke `$(CARGO)` with the
 Makefile default `CARGO ?= cargo`; the wrapper always supplies the authenticated absolute Cargo
 path, so the ordinary build never falls back to a bare or rustup-selected executable.
@@ -1444,6 +1449,26 @@ copied into the product snapshot. Untracked files and every other tracked modifi
 The adoption PR binds the recorded project `HEAD` to the exact reviewed implementation head before
 ordinary evidence is accepted.
 
+The three ordinary Make children run inside a fresh authenticated private mount namespace. The
+namespace starts with an empty root, the authenticated runtime at `/runtime`, read-only bindings
+for `/private-project`, `/private-align`, `/private-rust`, `/private-llvm`, `/private-native`,
+`/private-cargo-cache`, and `/private-tool-bin`, and writable bindings only for
+`/private-cargo-home`, `/private-cargo-target`, and `/private-compiler-cache`; it has a private
+`/proc`, minimal `/dev`, private `/tmp`, no host root, and no original host pathname. The wrapper
+uses the attested namespace launcher with the fixed shape
+
+```text
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --cap-drop ALL --tmpfs / --proc /proc --dev /dev --tmpfs /tmp --ro-bind <private-runtime> /runtime --ro-bind <private-project> /private-project --ro-bind <private-align> /private-align --ro-bind <private-rust> /private-rust --ro-bind <private-llvm> /private-llvm --ro-bind <private-native> /private-native --ro-bind <private-cargo-cache> /private-cargo-cache --ro-bind <private-tool-bin> /private-tool-bin --bind <private-cargo-home> /private-cargo-home --bind <private-cargo-target> /private-cargo-target --bind <private-compiler-cache> /private-compiler-cache --chdir /private-project -- /runtime/bin/make ...
+```
+
+The ellipsis is replaced only by one of the three child vectors below; no repository or caller
+argument is appended. The wrapper verifies every read-only mount source before the namespace starts,
+retains the mount identities until child cleanup, and the launcher verifies the namespace-visible
+`/private-tool-bin` mount is read-only before opening the handoff files. Thus a focused child or
+another same-UID process cannot reach or modify the host staging path through the compiler view.
+The child namespace drops all capabilities before Make starts; a failed namespace setup is reported
+as `toolchain` before any Make or compiler marker.
+
 The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
 
 ```text
@@ -1452,44 +1477,55 @@ env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
   ./scripts/run-json-scan-row-ownership-adoption
 ```
 
-After its preflight, the wrapper alone launches these fixed child vectors with the authenticated
-toolchain environment and empty Make-control variables:
+After its preflight, the wrapper alone launches these fixed child vectors inside that namespace with
+the authenticated toolchain environment and empty Make-control variables:
 
 ```text
-/usr/bin/make --no-print-directory -C <private-project> -f <private-project>/Makefile align-revision
-/usr/bin/make --no-print-directory -C <private-project> -f <private-project>/Makefile align-build
-/usr/bin/make --no-print-directory -C <private-project> -f <private-project>/Makefile json-scan-row-ownership-adoption
+/runtime/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-revision
+/runtime/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-build
+/runtime/bin/make --no-print-directory -C /private-project -f /private-project/Makefile json-scan-row-ownership-adoption
 ```
 
-Each child receives `ALIGN_REPO=<private-align>` and the same authenticated read-only toolchain,
+Each child receives `ALIGN_REPO=/private-align` and the same authenticated read-only toolchain,
 cache, and empty Make-control environment. The `align-build` child additionally receives
-`CARGO=<private-rust>/bin/cargo`, `RUSTC=<private-rust>/bin/rustc`,
-`CARGO_HOME=<private-cargo-home>`, `CARGO_TARGET_DIR=<private-cargo-target>`,
-`CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=<private-llvm>/bin/llvm-config`,
-`LLVM_SYS_221_PREFIX=<private-llvm>`, `CC=<private-native-bin>/cc`,
-`CXX=<private-native-bin>/cxx`, and the authenticated native search paths. The wrapper materializes
+`CARGO=/private-rust/bin/cargo`, `RUSTC=/private-rust/bin/rustc`,
+`CARGO_HOME=/private-cargo-home`, `CARGO_TARGET_DIR=/private-cargo-target`,
+`CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=/private-llvm/bin/llvm-config`,
+`LLVM_SYS_221_PREFIX=/private-llvm`, `CC=/private-native/bin/cc`,
+`CXX=/private-native/bin/cxx`, and the authenticated native search paths. The wrapper materializes
 `private-native-bin/cc` and `private-native-bin/cxx` as create-exclusive copies of the authenticated
 `clang` and `clang++` runtime bytes, with their complete ELF closure; the manifest's `cc` and `cxx`
 forwarders are identity records, not executed aliases. These are explicit staged aliases, not an
 unlisted `c++` name. Every focused child
-receives `PATH=<private-rust>/bin:<private-llvm>/bin:<private-native-bin>:/usr/bin:/bin`, with the
+receives `PATH=/private-rust/bin:/private-llvm/bin:/private-native/bin:/runtime/bin`, with the
 staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
 must never reach ambient `/usr/bin/cc`. After the build, the wrapper verifies the new `release/alignc`
 and adjacent runtime archive by no-follow type, mode, link count, revision, version, and complete
 bytes, then writes a canonical schema-1, mode-`0444` compiler handoff descriptor containing the
 exact compiler/archive paths, device/inode, mode, link-count, size, SHA-256, Align revision, and
 project HEAD. The fixed `scripts/adoption-alignc` launcher reads that descriptor before every
-compiler call, rechecks both retained private files, and `execve`s only the verified compiler path;
-its descriptor and launcher are copied into the private read-only tool bin before the focused child
-starts. The focused child receives `ALIGNC=<private-tool-bin>/adoption-alignc`,
-`ALIGNC_DESCRIPTOR=<private-handoff>`, and `ALIGNC_CACHE=<private-compiler-cache>`, and rejects a
-missing, relative, symlinked, stale, replaced, or digest-mismatched handoff before any fixture
-compiler call. It never searches sibling release/debug paths or `PATH` for the compiler.
+compiler call. The descriptor paths are fixed namespace paths `/private-tool-bin/alignc` and
+`/private-tool-bin/libalign_runtime.a`, never host staging paths or caller input. Before the focused
+namespace starts, the wrapper copies the verified compiler,
+archive, descriptor, and launcher into the namespace's private `tool-bin` source using retained
+no-follow descriptors, verifies the complete bytes, and exposes that source only through one
+read-only `/private-tool-bin` bind. The launcher opens exactly
+`/private-tool-bin/adoption-handoff`, `/private-tool-bin/alignc`, and
+`/private-tool-bin/libalign_runtime.a` with `O_RDONLY|O_NOFOLLOW`, rechecks the mount identity and
+all declared tuples, and executes the already-open compiler with `execveat(AT_EMPTY_PATH)`. The
+read-only namespace bind is the immutability boundary; a focused child cannot chmod, replace, or
+restore any handoff or sibling bundle member through its visible path. The focused child receives
+`ALIGNC=/private-tool-bin/adoption-alignc`, `ALIGNC_DESCRIPTOR=/private-tool-bin/adoption-handoff`,
+and `ALIGNC_CACHE=/private-compiler-cache`, and rejects a missing, relative, symlinked, stale,
+replaced, or digest-mismatched handoff before any fixture compiler call. It never searches sibling
+release/debug paths or `PATH` for the compiler.
 The handoff descriptor is canonical UTF-8 JSON with one final LF, no duplicate or unknown fields,
 decimal unsigned integers, and this exact field order and width: `schema_version` (`u64`),
-`compiler_path` (absolute UTF-8 string), `compiler_dev` (`u64`), `compiler_ino` (`u64`),
+`compiler_path` (the fixed string `/private-tool-bin/alignc`), `compiler_dev` (`u64`),
+`compiler_ino` (`u64`),
 `compiler_mode` (`u32`), `compiler_nlink` (`u64`), `compiler_size` (`u64`),
-`compiler_sha256` (64 lowercase hexadecimal bytes), `archive_path` (absolute UTF-8 string),
+`compiler_sha256` (64 lowercase hexadecimal bytes), `archive_path` (the fixed string
+`/private-tool-bin/libalign_runtime.a`),
 `archive_dev` (`u64`), `archive_ino` (`u64`), `archive_mode` (`u32`), `archive_nlink` (`u64`),
 `archive_size` (`u64`), `archive_sha256` (64 lowercase hexadecimal bytes),
 `align_revision` (40 lowercase hexadecimal bytes), and `project_head` (40 lowercase hexadecimal
@@ -1501,7 +1537,7 @@ The semantic-to-byte and byte-to-semantic acceptance vector is named
 `adoption-compiler-handoff-v1-golden`; its exact UTF-8 bytes, including the final LF, are:
 
 ```text
-{"schema_version":1,"compiler_path":"/private/tool-bin/alignc","compiler_dev":7,"compiler_ino":11,"compiler_mode":365,"compiler_nlink":1,"compiler_size":123,"compiler_sha256":"0000000000000000000000000000000000000000000000000000000000000000","archive_path":"/private/tool-bin/libalign_runtime.a","archive_dev":7,"archive_ino":13,"archive_mode":292,"archive_nlink":1,"archive_size":456,"archive_sha256":"1111111111111111111111111111111111111111111111111111111111111111","align_revision":"2222222222222222222222222222222222222222","project_head":"3333333333333333333333333333333333333333"}
+{"schema_version":1,"compiler_path":"/private-tool-bin/alignc","compiler_dev":7,"compiler_ino":11,"compiler_mode":365,"compiler_nlink":1,"compiler_size":123,"compiler_sha256":"0000000000000000000000000000000000000000000000000000000000000000","archive_path":"/private-tool-bin/libalign_runtime.a","archive_dev":7,"archive_ino":13,"archive_mode":292,"archive_nlink":1,"archive_size":456,"archive_sha256":"1111111111111111111111111111111111111111111111111111111111111111","align_revision":"2222222222222222222222222222222222222222","project_head":"3333333333333333333333333333333333333333"}
 ```
 The golden test parses those bytes into the declared typed object and serializes that object back to
 the identical byte sequence; each individual field mutation has a separately checked rejection.
@@ -1572,7 +1608,7 @@ The fixture directory contains:
 
 The adoption script has two explicit execution profiles. In the ordinary adoption profile,
 `owned-direct.align`, `owned-nested.align`, and `owned-union.align` use
-`ALIGNC=<private-tool-bin>/adoption-alignc ALIGNC_DESCRIPTOR=<private-handoff> ALIGNC_CACHE=<private-compiler-cache> <private-tool-bin>/adoption-alignc check <file>` in that fixed filename order. In the
+`ALIGNC=/private-tool-bin/adoption-alignc ALIGNC_DESCRIPTOR=/private-tool-bin/adoption-handoff ALIGNC_CACHE=/private-compiler-cache /private-tool-bin/adoption-alignc check <file>` in that fixed filename order inside the ordinary namespace. In the
 Section 9 fresh-capable profile, the same calls use the controller-owned fixed vector
 `ALIGNC_CACHE=off /tools/fresh-alignc check <file>`; `/tools/fresh-alignc` opens the authenticated
 handoff files and cannot be replaced by a caller-selected compiler. Both profiles require a
@@ -1590,7 +1626,7 @@ descriptor and named cache in the ordinary profile. In the Section 9 fresh-capab
 `ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned.align`; the worker's `ALIGNC_CACHE=off`
 setting is fixed and caller cache overrides are rejected. It then invokes
 `decode-owned-option.align` with
-`ALIGNC=<private-tool-bin>/adoption-alignc ALIGNC_DESCRIPTOR=<private-handoff> ALIGNC_CACHE=<private-compiler-cache> <private-tool-bin>/adoption-alignc run decode-owned-option.align`
+`ALIGNC=/private-tool-bin/adoption-alignc ALIGNC_DESCRIPTOR=/private-tool-bin/adoption-handoff ALIGNC_CACHE=/private-compiler-cache /private-tool-bin/adoption-alignc run decode-owned-option.align`
 in the ordinary profile, or with
 `ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned-option.align` in the Section 9 fresh-capable
 profile. The selected profile vector is fixed in both profiles; only a future Align cleanup that
