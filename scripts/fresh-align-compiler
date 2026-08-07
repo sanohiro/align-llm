@@ -3954,8 +3954,7 @@ def resolve_elf_dependency(
                 (
                     "diagnostic ELF resolve: "
                     f"name={name!r} current={current!r} "
-                    f"search_paths={list(search_paths)!r} "
-                    f"candidates={candidates!r} matches={matches!r}\n"
+                    f"matches={matches!r}\n"
                 ).encode("ascii", "backslashreplace"),
             )
         except OSError:
@@ -3979,8 +3978,7 @@ def resolve_elf_dependency(
                 (
                     "diagnostic ELF resolve: "
                     f"name={name!r} current={current!r} "
-                    f"search_paths={list(search_paths)!r} "
-                    f"candidates={candidates!r} matches={candidate_details!r} "
+                    f"matches={candidate_details!r} "
                     f"distinct={distinct!r}\n"
                 ).encode("ascii", "backslashreplace"),
             )
