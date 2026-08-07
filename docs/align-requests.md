@@ -1384,18 +1384,34 @@ absolute clean Align worktree, `ALIGN_RUST_TOOLCHAIN_BIN` is an absolute no-syml
 containing direct Rust 1.96.0 `cargo` and `rustc` binaries, `ALIGN_LLVM_PREFIX` is the absolute
 no-symlink LLVM 22 prefix containing its direct `llvm-config`, and `ALIGN_NATIVE_PREFIX` is the
 absolute no-symlink native dependency prefix whose `bin`, `include`, `lib`, and `lib/pkgconfig`
-entries are the only native search roots used by the locked Align build. The wrapper opens and
-authenticates every named tool and required native file with no-follow regular-file checks,
-records its digest, and rejects rustup shims, symlink aliases, version mismatches, and mutable
-replacement before the first Make child. It derives the exact `CARGO`, `RUSTC`, `LLVM_CONFIG`,
+entries are the only native search roots used by the locked Align build. `ALIGN_CARGO_CACHE_ROOT`
+and `ALIGN_CARGO_CACHE_MANIFEST` are a read-only Cargo cache tree and its authenticated Section 9
+schema-2 cache manifest; the manifest uses the fixed registry/Git prefixes, exact file digests,
+owner-readable modes, and no symlinks, hard links, wrappers, credentials, or configuration files.
+The wrapper opens and authenticates every named tool, required native file, and cache descriptor
+with no-follow checks, records its digest, and rejects rustup shims, symlink aliases, version
+mismatches, and mutable replacement before the first Make child. It copies the accepted cache into
+a unique private Cargo home and sets `CARGO_NET_OFFLINE=true`; no registry, Git, proxy, credential,
+or network fallback is allowed. It derives the exact `CARGO`, `RUSTC`, `LLVM_CONFIG`,
 `LLVM_SYS_221_PREFIX`, `CC`, `CXX`, `AR`, `RANLIB`, and linker values from those authenticated
 inputs; it clears `RUSTUP_HOME`, `RUSTC_WRAPPER`, Cargo configuration/proxy/credential channels,
 and all unrelated inherited build variables. `PATH` contains only the authenticated Rust and LLVM
 bin directories followed by the fixed native system directories. The wrapper creates unique
-mode-`0700` `CARGO_HOME`, `CARGO_TARGET_DIR`, cache, and output paths and records their identities.
+mode-`0700` `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their
+identities.
 The adoption implementation changes the `align-build` recipe to invoke `$(CARGO)` with the
 Makefile default `CARGO ?= cargo`; the wrapper always supplies the authenticated absolute Cargo
 path, so the ordinary build never falls back to a bare or rustup-selected executable.
+
+Before any child starts, the wrapper creates descriptor-relative, no-follow, mode-`0555` snapshots
+of the invocation project and `ALIGN_REPO`, including a private Git view for the Align snapshot so
+`check-align-revision` never reopens the caller's worktree. It also stages the authenticated Rust,
+LLVM, native, and Cargo-cache inputs into the private root, hashes every accepted regular file,
+and performs complete pre-copy, post-copy, and final pre-child tree snapshots. Children see only
+these retained read-only inputs and private writable `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache,
+and temporary paths. A source, tool, native, or cache replacement, mutation, extra entry, type,
+mode, size, link-count, or digest mismatch fails before the next child and leaves the private root
+for diagnostic cleanup rather than reopening the original path.
 
 The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
 
@@ -1405,6 +1421,8 @@ env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
   ALIGN_RUST_TOOLCHAIN_BIN=<absolute-direct-rust-1.96.0-bin> \
   ALIGN_LLVM_PREFIX=<absolute-direct-llvm-22-prefix> \
   ALIGN_NATIVE_PREFIX=<absolute-native-dependency-prefix> \
+  ALIGN_CARGO_CACHE_ROOT=<absolute-read-only-cargo-cache> \
+  ALIGN_CARGO_CACHE_MANIFEST=<absolute-cargo-cache-manifest> \
   ./scripts/run-json-scan-row-ownership-adoption
 ```
 
@@ -1412,22 +1430,39 @@ After its preflight, the wrapper alone launches these fixed child vectors with t
 toolchain environment and empty Make-control variables:
 
 ```text
-/usr/bin/make --no-print-directory -f <project-root>/Makefile align-revision
-/usr/bin/make --no-print-directory -f <project-root>/Makefile align-build
-/usr/bin/make --no-print-directory -f <project-root>/Makefile json-scan-row-ownership-adoption
+/usr/bin/make --no-print-directory -f <private-project>/Makefile align-revision
+/usr/bin/make --no-print-directory -f <private-project>/Makefile align-build
+/usr/bin/make --no-print-directory -f <private-project>/Makefile json-scan-row-ownership-adoption
 ```
 
-The first child verifies the exact `.align-revision` commit and clean raw source tree. The second
-builds the locked release packages into the unique target directory using the direct authenticated
-Cargo/Rust binaries; the third accepts only that newly built, no-follow regular executable and
-never searches sibling release/debug paths or `PATH` for a compiler. A missing, symlinked,
-non-executable, stale, or digest-mismatched artifact fails before any fixture compiler call. The
-ordinary profile records the absolute Align worktree, exact revision, authenticated toolchain
-file identities and versions, build-target identity, compiler digest, cache identity, and all
-three internal vectors. The authenticated fresh profile performs the equivalent source and
-compiler-build checks inside the worker-owned private root and supplies only its fixed
-`/tools/fresh-alignc` and `ALIGNC_CACHE=off` vector; it does not run the ordinary host wrapper or
-trust its artifacts.
+Each child receives `ALIGN_REPO=<private-align>` and the same authenticated read-only toolchain,
+cache, and empty Make-control environment. The `align-build` child additionally receives
+`CARGO=<private-toolchain>/cargo`, `RUSTC=<private-toolchain>/rustc`,
+`CARGO_HOME=<private-cargo-home>`, `CARGO_TARGET_DIR=<private-cargo-target>`,
+`CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=<private-llvm>/bin/llvm-config`,
+`LLVM_SYS_221_PREFIX=<private-llvm>`, and the authenticated native search paths. After the build,
+the wrapper verifies the new `release/alignc` and adjacent runtime archive by no-follow type,
+mode, link count, revision, version, and complete bytes, then supplies the exact absolute
+`ALIGNC=<private-cargo-target>/release/alignc` and `ALIGNC_CACHE=<private-compiler-cache>` values
+to the focused child. The target rejects a missing, relative, symlinked, stale, or digest-mismatched
+`ALIGNC` before any fixture compiler call; it never searches sibling release/debug paths or `PATH`.
+The ordinary profile records the staged project/Align identities, exact revision, authenticated
+toolchain and cache file identities and versions, build-target identity, compiler/archive digest,
+compiler selector, cache identity, and all three internal vectors. The authenticated fresh profile
+performs the equivalent source and compiler-build checks inside the worker-owned private root and
+supplies only its fixed `/tools/fresh-alignc` and `ALIGNC_CACHE=off` vector; it does not run the
+ordinary host wrapper or trust its artifacts.
+
+The wrapper's owned-child runner sets Linux child-subreaper mode before its first child, starts
+each Make child in a new session, enumerates and adopts descendants through `/proc` using recorded
+PID start times and process-group identities, and drains stdout and stderr concurrently with a
+65,536-byte cap per stream. The fixed deadlines are 10 seconds for
+`align-revision`, 1,800 seconds for `align-build`, and 120 seconds for the focused target. Timeout,
+cancellation, reader failure, launch failure, nonzero exit, and cleanup use one order: stop new
+children, send TERM to the owned process group, wait one second, send KILL to remaining owned
+descendants, reap them, close pipes/descriptors, re-snapshot the private tree, and remove only the
+wrapper-owned private root. A failure leaves no child and emits the one phase error; a failed
+cleanup emits `json-scan adoption: ERROR cleanup\n` and leaves the unprovable path untouched.
 
 The focused target accepts no positional arguments and its preflight rejects missing, extra, or
 unexpected fixture entries before starting the compiler. It opens the project root from the
@@ -1478,7 +1513,7 @@ The fixture directory contains:
 
 The adoption script has two explicit execution profiles. In the ordinary adoption profile,
 `owned-direct.align`, `owned-nested.align`, and `owned-union.align` use
-`ALIGNC_CACHE=<fresh-cache> <pinned-alignc> check <file>` in that fixed filename order. In the
+`ALIGNC=<private-cargo-target>/release/alignc ALIGNC_CACHE=<private-compiler-cache> <private-cargo-target>/release/alignc check <file>` in that fixed filename order. In the
 Section 9 fresh-capable profile, the same calls use the controller-owned fixed vector
 `ALIGNC_CACHE=off /tools/fresh-alignc check <file>`; `/tools/fresh-alignc` opens the authenticated
 handoff files and cannot be replaced by a caller-selected compiler. Both profiles require a
@@ -1489,13 +1524,14 @@ nonzero status, require empty stdout, and match exactly once:
 ```
 
 It rejects a panic, backtrace, or any unexpected file under the selected cache. It checks
-`owned-option.align` against the fixed scanner diagnostic above, then invokes `<pinned-alignc> run copy-row.align` and
-`<pinned-alignc> run decode-owned.align` in that order with the same named cache in the ordinary
-profile. In the Section 9 fresh-capable profile, those exact vectors are
+`owned-option.align` against the fixed scanner diagnostic above, then invokes the same absolute
+private compiler with `run copy-row.align` and `run decode-owned.align` in that order with the
+same named cache in the ordinary profile. In the Section 9 fresh-capable profile, those exact vectors are
 `ALIGNC_CACHE=off /tools/fresh-alignc run copy-row.align` and
 `ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned.align`; the worker's `ALIGNC_CACHE=off`
 setting is fixed and caller cache overrides are rejected. It then invokes
-`decode-owned-option.align` with `ALIGNC_CACHE=<fresh-cache> <pinned-alignc> run decode-owned-option.align`
+`decode-owned-option.align` with
+`ALIGNC=<private-cargo-target>/release/alignc ALIGNC_CACHE=<private-compiler-cache> <private-cargo-target>/release/alignc run decode-owned-option.align`
 in the ordinary profile, or with
 `ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned-option.align` in the Section 9 fresh-capable
 profile. The selected profile vector is fixed in both profiles; only a future Align cleanup that

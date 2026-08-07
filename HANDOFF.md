@@ -22,6 +22,10 @@ continue with the corrected Request 6 adoption design before implementation.
 - Active goal: finish and review the corrected Request 6 adoption contract, merge that design gate,
   then implement the wrapper, focused target, fixtures, pin wave, fresh adoption vector, and final
   fresh `make ci` on a new branch. Request 7 and later consumers remain blocked on this gate.
+- Expected post-merge checkpoint: refresh `main` safely, perform the bounded design retrospective,
+  and create `agent/request6-adoption-implementation` from the merged design. The next session must
+  begin implementation of the ordinary launcher and authenticated focused consumer; it must not
+  reopen this design PR or reuse PR #62's direct ordinary Make command.
 - The shipped Align revision for Request 6 is
   `e65448b744c04e3868d079eef8b45ce0d43ac8ee`; `.align-revision` must remain unchanged until the
   reviewed implementation branch consumes the fresh adoption design.
@@ -116,10 +120,10 @@ continue with the corrected Request 6 adoption design before implementation.
 1. Finish the corrected Request 6 design ledger and closure matrix, run its author-side consistency
    checks and one fresh independent adversarial review, then open the replacement design PR. Do not
    merge PR #62 or consume its unrevised ordinary command.
-2. After the corrected design merges, create a new implementation branch from merged `main`; read
-   the sibling Align instructions and shipped JSON scanner design, then implement the ordinary
-   launcher, focused target/fixtures, exact pin, fresh adoption vector, baseline ancestry, and final
-   fresh `make ci`.
+2. After the corrected design merges, refresh `main`, record the bounded retrospective, and create
+   a new implementation branch from merged `main`; read the sibling Align instructions and shipped
+   JSON scanner design, then implement the ordinary launcher, focused target/fixtures, exact pin,
+   fresh adoption vector, baseline ancestry, and final fresh `make ci`.
 3. Open the implementation PR, complete its review/fix/merge evidence, refresh `main` safely while
    preserving the primary intentional handoff, and continue to the next eligible roadmap gate.
 
