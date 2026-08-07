@@ -13,7 +13,8 @@ attestations; this file records durable project state.
   `83d9117f4519f4cb990d64089163713b8bbc749a`, oracle
   `271783e9f35eb7e3575c753ecbbb4e47a4b60a67`, and finalization
   `09fde6c6f203c49ccd8eea743b8b2f466a0b1862`. The current head is
-  `acbba8e`, after design commits `b9e4d37`, `baae181`, and cgroup-v2 cleanup design `ca18317`.
+  `c12e4f6`, after design commits `b9e4d37`, `baae181`, cgroup-v2 cleanup design `ca18317`, and
+  ELF library-alias design `554dcbd`.
 - Active goal: finish the reviewed FRESH-WORKER repair, complete PR review/fix/merge, then start
   the next eligible roadmap gate without waiting for a stop instruction.
 - The prior baseline tuple
@@ -54,6 +55,12 @@ attestations; this file records durable project state.
   is used under the protected delegated-parent writer boundary. Implementation `acbba8e` applies
   that protocol to worker and image control and adds direct-removal and replacement-before-removal
   regressions. Diagnostic-only commits remain off the product branch.
+- Exact-head diagnostic run `31148028562` reached the aggregate after the cgroup-v2 repair but
+  rejected the generated ELF because the image exposes identical system-library trees at both
+  `/lib` and `/usr/lib`; the existing derived loader list treated those authenticated structural
+  aliases as ambiguous. Design `554dcbd` records first-manifest-order structural alias collapse
+  while retaining rejection for distinct trees. Implementation `c12e4f6` applies it to all three
+  derived path lists and adds focused identical/distinct alias and real ELF closure regressions.
 - The diagnostic branch `agent/fresh-worker-current-diagnostic` exposed only the hosted
   `filesystem` category before aggregate failure; diagnostic branch
   `agent/fresh-worker-aggregate-diagnostic-v5` isolated the runtime file-open failure and is
@@ -61,7 +68,7 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Push `acbba8e` and this handoff, obtain passing hosted pinned and installed checks for the
+1. Push `c12e4f6` and this handoff, obtain passing hosted pinned and installed checks for the
    complete repair, publish the final
    SHA-bound comprehensive review envelope and all finding dispositions, mark ready, and merge
    the exact head with method `merge`.
@@ -95,6 +102,11 @@ attestations; this file records durable project state.
   cleanup repair, including descriptor-relative leaf removal and replacement-before-removal.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the cgroup-v2
   cleanup repair, including mirrored descriptor-relative removal and replacement-before-removal.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after the ELF alias
+  repair, including identical structural alias collapse, distinct-alias rejection, and real
+  `/bin/true` closure validation.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the ELF alias
+  repair; `git diff --check`: PASS.
 - `python3 -m py_compile scripts/fresh-align-compiler image/fresh/control/fresh_image_control.py
   scripts/run-fresh-worker-unit-smoke`: PASS; `git diff --check`: PASS.
 - Hosted run `31137327638` passed the pinned job but failed the installed aggregate with
@@ -102,7 +114,8 @@ attestations; this file records durable project state.
   `NotADirectoryError`; diagnostic run `31143014723` then exposed the inherited replacement-object
   smoke mismatch. Hosted run `31145643974` exposed cgroup-v2 `renameat2` incompatibility;
   diagnostic run `31146342637` confirmed the `OSError(22, "Invalid argument")` probe failure.
-  All diagnostic runs are evidence only.
+  Exact-head diagnostic run `31148028562` exposed the duplicate-library ELF validation failure;
+  all diagnostic runs are evidence only.
 
 ## Constraints and intentional state
 
