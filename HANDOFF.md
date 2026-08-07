@@ -7,14 +7,13 @@ attestations; this file records durable project state.
 
 - Branch: `agent/fresh-worker-capability`, based on PR #61 base
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
-- PR #61 is draft and must merge with method `merge`. The current product head includes the
-  single-file runtime repair `1d33b90a4200cc3ba756992bb81b229205d46ec2` and the hosted-baseline
-  smoke repair `8ff96a8c0db753a4b278a3b6e5186fcc5e8e4887`; the repaired baseline chain is source
-  `83d9117f4519f4cb990d64089163713b8bbc749a`, oracle
-  `271783e9f35eb7e3575c753ecbbb4e47a4b60a67`, and finalization
-  `09fde6c6f203c49ccd8eea743b8b2f466a0b1862`. The current head is
-  `29b4730`, after design commits `b9e4d37`, `baae181`, cgroup-v2 cleanup design `ca18317`, ELF
-  library-alias design `554dcbd`, and identical ELF file-alias design `02b02f3`.
+- PR #61 is draft and must merge with method `merge`. The current product head before this
+  handoff update is `b82c56abd2eb3feae640f078ca92859d8af23084`; the reviewed product includes
+  the cgroup-v2 cleanup, ELF alias, identical-file alias, and bounded materialization repairs.
+  The current identity-bound baseline is source
+  `8fa4fd7a762fcf973a70ae50b80815799b194e79`, oracle
+  `d50a7535c676e3f1de891041974420e16c5a088f`, and finalization
+  `44c825e1f9f1e25c2258a52e7b88424071093a6d`.
 - Active goal: finish the reviewed FRESH-WORKER repair, complete PR review/fix/merge, then start
   the next eligible roadmap gate without waiting for a stop instruction.
 - The prior baseline tuple
@@ -48,6 +47,12 @@ attestations; this file records durable project state.
   descriptor-relative pre/post tree snapshot. The reviewed design was reopened in `b9e4d37` and
   `baae181`; implementation `c61995f` adds cgroup membership/quarantine, private-root quarantine,
   complete materialization verification, image-control parity, and deterministic regression cases.
+- Fresh independent review of exact head `e62eb6a` found three P1 gaps: a raced FIFO could block
+  materialization, a same-size source mutation after the destination write was not rejected, and
+  exact-head installed hosted evidence was still absent; it also found stale handoff head text.
+  Design `0aa9d60` reopens the materialization closure matrix and implementation `aba1c84` adds
+  no-follow/nonblocking file opens, retained-source post-write snapshots, and FIFO/same-size
+  mutation regressions. The handoff head is corrected here; hosted evidence remains a PR concern.
 - Hosted Installed run `31145643974` failed because cgroup-v2 rejects `renameat2(RENAME_NOREPLACE)`.
   Diagnostic run `31146342637` confirmed `OSError(22, "Invalid argument")` at the supervisor's
   first Git identity probe. Design `ca18317` records the kernel-supported cgroup-v2 primitive:
@@ -68,6 +73,14 @@ attestations; this file records durable project state.
   candidate, and reject byte-distinct candidates. Implementation `29b4730` adds that resolver
   behavior plus single-file and real-ELF byte-distinct alias regressions. Diagnostic branch
   instrumentation remains off the product branch.
+- Exact-head hosted run `31151900302` passed pinned checks but failed Installed at the aggregate
+  baseline chain. Diagnostic run `31153583460` proved the ELF alias repair was working and exposed
+  the actual failure: `scripts/check-baseline-chain` replaced the aggregate's staged `PATH=/tools`
+  with `/usr/bin:/bin`, so its bare `git` subprocess was unavailable. Design `c2cdad7` records
+  the closed two-profile executable contract; implementation `8fa4fd7` and regression repair
+  `b82c56a` select `/tools` only for the exact fresh marker/tool-root pair and reject partial or
+  different settings. The baseline was then refreshed through source `8fa4fd7`, oracle `d50a753`,
+  and finalization `44c825e`.
 - The diagnostic branch `agent/fresh-worker-current-diagnostic` exposed only the hosted
   `filesystem` category before aggregate failure; diagnostic branch
   `agent/fresh-worker-aggregate-diagnostic-v5` isolated the runtime file-open failure and is
@@ -75,8 +88,8 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Push `29b4730` and this handoff, obtain passing hosted pinned and installed checks for the
-   complete repair, publish the final
+1. Push the current product head and this handoff, obtain passing hosted pinned and installed
+   checks for the complete repair, publish the final
    SHA-bound comprehensive review envelope and all finding dispositions, mark ready, and merge
    the exact head with method `merge`.
 2. Refresh `main`, perform the bounded retrospective, update this handoff for the post-merge
@@ -93,7 +106,14 @@ attestations; this file records durable project state.
   `run-fresh-image-control-smoke`: PASS, and `run-fresh-worker-qualification`: PASS.
 - `make baseline-check`: PASS; canonical baseline, invalid-input smokes, failure smoke, and the
   executable source/oracle/finalization chain checker all passed.
-- The source recorder completed two deterministic-reference samples from source `83d9117`.
+- `PYTHONDONTWRITEBYTECODE=1 make baseline-check`: PASS after the fresh baseline Git executable
+  repair and identity-bound refresh; the smoke covers staged `/tools`, ordinary host PATH, and
+  incomplete/different fresh settings.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after bounded
+  materialization repair.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after bounded
+  materialization repair.
+- The source recorder completed two deterministic-reference samples from source `8fa4fd7`.
 - `git diff --check`: PASS for the source, oracle, and finalization commits.
 - `bash -n scripts/run-baseline-invalid-smoke` and
   `GIT_NO_REPLACE_OBJECTS=1 PYTHONDONTWRITEBYTECODE=1 make baseline-check`: PASS, including the
