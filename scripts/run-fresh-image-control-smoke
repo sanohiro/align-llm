@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPOSITORY / "image" / "fresh" / "control"))
 from fresh_image_control import (  # noqa: E402
     ControlError,
     _mode_from_arguments,
+    _normalize_absolute,
     _normalize_relative,
     _open_regular,
     _read_sealed,
@@ -43,6 +44,121 @@ def rejected_os(callback: object) -> None:
     except OSError:
         return
     raise AssertionError("OS-level case was accepted")
+
+
+def revision_rejected(callback: object) -> None:
+    try:
+        callback()  # type: ignore[operator]
+    except ControlError as error:
+        assert error.category == "REVISION"
+        assert error.phase == "revision"
+        return
+    raise AssertionError("revision case was accepted")
+
+
+def boundary_worker_presence_case(temporary: Path) -> None:
+    project = temporary / "boundary-project"
+    scripts = project / "scripts"
+    scripts.mkdir(parents=True)
+    project_fd = os.open(project, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    worker = scripts / "run-json-scan-row-ownership-adoption"
+    try:
+        revision_rejected(lambda: control._boundary_worker_presence(project_fd))
+        worker.write_bytes(b"worker bytes must not be consumed")
+        worker.chmod(0o755)
+        revision_rejected(lambda: control._boundary_worker_presence(project_fd))
+        worker.unlink()
+        os.symlink("missing-worker", worker)
+        revision_rejected(lambda: control._boundary_worker_presence(project_fd))
+        worker.unlink()
+        os.mkfifo(worker, 0o755)
+        started = time.monotonic()
+        revision_rejected(lambda: control._boundary_worker_presence(project_fd))
+        assert time.monotonic() - started < 1.0
+    finally:
+        os.close(project_fd)
+
+
+def boundary_child_lifecycle_case(temporary: Path) -> None:
+    source = temporary / "boundary-child.c"
+    source.write_text(
+        "#include <signal.h>\n"
+        "#include <unistd.h>\n"
+        "#ifndef CASE\n"
+        "#define CASE 0\n"
+        "#endif\n"
+        "int main(void) {\n"
+        "#if CASE == 1\n"
+        "    for (;;) pause();\n"
+        "#elif CASE == 2\n"
+        "    raise(SIGTERM);\n"
+        "#endif\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="ascii",
+    )
+    compiler = os.environ.get("CC", "cc")
+    helpers = []
+    for case in (1, 2):
+        helper = temporary / f"boundary-child-{case}"
+        subprocess.run(
+            [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", f"-DCASE={case}", "-o", str(helper), str(source)],
+            check=True,
+        )
+        helpers.append(helper)
+
+    saved: dict[int, int] = {}
+    targets = (4, 6, 8, 14, 18)
+    for target in targets:
+        try:
+            saved[target] = os.dup(target)
+        except OSError:
+            pass
+    project = temporary / "boundary-dispatch-project"
+    align = temporary / "boundary-dispatch-align"
+    project.mkdir()
+    align.mkdir()
+    old_timeout = control.BOUNDARY_TIMEOUT_SECONDS
+    control.BOUNDARY_TIMEOUT_SECONDS = 0.1
+    try:
+        for helper in helpers:
+            project_source = os.open(project, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+            os.dup2(project_source, 4, inheritable=True)
+            if project_source != 4:
+                os.close(project_source)
+            align_source = os.open(align, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+            os.dup2(align_source, 18, inheritable=True)
+            if align_source != 18:
+                os.close(align_source)
+            _sealed_memfd("boundary-image", b"image", 6)
+            _sealed_memfd("boundary-manifest", b"manifest", 8)
+            dispatcher_source = os.open(helper, os.O_RDONLY | os.O_CLOEXEC)
+            os.dup2(dispatcher_source, 14, inheritable=True)
+            if dispatcher_source != 14:
+                os.close(dispatcher_source)
+            status, stdout, stderr, valid = control._boundary_dispatch(
+                project_fd=4,
+                image_fd=6,
+                manifest_fd=8,
+                dispatcher_fd=14,
+                align_fd=18,
+                align_repo_absolute=str(align),
+                align_repo_relative="../" + align.name,
+            )
+            assert not valid
+            assert status is not None
+            assert stdout == b""
+            assert stderr == b""
+    finally:
+        control.BOUNDARY_TIMEOUT_SECONDS = old_timeout
+        for target in targets:
+            try:
+                os.close(target)
+            except OSError:
+                pass
+            if target in saved:
+                os.dup2(saved[target], target, inheritable=True)
+                os.close(saved[target])
 
 
 def build(output: Path) -> dict[str, str]:
@@ -276,6 +392,12 @@ def main() -> int:
     assert _mode_from_arguments(["make", "--no-print-directory", "ci"]) == "ci"
     assert _mode_from_arguments(["--mode", "build"]) == "build"
     assert _mode_from_arguments(["--mode", "self-test"]) == "self-test"
+    assert _mode_from_arguments(["--mode", "ordinary-adoption-boundary"]) == (
+        "ordinary-adoption-boundary"
+    )
+    assert _normalize_absolute("/work/align") == "/work/align"
+    for invalid in ("", "align", "/work/../align", "/work//align", "/work/\x01align"):
+        rejected(lambda value=invalid: _normalize_absolute(value))
     for invalid in (
         [],
         ["make", "ci"],
@@ -290,6 +412,8 @@ def main() -> int:
         lambda: _reject_environment({"ALIGN_REPO": "../align"}, mode="self-test")
     )
     with tempfile.TemporaryDirectory(prefix="fresh-image-membership-") as name:
+        boundary_worker_presence_case(Path(name))
+        boundary_child_lifecycle_case(Path(name))
         cgroup_membership_case(Path(name))
         cgroup_removal_case(Path(name))
         cgroup_launch_failure_case(Path(name))
@@ -311,10 +435,17 @@ def main() -> int:
             second = Path(second_name)
             forwarder_descriptor_case(first)
             assert build(first) == build(second)
-            for name in ("fresh-supervise", "fresh-bootstrap"):
+            for name in (
+                "fresh-supervise",
+                "fresh-bootstrap",
+                "request6-adoption-boundary-entrypoint",
+            ):
                 assert (first / name).read_bytes() == (second / name).read_bytes()
                 assert (first / name).read_bytes().startswith(b"\x7fELF")
             assert not has_elf_interpreter(first / "fresh-supervise")
+            assert not has_elf_interpreter(
+                first / "request6-adoption-boundary-entrypoint"
+            )
             fifo = first / "worker-fifo"
             os.mkfifo(fifo, 0o755)
             started = time.monotonic()
@@ -421,6 +552,27 @@ def main() -> int:
             assert result.returncode == 1
             assert result.stdout == b""
             assert result.stderr == b"fresh compiler: ERROR TRUST supervisor\n"
+            boundary = subprocess.run(
+                [
+                    str(first / "request6-adoption-boundary-entrypoint"),
+                    "--mode",
+                    "ordinary-adoption-boundary",
+                ],
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "LANG": "C",
+                    "HOME": "/nonexistent",
+                    "TMPDIR": "/tmp",
+                },
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            assert boundary.returncode == 1
+            assert boundary.stdout == b""
+            assert boundary.stderr == b"json-scan adoption: ERROR input\n"
 
     print("fresh image control smoke: PASS")
     return 0

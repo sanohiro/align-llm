@@ -12,7 +12,9 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
+import ctypes
 import os
+import posixpath
 import re
 import resource
 import selectors
@@ -25,7 +27,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from fresh_attestation import (
     IMAGE_KEY_ID,
@@ -50,6 +52,9 @@ SNAPSHOT_DEADLINE_SECONDS = 5.0
 CONTROLLER_PATH = "scripts/fresh-align-compiler"
 SUPERVISOR_PATH = "/usr/local/libexec/align-llm/fresh-supervise"
 BOOTSTRAP_PATH = "/usr/local/libexec/align-llm/fresh-bootstrap"
+BOUNDARY_DISPATCHER_PATH = (
+    "/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint"
+)
 MANIFEST_PATH = "/usr/local/share/align-llm/fresh-toolchain.json"
 IMAGE_ATTESTATION_PATH = "/run/align-llm-fresh/image-attestation.dsse"
 IMAGE_PUBLIC_KEY_PATH = "/usr/local/share/align-llm/image-verifier.pub"
@@ -65,6 +70,8 @@ SUPERVISOR_VERSION = "1.0.0"
 WORKER_INVOCATION_TIMEOUT = 5_000
 CONTROL_STREAM_LIMIT = 65_536
 CONTROL_CGROUP_PREFIX = "align-llm-control-"
+BOUNDARY_WORKER_PATH = "scripts/run-json-scan-row-ownership-adoption"
+BOUNDARY_TIMEOUT_SECONDS = 5.0
 
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -781,7 +788,9 @@ def _sealed_memfd(name: str, raw: bytes, target: int) -> int:
         raise ControlError("TRUST", "supervisor", "cannot create sealed input") from error
 
 
-def _read_sealed(fd: int, *, limit: int) -> bytes:
+def _read_sealed(
+    fd: int, *, limit: int, expected_name: str | None = None
+) -> bytes:
     try:
         seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
     except OSError as error:
@@ -791,6 +800,13 @@ def _read_sealed(fd: int, *, limit: int) -> bytes:
     before = _identity(fd)
     if not stat.S_ISREG(before.mode) or before.links != 0 or before.size > limit:
         raise ControlError("TRUST", "supervisor", "sealed input identity is invalid")
+    if expected_name is not None:
+        try:
+            link = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError as error:
+            raise ControlError("TRUST", "supervisor", "sealed input name is unavailable") from error
+        if link != f"/memfd:{expected_name} (deleted)":
+            raise ControlError("TRUST", "supervisor", "sealed input name is invalid")
     os.lseek(fd, 0, os.SEEK_SET)
     try:
         raw = _read_exact_bounded(
@@ -825,6 +841,176 @@ def _normalize_relative(value: str) -> str:
     return normalized
 
 
+def _normalize_absolute(value: str) -> str:
+    if not value or "\x00" in value or not value.startswith("/"):
+        raise ControlError("ARGUMENT", "input", "absolute path is invalid")
+    if any(ord(character) < 0x20 for character in value):
+        raise ControlError("ARGUMENT", "input", "absolute path contains a control character")
+    pieces = value.split("/")[1:]
+    if not pieces or any(piece in ("", ".", "..") for piece in pieces):
+        raise ControlError("ARGUMENT", "input", "absolute path is not canonical")
+    normalized = "/" + "/".join(pieces)
+    if len(normalized.encode("utf-8")) > 4096:
+        raise ControlError("ARGUMENT", "input", "absolute path exceeds its byte bound")
+    return normalized
+
+
+def _canonical_relative_from_absolute(absolute: str) -> str:
+    try:
+        project = _normalize_absolute(os.getcwd())
+    except OSError as error:
+        raise ControlError("TRUST", "supervisor", "project cwd is unavailable") from error
+    normalized = _normalize_absolute(absolute)
+    relative = posixpath.relpath(normalized, project)
+    if relative == "." or relative.startswith("/"):
+        raise ControlError("ARGUMENT", "input", "absolute path is not a sibling path")
+    return _normalize_relative(relative)
+
+
+def _open_absolute_directory(value: str, target: int) -> int:
+    """Walk an absolute directory without following a component symlink."""
+
+    normalized = _normalize_absolute(value)
+    root_fd = -1
+    current_fd = -1
+    try:
+        root_fd = os.open(
+            "/", os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        os.dup2(root_fd, 17, inheritable=False)
+        if root_fd != 17:
+            os.close(root_fd)
+        root_fd = -1
+        current_fd = 17
+        for component in normalized.split("/")[1:]:
+            next_fd = os.open(
+                os.fsencode(component),
+                os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=current_fd,
+            )
+            if current_fd != 17 and current_fd != target:
+                os.close(current_fd)
+            current_fd = next_fd
+        os.dup2(current_fd, target, inheritable=True)
+        if current_fd != target:
+            os.close(current_fd)
+        current_fd = -1
+        try:
+            observed = _normalize_absolute(os.readlink(f"/proc/self/fd/{target}"))
+        except (OSError, ControlError) as error:
+            raise ControlError("TRUST", "supervisor", "Align path identity is unavailable") from error
+        if observed != normalized:
+            raise ControlError("TRUST", "supervisor", "Align path identity changed")
+        return target
+    except ControlError:
+        raise
+    except OSError as error:
+        raise ControlError("TRUST", "supervisor", "Align path walk failed") from error
+    finally:
+        for descriptor in (current_fd, root_fd, 17):
+            if descriptor >= 0 and descriptor != target:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _execveat(fd: int, arguments: Sequence[str], environment: Mapping[str, str]) -> None:
+    """Execute one retained ELF descriptor without reopening its pathname."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    function = libc.execveat
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_char_p),
+        ctypes.POINTER(ctypes.c_char_p),
+        ctypes.c_int,
+    ]
+    function.restype = ctypes.c_int
+    encoded_arguments = [value.encode("utf-8") for value in arguments]
+    encoded_environment = [
+        f"{name}={value}".encode("utf-8") for name, value in environment.items()
+    ]
+    argv = (ctypes.c_char_p * (len(encoded_arguments) + 1))(
+        *(encoded_arguments + [None])
+    )
+    envp = (ctypes.c_char_p * (len(encoded_environment) + 1))(
+        *(encoded_environment + [None])
+    )
+    result = function(fd, b"", argv, envp, 0x1000)  # AT_EMPTY_PATH
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _runtime_file_binding(
+    manifest: Mapping[str, Any], target: str, *, owner: int
+) -> tuple[int, bytes, Mapping[str, Any]]:
+    matches = [
+        binding
+        for binding in manifest["runtime_bindings"]
+        if binding.get("target") == target
+    ]
+    if len(matches) != 1:
+        raise ControlError("TRUST", "supervisor", "runtime binding is missing")
+    binding = matches[0]
+    tree = binding.get("manifest")
+    if (
+        binding.get("source") != target
+        or binding.get("kind") != "file"
+        or not isinstance(tree, Mapping)
+        or tree.get("kind") != "file"
+        or tree.get("mode") != "0755"
+    ):
+        raise ControlError("TRUST", "supervisor", "runtime binding is not the dispatcher")
+    try:
+        descriptor, raw = _open_regular(
+            target,
+            limit=MAX_WORKER_BYTES,
+            exact_mode=0o755,
+            exact_owner=owner,
+        )
+    except ControlError as error:
+        raise ControlError("TRUST", "supervisor", "runtime dispatcher is unavailable") from error
+    if (
+        sha256_hex(raw) != tree.get("sha256")
+        or serialized_digest(tree) != binding.get("manifest_sha256")
+    ):
+        os.close(descriptor)
+        raise ControlError("TRUST", "supervisor", "runtime dispatcher digest mismatch")
+    return descriptor, raw, binding
+
+
+def _boundary_worker_presence(project_fd: int) -> None:
+    """Reject the future consumer worker without reading or executing its bytes."""
+
+    scripts_fd = -1
+    worker_fd = -1
+    try:
+        scripts_fd = os.open(
+            "scripts",
+            os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=project_fd,
+        )
+        worker_fd = os.open(
+            os.fsencode(BOUNDARY_WORKER_PATH.split("/", 1)[1]),
+            os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=scripts_fd,
+        )
+        os.fstat(worker_fd)
+    except OSError as error:
+        raise ControlError("REVISION", "revision", "boundary worker is absent or invalid") from error
+    finally:
+        for descriptor in (worker_fd, scripts_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+    raise ControlError("REVISION", "revision", "boundary worker is present")
+
+
 def _mode_from_arguments(arguments: Sequence[str]) -> str:
     if list(arguments) == ["make", "--no-print-directory", "ci"]:
         return "ci"
@@ -832,6 +1018,8 @@ def _mode_from_arguments(arguments: Sequence[str]) -> str:
         return "build"
     if list(arguments) == ["--mode", "self-test"]:
         return "self-test"
+    if list(arguments) == ["--mode", "ordinary-adoption-boundary"]:
+        return "ordinary-adoption-boundary"
     raise ControlError("ARGUMENT", "input", "request vector is not accepted")
 
 
@@ -842,6 +1030,11 @@ def _reject_environment(environment: Mapping[str, str], *, mode: str) -> str:
     for name in ("MAKEFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES"):
         if environment.get(name, ""):
             raise ControlError("ARGUMENT", "input", f"nonempty {name}")
+    if mode == "ordinary-adoption-boundary":
+        align_repo = environment.get("ALIGN_REPO")
+        if align_repo is None:
+            raise ControlError("ARGUMENT", "input", "boundary mode requires ALIGN_REPO")
+        return _normalize_absolute(align_repo)
     align_repo = environment.get("ALIGN_REPO", "../align")
     if mode == "self-test" and "ALIGN_REPO" in environment:
         raise ControlError("ARGUMENT", "input", "self-test rejects ALIGN_REPO")
@@ -1015,15 +1208,315 @@ def _invocation_predicate(
     )
 
 
+def _boundary_dispatch(
+    *,
+    project_fd: int,
+    image_fd: int,
+    manifest_fd: int,
+    dispatcher_fd: int,
+    align_fd: int,
+    align_repo_absolute: str,
+    align_repo_relative: str,
+) -> tuple[int | None, bytes, bytes, bool]:
+    """Run one retained boundary dispatcher with bounded stream capture."""
+
+    if (project_fd, image_fd, manifest_fd, dispatcher_fd, align_fd) != (
+        4,
+        6,
+        8,
+        14,
+        18,
+    ):
+        raise OSError(errno.EINVAL, "boundary descriptor vector is not fixed")
+    stdout_read, stdout_write = os.pipe2(os.O_CLOEXEC)
+    stderr_read, stderr_write = os.pipe2(os.O_CLOEXEC)
+    child_pid = -1
+    child_status: int | None = None
+    timed_out = False
+    overflow = False
+    streams = selectors.DefaultSelector()
+    captures = {stdout_read: bytearray(), stderr_read: bytearray()}
+    try:
+        child_pid = os.fork()
+        if child_pid == 0:
+            try:
+                os.close(stdout_read)
+                os.close(stderr_read)
+                os.dup2(stdout_write, 1, inheritable=True)
+                os.dup2(stderr_write, 2, inheritable=True)
+                os.set_inheritable(4, True)
+                os.set_inheritable(6, True)
+                os.set_inheritable(8, True)
+                os.set_inheritable(14, True)
+                os.set_inheritable(18, True)
+                if stdout_write != 1:
+                    os.close(stdout_write)
+                if stderr_write != 2:
+                    os.close(stderr_write)
+                os.chdir("/proc/self/fd/4")
+                _close_descriptors_except({0, 1, 2, 4, 6, 8, 14, 18})
+                _execveat(
+                    14,
+                    [
+                        "request6-adoption-boundary-entrypoint",
+                        "--mode",
+                        "ordinary-adoption-boundary",
+                        "--project-root-fd",
+                        "4",
+                        "--image-attestation-fd",
+                        "6",
+                        "--manifest-fd",
+                        "8",
+                        "--align-repo-root-fd",
+                        "18",
+                        "--align-repo-absolute",
+                        align_repo_absolute,
+                        "--align-repo-relative",
+                        align_repo_relative,
+                    ],
+                    CHILD_ENVIRONMENT,
+                )
+            except BaseException:
+                os._exit(127)
+
+        os.close(stdout_write)
+        os.close(stderr_write)
+        stdout_write = -1
+        stderr_write = -1
+        for descriptor in (stdout_read, stderr_read):
+            os.set_blocking(descriptor, False)
+            streams.register(descriptor, selectors.EVENT_READ)
+        deadline = time.monotonic() + BOUNDARY_TIMEOUT_SECONDS
+        while streams.get_map() or child_status is None:
+            if child_status is None:
+                try:
+                    waited, status = os.waitpid(child_pid, os.WNOHANG)
+                except OSError:
+                    waited = child_pid
+                    status = -1
+                if waited == child_pid:
+                    child_status = status
+                    child_pid = -1
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            events = streams.select(remaining)
+            for event, _ in events:
+                descriptor = event.fd
+                while True:
+                    try:
+                        block = os.read(descriptor, 65_536)
+                    except BlockingIOError:
+                        break
+                    except OSError:
+                        timed_out = True
+                        break
+                    if not block:
+                        streams.unregister(descriptor)
+                        os.close(descriptor)
+                        break
+                    captures[descriptor].extend(block)
+                    if len(captures[descriptor]) > CONTROL_STREAM_LIMIT:
+                        overflow = True
+                        break
+                if timed_out or overflow:
+                    break
+            if timed_out or overflow:
+                break
+        if child_pid > 0:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                _, child_status = os.waitpid(child_pid, 0)
+            except OSError:
+                child_status = -1
+            child_pid = -1
+        if timed_out or overflow:
+            return child_status, bytes(captures[stdout_read]), bytes(captures[stderr_read]), False
+        drain_deadline = deadline
+        while streams.get_map():
+            if time.monotonic() >= drain_deadline:
+                timed_out = True
+                break
+            events = streams.select(0.1)
+            if not events:
+                timed_out = True
+                break
+            for event, _ in events:
+                descriptor = event.fd
+                try:
+                    block = os.read(descriptor, 65_536)
+                except (BlockingIOError, OSError):
+                    timed_out = True
+                    break
+                if not block:
+                    streams.unregister(descriptor)
+                    os.close(descriptor)
+                    continue
+                captures[descriptor].extend(block)
+                if len(captures[descriptor]) > CONTROL_STREAM_LIMIT:
+                    overflow = True
+                    break
+            if timed_out or overflow:
+                break
+        valid = (
+            not timed_out
+            and not overflow
+            and child_status is not None
+            and os.WIFEXITED(child_status)
+        )
+        return child_status, bytes(captures[stdout_read]), bytes(captures[stderr_read]), valid
+    finally:
+        if child_pid > 0:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                os.waitpid(child_pid, 0)
+            except OSError:
+                pass
+        try:
+            streams.close()
+        except OSError:
+            pass
+        for descriptor in (stdout_read, stdout_write, stderr_read, stderr_write):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _write_exact(fd: int, raw: bytes) -> None:
+    view = memoryview(raw)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError(errno.EIO, "short boundary output")
+        view = view[written:]
+
+
+def _boundary_supervise(
+    *, align_repo_absolute: str, self_fd: int, paths: ProfilePaths
+) -> int:
+    image_fd = -1
+    manifest_fd = -1
+    project_fd = -1
+    align_fd = -1
+    dispatcher_fd = -1
+    try:
+        try:
+            attestation_fd, attestation_raw = _open_regular(
+                paths.image_attestation,
+                limit=MAX_ATTESTATION_BYTES,
+                exact_mode=0o444,
+                exact_owner=paths.image_owner,
+            )
+            os.close(attestation_fd)
+            image_fd = _sealed_memfd("align-llm-image", attestation_raw, 6)
+            manifest_source_fd, manifest_raw = _open_regular(
+                paths.manifest,
+                limit=MAX_MANIFEST_BYTES,
+                exact_mode=0o444,
+                exact_owner=paths.image_owner,
+            )
+            os.close(manifest_source_fd)
+            manifest_fd = _sealed_memfd("align-llm-manifest", manifest_raw, 8)
+        except ControlError as error:
+            raise ControlError("TRUST", "supervisor", "boundary image input unavailable") from error
+
+        try:
+            supervisor_raw = _regular_snapshot(
+                self_fd,
+                limit=MAX_WORKER_BYTES,
+                exact_mode=0o755,
+                exact_owner=paths.image_owner,
+            )
+            image_envelope = _read_sealed(image_fd, limit=MAX_ATTESTATION_BYTES)
+            _, _, _, verified_manifest_raw = _verify_image_envelope(
+                image_envelope,
+                paths=paths,
+                supervisor_raw=supervisor_raw,
+            )
+        except ControlError as error:
+            raise ControlError("TRUST", "supervisor", "boundary image verification failed") from error
+        if verified_manifest_raw != manifest_raw:
+            raise ControlError("TRUST", "supervisor", "boundary manifest snapshot changed")
+        try:
+            manifest = validate_manifest_bytes(manifest_raw)
+        except WireError as error:
+            raise ControlError("TRUST", "manifest", "boundary manifest is invalid") from error
+        dispatcher_fd, _, _ = _runtime_file_binding(
+            manifest, BOUNDARY_DISPATCHER_PATH, owner=paths.image_owner
+        )
+        os.dup2(dispatcher_fd, 14, inheritable=True)
+        if dispatcher_fd != 14:
+            os.close(dispatcher_fd)
+            dispatcher_fd = 14
+
+        try:
+            project_fd = os.open(
+                ".", os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+            os.dup2(project_fd, 4, inheritable=True)
+            if project_fd != 4:
+                os.close(project_fd)
+            project_fd = 4
+        except OSError as error:
+            raise ControlError("TRUST", "supervisor", "project root cannot be retained") from error
+        normalized_absolute = _normalize_absolute(align_repo_absolute)
+        relative = _canonical_relative_from_absolute(normalized_absolute)
+        align_fd = _open_absolute_directory(normalized_absolute, 18)
+        try:
+            status, stdout, stderr, valid = _boundary_dispatch(
+                project_fd=project_fd,
+                image_fd=image_fd,
+                manifest_fd=manifest_fd,
+                dispatcher_fd=dispatcher_fd,
+                align_fd=align_fd,
+                align_repo_absolute=normalized_absolute,
+                align_repo_relative=relative,
+            )
+        except (OSError, ValueError, selectors.SelectorError) as error:
+            raise ControlError("TRUST", "supervisor", "boundary child launch failed") from error
+        if (
+            not valid
+            or status is None
+            or not os.WIFEXITED(status)
+            or os.WEXITSTATUS(status) != 1
+            or stdout
+            or stderr != b"json-scan adoption: ERROR revision\n"
+        ):
+            raise ControlError("TRUST", "supervisor", "boundary child result is not canonical")
+        _write_exact(2, stderr)
+        return 1
+    finally:
+        for descriptor in (4, 6, 8, 14, 18):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 def supervise(
     arguments: Sequence[str],
     *,
     self_fd: int,
     image_fd: int | None = None,
     paths: ProfilePaths = ProfilePaths(),
-) -> None:
+) -> int | None:
     mode = _mode_from_arguments(arguments)
     align_repo = _reject_environment(os.environ, mode=mode)
+    if mode == "ordinary-adoption-boundary":
+        return _boundary_supervise(
+            align_repo_absolute=align_repo,
+            self_fd=self_fd,
+            paths=paths,
+        )
     if image_fd is None:
         try:
             attestation_fd, attestation_raw = _open_regular(
@@ -1784,12 +2277,12 @@ def supervisor_main(arguments: Sequence[str] | None = None) -> int:
     if values[:2] != ["--embedded-self-fd", "10"]:
         return _emit_error(ControlError("TRUST", "supervisor", "wrong self descriptor"))
     try:
-        supervise(values[2:], self_fd=10)
+        result = supervise(values[2:], self_fd=10)
     except ControlError as error:
         return _emit_error(error)
     except Exception:
         return _emit_error(ControlError("INTERNAL", "internal"))
-    return 1
+    return 1 if result is None else result
 
 
 def bootstrap_main(arguments: Sequence[str] | None = None) -> int:
@@ -1808,6 +2301,7 @@ __all__ = [
     "ControlError",
     "ProfilePaths",
     "_mode_from_arguments",
+    "_normalize_absolute",
     "_normalize_relative",
     "_reject_environment",
     "_sealed_memfd",
