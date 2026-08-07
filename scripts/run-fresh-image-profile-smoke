@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import shutil
@@ -287,6 +288,96 @@ os._exit(128 + os.WTERMSIG(status))
     return run(arguments, check=False, timeout=WORKER_INVOCATION_TIMEOUT)
 
 
+def ordinary_profile_run(
+    image: str,
+    volume: str,
+    runtime_volume: str,
+    source_volume: str,
+    cgroup_driver: str,
+    *,
+    replacements: tuple[tuple[Path, str], ...] = (),
+) -> subprocess.CompletedProcess[bytes]:
+    replacement_arguments: list[str] = []
+    for source, target in replacements:
+        replacement_arguments.extend(
+            ["--mount", f"type=bind,src={source},dst={target},readonly"]
+        )
+    arguments = [
+        "docker",
+        "run",
+        "--rm",
+        "--privileged",
+        "--cgroupns=host",
+        "--network=none",
+        "--workdir",
+        "/work/project",
+        "--env",
+        "ALIGN_REPO=/work/align",
+    ]
+    command = [image, "--mode", "ordinary-adoption"]
+    if cgroup_driver == "cgroupfs":
+        arguments.extend(
+            [
+                "--cgroup-parent",
+                f"/align-llm-fresh/{TEST_UID}",
+                "--user",
+                f"{TEST_UID}:{TEST_UID}",
+            ]
+        )
+    elif cgroup_driver == "systemd":
+        launcher = f"""\
+import os
+parent = '/sys/fs/cgroup/align-llm-fresh/{TEST_UID}'
+leaf = parent + '/docker-ordinary-adoption-' + str(os.getpid())
+os.mkdir(leaf, 0o700)
+child = os.fork()
+if child == 0:
+    try:
+        with open(leaf + '/cgroup.procs', 'w', encoding='ascii') as target:
+            target.write('0\\n')
+        os.setgroups([])
+        os.setgid({TEST_UID})
+        os.setuid({TEST_UID})
+        os.chdir('/work/project')
+        os.execve('/usr/local/libexec/align-llm/fresh-supervise',
+                  ['fresh-supervise', '--mode', 'ordinary-adoption'],
+                  {{'ALIGN_REPO': '/work/align'}})
+    except BaseException:
+        os._exit(127)
+try:
+    _, status = os.waitpid(child, 0)
+finally:
+    os.rmdir(leaf)
+if os.WIFEXITED(status):
+    os._exit(os.WEXITSTATUS(status))
+os._exit(128 + os.WTERMSIG(status))
+"""
+        arguments.extend(
+            [
+                "--user",
+                "0:0",
+                "--entrypoint",
+                "/usr/bin/python3.12",
+            ]
+        )
+        command = [image, "-I", "-c", launcher]
+    else:
+        raise RuntimeError(f"unsupported Docker cgroup driver: {cgroup_driver}")
+    arguments.extend(
+        [
+            "--mount",
+            f"type=volume,src={volume},dst=/run/align-llm-fresh,readonly",
+            "--mount",
+            f"type=volume,src={runtime_volume},dst=/run/user",
+            "--mount",
+            f"type=volume,src={source_volume},dst=/work,readonly",
+            *replacement_arguments,
+            *command,
+        ]
+    )
+    return run(arguments, check=False, timeout=WORKER_INVOCATION_TIMEOUT)
+
+
 def populate_source_volume(image: str, volume: str, source: Path) -> None:
     run(
         [
@@ -393,7 +484,26 @@ def main() -> int:
             manifest = temporary / "fresh-toolchain.json"
             copy_from_image(image, "/usr/local/libexec/align-llm/fresh-supervise", supervisor)
             copy_from_image(image, "/usr/local/libexec/align-llm/fresh-bootstrap", bootstrap)
+            dispatcher = temporary / "request6-adoption-entrypoint"
+            namespace = temporary / "adoption-namespace"
+            copy_from_image(image, "/usr/local/libexec/align-llm/request6-adoption-entrypoint", dispatcher)
+            copy_from_image(image, "/usr/bin/adoption-namespace", namespace)
             copy_from_image(image, "/usr/local/share/align-llm/fresh-toolchain.json", manifest)
+            manifest_value = json.loads(manifest.read_text(encoding="utf-8"))
+            bindings = {
+                binding["target"]: binding
+                for binding in manifest_value["runtime_bindings"]
+            }
+            for target in (
+                "/usr/local/libexec/align-llm/request6-adoption-entrypoint",
+                "/usr/bin/adoption-namespace",
+            ):
+                if target not in bindings or bindings[target]["kind"] != "file":
+                    raise RuntimeError(f"ordinary runtime binding is missing: {target}")
+            if bindings["/usr/local/libexec/align-llm/request6-adoption-entrypoint"]["manifest"]["sha256"] != hashlib.sha256(dispatcher.read_bytes()).hexdigest():
+                raise RuntimeError("ordinary dispatcher manifest digest mismatch")
+            if bindings["/usr/bin/adoption-namespace"]["manifest"]["sha256"] != hashlib.sha256(namespace.read_bytes()).hexdigest():
+                raise RuntimeError("ordinary namespace manifest digest mismatch")
             attestation = temporary / "image-attestation.dsse"
             run(
                 [
@@ -659,6 +769,44 @@ def main() -> int:
                 )
             if worker_result.stdout != b"fresh compiler and capable checks: PASS\n" or worker_result.stderr:
                 raise RuntimeError("fresh worker aggregate output is not canonical")
+            ordinary_result = ordinary_profile_run(
+                image, volume, runtime_volume, source_volume, cgroup_driver
+            )
+            if ordinary_result.returncode != 1 or ordinary_result.stdout or ordinary_result.stderr != b"json-scan adoption: ERROR revision\n":
+                raise RuntimeError(
+                    "ordinary profile did not reject the absent consumer before Make:\n"
+                    + ordinary_result.stdout.decode("utf-8", "replace")
+                    + ordinary_result.stderr.decode("utf-8", "replace")
+                )
+            replaced_dispatcher = temporary / "replaced-dispatcher"
+            replaced_dispatcher.write_bytes(bootstrap.read_bytes())
+            replaced_dispatcher.chmod(0o755)
+            require_trust_rejection(
+                ordinary_profile_run(
+                    image,
+                    volume,
+                    runtime_volume,
+                    source_volume,
+                    cgroup_driver,
+                    replacements=((replaced_dispatcher, "/usr/local/libexec/align-llm/request6-adoption-entrypoint"),),
+                ),
+                "replaced ordinary dispatcher",
+            )
+            worker_source = temporary / "source-with-worker"
+            shutil.copytree(source, worker_source)
+            worker_link = worker_source / "project" / "scripts" / "run-json-scan-row-ownership-adoption"
+            worker_link.symlink_to("/bin/sh")
+            invalid_worker_volume = f"{source_volume}-invalid-worker"
+            run(["docker", "volume", "create", invalid_worker_volume])
+            try:
+                populate_source_volume(image, invalid_worker_volume, worker_source)
+                invalid_worker_result = ordinary_profile_run(
+                    image, volume, runtime_volume, invalid_worker_volume, cgroup_driver
+                )
+                if invalid_worker_result.returncode != 1 or invalid_worker_result.stdout or invalid_worker_result.stderr != b"json-scan adoption: ERROR revision\n":
+                    raise RuntimeError("replaced ordinary worker was not rejected before Make")
+            finally:
+                run(["docker", "volume", "rm", "-f", invalid_worker_volume], check=False)
         finally:
             if cgroup_ready:
                 run(

@@ -27,6 +27,12 @@ self-test without a network, and checks canonical trust rejection:
 PYTHONDONTWRITEBYTECODE=1 scripts/run-fresh-image-profile-smoke
 ```
 
+The profile smoke also verifies the two fixed ordinary-adoption runtime bindings, rejects direct
+dispatcher execution, and invokes `fresh-supervise --mode ordinary-adoption` against a checkout that
+does not yet contain the consumer worker. That path must return exactly
+`json-scan adoption: ERROR revision\n` before any Make or compiler marker. The consumer worker and
+its full namespace/build acceptance remain a later adoption slice.
+
 The hosted Ubuntu 24.04 qualification temporarily disables that runner's AppArmor restriction on
 unprivileged user namespaces, verifies a nested namespace can be created, and restores the original
 setting after the profile. A deployment must provide equivalent nested-user-namespace capability;

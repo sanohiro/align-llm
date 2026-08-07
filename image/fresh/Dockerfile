@@ -78,8 +78,12 @@ RUN mkdir -p /usr/local/libexec/align-llm /usr/local/share/align-llm \
       --cc /usr/lib/llvm-22/bin/clang --output-dir /tmp/fresh-control-b && \
     cmp /tmp/fresh-control-a/fresh-supervise /tmp/fresh-control-b/fresh-supervise && \
     cmp /tmp/fresh-control-a/fresh-bootstrap /tmp/fresh-control-b/fresh-bootstrap && \
+    cmp /tmp/fresh-control-a/request6-adoption-entrypoint /tmp/fresh-control-b/request6-adoption-entrypoint && \
+    cmp /tmp/fresh-control-a/adoption-namespace /tmp/fresh-control-b/adoption-namespace && \
     install -m 0755 /tmp/fresh-control-a/fresh-supervise \
-      /tmp/fresh-control-a/fresh-bootstrap /usr/local/libexec/align-llm/ && \
+      /tmp/fresh-control-a/fresh-bootstrap \
+      /tmp/fresh-control-a/request6-adoption-entrypoint /usr/local/libexec/align-llm/ && \
+    install -m 0755 /tmp/fresh-control-a/adoption-namespace /usr/bin/adoption-namespace && \
     rm -rf /tmp/fresh-control-a /tmp/fresh-control-b && \
     /usr/lib/llvm-22/bin/clang -std=c11 -O2 -Wall -Wextra -Werror -static-pie \
       -Wl,-z,relro,-z,now -Wl,--build-id=none \
@@ -181,6 +185,8 @@ RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --runtime /runtime/rust=/runtime/rust \
       --runtime /runtime/cc-suite=/runtime/cc-suite \
       --runtime /runtime/bwrap=/runtime/bwrap \
+      --runtime /usr/local/libexec/align-llm/request6-adoption-entrypoint=/usr/local/libexec/align-llm/request6-adoption-entrypoint \
+      --runtime /usr/bin/adoption-namespace=/usr/bin/adoption-namespace \
       --runtime /usr/bin/dash=/bin/sh \
       --runtime /usr/bin/bash=/bin/bash \
       --runtime /usr/bin/env=/usr/bin/env \

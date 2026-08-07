@@ -20,7 +20,9 @@ sys.path.insert(0, str(REPOSITORY / "image" / "fresh" / "control"))
 from fresh_image_control import (  # noqa: E402
     ControlError,
     _mode_from_arguments,
+    _normalize_absolute,
     _normalize_relative,
+    _open_absolute_directory,
     _open_regular,
     _read_sealed,
     _reject_environment,
@@ -273,14 +275,19 @@ def main() -> int:
     assert _normalize_relative("a/./b/../c") == "a/c"
     for invalid in ("", "/align", ".", "a/..", "\x00"):
         rejected(lambda value=invalid: _normalize_relative(value))
+    assert _normalize_absolute("/tmp/align") == "/tmp/align"
+    for invalid in ("", "align", "/", "/tmp/./align", "/tmp//align", "/tmp/../align"):
+        rejected(lambda value=invalid: _normalize_absolute(value))
     assert _mode_from_arguments(["make", "--no-print-directory", "ci"]) == "ci"
     assert _mode_from_arguments(["--mode", "build"]) == "build"
     assert _mode_from_arguments(["--mode", "self-test"]) == "self-test"
+    assert _mode_from_arguments(["--mode", "ordinary-adoption"]) == "ordinary-adoption"
     for invalid in (
         [],
         ["make", "ci"],
         ["make", "--no-print-directory", "ci", "extra"],
         ["--mode", "ci"],
+        ["--mode", "ordinary-adoption", "extra"],
     ):
         rejected(lambda value=invalid: _mode_from_arguments(value))
     assert _reject_environment({}, mode="ci") == "../align"
@@ -289,6 +296,8 @@ def main() -> int:
     rejected(
         lambda: _reject_environment({"ALIGN_REPO": "../align"}, mode="self-test")
     )
+    assert _reject_environment({"ALIGN_REPO": "/tmp/align"}, mode="ordinary-adoption") == "/tmp/align"
+    rejected(lambda: _reject_environment({}, mode="ordinary-adoption"))
     with tempfile.TemporaryDirectory(prefix="fresh-image-membership-") as name:
         cgroup_membership_case(Path(name))
         cgroup_removal_case(Path(name))
@@ -311,10 +320,25 @@ def main() -> int:
             second = Path(second_name)
             forwarder_descriptor_case(first)
             assert build(first) == build(second)
-            for name in ("fresh-supervise", "fresh-bootstrap"):
+            for name in (
+                "fresh-supervise",
+                "fresh-bootstrap",
+                "request6-adoption-entrypoint",
+                "adoption-namespace",
+            ):
                 assert (first / name).read_bytes() == (second / name).read_bytes()
                 assert (first / name).read_bytes().startswith(b"\x7fELF")
             assert not has_elf_interpreter(first / "fresh-supervise")
+            assert not has_elf_interpreter(first / "request6-adoption-entrypoint")
+            assert not has_elf_interpreter(first / "adoption-namespace")
+            with tempfile.TemporaryDirectory(prefix="fresh-image-absolute-walk-") as walk_name:
+                walk_root = Path(walk_name) / "align"
+                walk_root.mkdir()
+                walk_fd = _open_absolute_directory(str(walk_root), 31)
+                try:
+                    assert os.fstat(walk_fd).st_ino == walk_root.stat().st_ino
+                finally:
+                    os.close(walk_fd)
             fifo = first / "worker-fifo"
             os.mkfifo(fifo, 0o755)
             started = time.monotonic()

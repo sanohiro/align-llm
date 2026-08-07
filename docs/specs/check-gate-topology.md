@@ -3608,16 +3608,20 @@ the public line.
 
 ### 9.11 Compatibility, verification, and delivery order
 
-This design-only gate executes exactly `git diff --check`, the balanced Markdown fence parity check,
-and `make gate-topology-check`. It does not execute or claim
+The design gate executed exactly `git diff --check`, the balanced Markdown fence parity check, and
+`make gate-topology-check`. The installed profile extension now additionally owns the deterministic
+image-side checks `python3 scripts/run-fresh-focused-adoption-smoke`, the existing focused control
+smokes, and the installed `scripts/run-fresh-image-profile-smoke`. It does not execute or claim
 passing the future digest-tree, source-manifest, cache-manifest, descriptor/guard, image-attestation,
 run-capsule, supervisor, Make-option, pre-dispatch, source-fd-window, compiler-suite, lock,
 concurrency, or error-grammar owners named in this section; those checks are acceptance contracts
-whose executable owners are deferred to the implementation/profile slices. Source tests,
+whose full executable owners remain in the consumer implementation/profile slices. Source tests,
 `make check`, `make build`, `make ci`, hosted checks, and benchmarks are N/A until an executable
-implementation or executable contract boundary exists. A pull request description and HANDOFF must
-record only the commands actually run at this design gate, never the deferred owner names as passed
-evidence.
+consumer implementation or executable contract boundary exists. The image/profile branch proves only
+the ordinary selector, canonical capsule wire, image-owned dispatcher/helper bindings, retained-path
+dispatch boundary, direct-invocation rejection, and pre-Make rejection of an absent worker. A pull
+request description and HANDOFF must record only commands actually run at the applicable gate, never
+the deferred consumer owner names as passed evidence.
 
 The successor design and its wire/source-identity foundations are merged. They are internal
 checkpoints, not a precedent for more helper-only pull requests. Delivery now has two independently
@@ -3700,7 +3704,12 @@ dependent adoption wave:
    capsule, nonce, Make, or compiler marker occurs on that path. It must replace the dispatcher and
    worker independently, replay or edit the capsule, and prove rejection before any Make or compiler
    marker. It must pass against the exact installed manifest before this extension is considered
-   merged; it records a new image/profile identity and does not change `.align-revision`.
+   merged; it records a new image/profile identity and does not change `.align-revision`. This
+   implementation slice is intentionally over 1,000 changed hand-written lines because the
+   dispatcher, retained-FD launcher, namespace-helper binding, manifest extension, image smoke, and
+   qualification ownership form one signed installed-profile capability; splitting them would create
+   an intermediate image that cannot exercise the retained authority path or be independently
+   attested.
 4. **Fresh adoption wave.** After FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6 all pass
    and merge, batch the merged Align requests
    required by the next real consumer into one `.align-revision` update, rebuild, and the original

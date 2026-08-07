@@ -100,6 +100,8 @@ def main() -> int:
         build = Path(temporary)
         supervisor_bundle = build / "supervisor.pyz"
         bootstrap_bundle = build / "bootstrap.pyz"
+        dispatcher_bundle = build / "dispatcher.pyz"
+        namespace_bundle = build / "namespace.pyz"
         build_bundle(
             supervisor_bundle,
             main=control / "supervisor_main.py",
@@ -110,6 +112,18 @@ def main() -> int:
             main=control / "bootstrap_main.py",
             modules=modules,
         )
+        build_bundle(
+            dispatcher_bundle,
+            main=control / "dispatcher_main.py",
+            modules=modules
+            + [("request6_adoption.py", control / "request6_adoption.py")],
+        )
+        build_bundle(
+            namespace_bundle,
+            main=control / "namespace_main.py",
+            modules=modules
+            + [("adoption_namespace.py", control / "adoption_namespace.py")],
+        )
         write_header(
             build / "supervisor_payload.inc",
             symbol="supervisor_payload",
@@ -119,6 +133,16 @@ def main() -> int:
             build / "bootstrap_payload.inc",
             symbol="bootstrap_payload",
             raw=bootstrap_bundle.read_bytes(),
+        )
+        write_header(
+            build / "dispatcher_payload.inc",
+            symbol="dispatcher_payload",
+            raw=dispatcher_bundle.read_bytes(),
+        )
+        write_header(
+            build / "namespace_payload.inc",
+            symbol="namespace_payload",
+            raw=namespace_bundle.read_bytes(),
         )
         compile_launcher(
             compiler=arguments.cc,
@@ -133,6 +157,20 @@ def main() -> int:
             include_dir=build,
             output=arguments.output_dir / "fresh-bootstrap",
         )
+        compile_launcher(
+            compiler=arguments.cc,
+            source=repository / "image" / "fresh" / "request6-adoption-entrypoint.c",
+            include_dir=build,
+            output=arguments.output_dir / "request6-adoption-entrypoint",
+            static=True,
+        )
+        compile_launcher(
+            compiler=arguments.cc,
+            source=repository / "image" / "fresh" / "adoption-namespace.c",
+            include_dir=build,
+            output=arguments.output_dir / "adoption-namespace",
+            static=True,
+        )
         if arguments.keep_bundles:
             (arguments.output_dir / "fresh-supervise.pyz").write_bytes(
                 supervisor_bundle.read_bytes()
@@ -141,7 +179,12 @@ def main() -> int:
                 bootstrap_bundle.read_bytes()
             )
 
-    for name in ("fresh-supervise", "fresh-bootstrap"):
+    for name in (
+        "fresh-supervise",
+        "fresh-bootstrap",
+        "request6-adoption-entrypoint",
+        "adoption-namespace",
+    ):
         raw = (arguments.output_dir / name).read_bytes()
         print(f"{hashlib.sha256(raw).hexdigest()}  {name}")
     return 0

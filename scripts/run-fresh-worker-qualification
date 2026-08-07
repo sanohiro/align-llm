@@ -42,6 +42,7 @@ FOCUSED_CHECKS = (
             "fresh-v2-pre-dispatch-source-smoke",
         ),
     ),
+    ("run-fresh-focused-adoption-smoke", ("fresh-v2-focused-adoption-request-smoke",)),
     (
         "run-fresh-worker-unit-smoke",
         (
@@ -98,7 +99,10 @@ EXPECTED_CASES = {
     "fresh-v2-baseline-integration-smoke",
     "fresh-v2-concurrency-smoke",
     "fresh-v2-platform-profile-smoke",
+    "fresh-v2-focused-adoption-request-smoke",
 }
+
+PARTIAL_CASES = {"fresh-v2-focused-adoption-request-smoke"}
 
 
 def run(*arguments: str) -> None:
@@ -117,7 +121,10 @@ def run(*arguments: str) -> None:
 
 def verify_contract_inventory() -> None:
     specification = SPECIFICATION.read_text(encoding="utf-8")
-    closure = specification[specification.index("### 9.10 Closure matrix") :]
+    # The wire/source owners are specified in Sections 9.2/9.3, while the
+    # closure rows begin at 9.10.  Qualify the complete Section 9 inventory so
+    # a row cannot silently move before the matrix without being observed.
+    closure = specification[specification.index("### 9.2 Authenticated manifest") :]
     observed = set(re.findall(r"`(fresh-v2-[a-z0-9-]+)`", closure))
     if observed != EXPECTED_CASES:
         missing = sorted(EXPECTED_CASES - observed)
@@ -223,6 +230,9 @@ def verify_contract_inventory() -> None:
         "libzstd-dev",
         "cp -aL /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64",
         "--runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu",
+        "install -m 0755 /tmp/fresh-control-a/adoption-namespace /usr/bin/adoption-namespace",
+        "--runtime /usr/local/libexec/align-llm/request6-adoption-entrypoint=/usr/local/libexec/align-llm/request6-adoption-entrypoint",
+        "--runtime /usr/bin/adoption-namespace=/usr/bin/adoption-namespace",
         "--runtime /usr/bin/dash=/bin/sh",
         "--runtime /usr/bin/bash=/bin/bash",
         "--runtime /usr/bin/env=/usr/bin/env",
@@ -252,7 +262,8 @@ def main() -> int:
     owners = {case: command for command, cases in FOCUSED_CHECKS for case in cases}
     for name in sorted(EXPECTED_CASES):
         if name in owners:
-            print(f"  {name}: owner={owners[name]} execution=focused")
+            execution = "focused-profile-boundary" if name in PARTIAL_CASES else "focused"
+            print(f"  {name}: owner={owners[name]} execution={execution}")
         elif installed_profile:
             print(f"  {name}: owner=run-fresh-image-profile-smoke execution=installed-profile")
         else:

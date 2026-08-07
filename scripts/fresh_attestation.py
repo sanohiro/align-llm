@@ -23,6 +23,9 @@ IMAGE_PREDICATE_TYPE = "https://align-llm.dev/attestations/runner-image/v1"
 INVOCATION_PREDICATE_TYPE = (
     "https://align-llm.dev/attestations/runner-invocation/v1"
 )
+ORDINARY_ADOPTION_PREDICATE_TYPE = (
+    "https://align-llm.dev/attestations/ordinary-adoption/v2"
+)
 IMAGE_KEY_ID = "align-llm-runner-image-v1"
 RUN_KEY_ID = "align-llm-run-v1"
 CONTROLLER_PATH = "scripts/fresh-align-compiler"
@@ -106,6 +109,17 @@ def canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
 
     if not isinstance(value, Mapping):
         raise WireError("canonical root is not an object")
+    try:
+        return (_render_json(value) + "\n").encode("utf-8", "strict")
+    except UnicodeEncodeError as error:
+        raise WireError("canonical JSON is not valid UTF-8") from error
+
+
+def canonical_json_value_bytes(value: Any) -> bytes:
+    """Serialize a canonical JSON value, including the Request 6 array wire."""
+
+    if not isinstance(value, (Mapping, list)):
+        raise WireError("canonical value is not an object or array")
     try:
         return (_render_json(value) + "\n").encode("utf-8", "strict")
     except UnicodeEncodeError as error:
@@ -306,6 +320,64 @@ def validate_invocation_predicate(value: Mapping[str, Any]) -> Mapping[str, Any]
     if _string(value["supervisor_key_id"], "supervisor_key_id") != RUN_KEY_ID:
         raise WireError("wrong supervisor key id")
     _sha256(value["supervisor_key_sha256"], "supervisor_key_sha256")
+    return value
+
+
+def validate_ordinary_adoption_predicate(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    fields = (
+        "api",
+        "request",
+        "invocation_nonce",
+        "dispatch_ticket_sha256",
+        "project_head",
+        "project_object_format",
+        "project_index_sha256",
+        "project_raw_tree_sha256",
+        "source_exception_sha256",
+        "align_head",
+        "align_object_format",
+        "align_repo_relative",
+        "worker_relative",
+        "worker_size",
+        "worker_sha256",
+        "image_digest",
+        "image_attestation_sha256",
+        "manifest_sha256",
+        "entrypoint_sha256",
+    )
+    _fields(value, fields, "ordinary adoption predicate")
+    if _string(value["api"], "api") != "ordinary-adoption/v2":
+        raise WireError("ordinary adoption API is invalid")
+    if _string(value["request"], "request") != "json-scan-row-ownership-adoption":
+        raise WireError("ordinary adoption request is invalid")
+    _strict_b64url(value["invocation_nonce"], name="invocation_nonce", expected_size=32)
+    for name in (
+        "dispatch_ticket_sha256",
+        "project_index_sha256",
+        "project_raw_tree_sha256",
+        "source_exception_sha256",
+        "worker_sha256",
+        "image_attestation_sha256",
+        "manifest_sha256",
+        "entrypoint_sha256",
+    ):
+        _sha256(value[name], name)
+    for name in ("project_head", "align_head"):
+        head = _string(value[name], name)
+        if not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise WireError(f"{name} is not a lowercase SHA-1 head")
+    for name in ("project_object_format", "align_object_format"):
+        if _string(value[name], name) != "sha1":
+            raise WireError(f"{name} is not sha1")
+    _relative_path(value["align_repo_relative"], "align_repo_relative")
+    worker_relative = _relative_path(value["worker_relative"], "worker_relative")
+    if worker_relative != "scripts/run-json-scan-row-ownership-adoption":
+        raise WireError("worker_relative is not the fixed Request 6 source")
+    if isinstance(value["worker_size"], bool) or not isinstance(value["worker_size"], int):
+        raise WireError("worker_size is not an integer")
+    if value["worker_size"] < 1 or value["worker_size"] > 4_194_304:
+        raise WireError("worker_size exceeds its bound")
+    _sha256_tagged(value["image_digest"], "image_digest")
     return value
 
 
