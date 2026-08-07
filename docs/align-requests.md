@@ -1379,50 +1379,54 @@ stdout is exactly `json-scan adoption: PASS\n`, stderr is empty, and failures su
 streams and emit exactly one bounded `json-scan adoption: ERROR <phase>\n` line where `phase` is
 one of `input`, `toolchain`, `revision`, `build`, `fixture`, or `cleanup`.
 
-The ordinary wrapper's required inputs are explicit environment values: `ALIGN_REPO` is the
-absolute clean Align worktree, `ALIGN_RUST_TOOLCHAIN_BIN` is an absolute no-symlink directory
-containing direct Rust 1.96.0 `cargo` and `rustc` binaries, `ALIGN_LLVM_PREFIX` is the absolute
-no-symlink LLVM 22 prefix containing its direct `llvm-config`, and `ALIGN_NATIVE_PREFIX` is the
-absolute no-symlink native dependency prefix whose `bin`, `include`, `lib`, and `lib/pkgconfig`
-entries are the only native search roots used by the locked Align build. `ALIGN_CARGO_CACHE_ROOT`
-and `ALIGN_CARGO_CACHE_MANIFEST` are a read-only Cargo cache tree and its authenticated Section 9
-schema-2 cache manifest; the manifest uses the fixed registry/Git prefixes, exact file digests,
-owner-readable modes, and no symlinks, hard links, wrappers, credentials, or configuration files.
-The wrapper opens and authenticates every named tool, required native file, and cache descriptor
-with no-follow checks, records its digest, and rejects rustup shims, symlink aliases, version
-mismatches, and mutable replacement before the first Make child. It copies the accepted cache into
-a unique private Cargo home and sets `CARGO_NET_OFFLINE=true`; no registry, Git, proxy, credential,
-or network fallback is allowed. It derives the exact `CARGO`, `RUSTC`, `LLVM_CONFIG`,
-`LLVM_SYS_221_PREFIX`, `CC`, `CXX`, `AR`, `RANLIB`, and linker values from those authenticated
-inputs; it clears `RUSTUP_HOME`, `RUSTC_WRAPPER`, Cargo configuration/proxy/credential channels,
-and all unrelated inherited build variables. `PATH` contains only the authenticated Rust and LLVM
-bin directories followed by the fixed native system directories. The wrapper creates unique
-mode-`0700` `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their
-identities.
+The ordinary wrapper's only caller-selected source input is `ALIGN_REPO`, the absolute clean Align
+worktree. Toolchain and dependency inputs come from the fixed installed-profile manifest at
+`/usr/local/share/align-llm/fresh-toolchain.json`; the wrapper accepts no caller-selected manifest
+path, manifest digest, tool path, cache path, or per-tool override. That manifest is the
+image-owned schema-2 object authenticated by the Section 9 runner-image attestation and contains
+the ordered tool records, runtime bindings, complete Rust prefix, LLVM/native inputs, and Cargo
+cache manifest. Ordinary host evidence is valid only on that declared installed profile; an
+arbitrary local machine may run the smoke as an untrusted developer check but may not claim the
+ordinary adoption result until the fixed manifest and attestation are present.
+
+The wrapper opens and authenticates the fixed manifest, every named tool, required native file, and
+cache descriptor with no-follow checks, records the attested digest, and rejects rustup shims,
+symlink aliases, version mismatches, and mutable replacement before the first Make child. The
+manifest's Rust runtime binding is the complete Rust 1.96.0 prefix, preserving `bin`, `lib`, and
+`lib/rustlib` layout including `librustc_driver` and target libraries; staging only `cargo` or
+`rustc` is forbidden. It copies the accepted cache into a unique private Cargo home and sets
+`CARGO_NET_OFFLINE=true`; no registry, Git, proxy, credential, or network fallback is allowed. It
+derives the exact `CARGO`, `RUSTC`, `LLVM_CONFIG`, `LLVM_SYS_221_PREFIX`, `CC`, `CXX`, `AR`,
+`RANLIB`, linker, and runtime search paths from the attested manifest; it clears `RUSTUP_HOME`,
+`RUSTC_WRAPPER`, Cargo configuration/proxy/credential channels, and all unrelated inherited build
+variables. `PATH` begins with the staged authenticated Rust/LLVM/native tool directories and has no
+ambient fallback before the fixed interpreter directories. The wrapper creates unique mode-`0700`
+`CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
 The adoption implementation changes the `align-build` recipe to invoke `$(CARGO)` with the
 Makefile default `CARGO ?= cargo`; the wrapper always supplies the authenticated absolute Cargo
 path, so the ordinary build never falls back to a bare or rustup-selected executable.
 
 Before any child starts, the wrapper creates descriptor-relative, no-follow, mode-`0555` snapshots
 of the invocation project and `ALIGN_REPO`, including a private Git view for the Align snapshot so
-`check-align-revision` never reopens the caller's worktree. It also stages the authenticated Rust,
-LLVM, native, and Cargo-cache inputs into the private root, hashes every accepted regular file,
-and performs complete pre-copy, post-copy, and final pre-child tree snapshots. Children see only
-these retained read-only inputs and private writable `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache,
-and temporary paths. A source, tool, native, or cache replacement, mutation, extra entry, type,
-mode, size, link-count, or digest mismatch fails before the next child and leaves the private root
-for diagnostic cleanup rather than reopening the original path.
+`check-align-revision` never reopens the caller's worktree. For an ordinary clone, the private view
+copies `.git` objects, refs, index, and metadata into the snapshot. For a linked worktree, it
+resolves the root `.git` file and its `gitdir`/`commondir` entries through retained descriptors,
+copies both the worktree metadata and common object/ref directory into private siblings, rewrites
+the private `commondir` to a canonical relative private path, and sets the matching private Git
+environment; no original common directory or absolute Git path crosses the child boundary. It also
+stages the complete authenticated Rust prefix, LLVM/native runtime trees, and Cargo-cache inputs
+into the private root, hashes every accepted regular file, and performs complete pre-copy,
+post-copy, and final pre-child tree snapshots. Children see only these retained read-only inputs
+and private writable `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and temporary paths. A
+source, tool, native, or cache replacement, mutation, extra entry, type, mode, size, link-count, or
+digest mismatch fails before the next child and leaves the private root for diagnostic cleanup
+rather than reopening the original path.
 
 The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
 
 ```text
 env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
   ALIGN_REPO=<absolute-clean-align-worktree> \
-  ALIGN_RUST_TOOLCHAIN_BIN=<absolute-direct-rust-1.96.0-bin> \
-  ALIGN_LLVM_PREFIX=<absolute-direct-llvm-22-prefix> \
-  ALIGN_NATIVE_PREFIX=<absolute-native-dependency-prefix> \
-  ALIGN_CARGO_CACHE_ROOT=<absolute-read-only-cargo-cache> \
-  ALIGN_CARGO_CACHE_MANIFEST=<absolute-cargo-cache-manifest> \
   ./scripts/run-json-scan-row-ownership-adoption
 ```
 
@@ -1437,10 +1441,14 @@ toolchain environment and empty Make-control variables:
 
 Each child receives `ALIGN_REPO=<private-align>` and the same authenticated read-only toolchain,
 cache, and empty Make-control environment. The `align-build` child additionally receives
-`CARGO=<private-toolchain>/cargo`, `RUSTC=<private-toolchain>/rustc`,
+`CARGO=<private-rust>/bin/cargo`, `RUSTC=<private-rust>/bin/rustc`,
 `CARGO_HOME=<private-cargo-home>`, `CARGO_TARGET_DIR=<private-cargo-target>`,
 `CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=<private-llvm>/bin/llvm-config`,
-`LLVM_SYS_221_PREFIX=<private-llvm>`, and the authenticated native search paths. After the build,
+`LLVM_SYS_221_PREFIX=<private-llvm>`, `CC=<private-native>/bin/cc`,
+`CXX=<private-native>/bin/c++`, and the authenticated native search paths. Every focused child
+receives `PATH=<private-rust>/bin:<private-llvm>/bin:<private-native>/bin:/usr/bin:/bin`, with the
+staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
+must never reach ambient `/usr/bin/cc`. After the build,
 the wrapper verifies the new `release/alignc` and adjacent runtime archive by no-follow type,
 mode, link count, revision, version, and complete bytes, then supplies the exact absolute
 `ALIGNC=<private-cargo-target>/release/alignc` and `ALIGNC_CACHE=<private-compiler-cache>` values
