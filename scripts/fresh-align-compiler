@@ -3926,12 +3926,16 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             pass_fds=(*overlay_descriptors, *bind_descriptors),
             resource_check=lambda: enforce_aggregate_quota(admission),
         )
+    except WorkerError as error:
+        os.write(2, f"fresh compiler diagnostic: aggregate worker error: {error}\n".encode())
+        raise
     finally:
         close_private_mounts(bind_descriptors)
         close_private_mounts(overlay_descriptors)
     upper = root / "aggregate-output/workspace-upper"
     names = sorted(os.listdir(upper), key=os.fsencode)
     if any(name != "main" for name in names):
+        os.write(2, f"fresh compiler diagnostic: aggregate output names: {names!r}\n".encode())
         fail("CHILD", "aggregate")
     output = upper / "main"
     value = output.lstat()
@@ -3942,11 +3946,16 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         or value.st_size <= 0
         or value.st_size > MAX_GENERATED_MAIN_BYTES
     ):
+        os.write(2, f"fresh compiler diagnostic: aggregate output metadata: {value!r}\n".encode())
         fail("CHILD", "aggregate")
     raw = read_path(str(output), MAX_GENERATED_MAIN_BYTES)
     try:
         validate_published_elf(raw, runtime)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        os.write(
+            2,
+            f"fresh compiler diagnostic: aggregate published ELF rejected: {type(error).__name__}: {error}\n".encode(),
+        )
         fail("CHILD", "aggregate")
 
 
