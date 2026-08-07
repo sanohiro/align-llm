@@ -217,6 +217,7 @@ def boundary_profile_run(
     cgroup_driver: str,
     *,
     align_repo: str | None = "/work/align",
+    extra_environment: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
     arguments = [
         "docker",
@@ -230,6 +231,11 @@ def boundary_profile_run(
     ]
     if align_repo is not None:
         arguments.extend(["--env", f"ALIGN_REPO={align_repo}"])
+    for entry in extra_environment:
+        name, separator, _ = entry.partition("=")
+        if not separator or not name:
+            raise ValueError(f"invalid boundary test environment entry: {entry!r}")
+        arguments.extend(["--env", entry])
     command = [image, "--mode", "ordinary-adoption-boundary"]
     if cgroup_driver == "cgroupfs":
         arguments.extend(
@@ -241,7 +247,13 @@ def boundary_profile_run(
             ]
         )
     elif cgroup_driver == "systemd":
-        environment = "{}" if align_repo is None else repr({"ALIGN_REPO": align_repo})
+        environment_values: dict[str, str] = {}
+        if align_repo is not None:
+            environment_values["ALIGN_REPO"] = align_repo
+        for entry in extra_environment:
+            name, _, value = entry.partition("=")
+            environment_values[name] = value
+        environment = repr(environment_values)
         launcher = f"""\
 import os
 parent = '/sys/fs/cgroup/align-llm-fresh/{TEST_UID}'
@@ -807,6 +819,32 @@ def main() -> int:
                 "boundary malformed ALIGN_REPO",
                 b"fresh compiler: ERROR ARGUMENT input\n",
             )
+            relative_align = boundary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                boundary_source_volume,
+                cgroup_driver,
+                align_repo="align",
+            )
+            require_rejection(
+                relative_align,
+                "boundary relative ALIGN_REPO",
+                b"fresh compiler: ERROR ARGUMENT input\n",
+            )
+            extra_environment = boundary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                boundary_source_volume,
+                cgroup_driver,
+                extra_environment=("BOUNDARY_EXTRA=1",),
+            )
+            require_rejection(
+                extra_environment,
+                "boundary extra environment",
+                b"fresh compiler: ERROR ARGUMENT input\n",
+            )
             run(
                 [
                     "docker",
@@ -835,6 +873,45 @@ def main() -> int:
                 "boundary present worker",
                 b"json-scan adoption: ERROR revision\n",
             )
+            for name, mutation in (
+                (
+                    "boundary symlink worker",
+                    "rm -f /work/project/scripts/run-json-scan-row-ownership-adoption; "
+                    "ln -s missing-worker /work/project/scripts/run-json-scan-row-ownership-adoption",
+                ),
+                (
+                    "boundary FIFO worker",
+                    "rm -f /work/project/scripts/run-json-scan-row-ownership-adoption; "
+                    "mkfifo /work/project/scripts/run-json-scan-row-ownership-adoption",
+                ),
+            ):
+                run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--entrypoint",
+                        "/bin/sh",
+                        "--mount",
+                        f"type=volume,src={boundary_source_volume},dst=/work",
+                        image,
+                        "-eu",
+                        "-c",
+                        mutation,
+                    ]
+                )
+                malformed_worker = boundary_profile_run(
+                    image,
+                    volume,
+                    runtime_volume,
+                    boundary_source_volume,
+                    cgroup_driver,
+                )
+                require_rejection(
+                    malformed_worker,
+                    name,
+                    b"json-scan adoption: ERROR revision\n",
+                )
             worker_result = worker_profile_run(
                 image, volume, runtime_volume, source_volume, cgroup_driver
             )

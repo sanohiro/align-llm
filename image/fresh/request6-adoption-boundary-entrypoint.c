@@ -161,7 +161,8 @@ int main(int argc, char **argv) {
     char *child_argv[32];
     int index;
 
-    if (argc < 2 || argc > 20 || environment_is_exact() < 0 ||
+    if (argc < 2 || argc > 20 || strcmp(argv[0], "request6-adoption-boundary-entrypoint") != 0 ||
+        environment_is_exact() < 0 ||
         descriptor_set_is_exact() < 0 || snapshot_payload() < 0 ||
         close_unexpected_descriptors() < 0) {
         return fail_input();

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import struct
 import stat
 import subprocess
@@ -28,6 +29,7 @@ from fresh_image_control import (  # noqa: E402
     _sealed_memfd,
 )
 import fresh_image_control as control  # noqa: E402
+from fresh_manifest import serialized_digest  # noqa: E402
 
 
 def rejected(callback: object) -> None:
@@ -79,6 +81,57 @@ def boundary_worker_presence_case(temporary: Path) -> None:
         os.close(project_fd)
 
 
+def boundary_runtime_binding_case(temporary: Path) -> None:
+    dispatcher = temporary / "runtime-dispatcher"
+    raw = b"runtime dispatcher bytes"
+    dispatcher.write_bytes(raw)
+    dispatcher.chmod(0o755)
+    tree = {
+        "kind": "file",
+        "mode": "0755",
+        "staged_mode": "0755",
+        "size": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "entries": [],
+    }
+    binding = {
+        "source": str(dispatcher),
+        "target": str(dispatcher),
+        "kind": "file",
+        "manifest": tree,
+        "manifest_sha256": serialized_digest(tree),
+    }
+    descriptor, _, _ = control._runtime_file_binding(
+        {"runtime_bindings": [binding]}, str(dispatcher), owner=os.geteuid()
+    )
+    os.close(descriptor)
+
+    wrong_tree = dict(tree)
+    wrong_tree["size"] = len(raw) + 1
+    wrong_binding = dict(binding)
+    wrong_binding["manifest"] = wrong_tree
+    wrong_binding["manifest_sha256"] = serialized_digest(wrong_tree)
+    try:
+        control._runtime_file_binding(
+            {"runtime_bindings": [wrong_binding]}, str(dispatcher), owner=os.geteuid()
+        )
+    except ControlError as error:
+        assert error.category == "TRUST"
+        assert error.phase == "supervisor"
+    else:
+        raise AssertionError("runtime binding with a wrong declared size was accepted")
+
+
+def boundary_manifest_error_case() -> None:
+    try:
+        control._load_boundary_manifest(b"{}\n")
+    except ControlError as error:
+        assert error.category == "TRUST"
+        assert error.phase == "supervisor"
+        return
+    raise AssertionError("malformed boundary manifest was accepted")
+
+
 def boundary_child_lifecycle_case(temporary: Path) -> None:
     source = temporary / "boundary-child.c"
     source.write_text(
@@ -99,13 +152,13 @@ def boundary_child_lifecycle_case(temporary: Path) -> None:
     )
     compiler = os.environ.get("CC", "cc")
     helpers = []
-    for case in (1, 2):
+    for case in (0, 1, 2):
         helper = temporary / f"boundary-child-{case}"
         subprocess.run(
             [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", f"-DCASE={case}", "-o", str(helper), str(source)],
             check=True,
         )
-        helpers.append(helper)
+        helpers.append((case, helper))
 
     saved: dict[int, int] = {}
     targets = (4, 6, 8, 14, 18)
@@ -121,7 +174,7 @@ def boundary_child_lifecycle_case(temporary: Path) -> None:
     old_timeout = control.BOUNDARY_TIMEOUT_SECONDS
     control.BOUNDARY_TIMEOUT_SECONDS = 0.1
     try:
-        for helper in helpers:
+        for case, helper in helpers:
             project_source = os.open(project, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
             os.dup2(project_source, 4, inheritable=True)
             if project_source != 4:
@@ -136,21 +189,111 @@ def boundary_child_lifecycle_case(temporary: Path) -> None:
             os.dup2(dispatcher_source, 14, inheritable=True)
             if dispatcher_source != 14:
                 os.close(dispatcher_source)
-            status, stdout, stderr, valid = control._boundary_dispatch(
-                project_fd=4,
-                image_fd=6,
-                manifest_fd=8,
-                dispatcher_fd=14,
-                align_fd=18,
-                align_repo_absolute=str(align),
-                align_repo_relative="../" + align.name,
-            )
-            assert not valid
+            original_waitpid = control.os.waitpid
+            interrupted = True
+
+            def waitpid_with_interrupt(pid: int, options: int) -> tuple[int, int]:
+                nonlocal interrupted
+                if interrupted:
+                    interrupted = False
+                    raise InterruptedError
+                return original_waitpid(pid, options)
+
+            if case == 0:
+                control.os.waitpid = waitpid_with_interrupt  # type: ignore[assignment]
+            try:
+                status, stdout, stderr, valid = control._boundary_dispatch(
+                    project_fd=4,
+                    image_fd=6,
+                    manifest_fd=8,
+                    dispatcher_fd=14,
+                    align_fd=18,
+                    align_repo_absolute=str(align),
+                    align_repo_relative="../" + align.name,
+                )
+            finally:
+                control.os.waitpid = original_waitpid  # type: ignore[assignment]
             assert status is not None
             assert stdout == b""
             assert stderr == b""
+            if case == 0:
+                assert valid
+                assert os.WIFEXITED(status)
+                assert os.WEXITSTATUS(status) == 0
+            else:
+                assert not valid
     finally:
         control.BOUNDARY_TIMEOUT_SECONDS = old_timeout
+        for target in targets:
+            try:
+                os.close(target)
+            except OSError:
+                pass
+            if target in saved:
+                os.dup2(saved[target], target, inheritable=True)
+                os.close(saved[target])
+
+
+def boundary_direct_vector_case(temporary: Path, dispatcher: Path) -> None:
+    root = temporary / "boundary-direct"
+    project = root / "project"
+    align = root / "align"
+    project.mkdir(parents=True)
+    align.mkdir()
+    saved: dict[int, int] = {}
+    targets = (4, 6, 8, 14, 18)
+    for target in targets:
+        try:
+            saved[target] = os.dup(target)
+        except OSError:
+            pass
+    try:
+        project_source = os.open(project, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+        os.dup2(project_source, 4, inheritable=True)
+        if project_source != 4:
+            os.close(project_source)
+        align_source = os.open(align, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+        os.dup2(align_source, 18, inheritable=True)
+        if align_source != 18:
+            os.close(align_source)
+        _sealed_memfd("align-llm-image", b"image", 6)
+        _sealed_memfd("align-llm-manifest", b"manifest", 8)
+        dispatcher_source = os.open(dispatcher, os.O_RDONLY | os.O_CLOEXEC)
+        os.dup2(dispatcher_source, 14, inheritable=True)
+        if dispatcher_source != 14:
+            os.close(dispatcher_source)
+        arguments = [
+            "--mode",
+            "ordinary-adoption-boundary",
+            "--project-root-fd",
+            "4",
+            "--image-attestation-fd",
+            "6",
+            "--manifest-fd",
+            "8",
+            "--align-repo-root-fd",
+            "18",
+            "--align-repo-absolute",
+            str(align),
+            "--align-repo-relative",
+            "../align",
+        ]
+        for argv0 in ("request6-adoption-boundary-entrypoint", "wrong-name"):
+            result = subprocess.run(
+                [argv0, *arguments],
+                cwd=project,
+                env=dict(control.CHILD_ENVIRONMENT),
+                executable=str(dispatcher),
+                pass_fds=targets,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            assert result.returncode == 1
+            assert result.stdout == b""
+            assert result.stderr == b"json-scan adoption: ERROR input\n"
+    finally:
         for target in targets:
             try:
                 os.close(target)
@@ -396,7 +539,14 @@ def main() -> int:
         "ordinary-adoption-boundary"
     )
     assert _normalize_absolute("/work/align") == "/work/align"
-    for invalid in ("", "align", "/work/../align", "/work//align", "/work/\x01align"):
+    for invalid in (
+        "",
+        "align",
+        "/work/../align",
+        "/work//align",
+        "/work/\x01align",
+        "/work/\udcff",
+    ):
         rejected(lambda value=invalid: _normalize_absolute(value))
     for invalid in (
         [],
@@ -409,14 +559,23 @@ def main() -> int:
     rejected(lambda: _reject_environment({"ALIGNC": "/tmp/alignc"}, mode="ci"))
     rejected(lambda: _reject_environment({"MAKEFLAGS": "-n"}, mode="ci"))
     rejected(
+        lambda: _reject_environment(
+            {"ALIGN_REPO": "/work/align", "BOUNDARY_EXTRA": "1"},
+            mode="ordinary-adoption-boundary",
+        )
+    )
+    rejected(
         lambda: _reject_environment({"ALIGN_REPO": "../align"}, mode="self-test")
     )
     with tempfile.TemporaryDirectory(prefix="fresh-image-membership-") as name:
-        boundary_worker_presence_case(Path(name))
-        boundary_child_lifecycle_case(Path(name))
-        cgroup_membership_case(Path(name))
-        cgroup_removal_case(Path(name))
-        cgroup_launch_failure_case(Path(name))
+        temporary = Path(name)
+        boundary_worker_presence_case(temporary)
+        boundary_runtime_binding_case(temporary)
+        boundary_manifest_error_case()
+        boundary_child_lifecycle_case(temporary)
+        cgroup_membership_case(temporary)
+        cgroup_removal_case(temporary)
+        cgroup_launch_failure_case(temporary)
 
     original = os.dup(31) if _fd_open(31) else None
     try:
@@ -435,6 +594,7 @@ def main() -> int:
             second = Path(second_name)
             forwarder_descriptor_case(first)
             assert build(first) == build(second)
+            boundary_direct_vector_case(first, first / "request6-adoption-boundary-entrypoint")
             for name in (
                 "fresh-supervise",
                 "fresh-bootstrap",

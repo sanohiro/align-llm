@@ -836,7 +836,11 @@ def _normalize_relative(value: str) -> str:
     if not pieces:
         raise ControlError("ARGUMENT", "input", "ALIGN_REPO normalizes to empty")
     normalized = "/".join(pieces)
-    if len(normalized.encode("utf-8")) > 4096:
+    try:
+        encoded = normalized.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ControlError("ARGUMENT", "input", "ALIGN_REPO is not valid UTF-8") from error
+    if len(encoded) > 4096:
         raise ControlError("ARGUMENT", "input", "ALIGN_REPO exceeds its byte bound")
     return normalized
 
@@ -844,6 +848,10 @@ def _normalize_relative(value: str) -> str:
 def _normalize_absolute(value: str) -> str:
     if not value or "\x00" in value or not value.startswith("/"):
         raise ControlError("ARGUMENT", "input", "absolute path is invalid")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ControlError("ARGUMENT", "input", "absolute path is not valid UTF-8") from error
     if any(ord(character) < 0x20 for character in value):
         raise ControlError("ARGUMENT", "input", "absolute path contains a control character")
     pieces = value.split("/")[1:]
@@ -974,12 +982,20 @@ def _runtime_file_binding(
     except ControlError as error:
         raise ControlError("TRUST", "supervisor", "runtime dispatcher is unavailable") from error
     if (
-        sha256_hex(raw) != tree.get("sha256")
+        tree.get("size") != len(raw)
+        or sha256_hex(raw) != tree.get("sha256")
         or serialized_digest(tree) != binding.get("manifest_sha256")
     ):
         os.close(descriptor)
         raise ControlError("TRUST", "supervisor", "runtime dispatcher digest mismatch")
     return descriptor, raw, binding
+
+
+def _load_boundary_manifest(raw: bytes) -> Mapping[str, Any]:
+    try:
+        return validate_manifest_bytes(raw)
+    except WireError as error:
+        raise ControlError("TRUST", "supervisor", "boundary manifest is invalid") from error
 
 
 def _boundary_worker_presence(project_fd: int) -> None:
@@ -1031,6 +1047,10 @@ def _reject_environment(environment: Mapping[str, str], *, mode: str) -> str:
         if environment.get(name, ""):
             raise ControlError("ARGUMENT", "input", f"nonempty {name}")
     if mode == "ordinary-adoption-boundary":
+        allowed = {"PATH", "LC_ALL", "LANG", "HOME", "TMPDIR", "ALIGN_REPO"}
+        unexpected = set(environment) - allowed
+        if unexpected:
+            raise ControlError("ARGUMENT", "input", "boundary environment is not exact")
         align_repo = environment.get("ALIGN_REPO")
         if align_repo is None:
             raise ControlError("ARGUMENT", "input", "boundary mode requires ALIGN_REPO")
@@ -1236,6 +1256,14 @@ def _boundary_dispatch(
     overflow = False
     streams = selectors.DefaultSelector()
     captures = {stdout_read: bytearray(), stderr_read: bytearray()}
+
+    def waitpid_retry(pid: int, options: int) -> tuple[int, int]:
+        while True:
+            try:
+                return os.waitpid(pid, options)
+            except InterruptedError:
+                continue
+
     try:
         child_pid = os.fork()
         if child_pid == 0:
@@ -1290,10 +1318,10 @@ def _boundary_dispatch(
         while streams.get_map() or child_status is None:
             if child_status is None:
                 try:
-                    waited, status = os.waitpid(child_pid, os.WNOHANG)
+                    waited, status = waitpid_retry(child_pid, os.WNOHANG)
                 except OSError:
-                    waited = child_pid
-                    status = -1
+                    child_status = -1
+                    break
                 if waited == child_pid:
                     child_status = status
                     child_pid = -1
@@ -1330,7 +1358,7 @@ def _boundary_dispatch(
             except OSError:
                 pass
             try:
-                _, child_status = os.waitpid(child_pid, 0)
+                _, child_status = waitpid_retry(child_pid, 0)
             except OSError:
                 child_status = -1
             child_pid = -1
@@ -1376,7 +1404,7 @@ def _boundary_dispatch(
             except OSError:
                 pass
             try:
-                os.waitpid(child_pid, 0)
+                waitpid_retry(child_pid, 0)
             except OSError:
                 pass
         try:
@@ -1446,10 +1474,7 @@ def _boundary_supervise(
             raise ControlError("TRUST", "supervisor", "boundary image verification failed") from error
         if verified_manifest_raw != manifest_raw:
             raise ControlError("TRUST", "supervisor", "boundary manifest snapshot changed")
-        try:
-            manifest = validate_manifest_bytes(manifest_raw)
-        except WireError as error:
-            raise ControlError("TRUST", "manifest", "boundary manifest is invalid") from error
+        manifest = _load_boundary_manifest(manifest_raw)
         dispatcher_fd, _, _ = _runtime_file_binding(
             manifest, BOUNDARY_DISPATCHER_PATH, owner=paths.image_owner
         )
