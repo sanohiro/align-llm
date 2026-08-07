@@ -58,7 +58,7 @@ attestations; this file records durable project state.
 - `make gate-topology-check`: PASS at `2db67e8`.
 - `python3 scripts/check-gate-topology --self-test`: PASS at `2db67e8`.
 - `git diff --check`: PASS at `2db67e8`.
-- `for file in docs/align-requests.md docs/specs/check-gate-topology.md; do awk '/^```/ { count++ } END { if (count % 2 != 0) exit 1; print FILENAME ": " count }' "$file"; done`: PASS (100, 76) at `2db67e8`.
+- `for file in docs/align-requests.md docs/specs/check-gate-topology.md; do awk '/^```/ { count++ } END { if (count % 2 != 0) exit 1; print FILENAME ": " count }' "$file"; done`: PASS (98, 76) at `2db67e8`.
 - The v4 seal, helper-plan, and phase-contract edits are docs-only; their executable owners remain
   deferred to the separately gated image-profile and adoption implementation slices.
 - The design-only gate does not run source tests, `make check`, `make build`, or `make ci`; those
