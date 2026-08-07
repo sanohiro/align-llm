@@ -1407,6 +1407,15 @@ cache manifest. Ordinary host evidence is valid only on that declared installed 
 arbitrary local machine may run the smoke as an untrusted developer check but may not claim the
 ordinary adoption result until the fixed manifest and attestation are present.
 
+The installed manifest's runtime-binding list has two additional fixed ordinary-adoption records:
+the executable file at target `/usr/bin/make` and the executable file at target
+`/usr/bin/adoption-namespace`. The first record's complete digest tree and mode must equal the
+`make` tool record's authenticated bytes; the second is an image-owned mode-`0755` namespace
+supervisor executable with its complete interpreter and library closure. `adoption-namespace` is a
+fixed executable runtime binding rather than a PATH-discovered tool record, and both records are
+directly retained and bound by descriptor. A missing record, incomplete closure, digest mismatch,
+or replacement is a `toolchain` failure before the first child.
+
 The wrapper opens and authenticates the fixed manifest, every named tool, required native file, and
 cache descriptor with no-follow checks, records the attested digest, and rejects rustup shims,
 symlink aliases, version mismatches, and mutable replacement before the first Make child. The
@@ -1421,11 +1430,12 @@ variables. `PATH` begins with the staged authenticated Rust/LLVM/native tool dir
 ambient fallback before the fixed interpreter directories. The wrapper creates unique mode-`0700`
 `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
 The fixed manifest also authenticates the ordinary namespace launcher (`bwrap` or its equivalent),
-the trusted `adoption-namespace` setup helper, their complete loader/library closure, and the
-staged runtime root containing `make`, `git`, the shell, and the required core utilities. A missing
-user/mount namespace capability or any incomplete
-launcher/runtime closure is a `toolchain` failure; the wrapper never invokes an ambient host
-`bwrap`, `make`, `git`, or shell.
+the `/usr/bin/adoption-namespace` runtime binding, their complete loader/library closure, and the
+staged runtime files containing `/usr/bin/make`, `/usr/bin/git`, the shell, and the required core
+utilities. The runtime-binding digest for `/usr/bin/make` must equal the `make` tool record, so the
+tool record and the direct namespace executable cannot identify different bytes. A missing
+user/mount namespace capability or any incomplete launcher/runtime closure is a `toolchain` failure;
+the wrapper never invokes an ambient host `bwrap`, `make`, `git`, or shell.
 The adoption implementation changes the build recipe to invoke `$(CARGO)` with the Makefile default
 `CARGO ?= cargo`; both `align-build` and the private `align-build-only` target use that recipe. The
 wrapper always supplies the authenticated absolute Cargo path, so the ordinary build never falls
@@ -1479,7 +1489,7 @@ with the fixed shape; every read-only source is passed through a retained descri
 from a host pathname:
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 8589934592 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 21474836480 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
 ```
 
 The fixed inherited descriptor map is:
@@ -1495,8 +1505,9 @@ The fixed inherited descriptor map is:
 | 26 | fixed launcher source | `/input-launcher-source` |
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
-`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets. Its sources occupy FD 40
-onward in manifest order, and `<ordered-runtime-fd-bind-argv>` contains only
+`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets, including the exact
+`/usr/bin/make` and `/usr/bin/adoption-namespace` file bindings. Its sources occupy FD 40 onward
+in manifest order, and `<ordered-runtime-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> <canonical-target>` triples for those retained no-follow descriptors; it is not a
 caller argument, pathname bind, or ambient host bind. The wrapper admits the descriptor table before
 launch, checks every source identity and complete digest after staging, launches bwrap with
@@ -1505,8 +1516,8 @@ released. The ellipsis is replaced only by the fixed namespace-helper arguments 
 child vectors below; no repository or caller argument is appended. The namespace helper remounts each
 writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
 entries between children. bwrap consumes the retained descriptors before executing
-`adoption-namespace`, so a same-UID rename or replacement of any staging pathname cannot change a
-mounted source. The runtime bindings are image-owned root-owned immutable inputs and remain direct
+`/usr/bin/adoption-namespace`, so a same-UID rename or replacement of any staging pathname cannot
+change a mounted source. The runtime bindings are image-owned root-owned immutable inputs and remain direct
 FD binds. Before the first Make child, the supervisor re-snapshots each `/input-*` tree against the
 wrapper-authenticated source digest, copies it descriptor-relatively into the matching
 namespace-owned `/private-*` directory, verifies source and destination pre/post trees, unmounts
@@ -1570,7 +1581,9 @@ replacement-before-admission case.
 
 After its preflight, the wrapper starts the one namespace supervisor, which launches these fixed
 child vectors inside that namespace with the authenticated toolchain environment and empty
-Make-control variables:
+Make-control variables. `/usr/bin/make` in each vector is the retained runtime-binding descriptor
+whose bytes equal the manifest's `make` tool record; it is never a host pathname reopened after
+admission:
 
 ```text
 /usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-revision
@@ -1682,11 +1695,16 @@ controller, so the ordinary contract does not claim a `memory.max` boundary. Bef
 it applies hard and soft
 `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and `RLIMIT_FSIZE=536870912`; the child-side probe verifies
 the exact inherited rlimits before admitting the first vector. The namespace-owned writable
-tmpfs bounds are fixed: root `68719476736` bytes, Cargo home `8589934592`, Cargo target
+tmpfs bounds are fixed: root `68719476736` bytes, Cargo home `21474836480`, Cargo target
 `68719476736`, compiler cache `8589934592`, tool bundle `268435456`, and `/tmp` `268435456`, with
-`nr_inodes=400000` on persistent trees and `nr_inodes=65536` on temporary/tool trees. The helper
-counts every admitted entry and byte between vectors and during active children, rejects cap-plus-one
-before the next side effect, and never binds a host-writable target or cache. A process, descriptor,
+`nr_inodes=2000000` on the root and private build trees, `nr_inodes=400000` on the Cargo home and
+compiler cache, and `nr_inodes=65536` on temporary/tool trees. Each of the seven retained setup
+trees has an individual 200,000-entry boundary, and the wrapper rejects a sealed-input byte or entry
+total above its fixed 48 GiB or 1,500,000-entry aggregate before the next copy. The supervisor counts
+every admitted entry and byte between vectors and during active children, rejecting cap-plus-one before
+the next side effect. Thus all seven individual boundaries fit the root inode limit together, and a
+valid 20 GiB Cargo cache fits its destination tmpfs. The helper never binds a host-writable target or
+cache. A process, descriptor,
 file-size, inode, or byte-cap failure is `build` for the build vector or `fixture` for the focused
 vector; cgroup admission is `toolchain`, and a failed post-run cgroup or host-root proof is
 `cleanup`. The outer wrapper removes the cgroup leaf only after descriptor-relative empty and identity
