@@ -1415,8 +1415,9 @@ variables. `PATH` begins with the staged authenticated Rust/LLVM/native tool dir
 ambient fallback before the fixed interpreter directories. The wrapper creates unique mode-`0700`
 `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
 The fixed manifest also authenticates the ordinary namespace launcher (`bwrap` or its equivalent),
-its complete loader/library closure, and the staged runtime root containing `make`, `git`, the shell,
-and the required core utilities. A missing user/mount namespace capability or any incomplete
+the trusted `adoption-namespace` setup helper, their complete loader/library closure, and the
+staged runtime root containing `make`, `git`, the shell, and the required core utilities. A missing
+user/mount namespace capability or any incomplete
 launcher/runtime closure is a `toolchain` failure; the wrapper never invokes an ambient host
 `bwrap`, `make`, `git`, or shell.
 The adoption implementation changes the `align-build` recipe to invoke `$(CARGO)` with the
@@ -1450,24 +1451,41 @@ The adoption PR binds the recorded project `HEAD` to the exact reviewed implemen
 ordinary evidence is accepted.
 
 The three ordinary Make children run inside a fresh authenticated private mount namespace. The
-namespace starts with an empty root, the authenticated runtime at `/runtime`, read-only bindings
-for `/private-project`, `/private-align`, `/private-rust`, `/private-llvm`, `/private-native`,
-`/private-cargo-cache`, and `/private-tool-bin`, and writable bindings only for
-`/private-cargo-home`, `/private-cargo-target`, and `/private-compiler-cache`; it has a private
-`/proc`, minimal `/dev`, private `/tmp`, no host root, and no original host pathname. The wrapper
-uses the attested namespace launcher with the fixed shape
+namespace starts with an empty root, the authenticated runtime bindings at their canonical `/bin`,
+`/lib`, `/lib64`, and `/usr` targets, read-only bindings for `/private-project`, `/private-align`,
+`/private-rust`, `/private-llvm`, `/private-native`, and `/private-cargo-cache`, and writable
+bindings only for `/private-cargo-home`, `/private-cargo-target`, and `/private-compiler-cache`; it
+has a private `/proc`, minimal `/dev`, private `/tmp`, no host root, and no original host pathname.
+The focused mode additionally gives the trusted namespace setup helper a namespace-owned tmpfs at
+`/private-tool-bin`; the helper copies the compiler, archive, launcher, and final descriptor into
+that tmpfs, remounts it read-only, drops every capability, and only then starts Make. The final
+bundle has no host pathname or same-UID alias. The wrapper uses the attested namespace launcher
+with the fixed shape
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --cap-drop ALL --tmpfs / --proc /proc --dev /dev --tmpfs /tmp --ro-bind <private-runtime> /runtime --ro-bind <private-project> /private-project --ro-bind <private-align> /private-align --ro-bind <private-rust> /private-rust --ro-bind <private-llvm> /private-llvm --ro-bind <private-native> /private-native --ro-bind <private-cargo-cache> /private-cargo-cache --ro-bind <private-tool-bin> /private-tool-bin --bind <private-cargo-home> /private-cargo-home --bind <private-cargo-target> /private-cargo-target --bind <private-compiler-cache> /private-compiler-cache --chdir /private-project -- /runtime/bin/make ...
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --tmpfs / --proc /proc --dev /dev --tmpfs /tmp --tmpfs /private-tool-bin --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-binding-argv> --ro-bind <private-project> /private-project --ro-bind <private-align> /private-align --ro-bind <private-rust> /private-rust --ro-bind <private-llvm> /private-llvm --ro-bind <private-native> /private-native --ro-bind <private-cargo-cache> /private-cargo-cache --ro-bind <private-tool-input> /private-tool-input --ro-bind <private-launcher-source> /private-launcher-source --bind <private-cargo-home> /private-cargo-home --bind <private-cargo-target> /private-cargo-target --bind <private-compiler-cache> /private-compiler-cache --chdir /private-project -- /usr/bin/adoption-namespace ...
 ```
 
-The ellipsis is replaced only by one of the three child vectors below; no repository or caller
-argument is appended. The wrapper verifies every read-only mount source before the namespace starts,
-retains the mount identities until child cleanup, and the launcher verifies the namespace-visible
-`/private-tool-bin` mount is read-only before opening the handoff files. Thus a focused child or
-another same-UID process cannot reach or modify the host staging path through the compiler view.
-The child namespace drops all capabilities before Make starts; a failed namespace setup is reported
-as `toolchain` before any Make or compiler marker.
+The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
+`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets; it is not a caller argument or
+an ambient host bind. The ellipsis is replaced only by the fixed namespace-helper arguments and one
+of the three child vectors below; no repository or caller argument is appended. The wrapper verifies
+every read-only mount source before the namespace starts, and the trusted helper verifies the
+namespace-owned `/private-tool-bin` mount is read-only before opening the handoff files. Thus a
+focused child or another same-UID host process cannot reach or modify the final compiler bundle.
+The helper drops all capabilities and sets `no_new_privs` before Make starts; a failed namespace or
+bundle setup is reported as `toolchain` before any Make or compiler marker.
+
+In focused mode the namespace helper receives, in this fixed order, the read-only source paths
+`/private-tool-input/alignc`, `/private-tool-input/libalign_runtime.a`, and
+`/private-launcher-source/adoption-alignc`, the expected compiler and archive SHA-256 values, the
+Align revision, the project HEAD, and then `--` followed by the selected Make vector. It copies the
+source bytes into the namespace-owned `/private-tool-bin` tmpfs with create-exclusive files, hashes
+and stats those final destination files, writes the schema-1 descriptor only after that final
+materialization, copies the launcher, verifies the descriptor bytes, remounts the tmpfs read-only,
+and drops all capabilities before `execve`-ing the Make vector. The first two modes pass
+`--no-compiler-handoff` in the same fixed helper position. No repository Makefile or fixture code
+runs before this setup sequence completes.
 
 The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
 
@@ -1481,9 +1499,9 @@ After its preflight, the wrapper alone launches these fixed child vectors inside
 the authenticated toolchain environment and empty Make-control variables:
 
 ```text
-/runtime/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-revision
-/runtime/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-build
-/runtime/bin/make --no-print-directory -C /private-project -f /private-project/Makefile json-scan-row-ownership-adoption
+/usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-revision
+/usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-build
+/usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile json-scan-row-ownership-adoption
 ```
 
 Each child receives `ALIGN_REPO=/private-align` and the same authenticated read-only toolchain,
@@ -1497,24 +1515,28 @@ cache, and empty Make-control environment. The `align-build` child additionally 
 `clang` and `clang++` runtime bytes, with their complete ELF closure; the manifest's `cc` and `cxx`
 forwarders are identity records, not executed aliases. These are explicit staged aliases, not an
 unlisted `c++` name. Every focused child
-receives `PATH=/private-rust/bin:/private-llvm/bin:/private-native/bin:/runtime/bin`, with the
+receives `PATH=/private-rust/bin:/private-llvm/bin:/private-native/bin:/usr/bin:/bin`, with the
 staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
 must never reach ambient `/usr/bin/cc`. After the build, the wrapper verifies the new `release/alignc`
 and adjacent runtime archive by no-follow type, mode, link count, revision, version, and complete
-bytes, then writes a canonical schema-1, mode-`0444` compiler handoff descriptor containing the
-exact compiler/archive paths, device/inode, mode, link-count, size, SHA-256, Align revision, and
-project HEAD. The fixed `scripts/adoption-alignc` launcher reads that descriptor before every
-compiler call. The descriptor paths are fixed namespace paths `/private-tool-bin/alignc` and
-`/private-tool-bin/libalign_runtime.a`, never host staging paths or caller input. Before the focused
-namespace starts, the wrapper copies the verified compiler,
-archive, descriptor, and launcher into the namespace's private `tool-bin` source using retained
-no-follow descriptors, verifies the complete bytes, and exposes that source only through one
-read-only `/private-tool-bin` bind. The launcher opens exactly
+bytes, then create-exclusively copies the verified compiler, archive, and fixed
+`scripts/adoption-alignc` launcher into the separate read-only `/private-tool-input` source using
+retained no-follow descriptors. It hashes and records those source bytes, but does not write the
+compiler handoff descriptor on the host. The trusted namespace helper materializes the final bundle
+inside its namespace-owned `/private-tool-bin` tmpfs, stats and hashes those final destination
+files, and only then writes a canonical schema-1, mode-`0444` compiler handoff descriptor containing
+the exact compiler/archive paths, device/inode, mode, link-count, size, SHA-256, Align revision, and
+project HEAD. The descriptor paths are fixed namespace paths `/private-tool-bin/alignc` and
+`/private-tool-bin/libalign_runtime.a`, never host staging paths or caller input. The fixed
+`scripts/adoption-alignc` launcher is copied into the same final bundle before the descriptor is
+published, and the helper exposes that bundle only through the read-only `/private-tool-bin` mount.
+The launcher opens exactly
 `/private-tool-bin/adoption-handoff`, `/private-tool-bin/alignc`, and
 `/private-tool-bin/libalign_runtime.a` with `O_RDONLY|O_NOFOLLOW`, rechecks the mount identity and
 all declared tuples, and executes the already-open compiler with `execveat(AT_EMPTY_PATH)`. The
-read-only namespace bind is the immutability boundary; a focused child cannot chmod, replace, or
-restore any handoff or sibling bundle member through its visible path. The focused child receives
+read-only namespace tmpfs is the immutability boundary; a focused child cannot chmod, replace, or
+restore any handoff or sibling bundle member through its visible path, and no host alias exists.
+The focused child receives
 `ALIGNC=/private-tool-bin/adoption-alignc`, `ALIGNC_DESCRIPTOR=/private-tool-bin/adoption-handoff`,
 and `ALIGNC_CACHE=/private-compiler-cache`, and rejects a missing, relative, symlinked, stale,
 replaced, or digest-mismatched handoff before any fixture compiler call. It never searches sibling
