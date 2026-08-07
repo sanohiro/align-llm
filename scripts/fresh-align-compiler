@@ -4089,20 +4089,47 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
     )
     try:
         admission.aggregate_started = True
-        run_owned(
+        aggregate_result = run_owned(
             arguments,
             category="CHILD",
             phase="aggregate",
             timeout=AGGREGATE_TIMEOUT,
             pass_fds=(*overlay_descriptors, *bind_descriptors),
             resource_check=lambda: enforce_aggregate_quota(admission),
+            return_result=True,
         )
+        if aggregate_result is not None and (
+            aggregate_result.returncode != 0
+            or aggregate_result.stdout
+            or aggregate_result.stderr
+        ):
+            try:
+                os.write(
+                    2,
+                    (
+                        "diagnostic aggregate result: "
+                        f"rc={aggregate_result.returncode} "
+                        f"stdout={aggregate_result.stdout[:4096]!r} "
+                        f"stderr={aggregate_result.stderr[:4096]!r}\n"
+                    ).encode("ascii", "backslashreplace"),
+                )
+            except OSError:
+                pass
     finally:
         close_private_mounts(bind_descriptors)
         close_private_mounts(overlay_descriptors)
     upper = root / "aggregate-output/workspace-upper"
     names = sorted(os.listdir(upper), key=os.fsencode)
     if any(name != "main" for name in names):
+        try:
+            os.write(
+                2,
+                f"diagnostic aggregate output names: {names!r}\n".encode(
+                    "ascii", "backslashreplace"
+                ),
+            )
+        except OSError:
+            pass
         fail("CHILD", "aggregate")
     output = upper / "main"
     value = output.lstat()
@@ -4113,11 +4140,32 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         or value.st_size <= 0
         or value.st_size > MAX_GENERATED_MAIN_BYTES
     ):
+        try:
+            os.write(
+                2,
+                (
+                    "diagnostic aggregate output stat: "
+                    f"mode={stat.S_IMODE(value.st_mode):04o} "
+                    f"type={stat.S_IFMT(value.st_mode):#o} "
+                    f"nlink={value.st_nlink} size={value.st_size}\n"
+                ).encode("ascii", "backslashreplace"),
+            )
+        except OSError:
+            pass
         fail("CHILD", "aggregate")
     raw = read_path(str(output), MAX_GENERATED_MAIN_BYTES)
     try:
         validate_published_elf(raw, runtime)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        try:
+            os.write(
+                2,
+                f"diagnostic aggregate ELF validation: {type(error).__name__}: {error!r}\n".encode(
+                    "ascii", "backslashreplace"
+                ),
+            )
+        except OSError:
+            pass
         fail("CHILD", "aggregate")
 
 
