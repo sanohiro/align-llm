@@ -692,24 +692,27 @@ def main() -> int:
             replaced_dispatcher = temporary / "replaced-boundary-dispatcher"
             replaced_dispatcher.write_bytes(dispatcher.read_bytes() + b"\x00")
             replaced_dispatcher.chmod(0o755)
-            for name, source, target in (
+            for name, source, target, expected in (
                 (
                     "replaced bootstrap",
                     replaced_bootstrap,
                     "/usr/local/libexec/align-llm/fresh-bootstrap",
+                    b"fresh compiler: ERROR TRUST supervisor\n",
                 ),
                 (
                     "replaced manifest",
                     replaced_manifest,
                     "/usr/local/share/align-llm/fresh-toolchain.json",
+                    b"fresh compiler: ERROR TRUST supervisor\n",
                 ),
                 (
                     "replaced boundary dispatcher",
                     replaced_dispatcher,
                     "/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint",
+                    b"fresh compiler: ERROR TOOL tools\n",
                 ),
             ):
-                require_trust_rejection(
+                require_rejection(
                     profile_run(
                         image,
                         volume,
@@ -718,6 +721,7 @@ def main() -> int:
                         replacements=((source, target),),
                     ),
                     name,
+                    expected,
                 )
             runtime_replacement = temporary / "runtime-replacement"
             runtime_replacement.write_bytes(b"not the installed runtime\n")
