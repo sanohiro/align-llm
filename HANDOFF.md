@@ -13,8 +13,8 @@ attestations; this file records durable project state.
   `83d9117f4519f4cb990d64089163713b8bbc749a`, oracle
   `271783e9f35eb7e3575c753ecbbb4e47a4b60a67`, and finalization
   `09fde6c6f203c49ccd8eea743b8b2f466a0b1862`. The current head is
-  `c12e4f6`, after design commits `b9e4d37`, `baae181`, cgroup-v2 cleanup design `ca18317`, and
-  ELF library-alias design `554dcbd`.
+  `29b4730`, after design commits `b9e4d37`, `baae181`, cgroup-v2 cleanup design `ca18317`, ELF
+  library-alias design `554dcbd`, and identical ELF file-alias design `02b02f3`.
 - Active goal: finish the reviewed FRESH-WORKER repair, complete PR review/fix/merge, then start
   the next eligible roadmap gate without waiting for a stop instruction.
 - The prior baseline tuple
@@ -61,6 +61,13 @@ attestations; this file records durable project state.
   aliases as ambiguous. Design `554dcbd` records first-manifest-order structural alias collapse
   while retaining rejection for distinct trees. Implementation `c12e4f6` applies it to all three
   derived path lists and adds focused identical/distinct alias and real ELF closure regressions.
+- Exact-head diagnostic run `31151003872` showed the remaining ambiguity: relative
+  `DT_NEEDED=ld-linux-x86-64.so.2` matched byte-identical loader files under the copied system
+  library tree and an explicit `/lib64` file binding. Design `02b02f3` extends the contract to
+  compare complete staged file bytes for multiple relative candidates, preserve the first
+  candidate, and reject byte-distinct candidates. Implementation `29b4730` adds that resolver
+  behavior plus single-file and real-ELF byte-distinct alias regressions. Diagnostic branch
+  instrumentation remains off the product branch.
 - The diagnostic branch `agent/fresh-worker-current-diagnostic` exposed only the hosted
   `filesystem` category before aggregate failure; diagnostic branch
   `agent/fresh-worker-aggregate-diagnostic-v5` isolated the runtime file-open failure and is
@@ -68,7 +75,7 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Push `c12e4f6` and this handoff, obtain passing hosted pinned and installed checks for the
+1. Push `29b4730` and this handoff, obtain passing hosted pinned and installed checks for the
    complete repair, publish the final
    SHA-bound comprehensive review envelope and all finding dispositions, mark ready, and merge
    the exact head with method `merge`.
@@ -107,6 +114,11 @@ attestations; this file records durable project state.
   `/bin/true` closure validation.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the ELF alias
   repair; `git diff --check`: PASS.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after the identical ELF
+  file-alias repair, including candidate-order preservation, identical-file acceptance, and
+  byte-distinct file and real-ELF alias rejection.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the identical ELF
+  file-alias repair; `git diff --check`: PASS.
 - `python3 -m py_compile scripts/fresh-align-compiler image/fresh/control/fresh_image_control.py
   scripts/run-fresh-worker-unit-smoke`: PASS; `git diff --check`: PASS.
 - Hosted run `31137327638` passed the pinned job but failed the installed aggregate with
