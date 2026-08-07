@@ -2219,12 +2219,16 @@ def open_manifest_source(source: Path) -> tuple[int, list[tuple[int, Snapshot]]]
     )
     retained: list[tuple[int, Snapshot]] = [(current, snapshot_fd(current))]
     try:
-        for part in raw.split(b"/")[1:]:
+        parts = raw.split(b"/")[1:]
+        for index, part in enumerate(parts):
             if part in (b"", b".", b".."):
                 raise OSError(errno.EINVAL, "manifest source path is not canonical")
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+            if index < len(parts) - 1:
+                flags |= os.O_DIRECTORY
             current = os.open(
                 part,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                flags,
                 dir_fd=current,
             )
             retained.append((current, snapshot_fd(current)))

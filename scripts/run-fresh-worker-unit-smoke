@@ -170,6 +170,32 @@ def digest_golden(module, temporary: Path) -> None:
     require((destination / "a").read_bytes() == b"abc", "runtime copy bytes changed")
     require(stat.S_IMODE((destination / "a").stat().st_mode) == 0o444, "runtime staged mode changed")
 
+    single_source = temporary / "single-runtime"
+    single_source.write_bytes(b"single runtime file")
+    single_source.chmod(0o755)
+    single_node = OrderedDict(
+        (
+            ("kind", "file"),
+            ("mode", "0755"),
+            ("staged_mode", "0555"),
+            ("size", single_source.stat().st_size),
+            ("sha256", hashlib.sha256(single_source.read_bytes()).hexdigest()),
+            ("entries", []),
+        )
+    )
+    require(
+        module.validate_tree_manifest(single_node, str(single_source))
+        == (1, single_source.stat().st_size),
+        "single-file runtime manifest was rejected",
+    )
+    single_destination = temporary / "single-runtime-copy"
+    module.copy_tree_manifest(single_node, single_source, single_destination)
+    require(
+        single_destination.read_bytes() == single_source.read_bytes()
+        and stat.S_IMODE(single_destination.stat().st_mode) == 0o555,
+        "single-file runtime copy changed",
+    )
+
     changed = OrderedDict(node)
     changed["sha256"] = "0" * 64
     try:
