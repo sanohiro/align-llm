@@ -8,9 +8,10 @@ attestations; this file records durable project state.
 The checkpoint below supersedes the older historical entries in this file. PR #61 is merged;
 continue with the corrected Request 6 adoption design before implementation.
 
-- Branch: `agent/request6-adoption-contract-v2`, based on merged `main` at
-  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; the design replacement is currently being prepared
-  after the final review of PR #62 found two P1 and two P2 contract gaps.
+- Branch: `agent/request6-adoption-contract-v2` at
+  `5528cf0a4357d693e1658277edb52aeda59a951c`, based on merged `main` at
+  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; the corrected design ledger and closure matrix are
+  complete and await the fresh independent design review before the replacement PR is opened.
 - PR #61 (`Install the authenticated fresh worker`) merged with method `merge` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`; its exact-head review and hosted evidence remain
   recorded in GitHub comment `5214227839` and run `31159427993`.
@@ -38,6 +39,13 @@ continue with the corrected Request 6 adoption design before implementation.
   conditional optional-schema oracle, and the branch handoff was stale. The PR is superseded rather
   than repaired in place. The replacement design adds a non-Make ordinary launcher, authenticated
   direct Rust/LLVM/native inputs, a fixed shipped scanner oracle, and this current checkpoint.
+- The next design review of `b078048` found three P1 and two P2 gaps: Make recipes could reopen the
+  caller cwd, the ordinary compiler handoff was not retained across the focused child, the native
+  aliases could still execute manifest forwarders, phase precedence was under-specified, and the
+  handoff did not name the current design head. Commit `5528cf0` closes these by fixing every child
+  to `-C` the private project, adding the schema-1 launcher and descriptor with golden bytes,
+  materializing aliases from authenticated compiler bytes, defining phase mapping, and recording
+  the current head here.
 - A fresh independent adversarial review found four valid non-trivial gaps: tool/Git descendants
   were outside the shared worker owner, cgroup leaves were pathname-owned, private-root cleanup
   closed identity witnesses before removal, and `make baseline-check` did not execute the
@@ -117,9 +125,8 @@ continue with the corrected Request 6 adoption design before implementation.
 
 ## Next steps, in priority order
 
-1. Finish the corrected Request 6 design ledger and closure matrix, run its author-side consistency
-   checks and one fresh independent adversarial review, then open the replacement design PR. Do not
-   merge PR #62 or consume its unrevised ordinary command.
+1. Run one fresh independent adversarial review of `5528cf0`, then open the replacement design PR.
+   Do not merge PR #62 or consume its unrevised ordinary command.
 2. After the corrected design merges, refresh `main`, record the bounded retrospective, and create
    a new implementation branch from merged `main`; read the sibling Align instructions and shipped
    JSON scanner design, then implement the ordinary launcher, focused target/fixtures, exact pin,
@@ -128,6 +135,11 @@ continue with the corrected Request 6 adoption design before implementation.
    preserving the primary intentional handoff, and continue to the next eligible roadmap gate.
 
 ## Latest verification
+
+- `git diff --check`: PASS at `5528cf0`.
+- Markdown fence parity: PASS (`docs/align-requests.md` 92, `docs/specs/check-gate-topology.md` 76).
+- Author-side design consistency review: PASS; the Request 6 public vectors, phase map, compiler
+  handoff schema/golden bytes, closure owners, and acceptance rows agree at `5528cf0`.
 
 - `make check`: PASS; only existing Align compiler warnings remain.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS.
