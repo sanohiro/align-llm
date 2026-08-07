@@ -1464,8 +1464,8 @@ ordinary evidence is accepted.
 
 The three ordinary Make children run inside a fresh authenticated private mount namespace. The
 namespace starts with an empty root, the authenticated runtime bindings at their canonical `/bin`,
-`/lib`, `/lib64`, and `/usr` targets, read-only bindings for `/private-project`, `/private-align`,
-`/private-rust`, `/private-llvm`, `/private-native`, and `/private-cargo-cache`; it has
+`/lib`, `/lib64`, and `/usr` targets, and namespace-owned sealed read-only copies of the project,
+Align, Rust, LLVM, native, Cargo-cache, and launcher-source trees; it has
 namespace-owned writable tmpfs mounts for `/private-cargo-home`, `/private-cargo-target`,
 `/private-compiler-cache`, `/private-tool-bin`, and `/tmp`, each with a fixed byte and inode cap. It
 has a private `/proc`, minimal `/dev`, no host root, and no original host pathname.
@@ -1479,20 +1479,20 @@ with the fixed shape; every read-only source is passed through a retained descri
 from a host pathname:
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 8589934592 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> --ro-bind-fd 20 /private-project --ro-bind-fd 21 /private-align --ro-bind-fd 22 /private-rust --ro-bind-fd 23 /private-llvm --ro-bind-fd 24 /private-native --ro-bind-fd 25 /private-cargo-cache --ro-bind-fd 26 /private-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 8589934592 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
 ```
 
 The fixed inherited descriptor map is:
 
 | FD | Retained source owned by the wrapper | Namespace target |
 | --- | --- | --- |
-| 20 | private project snapshot | `/private-project` |
-| 21 | private Align Git view | `/private-align` |
-| 22 | complete Rust prefix | `/private-rust` |
-| 23 | LLVM prefix | `/private-llvm` |
-| 24 | native tool/runtime tree | `/private-native` |
-| 25 | authenticated Cargo cache snapshot | `/private-cargo-cache` |
-| 26 | fixed launcher source | `/private-launcher-source` |
+| 20 | private project snapshot | `/input-project` |
+| 21 | private Align Git view | `/input-align` |
+| 22 | complete Rust prefix | `/input-rust` |
+| 23 | LLVM prefix | `/input-llvm` |
+| 24 | native tool/runtime tree | `/input-native` |
+| 25 | authenticated Cargo cache snapshot | `/input-cargo-cache` |
+| 26 | fixed launcher source | `/input-launcher-source` |
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
 `/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets. Its sources occupy FD 40
@@ -1506,12 +1506,16 @@ child vectors below; no repository or caller argument is appended. The namespace
 writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
 entries between children. bwrap consumes the retained descriptors before executing
 `adoption-namespace`, so a same-UID rename or replacement of any staging pathname cannot change a
-mounted source. The trusted helper verifies the namespace-owned `/private-tool-bin` mount is
-read-only before opening the handoff files. Thus a focused child or another same-UID host process
-cannot reach or modify the final compiler bundle.
-Each Make child drops all capabilities and sets `no_new_privs` before its `execve`; the supervisor
-retains its setup capability between children and is the only process allowed to copy the post-build
-compiler or remount `/private-tool-bin`. A failed namespace setup before the first child is
+mounted source. The runtime bindings are image-owned root-owned immutable inputs and remain direct
+FD binds. Before the first Make child, the supervisor re-snapshots each `/input-*` tree against the
+wrapper-authenticated source digest, copies it descriptor-relatively into the matching
+namespace-owned `/private-*` directory, verifies source and destination pre/post trees, unmounts
+every `/input-*` bind, bind-mounts and remounts every copied `/private-*` tree read-only, and verifies
+that no input mount or host pathname remains in the namespace. A same-UID host mutation after this
+seal cannot affect a child. The supervisor starts with UID/GID 0 and only `CAP_SYS_ADMIN` retained by
+the explicit bwrap vector; each Make child drops all capabilities and sets `no_new_privs` before its
+`execve`, and the supervisor is the only process allowed to copy the post-build compiler or remount
+`/private-tool-bin`. A failed namespace setup before the first child is
 `toolchain`, while a failed post-build compiler copy, namespace bundle, descriptor, remount, or
 handoff setup is `build`, before the focused child or compiler marker.
 
