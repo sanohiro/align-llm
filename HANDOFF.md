@@ -9,14 +9,16 @@ attestations; this file records durable project state.
   `85cbcc969b08ee3a7b844737d36b15744e5a9d18`.
 - PR #61 is draft and must merge with method `merge`. The pushed head is the old baseline
   finalization `870baf4d7faf03f579dde6256e79b4be91168dec`; local repair commits through
-  `d31e2d7da7e3b54c922befba969d73abd913c690` are present but not pushed.
+  source candidate `5c4af15` and oracle `d31e2d7da7e3b54c922befba969d73abd913c690` are present
+  but not pushed.
 - Active goal: finish the reviewed FRESH-WORKER repair, complete PR review/fix/merge, then start
   the next eligible roadmap gate without waiting for a stop instruction.
 - The prior baseline tuple
   `6b2828c3f0353cc5cd66854167f350a58faffb4e` /
   `f095a04d898e2b31aa9c8fd7e77a7f213a367369` /
-  `870baf4d7faf03f579dde6256e79b4be91168dec` is invalidated. A new source commit is required
-  because the recorded artifact manifest must include `scripts/check-baseline-chain`.
+  `870baf4d7faf03f579dde6256e79b4be91168dec` is invalidated. The source candidate now includes
+  `scripts/check-baseline-chain` in the recorded artifact manifest; record the replacement
+  baseline from the final amended source commit.
 
 ## Review and repair
 
@@ -28,13 +30,14 @@ attestations; this file records durable project state.
   boundaries.
 - Implementation `10bcbdd8f112746756069fd72f765843b4ea286b` routes worker children through the
   bounded owner, hardens cgroup and private-root cleanup, hardens image-control children, and
-  adds the executable baseline-chain checker. The follow-up manifest correction is in progress.
+  adds the executable baseline-chain checker. Source candidate `5c4af15` also aligns the
+  recorder's artifact manifest with the verifier.
 - The diagnostic branch `agent/fresh-worker-current-diagnostic` exposed only the hosted
   `filesystem` category before aggregate failure and is not product code.
 
 ## Next steps, in priority order
 
-1. Commit the recorder manifest correction as the final source, record two deterministic-reference
+1. Amend the source handoff with its final full commit ID, record two deterministic-reference
    samples, commit the immutable oracle, finalize the canonical baseline, remove pending output,
    and run `make baseline-check` plus the focused checks.
 2. Push PR #61, obtain passing hosted pinned and installed checks, publish the final SHA-bound
