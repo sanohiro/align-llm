@@ -255,7 +255,6 @@ fi
 printf '%s\n' "oversized baseline diagnostics: rejected"
 
 python3 - "${baseline}" <<'PY'
-import importlib.machinery
 import importlib.util
 import json
 import sys
@@ -311,6 +310,7 @@ fi
 printf '%s\n' "unrelated baseline Python runtime: rejected"
 
 python3 - <<'PY'
+import importlib.machinery
 import importlib.util
 import os
 import subprocess
