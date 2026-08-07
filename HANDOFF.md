@@ -5,63 +5,59 @@ attestations; this file records durable project state.
 
 ## Active checkpoint (2026-08-07)
 
-- Branch: `agent/request6-adoption-contract-v6`, based on merged `main` at
-  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. The v6 design content is committed at
-  `d211822`; the current HEAD is the handoff-only commit immediately following it.
+- Branch: `agent/request6-adoption-contract-v7`, based on merged `main` at
+  `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. The v7 design content is committed at
+  `29be692`; the Handoff update is intentionally still uncommitted.
 - Active goal: finish and merge the redesigned Request 6 focused-adoption contract, then implement
   the separately gated installed profile and authenticated adoption. Request 6 adoption and consumer
   implementations remain blocked until their named image and worker profiles merge.
-- v6 closes the ordinary evidence path through image-owned `fresh-supervise --mode
-  ordinary-adoption`. The supervisor authenticates the fixed manifest, creates FD 15's fresh sealed
-  nonce and FD 16's connected channel, forks exactly one dispatcher child, sends one ticket, and
-  keeps the parent alive while the child invokes retained FD 14 with `execveat(AT_EMPTY_PATH)` and
-  `argv[0] = request6-adoption-entrypoint`. The dispatcher authenticates the current parent PID,
-  stable kernel start-time, no-follow executable digest, exact supervisor command line, and ticket;
-  direct dispatcher execution cannot produce evidence.
-- The ordinary capsule adds `dispatch_ticket_sha256` and `image_attestation_sha256`. FD 12/13/15
-  are fixed-name sealed memfds with an observable regular-file/tmpfs/zero-link/name/seal predicate;
-  creator flags are explicit trace invariants because Linux exposes no post-hoc origin bits. The
-  worker rewinds and supplies them to pinned bwrap only as `--ro-bind-fd` sources; bwrap consumes
-  them into `/authority/{capsule,worker,nonce}`, and the helper rehydrates local memfds from those
-  fixed bind paths. No authority FD reaches the helper or Make children. Root and copied trees are
-  remounted read-only before the first child, and the fixed three-row child plan remains authoritative.
-- The raw-tree wire retains the independent six-entry non-UTF-8/symlink golden and exact
-  `HANDOFF.md`/`.git` exclusions. Legacy aggregate/self-test dispatch remains separate from the
-  ordinary path; the installed-profile milestone explicitly regresses legacy self-test output and
-  rejects ordinary markers.
-- PR #62 is superseded and must not be merged. v2 was rejected for root sealing, legacy/ordinary
-  dispatch separation, helper vectors, output grammar, nonce freshness, and milestone gaps; v3 for
-  authority-FD leakage, incomplete seals/helper plans, phase/milestone ambiguity, and self-test
-  dispatch; v4 for impossible memfd predicate, missing offset ownership, contradictory descriptor
-  inheritance, missing raw-tree/self-test gates, and stale handoff; v5 for bwrap rewind ownership,
-  dispatcher parent authentication, missing `argv[0]`, missing image-attestation capsule binding,
-  and nonce ownership. Those findings are redesigned in v6; do not patch the superseded branches.
+- v7 closes the v6 review gaps. The supervisor sends one fresh ticket over the connected
+  `SOCK_SEQPACKET` channel, receives the signed capsule digest `C`, and returns one queued
+  worker-admission proof `P` bound to the ticket, fresh nonce, and complete DSSE envelope. The
+  dispatcher peeks without consuming it; the namespace helper consumes it before Make and retains
+  the live channel through every child row and reverse cleanup. Parent death, HUP, peer/start-time
+  change, extra/missing proof, and replay fail closed with an exact phase.
+- v7 explicitly clears `FD_CLOEXEC` at the supervisor-to-dispatcher and dispatcher-to-worker edges,
+  gives the worker the exact FD allowlist, and makes the worker the owner of image-attested bwrap
+  FD 27. The worker invokes FD 27 with `execveat(AT_EMPTY_PATH)`; bwrap/helper never receive it.
+  The exact bwrap vector now includes `--as-pid-1 --sync-fd 16 --unshare-ipc`.
+- v7 makes project and Align source exceptions one canonical policy: fixed `git,handoff,target,main`
+  rows, project root `HANDOFF.md` only, no exception bytes in `raw-tree/v1` entries, and independent
+  metadata bytes. It also requires component-by-component no-follow `ALIGN_REPO` admission and
+  records the complete input/toolchain/revision/build/fixture/cleanup phase mapping.
+- PR #62 is superseded and must not be merged. v2 through v6 findings remain recorded for the PR
+  disposition step; do not patch the superseded branches. The v7 design is still unpublished until
+  a fresh comprehensive review of this exact HEAD completes.
 - Expected post-merge checkpoint: refresh `main`, perform the bounded design retrospective, and
   create `agent/request6-image-profile-extension` for the separately reviewed installed-profile
   gate. After that profile extension merges, create `agent/request6-adoption-implementation`.
 
 ## Next steps, in priority order
 
-1. Run one fresh comprehensive independent review of the exact v6 HEAD; do not publish until the
+1. Run one fresh comprehensive independent review of the exact v7 HEAD; do not publish until the
    review is clean.
-2. Record the v4/v5 final-review findings and dispositions on PR #62, close it as superseded, push
-   v6, create its replacement PR, and complete the review/check/fix/merge workflow.
+2. Record all v6 comprehensive-review findings and dispositions on PR #62, close it as superseded,
+   push v7, create its replacement PR, and complete the review/check/fix/merge workflow.
 3. Refresh `main`, record the bounded retrospective, implement and merge the FRESH-IMAGE-REQUEST6
    profile extension on its own branch, then implement authenticated Request 6; review, repair,
    merge, refresh `main`, and continue to the next eligible roadmap gate.
 
 ## Latest verification
 
-- `git diff --check`: PASS at v6 content commit `d211822`.
-- `make gate-topology-check`: PASS at v6 content commit `d211822`.
-- `python3 scripts/check-gate-topology --self-test`: PASS at v6 content commit `d211822`.
-- Exact Markdown fence parity check: PASS (`102`, `76`) for
-  `docs/align-requests.md` and `docs/specs/check-gate-topology.md` at `d211822`.
+- `git diff --check`: PASS at v7 content commit `29be692`.
+- `make gate-topology-check`: PASS at v7 content commit `29be692`.
+- `python3 scripts/check-gate-topology --self-test`: PASS at v7 content commit `29be692`.
+- Existing `python3 scripts/run-fresh-source-manifest-wire-smoke`: PASS; it still exercises the
+  shipped schema-1 implementation and does not yet consume v7's new exception projection.
+- Exact Markdown fence parity check: PASS (`104`, `76`) for
+  `docs/align-requests.md` and `docs/specs/check-gate-topology.md` at v7.
 - `ordinary-adoption-v1-wire-golden`: PASS (predicate 1217 bytes,
   `cf78d4b749ae37d850cca9dbb3751c5cb0080b23b8f1611cb59e6392117e5dd5`; PAE 1288 bytes,
-  `4a83ad037ca2bf99fb18f083d2beb9d2f9596b93b07fcb73ae4dada30c510467`) at `d211822`.
-- `raw-tree-v1-golden`: unchanged and PASS (1318 bytes,
-  `820d928b48c7c8fd88ce69230608143310caa17f020e72f8f2ceb23ff2354f4f`).
+  `4a83ad037ca2bf99fb18f083d2beb9d2f9596b93b07fcb73ae4dada30c510467`).
+- `raw-tree-v1-golden`: PASS (1348 bytes,
+  `8b30014d36e10e32e230fcbbcbe12b6933903da48c8569140cadd62795caad77`).
+- `raw-tree-v1-output-exception-golden`: PASS (1406 bytes,
+  `f326ceb896ff6224aa3fa1fbdd31c99da0a065d7200508bdccd8e51ca7e0046f`).
 - This is a docs/specification-only gate. Source tests, `make check`, `make build`, and `make ci`
   are N/A and remain deferred to executable implementation/profile slices.
 
