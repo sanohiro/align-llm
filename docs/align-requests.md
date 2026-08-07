@@ -997,7 +997,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: Request 6 align-llm adoption; Request 7 implementation remains blocked on this request's shipped surface plus its separately registered prerequisites
 Independent work that may continue: the authenticated focused-adoption transport design and implementation, the common fresh-compiler qualification, Request 7's independent registration work, its decoded-owner cleanup prerequisite, C6 design, and work that neither consumes json.scan nor changes .align-revision
-Resume condition: after FRESH-IMAGE and FRESH-WORKER merge and the focused-adoption transport is shipped, pin the release at the named Align commit, pass the ordinary and authenticated fresh Request 6 adoption vectors, then run one final fresh make ci before advancing to ALIGN_LLM_VERIFIED
+Resume condition: after FRESH-IMAGE, FRESH-WORKER, and the separately verified FRESH-IMAGE-REQUEST6 profile extension merge and the focused-adoption transport is shipped, pin the release at the named Align commit, pass the ordinary and authenticated fresh Request 6 adoption vectors, then run one final fresh make ci before advancing to ALIGN_LLM_VERIFIED
 Align commit or pull request: Align PR #703 (design) merged at 0ab7a30d6e7bfda56d4c8145b4672306634b9fea; Align PR #704 (implementation) merged at e65448b744c04e3868d079eef8b45ce0d43ac8ee
 align-llm verification: ALIGN_MERGED recorded; real-client adoption pending
 ```
@@ -1347,8 +1347,9 @@ second owner for scanner eligibility.
 
 After `ALIGN_MERGED`, align-llm owns a consumer adoption checkpoint, but it must not update
 `.align-revision`, run a pin-changing verification, or advance this request to
-`ALIGN_LLM_VERIFIED` until the merged Section 9 contract's FRESH-IMAGE and FRESH-WORKER capabilities
-have both merged. They must make canonical `make ci` build and use the pinned compiler through the
+`ALIGN_LLM_VERIFIED` until the merged Section 9 contract's FRESH-IMAGE, FRESH-WORKER, and separately
+verified FRESH-IMAGE-REQUEST6 profile extension have all merged. They must make canonical `make ci`
+build and use the pinned compiler through the
 reviewed fresh-build, identity, process, timeout, cache, and cleanup contract; this request must
 consume that shipped path rather than recreate it. The
 adoption may share one pin update with the other merged prerequisites needed by the same consumer.
@@ -1407,14 +1408,13 @@ cache manifest. Ordinary host evidence is valid only on that declared installed 
 arbitrary local machine may run the smoke as an untrusted developer check but may not claim the
 ordinary adoption result until the fixed manifest and attestation are present.
 
-The installed manifest's runtime-binding list has two additional fixed ordinary-adoption records:
-the executable file at target `/usr/bin/make` and the executable file at target
-`/usr/bin/adoption-namespace`. The first record's complete digest tree and mode must equal the
-`make` tool record's authenticated bytes; the second is an image-owned mode-`0755` namespace
-supervisor executable with its complete interpreter and library closure. `adoption-namespace` is a
-fixed executable runtime binding rather than a PATH-discovered tool record, and both records are
-directly retained and bound by descriptor. A missing record, incomplete closure, digest mismatch,
-or replacement is a `toolchain` failure before the first child.
+The installed manifest's runtime-binding list has one additional fixed ordinary-adoption record: the
+executable file at target `/usr/bin/adoption-namespace`. It is an image-owned mode-`0755` namespace
+supervisor executable with its complete interpreter and library closure, and is a fixed executable
+runtime binding rather than a PATH-discovered tool record. Every ordered `tools` record, including
+`make`, `git`, `tr`, `bash`, and the other core utilities, is separately retained and copied into the
+namespace-owned `/tools` inventory described below. A missing record, incomplete closure, digest
+mismatch, or replacement is a `toolchain` failure before the first child.
 
 The wrapper opens and authenticates the fixed manifest, every named tool, required native file, and
 cache descriptor with no-follow checks, records the attested digest, and rejects rustup shims,
@@ -1426,20 +1426,31 @@ manifest's Rust runtime binding is the complete Rust 1.96.0 prefix, preserving `
 derives the exact `CARGO`, `RUSTC`, `LLVM_CONFIG`, `LLVM_SYS_221_PREFIX`, `CC`, `CXX`, `AR`,
 `RANLIB`, linker, and runtime search paths from the attested manifest; it clears `RUSTUP_HOME`,
 `RUSTC_WRAPPER`, Cargo configuration/proxy/credential channels, and all unrelated inherited build
-variables. `PATH` begins with the staged authenticated Rust/LLVM/native tool directories and has no
-ambient fallback before the fixed interpreter directories. The wrapper creates unique mode-`0700`
+variables. `PATH` is exactly
+`/private-native/bin:/private-rust/bin:/private-llvm/bin:/tools:/usr/bin:/bin`; the native aliases
+precede the manifest tool inventory, and `/usr/bin` and `/bin` contain only the explicit runtime
+bindings. The wrapper creates unique mode-`0700`
 `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
 The fixed manifest also authenticates the ordinary namespace launcher (`bwrap` or its equivalent),
 the `/usr/bin/adoption-namespace` runtime binding, their complete loader/library closure, and the
-staged runtime files containing `/usr/bin/make`, `/usr/bin/git`, the shell, and the required core
-utilities. The runtime-binding digest for `/usr/bin/make` must equal the `make` tool record, so the
-tool record and the direct namespace executable cannot identify different bytes. A missing
-user/mount namespace capability or any incomplete launcher/runtime closure is a `toolchain` failure;
-the wrapper never invokes an ambient host `bwrap`, `make`, `git`, or shell.
+staged runtime files containing `/usr/bin/env`, `/bin/sh`, and the required loader/library roots.
+The wrapper never invokes an ambient host `bwrap`, `make`, `git`, or shell. A missing user/mount
+namespace capability or any incomplete launcher/runtime closure is a `toolchain` failure.
 The adoption implementation changes the build recipe to invoke `$(CARGO)` with the Makefile default
 `CARGO ?= cargo`; both `align-build` and the private `align-build-only` target use that recipe. The
 wrapper always supplies the authenticated absolute Cargo path, so the ordinary build never falls
-back to a bare or rustup-selected executable.
+back to a bare or rustup-selected executable. Before the first child, the namespace supervisor
+copies every ordered manifest tool record from retained descriptors into the namespace-owned
+`/private-tool-inventory`, verifies each copy against its record, unmounts the setup view, and
+bind-mounts that directory read-only at `/tools`. The inventory is the only resolution source for
+bare `git`, `tr`, `bash`, `python3`, and other tool names; the complete manifest tool inventory is
+therefore in scope even when a particular vector does not use every record. The compiler/archive
+handoff remains separate in `/private-tool-bin` and is not mixed with the inventory mount.
+The executable-resolution ledger is closed: `/usr/bin/adoption-namespace`, `/usr/bin/env`, and
+`/bin/sh` are the named direct runtime bindings; every bare tool name resolves to `/tools/<name>`;
+the fixed absolute `/private-rust`, `/private-llvm`, `/private-native`, and
+`/private-tool-bin` paths are the only other executable roots. A source scan and child-argv smoke
+must reject every executable outside those four classes before a Make child starts.
 
 Before any child starts, the wrapper creates descriptor-relative, no-follow, mode-`0555` snapshots
 of the invocation project and `ALIGN_REPO`, including a private Git view for the Align snapshot so
@@ -1475,10 +1486,11 @@ ordinary evidence is accepted.
 The three ordinary Make children run inside a fresh authenticated private mount namespace. The
 namespace starts with an empty root, the authenticated runtime bindings at their canonical `/bin`,
 `/lib`, `/lib64`, and `/usr` targets, and namespace-owned sealed read-only copies of the project,
-Align, Rust, LLVM, native, Cargo-cache, and launcher-source trees; it has
-namespace-owned writable tmpfs mounts for `/private-cargo-home`, `/private-cargo-target`,
-`/private-compiler-cache`, `/private-tool-bin`, and `/tmp`, each with a fixed byte and inode cap. It
-has a private `/proc`, minimal `/dev`, no host root, and no original host pathname.
+Align, Rust, LLVM, native, Cargo-cache, launcher-source, and ordered tool-inventory inputs; it has
+the namespace-owned sealed read-only `/tools` inventory plus writable tmpfs mounts for
+`/private-cargo-home`, `/private-cargo-target`, `/private-compiler-cache`, `/private-tool-inventory`,
+`/private-tool-bin`, and `/tmp`, each with a fixed byte and inode cap. It has a private `/proc`,
+minimal `/dev`, no host root, and no original host pathname.
 The focused mode additionally gives the trusted namespace setup helper a namespace-owned tmpfs at
 `/private-tool-bin`; the trusted helper copies the compiler, archive, launcher, and final descriptor
 into that tmpfs, remounts it read-only before the focused child, and launches each Make child through
@@ -1489,7 +1501,7 @@ with the fixed shape; every read-only source is passed through a retained descri
 from a host pathname:
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 21474836480 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
 ```
 
 The fixed inherited descriptor map is:
@@ -1503,27 +1515,33 @@ The fixed inherited descriptor map is:
 | 24 | native tool/runtime tree | `/input-native` |
 | 25 | authenticated Cargo cache snapshot | `/input-cargo-cache` |
 | 26 | fixed launcher source | `/input-launcher-source` |
+| 400 onward | ordered schema-2 tool records | `/input-tools/<tool-name>` |
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
 `/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets, including the exact
-`/usr/bin/make` and `/usr/bin/adoption-namespace` file bindings. Its sources occupy FD 40 onward
-in manifest order, and `<ordered-runtime-fd-bind-argv>` contains only
+`/usr/bin/adoption-namespace` file binding. Its sources occupy FD 40 onward in manifest order,
+and `<ordered-runtime-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> <canonical-target>` triples for those retained no-follow descriptors; it is not a
-caller argument, pathname bind, or ambient host bind. The wrapper admits the descriptor table before
-launch, checks every source identity and complete digest after staging, launches bwrap with
-`close_fds=True, pass_fds=tuple(range(20, 27)) + tuple(range(40, 40 + N))`, and closes its parent copies only after the child is
-released. The ellipsis is replaced only by the fixed namespace-helper arguments and one of the three
-child vectors below; no repository or caller argument is appended. The namespace helper remounts each
+caller argument, pathname bind, or ambient host bind. The tool sources occupy FD 400 onward in
+manifest order, and `<ordered-tool-fd-bind-argv>` contains only
+`--ro-bind-fd <fd> /input-tools/<name>` triples for those retained no-follow descriptors. The
+wrapper admits the descriptor table before launch, checks every source identity and complete digest
+after staging, launches bwrap with
+`close_fds=True, pass_fds=tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`, and closes its parent copies only after the child is released. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The ellipsis is replaced only by the fixed namespace-helper arguments and one of the three child
+vectors below; no repository or caller argument is appended. The namespace helper remounts each
 writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
 entries between children. bwrap consumes the retained descriptors before executing
 `/usr/bin/adoption-namespace`, so a same-UID rename or replacement of any staging pathname cannot
 change a mounted source. The runtime bindings are image-owned root-owned immutable inputs and remain direct
 FD binds. Before the first Make child, the supervisor re-snapshots each `/input-*` tree against the
 wrapper-authenticated source digest, copies it descriptor-relatively into the matching
-namespace-owned `/private-*` directory, verifies source and destination pre/post trees, unmounts
-every `/input-*` bind, bind-mounts and remounts every copied `/private-*` tree read-only, and verifies
+namespace-owned `/private-*` directory, verifies source and destination pre/post trees, copies the
+ordered `/input-tools/<name>` files into `/private-tool-inventory`, verifies each destination against
+the manifest, unmounts every `/input-*` bind, bind-mounts/remounts that inventory read-only at
+`/tools`, and then bind-mounts/remounts every other copied `/private-*` tree read-only. It verifies
 that no input mount or host pathname remains in the namespace. A same-UID host mutation after this
-seal cannot affect a child. The supervisor starts with UID/GID 0 and only `CAP_SYS_ADMIN` retained by
+seal cannot affect a child. The
+supervisor starts with UID/GID 0 and only `CAP_SYS_ADMIN` retained by
 the explicit bwrap vector; each Make child drops all capabilities and sets `no_new_privs` before its
 `execve`, and the supervisor is the only process allowed to copy the post-build compiler or remount
 `/private-tool-bin`. A failed namespace setup before the first child is
@@ -1581,14 +1599,14 @@ replacement-before-admission case.
 
 After its preflight, the wrapper starts the one namespace supervisor, which launches these fixed
 child vectors inside that namespace with the authenticated toolchain environment and empty
-Make-control variables. `/usr/bin/make` in each vector is the retained runtime-binding descriptor
-whose bytes equal the manifest's `make` tool record; it is never a host pathname reopened after
+Make-control variables. `/tools/make` in each vector is the retained schema-2 `make` tool record
+materialized in the read-only `/tools` inventory; it is never a host pathname reopened after
 admission:
 
 ```text
-/usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-revision
-/usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-build-only
-/usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile json-scan-row-ownership-adoption
+/tools/make --no-print-directory -C /private-project -f /private-project/Makefile align-revision
+/tools/make --no-print-directory -C /private-project -f /private-project/Makefile align-build-only
+/tools/make --no-print-directory -C /private-project -f /private-project/Makefile json-scan-row-ownership-adoption
 ```
 
 Each child receives `ALIGN_REPO=/private-align` and the same authenticated read-only toolchain,
@@ -1602,9 +1620,10 @@ cache, and empty Make-control environment. The `align-build-only` child addition
 `clang` and `clang++` runtime bytes, with their complete ELF closure; the manifest's `cc` and `cxx`
 forwarders are identity records, not executed aliases. These are explicit staged aliases, not an
 unlisted `c++` name. Every focused child
-receives `PATH=/private-native/bin:/private-rust/bin:/private-llvm/bin:/usr/bin:/bin`, with the
-staged `cc` first; this is required because the shipped `alignc run` path invokes `cc` by name and
-must never reach ambient `/usr/bin/cc`. After `align-build-only`, the namespace supervisor itself opens
+receives `PATH=/private-native/bin:/private-rust/bin:/private-llvm/bin:/tools:/usr/bin:/bin`, with
+the staged `cc` first and the authenticated tool inventory before the fixed runtime directories; this
+is required because the shipped `alignc run` path invokes `cc` by name and must never reach ambient
+`/usr/bin/cc`. After `align-build-only`, the namespace supervisor itself opens
 the newly built `/private-cargo-target/release/alignc` and adjacent runtime archive with retained
 no-follow descriptors, verifies type, mode, link count, revision, version, and complete bytes, and
 copies them create-exclusively into the namespace-owned `/private-tool-bin` tmpfs. It copies the
@@ -1695,16 +1714,22 @@ controller, so the ordinary contract does not claim a `memory.max` boundary. Bef
 it applies hard and soft
 `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and `RLIMIT_FSIZE=536870912`; the child-side probe verifies
 the exact inherited rlimits before admitting the first vector. The namespace-owned writable
-tmpfs bounds are fixed: root `68719476736` bytes, Cargo home `21474836480`, Cargo target
-`68719476736`, compiler cache `8589934592`, tool bundle `268435456`, and `/tmp` `268435456`, with
+tmpfs bounds are fixed: root `68719476736` bytes, Cargo home `25769803776`, Cargo target
+`68719476736`, compiler cache `8589934592`, tool inventory `268435456`, tool bundle `268435456`,
+and `/tmp` `268435456`, with
 `nr_inodes=2000000` on the root and private build trees, `nr_inodes=400000` on the Cargo home and
 compiler cache, and `nr_inodes=65536` on temporary/tool trees. Each of the seven retained setup
 trees has an individual 200,000-entry boundary, and the wrapper rejects a sealed-input byte or entry
-total above its fixed 48 GiB or 1,500,000-entry aggregate before the next copy. The supervisor counts
+total above its fixed 48 GiB or 1,500,000-entry aggregate before the next copy. Cargo-cache admission
+also computes the fixed upper bound
+`sum(round_up(file_size, 4096)) + 4096 * (directory_count + 1) + 2147483648`; it rejects before copy
+when that value exceeds `25769803776`, even when the logical schema-2 total is below 20 GiB. The
+2 GiB term is reserved for Cargo-created metadata and locks; the page-rounded file and directory
+terms make the copy bound independent of source filesystem allocation. At the schema-2 limits of
+20 GiB and 200,000 entries, this upper bound fits the 24 GiB Cargo-home tmpfs. The supervisor counts
 every admitted entry and byte between vectors and during active children, rejecting cap-plus-one before
-the next side effect. Thus all seven individual boundaries fit the root inode limit together, and a
-valid 20 GiB Cargo cache fits its destination tmpfs. The helper never binds a host-writable target or
-cache. A process, descriptor,
+the next side effect. Thus all seven individual boundaries fit the root inode limit together. The
+helper never binds a host-writable target or cache. A process, descriptor,
 file-size, inode, or byte-cap failure is `build` for the build vector or `fixture` for the focused
 vector; cgroup admission is `toolchain`, and a failed post-run cgroup or host-root proof is
 `cleanup`. The outer wrapper removes the cgroup leaf only after descriptor-relative empty and identity
@@ -2074,7 +2099,7 @@ The implementation closure ledger for the future Align design is:
 | Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
-| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | The reviewed Section 9 contract in `docs/specs/check-gate-topology.md` and its wire/source-identity foundations are merged. FRESH-IMAGE owns installation and attestation of the image trust root; FRESH-WORKER owns the repository worker, Make integration, identity-bound baseline refresh, and cleanup. Every pin-changing adoption remains blocked until both capabilities merge. | Run every Section 9 named owner qualification, the installed-image end-to-end unchanged-pin aggregate, baseline ancestry checks, and cleanup evidence before worker merge or later adoption. Aarch64 Linux/macOS consumers additionally require their named platform profiles. |
+| Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | The reviewed Section 9 contract in `docs/specs/check-gate-topology.md` and its wire/source-identity foundations are merged. FRESH-IMAGE owns installation and attestation of the image trust root; FRESH-WORKER owns the repository worker, Make integration, identity-bound baseline refresh, and cleanup. Request 6 additionally requires the separately reviewed FRESH-IMAGE-REQUEST6 installed-profile extension before its ordinary or fresh adoption. Every other pin-changing adoption remains blocked until its applicable image and worker capabilities merge. | Run every Section 9 named owner qualification, the installed-image end-to-end unchanged-pin aggregate, the Request 6 profile-extension smoke where applicable, baseline ancestry checks, and cleanup evidence before worker merge or later adoption. Aarch64 Linux/macOS consumers additionally require their named platform profiles. |
 
 Clean returned views remain owned by the input; materialized returned bytes are owned by the
 explicit arena; array spines retain their existing heap or arena owner; key, skipped-string, and
@@ -2638,8 +2663,9 @@ that changes `.align-revision`, FRESH-WORKER must make canonical `make ci` consu
 refresh its identity-bound baseline, while FRESH-IMAGE must install and attest the host profile.
 This is a repository-wide pin-transition prerequisite, not a Request 7-only helper: Request 6,
 decoded-owner cleanup, Request 7, and any other request that would advance the x86_64 pin or claim
-`ALIGN_LLM_VERIFIED` against a new compiler must wait for both capabilities. A request with an
-aarch64 or macOS acceptance environment must additionally wait for its named platform profile.
+`ALIGN_LLM_VERIFIED` against a new compiler must wait for both capabilities; Request 6 must also
+wait for FRESH-IMAGE-REQUEST6 before its focused adoption. A request with an aarch64 or macOS
+acceptance environment must additionally wait for its named platform profile.
 The plan, rather than this request register, owns the exact public inputs, bootstrap, commands,
 statuses, timeout constants, process topology, cleanup algorithm, implementation modules, and
 regression names for building and using a fresh pinned compiler outside `ALIGN_REPO`.
