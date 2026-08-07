@@ -1384,7 +1384,8 @@ config, helper, alternate-object, and linked-worktree metadata; (5) tool/runtime
 (6) private-root staging and final pre-child snapshots; (7) the three child vectors; and (8)
 reverse cleanup. The phase mapping is exact: steps 1–2 and every pre-child project/Align failure
 are `revision` except the initial argv/env/cwd grammar, which is `input`; fixed attestation,
-manifest, tool, runtime, cache, and private-root staging failures are `toolchain`;
+manifest, lock/cgroup admission, tool, runtime, cache, and private-root staging failures are
+`toolchain`;
 `.align-revision` mismatch is `revision`; the build child, compiler/archive/launcher source copy,
 and post-build namespace bundle/handoff setup are `build`; the focused child and fixture/compiler
 result are `fixture`; and cleanup is
@@ -1440,12 +1441,17 @@ channel outside the fixed Section 9 Git allowlist; it sets the private `GIT_DIR`
 `GIT_NO_REPLACE_OBJECTS=1`, and `GIT_GRAFT_FILE=/dev/null` values for all children. It also
 stages the complete authenticated Rust prefix, LLVM/native runtime trees, and Cargo-cache inputs
 into the private root, hashes every accepted regular file, and performs complete pre-copy,
-post-copy, and final pre-child tree snapshots. Children see only these retained read-only inputs
-and private writable `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and temporary paths. A
+post-copy, and final pre-child tree snapshots. The namespace supervisor copies the accepted cache
+into its bounded namespace-owned writable `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and
+temporary tmpfs paths; no child receives a host-writable output bind. A
 source, tool, native, or cache replacement, mutation, extra entry, type, mode, size, link-count, or
 digest mismatch fails before the next child and leaves the private root for diagnostic cleanup
 rather than reopening the original path. The project snapshot records the current project `HEAD`
-and requires the project index and raw tree to match that commit before and after the copy; the
+and requires `git rev-parse --show-object-format` to return `sha1` for both the project and Align
+views; a SHA-256 object-format checkout is rejected in the `revision` phase before private staging.
+The ordinary schema therefore uses the fixed 40-hex `project_head` width; the authenticated fresh
+profile retains Section 9's separate SHA-1/SHA-256 support. The project snapshot requires the
+project index and raw tree to match that commit before and after the copy; the
 only permitted working-tree exception is the intentional uncommitted `HANDOFF.md`, which is not
 copied into the product snapshot. Untracked files and every other tracked modification reject.
 The adoption PR binds the recorded project `HEAD` to the exact reviewed implementation head before
@@ -1454,9 +1460,10 @@ ordinary evidence is accepted.
 The three ordinary Make children run inside a fresh authenticated private mount namespace. The
 namespace starts with an empty root, the authenticated runtime bindings at their canonical `/bin`,
 `/lib`, `/lib64`, and `/usr` targets, read-only bindings for `/private-project`, `/private-align`,
-`/private-rust`, `/private-llvm`, `/private-native`, and `/private-cargo-cache`, and writable
-bindings only for `/private-cargo-home`, `/private-cargo-target`, and `/private-compiler-cache`; it
-has a private `/proc`, minimal `/dev`, private `/tmp`, no host root, and no original host pathname.
+`/private-rust`, `/private-llvm`, `/private-native`, and `/private-cargo-cache`; it has
+namespace-owned writable tmpfs mounts for `/private-cargo-home`, `/private-cargo-target`,
+`/private-compiler-cache`, `/private-tool-bin`, and `/tmp`, each with a fixed byte and inode cap. It
+has a private `/proc`, minimal `/dev`, no host root, and no original host pathname.
 The focused mode additionally gives the trusted namespace setup helper a namespace-owned tmpfs at
 `/private-tool-bin`; the helper copies the compiler, archive, launcher, and final descriptor into
 that tmpfs, remounts it read-only, drops every capability, and only then starts Make. The final
@@ -1464,13 +1471,15 @@ bundle has no host pathname or same-UID alias. The wrapper uses the attested nam
 with the fixed shape
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --tmpfs / --proc /proc --dev /dev --tmpfs /tmp --tmpfs /private-tool-bin --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-binding-argv> --ro-bind <private-project> /private-project --ro-bind <private-align> /private-align --ro-bind <private-rust> /private-rust --ro-bind <private-llvm> /private-llvm --ro-bind <private-native> /private-native --ro-bind <private-cargo-cache> /private-cargo-cache --ro-bind <private-tool-input> /private-tool-input --ro-bind <private-launcher-source> /private-launcher-source --bind <private-cargo-home> /private-cargo-home --bind <private-cargo-target> /private-cargo-target --bind <private-compiler-cache> /private-compiler-cache --chdir /private-project -- /usr/bin/adoption-namespace ...
+<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /private-tool-bin --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 8589934592 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-binding-argv> --ro-bind <private-project> /private-project --ro-bind <private-align> /private-align --ro-bind <private-rust> /private-rust --ro-bind <private-llvm> /private-llvm --ro-bind <private-native> /private-native --ro-bind <private-cargo-cache> /private-cargo-cache --ro-bind <private-tool-input> /private-tool-input --ro-bind <private-launcher-source> /private-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace ...
 ```
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
 `/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets; it is not a caller argument or
 an ambient host bind. The ellipsis is replaced only by the fixed namespace-helper arguments and one
-of the three child vectors below; no repository or caller argument is appended. The wrapper verifies
+of the three child vectors below; no repository or caller argument is appended. The namespace helper
+remounts each writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously
+counts bytes and entries between children. The wrapper verifies
 every read-only mount source before the namespace starts, and the trusted helper verifies the
 namespace-owned `/private-tool-bin` mount is read-only before opening the handoff files. Thus a
 focused child or another same-UID host process cannot reach or modify the final compiler bundle.
@@ -1479,16 +1488,19 @@ setup before the first child is `toolchain`, while a failed post-build compiler-
 namespace bundle, descriptor, remount, or handoff setup is `build`, before the focused child or
 compiler marker.
 
-In focused mode the namespace helper receives, in this fixed order, the read-only source paths
+The namespace helper is one trusted supervisor for this invocation. It receives the three child
+vectors in the fixed order below, starts each as a separate session with the bounded runner, and
+performs the compiler bundle handoff only after `align-build` succeeds and before the focused vector.
+In focused mode the handoff arguments are, in this fixed order, the read-only source paths
 `/private-tool-input/alignc`, `/private-tool-input/libalign_runtime.a`, and
 `/private-launcher-source/adoption-alignc`, the expected compiler, archive, and launcher SHA-256
-values, the Align revision, the project HEAD, and then `--` followed by the selected Make vector. It copies the
+values, the Align revision, the project HEAD, and then `--` followed by the focused Make vector. It copies the
 source bytes into the namespace-owned `/private-tool-bin` tmpfs with create-exclusive files, hashes
-and stats those final destination files, writes the schema-1 descriptor only after that final
-materialization, copies the launcher, verifies the descriptor bytes, remounts the tmpfs read-only,
-and drops all capabilities before `execve`-ing the Make vector. The first two modes pass
-`--no-compiler-handoff` in the same fixed helper position. No repository Makefile or fixture code
-runs before this setup sequence completes.
+and stats those final destination files, copies and verifies the launcher before writing the schema-1
+descriptor, verifies the descriptor bytes, remounts the tmpfs read-only, and drops all capabilities
+before `execve`-ing the focused Make vector. The first two vectors pass `--no-compiler-handoff` in
+the same fixed helper position. No repository Makefile or fixture code runs before this setup
+sequence completes, and no fourth vector is accepted.
 
 The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
 
@@ -1498,8 +1510,30 @@ env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
   ./scripts/run-json-scan-row-ownership-adoption
 ```
 
-After its preflight, the wrapper alone launches these fixed child vectors inside that namespace with
-the authenticated toolchain environment and empty Make-control variables:
+Concurrency is explicit. The ordinary wrapper and every Section 9 fresh public mode use the same
+installed per-user mode-`0600` lock at `/run/user/<uid>/align-llm-fresh/lock`; the wrapper opens and
+identity-checks it with `LOCK_NB` before private-root creation, cgroup admission, or namespace
+setup. The lock path and policy are fixed profile inputs, never caller overrides. The supported
+entrypoint combinations are:
+
+| Combination | Policy | Failed-second result |
+| --- | --- | --- |
+| ordinary + ordinary | reject before side effects | `json-scan adoption: ERROR toolchain\n` |
+| ordinary + fresh `ci`, `build`, `adoption`, or `self-test` | reject before side effects under the common lock | the existing fresh `PLATFORM concurrency` result for a fresh second, or the ordinary `toolchain` result for an ordinary second |
+| fresh + ordinary | the same common-lock rejection in the opposite arrival order | the result for the second entrypoint above |
+| recursive ordinary entrypoint in one process tree | reject before a second root or child | `json-scan adoption: ERROR toolchain\n` |
+
+Independent processes do not wait or share roots. On cancellation or normal exit the owner releases
+the lock only after child, cgroup-leaf, namespace, and private-root cleanup. A wrapper `SIGKILL`
+leaves no writable namespace mount; `--die-with-parent` empties the cgroup leaf, the kernel releases
+the lock, and the next invocation scans the bounded candidate quarantine. If identity or emptiness
+cannot be proved, it rejects before root creation and leaves the candidate untouched. The
+concurrency smoke runs every listed pair, failed-second marker, orphaned-leaf, orphaned-root, and
+replacement-before-admission case.
+
+After its preflight, the wrapper starts the one namespace supervisor, which launches these fixed
+child vectors inside that namespace with the authenticated toolchain environment and empty
+Make-control variables:
 
 ```text
 /usr/bin/make --no-print-directory -C /private-project -f /private-project/Makefile align-revision
@@ -1588,14 +1622,29 @@ descendants, reap them, close pipes/descriptors, re-snapshot the private tree, a
 wrapper-owned private root. A failure leaves no child and emits the one phase error; a failed
 cleanup emits `json-scan adoption: ERROR cleanup\n` and leaves the unprovable path untouched.
 
+The ordinary namespace has enforceable resource bounds, not only post-run accounting. The fixed
+installed profile provisions the delegated cgroup-v2 parent
+`/sys/fs/cgroup/align-llm-adoption/<uid>`; the namespace supervisor creates one unique leaf,
+requires an empty admission, sets `pids.max=512` and `memory.max=17179869184`, and keeps that leaf
+until every child and cleanup step has completed. Before the bwrap boundary it applies hard and soft
+`RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and `RLIMIT_FSIZE=536870912`; the child-side probe verifies
+the values and cgroup membership before admitting the first vector. The namespace-owned writable
+tmpfs bounds are fixed: root `68719476736` bytes, Cargo home `8589934592`, Cargo target
+`68719476736`, compiler cache `8589934592`, tool bundle `268435456`, and `/tmp` `268435456`, with
+`nr_inodes=400000` on persistent trees and `nr_inodes=65536` on temporary/tool trees. The helper
+counts every admitted entry and byte between vectors and during active children, rejects cap-plus-one
+before the next side effect, and never binds a host-writable target or cache. A process, descriptor,
+file-size, cgroup, inode, or byte-cap failure is `build` for the build vector or `fixture` for the
+focused vector; the cgroup leaf is removed only after descriptor-relative empty and identity proofs.
+
 The focused target accepts no positional arguments and its preflight rejects missing, extra, or
 unexpected fixture entries before starting the compiler. It opens the project root from the
 invocation `cwd`, requires the fixture directory and every expected fixture to be an owned regular
 file with no symlink or special-file component, rejects an unexpected entry, and creates all
-ordinary-profile cache and output paths below the wrapper's newly created mode-`0700` temporary
-directory. The temporary directory has a checked device/inode identity and is removed only after
-the target proves that no compiler child remains; a failed identity or cleanup proof leaves the
-path untouched and fails closed.
+ordinary-profile cache and output paths below the namespace supervisor's newly created mode-`0700`
+temporary root. The temporary root has a checked device/inode/mount identity and is removed only
+after the target proves that no compiler child remains; a failed identity or cleanup proof leaves
+the host candidate untouched and fails closed.
 
 Every compiler invocation captures bounded stdout and stderr, forwards neither stream on a
 negative result except for the one expected diagnostic comparison, rejects a panic/backtrace or
