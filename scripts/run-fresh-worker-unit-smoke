@@ -306,6 +306,57 @@ def cgroup_membership_cases(module, temporary: Path) -> None:
         os.close(leaf_fd)
 
 
+def cgroup_removal_cases(module, temporary: Path) -> None:
+    parent = temporary / "cgroup-removal-parent"
+    parent.mkdir(mode=0o700)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    original_empty = module.require_cgroup_empty_fd
+    module.require_cgroup_empty_fd = lambda _fd: None
+    try:
+        leaf_name = module.ROOT_PREFIX + "removal"
+        leaf = parent / leaf_name
+        leaf.mkdir(mode=0o700)
+        leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        lease = module.CgroupLease(
+            parent_fd,
+            module.snapshot_fd(parent_fd),
+            leaf_fd,
+            module.snapshot_fd(leaf_fd),
+            leaf_name,
+        )
+        module.remove_cgroup_leaf(lease)
+        require(not leaf.exists(), "cgroup leaf remained after descriptor-relative rmdir")
+        os.close(leaf_fd)
+
+        leaf = parent / leaf_name
+        leaf.mkdir(mode=0o700)
+        leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        lease = module.CgroupLease(
+            parent_fd,
+            module.snapshot_fd(parent_fd),
+            leaf_fd,
+            module.snapshot_fd(leaf_fd),
+            leaf_name,
+        )
+        saved = parent / (leaf_name + "-saved")
+        leaf.rename(saved)
+        leaf.mkdir(mode=0o700)
+        try:
+            module.remove_cgroup_leaf(lease)
+        except module.CleanupError:
+            pass
+        else:
+            raise AssertionError("replaced cgroup leaf was accepted")
+        require(leaf.exists(), "replaced cgroup leaf was removed")
+        saved.rmdir()
+        leaf.rmdir()
+        os.close(leaf_fd)
+    finally:
+        module.require_cgroup_empty_fd = original_empty
+        os.close(parent_fd)
+        parent.rmdir()
+
+
 def materialization_mutation_cases(module, temporary: Path) -> None:
     source = temporary / "materialization-race"
     source.mkdir(mode=0o755)
@@ -1065,6 +1116,7 @@ def main() -> int:
         with fake_cgroup(module, temporary):
             source_identity_cases(module, temporary)
         cgroup_membership_cases(module, temporary)
+        cgroup_removal_cases(module, temporary)
         materialization_mutation_cases(module, temporary)
         private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import struct
+import stat
 import subprocess
 import sys
 import tempfile
@@ -165,6 +166,57 @@ def cgroup_membership_case(temporary: Path) -> None:
         os.close(leaf_fd)
 
 
+def cgroup_removal_case(temporary: Path) -> None:
+    parent = temporary / "control-cgroup-removal"
+    parent.mkdir(mode=0o700)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    original_empty = control._control_cgroup_empty
+    control._control_cgroup_empty = lambda _fd: None
+    try:
+        leaf_name = "control-cgroup-leaf"
+        leaf = parent / leaf_name
+        leaf.mkdir(mode=0o700)
+        leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        value = os.fstat(leaf_fd)
+        identity = (
+            value.st_dev,
+            value.st_ino,
+            stat.S_IFMT(value.st_mode),
+            stat.S_IMODE(value.st_mode),
+            value.st_uid,
+        )
+        control._control_remove_cgroup_leaf(parent_fd, leaf_fd, leaf_name, identity)
+        assert not leaf.exists()
+        os.close(leaf_fd)
+
+        leaf.mkdir(mode=0o700)
+        leaf_fd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        value = os.fstat(leaf_fd)
+        identity = (
+            value.st_dev,
+            value.st_ino,
+            stat.S_IFMT(value.st_mode),
+            stat.S_IMODE(value.st_mode),
+            value.st_uid,
+        )
+        saved = parent / (leaf_name + "-saved")
+        leaf.rename(saved)
+        leaf.mkdir(mode=0o700)
+        rejected_os(
+            lambda: control._control_remove_cgroup_leaf(
+                parent_fd, leaf_fd, leaf_name, identity
+            )
+        )
+        assert leaf.exists()
+        saved.rmdir()
+        leaf.rmdir()
+        os.close(leaf_fd)
+    finally:
+        control._control_cgroup_empty = original_empty
+        os.close(parent_fd)
+        parent.rmdir()
+
+
 def main() -> int:
     assert _normalize_relative("../align") == "../align"
     assert _normalize_relative("a/./b/../c") == "a/c"
@@ -188,6 +240,7 @@ def main() -> int:
     )
     with tempfile.TemporaryDirectory(prefix="fresh-image-membership-") as name:
         cgroup_membership_case(Path(name))
+        cgroup_removal_case(Path(name))
 
     original = os.dup(31) if _fd_open(31) else None
     try:

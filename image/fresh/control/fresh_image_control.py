@@ -10,7 +10,6 @@ code therefore imports no repository module and no mutable image-side helper.
 from __future__ import annotations
 
 import errno
-import ctypes
 import fcntl
 import hashlib
 import os
@@ -66,7 +65,6 @@ SUPERVISOR_VERSION = "1.0.0"
 WORKER_INVOCATION_TIMEOUT = 5_000
 CONTROL_STREAM_LIMIT = 65_536
 CONTROL_CGROUP_PREFIX = "align-llm-control-"
-RENAME_NOREPLACE = 1
 
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -209,36 +207,6 @@ def _control_cgroup_file_read(leaf_fd: int, name: str, limit: int = 4096) -> byt
             chunks.append(block)
     finally:
         os.close(descriptor)
-
-
-def _control_rename_noreplace(
-    old_directory: int, old_name: bytes, new_directory: int, new_name: bytes
-) -> None:
-    libc = ctypes.CDLL(None, use_errno=True)
-    try:
-        renameat2 = libc.renameat2
-    except AttributeError as error:
-        raise OSError(errno.ENOSYS, "renameat2 is unavailable") from error
-    renameat2.argtypes = [
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    ]
-    renameat2.restype = ctypes.c_int
-    if (
-        renameat2(
-            old_directory,
-            old_name,
-            new_directory,
-            new_name,
-            RENAME_NOREPLACE,
-        )
-        != 0
-    ):
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number))
 
 
 def _control_cgroup_members(leaf_fd: int, name: str) -> tuple[int, ...]:
@@ -409,22 +377,6 @@ def _control_cgroup_entry_present(parent_fd: int, name: str) -> bool:
     return True
 
 
-def _control_restore_cgroup_quarantine(
-    parent_fd: int, quarantine_name: bytes, leaf_name: str
-) -> None:
-    try:
-        if _control_cgroup_entry_present(parent_fd, leaf_name):
-            return
-        _control_rename_noreplace(
-            parent_fd,
-            quarantine_name,
-            parent_fd,
-            os.fsencode(leaf_name),
-        )
-    except OSError:
-        return
-
-
 def _control_remove_cgroup_leaf(
     parent_fd: int,
     leaf_fd: int,
@@ -434,64 +386,17 @@ def _control_remove_cgroup_leaf(
     if not _control_cgroup_matches(parent_fd, leaf_fd, leaf_name, identity):
         raise OSError(errno.ESTALE, "control cgroup leaf identity changed")
     _control_cgroup_empty(leaf_fd)
-    for _ in range(8):
-        quarantine_name = os.fsencode(
-            CONTROL_CGROUP_PREFIX + "cleanup-" + os.urandom(16).hex()
-        )
-        try:
-            _control_rename_noreplace(
-                parent_fd,
-                os.fsencode(leaf_name),
-                parent_fd,
-                quarantine_name,
-            )
-        except FileExistsError:
-            continue
-        moved_fd = -1
-        try:
-            moved_fd = os.open(
-                quarantine_name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=parent_fd,
-            )
-            moved = os.fstat(moved_fd)
-            moved_identity = (
-                moved.st_dev,
-                moved.st_ino,
-                stat.S_IFMT(moved.st_mode),
-                stat.S_IMODE(moved.st_mode),
-                moved.st_uid,
-            )
-            if moved_identity != identity:
-                _control_restore_cgroup_quarantine(parent_fd, quarantine_name, leaf_name)
-                raise OSError(errno.ESTALE, "control cgroup leaf was replaced")
-            _control_cgroup_empty(moved_fd)
-            if _control_cgroup_entry_present(parent_fd, leaf_name):
-                raise OSError(errno.EBUSY, "control cgroup replacement appeared")
-            current = os.stat(
-                quarantine_name,
-                dir_fd=parent_fd,
-                follow_symlinks=False,
-            )
-            current_identity = (
-                current.st_dev,
-                current.st_ino,
-                stat.S_IFMT(current.st_mode),
-                stat.S_IMODE(current.st_mode),
-                current.st_uid,
-            )
-            if current_identity != identity:
-                raise OSError(errno.ESTALE, "control cgroup quarantine identity changed")
-            os.rmdir(quarantine_name, dir_fd=parent_fd)
-            if _control_cgroup_entry_present(parent_fd, os.fsdecode(quarantine_name)):
-                raise OSError(errno.EBUSY, "control cgroup quarantine remains")
-            if _control_cgroup_entry_present(parent_fd, leaf_name):
-                raise OSError(errno.EBUSY, "control cgroup replacement appeared after cleanup")
-            return
-        finally:
-            if moved_fd >= 0:
-                os.close(moved_fd)
-    raise OSError(errno.EEXIST, "control cgroup cleanup name exhaustion")
+    # cgroup-v2 does not implement rename(2). The delegated parent is an
+    # exclusive worker/profile writer boundary, so the authenticated leaf name
+    # is the only available quarantine identity. No uncooperating same-UID
+    # writer may replace it between this proof and the descriptor-relative
+    # rmdir; such a writer is outside the profile contract.
+    try:
+        os.rmdir(leaf_name, dir_fd=parent_fd)
+    except OSError as error:
+        raise OSError(errno.EIO, "control cgroup removal failed") from error
+    if _control_cgroup_entry_present(parent_fd, leaf_name):
+        raise OSError(errno.EBUSY, "control cgroup remains after removal")
 
 
 def _control_pid_start(pid: int) -> str:

@@ -2964,32 +2964,8 @@ def cgroup_group_is_owned(lease: CgroupLease, process_group: int) -> bool:
     return True
 
 
-def cgroup_entry_present(lease: CgroupLease) -> bool:
-    try:
-        os.stat(lease.leaf_name, dir_fd=lease.parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return False
-    return True
-
-
-def restore_cgroup_quarantine(
-    lease: CgroupLease, quarantine_fd: int, quarantine_name: bytes
-) -> None:
-    try:
-        if cgroup_entry_present(lease):
-            return
-        rename_noreplace(
-            quarantine_fd,
-            quarantine_name,
-            lease.parent_fd,
-            os.fsencode(lease.leaf_name),
-        )
-    except OSError:
-        return
-
-
 def remove_cgroup_leaf(lease: CgroupLease) -> None:
-    """Atomically quarantine and remove one authenticated, empty cgroup leaf."""
+    """Remove one authenticated, empty cgroup-v2 leaf through its parent fd."""
     if not same_cgroup_directory(snapshot_fd(lease.parent_fd), lease.parent_identity):
         raise CleanupError("cgroup parent identity changed")
     if not cgroup_entry_matches(lease):
@@ -2999,59 +2975,22 @@ def remove_cgroup_leaf(lease: CgroupLease) -> None:
     except OSError as error:
         raise CleanupError("child cgroup was not empty") from error
 
-    for _ in range(8):
-        quarantine_name = os.fsencode(ROOT_PREFIX + "cgroup-cleanup-" + secrets.token_hex(16))
-        try:
-            rename_noreplace(
-                lease.parent_fd,
-                os.fsencode(lease.leaf_name),
-                lease.parent_fd,
-                quarantine_name,
-            )
-        except FileExistsError:
-            continue
-        moved_fd = -1
-        try:
-            moved_fd = os.open(
-                quarantine_name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=lease.parent_fd,
-            )
-            moved_identity = snapshot_fd(moved_fd)
-            if not same_cgroup_directory(moved_identity, lease.leaf_identity):
-                restore_cgroup_quarantine(lease, lease.parent_fd, quarantine_name)
-                raise CleanupError("child cgroup entry was replaced")
-            try:
-                require_cgroup_empty_fd(moved_fd)
-            except OSError as error:
-                raise CleanupError("child cgroup was not empty during cleanup") from error
-            if cgroup_entry_present(lease):
-                raise CleanupError("child cgroup replacement appeared during cleanup")
-            current = os.stat(
-                quarantine_name,
-                dir_fd=lease.parent_fd,
-                follow_symlinks=False,
-            )
-            if not same_cgroup_directory(current, lease.leaf_identity):
-                raise CleanupError("child cgroup quarantine identity changed")
-            os.rmdir(quarantine_name, dir_fd=lease.parent_fd)
-            try:
-                os.stat(quarantine_name, dir_fd=lease.parent_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                raise CleanupError("child cgroup quarantine remains")
-            if cgroup_entry_present(lease):
-                raise CleanupError("child cgroup replacement appeared after cleanup")
-            return
-        except CleanupError:
-            raise
-        except OSError as error:
-            raise CleanupError("child cgroup quarantine cleanup failed") from error
-        finally:
-            if moved_fd >= 0:
-                os.close(moved_fd)
-    raise CleanupError("child cgroup quarantine name exhaustion")
+    # cgroup-v2 does not implement rename(2). The delegated parent is an
+    # exclusive worker/profile writer boundary, so the authenticated leaf name
+    # is the only available quarantine identity. No uncooperating same-UID
+    # writer may replace it between this proof and the descriptor-relative
+    # rmdir; such a writer is outside the profile contract.
+    try:
+        os.rmdir(lease.leaf_name, dir_fd=lease.parent_fd)
+    except OSError as error:
+        raise CleanupError("child cgroup removal failed") from error
+    try:
+        os.stat(lease.leaf_name, dir_fd=lease.parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise CleanupError("child cgroup removal could not be verified") from error
+    raise CleanupError("child cgroup remains after removal")
 
 
 def open_cgroup_lease() -> CgroupLease:
