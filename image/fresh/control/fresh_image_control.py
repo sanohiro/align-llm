@@ -935,8 +935,28 @@ def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
                 timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
+            try:
+                os.write(
+                    2,
+                    (
+                        "diagnostic git identity exception: "
+                        f"{type(error).__name__}: {error!r}\n"
+                    ).encode("ascii", "backslashreplace"),
+                )
+            except OSError:
+                pass
             raise ControlError("SOURCE", "project-source", "Git identity probe failed") from error
         if result.returncode != 0 or result.stderr or len(result.stdout) > 128:
+            try:
+                os.write(
+                    2,
+                    (
+                        "diagnostic git identity result: "
+                        f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}\n"
+                    ).encode("ascii", "backslashreplace"),
+                )
+            except OSError:
+                pass
             raise ControlError("SOURCE", "project-source", "Git identity probe rejected")
         try:
             return result.stdout.decode("ascii").strip()
