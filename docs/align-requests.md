@@ -996,7 +996,7 @@ Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: Request 6 align-llm adoption; Request 7 implementation remains blocked on this request's shipped surface plus its separately registered prerequisites
-Independent work that may continue: the authenticated focused-adoption transport design and implementation, the common fresh-compiler qualification, Request 7's independent registration work, its decoded-owner cleanup prerequisite, C6 design, and work that neither consumes json.scan nor changes .align-revision
+Independent work that may continue: the authenticated focused-adoption transport design, the common fresh-compiler qualification, Request 7's independent registration work, its decoded-owner cleanup prerequisite, C6 design, and work that neither consumes json.scan nor changes .align-revision; focused-adoption implementation may be prepared only as a non-mergeable design artifact and may not consume this contract or claim adoption until the listed image and worker profiles merge
 Resume condition: after FRESH-IMAGE, FRESH-WORKER, and the separately verified FRESH-IMAGE-REQUEST6 profile extension merge and the focused-adoption transport is shipped, pin the release at the named Align commit, pass the ordinary and authenticated fresh Request 6 adoption vectors, then run one final fresh make ci before advancing to ALIGN_LLM_VERIFIED
 Align commit or pull request: Align PR #703 (design) merged at 0ab7a30d6e7bfda56d4c8145b4672306634b9fea; Align PR #704 (implementation) merged at e65448b744c04e3868d079eef8b45ce0d43ac8ee
 align-llm verification: ALIGN_MERGED recorded; real-client adoption pending
@@ -1376,8 +1376,12 @@ the runner-image envelope and fixed schema-2 manifest, opens the Request 6 dispa
 `/usr/local/libexec/align-llm/request6-adoption-entrypoint` through a retained no-follow descriptor,
 checks its manifest digest and complete interpreter/loader closure, and invokes that descriptor with
 `execveat(AT_EMPTY_PATH)` at fixed FD `14`. Its fixed child argv is
-`--mode ordinary-adoption --project-root-fd 4 --image-attestation-fd 6 --manifest-fd 8`, with
-`close_fds=True, pass_fds=(4, 6, 8)` after the retained dispatcher descriptor is consumed. A
+`--mode ordinary-adoption --project-root-fd 4 --image-attestation-fd 6 --manifest-fd 8
+--align-repo-absolute <normalized-absolute> --align-repo-relative <canonical-relative>`, with
+`close_fds=True, pass_fds=(4, 6, 8)` after the retained dispatcher descriptor is consumed. The two
+path values are supervisor-validated named inputs, not positional arguments or ambient environment;
+the dispatcher independently recomputes the relative value from the retained project-root identity
+and rejects a mismatch. A
 repository checkout cannot replace the first executable
 or the retained dispatcher bytes; invoking the dispatcher pathname directly is an untrusted developer
 check and cannot claim ordinary evidence. The dispatcher accepts no positional arguments. The repository
@@ -1517,7 +1521,8 @@ variables. `PATH` is exactly
 precede the manifest tool inventory, and `/usr/bin` and `/bin` contain only the explicit runtime
 bindings. The wrapper creates unique mode-`0700`
 `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
-The fixed manifest also authenticates the ordinary namespace launcher (`bwrap` or its equivalent),
+The fixed manifest also authenticates the ordinary namespace launcher at the exact image-owned path
+`/usr/bin/bwrap`,
 the Request 6 dispatcher and `/usr/bin/adoption-namespace` runtime bindings, their complete
 loader/library closures, and the staged runtime files containing `/usr/bin/env`, `/bin/sh`, and the
 required loader/library roots.
@@ -1537,7 +1542,11 @@ therefore in scope even when a particular vector does not use every record. The 
 handoff remains separate in `/private-tool-bin` and is not mixed with the inventory mount.
 The executable-resolution ledger is closed: `/usr/local/libexec/align-llm/fresh-supervise`,
 `/usr/local/libexec/align-llm/request6-adoption-entrypoint`, `/usr/bin/python3`,
-`/usr/bin/adoption-namespace`, `/usr/bin/env`, and `/bin/sh` are the named direct runtime bindings;
+`/usr/bin/adoption-namespace`, `/usr/bin/bwrap`, `/usr/bin/env`, and `/bin/sh` are the named direct
+runtime bindings. `/usr/bin/bwrap` is retained as the image-authenticated FD `27` executable and
+invoked with `execveat(AT_EMPTY_PATH)` before the namespace exists; its complete ELF interpreter and
+library closure is part of the fixed runtime binding and FD `27` is consumed before the namespace
+helper starts. Every bare tool name resolves to `/tools/<name>`;
 every bare tool name resolves to `/tools/<name>`; the fixed absolute `/private-rust`, `/private-llvm`,
 `/private-native`, and `/private-tool-bin` paths are the other executable roots. Repository scripts
 are never executable roots: `align-revision` invokes the script data as the exact vector
@@ -1580,6 +1589,24 @@ copied into the product snapshot. Untracked files and every other tracked modifi
 The adoption PR binds the recorded project `HEAD` to the exact reviewed implementation head before
 ordinary evidence is accepted.
 
+The ordinary capsule's `project_raw_tree_sha256` has an independent canonical preimage. It is the
+SHA-256 of a UTF-8 `raw-tree/v1` JSON document using the Section 9 canonical JSON rules (fixed field
+order, two-space indentation, complete JSON escaping, and one final LF). The document fields are
+`schema` followed by `entries`; `schema` is exactly `raw-tree/v1`. The first entry is the project
+root with an empty `path_b64`, followed by every accepted root-relative entry in raw-byte
+lexicographic path order. Each entry has fields in the exact order `path_b64`, `kind`, `mode`,
+`size`, `sha256`, `target_b64`: `path_b64` is unpadded base64url of the raw path bytes, `kind` is
+exactly `dir`, `file`, or `symlink`, `mode` is the four-octal permission mode, `size` is the raw
+file or symlink-target byte length (zero for a directory), `sha256` is the digest of file bytes or
+symlink-target bytes (the digest of zero bytes for a directory), and `target_b64` is empty except
+for the unpadded base64url symlink target. Paths contain no NUL, empty, `.`, or `..` component;
+directory and file metadata not listed here, including timestamps, owners, device/inode numbers,
+and link counts, is not part of the preimage. The root `.git` control entry and the exact root
+`HANDOFF.md` exception are excluded before enumeration; every other accepted entry is represented,
+and an untracked or modified entry cannot be silently omitted. The dispatcher computes this digest
+from the retained descriptor snapshot before signing, and the worker recomputes the identical bytes
+before source acceptance.
+
 The three ordinary Make children run inside a fresh authenticated private mount namespace. The
 namespace starts with an empty root, the authenticated runtime bindings at their canonical `/bin`,
 `/lib`, `/lib64`, and `/usr` targets, and namespace-owned sealed read-only copies of the project,
@@ -1599,7 +1626,7 @@ with the fixed shape; every read-only source is passed through a retained descri
 from a host pathname:
 
 ```text
-<private-bwrap> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-fd 12 --worker-fd 13 ...
+<bwrap-fd-27> --clearenv --die-with-parent --new-session --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-fd 12 --worker-fd 13 ...
 ```
 
 The fixed inherited descriptor map is:
@@ -1615,6 +1642,7 @@ The fixed inherited descriptor map is:
 | 24 | native tool/runtime tree | `/input-native` |
 | 25 | authenticated Cargo cache snapshot | `/input-cargo-cache` |
 | 26 | fixed launcher source | `/input-launcher-source` |
+| 27 | image-owned `/usr/bin/bwrap` executable, retained for `execveat(AT_EMPTY_PATH)` | consumed by the outer launcher before the namespace helper; no namespace target |
 | 400 onward | ordered schema-2 tool records | `/input-tools/<tool-name>` |
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
@@ -1627,7 +1655,7 @@ manifest order, and `<ordered-tool-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> /input-tools/<name>` triples for those retained no-follow descriptors. The
 wrapper admits the descriptor table before launch, checks every source identity and complete digest
 after staging, launches bwrap with
-`close_fds=True, pass_fds=(12, 13) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`, and closes its parent copies only after the child is released. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The ellipsis is replaced only by the fixed namespace-helper arguments and one of the three child
+`close_fds=True, pass_fds=(12, 13, 27) + tuple(range(20, 27)) + tuple(range(40, 40 + N)) + tuple(range(400, 400 + T))`, and closes its parent copies only after the child is released. Here `N` is the ordered runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest. The ellipsis is replaced only by the fixed namespace-helper arguments and one of the three child
 vectors below; no repository or caller argument is appended. The namespace helper remounts each
 writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
 entries between children. bwrap consumes the retained source descriptors before executing
@@ -1673,20 +1701,38 @@ before `execve`-ing its Make vector. The first two vectors pass `--no-compiler-h
 fixed helper position. No repository Makefile or fixture code runs before this setup sequence
 completes, and no fourth vector is accepted.
 
-The caller starts the wrapper from a cleared environment; this is the exact ordinary request:
+The trusted installed runner starts the public profile with one direct kernel `execve`; no shell,
+`/usr/bin/env`, or repository executable runs before the image-owned supervisor. This is the exact
+ordinary request (the `execve` block is the contract, not shell syntax):
 
 ```text
-env -i PATH=/usr/bin:/bin LC_ALL=C LANG=C HOME=/nonexistent TMPDIR=/tmp \
-  ALIGN_REPO=<absolute-clean-align-worktree> \
-  /usr/local/libexec/align-llm/fresh-supervise --mode ordinary-adoption
+execve(
+  "/usr/local/libexec/align-llm/fresh-supervise",
+  ["fresh-supervise", "--mode", "ordinary-adoption"],
+  ["PATH=/usr/bin:/bin", "LC_ALL=C", "LANG=C", "HOME=/nonexistent", "TMPDIR=/tmp",
+   "ALIGN_REPO=<absolute-clean-align-worktree>"]
+)
 ```
 
-The command must run with the project checkout as its cwd. `fresh-supervise` is the first executable
-and the only public path that can claim ordinary adoption evidence; it verifies and dispatches the
+The runner sets the project checkout as the cwd and supplies no other environment entry. The
+image-owned `fresh-supervise` is the first profile executable and the only public path that can claim
+ordinary adoption evidence; it validates the absolute `ALIGN_REPO`, derives the canonical relative
+spelling, and passes both values in the fixed named-option dispatcher vector before dispatching the
 Request 6 child by retained FD `14`. Invoking either
 `/usr/local/libexec/align-llm/request6-adoption-entrypoint` or
 `./scripts/run-json-scan-row-ownership-adoption` directly is an untrusted developer check and cannot
 emit ordinary adoption evidence.
+
+For `ordinary-adoption`, `ALIGN_REPO` is required and is an absolute path with exactly one leading
+slash, no empty, `.`, or `..` component, and no symlink component. `fresh-supervise` obtains the
+absolute physical spelling of the retained project-root descriptor without consulting `PWD`, applies
+the same lexical normalization to the Align input, and computes the POSIX relative path from project
+root to Align. It rejects an empty or `.` result, an absolute result, or any result with an empty
+component; `..` components are permitted only when produced by this conversion (the golden sibling
+value is `../align`). It passes both normalized values in the fixed named-option vector. The
+dispatcher opens the absolute value with `O_DIRECTORY|O_NOFOLLOW`, recomputes the same relative
+value from the retained project-root descriptor, and rejects any mismatch before signing or staging;
+the capsule records only the canonical relative value.
 
 Concurrency is explicit. The ordinary wrapper and every Section 9 fresh public mode use the same
 installed per-user mode-`0600` lock at `/run/user/<uid>/align-llm-fresh/lock`; the wrapper opens and
