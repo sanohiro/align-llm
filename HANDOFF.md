@@ -10,9 +10,10 @@ attestations; this file records durable project state.
 - Active goal: correct the Request 6 delivery order after PR #64's independent review. The
   current design adds a separate non-evidence `FRESH-IMAGE-REQUEST6-BOUNDARY` enabling checkpoint;
   the full `ordinary-adoption` transport and consumer remain deferred.
-- PR #65 design head under review: `2fd22379902908f70cd3f09f37d2aadfcdd4417`. Its independent
-  review is complete; the recorded repair defines the direct-diagnostic limitation, exact post-exec
-  FD set, timeout/status mapping, and schema-2 runtime binding.
+- PR #65 current design head: `2b2f20043fa1d7d78c15a5fb6ef64b2451f85710` (repair commit
+  `2b2f20043fa1d7d78c15a5fb6ef64b2451f85710` follows the independently reviewed
+  head `2fd22379902908f70cd3f09f37d2aadfcdd4417`). The recorded repair defines the direct-diagnostic
+  limitation, exact post-exec FD set, timeout/status mapping, and schema-2 runtime binding.
 - PR #64 was closed without merge after review found an unsafe partial worker/helper path, a weak
   parent-authentication fallback, a broken socket endpoint handoff, and inconsistent scope claims.
   Its review envelope and findings are recorded in GitHub PR #64; do not patch or merge that branch.
