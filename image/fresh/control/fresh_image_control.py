@@ -656,7 +656,10 @@ def supervise(
     os.set_inheritable(6, True)
     os.chdir("/proc/self/fd/4")
     _close_descriptors_except({0, 1, 2, 4, 5, 6})
-    os.execve(paths.bootstrap, [paths.bootstrap, "--mode", mode], CHILD_ENVIRONMENT)
+    child_environment = dict(CHILD_ENVIRONMENT)
+    if os.environ.get("ALIGN_LLM_FRESH_DIAGNOSTIC") == "1":
+        child_environment["ALIGN_LLM_FRESH_DIAGNOSTIC"] = "1"
+    os.execve(paths.bootstrap, [paths.bootstrap, "--mode", mode], child_environment)
 
 
 def _bootstrap_verify(
@@ -1214,9 +1217,10 @@ def bootstrap(
         "--run-attestation-fd",
         "9",
     ]
+    worker_environment = dict(WORKER_ENVIRONMENT)
     result = subprocess.run(
         arguments,
-        env=WORKER_ENVIRONMENT,
+        env=worker_environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1231,6 +1235,10 @@ def bootstrap(
         "self-test": b"fresh compiler self-test: PASS\n",
     }[mode]
     if result.returncode != 0 or result.stderr or result.stdout != expected:
+        if result.stdout:
+            os.write(2, b"fresh compiler diagnostic: worker stdout: " + result.stdout)
+        if result.stderr:
+            os.write(2, b"fresh compiler diagnostic: worker stderr: " + result.stderr)
         raise ControlError("CHILD", "aggregate", "worker result is not canonical")
     os.write(1, expected)
     return 0

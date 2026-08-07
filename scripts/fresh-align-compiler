@@ -203,6 +203,7 @@ MAX_PATH_BYTES = 4096
 MAX_SOURCE_DEPTH = 64
 CANCELLED_SIGNAL: int | None = None
 PHASE_DEADLINE: float | None = None
+DIAGNOSTIC = True
 
 
 class WorkerError(Exception):
@@ -246,6 +247,11 @@ def phase_timeout(default: float) -> float:
     if PHASE_DEADLINE is None:
         return default
     return max(0.1, PHASE_DEADLINE - time.monotonic())
+
+
+def diagnostic(message: str) -> None:
+    if DIAGNOSTIC:
+        os.write(2, f"fresh compiler diagnostic: {message}\n".encode("utf-8", "replace"))
 
 
 def sha256(raw: bytes) -> str:
@@ -3061,8 +3067,15 @@ def run_owned(
         finally:
             teardown_complete = True
         if resource_failure is not None:
+            diagnostic(f"{phase} resource failure: {resource_failure}")
             raise resource_failure
         if primary_failure:
+            for label, captured in captures.items():
+                if captured:
+                    diagnostic(
+                        f"{phase} child {label}: "
+                        + bytes(captured).decode("utf-8", "replace")
+                    )
             fail(category, phase)
     except BaseException as active_error:
         if process is not None and not teardown_complete:
@@ -3750,12 +3763,16 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             pass_fds=(*overlay_descriptors, *bind_descriptors),
             resource_check=lambda: enforce_aggregate_quota(admission),
         )
+    except WorkerError as error:
+        diagnostic(f"aggregate worker error: {error}")
+        raise
     finally:
         close_private_mounts(bind_descriptors)
         close_private_mounts(overlay_descriptors)
     upper = root / "aggregate-output/workspace-upper"
     names = sorted(os.listdir(upper), key=os.fsencode)
     if any(name != "main" for name in names):
+        diagnostic(f"aggregate output names: {names!r}")
         fail("CHILD", "aggregate")
     output = upper / "main"
     value = output.lstat()
@@ -3766,11 +3783,13 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         or value.st_size <= 0
         or value.st_size > MAX_GENERATED_MAIN_BYTES
     ):
+        diagnostic(f"aggregate output metadata: {value!r}")
         fail("CHILD", "aggregate")
     raw = read_path(str(output), MAX_GENERATED_MAIN_BYTES)
     try:
         validate_published_elf(raw, runtime)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as error:
+        diagnostic(f"aggregate published ELF rejected: {type(error).__name__}: {error}")
         fail("CHILD", "aggregate")
 
 
@@ -3855,7 +3874,8 @@ def enforce_aggregate_quota(admission: Admission) -> None:
             or upper_bytes + work_bytes > MAX_AGGREGATE_OVERLAY_BYTES
         ):
             raise CleanupError("aggregate writable store exceeds its bound")
-    except (CleanupError, OSError):
+    except (CleanupError, OSError) as error:
+        diagnostic(f"aggregate quota rejected: {type(error).__name__}: {error}")
         fail("CHILD", "aggregate")
 
 

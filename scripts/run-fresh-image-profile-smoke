@@ -251,7 +251,8 @@ if child == 0:
         os.setuid({TEST_UID})
         os.chdir('/work/project')
         os.execve('/usr/local/libexec/align-llm/fresh-supervise',
-                  ['fresh-supervise', 'make', '--no-print-directory', 'ci'], {{}})
+                  ['fresh-supervise', 'make', '--no-print-directory', 'ci'],
+                  {{'ALIGN_LLM_FRESH_DIAGNOSTIC': '1'}})
     except BaseException:
         os._exit(127)
 try:
@@ -281,6 +282,8 @@ os._exit(128 + os.WTERMSIG(status))
             f"type=volume,src={runtime_volume},dst=/run/user",
             "--mount",
             f"type=volume,src={source_volume},dst=/work,readonly",
+            "--env",
+            "ALIGN_LLM_FRESH_DIAGNOSTIC=1",
             *command,
         ]
     )
