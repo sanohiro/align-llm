@@ -399,6 +399,29 @@ def _control_remove_cgroup_leaf(
         raise OSError(errno.EBUSY, "control cgroup remains after removal")
 
 
+def _control_cleanup_lease(
+    parent_fd: int,
+    leaf_fd: int,
+    leaf_name: str,
+    identity: tuple[int, int, int, int, int],
+) -> OSError | None:
+    cleanup_error: OSError | None = None
+    try:
+        if not _control_cgroup_matches(parent_fd, leaf_fd, leaf_name, identity):
+            raise OSError(errno.ESTALE, "control cgroup identity changed during cleanup")
+        if _control_cgroup_populated(leaf_fd):
+            raise OSError(errno.EBUSY, "control cgroup remained populated during cleanup")
+        _control_remove_cgroup_leaf(parent_fd, leaf_fd, leaf_name, identity)
+    except OSError as error:
+        cleanup_error = error
+    for descriptor in (leaf_fd, parent_fd):
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            cleanup_error = cleanup_error or error
+    return cleanup_error
+
+
 def _control_pid_start(pid: int) -> str:
     raw = Path(f"/proc/{pid}/stat").read_bytes()
     close = raw.rfind(b")")
@@ -460,129 +483,135 @@ def _run_controlled_child(
     captures = {"stdout": bytearray(), "stderr": bytearray()}
     start = ""
     group = -1
+    timed_out = False
+    overflow = False
+    result: subprocess.CompletedProcess[bytes] | None = None
+    primary_error: BaseException | None = None
+    stream_error: BaseException | None = None
     try:
-        def preexec() -> None:
-            resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
-            resource.setrlimit(resource.RLIMIT_NOFILE, (4096, 4096))
-            resource.setrlimit(resource.RLIMIT_FSIZE, (536_870_912, 536_870_912))
-            _control_cgroup_empty(leaf_fd)
-            _control_cgroup_file_write(leaf_fd, "cgroup.procs", b"0\n")
-            os.set_inheritable(leaf_fd, False)
-            os.setsid()
-
-        process = subprocess.Popen(
-            list(arguments),
-            executable=executable,
-            cwd=cwd,
-            env=dict(environment),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            pass_fds=tuple(dict.fromkeys((leaf_fd, *pass_fds))),
-            close_fds=True,
-            preexec_fn=preexec,
-        )
-        start = _control_pid_start(process.pid)
-        group = os.getpgid(process.pid)
         try:
-            _control_cgroup_child_membership(leaf_fd, process.pid)
-        except OSError:
-            if process.poll() is None:
-                raise
-            _control_cgroup_empty(leaf_fd)
-        assert process.stdout is not None and process.stderr is not None
-        streams = selectors.DefaultSelector()
-        for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
-            os.set_blocking(stream.fileno(), False)
-            streams.register(stream, selectors.EVENT_READ, label)
-        deadline = time.monotonic() + timeout
-        timed_out = False
-        overflow = False
-        while streams.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                break
-            for key, _ in streams.select(min(remaining, 0.25)):
-                block = os.read(key.fileobj.fileno(), 1_048_576)
-                if not block:
-                    streams.unregister(key.fileobj)
-                    continue
-                target = captures[key.data]
-                limit = stdout_limit if key.data == "stdout" else stderr_limit
-                if len(target) + len(block) > limit:
-                    overflow = True
-                    break
-                target.extend(block)
-            if timed_out or overflow:
-                break
-        if not timed_out and not overflow:
-            try:
-                process.wait(timeout=max(0.1, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                timed_out = True
-    except BaseException:
-        if process is not None:
-            _control_terminate(
-                process,
-                start=start,
-                group=group,
-                parent_fd=parent_fd,
-                leaf_fd=leaf_fd,
-                leaf_name=leaf_name,
-                identity=identity,
+            def preexec() -> None:
+                resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
+                resource.setrlimit(resource.RLIMIT_NOFILE, (4096, 4096))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (536_870_912, 536_870_912))
+                _control_cgroup_empty(leaf_fd)
+                _control_cgroup_file_write(leaf_fd, "cgroup.procs", b"0\n")
+                os.set_inheritable(leaf_fd, False)
+                os.setsid()
+
+            process = subprocess.Popen(
+                list(arguments),
+                executable=executable,
+                cwd=cwd,
+                env=dict(environment),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                pass_fds=tuple(dict.fromkeys((leaf_fd, *pass_fds))),
+                close_fds=True,
+                preexec_fn=preexec,
             )
-        raise
+            start = _control_pid_start(process.pid)
+            group = os.getpgid(process.pid)
+            try:
+                _control_cgroup_child_membership(leaf_fd, process.pid)
+            except OSError:
+                if process.poll() is None:
+                    raise
+                _control_cgroup_empty(leaf_fd)
+            assert process.stdout is not None and process.stderr is not None
+            streams = selectors.DefaultSelector()
+            for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+                os.set_blocking(stream.fileno(), False)
+                streams.register(stream, selectors.EVENT_READ, label)
+            deadline = time.monotonic() + timeout
+            while streams.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                for key, _ in streams.select(min(remaining, 0.25)):
+                    block = os.read(key.fileobj.fileno(), 1_048_576)
+                    if not block:
+                        streams.unregister(key.fileobj)
+                        continue
+                    target = captures[key.data]
+                    limit = stdout_limit if key.data == "stdout" else stderr_limit
+                    if len(target) + len(block) > limit:
+                        overflow = True
+                        break
+                    target.extend(block)
+                if timed_out or overflow:
+                    break
+            if not timed_out and not overflow:
+                try:
+                    process.wait(timeout=max(0.1, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+            if (
+                timed_out
+                or overflow
+                or process.poll() is None
+                or _control_cgroup_populated(leaf_fd)
+            ):
+                _control_terminate(
+                    process,
+                    start=start,
+                    group=group,
+                    parent_fd=parent_fd,
+                    leaf_fd=leaf_fd,
+                    leaf_name=leaf_name,
+                    identity=identity,
+                )
+            else:
+                process.wait()
+            result = subprocess.CompletedProcess(
+                list(arguments),
+                process.returncode,
+                bytes(captures["stdout"]),
+                bytes(captures["stderr"]),
+            )
+        except BaseException as error:
+            primary_error = error
+            if process is not None:
+                try:
+                    _control_terminate(
+                        process,
+                        start=start,
+                        group=group,
+                        parent_fd=parent_fd,
+                        leaf_fd=leaf_fd,
+                        leaf_name=leaf_name,
+                        identity=identity,
+                    )
+                except BaseException as terminate_error:
+                    primary_error = terminate_error
     finally:
         if streams is not None:
-            streams.close()
-    if process is None:
-        raise OSError(errno.ECHILD, "control child was not started")
-    try:
-        if (
-            timed_out
-            or overflow
-            or process.poll() is None
-            or _control_cgroup_populated(leaf_fd)
-        ):
-            _control_terminate(
-                process,
-                start=start,
-                group=group,
-                parent_fd=parent_fd,
-                leaf_fd=leaf_fd,
-                leaf_name=leaf_name,
-                identity=identity,
-            )
-        else:
-            process.wait()
-    finally:
-        cleanup_error: OSError | None = None
-        try:
-            if not _control_cgroup_matches(parent_fd, leaf_fd, leaf_name, identity):
-                raise OSError(errno.ESTALE, "control cgroup identity changed during cleanup")
-            if _control_cgroup_populated(leaf_fd):
-                raise OSError(errno.EBUSY, "control cgroup remained populated during cleanup")
-            _control_remove_cgroup_leaf(parent_fd, leaf_fd, leaf_name, identity)
-        except OSError as error:
-            cleanup_error = error
-        for descriptor in (leaf_fd, parent_fd):
             try:
-                os.close(descriptor)
-            except OSError as error:
-                cleanup_error = cleanup_error or error
-        if cleanup_error is not None:
-            raise cleanup_error
+                streams.close()
+            except BaseException as error:
+                stream_error = error
+        cleanup_error = _control_cleanup_lease(parent_fd, leaf_fd, leaf_name, identity)
+    if cleanup_error is not None:
+        if primary_error is not None:
+            raise cleanup_error from primary_error
+        if stream_error is not None:
+            raise cleanup_error from stream_error
+        raise cleanup_error
+    if stream_error is not None:
+        if primary_error is not None:
+            raise stream_error from primary_error
+        raise stream_error
+    if primary_error is not None:
+        raise primary_error
+    if result is None:
+        raise OSError(errno.ECHILD, "control child was not started")
     if timed_out:
         raise subprocess.TimeoutExpired(arguments, timeout)
     if overflow:
         raise ValueError("control child output exceeds bound")
-    return subprocess.CompletedProcess(
-        list(arguments),
-        process.returncode,
-        bytes(captures["stdout"]),
-        bytes(captures["stderr"]),
-    )
+    return result
 
 
 @dataclass(frozen=True)
