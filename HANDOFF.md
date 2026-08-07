@@ -6,8 +6,8 @@ attestations; this file records durable project state.
 ## Active checkpoint (2026-08-07)
 
 - Branch: `agent/request6-image-profile-extension`, based on merged `main` commit
-  `11262a785f4c994ecfae2d9d95f67f32d7056108`. The implementation candidate is staged and has not
-  been committed or published yet.
+  `11262a785f4c994ecfae2d9d95f67f32d7056108`. The implementation is committed at
+  `84490bc` and is not yet published.
 - Active goal: merge the separately gated FRESH-IMAGE-REQUEST6 installed profile extension after
   the reviewed Request 6 design PR #63. This slice installs the image-owned dispatcher and
   namespace-helper binding, extends the schema-2 runtime manifest, retains the absolute Align root
@@ -25,20 +25,19 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Commit this coherent implementation and update this handoff with the implementation commit.
-2. Push the branch, open the English PR, and record the exact focused checks plus the local Docker
+1. Push the branch, open the English PR, and record the exact focused checks plus the local Docker
    limitation; hosted Ubuntu 24.04 must run the installed profile smoke.
-3. Obtain one fresh independent adversarial comprehensive review of the complete PR diff. Record
+2. Obtain one fresh independent adversarial comprehensive review of the complete PR diff. Record
    the SHA-bound review envelope and every finding disposition in GitHub.
-4. Apply all valid findings in one consolidated repair, rerun affected checks, and merge only after
+3. Apply all valid findings in one consolidated repair, rerun affected checks, and merge only after
    the final integration checks and review evidence pass. A material redesign requires a new slice
    and review rather than an indefinite repair loop.
-5. Refresh `main`, perform the bounded post-merge retrospective, update the primary handoff, and
+4. Refresh `main`, perform the bounded post-merge retrospective, update the primary handoff, and
    start the next eligible adoption implementation slice.
 
 ## Latest verification
 
-- `git diff --cached --check`: PASS.
+- `git diff --check`: PASS before commit.
 - `make gate-topology-check`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-attestation-wire-smoke`: PASS.
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/run-fresh-manifest-wire-smoke`: PASS.
