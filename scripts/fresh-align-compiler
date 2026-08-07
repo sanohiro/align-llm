@@ -302,7 +302,7 @@ def read_fd(fd: int, limit: int, *, rewind: bool = True) -> bytes:
 
 
 def read_path(path: str, limit: int, *, single_link: bool = True) -> bytes:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(fd)
         raw = read_fd(fd, limit)
@@ -2313,6 +2313,7 @@ def copy_tree_manifest_fd(
             os.fchmod(descriptor, int(node["staged_mode"], 8))
         finally:
             os.close(descriptor)
+        assert_materialization_snapshot(source_fd, accepted)
         return 1, len(raw)
 
     if (
@@ -2338,6 +2339,8 @@ def copy_tree_manifest_fd(
         check_phase_deadline()
         child_name = os.fsencode(child["name"])
         flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        if child["kind"] == "file":
+            flags |= os.O_NONBLOCK
         if child["kind"] == "dir":
             flags |= os.O_DIRECTORY
         child_fd = os.open(child_name, flags, dir_fd=source_fd)

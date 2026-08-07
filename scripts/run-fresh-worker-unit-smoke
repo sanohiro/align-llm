@@ -429,6 +429,123 @@ def materialization_mutation_cases(module, temporary: Path) -> None:
         module.open_manifest_source = original_open
         module.os.listdir = original_listdir
 
+    read_fifo = temporary / "materialization-read-fifo"
+    os.mkfifo(read_fifo, 0o644)
+    original_os_open = module.os.open
+    read_fifo_opened = {}
+
+    def guard_read_fifo_open(path, flags, *args, **kwargs):
+        if os.fspath(path) == os.fspath(read_fifo):
+            require(flags & os.O_NONBLOCK, "read_path opened a raced FIFO without O_NONBLOCK")
+            read_fifo_opened["seen"] = True
+        return original_os_open(path, flags, *args, **kwargs)
+
+    module.os.open = guard_read_fifo_open
+    try:
+        try:
+            module.read_path(str(read_fifo), module.MAX_FILE_BYTES)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("read_path accepted a FIFO")
+        require(read_fifo_opened.get("seen"), "read_path FIFO fixture was not opened")
+    finally:
+        module.os.open = original_os_open
+        read_fifo.unlink()
+
+    fifo_source = temporary / "materialization-copy-fifo"
+    fifo_source.mkdir(mode=0o755)
+    os.mkfifo(fifo_source / "value", 0o644)
+    fifo_node = OrderedDict(
+        (
+            ("kind", "dir"),
+            ("mode", "0755"),
+            ("staged_mode", "0700"),
+            ("size", 0),
+            ("sha256", "0" * 64),
+            (
+                "entries",
+                [
+                    OrderedDict(
+                        (
+                            ("name", "value"),
+                            ("kind", "file"),
+                            ("mode", "0644"),
+                            ("staged_mode", "0444"),
+                            ("size", 0),
+                            ("sha256", "0" * 64),
+                            ("entries", []),
+                        )
+                    )
+                ],
+            ),
+        )
+    )
+    copy_fifo_opened = {}
+
+    def guard_copy_fifo_open(path, flags, *args, **kwargs):
+        if os.fsdecode(path) == "value" and "dir_fd" in kwargs:
+            require(flags & os.O_NONBLOCK, "manifest copy opened a raced FIFO without O_NONBLOCK")
+            copy_fifo_opened["seen"] = True
+        return original_os_open(path, flags, *args, **kwargs)
+
+    module.os.open = guard_copy_fifo_open
+    try:
+        try:
+            module.copy_tree_manifest(fifo_node, fifo_source, temporary / "materialization-copy-fifo-out")
+        except OSError:
+            pass
+        else:
+            raise AssertionError("manifest copy accepted a FIFO")
+        require(copy_fifo_opened.get("seen"), "manifest copy FIFO fixture was not opened")
+    finally:
+        module.os.open = original_os_open
+        (fifo_source / "value").unlink()
+
+    post_source = temporary / "materialization-post-write"
+    post_source.mkdir(mode=0o755)
+    (post_source / "value").write_bytes(b"stable")
+    post_node = digest_node(module, post_source, "0444")
+    post_destination = temporary / "materialization-post-write-copy"
+    original_os_close = module.os.close
+    original_os_write = module.os.write
+    post_state: dict[str, int] = {}
+
+    def capture_post_destination_open(path, flags, *args, **kwargs):
+        descriptor = original_os_open(path, flags, *args, **kwargs)
+        if os.fspath(path) == os.fspath(post_destination / "value"):
+            post_state["destination_fd"] = descriptor
+        return descriptor
+
+    def mutate_before_post_snapshot(descriptor):
+        if descriptor == post_state.get("destination_fd") and "mutated" not in post_state:
+            source_descriptor = original_os_open(
+                post_source / "value", os.O_WRONLY | os.O_CLOEXEC
+            )
+            try:
+                require(
+                    original_os_write(source_descriptor, b"mutate") == len(b"mutate"),
+                    "post-copy mutation fixture write was short",
+                )
+            finally:
+                original_os_close(source_descriptor)
+            post_state["mutated"] = 1
+        return original_os_close(descriptor)
+
+    module.os.open = capture_post_destination_open
+    module.os.close = mutate_before_post_snapshot
+    try:
+        try:
+            module.copy_tree_manifest(post_node, post_source, post_destination)
+        except (OSError, ValueError):
+            pass
+        else:
+            raise AssertionError("same-size post-write source mutation was accepted")
+        require(post_state.get("mutated"), "post-write mutation fixture did not run")
+    finally:
+        module.os.open = original_os_open
+        module.os.close = original_os_close
+
 
 def cleanup_quarantine_race_case(module, temporary: Path) -> None:
     roots = temporary / "quarantine-roots"
