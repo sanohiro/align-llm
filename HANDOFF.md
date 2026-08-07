@@ -13,7 +13,7 @@ attestations; this file records durable project state.
   `83d9117f4519f4cb990d64089163713b8bbc749a`, oracle
   `271783e9f35eb7e3575c753ecbbb4e47a4b60a67`, and finalization
   `09fde6c6f203c49ccd8eea743b8b2f466a0b1862`. The current head is
-  `c61995f`, after design commits `b9e4d37` and `baae181`.
+  `acbba8e`, after design commits `b9e4d37`, `baae181`, and cgroup-v2 cleanup design `ca18317`.
 - Active goal: finish the reviewed FRESH-WORKER repair, complete PR review/fix/merge, then start
   the next eligible roadmap gate without waiting for a stop instruction.
 - The prior baseline tuple
@@ -47,6 +47,13 @@ attestations; this file records durable project state.
   descriptor-relative pre/post tree snapshot. The reviewed design was reopened in `b9e4d37` and
   `baae181`; implementation `c61995f` adds cgroup membership/quarantine, private-root quarantine,
   complete materialization verification, image-control parity, and deterministic regression cases.
+- Hosted Installed run `31145643974` failed because cgroup-v2 rejects `renameat2(RENAME_NOREPLACE)`.
+  Diagnostic run `31146342637` confirmed `OSError(22, "Invalid argument")` at the supervisor's
+  first Git identity probe. Design `ca18317` records the kernel-supported cgroup-v2 primitive:
+  the unique authenticated leaf name is the quarantine identity and descriptor-relative `rmdir`
+  is used under the protected delegated-parent writer boundary. Implementation `acbba8e` applies
+  that protocol to worker and image control and adds direct-removal and replacement-before-removal
+  regressions. Diagnostic-only commits remain off the product branch.
 - The diagnostic branch `agent/fresh-worker-current-diagnostic` exposed only the hosted
   `filesystem` category before aggregate failure; diagnostic branch
   `agent/fresh-worker-aggregate-diagnostic-v5` isolated the runtime file-open failure and is
@@ -54,7 +61,7 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Push `c61995f` and this handoff, obtain passing hosted pinned and installed checks for the
+1. Push `acbba8e` and this handoff, obtain passing hosted pinned and installed checks for the
    complete repair, publish the final
    SHA-bound comprehensive review envelope and all finding dispositions, mark ready, and merge
    the exact head with method `merge`.
@@ -84,12 +91,18 @@ attestations; this file records durable project state.
   mutation cases.
 - `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the conditional
   final-review repair, including image-control membership parsing and rebuilt control bundles.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-worker-unit-smoke`: PASS after the cgroup-v2
+  cleanup repair, including descriptor-relative leaf removal and replacement-before-removal.
+- `PYTHONDONTWRITEBYTECODE=1 ./scripts/run-fresh-image-control-smoke`: PASS after the cgroup-v2
+  cleanup repair, including mirrored descriptor-relative removal and replacement-before-removal.
 - `python3 -m py_compile scripts/fresh-align-compiler image/fresh/control/fresh_image_control.py
   scripts/run-fresh-worker-unit-smoke`: PASS; `git diff --check`: PASS.
 - Hosted run `31137327638` passed the pinned job but failed the installed aggregate with
   `filesystem`; diagnostic run `31142031436` exposed the underlying single-file runtime
   `NotADirectoryError`; diagnostic run `31143014723` then exposed the inherited replacement-object
-  smoke mismatch. All diagnostic runs are evidence only.
+  smoke mismatch. Hosted run `31145643974` exposed cgroup-v2 `renameat2` incompatibility;
+  diagnostic run `31146342637` confirmed the `OSError(22, "Invalid argument")` probe failure.
+  All diagnostic runs are evidence only.
 
 ## Constraints and intentional state
 
