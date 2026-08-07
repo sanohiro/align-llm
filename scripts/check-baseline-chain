@@ -26,6 +26,8 @@ FINALIZATION_PATHS = frozenset(
 ORACLE_PATH = ORACLE.as_posix()
 COMMIT_ID = re.compile(r"[0-9a-f]{40}\Z")
 MAX_OUTPUT = 1024 * 1024
+FRESH_MARKER = "ALIGN_LLM_FRESH_COMPILER"
+TOOL_ROOT = "ALIGN_LLM_TOOL_ROOT"
 
 
 class BaselineChainError(Exception):
@@ -33,8 +35,16 @@ class BaselineChainError(Exception):
 
 
 def git_environment() -> dict[str, str]:
+    marker = os.environ.get(FRESH_MARKER)
+    tool_root = os.environ.get(TOOL_ROOT)
+    if marker is None and tool_root is None:
+        path = "/usr/bin:/bin"
+    elif marker == "1" and tool_root == "/tools":
+        path = "/tools"
+    else:
+        raise BaselineChainError("fresh baseline Git executable environment is incomplete")
     return {
-        "PATH": "/usr/bin:/bin",
+        "PATH": path,
         "LC_ALL": "C",
         "HOME": "/nonexistent",
         "GIT_CONFIG_NOSYSTEM": "1",

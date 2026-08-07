@@ -255,6 +255,7 @@ fi
 printf '%s\n' "oversized baseline diagnostics: rejected"
 
 python3 - "${baseline}" <<'PY'
+import importlib.machinery
 import importlib.util
 import json
 import sys
@@ -329,6 +330,48 @@ for name in (
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.dont_write_bytecode = True
+
+chain_path = Path("scripts/check-baseline-chain").resolve()
+chain_loader = importlib.machinery.SourceFileLoader("check_baseline_chain", str(chain_path))
+chain_spec = importlib.util.spec_from_loader("check_baseline_chain", chain_loader)
+if chain_spec is None or chain_spec.loader is None:
+    raise RuntimeError("cannot load baseline chain checker")
+chain = importlib.util.module_from_spec(chain_spec)
+chain_spec.loader.exec_module(chain)
+saved_fresh = {
+    name: os.environ.get(name)
+    for name in ("ALIGN_LLM_FRESH_COMPILER", "ALIGN_LLM_TOOL_ROOT")
+}
+try:
+    os.environ["ALIGN_LLM_FRESH_COMPILER"] = "1"
+    os.environ["ALIGN_LLM_TOOL_ROOT"] = "/tools"
+    if chain.git_environment()["PATH"] != "/tools":
+        raise RuntimeError("fresh baseline chain did not select the staged Git PATH")
+    os.environ.pop("ALIGN_LLM_TOOL_ROOT")
+    try:
+        chain.git_environment()
+    except chain.BaselineChainError:
+        pass
+    else:
+        raise RuntimeError("incomplete fresh baseline Git executable settings were accepted")
+    os.environ.pop("ALIGN_LLM_FRESH_COMPILER")
+    os.environ["ALIGN_LLM_TOOL_ROOT"] = "/host-tools"
+    try:
+        chain.git_environment()
+    except chain.BaselineChainError:
+        pass
+    else:
+        raise RuntimeError("different fresh baseline Git tool root was accepted")
+    os.environ.pop("ALIGN_LLM_TOOL_ROOT")
+    if chain.git_environment()["PATH"] != "/usr/bin:/bin":
+        raise RuntimeError("ordinary baseline chain did not retain the host Git PATH")
+finally:
+    for name, value in saved_fresh.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
 module_path = Path("eval/runners/record-baseline.py").resolve()
 spec = importlib.util.spec_from_file_location("record_baseline", module_path)
 if spec is None or spec.loader is None:
