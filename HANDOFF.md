@@ -5,25 +5,28 @@ attestations; this file records durable project state.
 
 ## Active checkpoint (2026-08-07)
 
-- Branch: `agent/request6-adoption-contract-v2`, with design content complete at
-  `62fe49e9ffda6d7a93bb01185014337e8a216fe5`, based on merged `main` at
+- Branch: `agent/request6-adoption-contract-v2`, with corrected design content complete at
+  `4b75b55390a3f57c11755b5df3bb274d1b3fd22e`, based on merged `main` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. This handoff-only metadata update follows that
   design commit; no design content follows it.
 - Active goal: finish and merge the corrected Request 6 focused-adoption design, then implement
   the ordinary launcher, focused target and fixtures, shipped Align pin, fresh adoption vector,
   baseline ancestry, and final fresh `make ci` on a new branch. Request 7 and later consumers stay
   blocked on this gate.
-- The latest design repair passes every manifest tool through retained FD-backed setup into the
-  namespace-owned read-only `/tools` inventory, fixes the ordinary executable-resolution ledger,
-  reserves non-overlapping tool descriptors at FD 400 onward, adds the separate
-  FRESH-IMAGE-REQUEST6 installed-profile prerequisite, raises Cargo home to 24 GiB with a
-  page-rounded materialization bound and 2 GiB metadata reserve, and makes the public ordinary
-  entrypoint image-owned at `/usr/local/libexec/align-llm/request6-adoption-entrypoint`. It binds
-  project HEAD/index/raw-tree identity and the worker digest into a signed `ordinary-adoption/v1`
-  capsule, transfers sealed capsule/worker inputs on FDs 10/11, and invokes project scripts only as
-  `/tools/bash` or `/tools/python3` data arguments. The earlier private `align-build-only` vector,
-  in-namespace child ownership, namespace-owned sealing, outer cgroup/host-root ownership, and
-  post-build compiler digest handoff remain in force. A fresh independent review is required.
+- The corrected design enters through trusted image-owned
+  `fresh-supervise --mode ordinary-adoption`, which authenticates the fixed manifest, retains the
+  Request 6 dispatcher at FD 14, and invokes it with `execveat(AT_EMPTY_PATH)`; the dispatcher
+  authenticates the project snapshot and sealed worker before any repository Make code runs. The
+  cgroup start gate remains on FDs 10/11, while the signed `ordinary-adoption/v1` capsule and sealed
+  worker use the disjoint FDs 12/13. The worker executes exactly
+  `/usr/bin/python3 -I -B /proc/self/fd/13 --project-root-fd 4 --capsule-fd 12`, owns bwrap/cgroup/
+  staging setup, and passes those seals to `adoption-namespace`, which owns only the three fixed
+  Make vectors. Every manifest tool is retained into the namespace-owned read-only `/tools`
+  inventory; its setup-only `/private-tool-inventory` mount is detached before children start.
+  Project scripts remain interpreter/data arguments, Cargo admission uses the 24 GiB materialization
+  bound with the metadata reserve, and the exact capsule predicate/PAE golden is recorded in the
+  adoption gate. FRESH-IMAGE-REQUEST6 is a separate installed-profile prerequisite. A fresh
+  independent review is required.
 - PR #62 is superseded and must not be merged. The replacement design PR must include the corrected
   vectors and current handoff state.
 - Expected post-merge checkpoint: refresh `main` safely, perform the bounded design retrospective,
@@ -33,18 +36,18 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Run one fresh independent adversarial review of `62fe49e`, then update the design PR with its
+1. Run one fresh independent adversarial review of `4b75b553`, then update the design PR with its
    SHA-bound review envelope and merge it only after checks and all findings are resolved.
-2. Close PR #62 as superseded, publish the replacement design PR, and complete its review/fix/merge
-   evidence.
+2. Record the final review disposition on PR #62, close it as superseded, publish the replacement
+   design PR, and complete its review/fix/merge evidence.
 3. Refresh `main`, record the bounded retrospective, implement and merge the FRESH-IMAGE-REQUEST6
    profile extension on its own branch, then implement Request 6 on a new branch; review, repair,
    merge, refresh `main`, and continue to the next eligible roadmap gate.
 
 ## Latest verification
 
-- `make gate-topology-check`: PASS at `62fe49e`.
-- `git diff --check`: PASS at `62fe49e`.
+- `make gate-topology-check`: PASS at `4b75b553`.
+- `git diff --check`: PASS at `4b75b553`.
 - Markdown fence parity: PASS (`docs/align-requests.md` 94, `docs/specs/check-gate-topology.md` 76).
 - The design-only gate does not run source tests, `make check`, `make build`, or `make ci`; those
   checks are deferred until executable implementation or an executable contract boundary exists.
