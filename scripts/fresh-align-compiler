@@ -4637,7 +4637,17 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
                 expected_head=predicate["repository_head"],
                 expected_format=predicate["repository_object_format"],
             )
-        except Exception:
+        except Exception as error:
+            try:
+                os.write(
+                    2,
+                    (
+                        "diagnostic project-source: "
+                        f"{type(error).__name__}: {error!r}\n"
+                    ).encode("ascii", "backslashreplace"),
+                )
+            except OSError:
+                pass
             fail("SOURCE", "project-source")
         try:
             align_fd, align_retained = open_relative_directory(project_fd, predicate["align_repo_relative"])
