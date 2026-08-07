@@ -6,7 +6,7 @@ attestations; this file records durable project state.
 ## Active checkpoint (2026-08-07)
 
 - Branch: `agent/request6-adoption-contract-v2`, with design content complete at
-  `f96bad37a07e16f0d48b8b0bb12c1bc1e69ae2f8`, based on merged `main` at
+  `62fe49e9ffda6d7a93bb01185014337e8a216fe5`, based on merged `main` at
   `1fafcd8b4c5d4f1c147e51749f596662c4a60398`. This handoff-only metadata update follows that
   design commit; no design content follows it.
 - Active goal: finish and merge the corrected Request 6 focused-adoption design, then implement
@@ -16,11 +16,14 @@ attestations; this file records durable project state.
 - The latest design repair passes every manifest tool through retained FD-backed setup into the
   namespace-owned read-only `/tools` inventory, fixes the ordinary executable-resolution ledger,
   reserves non-overlapping tool descriptors at FD 400 onward, adds the separate
-  FRESH-IMAGE-REQUEST6 installed-profile prerequisite, and raises Cargo home to 24 GiB with a
-  page-rounded materialization bound and 2 GiB metadata reserve. The earlier private
-  `align-build-only` vector, in-namespace child ownership, namespace-owned sealing, outer
-  cgroup/host-root ownership, and post-build compiler digest handoff remain in force. A fresh
-  independent review is required.
+  FRESH-IMAGE-REQUEST6 installed-profile prerequisite, raises Cargo home to 24 GiB with a
+  page-rounded materialization bound and 2 GiB metadata reserve, and makes the public ordinary
+  entrypoint image-owned at `/usr/local/libexec/align-llm/request6-adoption-entrypoint`. It binds
+  project HEAD/index/raw-tree identity and the worker digest into a signed `ordinary-adoption/v1`
+  capsule, transfers sealed capsule/worker inputs on FDs 10/11, and invokes project scripts only as
+  `/tools/bash` or `/tools/python3` data arguments. The earlier private `align-build-only` vector,
+  in-namespace child ownership, namespace-owned sealing, outer cgroup/host-root ownership, and
+  post-build compiler digest handoff remain in force. A fresh independent review is required.
 - PR #62 is superseded and must not be merged. The replacement design PR must include the corrected
   vectors and current handoff state.
 - Expected post-merge checkpoint: refresh `main` safely, perform the bounded design retrospective,
@@ -30,7 +33,7 @@ attestations; this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Run one fresh independent adversarial review of `f96bad3`, then update the design PR with its
+1. Run one fresh independent adversarial review of `62fe49e`, then update the design PR with its
    SHA-bound review envelope and merge it only after checks and all findings are resolved.
 2. Close PR #62 as superseded, publish the replacement design PR, and complete its review/fix/merge
    evidence.
@@ -40,8 +43,8 @@ attestations; this file records durable project state.
 
 ## Latest verification
 
-- `make gate-topology-check`: PASS at `f96bad3`.
-- `git diff --check`: PASS at `f96bad3`.
+- `make gate-topology-check`: PASS at `62fe49e`.
+- `git diff --check`: PASS at `62fe49e`.
 - Markdown fence parity: PASS (`docs/align-requests.md` 94, `docs/specs/check-gate-topology.md` 76).
 - The design-only gate does not run source tests, `make check`, `make build`, or `make ci`; those
   checks are deferred until executable implementation or an executable contract boundary exists.
