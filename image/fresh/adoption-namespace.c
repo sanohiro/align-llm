@@ -2,16 +2,15 @@
 
 #include <dirent.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <linux/memfd.h>
+#include <limits.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#include "dispatcher_payload.inc"
+#include "namespace_payload.inc"
 
 #ifndef F_ADD_SEALS
 #define F_ADD_SEALS 1033
@@ -30,8 +29,8 @@
 
 extern char **environ;
 
-static int fail_input(void) {
-    static const char message[] = "json-scan adoption: ERROR input\n";
+static int fail(void) {
+    static const char message[] = "json-scan adoption: ERROR toolchain\n";
     (void)!write(STDERR_FILENO, message, sizeof(message) - 1);
     return 1;
 }
@@ -53,8 +52,8 @@ static int write_all(int fd, const unsigned char *data, size_t size) {
 }
 
 static int snapshot_payload(void) {
-    int fd = memfd("align-llm-request6-boundary");
-    if (fd < 0 || write_all(fd, dispatcher_payload, dispatcher_payload_len) < 0 ||
+    int fd = memfd("align-llm-adoption-namespace");
+    if (fd < 0 || write_all(fd, namespace_payload, namespace_payload_len) < 0 ||
         lseek(fd, 0, SEEK_SET) < 0 || fcntl(fd, F_ADD_SEALS, REQUIRED_SEALS) < 0 ||
         fcntl(fd, F_GET_SEALS) != REQUIRED_SEALS || dup2(fd, 11) < 0 ||
         fcntl(11, F_SETFD, 0) < 0) {
@@ -70,8 +69,7 @@ static int snapshot_payload(void) {
 }
 
 static int allowed_descriptor(int fd) {
-    return fd == STDIN_FILENO || fd == STDOUT_FILENO || fd == STDERR_FILENO || fd == 4 ||
-           fd == 6 || fd == 8 || fd == 14 || fd == 18;
+    return fd == STDIN_FILENO || fd == STDOUT_FILENO || fd == STDERR_FILENO || fd == 16;
 }
 
 static int descriptor_set_is_exact(void) {
@@ -89,22 +87,13 @@ static int descriptor_set_is_exact(void) {
             continue;
         }
         value = strtol(entry->d_name, &end, 10);
-        if (end == entry->d_name || *end != '\0' || value < 0 || value > INT_MAX) {
-            closedir(directory);
-            return -1;
-        }
-        if ((int)value == directory_fd) {
-            continue;
-        }
-        if (!allowed_descriptor((int)value)) {
+        if (end == entry->d_name || *end != '\0' || value < 0 || value > INT_MAX ||
+            ((int)value != directory_fd && !allowed_descriptor((int)value))) {
             closedir(directory);
             return -1;
         }
     }
-    if (closedir(directory) < 0) {
-        return -1;
-    }
-    return 0;
+    return closedir(directory) < 0 ? -1 : 0;
 }
 
 static int matches_name(const char *entry, const char *name, const char *value) {
@@ -117,14 +106,16 @@ static int matches_name(const char *entry, const char *name, const char *value) 
 }
 
 static int environment_is_exact(void) {
-    static const char *names[] = {"PATH", "LC_ALL", "LANG", "HOME", "TMPDIR"};
-    static const char *values[] = {"/usr/bin:/bin", "C", "C", "/nonexistent", "/tmp"};
-    int seen[5] = {0, 0, 0, 0, 0};
+    static const char *names[] = {
+        "PATH", "LC_ALL", "LANG", "HOME", "TMPDIR", "PYTHONDONTWRITEBYTECODE"
+    };
+    static const char *values[] = {"/tools", "C", "C", "/nonexistent", "/tmp", "1"};
+    int seen[6] = {0, 0, 0, 0, 0, 0};
     int index;
     for (index = 0; environ[index] != NULL; ++index) {
         int found = 0;
         int name_index;
-        for (name_index = 0; name_index < 5; ++name_index) {
+        for (name_index = 0; name_index < 6; ++name_index) {
             if (matches_name(environ[index], names[name_index], values[name_index])) {
                 if (seen[name_index] != 0) {
                     return -1;
@@ -138,7 +129,7 @@ static int environment_is_exact(void) {
             return -1;
         }
     }
-    for (index = 0; index < 5; ++index) {
+    for (index = 0; index < 6; ++index) {
         if (seen[index] == 0) {
             return -1;
         }
@@ -147,25 +138,32 @@ static int environment_is_exact(void) {
 }
 
 static int close_unexpected_descriptors(void) {
-    return syscall(SYS_close_range, 3U, 3U, 0U) < 0 ||
-                   syscall(SYS_close_range, 5U, 5U, 0U) < 0 ||
-                   syscall(SYS_close_range, 7U, 7U, 0U) < 0 ||
-                   syscall(SYS_close_range, 9U, 10U, 0U) < 0 ||
-                   syscall(SYS_close_range, 12U, 17U, 0U) < 0 ||
-                   syscall(SYS_close_range, 19U, UINT_MAX, 0U) < 0
+    return syscall(SYS_close_range, 3U, 10U, 0U) < 0 ||
+                   syscall(SYS_close_range, 12U, 15U, 0U) < 0 ||
+                   syscall(SYS_close_range, 17U, UINT_MAX, 0U) < 0
                ? -1
                : 0;
 }
 
 int main(int argc, char **argv) {
     char *child_argv[32];
+    char *child_env[] = {
+        "PATH=/tools",
+        "LC_ALL=C",
+        "LANG=C",
+        "HOME=/nonexistent",
+        "TMPDIR=/tmp",
+        "PYTHONDONTWRITEBYTECODE=1",
+        NULL,
+    };
     int index;
 
-    if (argc < 2 || argc > 20 || strcmp(argv[0], "request6-adoption-boundary-entrypoint") != 0 ||
-        environment_is_exact() < 0 ||
-        descriptor_set_is_exact() < 0 || snapshot_payload() < 0 ||
-        close_unexpected_descriptors() < 0) {
-        return fail_input();
+    if (argc < 2 || argc > 16 || strcmp(argv[0], "/usr/bin/adoption-namespace") != 0 ||
+        environment_is_exact() < 0 || descriptor_set_is_exact() < 0) {
+        return fail();
+    }
+    if (snapshot_payload() < 0 || close_unexpected_descriptors() < 0) {
+        return fail();
     }
     child_argv[0] = argv[0];
     child_argv[1] = (char *)"-I";
@@ -175,6 +173,6 @@ int main(int argc, char **argv) {
         child_argv[index + 3] = argv[index];
     }
     child_argv[argc + 3] = NULL;
-    execve(PYTHON_PATH, child_argv, environ);
-    return fail_input();
+    execve(PYTHON_PATH, child_argv, child_env);
+    return fail();
 }

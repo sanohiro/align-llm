@@ -19,6 +19,7 @@ import re
 import resource
 import selectors
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -55,6 +56,8 @@ BOOTSTRAP_PATH = "/usr/local/libexec/align-llm/fresh-bootstrap"
 BOUNDARY_DISPATCHER_PATH = (
     "/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint"
 )
+DISPATCHER_PATH = "/usr/local/libexec/align-llm/request6-adoption-entrypoint"
+ADOPTION_NAMESPACE_PATH = "/usr/bin/adoption-namespace"
 MANIFEST_PATH = "/usr/local/share/align-llm/fresh-toolchain.json"
 IMAGE_ATTESTATION_PATH = "/run/align-llm-fresh/image-attestation.dsse"
 IMAGE_PUBLIC_KEY_PATH = "/usr/local/share/align-llm/image-verifier.pub"
@@ -72,6 +75,27 @@ CONTROL_STREAM_LIMIT = 65_536
 CONTROL_CGROUP_PREFIX = "align-llm-control-"
 BOUNDARY_WORKER_PATH = "scripts/run-json-scan-row-ownership-adoption"
 BOUNDARY_TIMEOUT_SECONDS = 5.0
+ORDINARY_PREDICATE_TYPE = "https://align-llm.dev/attestations/ordinary-adoption/v2"
+ORDINARY_REQUEST = "json-scan-row-ownership-adoption"
+ORDINARY_TICKET_BYTES = 32
+ORDINARY_NONCE_BYTES = 32
+ORDINARY_WORKER_PATH = "scripts/run-json-scan-row-ownership-adoption"
+ORDINARY_WORKER_LIMIT = 4_194_304
+ORDINARY_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "HOME": "/nonexistent",
+    "TMPDIR": "/tmp",
+}
+ORDINARY_NAMESPACE_ENVIRONMENT = {
+    "PATH": "/tools",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "HOME": "/nonexistent",
+    "TMPDIR": "/tmp",
+    "PYTHONDONTWRITEBYTECODE": "1",
+}
 
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -800,6 +824,16 @@ def _read_sealed(
     before = _identity(fd)
     if not stat.S_ISREG(before.mode) or before.links != 0 or before.size > limit:
         raise ControlError("TRUST", "supervisor", "sealed input identity is invalid")
+    try:
+        fstatfs = ctypes.CDLL(None, use_errno=True).fstatfs
+        fstatfs.argtypes = [ctypes.c_int, ctypes.c_void_p]
+        fstatfs.restype = ctypes.c_int
+        words = (ctypes.c_long * 32)()
+        if fstatfs(fd, ctypes.byref(words)) != 0 or words[0] != 0x01021994:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number))
+    except OSError as error:
+        raise ControlError("TRUST", "supervisor", "sealed input filesystem is invalid") from error
     if expected_name is not None:
         try:
             link = os.readlink(f"/proc/self/fd/{fd}")
@@ -816,6 +850,7 @@ def _read_sealed(
         raise ControlError("TRUST", "supervisor", "sealed input read rejected") from error
     if not _same_identity(before, _identity(fd)):
         raise ControlError("TRUST", "supervisor", "sealed input identity changed")
+    os.lseek(fd, 0, os.SEEK_SET)
     return raw
 
 
@@ -879,8 +914,31 @@ def _open_absolute_directory(value: str, target: int) -> int:
     """Walk an absolute directory without following a component symlink."""
 
     normalized = _normalize_absolute(value)
+    retained: list[tuple[int, int | None, bytes | None, FileIdentity]] = []
     root_fd = -1
     current_fd = -1
+
+    def identity_from_stat(value: os.stat_result) -> FileIdentity:
+        return FileIdentity(
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_uid,
+            value.st_size,
+        )
+
+    def close_retained() -> None:
+        seen: set[int] = set()
+        for descriptor, _, _, _ in reversed(retained):
+            if descriptor in seen or descriptor == target:
+                continue
+            seen.add(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
     try:
         root_fd = os.open(
             "/", os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -890,37 +948,70 @@ def _open_absolute_directory(value: str, target: int) -> int:
             os.close(root_fd)
         root_fd = -1
         current_fd = 17
+        retained.append((17, None, None, _identity(17)))
         for component in normalized.split("/")[1:]:
+            parent_identity = _identity(current_fd)
             next_fd = os.open(
                 os.fsencode(component),
                 os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                 dir_fd=current_fd,
             )
-            if current_fd != 17 and current_fd != target:
-                os.close(current_fd)
+            opened_identity = _identity(next_fd)
+            entry_identity = identity_from_stat(
+                os.stat(component, dir_fd=current_fd, follow_symlinks=False)
+            )
+            if opened_identity != entry_identity or _identity(current_fd) != parent_identity:
+                os.close(next_fd)
+                raise ControlError("TRUST", "supervisor", "Align path changed during walk")
+            retained.append((next_fd, current_fd, os.fsencode(component), opened_identity))
             current_fd = next_fd
         os.dup2(current_fd, target, inheritable=True)
-        if current_fd != target:
-            os.close(current_fd)
-        current_fd = -1
+        for descriptor, parent, component, identity in retained:
+            if _identity(descriptor) != identity:
+                raise ControlError("TRUST", "supervisor", "Align path identity changed")
+            if parent is not None and component is not None:
+                observed = identity_from_stat(
+                    os.stat(component, dir_fd=parent, follow_symlinks=False)
+                )
+                if observed != identity:
+                    raise ControlError("TRUST", "supervisor", "Align path identity changed")
         try:
             observed = _normalize_absolute(os.readlink(f"/proc/self/fd/{target}"))
         except (OSError, ControlError) as error:
             raise ControlError("TRUST", "supervisor", "Align path identity is unavailable") from error
         if observed != normalized:
             raise ControlError("TRUST", "supervisor", "Align path identity changed")
+        close_retained()
+        try:
+            os.close(17)
+        except OSError:
+            pass
+        retained.clear()
+        current_fd = -1
         return target
     except ControlError:
+        close_retained()
         raise
     except OSError as error:
+        close_retained()
         raise ControlError("TRUST", "supervisor", "Align path walk failed") from error
     finally:
-        for descriptor in (current_fd, root_fd, 17):
-            if descriptor >= 0 and descriptor != target:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
+        if root_fd >= 0 and root_fd != target:
+            try:
+                os.close(root_fd)
+            except OSError:
+                pass
+        if current_fd >= 0 and current_fd != target and not retained:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+        if retained:
+            close_retained()
+        try:
+            os.close(17)
+        except OSError:
+            pass
 
 
 def _execveat(fd: int, arguments: Sequence[str], environment: Mapping[str, str]) -> None:
@@ -953,7 +1044,11 @@ def _execveat(fd: int, arguments: Sequence[str], environment: Mapping[str, str])
 
 
 def _runtime_file_binding(
-    manifest: Mapping[str, Any], target: str, *, owner: int
+    manifest: Mapping[str, Any],
+    target: str,
+    *,
+    owner: int,
+    limit: int = MAX_WORKER_BYTES,
 ) -> tuple[int, bytes, Mapping[str, Any]]:
     matches = [
         binding
@@ -965,29 +1060,30 @@ def _runtime_file_binding(
     binding = matches[0]
     tree = binding.get("manifest")
     if (
-        binding.get("source") != target
+        not isinstance(binding.get("source"), str)
+        or not binding.get("source", "/").startswith("/")
         or binding.get("kind") != "file"
         or not isinstance(tree, Mapping)
         or tree.get("kind") != "file"
         or tree.get("mode") != "0755"
     ):
-        raise ControlError("TRUST", "supervisor", "runtime binding is not the dispatcher")
+        raise ControlError("TRUST", "supervisor", "runtime binding record is invalid")
     try:
         descriptor, raw = _open_regular(
-            target,
-            limit=MAX_WORKER_BYTES,
+            binding["source"],
+            limit=limit,
             exact_mode=0o755,
             exact_owner=owner,
         )
     except ControlError as error:
-        raise ControlError("TRUST", "supervisor", "runtime dispatcher is unavailable") from error
+        raise ControlError("TRUST", "supervisor", "runtime binding source is unavailable") from error
     if (
         tree.get("size") != len(raw)
         or sha256_hex(raw) != tree.get("sha256")
         or serialized_digest(tree) != binding.get("manifest_sha256")
     ):
         os.close(descriptor)
-        raise ControlError("TRUST", "supervisor", "runtime dispatcher digest mismatch")
+        raise ControlError("TRUST", "supervisor", "runtime binding digest mismatch")
     return descriptor, raw, binding
 
 
@@ -1027,6 +1123,38 @@ def _boundary_worker_presence(project_fd: int) -> None:
     raise ControlError("REVISION", "revision", "boundary worker is present")
 
 
+def _ordinary_worker_snapshot(project_fd: int, *, owner: int) -> tuple[str, int, bytes]:
+    scripts_fd = -1
+    worker_fd = -1
+    try:
+        scripts_fd = os.open(
+            "scripts",
+            os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=project_fd,
+        )
+        worker_fd = os.open(
+            os.fsencode(ORDINARY_WORKER_PATH.split("/", 1)[1]),
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=scripts_fd,
+        )
+        raw = _regular_snapshot(
+            worker_fd,
+            limit=ORDINARY_WORKER_LIMIT,
+            exact_mode=0o755,
+            exact_owner=owner,
+        )
+        return ORDINARY_WORKER_PATH, len(raw), raw
+    except OSError as error:
+        raise ControlError("REVISION", "revision", "ordinary worker source is unavailable") from error
+    finally:
+        for descriptor in (worker_fd, scripts_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
 def _mode_from_arguments(arguments: Sequence[str]) -> str:
     if list(arguments) == ["make", "--no-print-directory", "ci"]:
         return "ci"
@@ -1036,6 +1164,8 @@ def _mode_from_arguments(arguments: Sequence[str]) -> str:
         return "self-test"
     if list(arguments) == ["--mode", "ordinary-adoption-boundary"]:
         return "ordinary-adoption-boundary"
+    if list(arguments) == ["--mode", "ordinary-adoption"]:
+        return "ordinary-adoption"
     raise ControlError("ARGUMENT", "input", "request vector is not accepted")
 
 
@@ -1055,13 +1185,24 @@ def _reject_environment(environment: Mapping[str, str], *, mode: str) -> str:
         if align_repo is None:
             raise ControlError("ARGUMENT", "input", "boundary mode requires ALIGN_REPO")
         return _normalize_absolute(align_repo)
+    if mode == "ordinary-adoption":
+        allowed = {"PATH", "LC_ALL", "LANG", "HOME", "TMPDIR", "ALIGN_REPO"}
+        unexpected = set(environment) - allowed
+        if unexpected:
+            raise ControlError("ARGUMENT", "input", "ordinary environment is not exact")
+        align_repo = environment.get("ALIGN_REPO")
+        if align_repo is None:
+            raise ControlError("ARGUMENT", "input", "ordinary mode requires ALIGN_REPO")
+        return _normalize_absolute(align_repo)
     align_repo = environment.get("ALIGN_REPO", "../align")
     if mode == "self-test" and "ALIGN_REPO" in environment:
         raise ControlError("ARGUMENT", "input", "self-test rejects ALIGN_REPO")
     return _normalize_relative(align_repo)
 
 
-def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
+def _git_identity(
+    project_fd: int, git_path: str, *, git_fd: int | None = None
+) -> tuple[str, str]:
     environment = {
         "PATH": "/usr/bin:/bin",
         "LC_ALL": "C",
@@ -1079,6 +1220,7 @@ def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
                 [git_path, "-c", "safe.directory=*", *arguments],
                 cwd=cwd,
                 environment=environment,
+                pass_fds=() if git_fd is None else (git_fd,),
                 timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
@@ -1527,6 +1669,242 @@ def _boundary_supervise(
                 pass
 
 
+def _waitpid_retry(pid: int, options: int) -> tuple[int, int]:
+    while True:
+        try:
+            return os.waitpid(pid, options)
+        except InterruptedError:
+            continue
+
+
+def _send_packet(channel: socket.socket, payload: bytes) -> None:
+    if channel.send(payload) != len(payload):
+        raise OSError(errno.EIO, "short supervisor channel packet")
+
+
+def _recv_packet(channel: socket.socket, limit: int) -> bytes:
+    payload, _, flags, _ = channel.recvmsg(limit, 0)
+    if flags & socket.MSG_TRUNC:
+        raise OSError(errno.EMSGSIZE, "supervisor channel packet is too large")
+    return payload
+
+
+def _ordinary_supervise(
+    *, align_repo_absolute: str, self_fd: int, paths: ProfilePaths
+) -> int:
+    """Admit one ordinary Request 6 dispatcher through the retained image path."""
+
+    image_fd = -1
+    manifest_fd = -1
+    project_fd = -1
+    align_fd = -1
+    dispatcher_fd = -1
+    nonce_fd = -1
+    parent_channel: socket.socket | None = None
+    child_channel: socket.socket | None = None
+    child_pid = -1
+    try:
+        try:
+            attestation_fd, attestation_raw = _open_regular(
+                paths.image_attestation,
+                limit=MAX_ATTESTATION_BYTES,
+                exact_mode=0o444,
+                exact_owner=paths.image_owner,
+            )
+            os.close(attestation_fd)
+            image_fd = _sealed_memfd("align-llm-image", attestation_raw, 6)
+            manifest_source_fd, manifest_raw = _open_regular(
+                paths.manifest,
+                limit=MAX_MANIFEST_BYTES,
+                exact_mode=0o444,
+                exact_owner=paths.image_owner,
+            )
+            os.close(manifest_source_fd)
+            manifest_fd = _sealed_memfd("align-llm-manifest", manifest_raw, 8)
+            supervisor_raw = _regular_snapshot(
+                self_fd,
+                limit=MAX_WORKER_BYTES,
+                exact_mode=0o755,
+                exact_owner=paths.image_owner,
+            )
+            image_envelope = _read_sealed(
+                image_fd, limit=MAX_ATTESTATION_BYTES, expected_name="align-llm-image"
+            )
+            _, _, _, verified_manifest_raw = _verify_image_envelope(
+                image_envelope, paths=paths, supervisor_raw=supervisor_raw
+            )
+            if verified_manifest_raw != manifest_raw:
+                raise ControlError("TRUST", "supervisor", "ordinary manifest snapshot changed")
+            manifest = validate_manifest_bytes(manifest_raw)
+        except (ControlError, WireError) as error:
+            raise ControlError("TRUST", "supervisor", "ordinary image input unavailable") from error
+
+        dispatcher_fd, _, _ = _runtime_file_binding(
+            manifest, DISPATCHER_PATH, owner=paths.image_owner
+        )
+        os.dup2(dispatcher_fd, 14, inheritable=True)
+        if dispatcher_fd != 14:
+            os.close(dispatcher_fd)
+        dispatcher_fd = 14
+
+        project_fd = os.open(
+            ".", os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        os.dup2(project_fd, 4, inheritable=True)
+        if project_fd != 4:
+            os.close(project_fd)
+        project_fd = 4
+
+        align_repo_absolute = _normalize_absolute(align_repo_absolute)
+        align_repo_relative = _canonical_relative_from_absolute(align_repo_absolute)
+        align_fd = _open_absolute_directory(align_repo_absolute, 18)
+        nonce = os.getrandom(ORDINARY_NONCE_BYTES, 0)
+        if len(nonce) != ORDINARY_NONCE_BYTES:
+            raise ControlError("TRUST", "supervisor", "ordinary nonce has the wrong size")
+        nonce_fd = _sealed_memfd(
+            "align-llm-ordinary-adoption-nonce", nonce, 15
+        )
+        parent_channel, child_channel = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC
+        )
+
+        child_pid = os.fork()
+        if child_pid == 0:
+            try:
+                if parent_channel is None or child_channel is None:
+                    raise OSError(errno.EBADF, "ordinary channel endpoints are unavailable")
+                parent_channel.close()
+                parent_channel = None
+                os.dup2(child_channel.fileno(), 16, inheritable=True)
+                child_channel.close()
+                child_channel = None
+                for source, target in (
+                    (project_fd, 4),
+                    (image_fd, 6),
+                    (manifest_fd, 8),
+                    (nonce_fd, 15),
+                    (align_fd, 18),
+                ):
+                    os.dup2(source, target, inheritable=True)
+                os.chdir("/proc/self/fd/4")
+                _close_descriptors_except({0, 1, 2, 4, 6, 8, 14, 15, 16, 18})
+                _execveat(
+                    14,
+                    [
+                        "request6-adoption-entrypoint",
+                        "--mode",
+                        "ordinary-adoption",
+                        "--project-root-fd",
+                        "4",
+                        "--image-attestation-fd",
+                        "6",
+                        "--manifest-fd",
+                        "8",
+                        "--align-repo-root-fd",
+                        "18",
+                        "--align-repo-absolute",
+                        align_repo_absolute,
+                        "--align-repo-relative",
+                        align_repo_relative,
+                        "--invocation-nonce-fd",
+                        "15",
+                        "--supervisor-channel-fd",
+                        "16",
+                    ],
+                    ORDINARY_ENVIRONMENT,
+                )
+            except BaseException:
+                try:
+                    os.write(2, b"fresh compiler: ERROR TRUST supervisor\n")
+                except OSError:
+                    pass
+            os._exit(1)
+
+        if parent_channel is None or child_channel is None:
+            raise ControlError("TRUST", "supervisor", "ordinary channel endpoints are unavailable")
+        child_channel.close()
+        child_channel = None
+        admission_deadline = time.monotonic() + WORKER_INVOCATION_TIMEOUT
+        parent_channel.settimeout(max(0.0, admission_deadline - time.monotonic()))
+        ticket = os.getrandom(ORDINARY_TICKET_BYTES, 0)
+        _send_packet(parent_channel, ticket)
+        capsule_digest = b""
+        try:
+            capsule_digest = _recv_packet(parent_channel, ORDINARY_TICKET_BYTES)
+        except (socket.timeout, OSError):
+            pass
+        if len(capsule_digest) == ORDINARY_TICKET_BYTES:
+            proof = hashlib.sha256(
+                b"align-llm/ordinary-adoption/worker-admission/v2\0"
+                + hashlib.sha256(ticket).digest()
+                + nonce
+                + capsule_digest
+            ).digest()
+            try:
+                _send_packet(parent_channel, proof)
+            except OSError:
+                pass
+
+        deadline = admission_deadline
+        status: int | None = None
+        timed_out = False
+        while status is None:
+            waited, observed = _waitpid_retry(child_pid, os.WNOHANG)
+            if waited == child_pid:
+                status = observed
+                child_pid = -1
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            time.sleep(0.01)
+        if timed_out:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except OSError:
+                pass
+            _, status = _waitpid_retry(child_pid, 0)
+            child_pid = -1
+            _write_exact(2, b"fresh compiler: ERROR TRUST supervisor\n")
+            return 1
+        if status is None:
+            raise ControlError("TRUST", "supervisor", "ordinary child status is unavailable")
+        if os.WIFEXITED(status):
+            code = os.WEXITSTATUS(status)
+            if code == 0:
+                return 0
+            if 1 <= code <= 7:
+                return 1
+        _write_exact(2, b"fresh compiler: ERROR TRUST supervisor\n")
+        return 1
+    except (ControlError, OSError, WireError) as error:
+        if child_pid > 0:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                _waitpid_retry(child_pid, 0)
+            except OSError:
+                pass
+            child_pid = -1
+        if isinstance(error, ControlError):
+            raise
+        raise ControlError("TRUST", "supervisor", "ordinary dispatch failed") from error
+    finally:
+        for channel in (parent_channel, child_channel):
+            if channel is not None:
+                try:
+                    channel.close()
+                except OSError:
+                    pass
+        for descriptor in (4, 6, 8, 14, 15, 18):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 def supervise(
     arguments: Sequence[str],
     *,
@@ -1538,6 +1916,12 @@ def supervise(
     align_repo = _reject_environment(os.environ, mode=mode)
     if mode == "ordinary-adoption-boundary":
         return _boundary_supervise(
+            align_repo_absolute=align_repo,
+            self_fd=self_fd,
+            paths=paths,
+        )
+    if mode == "ordinary-adoption":
+        return _ordinary_supervise(
             align_repo_absolute=align_repo,
             self_fd=self_fd,
             paths=paths,

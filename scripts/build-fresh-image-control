@@ -98,6 +98,12 @@ def main() -> int:
     dispatcher_modules = common_modules + [
         ("request6_boundary.py", control / "request6_boundary.py"),
     ]
+    adoption_modules = common_modules + [
+        ("request6_adoption.py", control / "request6_adoption.py"),
+    ]
+    namespace_modules = common_modules + [
+        ("adoption_namespace.py", control / "adoption_namespace.py"),
+    ]
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="fresh-image-control-") as temporary:
         build = Path(temporary)
@@ -119,6 +125,18 @@ def main() -> int:
             main=control / "dispatcher_main.py",
             modules=dispatcher_modules,
         )
+        adoption_bundle = build / "request6-adoption.pyz"
+        build_bundle(
+            adoption_bundle,
+            main=control / "adoption_dispatcher_main.py",
+            modules=adoption_modules,
+        )
+        namespace_bundle = build / "adoption-namespace.pyz"
+        build_bundle(
+            namespace_bundle,
+            main=control / "namespace_main.py",
+            modules=namespace_modules,
+        )
         write_header(
             build / "supervisor_payload.inc",
             symbol="supervisor_payload",
@@ -133,6 +151,16 @@ def main() -> int:
             build / "dispatcher_payload.inc",
             symbol="dispatcher_payload",
             raw=boundary_bundle.read_bytes(),
+        )
+        write_header(
+            build / "adoption_payload.inc",
+            symbol="adoption_payload",
+            raw=adoption_bundle.read_bytes(),
+        )
+        write_header(
+            build / "namespace_payload.inc",
+            symbol="namespace_payload",
+            raw=namespace_bundle.read_bytes(),
         )
         compile_launcher(
             compiler=arguments.cc,
@@ -154,6 +182,20 @@ def main() -> int:
             output=arguments.output_dir / "request6-adoption-boundary-entrypoint",
             static=True,
         )
+        compile_launcher(
+            compiler=arguments.cc,
+            source=repository / "image" / "fresh" / "request6-adoption-entrypoint.c",
+            include_dir=build,
+            output=arguments.output_dir / "request6-adoption-entrypoint",
+            static=True,
+        )
+        compile_launcher(
+            compiler=arguments.cc,
+            source=repository / "image" / "fresh" / "adoption-namespace.c",
+            include_dir=build,
+            output=arguments.output_dir / "adoption-namespace",
+            static=True,
+        )
         if arguments.keep_bundles:
             (arguments.output_dir / "fresh-supervise.pyz").write_bytes(
                 supervisor_bundle.read_bytes()
@@ -164,11 +206,19 @@ def main() -> int:
             (arguments.output_dir / "request6-adoption-boundary-entrypoint.pyz").write_bytes(
                 boundary_bundle.read_bytes()
             )
+            (arguments.output_dir / "request6-adoption-entrypoint.pyz").write_bytes(
+                adoption_bundle.read_bytes()
+            )
+            (arguments.output_dir / "adoption-namespace.pyz").write_bytes(
+                namespace_bundle.read_bytes()
+            )
 
     for name in (
         "fresh-supervise",
         "fresh-bootstrap",
         "request6-adoption-boundary-entrypoint",
+        "request6-adoption-entrypoint",
+        "adoption-namespace",
     ):
         raw = (arguments.output_dir / name).read_bytes()
         print(f"{hashlib.sha256(raw).hexdigest()}  {name}")

@@ -53,7 +53,7 @@ static int matches_prefix(const char *entry, const char *prefix) {
     return strncmp(entry, prefix, strlen(prefix)) == 0;
 }
 
-static int sanitize_environment(char **child_env, int strict_boundary) {
+static int sanitize_environment(char **child_env, int strict_ordinary) {
     static char path[] = "PATH=/usr/bin:/bin";
     static char locale[] = "LC_ALL=C";
     static char language[] = "LANG=C";
@@ -73,7 +73,7 @@ static int sanitize_environment(char **child_env, int strict_boundary) {
     for (index = 0; environ[index] != NULL; ++index) {
         char *entry = environ[index];
         size_t forbidden_index;
-        if (strict_boundary && !matches_name(entry, "PATH") &&
+        if (strict_ordinary && !matches_name(entry, "PATH") &&
             !matches_name(entry, "LC_ALL") && !matches_name(entry, "LANG") &&
             !matches_name(entry, "HOME") && !matches_name(entry, "TMPDIR") &&
             !matches_name(entry, "ALIGN_REPO")) {
@@ -164,10 +164,11 @@ int main(int argc, char **argv) {
     char *child_env[7];
     int self_fd;
     int index;
-    int strict_boundary = argc >= 3 && strcmp(argv[1], "--mode") == 0 &&
-                          strcmp(argv[2], "ordinary-adoption-boundary") == 0;
+    int strict_ordinary = argc >= 3 && strcmp(argv[1], "--mode") == 0 &&
+                           (strcmp(argv[2], "ordinary-adoption-boundary") == 0 ||
+                            strcmp(argv[2], "ordinary-adoption") == 0);
 
-    if (sanitize_environment(child_env, strict_boundary) < 0) {
+    if (sanitize_environment(child_env, strict_ordinary) < 0) {
         return fail_argument();
     }
     if (argc > 10) {

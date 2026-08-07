@@ -2,16 +2,15 @@
 
 #include <dirent.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <linux/memfd.h>
+#include <limits.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#include "dispatcher_payload.inc"
+#include "adoption_payload.inc"
 
 #ifndef F_ADD_SEALS
 #define F_ADD_SEALS 1033
@@ -30,12 +29,17 @@
 
 extern char **environ;
 
+static int fail(void) {
+    static const char message[] = "json-scan adoption: ERROR toolchain\n";
+    (void)!write(STDERR_FILENO, message, sizeof(message) - 1);
+    return 1;
+}
+
 static int fail_input(void) {
     static const char message[] = "json-scan adoption: ERROR input\n";
     (void)!write(STDERR_FILENO, message, sizeof(message) - 1);
     return 1;
 }
-
 static int memfd(const char *name) {
     return (int)syscall(SYS_memfd_create, name, MFD_ALLOW_SEALING | MFD_CLOEXEC);
 }
@@ -53,8 +57,8 @@ static int write_all(int fd, const unsigned char *data, size_t size) {
 }
 
 static int snapshot_payload(void) {
-    int fd = memfd("align-llm-request6-boundary");
-    if (fd < 0 || write_all(fd, dispatcher_payload, dispatcher_payload_len) < 0 ||
+    int fd = memfd("align-llm-request6-adoption");
+    if (fd < 0 || write_all(fd, adoption_payload, adoption_payload_len) < 0 ||
         lseek(fd, 0, SEEK_SET) < 0 || fcntl(fd, F_ADD_SEALS, REQUIRED_SEALS) < 0 ||
         fcntl(fd, F_GET_SEALS) != REQUIRED_SEALS || dup2(fd, 11) < 0 ||
         fcntl(11, F_SETFD, 0) < 0) {
@@ -71,7 +75,7 @@ static int snapshot_payload(void) {
 
 static int allowed_descriptor(int fd) {
     return fd == STDIN_FILENO || fd == STDOUT_FILENO || fd == STDERR_FILENO || fd == 4 ||
-           fd == 6 || fd == 8 || fd == 14 || fd == 18;
+           fd == 6 || fd == 8 || fd == 14 || fd == 15 || fd == 16 || fd == 18;
 }
 
 static int descriptor_set_is_exact(void) {
@@ -151,7 +155,8 @@ static int close_unexpected_descriptors(void) {
                    syscall(SYS_close_range, 5U, 5U, 0U) < 0 ||
                    syscall(SYS_close_range, 7U, 7U, 0U) < 0 ||
                    syscall(SYS_close_range, 9U, 10U, 0U) < 0 ||
-                   syscall(SYS_close_range, 12U, 17U, 0U) < 0 ||
+                   syscall(SYS_close_range, 12U, 14U, 0U) < 0 ||
+                   syscall(SYS_close_range, 17U, 17U, 0U) < 0 ||
                    syscall(SYS_close_range, 19U, UINT_MAX, 0U) < 0
                ? -1
                : 0;
@@ -159,13 +164,22 @@ static int close_unexpected_descriptors(void) {
 
 int main(int argc, char **argv) {
     char *child_argv[32];
+    char *child_env[] = {
+        "PATH=/usr/bin:/bin",
+        "LC_ALL=C",
+        "LANG=C",
+        "HOME=/nonexistent",
+        "TMPDIR=/tmp",
+        NULL,
+    };
     int index;
 
-    if (argc < 2 || argc > 20 || strcmp(argv[0], "request6-adoption-boundary-entrypoint") != 0 ||
-        environment_is_exact() < 0 ||
-        descriptor_set_is_exact() < 0 || snapshot_payload() < 0 ||
-        close_unexpected_descriptors() < 0) {
+    if (argc < 2 || argc > 28 || strcmp(argv[0], "request6-adoption-entrypoint") != 0 ||
+        environment_is_exact() < 0 || descriptor_set_is_exact() < 0) {
         return fail_input();
+    }
+    if (snapshot_payload() < 0 || close_unexpected_descriptors() < 0) {
+        return fail();
     }
     child_argv[0] = argv[0];
     child_argv[1] = (char *)"-I";
@@ -175,6 +189,6 @@ int main(int argc, char **argv) {
         child_argv[index + 3] = argv[index];
     }
     child_argv[argc + 3] = NULL;
-    execve(PYTHON_PATH, child_argv, environ);
-    return fail_input();
+    execve(PYTHON_PATH, child_argv, child_env);
+    return fail();
 }
