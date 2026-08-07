@@ -1263,23 +1263,19 @@ Align compiler/runtime tests must:
    Copy row reports the input-type diagnostic;
 8. prove semantic rejection occurs before MIR/codegen for every scanner-owned fixture in items 1–2:
    `alignc check` and `alignc emit-mir` must both report the scanner-specific semantic diagnostic,
-   and `emit-mir` must produce no MIR on stdout. If `Option<nested Move struct>` is already rejected
-   by the general schema, apply the same no-MIR assertion to that earlier diagnostic instead. The
-   distinct multi-invalid fixtures in item 7 retain their earlier capability, schema, or input-type
-   diagnostics and are not ownership fixtures for this assertion. No descriptor table, object
-   file, executable, or runtime call may be produced for an owning-row rejection;
+   including the shipped `Option<nested Move struct>` case, and `emit-mir` must produce no MIR on
+   stdout. The distinct multi-invalid fixtures in item 7 retain their earlier capability, schema,
+   or input-type diagnostics and are not ownership fixtures for this assertion. No descriptor table,
+   object file, executable, or runtime call may be produced for an owning-row rejection;
 9. prove the scanner-only boundary by retaining the row declarations as valid types and by
    decoding, encoding, and dropping through ordinary JSON each supported direct, nested, and union
-   Move schema that `json.scan` rejects. If the Request 6 implementation base still admits
-   `Option<Move record>`, include the exact optional fixture
+   Move schema that `json.scan` rejects. The optional fixture is admitted by ordinary decode at
+   the shipped Align commit:
    `Inner { items: array<i64> }` and
    `Row { inner: Option<Inner>, score: i64 }`; decoding
    `{"inner":{"items":[1,2]},"score":3}` and immediately encoding the owner must produce those
-   exact bytes before the value leaves scope successfully. If an already-merged cleanup
-   prerequisite restored rejection, instead prove the same declaration remains a valid Align type
-   while ordinary JSON decode receives that prerequisite's canonical schema diagnostic before
-   the scanner ownership predicate. The distinct decoded-owner transition gaps described above
-   remain deferred.
+   exact bytes before the value leaves scope successfully. The distinct decoded-owner transition
+   gaps described above remain deferred.
    Their follow-up must audit every transition after an owner becomes live and include
    allocation-count regressions for successful and failed top-level AoS fallback after a
    speculative owner write, plus malformed-later-element and trailing-garbage cleanup for top-level
