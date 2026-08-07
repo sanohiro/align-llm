@@ -3392,6 +3392,20 @@ def run_owned(
                 bytes(captures["stdout"]),
                 bytes(captures["stderr"]),
             )
+        if process.returncode != 0:
+            for label, captured in captures.items():
+                if captured:
+                    try:
+                        os.write(
+                            2,
+                            (
+                                f"diagnostic {phase} child {label}: "
+                                + repr(bytes(captured[:65536]))
+                                + "\n"
+                            ).encode("ascii", "backslashreplace"),
+                        )
+                    except OSError:
+                        pass
         if process_unhealthy or process.returncode != 0:
             fail(category, phase)
     except BaseException as active_error:
