@@ -340,13 +340,44 @@ chain = importlib.util.module_from_spec(chain_spec)
 chain_spec.loader.exec_module(chain)
 saved_fresh = {
     name: os.environ.get(name)
-    for name in ("ALIGN_LLM_FRESH_COMPILER", "ALIGN_LLM_TOOL_ROOT")
+    for name in (
+        "ALIGN_LLM_FRESH_COMPILER",
+        "ALIGN_LLM_TOOL_ROOT",
+        "ALIGN_LLM_BASELINE_GIT_DIR",
+        "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+        "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+    )
 }
 try:
-    os.environ["ALIGN_LLM_FRESH_COMPILER"] = "1"
-    os.environ["ALIGN_LLM_TOOL_ROOT"] = "/tools"
-    if chain.git_environment()["PATH"] != "/tools":
+    os.environ.update(
+        {
+            "ALIGN_LLM_FRESH_COMPILER": "1",
+            "ALIGN_LLM_TOOL_ROOT": "/tools",
+            "ALIGN_LLM_BASELINE_GIT_DIR": "/baseline-git",
+            "ALIGN_LLM_BASELINE_GIT_COMMON_DIR": "/baseline-git",
+            "ALIGN_LLM_BASELINE_GIT_WORK_TREE": "/workspace",
+            "GIT_DIR": "/baseline-git",
+            "GIT_COMMON_DIR": "/baseline-git",
+            "GIT_WORK_TREE": "/workspace",
+        }
+    )
+    selected = chain.git_environment()
+    if selected["PATH"] != "/tools" or any(
+        selected[name] != "/baseline-git"
+        for name in ("GIT_DIR", "GIT_COMMON_DIR")
+    ) or selected["GIT_WORK_TREE"] != "/workspace":
         raise RuntimeError("fresh baseline chain did not select the staged Git PATH")
+    os.environ["GIT_DIR"] = "/other-git"
+    try:
+        chain.git_environment()
+    except chain.BaselineChainError:
+        pass
+    else:
+        raise RuntimeError("different fresh baseline Git view was accepted")
+    os.environ["GIT_DIR"] = "/baseline-git"
     os.environ.pop("ALIGN_LLM_TOOL_ROOT")
     try:
         chain.git_environment()
@@ -362,7 +393,8 @@ try:
         pass
     else:
         raise RuntimeError("different fresh baseline Git tool root was accepted")
-    os.environ.pop("ALIGN_LLM_TOOL_ROOT")
+    for name in saved_fresh:
+        os.environ.pop(name, None)
     if chain.git_environment()["PATH"] != "/usr/bin:/bin":
         raise RuntimeError("ordinary baseline chain did not retain the host Git PATH")
 finally:

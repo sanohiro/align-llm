@@ -28,6 +28,13 @@ COMMIT_ID = re.compile(r"[0-9a-f]{40}\Z")
 MAX_OUTPUT = 1024 * 1024
 FRESH_MARKER = "ALIGN_LLM_FRESH_COMPILER"
 TOOL_ROOT = "ALIGN_LLM_TOOL_ROOT"
+FRESH_BASELINE_GIT_NAMES = (
+    "ALIGN_LLM_BASELINE_GIT_DIR",
+    "ALIGN_LLM_BASELINE_GIT_COMMON_DIR",
+    "ALIGN_LLM_BASELINE_GIT_WORK_TREE",
+)
+GIT_VIEW_NAMES = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE")
+FRESH_BASELINE_GIT_VALUES = ("/baseline-git", "/baseline-git", "/workspace")
 
 
 class BaselineChainError(Exception):
@@ -37,13 +44,21 @@ class BaselineChainError(Exception):
 def git_environment() -> dict[str, str]:
     marker = os.environ.get(FRESH_MARKER)
     tool_root = os.environ.get(TOOL_ROOT)
-    if marker is None and tool_root is None:
+    baseline_values = tuple(os.environ.get(name) for name in FRESH_BASELINE_GIT_NAMES)
+    git_values = tuple(os.environ.get(name) for name in GIT_VIEW_NAMES)
+    all_profile_values = (*baseline_values, *git_values)
+    if marker is None and tool_root is None and all(value is None for value in all_profile_values):
         path = "/usr/bin:/bin"
-    elif marker == "1" and tool_root == "/tools":
+    elif (
+        marker == "1"
+        and tool_root == "/tools"
+        and baseline_values == FRESH_BASELINE_GIT_VALUES
+        and git_values == FRESH_BASELINE_GIT_VALUES
+    ):
         path = "/tools"
     else:
         raise BaselineChainError("fresh baseline Git executable environment is incomplete")
-    return {
+    environment = {
         "PATH": path,
         "LC_ALL": "C",
         "HOME": "/nonexistent",
@@ -56,6 +71,9 @@ def git_environment() -> dict[str, str]:
         "GIT_OPTIONAL_LOCKS": "0",
         "XDG_CONFIG_HOME": os.devnull,
     }
+    if path == "/tools":
+        environment.update(dict(zip(GIT_VIEW_NAMES, git_values)))
+    return environment
 
 
 def git(arguments: Sequence[str]) -> bytes:
