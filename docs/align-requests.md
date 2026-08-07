@@ -66,7 +66,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-01): Requests 1 and 3 are CLOSED; Request 2 is ALIGN_MERGED; Requests 4, 5, 6, 7, 8, and 9 are PROPOSED.**
+> **Status (2026-08-07): Requests 1 and 3 are CLOSED; Requests 2 and 6 are ALIGN_MERGED; Requests 4, 5, 7, 8, and 9 remain PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -992,14 +992,14 @@ persisted proposal error label, and resumes only after this adoption gate.
 ## Request 6 — `core.json`: require recursively Copy `json.scan` rows
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
-Blocked gate or slice: Request 7 implementation, whose strict-string grammar matrix exercises Request 6-admitted Copy scanner rows; Request 6 align-llm adoption and every other pin-changing adoption are blocked on the common fresh-compiler topology design and implementation; roadmap C6 remains indirectly blocked behind Request 7
-Independent work that may continue: the common check-topology design and implementation, Request 7 registration and review, its separately registered decoded-owner cleanup prerequisite, C6 design, and other work that neither implements Request 7 nor consumes json.scan
-Resume condition: Request 7 implementation may start only after Request 6 reaches ALIGN_MERGED at a named commit; after the common check-topology design and implementation merge, the Request 6 adoption consumer may pin that release and must pass before Request 6 closes
-Align commit or pull request: pending
-align-llm verification: pending
+Blocked gate or slice: Request 6 align-llm adoption; Request 7 implementation remains blocked on this request's shipped surface plus its separately registered prerequisites
+Independent work that may continue: the authenticated focused-adoption transport design and implementation, the common fresh-compiler qualification, Request 7's independent registration work, its decoded-owner cleanup prerequisite, C6 design, and work that neither consumes json.scan nor changes .align-revision
+Resume condition: after FRESH-IMAGE and FRESH-WORKER merge and the focused-adoption transport is shipped, pin the release at the named Align commit, pass the ordinary and authenticated fresh Request 6 adoption vectors, then run one final fresh make ci before advancing to ALIGN_LLM_VERIFIED
+Align commit or pull request: Align PR #703 (design) merged at 0ab7a30d6e7bfda56d4c8145b4672306634b9fea; Align PR #704 (implementation) merged at e65448b744c04e3868d079eef8b45ce0d43ac8ee
+align-llm verification: ALIGN_MERGED recorded; real-client adoption pending
 ```
 
 The first scheduled dependent slice is Request 7 implementation: its strict-string grammar matrix
@@ -1336,9 +1336,12 @@ No new runtime entrypoint is expected. If implementation instead changes
 exact signature and identity coupling, and reopen this request's ABI, cleanup, and performance
 closure before implementation.
 
-Items 2, 8, and 9 record the optional-schema outcome of the Request 6 implementation candidate.
-If a later decoded-owner cleanup changes that outcome, its Align change must update all three
-checked-in Request 6 regressions in the same pull request before the cleanup merges: scanner
+Items 2, 8, and 9 record the optional-schema outcome of the Request 6 implementation at the
+shipped Align commit `e65448b744c04e3868d079eef8b45ce0d43ac8ee`. That commit admits
+`Option<Move-struct>` for ordinary declared-record decode and rejects a reachable Move row for
+`json.scan`; the adoption oracle is therefore fixed, not inferred from whichever compiler happens
+to run. If a later decoded-owner cleanup changes that outcome, its Align change must update all
+three checked-in Request 6 regressions in the same pull request before the cleanup merges: scanner
 checking must then expect the cleanup request's canonical schema diagnostic, the no-MIR assertion
 must bind to that earlier rejection, and ordinary optional decode must change from success to the
 same rejection. If cleanup instead preserves and repairs the admitted schema, those Request 6
@@ -1360,6 +1363,62 @@ The target runs
 `scripts/run-json-scan-row-ownership-adoption-smoke` over
 `eval/fixtures/json-scan-row-ownership-adoption/`.
 
+Because the target is intentionally outside the routine hosted/capable aggregate lists, the
+Section 9 fresh-capable profile uses the image-owned focused request
+`make --no-print-directory json-scan-row-ownership-adoption`. The trusted supervisor accepts that
+exact vector as the authenticated `adoption` mode, and the worker runs the target in the same
+private source, runtime, cache, process, temporary-filesystem, and cleanup boundary as the capable
+aggregate with `ALIGNC_CACHE=off` and `/tools/fresh-alignc`. A direct host invocation that merely
+sets `ALIGNC=/tools/fresh-alignc` is not fresh evidence. The focused target remains absent from
+`HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and `SERIAL_CHECK_AGGREGATES`; the final
+fresh `make --no-print-directory ci` is a separate required gate.
+
+The focused target accepts no positional arguments and its preflight rejects missing, extra, or
+unexpected fixture entries before starting the compiler. It opens the project root from the
+invocation `cwd`, requires the fixture directory and every expected fixture to be an owned regular
+file with no symlink or special-file component, rejects an unexpected entry, and creates all
+ordinary-profile cache and output paths below one newly created mode-`0700` temporary directory
+owned by the invoking uid. The temporary directory has a checked device/inode identity and is
+removed only after the target proves that no compiler child remains; a failed identity or cleanup
+proof leaves the path untouched and fails closed.
+
+The ordinary preparation sequence is explicit and is not satisfied by a stale sibling binary:
+
+```text
+ALIGN_REPO=<absolute-clean-align-worktree> make --no-print-directory align-revision
+ALIGN_REPO=<absolute-clean-align-worktree> CARGO_TARGET_DIR=<unique-build-dir> \
+  make --no-print-directory align-build
+ALIGN_REPO=<absolute-clean-align-worktree> ALIGNC=<unique-build-dir>/release/alignc \
+  ALIGNC_CACHE=<unique-cache-dir> make --no-print-directory json-scan-row-ownership-adoption
+```
+
+The first command must verify the exact `.align-revision` commit and clean raw source tree. The
+second builds the locked release packages into the unique target directory; the third accepts only
+that newly built, no-follow regular executable and never searches the sibling release/debug paths
+or `PATH`. A missing, symlinked, non-executable, or otherwise unverified release artifact fails
+before any fixture compiler call. The ordinary profile records the absolute Align worktree, the
+exact revision, build-target identity, compiler digest, cache identity, and all three command
+vectors. The authenticated fresh profile performs the equivalent source and compiler-build checks
+inside the worker-owned private root and supplies only its fixed `/tools/fresh-alignc` and
+`ALIGNC_CACHE=off` vector; it does not run the ordinary host preparation commands or trust their
+artifacts.
+
+Every compiler invocation captures bounded stdout and stderr, forwards neither stream on a
+negative result except for the one expected diagnostic comparison, rejects a panic/backtrace or
+unexpected cache/output byte, and checks the exit status before the next fixed filename. The
+ordinary and fresh profiles must produce the same fixture verdicts and exact output bytes; the
+profile difference is only the authenticated compiler/materialization boundary.
+
+Because this adoption changes `Makefile`, fixtures, and `.align-revision`, its implementation branch
+also performs the Section 2.4 identity-bound baseline sequence after the final source is complete:
+one clean source commit, two deterministic reference samples, one oracle-only commit, and one
+finalization-only commit. It verifies the exact source/oracle/finalization identities and requires
+all three to be ancestors of the tested head and its merge result; squash or rebase integration is
+not evidence for this baseline contract. No tracked input, pin, fixture, or recorded command may
+change after finalization without repeating the sequence. The adoption PR records the ordinary
+focused result, the authenticated fresh focused result, the final fresh `make ci` result, and the
+post-merge ancestry check before advancing the request lifecycle.
+
 The fixture directory contains:
 
 - `copy-row.align`, which scans exactly
@@ -1369,9 +1428,8 @@ The fixture directory contains:
   top-level scanner type is named `OwnedRow` and which respectively expose
   `items: array<i64>`, a nested `items: array<str>`, an optional nested struct that owns
   `items: array<i64>`, and an owning `Parts(array<Item>)` union variant to `json.scan`.
-  `owned-option.align` expects the scanner-specific diagnostic only when the active pinned compiler
-  admits that general Decode schema; otherwise it expects the decoded-owner cleanup request's exact
-  canonical schema diagnostic and proves the scanner ownership predicate was not reached; and
+  `owned-option.align` expects the scanner-specific diagnostic and proves the scanner ownership
+  predicate is reached after ordinary schema admission; and
 - `decode-owned.align`, which decodes the `owned-direct.align` schema through `json.decode`, sums
   the exact input `{"items":[1,2]}`, evaluates
   `print(decoded.items[0] + decoded.items[1])`, and must exit zero with stdout exactly `3\n` and
@@ -1379,11 +1437,9 @@ The fixture directory contains:
 - `decode-owned-option.align`, which uses
   `Inner { items: array<i64> }` and
   `Row { inner: Option<Inner>, score: i64 }`, decodes
-  `{"inner":{"items":[1,2]},"score":3}`. When the active pinned compiler admits that schema, it
-  immediately prints `json.encode(decoded)`, then lets the owner leave scope; it must exit zero
-  with stdout exactly `{"inner":{"items":[1,2]},"score":3}\n` and empty stderr. When the active
-  pinned compiler rejects that schema, the fixture instead expects the decoded-owner cleanup
-  request's exact canonical schema diagnostic with empty stdout.
+  `{"inner":{"items":[1,2]},"score":3}`. It immediately prints `json.encode(decoded)`, then lets
+  the owner leave scope; at the shipped Align commit it must exit zero with stdout exactly
+  `{"inner":{"items":[1,2]},"score":3}\n` and empty stderr.
 
 The adoption script has two explicit execution profiles. In the ordinary adoption profile,
 `owned-direct.align`, `owned-nested.align`, and `owned-union.align` use
@@ -1398,8 +1454,7 @@ nonzero status, require empty stdout, and match exactly once:
 ```
 
 It rejects a panic, backtrace, or any unexpected file under the selected cache. It checks
-`owned-option.align` against the outcome selected by the adoption checkpoint that installed the active
-`.align-revision`, then invokes `<pinned-alignc> run copy-row.align` and
+`owned-option.align` against the fixed scanner diagnostic above, then invokes `<pinned-alignc> run copy-row.align` and
 `<pinned-alignc> run decode-owned.align` in that order with the same named cache in the ordinary
 profile. In the Section 9 fresh-capable profile, those exact vectors are
 `ALIGNC_CACHE=off /tools/fresh-alignc run copy-row.align` and
@@ -1408,12 +1463,9 @@ setting is fixed and caller cache overrides are rejected. It then invokes
 `decode-owned-option.align` with `ALIGNC_CACHE=<fresh-cache> <pinned-alignc> run decode-owned-option.align`
 in the ordinary profile, or with
 `ALIGNC_CACHE=off /tools/fresh-alignc run decode-owned-option.align` in the Section 9 fresh-capable
-profile. The selected profile vector is used in both the admitted and rejected outcome branches;
-only the expected status and diagnostic differ. The initial Request 6 adoption records
-the outcome of its active compiler. If a later decoded-owner cleanup changes that outcome, the
-align-llm adoption checkpoint that first pins the changed compiler must update both optional-fixture
-expectations and this script in the same pull request before `.align-revision` advances. Thus the
-persistent `make ci` target never infers current behavior from the immutable Request 6 commit.
+profile. The selected profile vector is fixed in both profiles; only a future Align cleanup that
+changes the shipped contract may update the fixture oracle in a separate pin wave. Thus the
+persistent `make ci` target never infers current behavior from an observed compiler.
 The script removes the validated temporary directory on every exit. This focused target must pass
 before the consumer capability's one final `make ci`; together they may advance Request 6 to
 `ALIGN_LLM_VERIFIED`.

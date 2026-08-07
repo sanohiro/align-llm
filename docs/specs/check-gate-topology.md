@@ -1589,11 +1589,12 @@ whose repository head, canonical sibling path, or worker digest does not match t
 is rejected before worker execution and before private-root creation.
 
 The accepted pre-bootstrap entrypoint is the image-owned `fresh-supervise`, not a repository shell.
-The trusted job entrypoint passes it the public logical request vector
-`make --no-print-directory ci`; the image-only qualification vectors are exactly `--mode build`
-and `--mode self-test`. `fresh-supervise` validates one of those vectors as input and never asks GNU
-Make to parse the retained project root. `build` uses the same retained project and optional
-`ALIGN_REPO` input as `ci`; `self-test` rejects `ALIGN_REPO` and selects the immutable image-owned
+The trusted job entrypoint passes it one of the two public project requests
+`make --no-print-directory ci` or
+`make --no-print-directory json-scan-row-ownership-adoption`; the image-only qualification vectors
+are exactly `--mode build` and `--mode self-test`. `fresh-supervise` validates one of those vectors
+as input and never asks GNU Make to parse the retained project root. `build`, `ci`, and `adoption`
+use the same retained project and optional `ALIGN_REPO` input; `self-test` rejects `ALIGN_REPO` and selects the immutable image-owned
 synthetic project. It opens the selected project root as descriptor `4` with
 `O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, validates the image envelope on descriptor `6` and the
 run capsule on descriptor `5`, and clears `FD_CLOEXEC` only on descriptors `4`, `5`, and `6` for its
@@ -1604,17 +1605,18 @@ Cargo, compiler, loader, Python, or raw `ALIGN_REPO` value is present in that ch
 requires the optional parent-side `ALIGN_REPO` input, when supplied, to normalize to the canonical
 `align_repo_relative` value in the signed run capsule; it passes no `ALIGN_REPO` environment variable
 to the bootstrap or worker. Its only child vector is the image-owned
-`/usr/local/libexec/align-llm/fresh-bootstrap --mode <ci|build|self-test>` matching the admitted
+`/usr/local/libexec/align-llm/fresh-bootstrap --mode <ci|adoption|build|self-test>` matching the admitted
 logical request, with
 `cwd=/proc/self/fd/4` and `close_fds=True, pass_fds=(4,5,6)`. It rejects every other command, option,
 assignment, and inherited `MAKEFLAGS` value before dispatch. The supervisor maps a failed image or
 run-capsule check to exit 1, empty stdout, and exactly `fresh compiler: ERROR TRUST supervisor\n`;
-no repository worker, Make process, or private root exists on that path. The worker runs the fixed
-internal `capable-checks` Make graph only after it has accepted and materialized the project source;
-the private source copy, not the retained host root, is the first repository Makefile that any fresh
-process may parse. A direct host invocation of `make ci` without this supervisor is non-evidence and
-fails the same pre-dispatch contract; the accepted public request remains the logical `make ci`
-selector handled by the image-owned supervisor.
+no repository worker, Make process, or private root exists on that path. The worker runs either the
+fixed internal `capable-checks` Make graph or the fixed focused-adoption Make goal only after it has
+accepted and materialized the project source; the private source copy, not the retained host root,
+is the first repository Makefile that any fresh process may parse. A direct host invocation of
+`make ci` or a focused adoption goal without this supervisor is non-evidence and fails the same
+pre-dispatch contract; the accepted public requests remain the logical selectors handled by the
+image-owned supervisor.
 
 The bootstrap verifies descriptor `6` as a sealed memfd with the four required seals, reads and
 validates the image envelope, verifies descriptor `5` as a separately sealed run capsule, and
@@ -1628,7 +1630,8 @@ mutable overlay, a replaced supervisor/bootstrap, a replaced manifest, a replaye
 a replayed run capsule, and missing descriptors; each case is rejected by the
 supervisor/bootstrap boundary before worker execution and before private-root creation. The trusted
 image identity is therefore the supervisor-verified OCI digest, not a mutable path or a pair of files
-that could be replaced together. The bootstrap accepts exactly one of `--mode ci`, `--mode build`,
+that could be replaced together. The bootstrap accepts exactly one of `--mode ci`, `--mode adoption`,
+`--mode build`,
 and `--mode self-test`; it performs no shell expansion, repository import, Git command, Cargo
 command, network access, or repository-controlled child launch before both attestations and the
 image-owned manifest snapshot are authenticated.
@@ -1650,7 +1653,7 @@ error. The fixed fd map is: `4` retained project root, `5` sealed run capsule in
 attestation input, `7` sealed worker snapshot, `8` sealed image-manifest snapshot, and `9` sealed
 run-capsule snapshot. The bootstrap clears `FD_CLOEXEC` only on `4`, `7`, `8`, and `9` for the fixed
 image `/usr/bin/python3 -I -B` vector
-`/proc/self/fd/7 --mode <ci|build|self-test> --project-root-fd 4 --image-manifest-fd 8
+`/proc/self/fd/7 --mode <ci|adoption|build|self-test> --project-root-fd 4 --image-manifest-fd 8
 --run-attestation-fd 9`, with
 `close_fds=True, pass_fds=(4,7,8,9)` and a fixed worker environment of
 `PATH=/usr/bin:/bin`, `LC_ALL=C`, `HOME=/nonexistent`, `TMPDIR=/tmp`, `PYTHONHOME=/usr`,
@@ -1664,29 +1667,31 @@ The final public contract is:
 
 | Surface | Exact contract |
 | --- | --- |
-| `fresh-supervise` | Image-owned pre-bootstrap entrypoint. It accepts only the public logical request `make --no-print-directory ci` or image qualification request `--mode build`/`--mode self-test`. `ci` and `build` accept the optional parent-side `ALIGN_REPO` input bound into the run capsule; `self-test` rejects it and uses the installed synthetic project. The supervisor opens the selected project root as fd 4, authenticates run/image attestations on fds 5/6, scrubs the child to the five-variable environment allowlist, and passes only fds 4/5/6 to the fixed matching `fresh-bootstrap --mode <mode>` child. It never parses the repository Makefile. |
+| `fresh-supervise` | Image-owned pre-bootstrap entrypoint. It accepts only the public logical request `make --no-print-directory ci`, the focused adoption request `make --no-print-directory json-scan-row-ownership-adoption`, or image qualification request `--mode build`/`--mode self-test`. `ci`, focused adoption, and `build` accept the optional parent-side `ALIGN_REPO` input bound into the run capsule; `self-test` rejects it and uses the installed synthetic project. The supervisor opens the selected project root as fd 4, authenticates run/image attestations on fds 5/6, scrubs the child to the five-variable environment allowlist, and passes only fds 4/5/6 to the fixed matching `fresh-bootstrap --mode <mode>` child. It never parses the repository Makefile. |
 | `make ci` | The sole complete-gate request, represented inside the trusted image entrypoint by `make --no-print-directory ci`. The supervisor dispatches the fixed bootstrap directly; after source validation and private materialization, the worker runs the ordered `capable-checks` graph in the private source copy. A direct unsupervised repository Make invocation is non-evidence and fails before private-root creation. |
+| focused adoption request | The exact public request `make --no-print-directory json-scan-row-ownership-adoption`. The supervisor maps it to `adoption`, and the worker runs the fixed internal `make --silent --no-print-directory -j1 -f /workspace/Makefile json-scan-row-ownership-adoption` goal in the same authenticated private source, runtime, cache, process, temporary-filesystem, and cleanup boundary as `ci`, with `ALIGNC_CACHE=off` and `/tools/fresh-alignc`. It is a focused acceptance vector, not routine aggregate membership, and it never publishes `/workspace/main`. |
 | run capsule | A supervisor-signed `runner-invocation/v1` DSSE envelope on descriptor 5. It binds the current repository head/object format, canonical `ALIGN_REPO` relative path, `scripts/fresh-align-compiler` relative path and SHA-256, image-attestation digest, and image-manifest digest to this invocation. |
 | image deployment inputs | The image contains only the two root-owned public keys. The read-only `/run/align-llm-fresh` deployment mount contains root-owned `image-attestation.dsse` mode `0444`, `image-digest` mode `0444`, and `provenance-digest` mode `0444`, plus invoking-uid-owned `run-signing-seed` mode `0400`; all are single-link regular files. `scripts/fresh-image-attest` is the offline image-attestation producer; the seed files remain outside Git and OCI layers. |
 | `fresh-profile setup <uid>` | Root-only image helper. It provisions the mode-`0700`, uid-owned `/run/user/<uid>/align-llm-fresh/{roots,lock}` profile (`lock` is a mode-`0600` single-link regular file) and delegated `/sys/fs/cgroup/align-llm-fresh/<uid>` parent with `pids` enabled. `cleanup <uid>` removes only an empty profile whose exact ownership and modes still match. |
 | `fresh-bootstrap --mode build` | Image-supervisor-only diagnostic invocation with both sealed image/run attestation descriptors and fixed repository inputs as `ci`; it builds and authenticates the private compiler bundle, performs cleanup, and never launches `capable-checks` or claims consumer adoption. Its success bytes are exactly `fresh compiler: PASS\n`. |
+| `fresh-bootstrap --mode adoption` | Image-supervisor-only focused adoption invocation with both sealed image/run attestation descriptors and fixed repository inputs. It authenticates and materializes the private compiler/runtime boundary, launches only the fixed focused adoption goal, performs cleanup, and never launches a routine aggregate or claims complete-gate evidence. Its success bytes are exactly `fresh compiler adoption: PASS\n`. |
 | `fresh-bootstrap --mode self-test` | Image-supervisor-only synthetic contract invocation with both sealed attestation descriptors. It uses only checked-in fixtures and image-attested tools, creates no project or Align build output, and proves the manifest, namespace, launcher, process, admission-lock, resource-limit, and cleanup unit matrix. Its success bytes are exactly `fresh compiler self-test: PASS\n`. |
 | `ALIGN_REPO` | Optional project-root-relative input, default `../align`. The trusted supervisor lexically normalizes it without following a symlink and records the canonical relative bytes as `align_repo_relative` in the signed run capsule. The worker opens every component descriptor-relative with `O_DIRECTORY|O_NOFOLLOW`, records each ancestor device/inode, and retains the final worktree descriptor; no later operation reopens the pathname. A NUL, empty or absolute input, symlink, component replacement, or ancestor identity mismatch is an `ARGUMENT`/`SOURCE` failure. Its exact pinned commit and clean raw source tree are mandatory build inputs. |
 | `ALIGN_LLM_TOOLCHAIN_MANIFEST` | Rejected before bootstrap dispatch. The fixed trusted runner image selects `/usr/local/share/align-llm/fresh-toolchain.json`; callers cannot select a manifest path. |
 | `ALIGN_LLM_TOOLCHAIN_MANIFEST_SHA256` | Rejected before bootstrap dispatch. The image attestation supplies the exact manifest digest; callers cannot authenticate a different manifest by supplying a different digest. |
-| `ALIGNC` on `ci` | Rejected before bootstrap dispatch. The worker supplies the fresh launcher `/tools/fresh-alignc`, its read-only `/tools/fresh-descriptor` and `/tools/fresh-guard`, the compiler `/tools/alignc`, and sibling `/tools/libalign_runtime.a`; caller compiler paths cannot cross the boundary. |
-| caller Make options | The supervisor accepts exactly `make --no-print-directory ci` with no assignments and an empty `MAKEFLAGS`/`GNUMAKEFLAGS`/`MAKEOVERRIDES`. Its normalized GNU Make 4.3 rejection matrix covers `-b/-m`, `-B/--always-make`, `-C/--directory=`, `-d/--debug[=]`, `-e/--environment-overrides`, `-E/--eval=`, `-f/--file=/--makefile=`, `-h/--help`, `-i/--ignore-errors`, `-I/--include-dir=`, `-j/--jobs[=]`, `-k/--keep-going`, `-l/--load-average[=]/--max-load[=]`, `-L/--check-symlink-times`, `-n/--just-print/--dry-run/--recon`, `-o/--old-file=/--assume-old=`, `-O[TYPE]/--output-sync[=]`, `-p/--print-data-base`, `-q/--question`, `-r/--no-builtin-rules`, `-R/--no-builtin-variables`, `-s/--silent/--quiet`, `--no-silent`, `-S/--no-keep-going/--stop`, `-t/--touch`, `-v/--version`, `-w/--print-directory`, `-W/--what-if=/--new-file=/--assume-new=`, `--warn-undefined-variables`, and `--trace`, including separated and attached arguments and every long `--name=value` form. The newer/unsupported `--jobserver-style=` and `--shuffle[=]` spellings are explicit rejection rows even on a newer host. It rejects every unknown option, assignment, alternate goal, and alternate makefile. The accepted `--no-print-directory` spelling is tested separately and is the only option retained in the logical request vector. The private worker Make invocation is a different fixed vector and is not part of caller option admission. |
+| `ALIGNC` on `ci` or focused adoption | Rejected before bootstrap dispatch. The worker supplies the fresh launcher `/tools/fresh-alignc`, its read-only `/tools/fresh-descriptor` and `/tools/fresh-guard`, the compiler `/tools/alignc`, and sibling `/tools/libalign_runtime.a`; caller compiler paths cannot cross the boundary. The focused adoption vector also fixes `ALIGNC_CACHE=off`; caller cache paths cannot cross the boundary. |
+| caller Make options | The supervisor accepts exactly `make --no-print-directory ci` or `make --no-print-directory json-scan-row-ownership-adoption`, with no assignments and an empty `MAKEFLAGS`/`GNUMAKEFLAGS`/`MAKEOVERRIDES`. Its normalized GNU Make 4.3 rejection matrix covers `-b/-m`, `-B/--always-make`, `-C/--directory=`, `-d/--debug[=]`, `-e/--environment-overrides`, `-E/--eval=`, `-f/--file=/--makefile=`, `-h/--help`, `-i/--ignore-errors`, `-I/--include-dir=`, `-j/--jobs[=]`, `-k/--keep-going`, `-l/--load-average[=]/--max-load[=]`, `-L/--check-symlink-times`, `-n/--just-print/--dry-run/--recon`, `-o/--old-file=/--assume-old=`, `-O[TYPE]/--output-sync[=]`, `-p/--print-data-base`, `-q/--question`, `-r/--no-builtin-rules`, `-R/--no-builtin-variables`, `-s/--silent/--quiet`, `--no-silent`, `-S/--no-keep-going/--stop`, `-t/--touch`, `-v/--version`, `-w/--print-directory`, `-W/--what-if=/--new-file=/--assume-new=`, `--warn-undefined-variables`, and `--trace`, including separated and attached arguments and every long `--name=value` form. The newer/unsupported `--jobserver-style=` and `--shuffle[=]` spellings are explicit rejection rows even on a newer host. It rejects every unknown option, assignment, alternate goal, and alternate makefile. The accepted `--no-print-directory` spelling is tested separately for both admitted goals and is the only option retained in the logical request vectors. The private worker Make invocation is a different fixed vector and is not part of caller option admission. |
 | `ALIGN_LLM_WORK_PARENT`, cgroup parent, cache, and timeout overrides | N/A. The private-root parent is the fixed protected per-user `roots` directory, the delegated cgroup parent is the fixed image/profile path `/sys/fs/cgroup/align-llm-fresh/<uid>`, the cache is named by the authenticated manifest, and all deadlines are worker constants. No caller can redirect cleanup, cgroup ownership, cache identity, or a safety deadline. |
-| success bytes | `ci`: exit 0, empty stderr, and exactly `fresh compiler and capable checks: PASS\n`; `build`: exactly `fresh compiler: PASS\n`; `self-test`: exactly `fresh compiler self-test: PASS\n`. |
+| success bytes | `ci`: exit 0, empty stderr, and exactly `fresh compiler and capable checks: PASS\n`; `adoption`: exactly `fresh compiler adoption: PASS\n`; `build`: exactly `fresh compiler: PASS\n`; `self-test`: exactly `fresh compiler self-test: PASS\n`. |
 | failure bytes | Exit 1, empty stdout, one primary `fresh compiler: ERROR <CATEGORY> <PHASE>\n` (or the cleanup line alone when the phase itself succeeded), and optionally one `fresh compiler: ERROR CLEANUP cleanup\n`; no child bytes are forwarded. |
 
 Within the caller-option matrix, `--no-print-directory` has the sole accepted option row and only
-with the exact `ci` goal; every other option row is rejected. The newer/unsupported
+with either admitted goal; every other option row is rejected. The newer/unsupported
 `--jobserver-style=` and `--shuffle[=]` rows remain explicit rejections even on a newer host.
 
 The worker is the sole owner of the private root, the admission lock, every build and aggregate
-process, compiler and descriptor file descriptor, cache copy, and cleanup decision. `make ci` plus
-any aggregate or focused goal is rejected before side effects. Independent concurrent invocations are
+process, compiler and descriptor file descriptor, cache copy, and cleanup decision. Either admitted
+public request plus any aggregate or focused goal is rejected before side effects. Independent concurrent invocations are
 rejected before root creation: the worker opens the protected lock parent
 `/run/user/<uid>/align-llm-fresh` component-by-component with no-follow operations, verifies
 `/run` and `/run/user` as the fixed root-owned mode-`0755` ancestors, and verifies
@@ -1703,8 +1708,8 @@ existence, considering any name with the private-root prefix `align-llm-fresh-` 
 inspecting candidate contents: at most 65,536 directory entries and one second, with cap-plus-one,
 read, or deadline failure returning `fresh compiler: ERROR FILESYSTEM filesystem\n`; it never reads,
 classifies, or removes a candidate. A mode-`01777` shared `/tmp` name can never block or masquerade
-as an orphan for another user. The concurrency smoke enumerates two simultaneous `ci`, `build`, and
-`self-test` admissions, proves the first owns at most one root, and proves the second has no root or
+as an orphan for another user. The concurrency smoke enumerates two simultaneous `ci`, `adoption`,
+`build`, and `self-test` admissions, proves the first owns at most one root, and proves the second has no root or
 cleanup authority. Concurrent independent processes are therefore explicitly rejected rather than
 unsupported evidence.
 
@@ -1717,12 +1722,12 @@ source copy, or private output root is created. The project root's exact raw sou
 Align root's exact raw source manifest are separate values in the compiler descriptor. No Cargo
 command receives the project root, and no aggregate command receives the Align source tree.
 
-The `ci` control plane is fixed before any repository Makefile can run. The image supervisor accepts
-only its logical request vector and clears all loader, Python, Make, Git, Cargo, and compiler override
-variables; it dispatches the fixed bootstrap rather than a repository Make process. After source
-materialization, the worker uses the private copy's `Makefile` with the fixed internal capable graph
-and an explicit `-f /workspace/Makefile`, so tracked `GNUmakefile` or lowercase `makefile` files
-cannot change the aggregate entrypoint.
+The `ci` and focused-adoption control planes are fixed before any repository Makefile can run. The
+image supervisor accepts only an admitted logical request vector and clears all loader, Python, Make,
+Git, Cargo, and compiler override variables; it dispatches the fixed bootstrap rather than a
+repository Make process. After source materialization, the worker uses the private copy's `Makefile`
+with the fixed internal capable graph or focused-adoption goal and an explicit `-f /workspace/Makefile`,
+so tracked `GNUmakefile` or lowercase `makefile` files cannot change the entrypoint.
 The implementation uses `override SHELL := /bin/sh`, `override .SHELLFLAGS := -eu -c`, and a
 parse-time guard for the internal aggregate invocation that rejects every inherited Make option or
 assignment other than Make's own `--no-print-directory` bookkeeping. The complete GNU Make 4.3 option matrix is tested by the
@@ -1734,8 +1739,9 @@ supervisor unit (`-B/-b`, `-C`, `-d/--debug`, `-e`, `-E/--eval`, `-f/--file`, `-
 question invocation that suppresses recipes is rejected before the bootstrap even if Make would
 return zero. The worker's child Make vector clears `MAKEFLAGS`, `GNUMAKEFLAGS`, and `MAKEOVERRIDES`,
 supplies `SHELL=/bin/sh`, fixes `-f /workspace/Makefile`, and contains only the ordered
-`capable-checks` goal. A marker shell, descriptor assignment, alternate makefile, or extra goal must
-fail before the bootstrap or any private root is created.
+`capable-checks` goal for `ci` or only `json-scan-row-ownership-adoption` for `adoption`. A marker
+shell, descriptor assignment, alternate makefile, or extra goal must fail before the bootstrap or
+any private root is created.
 
 The matrix includes the GNU Make 4.3 compatibility option `-m` alongside `-b`, every displayed
 short-option alias and long alias (`--makefile`, `--assume-old`, `--assume-new`, `--max-load`,
@@ -3412,6 +3418,7 @@ the public line.
 | Build namespace | worker plus bwrap | Empty root, authenticated pinned `/align-src` only, no project source or host `ALIGN_REPO`, user/PID/net namespaces, read-only authenticated `/cargo`, tracked Cargo config policy, derived linker/loader/pkg-config paths, compiler closure, and writable `/target` only | `fresh-v2-build-namespace-smoke` uses host-root/cache/HOME/network/project-source/sibling-target markers, attempts a Cargo-cache write, verifies `/align-src/Cargo.toml` and the exact `.cargo/config.toml` digest/key set, checks derived OpenSSL/linker paths and compiler closure, double fork, and runtime loader probes. |
 | Compiler descriptor | worker/launcher | Canonical schema 4 with separate project/Align source digests, write-once descriptor/guard files, authenticated single-link compiler/archive sibling bundle at `/tools/alignc` and `/tools/libalign_runtime.a` plus the `/tools/fresh-alignc` launcher, fixed read-only execution path, exact digest and revision, and no inherited identity fd | `fresh-v2-descriptor-file-smoke` replaces each source path after staging, mutates or makes the private handoff files writable, attempts alternate descriptor paths and compiler/archive names, proves Cargo hardlinks are materialized before descriptor publication, proves non-validation children use `pass_fds=()` while the coding-task boundary receives only its prepared user-namespace fd, compiles a tiny Align program through the namespace-visible launcher/compiler/archive bundle, and checks exact descriptor-v4 golden bytes. |
 | Direct compiler call | fresh launcher | Execution is only the launcher-verified `/tools/alignc` path with its authenticated descriptor/guard and sibling archive; no flag-controlled, PATH, host, or old fallback. Request 6's fresh profile uses the same launcher and fixed `ALIGNC_CACHE=off` value. | `fresh-v2-direct-interposition-smoke` clears every fresh marker and installs old sibling/PATH marker compilers, replaces the private handoff files and bundle, and requires none to run while a tiny link proves `libalign_runtime.a` is found beside `current_exe()`; the Request 6 adoption smoke proves its `check` and `run` vectors use `/tools/fresh-alignc`. |
+| Focused adoption request | supervisor/worker/Makefile plus Request 6 smoke | Admit only `make --no-print-directory json-scan-row-ownership-adoption`, map it to `adoption`, run only the fixed `json-scan-row-ownership-adoption` goal from the private `/workspace/Makefile`, preserve the same authenticated source/runtime/cache/process/tmpfs/cleanup boundary as `ci`, force `ALIGNC_CACHE=off` and `/tools/fresh-alignc`, publish no `/workspace/main`, and keep the target outside every routine aggregate | `fresh-v2-focused-adoption-request-smoke` exercises exact request admission and rejection before side effects, mode/argv/env/fd mapping, source mutation/FIFO/symlink/worker snapshot failures, fixed target and no-aggregate membership, cache-off/compiler identity, exact PASS/error bytes, cleanup and signal/timeout paths; `run-json-scan-row-ownership-adoption-smoke` proves the Copy-row diagnostic, fixed optional-schema outcome, ordinary decode, fixture preflight, fixed file order, cache closure, and ordinary/fresh vectors. |
 | Internal compiler call | Makefile/scripts/Python runners | All consumers use the fresh launcher and fixed read-only handoff paths; every Python boundary uses `close_fds=True, pass_fds=()` except the coding-task sandbox probe and its two validation invocations, which pass exactly the prepared user-namespace fd; the fresh environment disables bytecode writes; no bare compiler, sibling, mutable path, or fallback | `fresh-v2-callsite-smoke` exercises Make, format, prompt/evaluation, baseline, nested runners, Python subprocesses, recursive Make, handoff-file replacement, workspace `__pycache__` prevention, absence of worker identity fds, and the Section 9 Request 6 fresh-profile branch. |
 | Aggregate interpreter boundary | aggregate and nested bwrap | Staged `/usr/bin/env`, `/bin/sh`, Python plus stdlib/extension roots, Bash, `mount-guard`, `/tools`, no-symlink aggregate `/target/tmp` plus nested validation `/tmp` and `/dev/shm`, derived linker/loader paths, `PYTHONDONTWRITEBYTECODE=1`, PATH, and the single prepared user-namespace descriptor as the only permitted nested input fd | `fresh-v2-interpreter-boundary-smoke` installs host marker interpreters/tools/modules, runs nested validation, exercises the independent 64 MiB `/tmp` and `/dev/shm` mounts, attempts a temp-to-workspace symlink and a contained source symlink, creates an importable runner module, and verifies staged identities, temp-root propagation, mount attributes, no `__pycache__`, and no worker identity fd; all other aggregate child launches retain the empty descriptor set. |
 | Aggregate topology | supervisor/worker/Makefile | Exactly one bwrap aggregate, UID/GID 0 with `CAP_SYS_ADMIN`/`CAP_SETFCAP` plus temporary setup-only `CAP_SETUID`/`CAP_SETGID`, mount-guard preparation of the one descendant validation user namespace, reduction to `CAP_SETFCAP` plus `no_new_privs` before Make, closed executable inventory including `seq`, supervisor exact request validation and direct-bootstrap argv/env/fd-4/5/6 boundary, private-source-only Make parsing, fixed internal `-f /workspace/Makefile`, complete normalized GNU Make 4.3 option/alias matrix with a separate accepted `--no-print-directory` row, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, accepted-request and newer-option rejection, tracked and untracked alternate makefile bypass, fixed internal Makefile selection, repository Makefile supervisor bypass, loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation except for the single prepared user-namespace fd at the nested coding-task boundary; the qualification inventory additionally asserts the nested `--cap-drop ALL --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP` order, no nested `--unshare-all`/`--unshare-user`, prepared `--userns` descriptor use, the aggregate `--prepare-validation-userns` flag, root `--size 268435456`, authenticated `/tools/fresh-alignc`, bounded Git view, and published-ELF closure owners. |
@@ -3421,7 +3428,7 @@ the public line.
 | Baseline Git identity | worker plus baseline runners | Normal baseline and project Git calls use a worker-copied read-only `/baseline-git` view; negative replacement fixtures use a separate `/target/tmp` private view; explicit `GIT_DIR`/`GIT_COMMON_DIR`/`GIT_WORK_TREE`, copied objects, fixed hardening variables, and the standalone chain checker's exact fresh executable and private-view tuple never resolve the hidden workspace, source common dir, host Git, or an unlisted runtime executable | `fresh-v2-baseline-scratch-smoke` plus `run-baseline-invalid-smoke` run normal, eval, loop, invalid-baseline, and chain-environment paths, check linked-worktree object resolution, private-object replacement, hardening-variable preservation, alternate rejection, fixture-variable clearing, partial/different fresh executable settings, mismatched Git-view settings, and unchanged project source-control state. |
 | Status and error grammar | worker | Exact PASS bytes and `fresh compiler: ERROR <CATEGORY> <PHASE>\n` primary / `fresh compiler: ERROR CLEANUP cleanup\n` cleanup lines, with closed category/phase sets and fixed precedence | `fresh-v2-status-grammar-smoke` asserts every phase's first failure, successful-phase cleanup failure, primary-plus-cleanup failure, empty stdout, and no child bytes. |
 | Baseline identity | baseline owner | Final Makefile source, two samples, oracle, finalization, ancestry, unchanged pin, and explicit read-only descriptor/guard paths through recorder subprocesses | `fresh-v2-baseline-integration-smoke` runs the Section 2.4 chain before capable evidence and asserts recorder Python children use the empty descriptor set and fixed handoff files in fresh mode. |
-| Concurrent independent invocations | worker and image/profile lock parent | The worker owns a descriptor-relative `flock` on `/run/user/<uid>/align-llm-fresh/lock`, validates every protected parent component and `0600` lock identity, opens the profile-created `roots` child with mode `0700` and stable identity, then performs a bounded per-user candidate-name scan; a second `ci`, `build`, or `self-test` is rejected before private-root creation and no process classifies or deletes another root | `fresh-v2-concurrency-smoke` runs every pair of simultaneous modes, checks exact `PLATFORM concurrency`/`FILESYSTEM filesystem` status, replaces or weakens each lock-parent or `roots` component, proves only one root can exist per user, exercises the 65,536-entry/one-second fail-closed scan without shared-`/tmp` interference, and injects cross-root replacement/deletion attempts. |
+| Concurrent independent invocations | worker and image/profile lock parent | The worker owns a descriptor-relative `flock` on `/run/user/<uid>/align-llm-fresh/lock`, validates every protected parent component and `0600` lock identity, opens the profile-created `roots` child with mode `0700` and stable identity, then performs a bounded per-user candidate-name scan; a second `ci`, `adoption`, `build`, or `self-test` is rejected before private-root creation and no process classifies or deletes another root | `fresh-v2-concurrency-smoke` runs every pair of simultaneous modes, checks exact `PLATFORM concurrency`/`FILESYSTEM filesystem` status, replaces or weakens each lock-parent or `roots` component, proves only one root can exist per user, exercises the 65,536-entry/one-second fail-closed scan without shared-`/tmp` interference, and injects cross-root replacement/deletion attempts. |
 | Platform boundary | topology plan | x86-only claim; executable `/tmp`; authenticated-retained-bwrap namespace/overlay/read-only-tools and `/target/tmp`-only no-symlink self-tests; delegated cgroup limits; non-x86 requires separate profile | `fresh-v2-platform-profile-smoke` rejects unsupported or `noexec` `/tmp`, missing cgroup delegation, replaces the mutable bwrap pathname and tool staging source, proves the read-only bundle survives replacement, checks a contained source symlink remains usable, and prevents C7 non-x86 evidence reuse. |
 
 ### 9.11 Compatibility, verification, and delivery order
@@ -3484,11 +3491,15 @@ owned capabilities that may progress in parallel and one dependent adoption wave
    consumers, its branch also performs the Section 2.4 identity-bound baseline source, oracle,
    finalization, and merge-ancestry sequence.
 3. **Fresh adoption wave.** After both capabilities pass and merge, batch the merged Align requests
-   required by the next real consumer into one `.align-revision` update, rebuild, and original
-   acceptance gate through fresh `make ci`. Request 6's adoption script selects its Section 9
-   profile inside that aggregate with `ALIGNC_CACHE=off /tools/fresh-alignc check <file>` and
+   required by the next real consumer into one `.align-revision` update, rebuild, and the original
+   focused acceptance gate through the authenticated focused request, followed by one final fresh
+   `make ci`. Request 6's adoption script selects its Section 9 profile inside the fixed
+   `make --no-print-directory json-scan-row-ownership-adoption` request with
+   `ALIGNC_CACHE=off /tools/fresh-alignc check <file>` and
    `ALIGNC_CACHE=off /tools/fresh-alignc run <file>`; its ordinary non-fresh profile may retain the
-   named pinned-compiler and cache vectors.
+   named pinned-compiler and cache vectors. The focused target is deliberately absent from routine
+   hosted/capable aggregate membership, and a host command that only names `/tools/fresh-alignc`
+   is not fresh evidence.
 
 No Request 6, Request 7, Request 9, C7, or other consumer may implement against this redesign before
 FRESH-WORKER and FRESH-IMAGE merge. A proposed descriptor, manifest, host image, or
