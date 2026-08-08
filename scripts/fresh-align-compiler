@@ -3906,7 +3906,7 @@ def ordinary_exception_rows(project_fd: int, align_fd: int) -> bytes:
                     rows.append(OrderedDict((("source", source), ("label", label), ("present", True), ("type", "regular"), ("mode", mode), ("link_count", 1), ("bytes_consumed", label == "handoff"), ("content_sha256", sha256(raw) if label == "handoff" else None))))
             finally:
                 os.close(descriptor)
-    return canonical_json_value(rows)
+    return canonical_json(rows)
 
 
 def _open_source_entry_simple(root_fd: int, path: str) -> int:
