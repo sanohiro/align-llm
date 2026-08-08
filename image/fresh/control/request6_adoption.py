@@ -731,18 +731,42 @@ def _require_clean(root_fd: int, *, project: bool) -> None:
 
 
 def _source_identity(project_fd: int, align_fd: int) -> tuple[str, str, str, str, bytes, bytes]:
-    project_head = _git_value(project_fd, "rev-parse", "HEAD")
-    project_format = _git_value(project_fd, "rev-parse", "--show-object-format")
-    align_head = _git_value(align_fd, "rev-parse", "HEAD")
-    align_format = _git_value(align_fd, "rev-parse", "--show-object-format")
+    try:
+        project_head = _git_value(project_fd, "rev-parse", "HEAD")
+    except AdoptionFailure as error:
+        raise AdoptionFailure("revision", "project HEAD") from error
+    try:
+        project_format = _git_value(project_fd, "rev-parse", "--show-object-format")
+    except AdoptionFailure as error:
+        raise AdoptionFailure("revision", "project object format") from error
+    try:
+        align_head = _git_value(align_fd, "rev-parse", "HEAD")
+    except AdoptionFailure as error:
+        raise AdoptionFailure("revision", "Align HEAD") from error
+    try:
+        align_format = _git_value(align_fd, "rev-parse", "--show-object-format")
+    except AdoptionFailure as error:
+        raise AdoptionFailure("revision", "Align object format") from error
     if project_format != "sha1" or align_format != "sha1":
         raise AdoptionFailure("revision")
     if not (len(project_head) == 40 and len(align_head) == 40):
         raise AdoptionFailure("revision")
-    _require_clean(project_fd, project=True)
-    _require_clean(align_fd, project=False)
-    project_index = _git_index(project_fd)
-    align_index = _git_index(align_fd)
+    try:
+        _require_clean(project_fd, project=True)
+    except AdoptionFailure as error:
+        raise AdoptionFailure("revision", "project clean state") from error
+    try:
+        _require_clean(align_fd, project=False)
+    except AdoptionFailure as error:
+        raise AdoptionFailure("revision", "Align clean state") from error
+    try:
+        project_index = _git_index(project_fd)
+    except AdoptionFailure as error:
+        raise AdoptionFailure("revision", "project index") from error
+    try:
+        align_index = _git_index(align_fd)
+    except AdoptionFailure as error:
+        raise AdoptionFailure("revision", "Align index") from error
     return project_head, project_format, align_head, align_format, project_index, align_index
 
 
