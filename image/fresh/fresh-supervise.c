@@ -1153,11 +1153,6 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         if (failure) break;
         if (reaped && channel_hup && stdout_eof && stderr_eof) break;
     }
-    dprintf(STDERR_FILENO,
-            "parent debug: failure=%d reaped=%d stdout_eof=%d stderr_eof=%d channel_hup=%d got_capsule=%d proof_sent=%d status=%d stdout_size=%zu stderr_size=%zu\n",
-            failure, reaped, stdout_eof, stderr_eof, channel_hup, got_capsule, proof_sent,
-            status, stdout_size, stderr_size);
-    if (stderr_size > 0) (void)!write(STDERR_FILENO, stderr_buffer, stderr_size);
     if (failure || !reaped || !stdout_eof || !stderr_eof || !channel_hup || !got_capsule || !proof_sent ||
         expected_dispatcher_result(status, stdout_buffer, stdout_size, stderr_buffer, stderr_size) < 0) {
         if (!reaped) {

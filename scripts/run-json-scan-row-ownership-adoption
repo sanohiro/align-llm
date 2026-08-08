@@ -47,10 +47,6 @@ def fail() -> None:
     raise SystemExit(2)
 
 
-def debug(message: str) -> None:
-    os.write(2, ("carrier debug: " + message + "\n").encode("ascii"))
-
-
 def _render(value: Any, level: int = 0) -> str:
     if value is None:
         return "null"
@@ -146,12 +142,17 @@ def _open_relative(root_fd: int, path: str, flags: int) -> int:
 def _descriptor_set() -> set[int]:
     directory_fd = os.open("/proc/self/fd", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
+        directory_stat = os.fstat(directory_fd)
         result: set[int] = set()
         for name in os.listdir(directory_fd):
             if not name.isdigit():
                 continue
             fd = int(name)
-            if fd != directory_fd:
+            try:
+                value = os.fstat(fd)
+            except OSError:
+                continue
+            if (value.st_dev, value.st_ino) != (directory_stat.st_dev, directory_stat.st_ino):
                 result.add(fd)
         return result
     finally:
@@ -278,23 +279,17 @@ def _run_controller(raw: bytes) -> None:
 
 
 def main() -> int:
-    debug("start")
     if tuple(sys.argv[1:]) != REQUIRED_ARGS or dict(os.environ) != EXPECTED_ENVIRONMENT:
         fail()
-    debug("arguments and environment passed")
     descriptors = _descriptor_set()
     if descriptors != REQUIRED_FDS:
-        debug(f"descriptors mismatch {sorted(descriptors)}")
         fail()
-    debug("descriptors passed")
     capsule = _read(12, CAPSULE_LIMIT)
     worker = _read(13, WORKER_LIMIT)
     nonce = _read(15, NONCE_LIMIT)
     if len(nonce) != NONCE_LIMIT:
         fail()
-    debug("sealed inputs passed")
     predicate = _parse_capsule(capsule)
-    debug("capsule passed")
     if (
         predicate.get("worker_size") != len(worker)
         or predicate.get("worker_sha256") != hashlib.sha256(worker).hexdigest()
@@ -303,7 +298,6 @@ def main() -> int:
         or predicate.get("project_raw_tree_sha256") != hashlib.sha256(_raw_tree(4)).hexdigest()
     ):
         fail()
-    debug("worker and tree passed")
     try:
         import socket
         channel = socket.socket(fileno=16)
@@ -318,7 +312,6 @@ def main() -> int:
         ).digest()
         if proof != expected:
             fail()
-        debug("proof passed")
     except (OSError, ValueError, KeyError):
         fail()
     generic = _open_relative(4, "scripts/fresh-align-compiler", os.O_RDONLY)
@@ -329,7 +322,6 @@ def main() -> int:
         generic_raw = _read(generic, MAX_FILE_BYTES)
     finally:
         os.close(generic)
-    debug("generic source passed")
     _run_controller(generic_raw)
     return 127
 

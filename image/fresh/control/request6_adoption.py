@@ -121,12 +121,13 @@ def _descriptor_set() -> set[int]:
     result: set[int] = set()
     directory_fd = os.open("/proc/self/fd", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
+        directory_stat = os.fstat(directory_fd)
         for name in os.listdir(directory_fd):
             try:
                 fd = int(name)
-                if fd == directory_fd:
+                value = os.fstat(fd)
+                if (value.st_dev, value.st_ino) == (directory_stat.st_dev, directory_stat.st_ino):
                     continue
-                os.fstat(fd)
             except (OSError, ValueError):
                 continue
             result.add(fd)
@@ -930,7 +931,6 @@ def _launch_worker(worker_fd: int, arguments: Sequence[str]) -> tuple[int, bytes
 
     stdout = bytes(captures[stdout_fd])
     stderr = bytes(captures[stderr_fd])
-    os.write(2, b"worker raw status=" + str(status).encode("ascii") + b" stdout=" + repr(stdout).encode("ascii") + b" stderr=" + repr(stderr).encode("ascii") + b"\n")
     if status < 0:
         raise AdoptionFailure("unobserved")
     if status not in range(0, 7):
