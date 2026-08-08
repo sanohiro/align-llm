@@ -3558,11 +3558,12 @@ the public line.
 
 | Path | Owner | Required invariant | Exact regression |
 | --- | --- | --- | --- |
-| Ordinary admission proof and liveness | supervisor, dispatcher, worker, and namespace helper | The supervisor opens `/` as temporary FD 17, component-walks and retains `ALIGN_REPO` as FD 18 before channel creation, closes FD 17, creates one `SOCK_SEQPACKET|SOCK_CLOEXEC` channel, and forks exactly one dispatcher child. The supervisor sends exactly one fresh ticket `T`; the dispatcher authenticates the current-parent peer and stable start-time/image/cmdline using the controlled procfs executable rule, receives `T`, signs the capsule, and sends exactly one 32-byte capsule digest `C`; the supervisor receives `C` and replies with exactly one queued 32-byte `P = SHA-256("align-llm/ordinary-adoption/worker-admission/v2\0" || dispatch_ticket_sha256_bytes || invocation_nonce_bytes || C)`. The dispatcher passes FD 16 and FD 18 to the worker after explicitly clearing `FD_CLOEXEC` with `pass_fds=(4,12,13,15,16,18)`; the worker peeks without consuming, verifies the outer peer before bwrap, closes FD 18 after source validation, and bwrap retains FD 16 with the exact `--as-pid-1 --sync-fd 16` vector. The PID-1 helper consumes the proof before any Make child and checks only channel HUP/EOF/protocol liveness because outer PIDs and procfs entries are not visible in its private PID namespace. The parent stays alive until helper exit; extra, missing, or mismatched messages fail closed with the exact owning phase. | `run-json-scan-row-ownership-adoption-smoke` covers direct-dispatcher admission, stale ticket/capsule/nonce/exception replay, proof mismatch, missing/extra proof, FD_CLOEXEC loss at both exec edges, parent death before/after proof, channel endpoint replacement, HUP during setup and each child row, outer-PID invisibility, IPC markers with and without `--unshare-ipc`, controlled `/proc/<pid>/exe` replacement/exec races, and exact proof consumption before the first Make marker. |
+| Ordinary native-parent continuity | native `fresh-supervise`, image preflight, and dispatcher | In `ordinary-adoption`, the native `fresh-supervise` ELF remains the direct parent of the dispatcher until the dispatcher exits. It does not `execve` the Python carrier before dispatch, and a Python interpreter digest or reconstructed command line is never accepted as a supervisor identity. Before creating the ordinary channel, the native supervisor runs and reaps the exact same-ELF preflight contract in Section 9.10.3; the preflight child may not open the repository, create a channel, sign a capsule, or launch a worker. After preflight succeeds, the native supervisor creates the ordinary descriptors, walks and retains FD 18, opens FD 14, creates the one channel, forks exactly one dispatcher child, and sends the ticket; it reaps only that direct dispatcher. The dispatcher authenticates `/proc/<pid>/exe` and the exact native `fresh-supervise\\0--mode\\0ordinary-adoption\\0` command line, with the stable peer start-time check, before receiving the ticket. Legacy modes may continue to use the Python carrier because they have no ordinary parent-authentication contract. | `run-fresh-image-profile-smoke` proves the ordinary child parent is the native supervisor at the `/proc/<pid>/exe` and cmdline boundary, the preflight child cannot reach a repository marker or create a channel, a Python carrier/direct dispatcher/caller-created channel is rejected, and the native parent remains alive through dispatcher completion; the consumer smoke owns the later capsule, proof, bwrap, helper, and cleanup evidence. |
+| Ordinary admission proof and liveness | supervisor, dispatcher, worker, and namespace helper | The supervisor opens `/` as temporary FD 17, component-walks and retains `ALIGN_REPO` as FD 18 before channel creation, closes FD 17, creates one `SOCK_SEQPACKET|SOCK_CLOEXEC` channel, and forks exactly one dispatcher child. The supervisor sends exactly one fresh ticket `T`; the dispatcher authenticates the current-parent peer and stable start-time/image/cmdline using the controlled procfs executable rule, receives `T`, signs the capsule, and sends exactly one 32-byte capsule digest `C`; the supervisor receives `C` and replies with exactly one queued 32-byte `P = SHA-256("align-llm/ordinary-adoption/worker-admission/v2\0" || dispatch_ticket_sha256_bytes || invocation_nonce_bytes || C)`. The dispatcher passes FD 16 and FD 18 to the worker after explicitly clearing `FD_CLOEXEC` with `pass_fds=(4,12,13,15,16,18)`; the worker peeks without consuming, verifies the outer peer before bwrap, closes FD 18 after source validation, and bwrap retains FD 16 with the exact `--as-pid-1 --sync-fd 16` vector. The PID-1 helper consumes the proof before any Make child and checks only channel HUP/EOF/protocol liveness because outer PIDs and procfs entries are not visible in its private PID namespace. The native parent stays alive until dispatcher exit and reaps only that direct child; the dispatcher, worker, and namespace helper own their inner reaps; extra, missing, or mismatched messages fail closed with the exact owning phase. | `run-json-scan-row-ownership-adoption-smoke` covers direct-dispatcher admission, stale ticket/capsule/nonce/exception replay, proof mismatch, missing/extra proof, FD_CLOEXEC loss at both exec edges, parent death before/after proof, channel endpoint replacement, HUP during setup and each child row, outer-PID invisibility, IPC markers with and without `--unshare-ipc`, controlled `/proc/<pid>/exe` replacement/exec races, and exact proof consumption before the first Make marker. |
 | Absolute sibling path admission | supervisor and dispatcher | `ALIGN_REPO` is lexically validated and walked by the trusted supervisor from a retained `/` descriptor FD 17 before channel creation and FD 14 dispatch, component-by-component with `openat(O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)` and before/after `fstatat(AT_SYMLINK_NOFOLLOW)` identity checks. The final retained descriptor is passed as FD 18 and FD 17 is closed before the child is forked; the dispatcher only rechecks FD 18 identity and uses it for all later Git/copy work. No intermediate or final symlink, replacement, or pathname reopen is accepted. | `run-json-scan-row-ownership-adoption-smoke` replaces every intermediate and final component with a symlink, FIFO, directory, or same-identity rename race and proves `fresh compiler: ERROR TRUST supervisor\n` before FD 14 dispatch; it also replaces FD 18 after dispatch and proves the ordinary `revision` result before capsule signing or staging. |
 | Ordinary source-exception and raw-tree wire | dispatcher and worker | Request 6 uses `raw-tree/v1` plus the separate `source-exception/v2` vector; both project and Align root `HANDOFF.md` are control exceptions, project `main` is optional, Align `main` is absent, present handoff rows carry a bounded content digest, Git rows use `link_count=null` by retained-descriptor policy, and no exception bytes enter `raw-tree/v1` entries or digest. The raw-tree and exception semantic-to-byte goldens are `8b30014d36e10e32e230fcbbcbe12b6933903da48c8569140cadd62795caad77` and `0c685027b378e6ef448e8efd807532eb8f056de04f550e884d56a5ef0834ead0`. The complete exception digest is signed as `source_exception_sha256` in `ordinary-adoption/v2`; legacy source-manifest/v1 remains unchanged. | `run-json-scan-row-ownership-adoption-smoke` and `raw-tree-v1-output-exception-golden` cover present/absent rows, exact type/mode/link-count/content-digest metadata, exception-only mutation invariance, tracked/symlinked/wrong-type/wrong-mode/wrong-link-count negatives, handoff-content mutation, and independent semantic-to-byte/byte-to-semantic round trips. |
 | Ordinary error phase grammar | dispatcher, worker, and namespace helper | The closed phase set is `input`, `toolchain`, `revision`, `build`, `fixture`, and `cleanup`; each validation, channel, staging, row, and cleanup failure has the exact mapping and first-failure precedence recorded in Request 6, while pre-FD-14 failure remains `TRUST supervisor`. Every post-FD-14 authority, offset, bind, proof, bwrap, namespace, and infrastructure failure is `toolchain`; project/Align/worker content or identity is `revision`; malformed public argv/env is `input`; a supervisor hangup maps to `toolchain` before the first child, the active row's phase while a row runs, and `cleanup` during reverse cleanup. A worker signal death or unknown exit status before a final phase result is the explicit terminal `UNOBSERVED_EXIT` outcome `json-scan adoption: ERROR unobserved\n`, not a phase. | `run-json-scan-row-ownership-adoption-smoke` injects every pre-dispatch, post-dispatch, source, authority, toolchain, capsule, path, channel, child, timeout, cancellation, cleanup, and uncatchable worker-death failure at each ordering point and compares exact stdout/stderr bytes, the `UNOBSERVED_EXIT` exception, and primary-phase precedence. |
-| Ordinary worker exit observation | dispatcher and worker | The dispatcher remains the direct parent/monitor of the sealed worker child and owns the public stream. Worker exit status `0` is success; fixed statuses `1..6` map in order to `input`, `toolchain`, `revision`, `build`, `fixture`, and `cleanup`. A signal or any other status before a final phase result maps to `UNOBSERVED_EXIT`; the dispatcher emits exactly one `json-scan adoption: ERROR unobserved\n` after its safe outer cleanup. The helper and Make children never emit public status bytes. | `run-json-scan-row-ownership-adoption-smoke` kills the worker at each pre-phase and active-row boundary, supplies unknown exit statuses, proves no child stream escapes, and checks the exact `unobserved` result and cleanup ordering. |
+| Ordinary worker exit observation | dispatcher, worker, and native transport | The dispatcher remains the direct parent/monitor of the sealed worker child and is the sole semantic result producer; the native parent owns only the bounded public transport pipes and forwards the validated result once after reaping the dispatcher. Worker exit status `0` is success; fixed statuses `1..6` map in order to `input`, `toolchain`, `revision`, `build`, `fixture`, and `cleanup`. A signal or any other status before a final phase result maps to `UNOBSERVED_EXIT`; the dispatcher emits exactly one `json-scan adoption: ERROR unobserved\n` after its safe outer cleanup. The helper and Make children never emit public status bytes. | `run-json-scan-row-ownership-adoption-smoke` kills the worker at each pre-phase and active-row boundary, supplies unknown exit statuses, proves no child stream escapes, and checks the exact `unobserved`/`TRUST supervisor` result, bounded streams, and one-reaper-per-edge cleanup ordering. |
 | Runner-image trust boundary | image supervisor plus fixed bootstrap | Verify the signed image DSSE predicate against the pinned raw Ed25519 key, bind the immutable OCI digest to supervisor/bootstrap/manifest digests, pass the sealed image attestation at fd 6, and reject before any repository child | `fresh-v2-image-trust-smoke` mutates/replays the image, supervisor, bootstrap, manifest, attestation, and descriptor presence; the supervisor/bootstrap boundary rejects before private-root creation and records the complete image/verifier tuple. |
 | Legacy per-invocation trust boundary | image supervisor plus fixed bootstrap and worker | For legacy `ci`, fresh `adoption`, `build`, and `self-test`, before signing, the supervisor opens the worker through no-follow descriptors, requires euid-owned single-link regular `0755` bytes at or below `fresh_worker_max_bytes = 4194304`, performs a bounded exact read and post-read identity check, and binds that digest plus the retained project head/object format and canonical `ALIGN_REPO` relative path into a distinct signed run-capsule DSSE predicate; the bootstrap repeats the worker checks, passes the sealed capsule at fd 5, snapshots it at fd 9, and requires the worker's observed project/sibling identities to equal the capsule before source acceptance | `fresh-v2-run-attestation-smoke` changes the checkout head, worker bytes, object format, canonical sibling path, parent-side `ALIGN_REPO`, run signature, key ID, image-attestation digest, and manifest digest; FIFO, directory, symlink, oversized, short-read, replacement, and deadline cases reject before capsule signing or root creation, and every mismatch rejects before the source manifest is accepted. |
 | Pre-dispatch repository boundary | image supervisor plus bootstrap | Accept the logical request vector but dispatch only the image-owned bootstrap; no repository `Makefile`, tracked or untracked `GNUmakefile`/`makefile`, dirty tracked input, or repository Make process is parsed or executed from the retained root before source validation and private materialization. The supervisor and bootstrap both use bounded no-follow worker descriptors; the worker is read only as the bounded authenticated snapshot named by the run capsule. | `fresh-v2-pre-dispatch-source-smoke` plants tracked and untracked `GNUmakefile`/`makefile` alternates, mutates the retained `Makefile`, replaces the worker with a symlink/FIFO/directory/oversized file, and proves the supervisor launches only the fixed bootstrap and the worker rejects each source/worker fault before any private root or repository Make process. |
@@ -3665,6 +3666,173 @@ the boundary profile smoke. The ordinary admission proof, capsule and worker mem
 identity vectors, bwrap FD 27, namespace helper, process ownership, resource limits, cleanup
 quarantine, and focused Make vectors are explicitly deferred to the consumer-complete
 FRESH-IMAGE-REQUEST6 slice below; no boundary check or HANDOFF may claim them as passed.
+
+### 9.10.2 Superseded ordinary parent attempt (audit record)
+
+This subsection records the rejected partial correction for review traceability only. It is not a
+contract and must not be implemented. The normative replacement is Section 9.10.3 below.
+
+The first ordinary-transport implementation attempt is superseded and is not an executable
+checkpoint. Its Python-carrier parent and executable-digest fallback cannot authenticate provenance:
+an unrelated same-UID Python process can reconstruct the same command line and bytes. The corrected
+implementation therefore preserves the full Section 9.10 public contract and changes the ownership
+boundary before code resumes.
+
+For `ordinary-adoption`, the native image-owned `fresh-supervise` remains the direct parent of the
+dispatcher from the first ordinary exec through final helper cleanup. It never `execve`s the Python
+carrier before dispatch. A short-lived image-owned preflight child may run before the ordinary channel
+exists; it validates the image envelope, fixed manifest, supervisor identity, and Request 6 dispatcher
+runtime binding using the embedded control payload, captures bounded empty output, and exits. It may
+not open the project or Align roots, inspect repository bytes, create a channel or nonce, sign a
+capsule, or launch a worker. The native supervisor rejects any preflight failure as the pre-FD-14
+`TRUST supervisor` result, then creates the sealed image/manifest/nonce descriptors, walks and retains
+FD 18 from the `/` root, opens the retained dispatcher as FD 14, creates one
+`SOCK_SEQPACKET|SOCK_CLOEXEC` channel, forks exactly one dispatcher child, and sends the fresh ticket.
+The dispatcher authenticates its current parent through `SO_PEERCRED`, stable `/proc/<pid>/stat`
+start-time, the one controlled `/proc/<pid>/exe` descriptor hash, and the exact native command line
+`fresh-supervise\\0--mode\\0ordinary-adoption\\0`; a Python interpreter digest, reconstructed
+command line, retained payload bytes, or caller-created descriptor cannot satisfy this predicate.
+
+The native parent owns the public ordinary streams. It captures the dispatcher child through bounded
+stdout/stderr pipes, remains alive while receiving the capsule digest and sending the queued proof,
+waits for the dispatcher/worker/helper tree, and forwards only the exact success or phase result after
+the child has been reaped. A signal, unknown status, partial output, stream overflow, missing/extra
+channel packet, or cleanup failure follows the existing `TRUST supervisor` or ordinary phase grammar
+at the owner boundary; no Python-carrier output escapes. Legacy `ci`, `build`, and `self-test` retain
+their existing Python-carrier path because they have no ordinary parent-authentication contract.
+
+The corrected design ledger is:
+
+| Surface | Exact contract | Owner and lifetime | Acceptance |
+| --- | --- | --- | --- |
+| Ordinary native parent | `/usr/local/libexec/align-llm/fresh-supervise --mode ordinary-adoption`; exact five-variable environment plus absolute `ALIGN_REPO`; native ELF is the direct dispatcher parent | `fresh-supervise.c`; parent owns FD 4/6/8/14/15/16/18, ticket, proof, streams, child wait, and final close order | installed profile parent `/proc` identity and exact argv/env/fd smoke |
+| Image preflight | embedded image-control child only; bounded empty stdout/stderr; no repository, channel, nonce, capsule, worker, or Make access; success required before channel creation | native supervisor starts and reaps the child before opening ordinary FD 16; all preflight descriptors are closed before ordinary setup | image/manifest/dispatcher replacement and repository-marker negatives |
+| Dispatcher peer predicate | `SO_PEERCRED` current parent; unchanged start-time; bounded `/proc/<pid>/stat` and `/proc/<pid>/cmdline`; one controlled `/proc/<pid>/exe` open whose bytes equal the attested native supervisor; exact `fresh-supervise\\0--mode\\0ordinary-adoption\\0` cmdline | Request 6 dispatcher validates before receiving ticket or signing; no Python digest fallback and no extra procfs magic-link authority | direct dispatcher, Python carrier, caller-created channel, exec-race, PID-reuse, and wrong-parent negatives |
+| Ordinary child streams | bounded pipes; no child bytes escape before validation; exact stdout/stderr/status mapping after reap | native supervisor is the sole public stream owner; dispatcher/worker/helper children are fully reaped | partial, overflow, signal, unknown status, timeout, and extra-message regressions |
+| Deferred consumer | N/A in this correction: worker source, full staging, bwrap FD 27, namespace rows, and final adoption remain the Section 9.10 implementation slice | no implementation may claim a positive consumer result from this design checkpoint | N/A because this PR changes only ownership design |
+
+The design closure matrix additionally requires construction, success, preflight failure, dispatcher
+fork failure, parent death before/after ticket and proof, stream overflow, worker signal/unknown exit,
+extra or missing channel packets, cleanup restoration, descriptor leakage, and malformed image/path
+inputs to name the native owner and exact installed-profile regression. It must separately prove that
+the preflight child cannot reach repository-controlled bytes and that an unrelated Python process
+cannot satisfy the dispatcher peer predicate. No implementation PR may proceed until this correction
+has passed an independent adversarial design review and merged.
+
+### 9.10.3 Normative native-parent, preflight, and stream contract
+
+The preceding subsection is historical. This subsection is the sole normative correction for the
+ordinary parent boundary and supersedes every broader ownership phrase in the Section 9.10 rows.
+The Python-carrier parent and executable-digest fallback are forbidden: an unrelated same-UID
+Python process can reproduce their bytes and command line, so neither is supervisor provenance.
+
+For `ordinary-adoption`, the image-owned native ELF
+`/usr/local/libexec/align-llm/fresh-supervise` remains the direct parent of the dispatcher from
+the first ordinary dispatch until the dispatcher exits. It does not `execve` a carrier before
+dispatch. The native parent is a direct-child reaper, not a cross-namespace tree reaper: it reaps
+the preflight child and the one dispatcher child only; the dispatcher reaps the worker, the worker
+reaps its bwrap/namespace tree, and the namespace helper reaps its Make children. No subreaper or
+reparenting assumption crosses those edges.
+
+The preflight is an image-owned C child in the same static-PIE native ELF, not an external
+interpreter boundary. After the native parent has opened and identity-checked the sealed image
+attestation at FD 6, sealed schema-2 manifest at FD 8, and retained static-PIE dispatcher FD 14,
+it forks the preflight child and calls the exact internal routine
+`ordinary_image_preflight(attestation_fd=6, manifest_fd=8, dispatcher_fd=14)`. The child does not
+`execve`, does not parse `argv` or `envp`, and has no repository pathname input. Its effective
+descriptor set is exactly `{0=/dev/null, 1=preflight-stdout-pipe, 2=preflight-stderr-pipe, 6, 8,
+14}`; it closes FD 4, FD 15, FD 16, FD 17, FD 18, every inherited descriptor not listed, and both
+pipe read ends. The parent owns the two read ends and drains them concurrently with a zero-byte
+allowance: any byte, read error, EOF failure, or retained byte beyond the zero-byte bound is a
+preflight failure. The child may open only `/proc/self/exe` to hash the current native supervisor
+and compare it with the image-attested supervisor digest; it may read only FDs 6, 8, and 14 after
+that identity check. It may not open `/`, `ALIGN_REPO`, the project or Align roots, any repository
+file, a channel, a nonce, a capsule, a worker, bwrap, a namespace, or Make.
+
+The preflight deadline is 5 seconds on a monotonic clock. The parent sets the child death signal,
+applies `RLIMIT_NOFILE=64` and `RLIMIT_FSIZE=0` to the child, drains both pipes, and waits for
+exactly one `waitpid` result. Only exit status 0 with both pipes empty succeeds. Nonzero exit,
+signal death, unknown wait status, timeout, output, read failure, or cleanup failure maps to exit 1,
+empty stdout, and exactly `fresh compiler: ERROR TRUST supervisor\\n`; the parent closes the
+preflight pipes and reaps the child before creating FD 4, FD 15, FD 16, FD 17, or FD 18. Thus the
+preflight inputs are the same descriptor objects later used for dispatch, and its supervisor and
+dispatcher attestation cannot be detached from the later FD 6, FD 8, or FD 14 values.
+
+After successful preflight, the native parent opens the project root as FD 4, opens `/` as temporary
+FD 17, performs the complete no-follow component walk, and retains the requested Align root as FD
+18. It creates sealed fresh nonce FD 15, creates one `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair, and
+creates bounded dispatcher stdout/stderr pipes. It closes FD 17 before channel creation, forks
+exactly one dispatcher child, and consumes FD 14 only in that child with
+`execveat(AT_EMPTY_PATH)`. The child vector, inherited environment, and post-exec descriptor set
+are the existing Section 9.10 values: the exact native command line is
+`fresh-supervise\\0--mode\\0ordinary-adoption\\0`, and the dispatcher receives only
+`{0,1,2,4,6,8,15,16,18}` after FD 14's `FD_CLOEXEC` removal. The parent sends one 32-byte ticket
+only after the dispatcher peer is running. The dispatcher performs the `SO_PEERCRED`, start-time,
+controlled `/proc/<pid>/exe`, and exact-cmdline predicate before consuming that ticket.
+
+The descriptor ownership ledger is:
+
+| Descriptor or object | Creator and inherited holder | Operational owner | Close and reap rule |
+| --- | --- | --- | --- |
+| FD 4, project root | Native parent creates it; dispatcher inherits it; worker receives it in the fixed worker vector | Dispatcher validates the project identity; worker uses it for descriptor-relative source work | Worker closes it before bwrap; dispatcher closes its copy after the worker handoff; native parent closes its copy after dispatcher reap |
+| FD 6, image attestation; FD 8, manifest | Native parent opens sealed image-owned descriptors; preflight and dispatcher inherit them | Preflight validates them, then dispatcher validates and binds them into the capsule | Preflight closes its copies before `_exit`; dispatcher closes after capsule construction; native parent closes after dispatcher reap |
+| FD 14, dispatcher authority | Native parent opens the retained static-PIE descriptor | Dispatcher child consumes it with `execveat(AT_EMPTY_PATH)` | `FD_CLOEXEC` removes it at successful exec; failed exec closes it in the child; parent closes its copy immediately after the dispatcher fork |
+| FD 15, invocation nonce | Native parent creates the sealed 32-byte descriptor; dispatcher and worker inherit it | Dispatcher binds it into the capsule; worker verifies it before bwrap | Worker closes it after nonce validation and bwrap handoff; dispatcher closes its copy after worker exec; parent closes after dispatcher reap |
+| FD 16, supervisor channel | Native parent owns one socketpair endpoint; dispatcher inherits the other | Parent receives exactly one capsule digest and sends exactly one proof; the worker/helper retain the child endpoint for liveness | Parent closes its endpoint after dispatcher reap and output validation; each child closes its copy at its documented handoff/cleanup boundary; no process reaps across an edge it does not own |
+| FD 17, temporary `/` root | Native parent opens it for the component walk | Native parent only | Parent closes it before channel creation; it is never inherited by preflight or dispatcher |
+| FD 18, retained Align root | Native parent creates and identity-checks it; dispatcher and worker inherit it | Dispatcher rechecks it; worker uses it until source validation | Worker closes it immediately after source validation; dispatcher closes its copy after worker handoff; parent closes after dispatcher reap |
+| FD 12, capsule; FD 13, worker snapshot | Dispatcher creates sealed memfds after ticket validation; worker inherits them | Worker verifies and presents them to the bwrap bind boundary | Dispatcher closes its copies after worker exec; bwrap consumes the bind sources; worker closes its copies after successful bwrap setup; neither reaches the namespace helper |
+| FD 27, bwrap executable | Worker opens the retained image-owned executable descriptor | The worker's launcher child consumes it with `execveat(AT_EMPTY_PATH)` | `FD_CLOEXEC` removes it at successful exec; failed launch closes it; bwrap and the helper never inherit it |
+| Preflight/public pipes | Native parent creates read/write pairs; preflight or dispatcher inherits only the write ends | Parent drains preflight pipes during preflight and dispatcher pipes throughout the dispatcher lifetime | Parent closes read ends after EOF and direct-child reap; child write ends close at `_exit`/exec cleanup; a cap violation kills and reaps the direct child |
+
+The native parent is the public stream transport owner, while the dispatcher is the only semantic
+result producer. The dispatcher drains and suppresses worker/helper/Make output, produces one exact
+ordinary result, and writes it to its inherited stdout or stderr. The native parent drains both
+dispatcher pipes concurrently in 8,192-byte reads, retains at most 65,536 bytes per stream, and
+does not forward any byte until the direct dispatcher child has been reaped and its complete output
+and exit status have passed the grammar check. It then forwards the dispatcher bytes exactly once;
+it never synthesizes or duplicates a phase result. A valid dispatcher result is `stdout=
+json-scan adoption: PASS\\n`, `stderr=empty`, `exit=0`, or `stdout=empty`,
+`stderr=json-scan adoption: ERROR <phase>\\n`, `exit=1`, including the explicit `unobserved`
+terminal line.
+
+The native boundary failure table is deterministic:
+
+| Failure owned by native parent | Result and side effect |
+| --- | --- |
+| Preflight nonzero/signal/timeout/output/unknown status or cleanup failure | `TRUST supervisor`; no ordinary channel or nonce exists |
+| FD 4/6/8/14/15/16/17/18 construction, path walk, channel, fork, or `execveat` failure before a running dispatcher | `TRUST supervisor`; no dispatcher bytes are forwarded |
+| Missing/truncated/extra capsule packet, proof-channel peer replacement, or extra inbound packet at the native channel boundary | `TRUST supervisor`; the native parent kills/reaps the dispatcher and suppresses child bytes |
+| Dispatcher signal, unknown status, partial result, invalid result grammar, stream overflow, pipe error, or native cleanup failure | `TRUST supervisor`; the native parent kills/reaps as needed and suppresses child bytes |
+| Worker/helper/Make channel, phase, timeout, or cleanup failure after a trusted dispatcher starts | The dispatcher owns the ordinary phase mapping and emits exactly one phase or `UNOBSERVED_EXIT` line; the native parent forwards it unchanged |
+
+The parent channel accepts exactly one 32-byte `C`, sends exactly one queued 32-byte `P`, rejects
+`MSG_TRUNC`, EOF/HUP before `C` or before dispatcher completion, and rejects any additional inbound
+packet after `C`. The dispatcher/worker/helper own the queued proof and inner channel liveness;
+their missing, extra, or mismatched proof maps through the existing active phase grammar. A worker
+signal or unknown worker status becomes `UNOBSERVED_EXIT` only when the dispatcher observed it and
+emitted the terminal line; a signal or unknown status of the dispatcher itself is always native
+`TRUST supervisor`. Native transport cleanup is also trust-owned; dispatcher-owned reverse cleanup
+remains the ordinary `cleanup` phase. This gives one producer, one reaper for every process edge,
+one final close order, and one deterministic result for every new boundary failure.
+
+The design-only acceptance is limited to the native parent/preflight/descriptor/reaper and failure
+grammar contract. The consumer-complete implementation slice remains explicitly deferred: FD 12/13
+capsule and worker construction, FD 15 nonce and FD 16 proof handoff beyond the native boundary,
+raw-tree and source-exception transport, capsule signing and proof verification, worker source
+validation, `/tools` inventory, runtime and Rust staging, cache copy, bwrap FD 27, namespace rows,
+cgroup and rlimit ownership, the 24-GiB Cargo profile, the three fixed Make vectors, compiler
+handoff, worker/namespace cleanup quarantine, and final adoption success. These are deferred
+implementation cells, not `N/A`, and `run-json-scan-row-ownership-adoption-smoke` is the future
+consumer acceptance; this design PR claims no positive consumer result.
+
+The required design regressions are the native-parent `/proc` identity and exact command line,
+preflight descriptor/input/argv-free boundary, repository-marker and channel/nonce negatives,
+direct-dispatcher/Python-carrier rejection, exact FD inheritance and close order, one-reaper-per-edge
+process tracing, bounded empty preflight output, partial/overflow/extra stream cases, signal and
+unknown-status mapping, packet precedence, and native-versus-dispatcher cleanup ownership. The
+full consumer matrix named above remains a prerequisite for the implementation PR and cannot be
+claimed by this design checkpoint.
 
 ### 9.11 Compatibility, verification, and delivery order
 

@@ -1386,7 +1386,21 @@ sets `ALIGNC=/tools/fresh-alignc` is not fresh evidence. The focused target rema
 fresh `make --no-print-directory ci` is a separate required gate.
 
 The ordinary profile's evidence-bearing public request enters through the already trusted image-owned
-`/usr/local/libexec/align-llm/fresh-supervise`. FRESH-IMAGE-REQUEST6 adds the exact
+`/usr/local/libexec/align-llm/fresh-supervise`. The corrected implementation keeps this native ELF as
+the direct parent of the ordinary dispatcher until the dispatcher exits. It does not exec a Python
+carrier before dispatch, and a Python interpreter digest or reconstructed command line is not a
+supervisor identity. A short-lived embedded C preflight child in the same native ELF may run before
+the ordinary channel exists. It receives only the sealed image-attestation, manifest, and retained
+dispatcher descriptors, validates only image-owned inputs (including `/proc/self/exe`), emits no
+bytes, and must not open either repository, create a nonce or channel, sign a capsule, or launch a
+worker. The native parent reaps the preflight and direct dispatcher only; the dispatcher, worker, and
+namespace helper own their respective inner reaps. After preflight succeeds, the native parent creates
+the ordinary descriptors and channel, owns the bounded public transport pipes, and forwards exactly
+the dispatcher-produced result once after reaping that direct child. Legacy `ci`, `build`, and
+`self-test` retain their existing carrier path because they have no ordinary parent-authentication
+contract.
+
+FRESH-IMAGE-REQUEST6 adds the exact
 `--mode ordinary-adoption` request to that supervisor. Before dispatch, `fresh-supervise` authenticates
 the runner-image envelope and fixed schema-2 manifest, opens the Request 6 dispatcher
 `/usr/local/libexec/align-llm/request6-adoption-entrypoint` through a retained no-follow descriptor,
@@ -1469,11 +1483,17 @@ bounded `json-scan adoption: ERROR <phase>\n` line where `phase` is one of `inpu
 `revision`, `build`, `fixture`, or `cleanup`. The worker exit-status table is fixed: status `0` means
 success; statuses `1` through `6` mean, respectively, `input`, `toolchain`, `revision`, `build`,
 `fixture`, and `cleanup`, and the worker returns the first failed phase even when reverse cleanup also
-runs. The dispatcher is the worker's direct parent and public-stream owner. If the worker exits by
-signal or with an exit status outside that table before returning a final phase result, the dispatcher
-emits the special terminal `UNOBSERVED_EXIT` result `json-scan adoption: ERROR unobserved\n`;
+runs. The dispatcher is the worker's direct parent and sole semantic result producer. The native
+`fresh-supervise` parent is the public-stream transport owner: it drains both dispatcher pipes with
+an 8,192-byte read size, retains at most 65,536 bytes per stream, validates the complete result after
+reaping the dispatcher, and forwards those bytes exactly once. It never synthesizes or duplicates a
+phase result. If the worker exits by signal or with an exit status outside that table before returning
+a final phase result, the dispatcher emits the special terminal `UNOBSERVED_EXIT` result
+`json-scan adoption: ERROR unobserved\n`;
 `unobserved` is not a phase and is the only ordinary outcome outside the six-phase set. The dispatcher
-owns this public result even when the worker is uncatchably killed. Validation order is fixed: (1) argv,
+produces this semantic result even when the worker is uncatchably killed. A dispatcher signal,
+unknown status, partial/extra result, pipe overflow, or native transport cleanup failure is instead a
+native `fresh compiler: ERROR TRUST supervisor\n` with child bytes suppressed. Validation order is fixed: (1) argv,
 Make-control
 variables, cwd, and allowed `HANDOFF.md` exception; (2) project HEAD, index, clean-tree, and raw
 snapshot; (3) fixed entrypoint, attestation, capsule, and manifest bytes; (4) worker snapshot and Align
@@ -2216,12 +2236,16 @@ the capsule records only the canonical relative value.
 The ordinary output boundary has two stages. A failure in `fresh-supervise` before it consumes the
 retained dispatcher descriptor (image, manifest, argument, nonce, or dispatcher-closure admission)
 returns exit `1`, empty stdout, and exactly `fresh compiler: ERROR TRUST supervisor\n` on stderr. After
-FD `14` dispatch, the Request 6 dispatcher owns the public stream: success is exit `0`, empty stderr,
+FD `14` dispatch, the dispatcher is the sole semantic result producer and the native parent is the
+public-stream transport owner. The parent drains both dispatcher pipes concurrently, retains at most
+65,536 bytes per stream, waits for and reaps the direct dispatcher child, validates its complete
+result/status pair, and forwards the captured bytes exactly once. Success is exit `0`, empty stderr,
 and exactly `json-scan adoption: PASS\n`; failure is exit `1`, empty stdout, and exactly one
-`json-scan adoption: ERROR <phase>\n` on stderr. The phase set and first-failure/cleanup precedence
-are the fixed values above; a worker signal or unknown exit before a final phase result instead emits
-`json-scan adoption: ERROR unobserved\n` as the explicit `UNOBSERVED_EXIT` terminal outcome. No
-child stream is forwarded.
+`json-scan adoption: ERROR <phase>\n` on stderr. A worker signal or unknown exit before a final
+phase result is translated by the dispatcher to `json-scan adoption: ERROR unobserved\n` and is
+forwarded unchanged. A dispatcher signal/unknown status, partial or extra output, pipe overflow,
+native channel violation, or native cleanup failure is `fresh compiler: ERROR TRUST supervisor\n`
+with child bytes suppressed. The native parent never synthesizes or duplicates an ordinary result.
 
 Concurrency is explicit. The ordinary wrapper and every Section 9 fresh public mode use the same
 installed per-user mode-`0600` lock at `/run/user/<uid>/align-llm-fresh/lock`; the wrapper opens and
