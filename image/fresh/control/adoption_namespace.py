@@ -544,7 +544,7 @@ def _receive_proof(channel: socket.socket) -> bytes:
     channel.setblocking(False)
     try:
         try:
-            extra, _, flags, _ = channel.recvmsg(1, socket.MSG_PEEK)
+            extra, _, flags, _ = channel.recvmsg(1, 0, socket.MSG_PEEK)
         except BlockingIOError:
             extra = b""
             flags = 0
@@ -581,7 +581,7 @@ def _set_subreaper() -> None:
 def _channel_alive(channel: socket.socket) -> None:
     channel.setblocking(False)
     try:
-        data, _, flags, _ = channel.recvmsg(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+        data, _, flags, _ = channel.recvmsg(1, 0, socket.MSG_PEEK | socket.MSG_DONTWAIT)
     except BlockingIOError:
         return
     except OSError as error:

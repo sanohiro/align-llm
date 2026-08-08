@@ -312,7 +312,7 @@ def main() -> int:
     try:
         import socket
         channel = socket.socket(fileno=16)
-        proof, _, flags, _ = channel.recvmsg(33, socket.MSG_PEEK)
+        proof, _, flags, _ = channel.recvmsg(33, 0, socket.MSG_PEEK)
         if flags & socket.MSG_TRUNC or len(proof) != 32:
             fail()
         expected = hashlib.sha256(
