@@ -1161,7 +1161,7 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
                 }
             }
         }
-        if (channel_hup && (!got_capsule || !reaped)) failure = 1;
+        if (channel_hup && !got_capsule) failure = 1;
         if (got_capsule && !proof_sent && !failure) {
             sha256_init(&proof_state);
             sha256_update(&proof_state, ticket, 32U);
