@@ -1109,9 +1109,12 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         nfds_t nfds = 0;
         struct timespec now;
         int poll_result;
-        pid_t waited = waitpid(child, &status, WNOHANG);
-        if (waited == child) reaped = 1;
-        else if (waited < 0 && errno != EINTR) failure = 1;
+        pid_t waited = 0;
+        if (!reaped) {
+            waited = waitpid(child, &status, WNOHANG);
+            if (waited == child) reaped = 1;
+            else if (waited < 0 && errno != EINTR) failure = 1;
+        }
         if (!stdout_eof) fds[nfds++] = (struct pollfd){stdout_fd, POLLIN, 0};
         if (!stderr_eof) fds[nfds++] = (struct pollfd){stderr_fd, POLLIN, 0};
         fds[nfds++] = (struct pollfd){channel_fd, POLLIN, 0};
