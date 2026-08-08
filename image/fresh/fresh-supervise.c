@@ -95,6 +95,14 @@ static void ordinary_debug_parent_state(int failure, int reaped, int stdout_eof,
     if (length > 0) ordinary_debug(message);
 }
 
+static void ordinary_debug_errno(const char *prefix, int error) {
+    char message[128];
+    int length;
+    if (!ordinary_debug_enabled()) return;
+    length = snprintf(message, sizeof(message), "%s errno=%d (%s)\n", prefix, error, strerror(error));
+    if (length > 0) ordinary_debug(message);
+}
+
 static int fail_argument(void) {
     static const char message[] = "fresh compiler: ERROR ARGUMENT input\n";
     (void)!write(STDERR_FILENO, message, sizeof(message) - 1);
@@ -1175,7 +1183,7 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
                 ordinary_debug("parent: channel hup\n");
             }
             else if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-                ordinary_debug("parent: recv error\n");
+                ordinary_debug_errno("parent: recv error", errno);
                 failure = 1;
             }
             else if (received > 0) {
