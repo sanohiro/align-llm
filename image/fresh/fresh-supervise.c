@@ -62,6 +62,14 @@ static int fail(void) {
     return 1;
 }
 
+static int ordinary_debug_enabled(void) {
+    return access("/tmp/fresh-debug", F_OK) == 0;
+}
+
+static void ordinary_debug(const char *message) {
+    if (ordinary_debug_enabled()) (void)!write(STDERR_FILENO, message, strlen(message));
+}
+
 static int fail_argument(void) {
     static const char message[] = "fresh compiler: ERROR ARGUMENT input\n";
     (void)!write(STDERR_FILENO, message, sizeof(message) - 1);
@@ -1069,6 +1077,7 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
     int status = 0;
     int reaped = 0;
     int failure = 0;
+    struct timespec heartbeat;
     if (set_nonblocking(stdout_fd) < 0 || set_nonblocking(stderr_fd) < 0) {
         close(stdout_fd);
         close(stderr_fd);
@@ -1079,14 +1088,19 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         close(stderr_fd);
         return -1;
     }
+    ordinary_debug("fresh debug: ticket sent\n");
     clock_gettime(CLOCK_MONOTONIC, &start);
+    heartbeat = start;
     while (!reaped || !stdout_eof || !stderr_eof || !channel_hup) {
         struct pollfd fds[3];
         nfds_t nfds = 0;
         struct timespec now;
         int poll_result;
         pid_t waited = waitpid(child, &status, WNOHANG);
-        if (waited == child) reaped = 1;
+        if (waited == child) {
+            reaped = 1;
+            ordinary_debug("fresh debug: dispatcher reaped\n");
+        }
         else if (waited < 0 && errno != EINTR) failure = 1;
         if (!stdout_eof) fds[nfds++] = (struct pollfd){stdout_fd, POLLIN, 0};
         if (!stderr_eof) fds[nfds++] = (struct pollfd){stderr_fd, POLLIN, 0};
@@ -1110,7 +1124,11 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
             else if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) failure = 1;
             else if (received > 0) {
                 if (got_capsule || received != 32 || (message.msg_flags & MSG_TRUNC)) failure = 1;
-                else { memcpy(capsule_digest, packet, 32U); got_capsule = 1; }
+                else {
+                    memcpy(capsule_digest, packet, 32U);
+                    got_capsule = 1;
+                    ordinary_debug("fresh debug: capsule received\n");
+                }
             }
         }
         if (channel_hup && (!got_capsule || !reaped)) failure = 1;
@@ -1125,9 +1143,16 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
             sha256_update(&proof_state, capsule_digest, 32U);
             sha256_final(&proof_state, proof);
             if (send(channel_fd, proof, 32U, MSG_NOSIGNAL) != 32) failure = 1;
-            else proof_sent = 1;
+            else {
+                proof_sent = 1;
+                ordinary_debug("fresh debug: proof sent\n");
+            }
         }
         clock_gettime(CLOCK_MONOTONIC, &now);
+        if (ordinary_debug_enabled() && now.tv_sec - heartbeat.tv_sec >= 5) {
+            ordinary_debug("fresh debug: parent waiting\n");
+            heartbeat = now;
+        }
         if ((now.tv_sec - start.tv_sec) > ORDINARY_WORKER_SECONDS ||
             ((now.tv_sec - start.tv_sec) == ORDINARY_WORKER_SECONDS && now.tv_nsec >= start.tv_nsec)) failure = 1;
         if (failure) break;
@@ -1204,6 +1229,7 @@ static int ordinary_supervise(char **child_env, const char *absolute) {
     if (canonical_absolute(absolute) < 0 ||
         copy_sealed_file(IMAGE_ATTESTATION_PATH, "align-llm-image-attestation", 6, 262144U) < 0 ||
         copy_sealed_file(MANIFEST_PATH, "align-llm-fresh-manifest", 8, 67108864U) < 0) goto cleanup;
+    ordinary_debug("fresh debug: sealed inputs copied\n");
     dispatcher_fd = open(ORDINARY_DISPATCHER_PATH, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (dispatcher_fd < 0) goto cleanup;
     {
@@ -1215,6 +1241,7 @@ static int ordinary_supervise(char **child_env, const char *absolute) {
     }
     if (dispatcher_fd != 14) { close(dispatcher_fd); dispatcher_fd = 14; }
     if (run_ordinary_preflight() < 0) goto cleanup;
+    ordinary_debug("fresh debug: preflight passed\n");
     project_fd = open(".", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (project_fd < 0 || dup2(project_fd, 4) < 0 || set_cloexec(4, 1) < 0) goto cleanup;
     if (project_fd != 4) { close(project_fd); project_fd = 4; }
@@ -1232,11 +1259,13 @@ static int ordinary_supervise(char **child_env, const char *absolute) {
     child = fork();
     if (child < 0) goto cleanup;
     if (child == 0) ordinary_dispatcher_child(socket_pair[1], output_pipe[1], error_pipe[1], child_env, absolute, relative);
+    ordinary_debug("fresh debug: dispatcher launched\n");
     close(socket_pair[1]); socket_pair[1] = -1;
     close(output_pipe[1]); output_pipe[1] = -1;
     close(error_pipe[1]); error_pipe[1] = -1;
     close(14); dispatcher_fd = -1;
     result = ordinary_parent_loop(child, 16, output_pipe[0], error_pipe[0], ticket, nonce);
+    ordinary_debug(result == 0 ? "fresh debug: parent success\n" : "fresh debug: parent failure\n");
     output_pipe[0] = -1;
     error_pipe[0] = -1;
 cleanup:
