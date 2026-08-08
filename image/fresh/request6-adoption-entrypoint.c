@@ -30,6 +30,15 @@
 
 extern char **environ;
 
+static void debug_message(const char *message) {
+    int fd = open("/tmp/fresh-debug", O_WRONLY | O_APPEND | O_CLOEXEC);
+    if (fd < 0) {
+        return;
+    }
+    (void)!write(fd, message, strlen(message));
+    close(fd);
+}
+
 static int fail_input(void) {
     static const char message[] = "json-scan adoption: ERROR input\n";
     (void)!write(STDERR_FILENO, message, sizeof(message) - 1);
@@ -156,11 +165,31 @@ static int close_unexpected_descriptors(void) {
 int main(int argc, char **argv) {
     char *child_argv[32];
     int index;
-    if (argc < 2 || argc > 20 || strcmp(argv[0], "request6-adoption-entrypoint") != 0 ||
-        exact_environment() < 0 || descriptor_set_is_exact() < 0 || snapshot_payload() < 0 ||
-        close_unexpected_descriptors() < 0) {
+    if (argc < 2 || argc > 20 || strcmp(argv[0], "request6-adoption-entrypoint") != 0) {
+        debug_message("launcher: argv rejected\n");
         return fail_input();
     }
+    debug_message("launcher: argv passed\n");
+    if (exact_environment() < 0) {
+        debug_message("launcher: environment rejected\n");
+        return fail_input();
+    }
+    debug_message("launcher: environment passed\n");
+    if (descriptor_set_is_exact() < 0) {
+        debug_message("launcher: descriptors rejected\n");
+        return fail_input();
+    }
+    debug_message("launcher: descriptors passed\n");
+    if (snapshot_payload() < 0) {
+        debug_message("launcher: payload rejected\n");
+        return fail_input();
+    }
+    debug_message("launcher: payload passed\n");
+    if (close_unexpected_descriptors() < 0) {
+        debug_message("launcher: close rejected\n");
+        return fail_input();
+    }
+    debug_message("launcher: close passed\n");
     child_argv[0] = (char *)PYTHON_PATH;
     child_argv[1] = (char *)"-I";
     child_argv[2] = (char *)"-B";
@@ -170,5 +199,6 @@ int main(int argc, char **argv) {
     }
     child_argv[argc + 3] = NULL;
     execve(PYTHON_PATH, child_argv, environ);
+    debug_message("launcher: exec rejected\n");
     return fail_input();
 }
