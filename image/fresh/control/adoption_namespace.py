@@ -747,6 +747,10 @@ def _runtime_paths() -> tuple[str, str, str]:
             if name.endswith(".pc") and directory not in pkgconfig:
                 pkgconfig.append(directory)
     if not libraries or not loaders or not pkgconfig:
+        _debug(
+            f"runtime paths missing libraries={len(libraries)} loaders={len(loaders)} "
+            f"pkgconfig={len(pkgconfig)}"
+        )
         raise NamespaceFailure("toolchain")
     return ":".join(libraries), ":".join(loaders), ":".join(pkgconfig)
 
