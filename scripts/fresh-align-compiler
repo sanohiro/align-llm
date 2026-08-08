@@ -3968,12 +3968,14 @@ def ordinary_bind_source(admission: Admission, source: Path, kind: str, target_f
         os.set_inheritable(target_fd, True)
         return target_fd
     except (CleanupError, OSError, ValueError) as error:
+        ordinary_debug(f"bind source failed target={target_fd} source={source}: {type(error).__name__}: {error}")
         raise OrdinaryFailure("toolchain") from error
 
 
 def ordinary_runtime_binding(runtime: Sequence[RuntimeBinding], target: str) -> RuntimeBinding:
     matches = [binding for binding in runtime if binding[1] == target]
     if len(matches) != 1:
+        ordinary_debug(f"runtime binding failed target={target} count={len(matches)}")
         raise OrdinaryFailure("toolchain")
     return matches[0]
 
@@ -4058,6 +4060,7 @@ def ordinary_capture_bwrap(
         bwrap_fd = ordinary_bind_source(admission, bwrap[0], "file", 27)
         os.set_inheritable(bwrap_fd, False)
         bound.append(bwrap_fd)
+        ordinary_debug("capture bindings passed")
         os.set_inheritable(12, True)
         os.set_inheritable(13, True)
         os.set_inheritable(15, True)
@@ -4140,7 +4143,9 @@ def ordinary_capture_bwrap(
         try:
             cgroup_child_membership(lease, child)
         except CleanupError as error:
+            ordinary_debug(f"child cgroup membership failed: {error}")
             raise OrdinaryFailure("toolchain") from error
+        ordinary_debug("child cgroup membership passed")
         try:
             process_group = os.getpgid(child)
         except ProcessLookupError:
