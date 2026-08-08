@@ -41,9 +41,8 @@ REQUIRED_SEALS = (
 
 def _ordinary_debug(message: str) -> None:
     try:
-        with open("/tmp/fresh-debug", "a", encoding="ascii") as stream:
-            stream.write(message + "\n")
-    except (OSError, UnicodeError):
+        os.write(2, ("generic debug: " + message + "\n").encode("ascii"))
+    except OSError:
         pass
 
 
