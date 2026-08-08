@@ -228,6 +228,15 @@ SUPERVISOR_VERSION = "1.0.0"
 CONTROLLER_PATH = "scripts/fresh-align-compiler"
 RUST_LINKER_NAMESPACE_PATH = "/tools/cc"
 ALIGN_REVISION_FILE = ".align-revision"
+ORDINARY_ADOPTION_TYPE = "https://align-llm.dev/attestations/ordinary-adoption/v2"
+ORDINARY_ADOPTION_REQUEST = "json-scan-row-ownership-adoption"
+ORDINARY_WORKER_PATH = "scripts/run-json-scan-row-ownership-adoption"
+ORDINARY_IMAGE_ATTESTATION_PATH = "/run/align-llm-fresh/image-attestation.dsse"
+ORDINARY_MANIFEST_PATH = "/usr/local/share/align-llm/fresh-toolchain.json"
+ORDINARY_ENTRYPOINT_PATH = "/usr/local/libexec/align-llm/request6-adoption-entrypoint"
+ORDINARY_REQUIRED_FDS = {0, 1, 2, 4, 12, 13, 15, 16, 18}
+ORDINARY_HELPER_STREAM = 65_536
+ORDINARY_BWRAP_TIMEOUT = 5_000
 MAX_PATH_BYTES = 4096
 MAX_SOURCE_DEPTH = 64
 CANCELLED_SIGNAL: int | None = None
@@ -3605,6 +3614,736 @@ def install_file(source: Path, target: Path, mode: int, *, single_link: bool = T
     return len(raw), sha256(raw)
 
 
+class OrdinaryFailure(Exception):
+    def __init__(self, phase: str) -> None:
+        super().__init__(phase)
+        self.phase = phase
+
+
+def ordinary_fail(phase: str) -> None:
+    raise OrdinaryFailure(phase)
+
+
+def ordinary_descriptor_set() -> set[int]:
+    descriptors: set[int] = set()
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            descriptor = int(name)
+            os.fstat(descriptor)
+            descriptors.add(descriptor)
+        except (OSError, ValueError):
+            pass
+    return descriptors
+
+
+def ordinary_read_sealed(fd: int, limit: int, name: str | None = None) -> bytes:
+    if fcntl.fcntl(fd, fcntl.F_GET_SEALS) != REQUIRED_SEALS:
+        ordinary_fail("toolchain")
+    if name is not None:
+        try:
+            if os.readlink(f"/proc/self/fd/{fd}") != f"/memfd:{name} (deleted)":
+                ordinary_fail("toolchain")
+        except OSError:
+            ordinary_fail("toolchain")
+    try:
+        return read_fd(fd, limit)
+    except OSError as error:
+        raise OrdinaryFailure("toolchain") from error
+
+
+def ordinary_read_key(path: str) -> bytes:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            value = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(value.st_mode)
+                or value.st_uid != 0
+                or value.st_nlink != 1
+                or stat.S_IMODE(value.st_mode) != 0o444
+                or value.st_size != 32
+            ):
+                ordinary_fail("toolchain")
+            raw = read_fd(descriptor, 32)
+            if snapshot_fd(descriptor) != snapshot_from_stat(value):
+                ordinary_fail("toolchain")
+            return raw
+        finally:
+            os.close(descriptor)
+    except OrdinaryFailure:
+        raise
+    except OSError as error:
+        raise OrdinaryFailure("toolchain") from error
+
+
+def ordinary_validate_predicate(value: Mapping[str, Any]) -> None:
+    exact_fields(
+        value,
+        (
+            "api", "request", "invocation_nonce", "dispatch_ticket_sha256", "project_head",
+            "project_object_format", "project_index_sha256", "project_raw_tree_sha256",
+            "source_exception_sha256", "align_head", "align_object_format", "align_repo_relative",
+            "worker_relative", "worker_size", "worker_sha256", "image_digest",
+            "image_attestation_sha256", "manifest_sha256", "entrypoint_sha256",
+        ),
+    )
+    if value["api"] != "ordinary-adoption/v2" or value["request"] != ORDINARY_ADOPTION_REQUEST:
+        raise ValueError("ordinary capsule request rejected")
+    nonce = value["invocation_nonce"]
+    if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", nonce) or "=" in nonce:
+        raise ValueError("ordinary capsule nonce rejected")
+    if len(decode_base64url(nonce, 32)) != 32:
+        raise ValueError("ordinary capsule nonce size rejected")
+    for name in (
+        "dispatch_ticket_sha256", "project_index_sha256", "project_raw_tree_sha256",
+        "source_exception_sha256", "worker_sha256", "image_attestation_sha256",
+        "manifest_sha256", "entrypoint_sha256",
+    ):
+        if not isinstance(value[name], str) or not HEX64.fullmatch(value[name]):
+            raise ValueError("ordinary capsule digest rejected")
+    for name in ("project_head", "align_head"):
+        if not isinstance(value[name], str) or not HEX40.fullmatch(value[name]):
+            raise ValueError("ordinary capsule revision rejected")
+    if value["project_object_format"] != "sha1" or value["align_object_format"] != "sha1":
+        raise ValueError("ordinary capsule object format rejected")
+    relative = value["align_repo_relative"]
+    if (
+        not isinstance(relative, str)
+        or relative.startswith("/")
+        or not relative
+        or any(component in ("", ".") for component in relative.split("/"))
+    ):
+        raise ValueError("ordinary capsule relative path rejected")
+    if value["worker_relative"] != ORDINARY_WORKER_PATH:
+        raise ValueError("ordinary capsule worker path rejected")
+    if not isinstance(value["worker_size"], int) or isinstance(value["worker_size"], bool) or not 0 <= value["worker_size"] <= MAX_WORKER_BYTES:
+        raise ValueError("ordinary capsule worker size rejected")
+    if not isinstance(value["image_digest"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["image_digest"]):
+        raise ValueError("ordinary capsule image digest rejected")
+
+
+def ordinary_verify_capsule(raw: bytes) -> OrderedDict[str, Any]:
+    envelope = parse_canonical(raw, MAX_ATTESTATION_BYTES)
+    exact_fields(envelope, ("payloadType", "payload", "signatures"))
+    if envelope["payloadType"] != ORDINARY_ADOPTION_TYPE:
+        raise ValueError("ordinary capsule type rejected")
+    predicate_raw = decode_base64url(envelope["payload"], MAX_ATTESTATION_BYTES)
+    predicate = parse_canonical(predicate_raw, MAX_ATTESTATION_BYTES)
+    ordinary_validate_predicate(predicate)
+    signatures = envelope["signatures"]
+    if not isinstance(signatures, list) or len(signatures) != 1:
+        raise ValueError("ordinary capsule signature set rejected")
+    signature = signatures[0]
+    if not isinstance(signature, Mapping):
+        raise ValueError("ordinary capsule signature rejected")
+    exact_fields(signature, ("keyid", "sig"))
+    if signature["keyid"] != RUN_KEY_ID:
+        raise ValueError("ordinary capsule key rejected")
+    signature_raw = decode_base64url(signature["sig"], 64)
+    if len(signature_raw) != 64 or not verify_ed25519(
+        ordinary_read_key(RUN_PUBLIC_KEY_PATH), dsse_pae(ORDINARY_ADOPTION_TYPE, predicate_raw), signature_raw
+    ):
+        raise ValueError("ordinary capsule signature rejected")
+    return predicate
+
+
+def ordinary_verify_image(raw: bytes, manifest_raw: bytes) -> Mapping[str, Any]:
+    envelope = parse_canonical(raw, MAX_ATTESTATION_BYTES)
+    exact_fields(envelope, ("payloadType", "payload", "signatures"))
+    if envelope["payloadType"] != "https://align-llm.dev/attestations/runner-image/v1":
+        raise ValueError("image attestation type rejected")
+    predicate_raw = decode_base64url(envelope["payload"], MAX_ATTESTATION_BYTES)
+    predicate = parse_canonical(predicate_raw, MAX_ATTESTATION_BYTES)
+    exact_fields(
+        predicate,
+        (
+            "schema_version", "image_digest", "image_name", "provenance_digest", "verifier_identity",
+            "verifier_version", "verifier_key_id", "verifier_key_sha256", "supervisor_path",
+            "supervisor_sha256", "bootstrap_path", "bootstrap_sha256", "manifest_path", "manifest_sha256",
+        ),
+    )
+    if predicate["schema_version"] != 1 or not isinstance(predicate["image_digest"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", predicate["image_digest"]):
+        raise ValueError("image attestation schema rejected")
+    for name in ("provenance_digest", "verifier_key_sha256", "supervisor_sha256", "bootstrap_sha256", "manifest_sha256"):
+        if not isinstance(predicate[name], str) or not HEX64.fullmatch(predicate[name]):
+            raise ValueError("image attestation digest rejected")
+    if predicate["manifest_sha256"] != sha256(manifest_raw):
+        raise ValueError("image manifest digest rejected")
+    signature = envelope["signatures"]
+    if not isinstance(signature, list) or len(signature) != 1 or not isinstance(signature[0], Mapping):
+        raise ValueError("image attestation signature set rejected")
+    signature_object = signature[0]
+    exact_fields(signature_object, ("keyid", "sig"))
+    if signature_object["keyid"] != IMAGE_KEY_ID:
+        raise ValueError("image attestation key rejected")
+    signature_raw = decode_base64url(signature_object["sig"], 64)
+    if not verify_ed25519(
+        ordinary_read_key("/usr/local/share/align-llm/image-verifier.pub"),
+        dsse_pae(envelope["payloadType"], predicate_raw),
+        signature_raw,
+    ):
+        raise ValueError("image attestation signature rejected")
+    return predicate
+
+
+def ordinary_raw_tree(root_fd: int, source: str) -> bytes:
+    try:
+        root = os.open(b".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd)
+    except OSError as error:
+        raise OrdinaryFailure("revision") from error
+    entries: list[OrderedDict[str, Any]] = []
+    total = 0
+
+    def append(path: bytes, kind: str, mode: int, size: int, raw: bytes, target: bytes = b"") -> None:
+        nonlocal total
+        total += len(raw)
+        if len(entries) >= 1_500_000 or total > MAX_SOURCE_BYTES:
+            ordinary_fail("revision")
+        entries.append(
+            OrderedDict(
+                (
+                    ("path_b64", base64.urlsafe_b64encode(path).rstrip(b"=").decode("ascii")),
+                    ("kind", kind),
+                    ("mode", f"{stat.S_IMODE(mode):04o}"),
+                    ("size", size),
+                    ("sha256", sha256(raw)),
+                    ("target_b64", base64.urlsafe_b64encode(target).rstrip(b"=").decode("ascii")),
+                )
+            )
+        )
+
+    append(b"", "dir", os.fstat(root).st_mode, 0, b"")
+
+    def visit(parent: int, prefix: tuple[bytes, ...]) -> None:
+        try:
+            names = sorted((os.fsencode(name) for name in os.listdir(parent)))
+        except OSError as error:
+            raise OrdinaryFailure("revision") from error
+        for name in names:
+            if not prefix and name in (b".git", b"HANDOFF.md", b"target", b"main"):
+                continue
+            path = (*prefix, name)
+            path_raw = b"/".join(path)
+            if not name or name in (b".", b"..") or b"\x00" in name or len(path_raw) > MAX_PATH_BYTES:
+                ordinary_fail("revision")
+            try:
+                value = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except OSError as error:
+                raise OrdinaryFailure("revision") from error
+            if stat.S_ISDIR(value.st_mode):
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+                try:
+                    before = snapshot_fd(child)
+                    if before != snapshot_from_stat(value):
+                        ordinary_fail("revision")
+                    append(path_raw, "dir", value.st_mode, 0, b"")
+                    visit(child, path)
+                    assert_snapshot(child, before)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(value.st_mode):
+                if value.st_nlink != 1 or value.st_uid != os.geteuid():
+                    ordinary_fail("revision")
+                descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+                try:
+                    before = snapshot_fd(descriptor)
+                    raw = read_fd(descriptor, MAX_FILE_BYTES)
+                    assert_snapshot(descriptor, before)
+                    append(path_raw, "file", value.st_mode, len(raw), raw)
+                finally:
+                    os.close(descriptor)
+            elif stat.S_ISLNK(value.st_mode):
+                target = os.fsencode(os.readlink(name, dir_fd=parent))
+                if not target or len(target) > MAX_PATH_BYTES or b"\x00" in target:
+                    ordinary_fail("revision")
+                append(path_raw, "symlink", value.st_mode, len(target), target, target)
+            else:
+                ordinary_fail("revision")
+
+    try:
+        visit(root, ())
+    finally:
+        os.close(root)
+    return canonical_json(OrderedDict((("schema", "raw-tree/v1"), ("source", source), ("entries", entries))))
+
+
+def ordinary_exception_rows(project_fd: int, align_fd: int) -> bytes:
+    rows: list[OrderedDict[str, Any]] = []
+    for source, root_fd, allow_main in (("project-source", project_fd, True), ("align-source", align_fd, False)):
+        for label, path in (("git", ".git"), ("handoff", "HANDOFF.md"), ("target", "target"), ("main", "main")):
+            descriptor = -1
+            try:
+                descriptor = _open_source_entry_simple(root_fd, path)
+            except FileNotFoundError:
+                if label in ("git", "handoff") or (label == "main" and not allow_main):
+                    ordinary_fail("revision")
+                rows.append(OrderedDict((("source", source), ("label", label), ("present", False), ("type", None), ("mode", None), ("link_count", None), ("bytes_consumed", False), ("content_sha256", None))))
+                continue
+            try:
+                value = os.fstat(descriptor)
+                mode = f"{stat.S_IMODE(value.st_mode):04o}"
+                if label == "git":
+                    if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+                        ordinary_fail("revision")
+                    rows.append(OrderedDict((("source", source), ("label", label), ("present", True), ("type", "directory" if stat.S_ISDIR(value.st_mode) else "regular"), ("mode", mode), ("link_count", None), ("bytes_consumed", False), ("content_sha256", None))))
+                elif label == "target":
+                    if not stat.S_ISDIR(value.st_mode) or value.st_mode & 0o7000 or value.st_mode & 0o022 or value.st_mode & 0o700 != 0o700:
+                        ordinary_fail("revision")
+                    rows.append(OrderedDict((("source", source), ("label", label), ("present", True), ("type", "directory"), ("mode", mode), ("link_count", value.st_nlink), ("bytes_consumed", False), ("content_sha256", None))))
+                else:
+                    if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or mode not in ("0644", "0755"):
+                        ordinary_fail("revision")
+                    raw = read_fd(descriptor, MAX_FILE_BYTES) if label == "handoff" else b""
+                    rows.append(OrderedDict((("source", source), ("label", label), ("present", True), ("type", "regular"), ("mode", mode), ("link_count", 1), ("bytes_consumed", label == "handoff"), ("content_sha256", sha256(raw) if label == "handoff" else None))))
+            finally:
+                os.close(descriptor)
+    return canonical_json_value(rows)
+
+
+def _open_source_entry_simple(root_fd: int, path: str) -> int:
+    parts = os.fsencode(path).split(b"/")
+    current = os.dup(root_fd)
+    try:
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=current)
+        os.close(current)
+        return descriptor
+    except OSError:
+        os.close(current)
+        raise
+
+
+def ordinary_make_root(admission: Admission) -> None:
+    make_root_children(admission)
+    for name in ("input-tools", "input-launcher-source"):
+        os.mkdir(name, 0o700, dir_fd=admission.root_fd)
+
+
+def ordinary_stage(
+    admission: Admission,
+    project: SourceIdentity,
+    align: SourceIdentity,
+    manifest: Mapping[str, Any],
+    cache_manifest: Mapping[str, Any],
+    tools: Mapping[str, int],
+) -> list[RuntimeBinding]:
+    root = admission.root_path
+    try:
+        (root / "project-source/.git").mkdir(mode=0o700)
+        copy_git_view(project, root / "project-source/.git")
+        copy_source(project, root / "project-source")
+        (root / "align-source/.git").mkdir(mode=0o700)
+        copy_git_view(align, root / "align-source/.git")
+        copy_source(align, root / "align-source")
+        copy_tools(tools, root / "input-tools")
+        runtime = copy_runtime(manifest, root / "runtime")
+        copy_cache(manifest, cache_manifest, root / "cargo-home")
+        launcher_source = root / "project-source/scripts/adoption-alignc"
+        if not launcher_source.is_file():
+            ordinary_fail("build")
+        install_file(launcher_source, root / "input-launcher-source/adoption-alignc", 0o755)
+        enforce_private_quota(admission)
+        return runtime
+    except OrdinaryFailure:
+        raise
+    except (CleanupError, OSError, ValueError) as error:
+        raise OrdinaryFailure("toolchain") from error
+
+
+def ordinary_bind_source(admission: Admission, source: Path, kind: str, target_fd: int) -> int:
+    try:
+        descriptor = open_private_mount(admission, source, kind)
+        os.dup2(descriptor, target_fd, inheritable=True)
+        if descriptor != target_fd:
+            os.close(descriptor)
+        os.set_inheritable(target_fd, True)
+        return target_fd
+    except (CleanupError, OSError, ValueError) as error:
+        raise OrdinaryFailure("toolchain") from error
+
+
+def ordinary_runtime_binding(runtime: Sequence[RuntimeBinding], target: str) -> RuntimeBinding:
+    matches = [binding for binding in runtime if binding[1] == target]
+    if len(matches) != 1:
+        raise OrdinaryFailure("toolchain")
+    return matches[0]
+
+
+def ordinary_ancestor_directories(runtime: Sequence[RuntimeBinding]) -> list[str]:
+    fixed = [
+        "/tmp", "/authority", "/input-project", "/input-align", "/input-rust", "/input-llvm",
+        "/input-native", "/input-cargo-cache", "/input-launcher-source", "/input-tools",
+        "/private-project", "/private-align", "/private-rust", "/private-llvm", "/private-native",
+        "/private-cargo-cache", "/private-launcher-source", "/private-tool-bin", "/private-tool-inventory",
+        "/private-cargo-home", "/private-cargo-target", "/private-compiler-cache", "/tools",
+        "/bin", "/lib", "/lib64", "/usr", "/usr/bin", "/usr/lib",
+    ]
+    seen = set(fixed)
+    result = list(fixed)
+    for _, target, _, _ in runtime:
+        parent = str(Path(target).parent)
+        ancestors: list[str] = []
+        while parent not in ("/", "."):
+            ancestors.append(parent)
+            parent = str(Path(parent).parent)
+        for value in reversed(ancestors):
+            if value not in seen:
+                seen.add(value)
+                result.append(value)
+    return result
+
+
+def ordinary_execveat(fd: int, arguments: Sequence[str]) -> None:
+    encoded_arguments = [os.fsencode(value) for value in arguments]
+    argv = (ctypes.c_char_p * (len(encoded_arguments) + 1))(*(encoded_arguments + [None]))
+    envp = (ctypes.c_char_p * 1)(None)
+    libc = ctypes.CDLL(None, use_errno=True)
+    result = libc.syscall(322, fd, ctypes.c_char_p(b""), argv, envp, 0x1000)
+    error = ctypes.get_errno()
+    if result != 0:
+        raise OSError(error, os.strerror(error))
+
+
+def ordinary_close_child_fds(allowed: set[int]) -> None:
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            descriptor = int(name)
+        except ValueError:
+            continue
+        if descriptor not in allowed:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def ordinary_capture_bwrap(
+    admission: Admission,
+    runtime: Sequence[RuntimeBinding],
+    tools: Mapping[str, int],
+) -> tuple[int, bytes, bytes]:
+    root = admission.root_path
+    bound: list[int] = []
+    runtime_fds: list[int] = []
+    tool_fds: list[int] = []
+    stdout_read = stdout_write = stderr_read = stderr_write = -1
+    lease: CgroupLease | None = None
+    child = -1
+    process_group: int | None = None
+    try:
+        project_fd = ordinary_bind_source(admission, root / "project-source", "dir", 20)
+        align_fd = ordinary_bind_source(admission, root / "align-source", "dir", 21)
+        rust_source = ordinary_runtime_binding(runtime, "/runtime/rust")
+        llvm_source = ordinary_runtime_binding(runtime, "/runtime/cc-suite")
+        rust_fd = ordinary_bind_source(admission, rust_source[0], rust_source[2], 22)
+        llvm_fd = ordinary_bind_source(admission, llvm_source[0], llvm_source[2], 23)
+        native_fd = ordinary_bind_source(admission, llvm_source[0], llvm_source[2], 24)
+        cargo_fd = ordinary_bind_source(admission, root / "cargo-home", "dir", 25)
+        launcher_fd = ordinary_bind_source(admission, root / "input-launcher-source", "dir", 26)
+        bound.extend((project_fd, align_fd, rust_fd, llvm_fd, native_fd, cargo_fd, launcher_fd))
+        for index, binding in enumerate(runtime):
+            runtime_fds.append(ordinary_bind_source(admission, binding[0], binding[2], 40 + index))
+        for index, name in enumerate(tools):
+            tool_fds.append(ordinary_bind_source(admission, root / "input-tools" / name, "file", 400 + index))
+        bwrap = ordinary_runtime_binding(runtime, "/usr/bin/bwrap")
+        bwrap_fd = ordinary_bind_source(admission, bwrap[0], "file", 27)
+        os.set_inheritable(bwrap_fd, False)
+        bound.append(bwrap_fd)
+        os.set_inheritable(12, True)
+        os.set_inheritable(13, True)
+        os.set_inheritable(15, True)
+        os.set_inheritable(16, True)
+        runtime_fds_tuple = tuple(runtime_fds)
+        tool_fds_tuple = tuple(tool_fds)
+        arguments: list[str] = [
+            "bwrap", "--clearenv", "--die-with-parent", "--new-session", "--as-pid-1",
+            "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--sync-fd", "16",
+            "--uid", "0", "--gid", "0", "--cap-drop", "ALL", "--cap-add", "CAP_SYS_ADMIN",
+            "--size", "68719476736", "--tmpfs", "/", "--proc", "/proc", "--dev", "/dev",
+        ]
+        for directory in ordinary_ancestor_directories(runtime):
+            arguments.extend(("--dir", directory))
+        arguments.extend(
+            (
+                "--size", "268435456", "--tmpfs", "/tmp",
+                "--size", "268435456", "--tmpfs", "/private-tool-bin",
+                "--size", "268435456", "--tmpfs", "/private-tool-inventory",
+                "--size", "25769803776", "--tmpfs", "/private-cargo-home",
+                "--size", "68719476736", "--tmpfs", "/private-cargo-target",
+                "--size", "8589934592", "--tmpfs", "/private-compiler-cache",
+            )
+        )
+        for index, binding in enumerate(runtime):
+            arguments.extend(("--ro-bind-fd", str(40 + index), binding[1]))
+        for index, name in enumerate(tools):
+            arguments.extend(("--ro-bind-fd", str(400 + index), f"/input-tools/{name}"))
+        arguments.extend(
+            (
+                "--ro-bind-fd", "12", "/authority/capsule",
+                "--ro-bind-fd", "13", "/authority/worker",
+                "--ro-bind-fd", "15", "/authority/nonce",
+                "--ro-bind-fd", "20", "/input-project",
+                "--ro-bind-fd", "21", "/input-align",
+                "--ro-bind-fd", "22", "/input-rust",
+                "--ro-bind-fd", "23", "/input-llvm",
+                "--ro-bind-fd", "24", "/input-native",
+                "--ro-bind-fd", "25", "/input-cargo-cache",
+                "--ro-bind-fd", "26", "/input-launcher-source",
+                "--setenv", "PATH", "/usr/bin:/bin",
+                "--setenv", "ALIGN_REPO", "/private-align",
+                "--setenv", "CARGO_NET_OFFLINE", "true",
+                "--setenv", "HOME", "/nonexistent",
+                "--setenv", "LANG", "C",
+                "--setenv", "LC_ALL", "C",
+                "--setenv", "MAKEFLAGS", "",
+                "--setenv", "GNUMAKEFLAGS", "",
+                "--setenv", "MAKEOVERRIDES", "",
+                "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
+                "--setenv", "TMPDIR", "/tmp",
+                "--chdir", "/private-project",
+                "--", "/usr/bin/adoption-namespace",
+                "--capsule-path", "/authority/capsule", "--worker-path", "/authority/worker",
+                "--nonce-path", "/authority/nonce", "--supervisor-channel-fd", "16",
+                "--mode", "ordinary-adoption",
+            )
+        )
+        stdout_read, stdout_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+        stderr_read, stderr_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+        lease = open_cgroup_lease()
+        child = os.fork()
+        if child == 0:
+            try:
+                os.dup2(stdout_write, 1)
+                os.dup2(stderr_write, 2)
+                for descriptor in (stdout_read, stdout_write, stderr_read, stderr_write):
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                child_preexec(lease.leaf_fd)
+                os.close(lease.leaf_fd)
+                ordinary_close_child_fds(
+                    {0, 1, 2, 12, 13, 15, 16, 20, 21, 22, 23, 24, 25, 26, 27, *runtime_fds_tuple, *tool_fds_tuple}
+                )
+                ordinary_execveat(27, arguments)
+            except BaseException:
+                os._exit(127)
+        try:
+            cgroup_child_membership(lease, child)
+        except CleanupError as error:
+            raise OrdinaryFailure("toolchain") from error
+        try:
+            process_group = os.getpgid(child)
+        except ProcessLookupError:
+            process_group = None
+        os.close(stdout_write)
+        stdout_write = -1
+        os.close(stderr_write)
+        stderr_write = -1
+        streams = selectors.DefaultSelector()
+        streams.register(stdout_read, selectors.EVENT_READ, "stdout")
+        streams.register(stderr_read, selectors.EVENT_READ, "stderr")
+        captures = {"stdout": bytearray(), "stderr": bytearray()}
+        deadline = time.monotonic() + ORDINARY_BWRAP_TIMEOUT
+        status: int | None = None
+        while streams.get_map() or status is None:
+            if time.monotonic() >= deadline:
+                raise OrdinaryFailure("build")
+            try:
+                waited, observed = os.waitpid(child, os.WNOHANG)
+            except InterruptedError:
+                waited, observed = 0, 0
+            if waited == child:
+                status = observed
+            for key, _ in streams.select(0.25):
+                block = os.read(key.fd, 8192)
+                if not block:
+                    streams.unregister(key.fd)
+                    os.close(key.fd)
+                    continue
+                target = captures[key.data]
+                if len(target) + len(block) > ORDINARY_HELPER_STREAM:
+                    raise OrdinaryFailure("build")
+                target.extend(block)
+        streams.close()
+        if status is None:
+            raise OrdinaryFailure("unobserved")
+        if not os.WIFEXITED(status):
+            raise OrdinaryFailure("unobserved")
+        return os.WEXITSTATUS(status), bytes(captures["stdout"]), bytes(captures["stderr"])
+    except OrdinaryFailure:
+        if child > 0:
+            try:
+                if lease is not None:
+                    kill_cgroup(lease, process_group)
+            except (CleanupError, OSError):
+                pass
+            while True:
+                try:
+                    os.waitpid(child, 0)
+                    break
+                except InterruptedError:
+                    continue
+                except ChildProcessError:
+                    break
+        raise
+    finally:
+        for descriptor in (stdout_read, stdout_write, stderr_read, stderr_write):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        for descriptor in reversed((*tool_fds, *runtime_fds, *bound)):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if lease is not None:
+            try:
+                if cgroup_populated(lease):
+                    kill_cgroup(lease, process_group)
+                while cgroup_populated(lease):
+                    time.sleep(0.01)
+                remove_cgroup_leaf(lease)
+            except (CleanupError, OSError) as error:
+                raise OrdinaryFailure("cleanup") from error
+            finally:
+                for descriptor in (lease.leaf_fd, lease.parent_fd):
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+
+
+def ordinary_result(status: int, stdout: bytes, stderr: bytes) -> int:
+    phases = ("input", "toolchain", "revision", "build", "fixture", "cleanup", "unobserved")
+    if status == 0:
+        if stdout != b"json-scan adoption: PASS\n" or stderr:
+            ordinary_fail("toolchain")
+        os.write(1, stdout)
+        return 0
+    if status < 1 or status > len(phases) or stdout:
+        ordinary_fail("toolchain")
+    expected = f"json-scan adoption: ERROR {phases[status - 1]}\n".encode("ascii")
+    if stderr != expected:
+        ordinary_fail("toolchain")
+    os.write(2, stderr)
+    return status
+
+
+def ordinary_worker(arguments: Sequence[str]) -> int:
+    if tuple(arguments) != (
+        "--mode", "ordinary-adoption", "--project-root-fd", "4", "--align-root-fd", "18",
+        "--capsule-fd", "12", "--invocation-nonce-fd", "15", "--supervisor-channel-fd", "16",
+    ):
+        ordinary_fail("input")
+    if dict(os.environ) != {
+        "PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent", "TMPDIR": "/tmp",
+        "PYTHONHOME": "/usr", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+    }:
+        ordinary_fail("input")
+    if ordinary_descriptor_set() != ORDINARY_REQUIRED_FDS:
+        ordinary_fail("input")
+    install_signal_handlers()
+    set_subreaper()
+    capsule = ordinary_read_sealed(12, MAX_ATTESTATION_BYTES, "align-llm-ordinary-adoption-capsule")
+    worker = ordinary_read_sealed(13, MAX_WORKER_BYTES, "align-llm-ordinary-adoption-worker")
+    nonce = ordinary_read_sealed(15, 32, "align-llm-ordinary-adoption-nonce")
+    if len(nonce) != 32:
+        ordinary_fail("toolchain")
+    try:
+        predicate = ordinary_verify_capsule(capsule)
+        if predicate["worker_size"] != len(worker) or predicate["worker_sha256"] != sha256(worker):
+            ordinary_fail("revision")
+        image_raw = read_path(ORDINARY_IMAGE_ATTESTATION_PATH, MAX_ATTESTATION_BYTES)
+        manifest_raw = read_path(ORDINARY_MANIFEST_PATH, MAX_MANIFEST_BYTES)
+        image_predicate = ordinary_verify_image(image_raw, manifest_raw)
+        manifest = validate_manifest(manifest_raw)
+        if (
+            predicate["image_attestation_sha256"] != sha256(image_raw)
+            or predicate["manifest_sha256"] != sha256(manifest_raw)
+            or predicate["image_digest"] != image_predicate["image_digest"]
+            or predicate["entrypoint_sha256"] != sha256(read_path(ORDINARY_ENTRYPOINT_PATH, MAX_FILE_BYTES))
+        ):
+            ordinary_fail("toolchain")
+    except OrdinaryFailure:
+        raise
+    except (OSError, ValueError, UnicodeError):
+        ordinary_fail("toolchain")
+    verify_platform()
+    try:
+        tools = authenticate_tools(manifest)
+    except Exception as error:
+        raise OrdinaryFailure("toolchain") from error
+    project: SourceIdentity | None = None
+    align: SourceIdentity | None = None
+    admission: Admission | None = None
+    try:
+        try:
+            project = source_identity(
+                "project-source", 4, tools["git"],
+                expected_head=predicate["project_head"], expected_format="sha1",
+            )
+            align = source_identity(
+                "align-source", 18, tools["git"],
+                expected_head=predicate["align_head"], expected_format="sha1",
+            )
+            verify_align_pin(project, align)
+            if index_digest(project.view) != predicate["project_index_sha256"]:
+                ordinary_fail("revision")
+            if sha256(ordinary_raw_tree(4, "project-source")) != predicate["project_raw_tree_sha256"]:
+                ordinary_fail("revision")
+            if sha256(ordinary_exception_rows(4, 18)) != predicate["source_exception_sha256"]:
+                ordinary_fail("revision")
+            project_path = os.path.normpath(os.readlink("/proc/self/fd/4"))
+            align_path = os.path.normpath(os.readlink("/proc/self/fd/18"))
+            relative = posixpath.relpath(align_path, project_path)
+            if relative != predicate["align_repo_relative"] or relative in ("", ".") or relative.startswith("/"):
+                ordinary_fail("revision")
+        except OrdinaryFailure:
+            raise
+        except (OSError, ValueError, UnicodeError) as error:
+            raise OrdinaryFailure("revision") from error
+        try:
+            cache_manifest = validate_cache(manifest)
+            for binding in manifest["runtime_bindings"]:
+                validate_tree_manifest(binding["manifest"], binding["source"])
+        except Exception as error:
+            raise OrdinaryFailure("toolchain") from error
+        try:
+            admission = admit_root()
+            ordinary_make_root(admission)
+            runtime = ordinary_stage(admission, project, align, manifest, cache_manifest, tools)
+            status, stdout, stderr = ordinary_capture_bwrap(admission, runtime, tools)
+            return ordinary_result(status, stdout, stderr)
+        except OrdinaryFailure:
+            raise
+        except WorkerError as error:
+            raise OrdinaryFailure("build") from error
+        except (CleanupError, OSError, ValueError, subprocess.SubprocessError) as error:
+            raise OrdinaryFailure("toolchain") from error
+    finally:
+        if admission is not None:
+            try:
+                cleanup(admission)
+            except CleanupError as error:
+                if sys.exc_info()[1] is None:
+                    raise OrdinaryFailure("cleanup") from error
+        for identity in (align, project):
+            if identity is not None:
+                try:
+                    close_git_view(identity.view)
+                except CleanupError:
+                    if sys.exc_info()[1] is None:
+                        raise OrdinaryFailure("cleanup")
+        for descriptor in tools.values():
+            try:
+                os.close(descriptor)
+            except OSError:
+                if sys.exc_info()[1] is None:
+                    raise OrdinaryFailure("cleanup")
+
+
 def install_bundle(
     admission: Admission,
     compiler_source: Path,
@@ -4726,13 +5465,35 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
+    selected_arguments = list(sys.argv[1:] if arguments is None else arguments)
+    if selected_arguments[:2] == ["--mode", "ordinary-adoption"]:
+        try:
+            return ordinary_worker(selected_arguments)
+        except OrdinaryFailure as error:
+            phases = {
+                "input": 1,
+                "toolchain": 2,
+                "revision": 3,
+                "build": 4,
+                "fixture": 5,
+                "cleanup": 6,
+                "unobserved": 7,
+            }
+            phase = error.phase if error.phase in phases else "toolchain"
+            os.write(2, f"json-scan adoption: ERROR {phase}\n".encode("ascii"))
+            return phases[phase]
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            os.write(2, b"json-scan adoption: ERROR unobserved\n")
+            return 7
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--mode", required=True)
     parser.add_argument("--project-root-fd", type=int, required=True)
     parser.add_argument("--image-manifest-fd", type=int, required=True)
     parser.add_argument("--run-attestation-fd", type=int, required=True)
     try:
-        value = parser.parse_args(list(sys.argv[1:] if arguments is None else arguments))
+        value = parser.parse_args(selected_arguments)
     except SystemExit:
         os.write(2, b"fresh compiler: ERROR ARGUMENT input\n")
         return 1

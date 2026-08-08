@@ -1,0 +1,9 @@
+import core.json
+
+NestedItems { items: array<str> }
+OwnedRow { nested: NestedItems }
+
+fn main() -> Result<(), Error> {
+  rows: json.scanner<OwnedRow> := json.scan("[{\"nested\":{\"items\":[\"a\"]}}]")
+  return Ok(())
+}

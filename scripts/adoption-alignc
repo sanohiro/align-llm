@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Verify and execute the ordinary Request 6 compiler handoff."""
+
+from __future__ import annotations
+
+import ctypes
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from collections import OrderedDict
+
+
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+MAX_DESCRIPTOR_BYTES = 4 * 1024 * 1024
+MAX_COMPILER_BYTES = 512 * 1024 * 1024
+
+
+def reject() -> None:
+    raise SystemExit(1)
+
+
+def fields(value: object, expected: tuple[str, ...]) -> OrderedDict[str, object]:
+    if not isinstance(value, OrderedDict) or tuple(value) != expected:
+        reject()
+    return value
+
+
+def read_regular(path: str, mode: int, limit: int) -> tuple[int, bytes, os.stat_result]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != 0
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != mode
+            or before.st_size < 0
+            or before.st_size > limit
+        ):
+            reject()
+        raw = os.pread(descriptor, before.st_size, 0)
+        after = os.fstat(descriptor)
+    except OSError:
+        reject()
+    if len(raw) != before.st_size or (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_nlink,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_nlink,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ):
+        reject()
+    return descriptor, raw, before
+
+
+def parse(raw: bytes) -> OrderedDict[str, object]:
+    def duplicate_pairs(pairs: list[tuple[str, object]]) -> OrderedDict[str, object]:
+        value: OrderedDict[str, object] = OrderedDict()
+        for key, child in pairs:
+            if key in value:
+                reject()
+            value[key] = child
+        return value
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8", "strict"),
+            object_pairs_hook=duplicate_pairs,
+            parse_constant=lambda _: reject(),
+        )
+        if not isinstance(value, OrderedDict):
+            reject()
+        canonical = (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
+            "utf-8", "strict"
+        )
+        if canonical != raw:
+            reject()
+        return value
+    except (UnicodeDecodeError, json.JSONDecodeError, UnicodeEncodeError):
+        reject()
+
+
+descriptor_fd, descriptor_raw, _ = read_regular(
+    "/private-tool-bin/adoption-handoff", 0o444, MAX_DESCRIPTOR_BYTES
+)
+compiler_fd, compiler_raw, compiler_stat = read_regular(
+    "/private-tool-bin/alignc", 0o555, MAX_COMPILER_BYTES
+)
+archive_fd, archive_raw, archive_stat = read_regular(
+    "/private-tool-bin/libalign_runtime.a", 0o444, MAX_COMPILER_BYTES
+)
+launcher_fd, launcher_raw, launcher_stat = read_regular(
+    "/private-tool-bin/adoption-alignc", 0o555, MAX_DESCRIPTOR_BYTES
+)
+try:
+    descriptor = fields(
+        parse(descriptor_raw),
+        (
+            "schema_version", "compiler_path", "compiler_dev", "compiler_ino", "compiler_mode",
+            "compiler_nlink", "compiler_size", "compiler_sha256", "archive_path", "archive_dev",
+            "archive_ino", "archive_mode", "archive_nlink", "archive_size", "archive_sha256",
+            "launcher_sha256", "align_revision", "project_head",
+        ),
+    )
+except TypeError:
+    reject()
+if (
+    isinstance(descriptor["schema_version"], bool)
+    or not isinstance(descriptor["schema_version"], int)
+    or descriptor["schema_version"] != 1
+    or descriptor["compiler_path"] != "/private-tool-bin/alignc"
+    or descriptor["archive_path"] != "/private-tool-bin/libalign_runtime.a"
+    or not isinstance(descriptor["align_revision"], str)
+    or not HEX40.fullmatch(descriptor["align_revision"])
+    or not isinstance(descriptor["project_head"], str)
+    or not HEX40.fullmatch(descriptor["project_head"])
+):
+    reject()
+for name in (
+    "compiler_dev", "compiler_ino", "compiler_mode", "compiler_nlink", "compiler_size",
+    "archive_dev", "archive_ino", "archive_mode", "archive_nlink", "archive_size",
+):
+    value = descriptor[name]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        reject()
+expected = OrderedDict(
+    (
+        ("schema_version", 1),
+        ("compiler_path", "/private-tool-bin/alignc"),
+        ("compiler_dev", compiler_stat.st_dev),
+        ("compiler_ino", compiler_stat.st_ino),
+        ("compiler_mode", compiler_stat.st_mode & 0o7777),
+        ("compiler_nlink", compiler_stat.st_nlink),
+        ("compiler_size", compiler_stat.st_size),
+        ("compiler_sha256", hashlib.sha256(compiler_raw).hexdigest()),
+        ("archive_path", "/private-tool-bin/libalign_runtime.a"),
+        ("archive_dev", archive_stat.st_dev),
+        ("archive_ino", archive_stat.st_ino),
+        ("archive_mode", archive_stat.st_mode & 0o7777),
+        ("archive_nlink", archive_stat.st_nlink),
+        ("archive_size", archive_stat.st_size),
+        ("archive_sha256", hashlib.sha256(archive_raw).hexdigest()),
+        ("launcher_sha256", hashlib.sha256(launcher_raw).hexdigest()),
+        ("align_revision", descriptor["align_revision"]),
+        ("project_head", descriptor["project_head"]),
+    )
+)
+if descriptor != expected:
+    reject()
+for value, pattern in ((descriptor["compiler_sha256"], HEX64), (descriptor["archive_sha256"], HEX64),
+                       (descriptor["launcher_sha256"], HEX64)):
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        reject()
+
+for unused in (descriptor_fd, archive_fd, launcher_fd):
+    os.close(unused)
+
+arguments = [b"/private-tool-bin/alignc", *[os.fsencode(value) for value in sys.argv[1:]]]
+argv = (ctypes.c_char_p * (len(arguments) + 1))(*arguments, None)
+environment = [os.fsencode(name + "=" + value) for name, value in os.environ.items()]
+envp = (ctypes.c_char_p * (len(environment) + 1))(*environment, None)
+libc = ctypes.CDLL(None, use_errno=True)
+result = libc.syscall(322, compiler_fd, ctypes.c_char_p(b""), argv, envp, 0x1000)
+raise SystemExit(ctypes.get_errno() if result < 0 else 1)

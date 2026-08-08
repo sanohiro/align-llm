@@ -1,0 +1,10 @@
+import core.json
+
+Item { name: str }
+Content { Text(str), Parts(array<Item>) }
+OwnedRow { content: Content }
+
+fn main() -> Result<(), Error> {
+  rows: json.scanner<OwnedRow> := json.scan("[{\"content\":[{\"name\":\"a\"}]}]")
+  return Ok(())
+}

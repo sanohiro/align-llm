@@ -41,6 +41,7 @@ FOCUSED_CHECKS = (
             "fresh-v2-pre-dispatch-source-smoke",
         ),
     ),
+    ("run-fresh-focused-adoption-smoke", ("fresh-v2-focused-adoption-request-smoke",)),
     (
         "run-fresh-worker-unit-smoke",
         (

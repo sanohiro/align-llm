@@ -26,7 +26,7 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption ci
 
 check:
 	$(ALIGNC) check-per-unit $(ENTRY)
@@ -107,11 +107,18 @@ capable-checks: gate-topology-check
 	  $(CAPABLE_ONLY_CHECK_TARGETS)
 
 align-revision:
-	./scripts/check-align-revision
+	/tools/bash /private-project/scripts/check-align-revision >/dev/null 2>&1
 
 align-build: align-revision
-	cargo build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
-		-p align_runtime -p align_driver
+	$(CARGO) build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
+		-p align_runtime -p align_driver >/dev/null 2>&1
+
+align-build-only:
+	$(CARGO) build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
+		-p align_runtime -p align_driver >/dev/null 2>&1
+
+json-scan-row-ownership-adoption:
+	@/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke
 
 ci:
 	@exit 1
