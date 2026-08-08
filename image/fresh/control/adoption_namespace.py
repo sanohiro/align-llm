@@ -439,7 +439,9 @@ def _stage_inputs() -> None:
         _copy_file(str(entry), f"/tools/{entry.name}", 0o555)
     _debug("stage tool inventory copied")
     for source, name in (("clang", "cc"), ("clang++", "cxx"), ("ar", "ar"), ("ranlib", "ranlib"), ("linker", "linker")):
+        _debug(f"stage native tool start source={source} destination={name}")
         _copy_file(f"/tools/{source}", f"/private-native/bin/{name}", 0o555)
+        _debug(f"stage native tool passed source={source}")
     _debug("stage native tools copied")
     Path("/private-native/bin").chmod(0o555)
     try:
