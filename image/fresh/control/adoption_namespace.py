@@ -64,6 +64,20 @@ HELPER_ENVIRONMENT = {
     "PYTHONDONTWRITEBYTECODE": "1",
     "TMPDIR": "/tmp",
 }
+RUNTIME_SEARCH_ROOTS = (
+    "/runtime/git",
+    "/runtime/rust",
+    "/runtime/cc-suite",
+    "/runtime/bwrap",
+    "/usr/lib/x86_64-linux-gnu",
+    "/lib/x86_64-linux-gnu",
+    "/usr/lib/gcc/x86_64-linux-gnu",
+    "/usr/lib/python3.12",
+    "/usr/include",
+    "/usr/share/git-core",
+    "/usr/share/perl5",
+    "/lib64",
+)
 
 
 class NamespaceFailure(Exception):
@@ -734,18 +748,19 @@ def _runtime_paths() -> tuple[str, str, str]:
     libraries: list[str] = []
     loaders: list[str] = []
     pkgconfig: list[str] = []
-    for root, directories, files in os.walk("/runtime"):
-        directories.sort(key=os.fsencode)
-        files.sort(key=os.fsencode)
-        for name in files:
-            path = os.path.join(root, name)
-            directory = os.path.dirname(path)
-            if (name.endswith(".a") or name.endswith(".so") or ".so." in name) and directory not in libraries:
-                libraries.append(directory)
-            if (name.endswith(".so") or ".so." in name) and directory not in loaders:
-                loaders.append(directory)
-            if name.endswith(".pc") and directory not in pkgconfig:
-                pkgconfig.append(directory)
+    for search_root in RUNTIME_SEARCH_ROOTS:
+        for root, directories, files in os.walk(search_root):
+            directories.sort(key=os.fsencode)
+            files.sort(key=os.fsencode)
+            for name in files:
+                path = os.path.join(root, name)
+                directory = os.path.dirname(path)
+                if (name.endswith(".a") or name.endswith(".so") or ".so." in name) and directory not in libraries:
+                    libraries.append(directory)
+                if (name.endswith(".so") or ".so." in name) and directory not in loaders:
+                    loaders.append(directory)
+                if name.endswith(".pc") and directory not in pkgconfig:
+                    pkgconfig.append(directory)
     if not libraries or not loaders or not pkgconfig:
         _debug(
             f"runtime paths missing libraries={len(libraries)} loaders={len(loaders)} "
