@@ -179,9 +179,9 @@ def check_source_contracts() -> None:
     for token in (
         '"--as-pid-1"', '"--unshare-ipc"', '"--sync-fd", "16"',
         '"--cap-drop", "ALL"', '"--cap-add", "CAP_SYS_ADMIN"',
-        '"--ro-bind-fd", "12", "/authority/capsule"',
-        '"--ro-bind-fd", "13", "/authority/worker"',
-        '"--ro-bind-fd", "15", "/authority/nonce"',
+        '"--ro-bind-data", "12", "/authority/capsule"',
+        '"--ro-bind-data", "13", "/authority/worker"',
+        '"--ro-bind-data", "15", "/authority/nonce"',
         '"--mode", "ordinary-adoption"',
         '"--setenv", "ALIGN_REPO", "/private-align"',
     ):
