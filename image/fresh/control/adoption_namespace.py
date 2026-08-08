@@ -588,17 +588,22 @@ def _receive_proof(channel: socket.socket) -> bytes:
 
 
 def _drop_child_capabilities() -> None:
-    libc = ctypes.CDLL(None, use_errno=True)
-    if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
-        error = ctypes.get_errno()
-        os.write(2, f"namespace debug: no_new_privs errno={error}\n".encode("ascii"))
-        raise OSError(error, "no_new_privs")
-    header = (ctypes.c_uint32 * 2)(0x20080522, 0)
-    data = (ctypes.c_uint32 * 2)(0, 0)
-    if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
-        error = ctypes.get_errno()
-        os.write(2, f"namespace debug: capset errno={error}\n".encode("ascii"))
-        raise OSError(error, "capset")
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
+            error = ctypes.get_errno()
+            raise OSError(error, "no_new_privs")
+        header = (ctypes.c_uint32 * 2)(0x20080522, 0)
+        data = (ctypes.c_uint32 * 2)(0, 0)
+        if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, "capset")
+    except BaseException as error:
+        try:
+            os.write(2, f"namespace debug: capability drop {type(error).__name__}: {error!r}\n".encode("ascii", "backslashreplace"))
+        except BaseException:
+            pass
+        os._exit(127)
 
 
 def _set_subreaper() -> None:
@@ -743,6 +748,7 @@ def _run_row(
     if descendant_failure:
         raise NamespaceFailure(phase)
     if status != 0:
+        _debug(f"row failure phase={phase} status={status} stdout={bytes(captures[stream_fds[0]])!r} stderr={bytes(captures[stream_fds[1]])!r}")
         raise NamespaceFailure(phase if status > 0 else "unobserved")
     if any(captures.values()):
         raise NamespaceFailure(phase)
