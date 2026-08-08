@@ -1153,7 +1153,7 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         }
         if (!stdout_eof) fds[nfds++] = (struct pollfd){stdout_fd, POLLIN, 0};
         if (!stderr_eof) fds[nfds++] = (struct pollfd){stderr_fd, POLLIN, 0};
-        fds[nfds++] = (struct pollfd){channel_fd, POLLIN, 0};
+        if (!channel_hup) fds[nfds++] = (struct pollfd){channel_fd, POLLIN, 0};
         poll_result = poll(fds, nfds, 1000);
         if (poll_result < 0 && errno != EINTR) {
             ordinary_debug("parent: poll error\n");
@@ -1181,6 +1181,10 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
             if (received == 0) {
                 channel_hup = 1;
                 ordinary_debug("parent: channel hup\n");
+            }
+            else if (received < 0 && errno == ECONNRESET) {
+                channel_hup = 1;
+                ordinary_debug("parent: channel reset\n");
             }
             else if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                 ordinary_debug_errno("parent: recv error", errno);
