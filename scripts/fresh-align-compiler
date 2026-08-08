@@ -4115,9 +4115,9 @@ def ordinary_capture_bwrap(
             arguments.extend(("--ro-bind-fd", str(400 + index), f"/input-tools/{name}"))
         arguments.extend(
             (
-                "--ro-bind-fd", "12", "/authority/capsule",
-                "--ro-bind-fd", "13", "/authority/worker",
-                "--ro-bind-fd", "15", "/authority/nonce",
+                "--ro-bind-data", "12", "/authority/capsule",
+                "--ro-bind-data", "13", "/authority/worker",
+                "--ro-bind-data", "15", "/authority/nonce",
                 "--ro-bind-fd", "20", "/input-project",
                 "--ro-bind-fd", "21", "/input-align",
                 "--ro-bind-fd", "22", "/input-rust",
