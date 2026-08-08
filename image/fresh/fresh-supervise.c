@@ -75,6 +75,15 @@ static void ordinary_debug(const char *message) {
     close(fd);
 }
 
+static void ordinary_debug_bytes(const unsigned char *bytes, size_t size) {
+    int fd;
+    if (!ordinary_debug_enabled()) return;
+    fd = open("/tmp/fresh-debug", O_WRONLY | O_APPEND | O_CLOEXEC);
+    if (fd < 0) return;
+    (void)!write(fd, bytes, size);
+    close(fd);
+}
+
 static int fail_argument(void) {
     static const char message[] = "fresh compiler: ERROR ARGUMENT input\n";
     (void)!write(STDERR_FILENO, message, sizeof(message) - 1);
@@ -1099,10 +1108,12 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         return -1;
     }
     if (send(channel_fd, ticket, 32U, MSG_NOSIGNAL) != 32) {
+        ordinary_debug("parent: ticket send failed\n");
         close(stdout_fd);
         close(stderr_fd);
         return -1;
     }
+    ordinary_debug("parent: loop start\n");
     clock_gettime(CLOCK_MONOTONIC, &start);
     while (!reaped || !stdout_eof || !stderr_eof || !channel_hup) {
         struct pollfd fds[3];
@@ -1112,7 +1123,10 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         pid_t waited = 0;
         if (!reaped) {
             waited = waitpid(child, &status, WNOHANG);
-            if (waited == child) reaped = 1;
+            if (waited == child) {
+                reaped = 1;
+                ordinary_debug("parent: dispatcher reaped\n");
+            }
             else if (waited < 0 && errno != EINTR) failure = 1;
         }
         if (!stdout_eof) fds[nfds++] = (struct pollfd){stdout_fd, POLLIN, 0};
@@ -1133,11 +1147,18 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
             message.msg_iov = &vector;
             message.msg_iovlen = 1;
             received = recvmsg(channel_fd, &message, MSG_DONTWAIT);
-            if (received == 0) channel_hup = 1;
+            if (received == 0) {
+                channel_hup = 1;
+                ordinary_debug("parent: channel hup\n");
+            }
             else if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) failure = 1;
             else if (received > 0) {
                 if (got_capsule || received != 32 || (message.msg_flags & MSG_TRUNC)) failure = 1;
-                else { memcpy(capsule_digest, packet, 32U); got_capsule = 1; }
+                else {
+                    memcpy(capsule_digest, packet, 32U);
+                    got_capsule = 1;
+                    ordinary_debug("parent: capsule received\n");
+                }
             }
         }
         if (channel_hup && (!got_capsule || !reaped)) failure = 1;
@@ -1152,7 +1173,10 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
             sha256_update(&proof_state, capsule_digest, 32U);
             sha256_final(&proof_state, proof);
             if (send(channel_fd, proof, 32U, MSG_NOSIGNAL) != 32) failure = 1;
-            else proof_sent = 1;
+            else {
+                proof_sent = 1;
+                ordinary_debug("parent: proof sent\n");
+            }
         }
         clock_gettime(CLOCK_MONOTONIC, &now);
         if ((now.tv_sec - start.tv_sec) > ORDINARY_WORKER_SECONDS ||
@@ -1160,8 +1184,11 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         if (failure) break;
         if (reaped && channel_hup && stdout_eof && stderr_eof) break;
     }
+    ordinary_debug("parent: loop end\n");
     if (failure || !reaped || !stdout_eof || !stderr_eof || !channel_hup || !got_capsule || !proof_sent ||
         expected_dispatcher_result(status, stdout_buffer, stdout_size, stderr_buffer, stderr_size) < 0) {
+        ordinary_debug("parent: failure state\n");
+        if (stderr_size != 0) ordinary_debug_bytes(stderr_buffer, stderr_size);
         if (!reaped) {
             kill(child, SIGKILL);
             while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
@@ -1268,6 +1295,7 @@ static int ordinary_supervise(char **child_env, const char *absolute) {
     close(error_pipe[1]); error_pipe[1] = -1;
     close(14); dispatcher_fd = -1;
     result = ordinary_parent_loop(child, 16, output_pipe[0], error_pipe[0], ticket, nonce);
+    ordinary_debug(result == 0 ? "supervise: parent loop passed\n" : "supervise: parent loop failed\n");
     output_pipe[0] = -1;
     error_pipe[0] = -1;
 cleanup:
