@@ -526,15 +526,20 @@ def _handoff(project_head: str, align_revision: str) -> str:
 
 def _receive_proof(channel: socket.socket) -> bytes:
     try:
+        _debug("proof receive start")
         channel.settimeout(10)
         proof, _, flags, _ = channel.recvmsg(33, 0)
     except socket.timeout as error:
+        _debug(f"proof receive timeout {error!r}")
         raise NamespaceFailure("toolchain") from error
     except OSError as error:
+        _debug(f"proof receive error {type(error).__name__} errno={error.errno} {error!r}")
         raise NamespaceFailure("toolchain") from error
     finally:
         channel.settimeout(None)
+    _debug(f"proof packet length={len(proof)} flags={flags}")
     if flags & socket.MSG_TRUNC or len(proof) != 32:
+        _debug("proof packet shape rejected")
         raise NamespaceFailure("toolchain")
     channel.setblocking(False)
     try:
@@ -543,9 +548,14 @@ def _receive_proof(channel: socket.socket) -> bytes:
         except BlockingIOError:
             extra = b""
             flags = 0
+            _debug("proof extra check would block")
+        else:
+            _debug(f"proof extra check length={len(extra)} flags={flags}")
         if extra or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+            _debug("proof extra packet rejected")
             raise NamespaceFailure("toolchain")
     except OSError as error:
+        _debug(f"proof extra check error {type(error).__name__} errno={error.errno} {error!r}")
         raise NamespaceFailure("toolchain") from error
     finally:
         channel.setblocking(True)
