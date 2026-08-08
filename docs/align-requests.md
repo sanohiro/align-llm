@@ -1386,7 +1386,17 @@ sets `ALIGNC=/tools/fresh-alignc` is not fresh evidence. The focused target rema
 fresh `make --no-print-directory ci` is a separate required gate.
 
 The ordinary profile's evidence-bearing public request enters through the already trusted image-owned
-`/usr/local/libexec/align-llm/fresh-supervise`. FRESH-IMAGE-REQUEST6 adds the exact
+`/usr/local/libexec/align-llm/fresh-supervise`. The corrected implementation keeps this native ELF as
+the direct parent of the ordinary dispatcher for the entire admission and helper lifetime. It does not
+exec a Python carrier before dispatch, and a Python interpreter digest or reconstructed command line is
+not a supervisor identity. A short-lived embedded image-control preflight may run before the ordinary
+channel exists; it may validate only image-owned inputs, must emit bounded empty output, and must not
+open either repository, create a nonce or channel, sign a capsule, or launch a worker. The native
+supervisor creates the ordinary descriptors and channel only after that preflight succeeds, and owns
+the bounded public streams and final child reap. Legacy `ci`, `build`, and `self-test` retain their
+existing carrier path because they have no ordinary parent-authentication contract.
+
+FRESH-IMAGE-REQUEST6 adds the exact
 `--mode ordinary-adoption` request to that supervisor. Before dispatch, `fresh-supervise` authenticates
 the runner-image envelope and fixed schema-2 manifest, opens the Request 6 dispatcher
 `/usr/local/libexec/align-llm/request6-adoption-entrypoint` through a retained no-follow descriptor,
