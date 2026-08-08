@@ -438,6 +438,7 @@ def _stage_inputs() -> None:
             raise NamespaceFailure("toolchain")
         _copy_file(str(entry), f"/tools/{entry.name}", 0o555)
     _debug("stage tool inventory copied")
+    Path("/private-native/bin").chmod(0o755)
     for source, name in (("clang", "cc"), ("clang++", "cxx"), ("ar", "ar"), ("ranlib", "ranlib"), ("linker", "linker")):
         _debug(f"stage native tool start source={source} destination={name}")
         _copy_file(f"/tools/{source}", f"/private-native/bin/{name}", 0o555)
