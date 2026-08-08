@@ -3769,7 +3769,11 @@ def ordinary_verify_image(raw: bytes, manifest_raw: bytes) -> Mapping[str, Any]:
     )
     if predicate["schema_version"] != 1 or not isinstance(predicate["image_digest"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", predicate["image_digest"]):
         raise ValueError("image attestation schema rejected")
-    for name in ("provenance_digest", "verifier_key_sha256", "supervisor_sha256", "bootstrap_sha256", "manifest_sha256"):
+    if not isinstance(predicate["provenance_digest"], str) or not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", predicate["provenance_digest"]
+    ):
+        raise ValueError("image attestation digest rejected")
+    for name in ("verifier_key_sha256", "supervisor_sha256", "bootstrap_sha256", "manifest_sha256"):
         if not isinstance(predicate[name], str) or not HEX64.fullmatch(predicate[name]):
             raise ValueError("image attestation digest rejected")
     if predicate["manifest_sha256"] != sha256(manifest_raw):
