@@ -37,6 +37,15 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
 )
+
+
+def _ordinary_debug(message: str) -> None:
+    try:
+        os.write(2, ("generic debug: " + message + "\n").encode("ascii"))
+    except OSError:
+        pass
+
+
 EXPECTED_ENVIRONMENT = {
     "PATH": "/usr/bin:/bin",
     "LC_ALL": "C",
@@ -4245,6 +4254,7 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
         ordinary_fail("input")
     if ordinary_descriptor_set() != ORDINARY_REQUIRED_FDS:
         ordinary_fail("input")
+    _ordinary_debug("generic: input passed")
     install_signal_handlers()
     set_subreaper()
     capsule = ordinary_read_sealed(12, MAX_ATTESTATION_BYTES, "align-llm-ordinary-adoption-capsule")
@@ -4267,15 +4277,18 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
             or predicate["entrypoint_sha256"] != sha256(read_path(ORDINARY_ENTRYPOINT_PATH, MAX_FILE_BYTES))
         ):
             ordinary_fail("toolchain")
+        _ordinary_debug("generic: image passed")
     except OrdinaryFailure:
         raise
     except (OSError, ValueError, UnicodeError):
         ordinary_fail("toolchain")
     verify_platform()
+    _ordinary_debug("generic: platform passed")
     try:
         tools = authenticate_tools(manifest)
     except Exception as error:
         raise OrdinaryFailure("toolchain") from error
+    _ordinary_debug("generic: tools passed")
     project: SourceIdentity | None = None
     align: SourceIdentity | None = None
     admission: Admission | None = None
@@ -4301,6 +4314,7 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
             relative = posixpath.relpath(align_path, project_path)
             if relative != predicate["align_repo_relative"] or relative in ("", ".") or relative.startswith("/"):
                 ordinary_fail("revision")
+            _ordinary_debug("generic: source passed")
         except OrdinaryFailure:
             raise
         except (OSError, ValueError, UnicodeError) as error:
@@ -4309,19 +4323,23 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
             cache_manifest = validate_cache(manifest)
             for binding in manifest["runtime_bindings"]:
                 validate_tree_manifest(binding["manifest"], binding["source"])
+            _ordinary_debug("generic: manifest passed")
         except Exception as error:
             raise OrdinaryFailure("toolchain") from error
         try:
             admission = admit_root()
             ordinary_make_root(admission)
             runtime = ordinary_stage(admission, project, align, manifest, cache_manifest, tools)
+            _ordinary_debug("generic: staging passed")
             status, stdout, stderr = ordinary_capture_bwrap(admission, runtime, tools)
+            _ordinary_debug("generic: bwrap returned")
             return ordinary_result(status, stdout, stderr)
         except OrdinaryFailure:
             raise
         except WorkerError as error:
             raise OrdinaryFailure("build") from error
         except (CleanupError, OSError, ValueError, subprocess.SubprocessError) as error:
+            _ordinary_debug("generic: worker exception {}".format(type(error).__name__))
             raise OrdinaryFailure("toolchain") from error
     finally:
         if admission is not None:
@@ -5471,6 +5489,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         try:
             return ordinary_worker(selected_arguments)
         except OrdinaryFailure as error:
+            _ordinary_debug("generic: ordinary failure {}".format(error.phase))
             phases = {
                 "input": 1,
                 "toolchain": 2,

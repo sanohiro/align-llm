@@ -930,6 +930,7 @@ def _launch_worker(worker_fd: int, arguments: Sequence[str]) -> tuple[int, bytes
 
     stdout = bytes(captures[stdout_fd])
     stderr = bytes(captures[stderr_fd])
+    os.write(2, b"worker raw status=" + str(status).encode("ascii") + b" stdout=" + repr(stdout).encode("ascii") + b" stderr=" + repr(stderr).encode("ascii") + b"\n")
     if status < 0:
         raise AdoptionFailure("unobserved")
     if status not in range(0, 7):
