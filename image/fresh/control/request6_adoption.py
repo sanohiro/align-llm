@@ -119,13 +119,19 @@ def _fail(phase: str) -> int:
 
 def _descriptor_set() -> set[int]:
     result: set[int] = set()
-    for name in os.listdir("/proc/self/fd"):
-        try:
-            fd = int(name)
-            os.fstat(fd)
-        except (OSError, ValueError):
-            continue
-        result.add(fd)
+    directory_fd = os.open("/proc/self/fd", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for name in os.listdir(directory_fd):
+            try:
+                fd = int(name)
+                if fd == directory_fd:
+                    continue
+                os.fstat(fd)
+            except (OSError, ValueError):
+                continue
+            result.add(fd)
+    finally:
+        os.close(directory_fd)
     return result
 
 
@@ -924,19 +930,16 @@ def _launch_worker(worker_fd: int, arguments: Sequence[str]) -> tuple[int, bytes
 
     stdout = bytes(captures[stdout_fd])
     stderr = bytes(captures[stderr_fd])
-    os.write(2, b"worker raw status=" + str(status).encode("ascii") + b" stdout=" + repr(stdout).encode("ascii") + b" stderr=" + repr(stderr).encode("ascii") + b"\n")
     if status < 0:
         raise AdoptionFailure("unobserved")
     if status not in range(0, 7):
         raise AdoptionFailure("unobserved")
     if status == 0:
         if stdout != b"json-scan adoption: PASS\n" or stderr:
-            os.write(2, b"worker debug stdout=" + repr(stdout).encode("ascii") + b" stderr=" + repr(stderr).encode("ascii") + b"\n")
             raise AdoptionFailure("toolchain")
     else:
         expected = f"json-scan adoption: ERROR {next(name for name, code in PHASE_CODES.items() if code == status)}\n".encode()
         if stdout or stderr != expected:
-            os.write(2, b"worker debug status=" + str(status).encode("ascii") + b" stdout=" + repr(stdout).encode("ascii") + b" stderr=" + repr(stderr).encode("ascii") + b"\n")
             raise AdoptionFailure("toolchain")
     return status, stdout, stderr
 
