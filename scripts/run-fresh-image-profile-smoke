@@ -343,14 +343,25 @@ def ordinary_profile_run(
         )
     command = [image, "--mode", "ordinary-adoption"]
     if cgroup_driver == "cgroupfs":
+        launcher = """\
+import os
+os.execve('/usr/local/libexec/align-llm/fresh-supervise',
+          ['fresh-supervise', '--mode', 'ordinary-adoption'],
+          {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'LANG': 'C',
+           'HOME': '/nonexistent', 'TMPDIR': '/tmp',
+           'ALIGN_REPO': '/work/align'})
+"""
         arguments.extend(
             [
                 "--cgroup-parent",
                 f"/align-llm-fresh/{TEST_UID}",
                 "--user",
                 f"{TEST_UID}:{TEST_UID}",
+                "--entrypoint",
+                "/usr/bin/python3.12",
             ]
         )
+        command = [image, "-I", "-c", launcher]
     elif cgroup_driver == "systemd":
         launcher = f"""\
 import os
@@ -935,6 +946,23 @@ def main() -> int:
             populate_source_volume(image, boundary_source_volume, source)
             run(["docker", "volume", "create", ordinary_source_volume])
             populate_source_volume(image, ordinary_source_volume, source)
+            valid_ordinary = ordinary_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                ordinary_source_volume,
+                cgroup_driver,
+            )
+            if (
+                valid_ordinary.returncode != 0
+                or valid_ordinary.stdout != b"json-scan adoption: PASS\n"
+                or valid_ordinary.stderr
+            ):
+                raise RuntimeError(
+                    "valid ordinary adoption failed:\n"
+                    + valid_ordinary.stdout.decode("utf-8", "replace")
+                    + valid_ordinary.stderr.decode("utf-8", "replace")
+                )
             missing_worker = boundary_profile_run(
                 image,
                 volume,
@@ -1094,6 +1122,8 @@ def main() -> int:
                     "/bin/sh",
                     "--mount",
                     f"type=volume,src={ordinary_source_volume},dst=/work",
+                    "--user",
+                    f"{TEST_UID}:{TEST_UID}",
                     image,
                     "-eu",
                     "-c",

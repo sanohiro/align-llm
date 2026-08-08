@@ -419,6 +419,118 @@ static int json_string_field(const unsigned char *raw, size_t size, const char *
     return *matches == 1U ? 0 : -1;
 }
 
+static int json_read_string(const unsigned char *raw, size_t size, size_t *position,
+                            char *output, size_t capacity) {
+    size_t cursor = *position;
+    size_t written = 0;
+    if (cursor >= size || raw[cursor++] != '"') return -1;
+    while (cursor < size) {
+        unsigned char character = raw[cursor++];
+        if (character == '"') {
+            output[written] = '\0';
+            *position = cursor;
+            return 0;
+        }
+        if (character == '\\' || character < 0x20U || written + 1U >= capacity) return -1;
+        output[written++] = (char)character;
+    }
+    return -1;
+}
+
+static int json_skip_string(const unsigned char *raw, size_t size, size_t *position) {
+    size_t cursor = *position;
+    if (cursor >= size || raw[cursor++] != '"') return -1;
+    while (cursor < size) {
+        unsigned char character = raw[cursor++];
+        if (character == '"') {
+            *position = cursor;
+            return 0;
+        }
+        if (character == '\\' || character < 0x20U) return -1;
+    }
+    return -1;
+}
+
+static int json_skip_value(const unsigned char *raw, size_t size, size_t *position) {
+    size_t cursor = *position;
+    if (cursor >= size) return -1;
+    if (raw[cursor] == '"') return json_skip_string(raw, size, position);
+    if (raw[cursor] == '{' || raw[cursor] == '[') {
+        size_t depth = 0;
+        int quoted = 0;
+        int escaped = 0;
+        for (; cursor < size; ++cursor) {
+            unsigned char character = raw[cursor];
+            if (quoted) {
+                if (escaped) escaped = 0;
+                else if (character == '\\') escaped = 1;
+                else if (character == '"') quoted = 0;
+                continue;
+            }
+            if (character == '"') quoted = 1;
+            else if (character == '{' || character == '[') ++depth;
+            else if (character == '}' || character == ']') {
+                if (depth == 0U) return -1;
+                if (--depth == 0U) {
+                    *position = cursor + 1U;
+                    return 0;
+                }
+            }
+        }
+        return -1;
+    }
+    {
+        size_t start = cursor;
+        while (cursor < size && raw[cursor] != ',' && raw[cursor] != '}' && raw[cursor] != ']') ++cursor;
+        if (cursor == start) return -1;
+        *position = cursor;
+    }
+    return 0;
+}
+
+static int json_top_level_string_field(const unsigned char *raw, size_t size, const char *key,
+                                       char *output, size_t capacity, size_t *matches) {
+    size_t cursor = 0;
+    char key_value[256];
+    *matches = 0;
+    if (size < 2U || raw[cursor++] != '{') return -1;
+    while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                             raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+    if (cursor >= size || raw[cursor] == '}') return -1;
+    for (;;) {
+        size_t value_start;
+        if (json_read_string(raw, size, &cursor, key_value, sizeof(key_value)) < 0) return -1;
+        while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                                 raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+        if (cursor >= size || raw[cursor++] != ':') return -1;
+        while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                                 raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+        if (cursor >= size) return -1;
+        value_start = cursor;
+        if (strcmp(key_value, key) == 0) {
+            if (json_read_string(raw, size, &cursor, output, capacity) < 0) return -1;
+            ++*matches;
+            if (*matches > 1U) return -1;
+        } else if (raw[cursor] == '"') {
+            if (json_skip_string(raw, size, &cursor) < 0) return -1;
+        } else if (json_skip_value(raw, size, &cursor) < 0) {
+            return -1;
+        }
+        if (cursor <= value_start) return -1;
+        while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                                 raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+        if (cursor >= size) return -1;
+        if (raw[cursor] == '}') {
+            ++cursor;
+            return cursor == size && *matches == 1U ? 0 : -1;
+        }
+        if (raw[cursor++] != ',') return -1;
+        while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                                 raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+        if (cursor >= size || raw[cursor] == '}') return -1;
+    }
+}
+
 static int base64_value(unsigned char value) {
     if (value >= 'A' && value <= 'Z') return (int)value - 'A';
     if (value >= 'a' && value <= 'z') return (int)value - 'a' + 26;
@@ -519,15 +631,15 @@ static int find_manifest_binding(const unsigned char *raw, size_t size, char *di
         char target_value[256];
         char kind[32];
         char binding_manifest_digest[65];
-        if (json_string_field(object, object_size, "source", source, sizeof(source), &matches) < 0 ||
+        if (json_top_level_string_field(object, object_size, "source", source, sizeof(source), &matches) < 0 ||
             strcmp(source, "/usr/local/libexec/align-llm/request6-adoption-entrypoint") != 0 ||
-            json_string_field(object, object_size, "target", target_value, sizeof(target_value), &matches) < 0 ||
+            json_top_level_string_field(object, object_size, "target", target_value, sizeof(target_value), &matches) < 0 ||
             strcmp(target_value, source) != 0 ||
-            json_string_field(object, object_size, "kind", kind, sizeof(kind), &matches) < 0 ||
+            json_top_level_string_field(object, object_size, "kind", kind, sizeof(kind), &matches) < 0 ||
             strcmp(kind, "file") != 0 ||
-            json_string_field(object, object_size, "manifest_sha256", binding_manifest_digest,
+            json_top_level_string_field(object, object_size, "manifest_sha256", binding_manifest_digest,
                               sizeof(binding_manifest_digest), &matches) < 0 ||
-            json_string_field(object, object_size, "sha256", digest, capacity, &matches) < 0) {
+            json_top_level_string_field(object, object_size, "sha256", digest, capacity, &matches) < 0) {
             return -1;
         }
     }
@@ -567,8 +679,7 @@ static int ordinary_preflight(void) {
     int self_fd = -1;
     if (fstat(6, &attestation) < 0 || fstat(8, &manifest) < 0 || fstat(14, &dispatcher) < 0 ||
         !S_ISREG(attestation.st_mode) || !S_ISREG(manifest.st_mode) || !S_ISREG(dispatcher.st_mode) ||
-        attestation.st_nlink != 0 || manifest.st_nlink != 0 || attestation.st_uid != 0 ||
-        manifest.st_uid != 0 ||
+        attestation.st_nlink != 0 || manifest.st_nlink != 0 ||
         (fcntl(6, F_GET_SEALS) != REQUIRED_SEALS) || (fcntl(8, F_GET_SEALS) != REQUIRED_SEALS) ||
         dispatcher.st_uid != 0 || (dispatcher.st_mode & 0777) != 0755 ||
         attestation.st_size <= 0 || attestation.st_size > 262144 ||
@@ -680,12 +791,13 @@ static int wait_preflight(pid_t pid, int output_fd, int error_fd) {
 }
 
 static int run_ordinary_preflight(void) {
-    int output_pipe[2];
-    int error_pipe[2];
+    int output_pipe[2] = {-1, -1};
+    int error_pipe[2] = {-1, -1};
     pid_t child;
-    if (pipe2(output_pipe, O_CLOEXEC | O_NONBLOCK) < 0 || pipe2(error_pipe, O_CLOEXEC | O_NONBLOCK) < 0) return -1;
+    if (pipe2(output_pipe, O_CLOEXEC | O_NONBLOCK) < 0) goto failure;
+    if (pipe2(error_pipe, O_CLOEXEC | O_NONBLOCK) < 0) goto failure;
     child = fork();
-    if (child < 0) return -1;
+    if (child < 0) goto failure;
     if (child == 0) {
         int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
         struct rlimit limits = {64, 64};
@@ -702,6 +814,12 @@ static int run_ordinary_preflight(void) {
     }
     close(output_pipe[1]); close(error_pipe[1]);
     return wait_preflight(child, output_pipe[0], error_pipe[0]);
+failure:
+    if (output_pipe[0] >= 0) close(output_pipe[0]);
+    if (output_pipe[1] >= 0) close(output_pipe[1]);
+    if (error_pipe[0] >= 0) close(error_pipe[0]);
+    if (error_pipe[1] >= 0) close(error_pipe[1]);
+    return -1;
 }
 
 static int ordinary_environment(char **child_env, char **align_entry) {

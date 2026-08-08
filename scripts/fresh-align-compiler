@@ -164,6 +164,7 @@ MAX_MANIFEST_BYTES = 67_108_864
 MAX_ATTESTATION_BYTES = 262_144
 MAX_SOURCE_ENTRIES = 200_000
 MAX_SOURCE_BYTES = 4_294_967_296
+MAX_ORDINARY_SOURCE_BYTES = 48 * 1024 * 1024 * 1024
 MAX_FILE_BYTES = 536_870_912
 MAX_RUNTIME_BYTES = 21_474_836_480
 MAX_PRIVATE_ENTRIES = 400_000
@@ -3797,7 +3798,7 @@ def ordinary_raw_tree(root_fd: int, source: str) -> bytes:
     def append(path: bytes, kind: str, mode: int, size: int, raw: bytes, target: bytes = b"") -> None:
         nonlocal total
         total += len(raw)
-        if len(entries) >= 1_500_000 or total > MAX_SOURCE_BYTES:
+        if len(entries) >= 1_500_000 or total > MAX_ORDINARY_SOURCE_BYTES:
             ordinary_fail("revision")
         entries.append(
             OrderedDict(

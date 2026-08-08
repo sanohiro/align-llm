@@ -19,6 +19,7 @@ sys.path.insert(0, str(CONTROL))
 
 from adoption_namespace import _descriptor_json, _environment, _rows  # noqa: E402
 from request6_adoption import (  # noqa: E402
+    MAX_RAW_BYTES,
     REQUIRED_DESCRIPTOR_SET,
     AdoptionFailure,
     _strict_arguments,
@@ -219,7 +220,18 @@ def check_fixture_and_make_contract() -> None:
         require(stat.S_IMODE(path.stat(follow_symlinks=False).st_mode) == 0o755, f"adoption input mode changed: {path.name}")
     makefile = (REPOSITORY / "Makefile").read_text(encoding="utf-8")
     require(re.search(r"(?m)^align-build-only:\s*$", makefile) is not None, "build-only target gained prerequisites")
+    require("/tools/bash /private-project/scripts/check-align-revision" in makefile, "fresh revision recipe changed")
+    require("./scripts/check-align-revision" in makefile, "host revision recipe disappeared")
     require("/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke" in makefile, "focused Make recipe changed")
+    require("CARGO ?= cargo" in makefile, "host Cargo default disappeared")
+    require(MAX_RAW_BYTES == 48 * 1024 * 1024 * 1024, "dispatcher raw-tree cap changed")
+    compiler = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
+    require("MAX_ORDINARY_SOURCE_BYTES = 48 * 1024 * 1024 * 1024" in compiler, "ordinary worker raw-tree cap changed")
+    require("total > MAX_ORDINARY_SOURCE_BYTES" in compiler, "ordinary worker raw-tree cap is not enforced")
+    profile = (REPOSITORY / "scripts/run-fresh-image-profile-smoke").read_text(encoding="utf-8")
+    require('if cgroup_driver == "cgroupfs":' in profile, "cgroupfs ordinary launcher disappeared")
+    require("--entrypoint\",\n                \"/usr/bin/python3.12\"" in profile, "ordinary launcher entrypoint changed")
+    require("['fresh-supervise', '--mode', 'ordinary-adoption']" in profile, "ordinary argv0 contract changed")
     require(DIAGNOSTIC.startswith("`json.scan` row type"), "fixture diagnostic constant changed")
     for line_name in ("HOSTED_CHECK_TARGETS", "CAPABLE_ONLY_CHECK_TARGETS", "SERIAL_CHECK_AGGREGATES"):
         line = next(line for line in makefile.splitlines() if line_name in line)

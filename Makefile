@@ -1,5 +1,6 @@
 ALIGNC ?= ./scripts/alignc
 ALIGN_REPO ?= ../align
+CARGO ?= cargo
 override SHELL := /bin/sh
 override .SHELLFLAGS := -eu -c
 override PINNED_ALIGNC := $(abspath $(ALIGN_REPO)/target/release/alignc)
@@ -107,7 +108,11 @@ capable-checks: gate-topology-check
 	  $(CAPABLE_ONLY_CHECK_TARGETS)
 
 align-revision:
-	/tools/bash /private-project/scripts/check-align-revision >/dev/null 2>&1
+	if [ "$${ALIGN_LLM_FRESH_COMPILER:-}" = 1 ]; then \
+	  /tools/bash /private-project/scripts/check-align-revision >/dev/null 2>&1; \
+	else \
+	  ./scripts/check-align-revision >/dev/null 2>&1; \
+	fi
 
 align-build: align-revision
 	$(CARGO) build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
