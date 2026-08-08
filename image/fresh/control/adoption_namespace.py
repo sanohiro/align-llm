@@ -489,10 +489,13 @@ def _handoff(project_head: str, align_revision: str) -> str:
         for descriptor in (compiler_fd, archive_fd, launcher_fd):
             if descriptor >= 0:
                 os.close(descriptor)
+    # Cargo hard-links release outputs to their corresponding `deps` copies.
+    # The raw Cargo paths therefore may have multiple links; the immutable
+    # single-link copies below are the handoff boundary that must be isolated.
     if (
-        not stat.S_ISREG(compiler_stat.st_mode) or compiler_stat.st_nlink != 1 or stat.S_IMODE(compiler_stat.st_mode) != 0o755
+        not stat.S_ISREG(compiler_stat.st_mode) or stat.S_IMODE(compiler_stat.st_mode) != 0o755
         or len(compiler_raw) != compiler_stat.st_size
-        or not stat.S_ISREG(archive_stat.st_mode) or archive_stat.st_nlink != 1 or stat.S_IMODE(archive_stat.st_mode) not in (0o444, 0o644)
+        or not stat.S_ISREG(archive_stat.st_mode) or stat.S_IMODE(archive_stat.st_mode) not in (0o444, 0o644)
         or len(archive_raw) != archive_stat.st_size
         or not stat.S_ISREG(launcher_stat.st_mode) or launcher_stat.st_nlink != 1 or stat.S_IMODE(launcher_stat.st_mode) != 0o755
         or len(launcher_raw) != launcher_stat.st_size
