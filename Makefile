@@ -108,18 +108,18 @@ capable-checks: gate-topology-check
 	  $(CAPABLE_ONLY_CHECK_TARGETS)
 
 align-revision:
-	if [ "$${ALIGN_LLM_FRESH_COMPILER:-}" = 1 ]; then \
+	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-}" = 1 ]; then \
 	  /tools/bash /private-project/scripts/check-align-revision >/dev/null 2>&1; \
 	else \
 	  ./scripts/check-align-revision >/dev/null 2>&1; \
 	fi
 
 align-build: align-revision
-	$(CARGO) build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
+	@$(CARGO) build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
 		-p align_runtime -p align_driver >/dev/null 2>&1
 
 align-build-only:
-	$(CARGO) build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
+	@$(CARGO) build --manifest-path $(ALIGN_REPO)/Cargo.toml --locked --release \
 		-p align_runtime -p align_driver >/dev/null 2>&1
 
 json-scan-row-ownership-adoption:
