@@ -4307,20 +4307,31 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
                 "align-source", 18, tools["git"],
                 expected_head=predicate["align_head"], expected_format="sha1",
             )
+            ordinary_debug(f"source identities passed project={project.head} align={align.head}")
             verify_align_pin(project, align)
+            ordinary_debug("align pin passed")
             if index_digest(project.view) != predicate["project_index_sha256"]:
+                ordinary_debug("project index mismatch")
                 ordinary_fail("revision")
-            if sha256(ordinary_raw_tree(4, "project-source")) != predicate["project_raw_tree_sha256"]:
+            ordinary_debug("project index passed")
+            project_tree = sha256(ordinary_raw_tree(4, "project-source"))
+            if project_tree != predicate["project_raw_tree_sha256"]:
+                ordinary_debug("project tree mismatch")
                 ordinary_fail("revision")
-            if sha256(ordinary_exception_rows(4, 18)) != predicate["source_exception_sha256"]:
+            ordinary_debug("project tree passed")
+            source_exceptions = sha256(ordinary_exception_rows(4, 18))
+            if source_exceptions != predicate["source_exception_sha256"]:
+                ordinary_debug("source exception rows mismatch")
                 ordinary_fail("revision")
+            ordinary_debug("source exception rows passed")
             project_path = os.path.normpath(os.readlink("/proc/self/fd/4"))
             align_path = os.path.normpath(os.readlink("/proc/self/fd/18"))
             relative = posixpath.relpath(align_path, project_path)
             if relative != predicate["align_repo_relative"] or relative in ("", ".") or relative.startswith("/"):
                 ordinary_fail("revision")
             ordinary_debug("source checks passed")
-        except OrdinaryFailure:
+        except OrdinaryFailure as error:
+            ordinary_debug(f"source failure {error.phase}")
             raise
         except (OSError, ValueError, UnicodeError) as error:
             ordinary_debug(f"source exception {type(error).__name__}: {error}")
