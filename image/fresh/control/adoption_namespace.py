@@ -445,10 +445,13 @@ def _stage_inputs() -> None:
         _debug(f"stage native tool passed source={source}")
     _debug("stage native tools copied")
     Path("/private-native/bin").chmod(0o555)
+    _debug("stage native bin sealed")
     try:
         Path("/private-tool-inventory").chmod(0o700)
+        _debug("stage tool inventory writable")
         for entry in Path("/private-tool-inventory").iterdir():
             entry.unlink()
+        _debug("stage tool inventory entries removed")
         Path("/private-tool-inventory").rmdir()
         _debug("stage tool inventory removed")
     except OSError as error:
