@@ -131,16 +131,11 @@ def profile_run(
     cgroup_driver: str,
     *,
     replacements: tuple[tuple[Path, str], ...] = (),
-    debug_marker: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     replacement_arguments: list[str] = []
     for source, target in replacements:
         replacement_arguments.extend(
             ["--mount", f"type=bind,src={source},dst={target},readonly"]
-        )
-    if debug_marker is not None:
-        replacement_arguments.extend(
-            ["--mount", f"type=bind,src={debug_marker},dst=/tmp/fresh-debug"]
         )
     arguments = [
         "docker",
@@ -318,6 +313,7 @@ def ordinary_profile_run(
     cgroup_driver: str,
     *,
     replacements: tuple[tuple[Path, str], ...] = (),
+    debug_marker: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     arguments = [
         "docker",
@@ -345,6 +341,10 @@ def ordinary_profile_run(
     for source, target in replacements:
         replacement_arguments.extend(
             ["--mount", f"type=bind,src={source},dst={target},readonly"]
+        )
+    if debug_marker is not None:
+        replacement_arguments.extend(
+            ["--mount", f"type=bind,src={debug_marker},dst=/tmp/fresh-debug"]
         )
     command = [image, "--mode", "ordinary-adoption"]
     if cgroup_driver == "cgroupfs":
