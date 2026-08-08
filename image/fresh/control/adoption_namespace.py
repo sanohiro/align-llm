@@ -428,20 +428,26 @@ def _stage_inputs() -> None:
         ("/input-launcher-source", "/private-launcher-source"),
         ("/input-tools", "/private-tool-inventory"),
     ):
+        _debug(f"stage tree start source={source}")
         _copy_tree(source, destination, writable=source == "/input-cargo-cache")
+        _debug(f"stage tree passed source={source}")
     Path("/tools").mkdir(mode=0o700, exist_ok=True)
+    _debug("stage tools directory passed")
     for entry in sorted(Path("/private-tool-inventory").iterdir(), key=lambda item: os.fsencode(item.name)):
         if not entry.is_file() or entry.is_symlink():
             raise NamespaceFailure("toolchain")
         _copy_file(str(entry), f"/tools/{entry.name}", 0o555)
+    _debug("stage tool inventory copied")
     for source, name in (("clang", "cc"), ("clang++", "cxx"), ("ar", "ar"), ("ranlib", "ranlib"), ("linker", "linker")):
         _copy_file(f"/tools/{source}", f"/private-native/bin/{name}", 0o555)
+    _debug("stage native tools copied")
     Path("/private-native/bin").chmod(0o555)
     try:
         Path("/private-tool-inventory").chmod(0o700)
         for entry in Path("/private-tool-inventory").iterdir():
             entry.unlink()
         Path("/private-tool-inventory").rmdir()
+        _debug("stage tool inventory removed")
     except OSError as error:
         raise NamespaceFailure("toolchain") from error
 
