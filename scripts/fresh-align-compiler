@@ -5523,7 +5523,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             return phases[phase]
         except (KeyboardInterrupt, SystemExit):
             raise
-        except Exception:
+        except Exception as error:
+            ordinary_debug(f"unobserved exception {type(error).__name__}: {error}")
             os.write(2, b"json-scan adoption: ERROR unobserved\n")
             return 7
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
