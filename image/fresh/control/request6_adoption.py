@@ -91,6 +91,7 @@ PHASE_CODES = {
 # absent from the worker's allowlist.
 REQUIRED_DESCRIPTOR_SET = {0, 1, 2, 4, 6, 8, 11, 15, 16, 18}
 DISPATCHER_PATH = "/usr/local/libexec/align-llm/request6-adoption-entrypoint"
+DEBUG_PATH = "/tmp/fresh-debug"
 
 
 class AdoptionFailure(Exception):
@@ -99,6 +100,14 @@ class AdoptionFailure(Exception):
     def __init__(self, phase: str, detail: str = "") -> None:
         super().__init__(detail or phase)
         self.phase = phase
+
+
+def _debug(message: str) -> None:
+    try:
+        with open(DEBUG_PATH, "a", encoding="ascii") as stream:
+            stream.write(message + "\n")
+    except (OSError, UnicodeError):
+        pass
 
 
 def _set_parent_death(parent_pid: int) -> None:
@@ -131,7 +140,7 @@ def _descriptor_set() -> set[int]:
 
 def _strict_arguments(arguments: Sequence[str]) -> tuple[str, str]:
     if len(arguments) != 18:
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", f"arguments length {len(arguments)}")
     fixed = (
         "--mode", "ordinary-adoption", "--project-root-fd", "4",
         "--image-attestation-fd", "6", "--manifest-fd", "8",
@@ -141,21 +150,21 @@ def _strict_arguments(arguments: Sequence[str]) -> tuple[str, str]:
     )
     for actual, expected in zip(arguments, fixed):
         if expected is not None and actual != expected:
-            raise AdoptionFailure("input")
+            raise AdoptionFailure("input", f"argument {actual!r} != {expected!r}")
     absolute = arguments[11]
     relative = arguments[13]
     if not absolute or not relative:
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", "empty repository path")
     try:
         normalized = _normalize_absolute(absolute)
     except (ControlError, UnicodeError) as error:
-        raise AdoptionFailure("input") from error
+        raise AdoptionFailure("input", "invalid absolute repository path") from error
     if normalized != absolute:
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", "non-canonical absolute repository path")
     if any(component == "" for component in relative.split("/")) or relative.startswith("/"):
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", "invalid relative repository path")
     if any(component == "." for component in relative.split("/")):
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", "dot relative repository path")
     return absolute, relative
 
 
@@ -169,7 +178,7 @@ def _require_environment(absolute: str) -> None:
         "ALIGN_REPO": absolute,
     }
     if dict(os.environ) != expected:
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", f"environment keys {sorted(os.environ)}")
 
 
 def _proc_start_time(pid: int) -> str:
@@ -246,21 +255,21 @@ def _authenticate_parent(channel: socket.socket, image_predicate: Mapping[str, A
     try:
         credentials = channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
     except OSError as error:
-        raise AdoptionFailure("input") from error
+        raise AdoptionFailure("input", "peer credential read") from error
     if not isinstance(credentials, bytes) or len(credentials) != 12:
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", "peer credential shape")
     pid = int.from_bytes(credentials[0:4], "little", signed=True)
     uid = int.from_bytes(credentials[4:8], "little", signed=True)
     if pid <= 0 or uid != os.geteuid() or pid != os.getppid():
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", f"peer pid={pid} uid={uid} ppid={os.getppid()} euid={os.geteuid()}")
     start = _proc_start_time(pid)
     command = _proc_cmdline(pid)
     if command != b"fresh-supervise\x00--mode\x00ordinary-adoption\x00":
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", f"parent command {command!r}")
     try:
         executable = os.open(f"/proc/{pid}/exe", os.O_RDONLY | os.O_CLOEXEC)
     except OSError as error:
-        raise AdoptionFailure("input") from error
+        raise AdoptionFailure("input", "parent executable open") from error
     try:
         before = _identity(executable)
         raw = _read_fd(executable, 16 * 1024 * 1024)
@@ -268,9 +277,9 @@ def _authenticate_parent(channel: socket.socket, image_predicate: Mapping[str, A
     finally:
         os.close(executable)
     if before != after or sha256_hex(raw) != image_predicate.get("supervisor_sha256"):
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", "parent executable digest")
     if _proc_start_time(pid) != start or os.getppid() != pid:
-        raise AdoptionFailure("input")
+        raise AdoptionFailure("input", "parent identity changed")
     return pid
 
 
@@ -935,10 +944,14 @@ def dispatch(arguments: Sequence[str]) -> int:
     capsule_fd = worker_fd = -1
     channel: socket.socket | None = None
     try:
+        _debug("dispatcher: start")
         absolute, relative = _strict_arguments(arguments)
+        _debug("dispatcher: arguments passed")
         _require_environment(absolute)
+        _debug("dispatcher: environment passed")
         if _descriptor_set() != REQUIRED_DESCRIPTOR_SET:
-            raise AdoptionFailure("input")
+            raise AdoptionFailure("input", f"descriptors {_descriptor_set()}")
+        _debug("dispatcher: descriptors passed")
         project_fd, image_fd, manifest_fd, nonce_fd, channel_fd, align_fd = 4, 6, 8, 15, 16, 18
         channel = socket.socket(fileno=channel_fd)
         image_raw = _snapshot_memfd(image_fd, "align-llm-image-attestation", 262_144)
@@ -949,7 +962,9 @@ def dispatch(arguments: Sequence[str]) -> int:
         finally:
             os.close(parent_fd)
         predicate = _verify_image(image_raw, manifest_raw, parent_raw)
+        _debug("dispatcher: image passed")
         _authenticate_parent(channel, predicate)
+        _debug("dispatcher: parent passed")
         ticket = _receive_packet(channel, ORDINARY_TICKET_BYTES)
         nonce = _snapshot_memfd(nonce_fd, "align-llm-ordinary-adoption-nonce", ORDINARY_NONCE_BYTES)
         if len(nonce) != ORDINARY_NONCE_BYTES:
@@ -1001,8 +1016,10 @@ def dispatch(arguments: Sequence[str]) -> int:
             os.write(2, worker_stderr)
         return worker_status
     except AdoptionFailure as error:
+        _debug(f"dispatcher: failure {error.phase}: {error}")
         return _fail(error.phase)
     except (OSError, ValueError, WireError, ControlError):
+        _debug("dispatcher: unexpected toolchain exception")
         return _fail("toolchain")
     finally:
         if channel is not None:
