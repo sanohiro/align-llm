@@ -68,6 +68,10 @@ static int fail_argument(void) {
     return 1;
 }
 
+static void supervisor_debug(const char *message) {
+    dprintf(STDERR_FILENO, "supervisor debug: %s\n", message);
+}
+
 static int matches_name(const char *entry, const char *name) {
     size_t length = strlen(name);
     return strncmp(entry, name, length) == 0 && entry[length] == '=';
@@ -1221,9 +1225,11 @@ static int ordinary_supervise(char **child_env, const char *absolute) {
     int error_pipe[2] = {-1, -1};
     pid_t child = -1;
     int result = -1;
+    supervisor_debug("start");
     if (canonical_absolute(absolute) < 0 ||
         copy_sealed_file(IMAGE_ATTESTATION_PATH, "align-llm-image-attestation", 6, 262144U) < 0 ||
         copy_sealed_file(MANIFEST_PATH, "align-llm-fresh-manifest", 8, 67108864U) < 0) goto cleanup;
+    supervisor_debug("sealed inputs passed");
     dispatcher_fd = open(ORDINARY_DISPATCHER_PATH, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (dispatcher_fd < 0) goto cleanup;
     {
@@ -1233,18 +1239,26 @@ static int ordinary_supervise(char **child_env, const char *absolute) {
             (uintmax_t)value.st_size > 16U * 1024U * 1024U || dup2(dispatcher_fd, 14) < 0 ||
             set_cloexec(14, 1) < 0) goto cleanup;
     }
+    supervisor_debug("dispatcher passed");
     if (dispatcher_fd != 14) { close(dispatcher_fd); dispatcher_fd = 14; }
-    if (run_ordinary_preflight() < 0) goto cleanup;
+    if (run_ordinary_preflight() < 0) {
+        supervisor_debug("preflight failed");
+        goto cleanup;
+    }
+    supervisor_debug("preflight passed");
     project_fd = open(".", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (project_fd < 0 || dup2(project_fd, 4) < 0 || set_cloexec(4, 1) < 0) goto cleanup;
     if (project_fd != 4) { close(project_fd); project_fd = 4; }
+    supervisor_debug("project fd passed");
     if (getcwd(project_path, sizeof(project_path)) == NULL || relative_path(project_path, absolute, relative, sizeof(relative)) < 0) goto cleanup;
     root_fd = open("/", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (root_fd < 0 || dup2(root_fd, 17) < 0 || set_cloexec(17, 1) < 0) goto cleanup;
     if (root_fd != 17) { close(root_fd); root_fd = 17; }
     if (open_align_root(absolute) < 0 || close(17) < 0) goto cleanup;
     root_fd = -1;
+    supervisor_debug("align fd passed");
     if (create_nonce(nonce) < 0 || random_bytes(ticket, sizeof(ticket)) < 0) goto cleanup;
+    supervisor_debug("nonce passed");
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, socket_pair) < 0 ||
         dup2(socket_pair[0], 16) < 0 || set_cloexec(16, 1) < 0) goto cleanup;
     if (socket_pair[0] != 16) { close(socket_pair[0]); socket_pair[0] = 16; }
@@ -1256,7 +1270,9 @@ static int ordinary_supervise(char **child_env, const char *absolute) {
     close(output_pipe[1]); output_pipe[1] = -1;
     close(error_pipe[1]); error_pipe[1] = -1;
     close(14); dispatcher_fd = -1;
+    supervisor_debug("dispatcher started");
     result = ordinary_parent_loop(child, 16, output_pipe[0], error_pipe[0], ticket, nonce);
+    supervisor_debug(result == 0 ? "parent loop passed" : "parent loop failed");
     output_pipe[0] = -1;
     error_pipe[0] = -1;
 cleanup:
