@@ -264,7 +264,11 @@ def _run_controller(raw: bytes) -> None:
 
 def main() -> int:
     debug("start")
-    if tuple(sys.argv[1:]) != REQUIRED_ARGS or dict(os.environ) != EXPECTED_ENVIRONMENT:
+    if tuple(sys.argv[1:]) != REQUIRED_ARGS:
+        debug(f"arguments mismatch {tuple(sys.argv[1:])!r}")
+        fail()
+    if dict(os.environ) != EXPECTED_ENVIRONMENT:
+        debug(f"environment mismatch {dict(os.environ)!r}")
         fail()
     debug("arguments and environment passed")
     descriptors = {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
