@@ -2968,7 +2968,6 @@ def require_cgroup_empty_fd(leaf_fd: int) -> None:
 def cgroup_child_membership(lease: CgroupLease, pid: int) -> None:
     processes = cgroup_members(lease.leaf_fd, "cgroup.procs")
     if processes != (pid,):
-        ordinary_debug(f"cgroup process mismatch pid={pid} members={processes}")
         raise CleanupError("cgroup contains an unexpected process")
     try:
         task_names = os.listdir(f"/proc/{pid}/task")
@@ -2976,10 +2975,6 @@ def cgroup_child_membership(lease: CgroupLease, pid: int) -> None:
         raise CleanupError("child thread membership could not be inspected") from error
     expected_threads = tuple(sorted(int(name) for name in task_names if name.isdigit()))
     if cgroup_members(lease.leaf_fd, "cgroup.threads") != expected_threads:
-        ordinary_debug(
-            f"cgroup thread mismatch pid={pid} expected={expected_threads} "
-            f"members={cgroup_members(lease.leaf_fd, 'cgroup.threads')}"
-        )
         raise CleanupError("cgroup contains an unexpected thread")
 
 
@@ -3649,10 +3644,6 @@ def ordinary_fail(phase: str) -> None:
     raise OrdinaryFailure(phase)
 
 
-def ordinary_debug(message: str) -> None:
-    os.write(2, ("ordinary debug: " + message + "\n").encode("ascii", "backslashreplace"))
-
-
 def ordinary_descriptor_set() -> set[int]:
     descriptors: set[int] = set()
     for name in os.listdir("/proc/self/fd"):
@@ -3979,7 +3970,6 @@ def ordinary_stage(
     except OrdinaryFailure:
         raise
     except (CleanupError, OSError, ValueError) as error:
-        ordinary_debug(f"stage exception {type(error).__name__}: {error}")
         raise OrdinaryFailure("toolchain") from error
 
 
@@ -3992,14 +3982,12 @@ def ordinary_bind_source(admission: Admission, source: Path, kind: str, target_f
         os.set_inheritable(target_fd, True)
         return target_fd
     except (CleanupError, OSError, ValueError) as error:
-        ordinary_debug(f"bind source failed target={target_fd} source={source}: {type(error).__name__}: {error}")
         raise OrdinaryFailure("toolchain") from error
 
 
 def ordinary_runtime_binding(runtime: Sequence[RuntimeBinding], target: str) -> RuntimeBinding:
     matches = [binding for binding in runtime if binding[1] == target]
     if len(matches) != 1:
-        ordinary_debug(f"runtime binding failed target={target} count={len(matches)}")
         raise OrdinaryFailure("toolchain")
     return matches[0]
 
@@ -4084,7 +4072,6 @@ def ordinary_capture_bwrap(
         bwrap_fd = ordinary_bind_source(admission, bwrap[0], "file", 27)
         os.set_inheritable(bwrap_fd, False)
         bound.append(bwrap_fd)
-        ordinary_debug("capture bindings passed")
         os.set_inheritable(12, True)
         os.set_inheritable(13, True)
         os.set_inheritable(15, True)
@@ -4172,16 +4159,7 @@ def ordinary_capture_bwrap(
         try:
             wait_cgroup_child_membership(lease, child)
         except CleanupError as error:
-            for stream_name, stream_fd in (("stdout", stdout_read), ("stderr", stderr_read)):
-                try:
-                    block = os.read(stream_fd, 65_536)
-                except OSError:
-                    block = b""
-                if block:
-                    ordinary_debug(f"early child {stream_name}: {block!r}")
-            ordinary_debug(f"child cgroup membership failed: {error}")
             raise OrdinaryFailure("toolchain") from error
-        ordinary_debug("child cgroup membership passed")
         try:
             process_group = os.getpgid(child)
         except ProcessLookupError:
@@ -4267,7 +4245,6 @@ def ordinary_capture_bwrap(
 
 
 def ordinary_result(status: int, stdout: bytes, stderr: bytes) -> int:
-    ordinary_debug(f"capture result status={status} stdout={stdout!r} stderr={stderr!r}")
     phases = ("input", "toolchain", "revision", "build", "fixture", "cleanup", "unobserved")
     if status == 0:
         if stdout != b"json-scan adoption: PASS\n" or stderr:
@@ -4284,7 +4261,6 @@ def ordinary_result(status: int, stdout: bytes, stderr: bytes) -> int:
 
 
 def ordinary_worker(arguments: Sequence[str]) -> int:
-    ordinary_debug("start")
     if tuple(arguments) != (
         "--mode", "ordinary-adoption", "--project-root-fd", "4", "--align-root-fd", "18",
         "--capsule-fd", "12", "--invocation-nonce-fd", "15", "--supervisor-channel-fd", "16",
@@ -4297,7 +4273,6 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
         ordinary_fail("input")
     if ordinary_descriptor_set() != ORDINARY_REQUIRED_FDS:
         ordinary_fail("input")
-    ordinary_debug("arguments environment descriptors passed")
     install_signal_handlers()
     set_subreaper()
     capsule = ordinary_read_sealed(12, MAX_ATTESTATION_BYTES, "align-llm-ordinary-adoption-capsule")
@@ -4305,7 +4280,6 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
     nonce = ordinary_read_sealed(15, 32, "align-llm-ordinary-adoption-nonce")
     if len(nonce) != 32:
         ordinary_fail("toolchain")
-    ordinary_debug("sealed inputs passed")
     try:
         predicate = ordinary_verify_capsule(capsule)
         if predicate["worker_size"] != len(worker) or predicate["worker_sha256"] != sha256(worker):
@@ -4321,20 +4295,15 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
             or predicate["entrypoint_sha256"] != sha256(read_path(ORDINARY_ENTRYPOINT_PATH, MAX_FILE_BYTES))
         ):
             ordinary_fail("toolchain")
-        ordinary_debug("capsule image and manifest passed")
     except OrdinaryFailure:
         raise
     except (OSError, ValueError, UnicodeError) as error:
-        ordinary_debug(f"capsule exception {type(error).__name__}: {error}")
         ordinary_fail("toolchain")
     verify_platform()
-    ordinary_debug("platform passed")
     try:
         tools = authenticate_tools(manifest)
     except Exception as error:
-        ordinary_debug(f"tool authentication exception {type(error).__name__}: {error}")
         raise OrdinaryFailure("toolchain") from error
-    ordinary_debug("tools passed")
     project: SourceIdentity | None = None
     align: SourceIdentity | None = None
     admission: Admission | None = None
@@ -4348,59 +4317,41 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
                 "align-source", 18, tools["git"],
                 expected_head=predicate["align_head"], expected_format="sha1",
             )
-            ordinary_debug(f"source identities passed project={project.revision} align={align.revision}")
             verify_align_pin(project, align)
-            ordinary_debug("align pin passed")
             if index_digest(project.view) != predicate["project_index_sha256"]:
-                ordinary_debug("project index mismatch")
                 ordinary_fail("revision")
-            ordinary_debug("project index passed")
             project_tree = sha256(ordinary_raw_tree(4, "project-source"))
             if project_tree != predicate["project_raw_tree_sha256"]:
-                ordinary_debug("project tree mismatch")
                 ordinary_fail("revision")
-            ordinary_debug("project tree passed")
             source_exceptions = sha256(ordinary_exception_rows(4, 18))
             if source_exceptions != predicate["source_exception_sha256"]:
-                ordinary_debug("source exception rows mismatch")
                 ordinary_fail("revision")
-            ordinary_debug("source exception rows passed")
             project_path = os.path.normpath(os.readlink("/proc/self/fd/4"))
             align_path = os.path.normpath(os.readlink("/proc/self/fd/18"))
             relative = posixpath.relpath(align_path, project_path)
             if relative != predicate["align_repo_relative"] or relative in ("", ".") or relative.startswith("/"):
                 ordinary_fail("revision")
-            ordinary_debug("source checks passed")
         except OrdinaryFailure as error:
-            ordinary_debug(f"source failure {error.phase}")
             raise
         except (OSError, ValueError, UnicodeError) as error:
-            ordinary_debug(f"source exception {type(error).__name__}: {error}")
             raise OrdinaryFailure("revision") from error
         try:
             cache_manifest = validate_cache(manifest)
             for binding in manifest["runtime_bindings"]:
                 validate_tree_manifest(binding["manifest"], binding["source"])
-            ordinary_debug("cache checks passed")
         except Exception as error:
-            ordinary_debug(f"cache exception {type(error).__name__}: {error}")
             raise OrdinaryFailure("toolchain") from error
         try:
             admission = admit_root()
-            ordinary_debug("root admitted")
             ordinary_make_root(admission)
             runtime = ordinary_stage(admission, project, align, manifest, cache_manifest, tools)
-            ordinary_debug("stage passed")
             status, stdout, stderr = ordinary_capture_bwrap(admission, runtime, tools)
             return ordinary_result(status, stdout, stderr)
         except OrdinaryFailure as error:
-            ordinary_debug(f"capture failure {error.phase}")
             raise
         except WorkerError as error:
-            ordinary_debug(f"worker exception {type(error).__name__}: {error}")
             raise OrdinaryFailure("build") from error
         except (CleanupError, OSError, ValueError, subprocess.SubprocessError) as error:
-            ordinary_debug(f"capture exception {type(error).__name__}: {error}")
             raise OrdinaryFailure("toolchain") from error
     finally:
         if admission is not None:
@@ -5565,7 +5516,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as error:
-            ordinary_debug(f"unobserved exception {type(error).__name__}: {error}")
             os.write(2, b"json-scan adoption: ERROR unobserved\n")
             return 7
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)

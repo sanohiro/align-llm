@@ -1144,11 +1144,6 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
             sha256_final(&proof_state, proof);
             if (send(channel_fd, proof, 32U, MSG_NOSIGNAL) != 32) failure = 1;
             else {
-                dprintf(STDERR_FILENO, "parent proof=");
-                for (size_t proof_index = 0; proof_index < 32U; ++proof_index) {
-                    dprintf(STDERR_FILENO, "%02x", proof[proof_index]);
-                }
-                dprintf(STDERR_FILENO, "\n");
                 proof_sent = 1;
             }
         }
@@ -1158,10 +1153,6 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         if (failure) break;
         if (reaped && channel_hup && stdout_eof && stderr_eof) break;
     }
-    dprintf(STDERR_FILENO,
-            "parent debug: failure=%d reaped=%d stdout_eof=%d stderr_eof=%d channel_hup=%d got_capsule=%d proof_sent=%d status=%d stdout_size=%zu stderr_size=%zu\n",
-            failure, reaped, stdout_eof, stderr_eof, channel_hup, got_capsule, proof_sent,
-            status, stdout_size, stderr_size);
     if (stderr_size > 0) (void)!write(STDERR_FILENO, stderr_buffer, stderr_size);
     if (failure || !reaped || !stdout_eof || !stderr_eof || !channel_hup || !got_capsule || !proof_sent ||
         expected_dispatcher_result(status, stdout_buffer, stdout_size, stderr_buffer, stderr_size) < 0) {

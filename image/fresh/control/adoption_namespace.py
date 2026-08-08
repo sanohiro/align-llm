@@ -96,10 +96,6 @@ def _fail(phase: str) -> int:
     return PHASE_CODES[phase]
 
 
-def _debug(message: str) -> None:
-    os.write(2, ("namespace debug: " + message + "\n").encode("ascii", "backslashreplace"))
-
-
 def _descriptor_set() -> set[int]:
     result: set[int] = set()
     for name in os.listdir("/proc/self/fd"):
@@ -442,31 +438,20 @@ def _stage_inputs() -> None:
         ("/input-launcher-source", "/private-launcher-source"),
         ("/input-tools", "/private-tool-inventory"),
     ):
-        _debug(f"stage tree start source={source}")
         _copy_tree(source, destination, writable=source == "/input-cargo-cache")
-        _debug(f"stage tree passed source={source}")
     Path("/tools").mkdir(mode=0o700, exist_ok=True)
-    _debug("stage tools directory passed")
     for entry in sorted(Path("/private-tool-inventory").iterdir(), key=lambda item: os.fsencode(item.name)):
         if not entry.is_file() or entry.is_symlink():
             raise NamespaceFailure("toolchain")
         _copy_file(str(entry), f"/tools/{entry.name}", 0o555)
-    _debug("stage tool inventory copied")
     Path("/private-native/bin").chmod(0o755)
     for source, name in (("clang", "cc"), ("clang++", "cxx"), ("ar", "ar"), ("ranlib", "ranlib"), ("linker", "linker")):
-        _debug(f"stage native tool start source={source} destination={name}")
         _copy_file(f"/tools/{source}", f"/private-native/bin/{name}", 0o555)
-        _debug(f"stage native tool passed source={source}")
-    _debug("stage native tools copied")
     Path("/private-native/bin").chmod(0o555)
-    _debug("stage native bin sealed")
     try:
         Path("/private-tool-inventory").chmod(0o700)
-        _debug("stage tool inventory writable")
         for entry in Path("/private-tool-inventory").iterdir():
             entry.unlink()
-        _debug("stage tool inventory entries removed")
-        _debug("stage tool inventory emptied")
     except OSError as error:
         raise NamespaceFailure("toolchain") from error
 
@@ -551,20 +536,15 @@ def _handoff(project_head: str, align_revision: str) -> str:
 
 def _receive_proof(channel: socket.socket) -> bytes:
     try:
-        _debug("proof receive start")
         channel.settimeout(10)
         proof, _, flags, _ = channel.recvmsg(33, 0)
     except socket.timeout as error:
-        _debug(f"proof receive timeout {error!r}")
         raise NamespaceFailure("toolchain") from error
     except OSError as error:
-        _debug(f"proof receive error {type(error).__name__} errno={error.errno} {error!r}")
         raise NamespaceFailure("toolchain") from error
     finally:
         channel.settimeout(None)
-    _debug(f"proof packet length={len(proof)} flags={flags}")
     if flags & socket.MSG_TRUNC or len(proof) != 32:
-        _debug("proof packet shape rejected")
         raise NamespaceFailure("toolchain")
     channel.setblocking(False)
     try:
@@ -573,14 +553,9 @@ def _receive_proof(channel: socket.socket) -> bytes:
         except BlockingIOError:
             extra = b""
             flags = 0
-            _debug("proof extra check would block")
-        else:
-            _debug(f"proof extra check length={len(extra)} flags={flags}")
         if extra or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
-            _debug("proof extra packet rejected")
             raise NamespaceFailure("toolchain")
     except OSError as error:
-        _debug(f"proof extra check error {type(error).__name__} errno={error.errno} {error!r}")
         raise NamespaceFailure("toolchain") from error
     finally:
         channel.setblocking(True)
@@ -590,29 +565,16 @@ def _receive_proof(channel: socket.socket) -> bytes:
 def _drop_child_capabilities() -> None:
     try:
         libc = ctypes.CDLL(None, use_errno=True)
-        if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
-            error = ctypes.get_errno()
-            raise OSError(error, "no_new_privs")
         header = (ctypes.c_uint32 * 2)(0x20080522, 0)
-        data = (ctypes.c_uint32 * 2)(0, 0)
+        # struct __user_cap_data_struct[2] has three words per element.
+        data = (ctypes.c_uint32 * 6)(0, 0, 0, 0, 0, 0)
         if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
             error = ctypes.get_errno()
             raise OSError(error, "capset")
-    except BaseException as error:
-        try:
-            status = {}
-            with open("/proc/self/status", encoding="ascii") as stream:
-                for line in stream:
-                    name, separator, value = line.partition(":")
-                    if separator and name in ("CapEff", "CapPrm", "CapBnd", "NoNewPrivs"):
-                        status[name] = value.strip()
-            os.write(
-                2,
-                f"namespace debug: capability drop uid={os.getuid()} euid={os.geteuid()} "
-                f"{status!r} {type(error).__name__}: {error!r}\n".encode("ascii", "backslashreplace"),
-            )
-        except BaseException:
-            pass
+        if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
+            error = ctypes.get_errno()
+            raise OSError(error, "no_new_privs")
+    except BaseException:
         os._exit(127)
 
 
@@ -758,7 +720,6 @@ def _run_row(
     if descendant_failure:
         raise NamespaceFailure(phase)
     if status != 0:
-        _debug(f"row failure phase={phase} status={status} stdout={bytes(captures[stream_fds[0]])!r} stderr={bytes(captures[stream_fds[1]])!r}")
         raise NamespaceFailure(phase if status > 0 else "unobserved")
     if any(captures.values()):
         raise NamespaceFailure(phase)
@@ -782,10 +743,6 @@ def _runtime_paths() -> tuple[str, str, str]:
                 if name.endswith(".pc") and directory not in pkgconfig:
                     pkgconfig.append(directory)
     if not libraries or not loaders or not pkgconfig:
-        _debug(
-            f"runtime paths missing libraries={len(libraries)} loaders={len(loaders)} "
-            f"pkgconfig={len(pkgconfig)}"
-        )
         raise NamespaceFailure("toolchain")
     return ":".join(libraries), ":".join(loaders), ":".join(pkgconfig)
 
@@ -883,19 +840,11 @@ def run(arguments: Sequence[str]) -> int:
         or dict(os.environ) != HELPER_ENVIRONMENT
         or _descriptor_set() != {0, 1, 2, 11, 16}
     ):
-        _debug(
-            f"input mismatch arguments={tuple(arguments)!r} environment={dict(os.environ)!r} "
-            f"descriptors={sorted(_descriptor_set())!r}"
-        )
         raise NamespaceFailure("input")
     _set_subreaper()
-    _debug("input boundary passed")
     capsule = _read_authority(CAPSULE_PATH, MAX_CAPSULE_BYTES)
-    _debug(f"capsule authority passed size={len(capsule)}")
     worker = _read_authority(WORKER_PATH, MAX_WORKER_BYTES)
-    _debug(f"worker authority passed size={len(worker)}")
     nonce = _read_authority(NONCE_PATH, MAX_NONCE_BYTES)
-    _debug(f"nonce authority passed size={len(nonce)}")
     if len(nonce) != MAX_NONCE_BYTES:
         raise NamespaceFailure("toolchain")
     try:
@@ -909,21 +858,13 @@ def run(arguments: Sequence[str]) -> int:
         )
     except (OSError, ValueError, WireError) as error:
         raise NamespaceFailure("toolchain") from error
-    _debug("capsule verification passed")
     predicate = verified.predicate
     if predicate["worker_size"] != len(worker) or predicate["worker_sha256"] != hashlib.sha256(worker).hexdigest():
         raise NamespaceFailure("revision")
-    _debug("worker predicate passed")
     if predicate["invocation_nonce"] != base64.urlsafe_b64encode(nonce).rstrip(b"=").decode("ascii"):
         raise NamespaceFailure("input")
-    _debug("nonce predicate passed")
     channel = socket.socket(fileno=16)
-    try:
-        proof = _receive_proof(channel)
-    except NamespaceFailure as error:
-        _debug(f"proof receive failure phase={error.phase}")
-        raise
-    _debug(f"proof received sha256={hashlib.sha256(proof).hexdigest()}")
+    proof = _receive_proof(channel)
     expected_proof = hashlib.sha256(
         b"align-llm/ordinary-adoption/worker-admission/v2\x00"
         + bytes.fromhex(predicate["dispatch_ticket_sha256"])
@@ -931,16 +872,9 @@ def run(arguments: Sequence[str]) -> int:
         + hashlib.sha256(capsule).digest()
     ).digest()
     if proof != expected_proof:
-        _debug(
-            f"proof mismatch received={proof.hex()} expected={expected_proof.hex()} "
-            f"ticket_digest={predicate['dispatch_ticket_sha256']} capsule_digest={hashlib.sha256(capsule).hexdigest()}"
-        )
         raise NamespaceFailure("toolchain")
-    _debug("worker proof passed")
     _stage_inputs()
-    _debug("staging passed")
     library_path, loader_path, pkgconfig_path = _runtime_paths()
-    _debug("runtime paths passed")
     rows = _rows(
         launcher_sha256="",
         align_revision=predicate["align_head"],
@@ -970,10 +904,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         return run(tuple(arguments if arguments is not None else os.sys.argv[1:]))
     except NamespaceFailure as error:
-        _debug(f"failure phase={error.phase}")
         return _fail(error.phase)
-    except Exception as error:
-        _debug(f"unexpected {type(error).__name__}: {error}")
+    except Exception:
         return _fail("toolchain")
 
 
