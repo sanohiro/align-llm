@@ -178,7 +178,7 @@ def check_source_contracts() -> None:
     ordinary = worker[ordinary_start:ordinary_end]
     for token in (
         '"--as-pid-1"', '"--unshare-ipc"', '"--sync-fd", "16"',
-        '"--cap-drop", "ALL"', '"--cap-add", "CAP_SYS_ADMIN"',
+        '"--cap-drop", "ALL"', '"--cap-add", "CAP_SYS_ADMIN"', '"--cap-add", "CAP_SETPCAP"',
         '"--ro-bind-data", "12", "/authority/capsule"',
         '"--ro-bind-data", "13", "/authority/worker"',
         '"--ro-bind-data", "15", "/authority/nonce"',

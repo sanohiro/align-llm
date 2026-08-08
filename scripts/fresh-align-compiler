@@ -4095,6 +4095,7 @@ def ordinary_capture_bwrap(
             "bwrap", "--clearenv", "--die-with-parent", "--new-session", "--as-pid-1",
             "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--sync-fd", "16",
             "--uid", "0", "--gid", "0", "--cap-drop", "ALL", "--cap-add", "CAP_SYS_ADMIN",
+            "--cap-add", "CAP_SETPCAP",
             "--size", "68719476736", "--tmpfs", "/", "--proc", "/proc", "--dev", "/dev",
         ]
         for directory in ordinary_ancestor_directories(runtime):
