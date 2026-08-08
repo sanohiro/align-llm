@@ -542,6 +542,7 @@ def require_file_binding(
     target: str,
     source: str,
     raw: bytes | None = None,
+    mode: str = "0755",
 ) -> None:
     bindings = [
         binding
@@ -556,7 +557,7 @@ def require_file_binding(
         binding["source"] != source
         or binding["kind"] != "file"
         or binding_manifest["kind"] != "file"
-        or binding_manifest["mode"] != "0755"
+        or binding_manifest["mode"] != mode
         or binding["manifest_sha256"] != serialized_digest(binding_manifest)
     ):
         raise RuntimeError(f"runtime binding is not canonical: {target}")
@@ -652,6 +653,8 @@ def main() -> int:
                 namespace_helper,
             )
             copy_from_image(image, "/usr/local/share/align-llm/fresh-toolchain.json", manifest)
+            run_public_key = temporary / "run-verifier.pub"
+            copy_from_image(image, "/usr/local/share/align-llm/run-verifier.pub", run_public_key)
             manifest_value = validate_manifest_bytes(manifest.read_bytes())
             require_file_binding(
                 manifest_value,
@@ -670,6 +673,13 @@ def main() -> int:
                 target="/usr/bin/adoption-namespace",
                 source="/usr/local/libexec/align-llm/adoption-namespace",
                 raw=namespace_helper.read_bytes(),
+            )
+            require_file_binding(
+                manifest_value,
+                target="/usr/local/share/align-llm/run-verifier.pub",
+                source="/usr/local/share/align-llm/run-verifier.pub",
+                raw=run_public_key.read_bytes(),
+                mode="0444",
             )
             require_file_binding(
                 manifest_value,

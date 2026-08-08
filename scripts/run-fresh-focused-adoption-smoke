@@ -201,6 +201,16 @@ def check_source_contracts() -> None:
         REPOSITORY / "scripts/run-json-scan-row-ownership-adoption-smoke",
     ):
         require("communicate(" not in path.read_text(encoding="utf-8"), f"unbounded subprocess boundary in {path.name}")
+    dockerfile = (REPOSITORY / "image/fresh/Dockerfile").read_text(encoding="utf-8")
+    require(
+        "--runtime /usr/local/share/align-llm/run-verifier.pub=/usr/local/share/align-llm/run-verifier.pub"
+        in dockerfile,
+        "ordinary verifier key runtime binding is missing",
+    )
+    require(
+        dockerfile.index("RUN_PUBLIC_KEY_HEX") < dockerfile.index("generate-fresh-toolchain-manifest"),
+        "ordinary verifier key is installed after manifest generation",
+    )
 
 
 def check_fixture_and_make_contract() -> None:

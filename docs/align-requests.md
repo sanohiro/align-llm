@@ -1707,11 +1707,13 @@ DSSE pre-authentication encoding is 1,385 bytes and has SHA-256
 }
 ```
 
-The installed manifest's runtime-binding list has two additional fixed ordinary-adoption records: the
-image-owned executable at target `/usr/local/libexec/align-llm/request6-adoption-entrypoint` and the
-executable file at target `/usr/bin/adoption-namespace`. Both are mode-`0755` files with complete
-interpreter and library closures, and are fixed executable runtime bindings rather than
-PATH-discovered tool records. Every ordered `tools` record, including
+The installed manifest's runtime-binding list has three additional fixed ordinary-adoption records: the
+image-owned executable at target `/usr/local/libexec/align-llm/request6-adoption-entrypoint`, the
+executable file at target `/usr/bin/adoption-namespace`, and the root-owned mode-`0444` raw public key
+at target `/usr/local/share/align-llm/run-verifier.pub`. The executable files have complete
+interpreter and library closures. All three are fixed runtime bindings rather than PATH-discovered
+tool records; the key binding makes the installed run-verification key available inside the outer
+tmpfs-rooted bwrap namespace at the same authenticated path used by the namespace helper. Every ordered `tools` record, including
 `make`, `git`, `tr`, `bash`, and the other core utilities, is separately retained and copied into the
 namespace-owned `/tools` inventory described below. A missing record, incomplete closure, digest
 mismatch, or replacement is a `toolchain` failure before the first child.
@@ -1733,9 +1735,9 @@ bindings. The wrapper creates unique mode-`0700`
 `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
 The fixed manifest also authenticates the ordinary namespace launcher at the exact image-owned path
 `/usr/bin/bwrap`,
-the Request 6 dispatcher and `/usr/bin/adoption-namespace` runtime bindings, their complete
-loader/library closures, and the staged runtime files containing `/usr/bin/env`, `/bin/sh`, and the
-required loader/library roots.
+the Request 6 dispatcher and `/usr/bin/adoption-namespace` runtime bindings, the ordinary run-verifier
+key binding, their complete interpreter/loader closures where applicable, and the staged runtime files
+containing `/usr/bin/env`, `/bin/sh`, and the required loader/library roots.
 The wrapper never invokes an ambient host `bwrap`, `make`, `git`, or shell. A missing user/mount
 namespace capability or any incomplete launcher/runtime closure is a `toolchain` failure.
 The adoption implementation changes the build recipe to invoke `$(CARGO)` with the Makefile default
@@ -2064,8 +2066,8 @@ The fixed inherited descriptor map is:
 | 400 onward | ordered schema-2 tool records | `/input-tools/<tool-name>` |
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
-`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets, including the exact
-`/usr/bin/adoption-namespace` file binding. Its sources occupy FD 40 onward in manifest order,
+`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, `/usr/lib`, and `/usr/local` targets, including the exact
+`/usr/bin/adoption-namespace` and `/usr/local/share/align-llm/run-verifier.pub` file bindings. Its sources occupy FD 40 onward in manifest order,
 and `<ordered-runtime-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> <canonical-target>` triples for those retained no-follow descriptors; it is not a
 caller argument, pathname bind, or ambient host bind. The tool sources occupy FD 400 onward in

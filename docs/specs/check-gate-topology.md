@@ -1063,12 +1063,15 @@ every cache regular file still requires `st_nlink == 1`.
 This gives runtime bindings the same hash-then-use rule as tools without exposing a host `PATH` or
 an unverified resource directory. The staged `/usr/bin/env` and `/bin/sh` launchers must have the
 same digests as the corresponding `env` and `sh` tool records. The fixed schema-2 image profile
-also carries two exact executable file bindings for ordinary adoption: `source` and `target`
+also carries three exact ordinary-adoption runtime bindings: `source` and `target`
 `/usr/local/libexec/align-llm/request6-adoption-entrypoint`, the image-owned mode-`0755` public
-dispatcher, and `source` and `target` `/usr/bin/adoption-namespace`, the image-owned mode-`0755`
-namespace supervisor. Both bindings include their complete interpreter and library closures, are
-intentionally runtime bindings rather than PATH tool records, and are executable only through their
-direct retained descriptors at those fixed targets. The trusted `fresh-supervise` verifies the
+dispatcher; `source` and `target` `/usr/bin/adoption-namespace`, the image-owned mode-`0755`
+namespace supervisor; and the root-owned mode-`0444` raw run-verifier key at
+`/usr/local/share/align-llm/run-verifier.pub`. The executable bindings include their complete
+interpreter and library closures, and all three are intentionally fixed runtime bindings rather
+than PATH tool records. The executable bindings are used only through their direct retained
+descriptors at those fixed targets. The key binding is staged into the tmpfs-rooted outer bwrap at
+the authenticated path consumed by the namespace helper. The trusted `fresh-supervise` verifies the
 dispatcher binding and invokes it through retained FD `14` with `execveat(AT_EMPTY_PATH)`; the
 dispatcher digest, image-attestation digest, supervisor-channel ticket digest, and fresh
 per-invocation nonce and source-exception digest are included in the `ordinary-adoption/v2` capsule. The ordinary wrapper separately
