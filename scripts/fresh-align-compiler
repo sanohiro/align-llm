@@ -3884,7 +3884,7 @@ def ordinary_exception_rows(project_fd: int, align_fd: int) -> bytes:
             try:
                 descriptor = _open_source_entry_simple(root_fd, path)
             except FileNotFoundError:
-                if label in ("git", "handoff") or (label == "main" and not allow_main):
+                if label in ("git", "handoff"):
                     ordinary_fail("revision")
                 rows.append(OrderedDict((("source", source), ("label", label), ("present", False), ("type", None), ("mode", None), ("link_count", None), ("bytes_consumed", False), ("content_sha256", None))))
                 continue
