@@ -943,16 +943,21 @@ def dispatch(arguments: Sequence[str]) -> int:
     project_fd = align_fd = image_fd = manifest_fd = nonce_fd = channel_fd = -1
     capsule_fd = worker_fd = -1
     channel: socket.socket | None = None
+    stage = "start"
     try:
+        stage = "arguments"
         _debug("dispatcher: start")
         absolute, relative = _strict_arguments(arguments)
         _debug("dispatcher: arguments passed")
+        stage = "environment"
         _require_environment(absolute)
         _debug("dispatcher: environment passed")
+        stage = "descriptors"
         if _descriptor_set() != REQUIRED_DESCRIPTOR_SET:
             raise AdoptionFailure("input", f"descriptors {_descriptor_set()}")
         _debug("dispatcher: descriptors passed")
         project_fd, image_fd, manifest_fd, nonce_fd, channel_fd, align_fd = 4, 6, 8, 15, 16, 18
+        stage = "image snapshot"
         channel = socket.socket(fileno=channel_fd)
         image_raw = _snapshot_memfd(image_fd, "align-llm-image-attestation", 262_144)
         manifest_raw = _snapshot_memfd(manifest_fd, "align-llm-fresh-manifest", 67_108_864)
@@ -963,12 +968,15 @@ def dispatch(arguments: Sequence[str]) -> int:
             os.close(parent_fd)
         predicate = _verify_image(image_raw, manifest_raw, parent_raw)
         _debug("dispatcher: image passed")
+        stage = "parent authentication"
         _authenticate_parent(channel, predicate)
         _debug("dispatcher: parent passed")
+        stage = "ticket and nonce"
         ticket = _receive_packet(channel, ORDINARY_TICKET_BYTES)
         nonce = _snapshot_memfd(nonce_fd, "align-llm-ordinary-adoption-nonce", ORDINARY_NONCE_BYTES)
         if len(nonce) != ORDINARY_NONCE_BYTES:
             raise AdoptionFailure("toolchain")
+        stage = "repository paths"
         align_before = _identity(align_fd)
         project_before = _identity(project_fd)
         align_path = os.readlink(f"/proc/self/fd/{align_fd}")
@@ -979,12 +987,17 @@ def dispatch(arguments: Sequence[str]) -> int:
             raise AdoptionFailure("revision")
         if _normalize_absolute(project_path) == absolute:
             raise AdoptionFailure("revision")
+        stage = "source identity"
         project_head, project_format, align_head, align_format, project_index, align_index = _source_identity(project_fd, align_fd)
+        stage = "project raw tree"
         project_tree = _raw_tree(project_fd, "project-source")
+        stage = "source exceptions"
         exceptions = _source_exceptions(project_fd, align_fd)
+        stage = "worker source"
         worker = _read_worker(project_fd)
         entrypoint_raw = b""  # Native parent binds this digest in the manifest; dispatcher reads it below.
         manifest = validate_manifest_bytes(manifest_raw)
+        stage = "dispatcher binding"
         try:
             entrypoint_fd, entrypoint_raw, _ = _runtime_file_binding(manifest, DISPATCHER_PATH, owner=0)
         except ControlError as error:
@@ -994,6 +1007,7 @@ def dispatch(arguments: Sequence[str]) -> int:
                 raise AdoptionFailure("toolchain")
         finally:
             os.close(entrypoint_fd)
+        stage = "capsule"
         capsule = _capsule(
             image_raw=image_raw, manifest_raw=manifest_raw, entrypoint_raw=entrypoint_raw,
             nonce=nonce, ticket=ticket, project_head=project_head, project_format=project_format,
@@ -1016,6 +1030,7 @@ def dispatch(arguments: Sequence[str]) -> int:
             os.write(2, worker_stderr)
         return worker_status
     except AdoptionFailure as error:
+        os.write(2, f"dispatcher detail: {stage}: {error}\n".encode("ascii", "backslashreplace"))
         _debug(f"dispatcher: failure {error.phase}: {error}")
         return _fail(error.phase)
     except (OSError, ValueError, WireError, ControlError):
