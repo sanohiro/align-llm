@@ -855,10 +855,17 @@ def run(arguments: Sequence[str]) -> int:
     predicate = verified.predicate
     if predicate["worker_size"] != len(worker) or predicate["worker_sha256"] != hashlib.sha256(worker).hexdigest():
         raise NamespaceFailure("revision")
+    _debug("worker predicate passed")
     if predicate["invocation_nonce"] != base64.urlsafe_b64encode(nonce).rstrip(b"=").decode("ascii"):
         raise NamespaceFailure("input")
+    _debug("nonce predicate passed")
     channel = socket.socket(fileno=16)
-    proof = _receive_proof(channel)
+    try:
+        proof = _receive_proof(channel)
+    except NamespaceFailure as error:
+        _debug(f"proof receive failure phase={error.phase}")
+        raise
+    _debug(f"proof received sha256={hashlib.sha256(proof).hexdigest()}")
     expected_proof = hashlib.sha256(
         b"align-llm/ordinary-adoption/worker-admission/v2\x00"
         + bytes.fromhex(predicate["dispatch_ticket_sha256"])
@@ -866,6 +873,10 @@ def run(arguments: Sequence[str]) -> int:
         + hashlib.sha256(capsule).digest()
     ).digest()
     if proof != expected_proof:
+        _debug(
+            f"proof mismatch received={proof.hex()} expected={expected_proof.hex()} "
+            f"ticket_digest={predicate['dispatch_ticket_sha256']} capsule_digest={hashlib.sha256(capsule).hexdigest()}"
+        )
         raise NamespaceFailure("toolchain")
     _debug("worker proof passed")
     _stage_inputs()

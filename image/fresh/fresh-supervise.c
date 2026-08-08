@@ -1144,6 +1144,11 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
             sha256_final(&proof_state, proof);
             if (send(channel_fd, proof, 32U, MSG_NOSIGNAL) != 32) failure = 1;
             else {
+                dprintf(STDERR_FILENO, "parent proof=");
+                for (size_t proof_index = 0; proof_index < 32U; ++proof_index) {
+                    dprintf(STDERR_FILENO, "%02x", proof[proof_index]);
+                }
+                dprintf(STDERR_FILENO, "\n");
                 proof_sent = 1;
             }
         }
