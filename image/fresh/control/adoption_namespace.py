@@ -600,7 +600,17 @@ def _drop_child_capabilities() -> None:
             raise OSError(error, "capset")
     except BaseException as error:
         try:
-            os.write(2, f"namespace debug: capability drop {type(error).__name__}: {error!r}\n".encode("ascii", "backslashreplace"))
+            status = {}
+            with open("/proc/self/status", encoding="ascii") as stream:
+                for line in stream:
+                    name, separator, value = line.partition(":")
+                    if separator and name in ("CapEff", "CapPrm", "CapBnd", "NoNewPrivs"):
+                        status[name] = value.strip()
+            os.write(
+                2,
+                f"namespace debug: capability drop uid={os.getuid()} euid={os.geteuid()} "
+                f"{status!r} {type(error).__name__}: {error!r}\n".encode("ascii", "backslashreplace"),
+            )
         except BaseException:
             pass
         os._exit(127)
