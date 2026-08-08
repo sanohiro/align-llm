@@ -452,8 +452,7 @@ def _stage_inputs() -> None:
         for entry in Path("/private-tool-inventory").iterdir():
             entry.unlink()
         _debug("stage tool inventory entries removed")
-        Path("/private-tool-inventory").rmdir()
-        _debug("stage tool inventory removed")
+        _debug("stage tool inventory emptied")
     except OSError as error:
         raise NamespaceFailure("toolchain") from error
 
