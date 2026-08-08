@@ -555,7 +555,7 @@ def _exception_row(root_fd: int, source: str, label: str, allow_main: bool) -> O
                 flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
             descriptor = os.open(parts[-1], flags, dir_fd=parent)
         except FileNotFoundError:
-            if label == "git" or label == "handoff" or (label == "main" and not allow_main):
+            if label == "git" or label == "handoff":
                 raise AdoptionFailure("revision")
             return OrderedDict((key, value) for key, value in (
                 ("source", source), ("label", label), ("present", False), ("type", None),
