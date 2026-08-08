@@ -590,11 +590,15 @@ def _receive_proof(channel: socket.socket) -> bytes:
 def _drop_child_capabilities() -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
-        raise OSError(ctypes.get_errno(), "no_new_privs")
+        error = ctypes.get_errno()
+        os.write(2, f"namespace debug: no_new_privs errno={error}\n".encode("ascii"))
+        raise OSError(error, "no_new_privs")
     header = (ctypes.c_uint32 * 2)(0x20080522, 0)
     data = (ctypes.c_uint32 * 2)(0, 0)
     if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
-        raise OSError(ctypes.get_errno(), "capset")
+        error = ctypes.get_errno()
+        os.write(2, f"namespace debug: capset errno={error}\n".encode("ascii"))
+        raise OSError(error, "capset")
 
 
 def _set_subreaper() -> None:
