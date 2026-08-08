@@ -831,9 +831,13 @@ def run(arguments: Sequence[str]) -> int:
         )
         raise NamespaceFailure("input")
     _set_subreaper()
+    _debug("input boundary passed")
     capsule = _read_authority(CAPSULE_PATH, MAX_CAPSULE_BYTES)
+    _debug(f"capsule authority passed size={len(capsule)}")
     worker = _read_authority(WORKER_PATH, MAX_WORKER_BYTES)
+    _debug(f"worker authority passed size={len(worker)}")
     nonce = _read_authority(NONCE_PATH, MAX_NONCE_BYTES)
+    _debug(f"nonce authority passed size={len(nonce)}")
     if len(nonce) != MAX_NONCE_BYTES:
         raise NamespaceFailure("toolchain")
     try:
@@ -847,6 +851,7 @@ def run(arguments: Sequence[str]) -> int:
         )
     except (OSError, ValueError, WireError) as error:
         raise NamespaceFailure("toolchain") from error
+    _debug("capsule verification passed")
     predicate = verified.predicate
     if predicate["worker_size"] != len(worker) or predicate["worker_sha256"] != hashlib.sha256(worker).hexdigest():
         raise NamespaceFailure("revision")
@@ -862,8 +867,11 @@ def run(arguments: Sequence[str]) -> int:
     ).digest()
     if proof != expected_proof:
         raise NamespaceFailure("toolchain")
+    _debug("worker proof passed")
     _stage_inputs()
+    _debug("staging passed")
     library_path, loader_path, pkgconfig_path = _runtime_paths()
+    _debug("runtime paths passed")
     rows = _rows(
         launcher_sha256="",
         align_revision=predicate["align_head"],
