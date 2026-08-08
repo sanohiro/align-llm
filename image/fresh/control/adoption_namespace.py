@@ -538,14 +538,12 @@ def _receive_proof(channel: socket.socket) -> bytes:
         raise NamespaceFailure("toolchain")
     channel.setblocking(False)
     try:
-        would_block = False
         try:
             extra, _, flags, _ = channel.recvmsg(1, socket.MSG_PEEK)
         except BlockingIOError:
             extra = b""
             flags = 0
-            would_block = True
-        if (not would_block and not extra) or extra or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+        if extra or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
             raise NamespaceFailure("toolchain")
     except OSError as error:
         raise NamespaceFailure("toolchain") from error
