@@ -47,10 +47,6 @@ def fail() -> None:
     raise SystemExit(2)
 
 
-def debug(message: str) -> None:
-    os.write(2, ("carrier debug: " + message + "\n").encode("ascii"))
-
-
 def _render(value: Any, level: int = 0) -> str:
     if value is None:
         return "null"
@@ -263,26 +259,17 @@ def _run_controller(raw: bytes) -> None:
 
 
 def main() -> int:
-    debug("start")
-    if tuple(sys.argv[1:]) != REQUIRED_ARGS:
-        debug(f"arguments mismatch {tuple(sys.argv[1:])!r}")
+    if tuple(sys.argv[1:]) != REQUIRED_ARGS or dict(os.environ) != EXPECTED_ENVIRONMENT:
         fail()
-    if dict(os.environ) != EXPECTED_ENVIRONMENT:
-        debug(f"environment mismatch {dict(os.environ)!r}")
-        fail()
-    debug("arguments and environment passed")
     descriptors = {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
     if descriptors != REQUIRED_FDS:
         fail()
-    debug("descriptors passed")
     capsule = _read(12, CAPSULE_LIMIT)
     worker = _read(13, WORKER_LIMIT)
     nonce = _read(15, NONCE_LIMIT)
     if len(nonce) != NONCE_LIMIT:
         fail()
-    debug("sealed inputs passed")
     predicate = _parse_capsule(capsule)
-    debug("capsule passed")
     if (
         predicate.get("worker_size") != len(worker)
         or predicate.get("worker_sha256") != hashlib.sha256(worker).hexdigest()
@@ -291,7 +278,6 @@ def main() -> int:
         or predicate.get("project_raw_tree_sha256") != hashlib.sha256(_raw_tree(4)).hexdigest()
     ):
         fail()
-    debug("worker and tree passed")
     try:
         import socket
         channel = socket.socket(fileno=16)
@@ -306,7 +292,6 @@ def main() -> int:
         ).digest()
         if proof != expected:
             fail()
-        debug("proof passed")
     except (OSError, ValueError, KeyError):
         fail()
     generic = _open_relative(4, "scripts/fresh-align-compiler", os.O_RDONLY)
@@ -317,7 +302,6 @@ def main() -> int:
         generic_raw = _read(generic, MAX_FILE_BYTES)
     finally:
         os.close(generic)
-    debug("generic source passed")
     _run_controller(generic_raw)
     return 127
 
