@@ -531,6 +531,42 @@ static int json_top_level_string_field(const unsigned char *raw, size_t size, co
     }
 }
 
+static int json_nested_object_string_field(const unsigned char *raw, size_t size,
+                                           const char *object_key, const char *key,
+                                           char *output, size_t capacity, size_t *matches) {
+    size_t cursor = 0;
+    char key_value[256];
+    if (size < 2U || raw[cursor++] != '{') return -1;
+    while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                             raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+    if (cursor >= size || raw[cursor] == '}') return -1;
+    for (;;) {
+        size_t value_start;
+        if (json_read_string(raw, size, &cursor, key_value, sizeof(key_value)) < 0) return -1;
+        while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                                 raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+        if (cursor >= size || raw[cursor++] != ':') return -1;
+        while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                                 raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+        if (cursor >= size) return -1;
+        value_start = cursor;
+        if (strcmp(key_value, object_key) == 0) {
+            if (raw[cursor] != '{' || json_skip_value(raw, size, &cursor) < 0) return -1;
+            return json_top_level_string_field(raw + value_start, cursor - value_start, key,
+                                               output, capacity, matches);
+        }
+        if (json_skip_value(raw, size, &cursor) < 0) return -1;
+        while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                                 raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+        if (cursor >= size) return -1;
+        if (raw[cursor] == '}') return -1;
+        if (raw[cursor++] != ',') return -1;
+        while (cursor < size && (raw[cursor] == ' ' || raw[cursor] == '\n' ||
+                                 raw[cursor] == '\r' || raw[cursor] == '\t')) ++cursor;
+        if (cursor >= size || raw[cursor] == '}') return -1;
+    }
+}
+
 static int base64_value(unsigned char value) {
     if (value >= 'A' && value <= 'Z') return (int)value - 'A';
     if (value >= 'a' && value <= 'z') return (int)value - 'a' + 26;
@@ -639,7 +675,8 @@ static int find_manifest_binding(const unsigned char *raw, size_t size, char *di
             strcmp(kind, "file") != 0 ||
             json_top_level_string_field(object, object_size, "manifest_sha256", binding_manifest_digest,
                               sizeof(binding_manifest_digest), &matches) < 0 ||
-            json_top_level_string_field(object, object_size, "sha256", digest, capacity, &matches) < 0) {
+            json_nested_object_string_field(object, object_size, "manifest", "sha256", digest,
+                                            capacity, &matches) < 0) {
             return -1;
         }
     }
