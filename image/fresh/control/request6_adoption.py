@@ -530,7 +530,11 @@ def _raw_tree(root_fd: int, source: str) -> bytes:
             else:
                 raise AdoptionFailure("revision")
 
-    scan = os.dup(root_fd)
+    scan = os.open(
+        ".",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=root_fd,
+    )
     try:
         visit(scan, ())
     finally:
