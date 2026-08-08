@@ -2967,6 +2967,7 @@ def require_cgroup_empty_fd(leaf_fd: int) -> None:
 def cgroup_child_membership(lease: CgroupLease, pid: int) -> None:
     processes = cgroup_members(lease.leaf_fd, "cgroup.procs")
     if processes != (pid,):
+        ordinary_debug(f"cgroup process mismatch pid={pid} members={processes}")
         raise CleanupError("cgroup contains an unexpected process")
     try:
         task_names = os.listdir(f"/proc/{pid}/task")
@@ -2974,6 +2975,10 @@ def cgroup_child_membership(lease: CgroupLease, pid: int) -> None:
         raise CleanupError("child thread membership could not be inspected") from error
     expected_threads = tuple(sorted(int(name) for name in task_names if name.isdigit()))
     if cgroup_members(lease.leaf_fd, "cgroup.threads") != expected_threads:
+        ordinary_debug(
+            f"cgroup thread mismatch pid={pid} expected={expected_threads} "
+            f"members={cgroup_members(lease.leaf_fd, 'cgroup.threads')}"
+        )
         raise CleanupError("cgroup contains an unexpected thread")
 
 
