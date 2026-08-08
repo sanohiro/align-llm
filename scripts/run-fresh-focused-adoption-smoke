@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""Check the fixed Request 6 focused-adoption profile contract."""
+
+from __future__ import annotations
+
+import os
+import json
+import re
+import stat
+import sys
+import tempfile
+from collections import OrderedDict
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+CONTROL = REPOSITORY / "image/fresh/control"
+sys.path.insert(0, str(REPOSITORY / "scripts"))
+sys.path.insert(0, str(CONTROL))
+
+from adoption_namespace import _copy_tree, _descriptor_json, _environment, _rows  # noqa: E402
+from request6_adoption import (  # noqa: E402
+    MAX_RAW_BYTES,
+    REQUIRED_DESCRIPTOR_SET,
+    AdoptionFailure,
+    _strict_arguments,
+    _symlink_stays_inside,
+    _worker_environment,
+)
+
+
+FIXTURES = REPOSITORY / "eval/fixtures/json-scan-row-ownership-adoption"
+DIAGNOSTIC = (
+    "`json.scan` row type 'OwnedRow' must be Copy; "
+    "Move rows need per-row Drop before the scanner can reuse its row slot"
+)
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def check_dispatcher_contract() -> None:
+    valid = (
+        "--mode", "ordinary-adoption", "--project-root-fd", "4",
+        "--image-attestation-fd", "6", "--manifest-fd", "8",
+        "--align-repo-root-fd", "18", "--align-repo-absolute", "/work/align",
+        "--align-repo-relative", "../align", "--invocation-nonce-fd", "15",
+        "--supervisor-channel-fd", "16",
+    )
+    require(_strict_arguments(valid) == ("/work/align", "../align"), "valid dispatcher vector changed")
+    for index in (0, 1, 10, 12, 17):
+        invalid = list(valid)
+        invalid[index] = "unexpected"
+        try:
+            _strict_arguments(invalid)
+        except AdoptionFailure:
+            pass
+        else:
+            raise RuntimeError(f"dispatcher accepted malformed vector index {index}")
+    require(REQUIRED_DESCRIPTOR_SET == {0, 1, 2, 4, 6, 8, 11, 15, 16, 18}, "dispatcher FD set changed")
+    require(
+        _worker_environment()
+        == {
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "HOME": "/nonexistent",
+            "TMPDIR": "/tmp",
+            "PYTHONHOME": "/usr",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        "worker environment changed",
+    )
+
+
+def check_rows() -> None:
+    rows = _rows(
+        launcher_sha256="a" * 64,
+        align_revision="b" * 40,
+        project_head="c" * 40,
+        library_path="/runtime/lib",
+        loader_path="/runtime/lib",
+        pkgconfig_path="/runtime/pkgconfig",
+    )
+    require(len(rows) == 3, "ordinary profile must have exactly three rows")
+    common = (
+        "/tools/make", "--no-print-directory", "-C", "/private-project", "-f",
+        "/private-project/Makefile",
+    )
+    require(rows[0][0] == (
+        "/usr/bin/adoption-namespace", "--child-index", "1",
+        "--no-compiler-handoff", "--", *common, "align-revision",
+    ), "revision row changed")
+    require(rows[1][0] == (
+        "/usr/bin/adoption-namespace", "--child-index", "2",
+        "--no-compiler-handoff", "--", *common, "align-build-only",
+    ), "build row changed")
+    require(rows[2][0] == (
+        "/usr/bin/adoption-namespace", "--child-index", "3",
+        "--compiler-handoff", "/private-cargo-target/release/alignc",
+        "/private-cargo-target/release/libalign_runtime.a",
+        "/private-launcher-source/adoption-alignc", "a" * 64, "b" * 40, "c" * 40,
+        "--", *common, "json-scan-row-ownership-adoption",
+    ), "focused row changed")
+    common_environment = {
+        "PATH": "/private-native/bin:/private-rust/bin:/private-llvm/bin:/tools:/usr/bin:/bin",
+        "ALIGN_REPO": "/private-align",
+        "CARGO_NET_OFFLINE": "true",
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "MAKEFLAGS": "",
+        "GNUMAKEFLAGS": "",
+        "MAKEOVERRIDES": "",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "TMPDIR": "/tmp",
+    }
+    require(set(rows[0][1]) == set(common_environment), "revision environment has an override")
+    require(set(rows[1][1]) == set(common_environment) | {
+        "CARGO", "RUSTC", "CARGO_HOME", "CARGO_TARGET_DIR", "LLVM_CONFIG",
+        "LLVM_SYS_221_PREFIX", "CC", "CXX", "AR", "RANLIB", "LD",
+        "LIBRARY_PATH", "LD_LIBRARY_PATH", "PKG_CONFIG_PATH",
+    }, "build environment has an override")
+    require(rows[2][1]["ALIGNC"] == "/private-tool-bin/adoption-alignc", "focused compiler path changed")
+    require(rows[2][1]["ALIGNC_DESCRIPTOR"] == "/private-tool-bin/adoption-handoff", "focused descriptor path changed")
+    require(rows[2][1]["ALIGNC_CACHE"] == "/private-compiler-cache", "focused cache path changed")
+
+
+def check_descriptor_contract() -> None:
+    descriptor = OrderedDict(
+        [
+            ("schema_version", 1),
+            ("compiler_path", "/private-tool-bin/alignc"),
+            ("compiler_dev", 7),
+            ("compiler_ino", 11),
+            ("compiler_mode", 365),
+            ("compiler_nlink", 1),
+            ("compiler_size", 123),
+            ("compiler_sha256", "0" * 64),
+            ("archive_path", "/private-tool-bin/libalign_runtime.a"),
+            ("archive_dev", 7),
+            ("archive_ino", 13),
+            ("archive_mode", 292),
+            ("archive_nlink", 1),
+            ("archive_size", 456),
+            ("archive_sha256", "1" * 64),
+            ("launcher_sha256", "2" * 64),
+            ("align_revision", "3" * 40),
+            ("project_head", "4" * 40),
+        ]
+    )
+    golden = (
+        b'{"schema_version":1,"compiler_path":"/private-tool-bin/alignc","compiler_dev":7,'
+        b'"compiler_ino":11,"compiler_mode":365,"compiler_nlink":1,"compiler_size":123,'
+        b'"compiler_sha256":"' + b"0" * 64 + b'","archive_path":"/private-tool-bin/libalign_runtime.a",'
+        b'"archive_dev":7,"archive_ino":13,"archive_mode":292,"archive_nlink":1,"archive_size":456,'
+        b'"archive_sha256":"' + b"1" * 64 + b'","launcher_sha256":"' + b"2" * 64 + b'",'
+        b'"align_revision":"' + b"3" * 40 + b'","project_head":"' + b"4" * 40 + b'"}\n'
+    )
+    require(_descriptor_json(descriptor) == golden, "descriptor semantic-to-byte golden changed")
+    parsed = json.loads(golden.decode("utf-8"), object_pairs_hook=OrderedDict)
+    require(parsed == descriptor and tuple(parsed) == tuple(descriptor), "descriptor byte-to-semantic golden changed")
+    launcher = (REPOSITORY / "scripts/adoption-alignc").read_text(encoding="utf-8")
+    require('separators=(",", ":")' in launcher, "launcher descriptor serializer changed")
+
+
+def check_source_link_contract() -> None:
+    require(_symlink_stays_inside((b"docs", b"link"), b"../README.md"), "in-tree symlink was rejected")
+    require(not _symlink_stays_inside((b"link",), b"../outside"), "escaping symlink was accepted")
+    require(not _symlink_stays_inside((b"link",), b"/outside"), "absolute symlink was accepted")
+
+
+def check_launcher_mode_contract() -> None:
+    namespace_source = (CONTROL / "adoption_namespace.py").read_text(encoding="utf-8")
+    require(
+        "stat.S_IMODE(launcher_stat.st_mode) != 0o555" in namespace_source
+        and "stat.S_IMODE(launcher_stat.st_mode) != 0o755" not in namespace_source,
+        "private launcher handoff mode is not canonical",
+    )
+    with tempfile.TemporaryDirectory(prefix="fresh-launcher-mode-") as name:
+        root = Path(name)
+        source = root / "source"
+        source.mkdir(mode=0o700)
+        launcher = source / "adoption-alignc"
+        launcher.write_bytes(b"#!/bin/sh\n")
+        launcher.chmod(0o755)
+        destination = root / "destination"
+        _copy_tree(str(source), str(destination))
+        copied = destination / "adoption-alignc"
+        require(stat.S_IMODE(copied.stat().st_mode) == 0o555, "private launcher copy mode changed")
+        require(copied.read_bytes() == launcher.read_bytes(), "private launcher copy bytes changed")
+
+
+def check_source_contracts() -> None:
+    worker = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
+    ordinary_start = worker.index("def ordinary_capture_bwrap")
+    ordinary_end = worker.index("def ordinary_result", ordinary_start)
+    ordinary = worker[ordinary_start:ordinary_end]
+    for token in (
+        '"--as-pid-1"', '"--unshare-ipc"', '"--sync-fd", "16"',
+        '"--cap-drop", "ALL"', '"--cap-add", "CAP_SYS_ADMIN"', '"--cap-add", "CAP_SETPCAP"',
+        '"--ro-bind-data", "12", "/authority/capsule"',
+        '"--ro-bind-data", "13", "/authority/worker"',
+        '"--ro-bind-data", "15", "/authority/nonce"',
+        '"--mode", "ordinary-adoption"',
+        '"--setenv", "ALIGN_REPO", "/private-align"',
+    ):
+        require(token in ordinary, f"ordinary bwrap contract is missing: {token}")
+    for forbidden in ('"--overlay"', '"--userns"', '"/workspace"'):
+        require(forbidden not in ordinary, f"ordinary bwrap contract leaked aggregate state: {forbidden}")
+    native = (REPOSITORY / "image/fresh/fresh-supervise.c").read_text(encoding="utf-8")
+    for token in (
+        "ordinary_preflight", "ordinary_dispatcher_child", "SYS_execveat",
+        "fresh-supervise", "ordinary-adoption",
+        "return WEXITSTATUS(status) == 0 ? 0 : 1",
+    ):
+        require(token in native, f"native ordinary parent contract is missing: {token}")
+    for path in (
+        REPOSITORY / "image/fresh/control/request6_adoption.py",
+        REPOSITORY / "image/fresh/control/adoption_namespace.py",
+        REPOSITORY / "scripts/run-json-scan-row-ownership-adoption-smoke",
+    ):
+        require("communicate(" not in path.read_text(encoding="utf-8"), f"unbounded subprocess boundary in {path.name}")
+    dockerfile = (REPOSITORY / "image/fresh/Dockerfile").read_text(encoding="utf-8")
+    require(
+        "--runtime /usr/local/share/align-llm/run-verifier.pub=/usr/local/share/align-llm/run-verifier.pub"
+        in dockerfile,
+        "ordinary verifier key runtime binding is missing",
+    )
+    require(
+        dockerfile.index("RUN_PUBLIC_KEY_HEX") < dockerfile.index("generate-fresh-toolchain-manifest"),
+        "ordinary verifier key is installed after manifest generation",
+    )
+
+
+def check_fixture_and_make_contract() -> None:
+    expected = {
+        "copy-row.align", "decode-owned-option.align", "decode-owned.align",
+        "owned-direct.align", "owned-nested.align", "owned-option.align", "owned-union.align",
+    }
+    require({path.name for path in FIXTURES.iterdir()} == expected, "focused fixture set changed")
+    for path in sorted(FIXTURES.iterdir()):
+        require(path.is_file() and not path.is_symlink(), f"fixture is not a regular file: {path.name}")
+        if path.name.startswith("owned-"):
+            require(path.read_text(encoding="utf-8").count("OwnedRow") == 2, f"fixture row changed: {path.name}")
+    for path in (
+        REPOSITORY / "scripts/adoption-alignc",
+        REPOSITORY / "scripts/run-json-scan-row-ownership-adoption",
+    ):
+        require(stat.S_IMODE(path.stat(follow_symlinks=False).st_mode) == 0o755, f"adoption input mode changed: {path.name}")
+    makefile = (REPOSITORY / "Makefile").read_text(encoding="utf-8")
+    require(re.search(r"(?m)^align-build-only:\s*$", makefile) is not None, "build-only target gained prerequisites")
+    require("/tools/bash /private-project/scripts/check-align-revision" in makefile, "fresh revision recipe changed")
+    require("./scripts/check-align-revision" in makefile, "host revision recipe disappeared")
+    require("/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke" in makefile, "focused Make recipe changed")
+    require("CARGO ?= cargo" in makefile, "host Cargo default disappeared")
+    require(MAX_RAW_BYTES == 48 * 1024 * 1024 * 1024, "dispatcher raw-tree cap changed")
+    compiler = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
+    require("MAX_ORDINARY_SOURCE_BYTES = 48 * 1024 * 1024 * 1024" in compiler, "ordinary worker raw-tree cap changed")
+    require("total > MAX_ORDINARY_SOURCE_BYTES" in compiler, "ordinary worker raw-tree cap is not enforced")
+    profile = (REPOSITORY / "scripts/run-fresh-image-profile-smoke").read_text(encoding="utf-8")
+    require('if cgroup_driver == "cgroupfs":' in profile, "cgroupfs ordinary launcher disappeared")
+    require("--entrypoint\",\n                \"/usr/bin/python3.12\"" in profile, "ordinary launcher entrypoint changed")
+    require("['fresh-supervise', '--mode', 'ordinary-adoption']" in profile, "ordinary argv0 contract changed")
+    require(DIAGNOSTIC.startswith("`json.scan` row type"), "fixture diagnostic constant changed")
+    for line_name in ("HOSTED_CHECK_TARGETS", "CAPABLE_ONLY_CHECK_TARGETS", "SERIAL_CHECK_AGGREGATES"):
+        line = next(line for line in makefile.splitlines() if line_name in line)
+        require("json-scan-row-ownership-adoption" not in line, f"focused target entered {line_name}")
+
+
+def main() -> int:
+    check_dispatcher_contract()
+    check_rows()
+    check_descriptor_contract()
+    check_source_link_contract()
+    check_launcher_mode_contract()
+    check_source_contracts()
+    check_fixture_and_make_contract()
+    print("fresh focused adoption smoke: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

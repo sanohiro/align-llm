@@ -4,6 +4,8 @@ FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_COMMIT=f94b90ad6e49cc7f15c4171c5a434aa459e82d2d
 ARG BWRAP_COMMIT=1b80120ef26a28e065e67f89bfef873f13bdd317
+ARG IMAGE_PUBLIC_KEY_HEX
+ARG RUN_PUBLIC_KEY_HEX
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget gnupg xz-utils git make build-essential pkg-config \
@@ -80,9 +82,15 @@ RUN mkdir -p /usr/local/libexec/align-llm /usr/local/share/align-llm \
     cmp /tmp/fresh-control-a/fresh-bootstrap /tmp/fresh-control-b/fresh-bootstrap && \
     cmp /tmp/fresh-control-a/request6-adoption-boundary-entrypoint \
       /tmp/fresh-control-b/request6-adoption-boundary-entrypoint && \
+    cmp /tmp/fresh-control-a/request6-adoption-entrypoint \
+      /tmp/fresh-control-b/request6-adoption-entrypoint && \
+    cmp /tmp/fresh-control-a/adoption-namespace \
+      /tmp/fresh-control-b/adoption-namespace && \
     install -m 0755 /tmp/fresh-control-a/fresh-supervise \
       /tmp/fresh-control-a/fresh-bootstrap \
       /tmp/fresh-control-a/request6-adoption-boundary-entrypoint \
+      /tmp/fresh-control-a/request6-adoption-entrypoint \
+      /tmp/fresh-control-a/adoption-namespace \
       /usr/local/libexec/align-llm/ && \
     rm -rf /tmp/fresh-control-a /tmp/fresh-control-b && \
     /usr/lib/llvm-22/bin/clang -std=c11 -O2 -Wall -Wextra -Werror -static-pie \
@@ -178,6 +186,21 @@ RUN ALIGN_REVISION="$(tr -d '\n' </build/align-llm/.align-revision)" && \
     find /var/cache/align-llm/cargo -type d -exec chmod 0755 {} + && \
     find /var/cache/align-llm/cargo -type f -exec chmod 0644 {} +
 
+RUN python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+image = os.environ.get("IMAGE_PUBLIC_KEY_HEX", "")
+run = os.environ.get("RUN_PUBLIC_KEY_HEX", "")
+for name, value in (("image-verifier.pub", image), ("run-verifier.pub", run)):
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise SystemExit(f"missing or invalid build key: {name}")
+    path = Path("/usr/local/share/align-llm") / name
+    path.write_bytes(bytes.fromhex(value))
+    path.chmod(0o444)
+PY
+
 RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --bootstrap /usr/local/libexec/align-llm/fresh-bootstrap \
       --tool-root /opt/align-llm/tool-bin \
@@ -185,7 +208,12 @@ RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --runtime /runtime/rust=/runtime/rust \
       --runtime /runtime/cc-suite=/runtime/cc-suite \
       --runtime /runtime/bwrap=/runtime/bwrap \
+      --runtime /runtime/bwrap/bin/bwrap=/usr/bin/bwrap \
       --runtime /usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint=/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint \
+      --runtime /usr/local/libexec/align-llm/request6-adoption-entrypoint=/usr/local/libexec/align-llm/request6-adoption-entrypoint \
+      --runtime /usr/local/libexec/align-llm/adoption-namespace=/usr/local/libexec/align-llm/adoption-namespace \
+      --runtime /usr/local/libexec/align-llm/adoption-namespace=/usr/bin/adoption-namespace \
+      --runtime /usr/local/share/align-llm/run-verifier.pub=/usr/local/share/align-llm/run-verifier.pub \
       --runtime /usr/bin/dash=/bin/sh \
       --runtime /usr/bin/bash=/bin/bash \
       --runtime /usr/bin/env=/usr/bin/env \
@@ -213,23 +241,6 @@ RUN mkdir -p /usr/local/share/align-llm/self-test/project/scripts \
     GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \
       git -C /usr/local/share/align-llm/self-test/project commit -m 'Install synthetic worker' && \
     rm -rf /build
-
-ARG IMAGE_PUBLIC_KEY_HEX
-ARG RUN_PUBLIC_KEY_HEX
-RUN python3 - <<'PY'
-import os
-import re
-from pathlib import Path
-
-image = os.environ.get("IMAGE_PUBLIC_KEY_HEX", "")
-run = os.environ.get("RUN_PUBLIC_KEY_HEX", "")
-for name, value in (("image-verifier.pub", image), ("run-verifier.pub", run)):
-    if not re.fullmatch(r"[0-9a-f]{64}", value):
-        raise SystemExit(f"missing or invalid build key: {name}")
-    path = Path("/usr/local/share/align-llm") / name
-    path.write_bytes(bytes.fromhex(value))
-    path.chmod(0o444)
-PY
 
 ENTRYPOINT ["/usr/local/libexec/align-llm/fresh-supervise"]
 CMD ["--mode", "self-test"]

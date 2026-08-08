@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Run the fixed Request 6 scanner-row adoption fixture matrix."""
+
+from __future__ import annotations
+
+import os
+import selectors
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+FIXTURES = REPOSITORY / "eval/fixtures/json-scan-row-ownership-adoption"
+EXPECTED_FILES = {
+    "copy-row.align",
+    "decode-owned-option.align",
+    "decode-owned.align",
+    "owned-direct.align",
+    "owned-nested.align",
+    "owned-option.align",
+    "owned-union.align",
+}
+DIAGNOSTIC = (
+    "`json.scan` row type 'OwnedRow' must be Copy; "
+    "Move rows need per-row Drop before the scanner can reuse its row slot"
+).encode("utf-8")
+MAX_STREAM_BYTES = 65_536
+COMMAND_TIMEOUT_SECONDS = 120
+
+
+def fail(message: str) -> "NoReturn":
+    raise RuntimeError(message)
+
+
+def validate_environment() -> tuple[str, str | None]:
+    if os.environ.get("ALIGN_LLM_FRESH_COMPILER") == "1":
+        compiler = os.environ.get("ALIGNC")
+        if compiler != "/tools/fresh-alignc" or os.environ.get("ALIGNC_CACHE") != "off":
+            fail("fresh adoption environment is not the fixed compiler vector")
+        if "ALIGNC_DESCRIPTOR" in os.environ:
+            fail("fresh adoption environment leaked an ordinary compiler descriptor")
+        return compiler, None
+
+    expected = {
+        "ALIGNC": "/private-tool-bin/adoption-alignc",
+        "ALIGNC_DESCRIPTOR": "/private-tool-bin/adoption-handoff",
+        "ALIGNC_CACHE": "/private-compiler-cache",
+    }
+    for name, value in expected.items():
+        if os.environ.get(name) != value:
+            fail(f"ordinary adoption environment has unexpected {name}")
+    return expected["ALIGNC"], expected["ALIGNC_DESCRIPTOR"]
+
+
+def run_bounded(arguments: list[str]) -> tuple[int, bytes, bytes]:
+    try:
+        process = subprocess.Popen(
+            arguments,
+            cwd=REPOSITORY,
+            env=dict(os.environ),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError as error:
+        fail(f"compiler launch failed: {error}")
+    assert process.stdout is not None and process.stderr is not None
+    stdout_fd, stderr_fd = process.stdout.fileno(), process.stderr.fileno()
+    streams = selectors.DefaultSelector()
+    captures: dict[int, bytearray] = {}
+    for stream in (process.stdout, process.stderr):
+        os.set_blocking(stream.fileno(), False)
+        streams.register(stream, selectors.EVENT_READ)
+        captures[stream.fileno()] = bytearray()
+    deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
+
+    def terminate() -> None:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            process.wait(timeout=5)
+
+    try:
+        while streams.get_map() or process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate()
+                fail("compiler command timed out")
+            if not streams.get_map():
+                time.sleep(min(remaining, 0.25))
+                continue
+            for key, _ in streams.select(min(remaining, 0.25)):
+                try:
+                    block = os.read(key.fd, 8192)
+                except BlockingIOError:
+                    continue
+                if not block:
+                    streams.unregister(key.fileobj)
+                    continue
+                capture = captures[key.fd]
+                capture.extend(block)
+                if len(capture) > MAX_STREAM_BYTES:
+                    terminate()
+                    fail("compiler output exceeded the fixed limit")
+        status = process.wait(timeout=0)
+    except BaseException:
+        if process.poll() is None:
+            terminate()
+        raise
+    finally:
+        streams.close()
+        process.stdout.close()
+        process.stderr.close()
+    return status, bytes(captures[stdout_fd]), bytes(captures[stderr_fd])
+
+
+def verify_fixture_set() -> None:
+    if not FIXTURES.is_dir():
+        fail(f"fixture directory is missing: {FIXTURES}")
+    observed = {path.name for path in FIXTURES.iterdir() if path.is_file()}
+    if observed != EXPECTED_FILES:
+        fail(f"fixture set changed: expected={sorted(EXPECTED_FILES)} observed={sorted(observed)}")
+    for name in sorted(EXPECTED_FILES):
+        if (FIXTURES / name).is_symlink():
+            fail(f"fixture must not be a symlink: {name}")
+
+
+def check_rejected(compiler: str, name: str) -> None:
+    path = FIXTURES / name
+    status, stdout, stderr = run_bounded([compiler, "check", str(path)])
+    if status == 0 or stdout:
+        fail(f"{name} was unexpectedly accepted or wrote stdout")
+    if stderr.count(DIAGNOSTIC) != 1 or stderr.count(b"error:") != 1:
+        fail(f"{name} did not produce the exact single scanner diagnostic: {stderr!r}")
+    if b"panic" in stderr.lower() or b"backtrace" in stderr.lower():
+        fail(f"{name} produced a panic or backtrace")
+
+
+def run_accepted(compiler: str, name: str, expected: bytes) -> None:
+    path = FIXTURES / name
+    status, stdout, stderr = run_bounded([compiler, "run", str(path)])
+    if status != 0 or stdout != expected or stderr:
+        fail(f"{name} result mismatch: status={status} stdout={stdout!r} stderr={stderr!r}")
+
+
+def main() -> int:
+    verify_fixture_set()
+    compiler, _ = validate_environment()
+    for name in ("owned-direct.align", "owned-nested.align", "owned-union.align", "owned-option.align"):
+        check_rejected(compiler, name)
+    run_accepted(compiler, "copy-row.align", b"3\n")
+    run_accepted(compiler, "decode-owned.align", b"3\n")
+    run_accepted(compiler, "decode-owned-option.align", b'{"inner":{"items":[1,2]},"score":3}\n')
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except RuntimeError as error:
+        print(f"json-scan adoption fixture failure: {error}", file=sys.stderr)
+        raise SystemExit(1)

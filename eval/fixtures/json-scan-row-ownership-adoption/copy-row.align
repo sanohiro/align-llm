@@ -1,0 +1,9 @@
+import core.json
+
+CopyRow { score: i64, name: str }
+
+fn main() -> Result<(), Error> {
+  rows: json.scanner<CopyRow> := json.scan("[{\"score\":1,\"name\":\"a\"},{\"score\":2,\"name\":\"b\"}]")
+  print(rows.score.sum()?)
+  return Ok(())
+}

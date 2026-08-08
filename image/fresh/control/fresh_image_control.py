@@ -1981,6 +1981,7 @@ def _platform_self_test(manifest_raw: bytes) -> None:
                 b"--overlay",
                 b"--bind-fd",
                 b"--ro-bind-fd",
+                b"--ro-bind-data",
             )
         ):
             raise ControlError("TRUST", "bwrap", "bubblewrap mount support is missing")

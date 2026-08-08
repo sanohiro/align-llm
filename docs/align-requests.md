@@ -1564,9 +1564,10 @@ The dispatcher leaves the supervisor channel open and passes it to the worker. T
 the inherited peer while it remains in the outer PID namespace, then closes FD `18` after its final
 source identity check. It executes only from that sealed descriptor, owns the bwrap/cgroup/staging
 setup, and supplies the three sealed FDs to bwrap as
-`--ro-bind-fd 12 /authority/capsule`, `--ro-bind-fd 13 /authority/worker`, and
-`--ro-bind-fd 15 /authority/nonce`; it also passes FD `16` as the fixed supervisor channel. The
-pinned bwrap consumes the three authority source descriptors while making read-only bind paths. The
+`--ro-bind-data 12 /authority/capsule`, `--ro-bind-data 13 /authority/worker`, and
+`--ro-bind-data 15 /authority/nonce`; it also passes FD `16` as the fixed supervisor channel. The
+pinned bwrap consumes the three sealed authority source descriptors by copying their bytes into
+read-only bind paths. The
 exact vector includes `--as-pid-1 --sync-fd 16`: on the pinned bwrap this makes FD `16` part of the
 PID-1 helper's inherited descriptor set; `--sync-fd` without `--as-pid-1` is not an accepted vector
 and its non-forwarding behavior is a negative platform test. Bwrap does not forward arbitrary FDs. The
@@ -1664,7 +1665,7 @@ and records offset zero; the receiver repeats it before verification and again b
 | --- | --- | --- |
 | supervisor -> FD-14 dispatcher | Rewind FD `15`; pass FD `15`, the named project/image/manifest descriptors, retained Align-root FD `18`, and the connected supervisor-channel FD `16`; FD `14` is an executable descriptor and has no data offset contract | Dispatcher validates the channel peer/ticket and retained FD `18`, rewinds and verifies FD `15` before nonce read |
 | dispatcher -> sealed worker Python | Rewind FD `12`, `13`, and `15` after capsule construction; revalidate identity-only FD `18` without an offset operation; clear `FD_CLOEXEC` on `4`, `12`, `13`, `15`, `16`, and `18`; invoke `/usr/bin/python3 -I -B /proc/self/fd/13` with `close_fds=True, pass_fds=(4,12,13,15,16,18)` | Worker rewinds the three authority fds after Python has opened the `/proc/self/fd/13` source, verifies them, revalidates FD `18` by identity without `lseek`/`pread`, peeks the queued proof on FD `16`, then closes FD `18` after the final source check |
-| worker -> bwrap | Rewind FD `12`, `13`, and `15` after worker verification; revalidate the identity-only descriptors in `B` without offset operations; clear `FD_CLOEXEC` on every descriptor in `B`; FD `18` is closed before this edge; FD `27` remains `FD_CLOEXEC` and is retained only by the forked bwrap launcher child for direct `execveat(AT_EMPTY_PATH)`, not by a Python `pass_fds` member | Pinned bwrap consumes FD `12`, `13`, `15`, `20..26`, `40..(40+N-1)`, and `400..(400+T-1)` through fixed `--ro-bind-fd` operations, retains FD `16` because the exact vector includes `--as-pid-1 --sync-fd 16`, closes every consumed source descriptor after binding, and performs no arbitrary-FD forwarding |
+| worker -> bwrap | Rewind FD `12`, `13`, and `15` after worker verification; revalidate the identity-only descriptors in `B` without offset operations; clear `FD_CLOEXEC` on every descriptor in `B`; FD `18` is closed before this edge; FD `27` remains `FD_CLOEXEC` and is retained only by the forked bwrap launcher child for direct `execveat(AT_EMPTY_PATH)`, not by a Python `pass_fds` member | Pinned bwrap consumes FD `12`, `13`, and `15` through fixed `--ro-bind-data` operations, consumes FD `20..26`, `40..(40+N-1)`, and `400..(400+T-1)` through fixed `--ro-bind-fd` operations, retains FD `16` because the exact vector includes `--as-pid-1 --sync-fd 16`, closes every consumed source descriptor after binding, and performs no arbitrary-FD forwarding |
 | bwrap -> namespace helper | The PID-1 helper receives only fixed path arguments plus the inherited supervisor channel FD `16`; FD `27` was closed by the successful bwrap exec | Helper opens the three fixed read-only bind paths with no-follow flags, consumes and verifies the one queued proof on FD `16`, and uses `pread`; it then rehydrates and rewinds local sealed memfds before verification |
 | namespace helper verification | Use `pread` and require offset zero after each read; no authority descriptor, proof channel, or bind-path fd is passed to a Make child; peer PID/procfs checks are N/A inside the private PID namespace and are completed by dispatcher/worker before bwrap | Close all local authority memfds, FD `16`, and bind-path descriptors only after the final row and reverse cleanup; every Make child sees exactly `{0,1,2}` |
 
@@ -1706,11 +1707,13 @@ DSSE pre-authentication encoding is 1,385 bytes and has SHA-256
 }
 ```
 
-The installed manifest's runtime-binding list has two additional fixed ordinary-adoption records: the
-image-owned executable at target `/usr/local/libexec/align-llm/request6-adoption-entrypoint` and the
-executable file at target `/usr/bin/adoption-namespace`. Both are mode-`0755` files with complete
-interpreter and library closures, and are fixed executable runtime bindings rather than
-PATH-discovered tool records. Every ordered `tools` record, including
+The installed manifest's runtime-binding list has three additional fixed ordinary-adoption records: the
+image-owned executable at target `/usr/local/libexec/align-llm/request6-adoption-entrypoint`, the
+executable file at target `/usr/bin/adoption-namespace`, and the root-owned mode-`0444` raw public key
+at target `/usr/local/share/align-llm/run-verifier.pub`. The executable files have complete
+interpreter and library closures. All three are fixed runtime bindings rather than PATH-discovered
+tool records; the key binding makes the installed run-verification key available inside the outer
+tmpfs-rooted bwrap namespace at the same authenticated path used by the namespace helper. Every ordered `tools` record, including
 `make`, `git`, `tr`, `bash`, and the other core utilities, is separately retained and copied into the
 namespace-owned `/tools` inventory described below. A missing record, incomplete closure, digest
 mismatch, or replacement is a `toolchain` failure before the first child.
@@ -1732,9 +1735,9 @@ bindings. The wrapper creates unique mode-`0700`
 `CARGO_HOME`, `CARGO_TARGET_DIR`, compiler-cache, and output paths and records their identities.
 The fixed manifest also authenticates the ordinary namespace launcher at the exact image-owned path
 `/usr/bin/bwrap`,
-the Request 6 dispatcher and `/usr/bin/adoption-namespace` runtime bindings, their complete
-loader/library closures, and the staged runtime files containing `/usr/bin/env`, `/bin/sh`, and the
-required loader/library roots.
+the Request 6 dispatcher and `/usr/bin/adoption-namespace` runtime bindings, the ordinary run-verifier
+key binding, their complete interpreter/loader closures where applicable, and the staged runtime files
+containing `/usr/bin/env`, `/bin/sh`, and the required loader/library roots.
 The wrapper never invokes an ambient host `bwrap`, `make`, `git`, or shell. A missing user/mount
 namespace capability or any incomplete launcher/runtime closure is a `toolchain` failure.
 The adoption implementation changes the build recipe to invoke `$(CARGO)` with the Makefile default
@@ -2021,14 +2024,14 @@ minimal `/dev`, no host root, and no original host pathname.
 The focused mode additionally gives the trusted namespace setup helper a namespace-owned tmpfs at
 `/private-tool-bin`; the trusted helper copies the compiler, archive, launcher, and final descriptor
 into that tmpfs, remounts it read-only before the focused child, and launches each Make child through
-a capability-dropping child boundary. The supervisor retains `CAP_SYS_ADMIN` only for its own
+a capability-dropping child boundary. The supervisor retains `CAP_SYS_ADMIN` and `CAP_SETPCAP` only for its own
 descriptor-relative tmpfs setup/remount operations and never interprets repository code. The final
 bundle has no host pathname or same-UID alias. The wrapper uses the attested namespace launcher
 with the fixed shape; every read-only source is passed through a retained descriptor, never reopened
 from a host pathname:
 
 ```text
-<bwrap-fd-27> --clearenv --die-with-parent --new-session --as-pid-1 --unshare-user --unshare-pid --unshare-net --unshare-ipc --sync-fd 16 --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /authority --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-fd 12 /authority/capsule --ro-bind-fd 13 /authority/worker --ro-bind-fd 15 /authority/nonce --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-path /authority/capsule --worker-path /authority/worker --nonce-path /authority/nonce --supervisor-channel-fd 16 --mode ordinary-adoption
+<bwrap-fd-27> --clearenv --die-with-parent --new-session --as-pid-1 --unshare-user --unshare-pid --unshare-net --unshare-ipc --sync-fd 16 --uid 0 --gid 0 --cap-drop ALL --cap-add CAP_SYS_ADMIN --cap-add CAP_SETPCAP --size 68719476736 --tmpfs / --proc /proc --dev /dev --dir /tmp --dir /authority --dir /input-project --dir /input-align --dir /input-rust --dir /input-llvm --dir /input-native --dir /input-cargo-cache --dir /input-launcher-source --dir /input-tools --dir /private-project --dir /private-align --dir /private-rust --dir /private-llvm --dir /private-native --dir /private-cargo-cache --dir /private-launcher-source --dir /private-tool-bin --dir /private-tool-inventory --dir /private-cargo-home --dir /private-cargo-target --dir /private-compiler-cache --dir /tools --size 268435456 --tmpfs /tmp --size 268435456 --tmpfs /private-tool-bin --size 268435456 --tmpfs /private-tool-inventory --size 25769803776 --tmpfs /private-cargo-home --size 68719476736 --tmpfs /private-cargo-target --size 8589934592 --tmpfs /private-compiler-cache --dir /bin --dir /lib --dir /lib64 --dir /usr --dir /usr/bin --dir /usr/lib <ordered-runtime-fd-bind-argv> <ordered-tool-fd-bind-argv> --ro-bind-data 12 /authority/capsule --ro-bind-data 13 /authority/worker --ro-bind-data 15 /authority/nonce --ro-bind-fd 20 /input-project --ro-bind-fd 21 /input-align --ro-bind-fd 22 /input-rust --ro-bind-fd 23 /input-llvm --ro-bind-fd 24 /input-native --ro-bind-fd 25 /input-cargo-cache --ro-bind-fd 26 /input-launcher-source --chdir /private-project -- /usr/bin/adoption-namespace --capsule-path /authority/capsule --worker-path /authority/worker --nonce-path /authority/nonce --supervisor-channel-fd 16 --mode ordinary-adoption
 ```
 
 The launcher child invokes this vector with `execveat(AT_EMPTY_PATH)` on FD `27`, with `argv[0]`
@@ -2037,19 +2040,19 @@ unspecified argument. The helper's `argv[0]` remains exactly `/usr/bin/adoption-
 in its separate fixed vector.
 
 The pinned-bwrap acceptance fixture uses a sealed regular-file memfd for each authority source and
-executes the exact `--ro-bind-fd <fd> <file-target>` form, not only directory binds. It proves the
-mounted target is a read-only regular file with the expected size and bytes, that bwrap consumes and
-closes the source descriptor, and that the namespace helper opens the mounted file with `O_NOFOLLOW`.
-Directory-only support, a pathname-reopened source, or a source descriptor still visible to the
-helper is a platform failure.
+executes the exact `--ro-bind-data <fd> <file-target>` form. It proves the mounted target is a
+read-only regular file with the expected size and bytes, that bwrap consumes and closes the source
+descriptor, and that the namespace helper opens the mounted file with `O_NOFOLLOW`. A
+pathname-reopened source, directory-only support, or a source descriptor still visible to the helper
+is a platform failure.
 
 The fixed inherited descriptor map is:
 
 | FD | Retained source owner and identity | Namespace target |
 | --- | --- | --- |
-| 12 | sealed `ordinary-adoption/v2` capsule | consumed by bwrap `--ro-bind-fd 12 /authority/capsule`; no FD 12 reaches the helper |
-| 13 | sealed repository worker snapshot | consumed by bwrap `--ro-bind-fd 13 /authority/worker`; no FD 13 reaches the helper |
-| 15 | sealed per-invocation 32-byte nonce challenge | consumed by bwrap `--ro-bind-fd 15 /authority/nonce`; no FD 15 reaches the helper |
+| 12 | sealed `ordinary-adoption/v2` capsule | consumed by bwrap `--ro-bind-data 12 /authority/capsule`; no FD 12 reaches the helper |
+| 13 | sealed repository worker snapshot | consumed by bwrap `--ro-bind-data 13 /authority/worker`; no FD 13 reaches the helper |
+| 15 | sealed per-invocation 32-byte nonce challenge | consumed by bwrap `--ro-bind-data 15 /authority/nonce`; no FD 15 reaches the helper |
 | 16 | connected supervisor channel with the queued worker-admission proof | retained by bwrap `--sync-fd 16` and inherited by the PID-1 helper; the helper retains it through every row and reverse cleanup, excludes it from each Make child, and closes it before helper exit |
 | 18 | retained absolute `ALIGN_REPO` root descriptor, revalidated by dispatcher and worker | used only through dispatcher/worker source checks, then closed before bwrap; no host Align descriptor reaches the helper |
 | 20 | private project snapshot | `/input-project` |
@@ -2063,8 +2066,8 @@ The fixed inherited descriptor map is:
 | 400 onward | ordered schema-2 tool records | `/input-tools/<tool-name>` |
 
 The ordered runtime binding sequence is the fixed Section 9 manifest-derived list at canonical
-`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, and `/usr/lib` targets, including the exact
-`/usr/bin/adoption-namespace` file binding. Its sources occupy FD 40 onward in manifest order,
+`/bin`, `/lib`, `/lib64`, `/usr`, `/usr/bin`, `/usr/lib`, and `/usr/local` targets, including the exact
+`/usr/bin/adoption-namespace` and `/usr/local/share/align-llm/run-verifier.pub` file bindings. Its sources occupy FD 40 onward in manifest order,
 and `<ordered-runtime-fd-bind-argv>` contains only
 `--ro-bind-fd <fd> <canonical-target>` triples for those retained no-follow descriptors; it is not a
 caller argument, pathname bind, or ambient host bind. The tool sources occupy FD 400 onward in
@@ -2078,7 +2081,7 @@ and uses no Python `close_fds/pass_fds` subprocess boundary for this edge. The c
 `execveat(AT_EMPTY_PATH)` edge, while every descriptor in `B` remains open until bwrap consumes its
 bind source or retains FD `16` through `--as-pid-1 --sync-fd 16`. Here `N` is the ordered
 runtime-binding count and `T` is the fixed ordered tool-record count from the authenticated manifest.
-`--ro-bind-fd 12 /authority/capsule --ro-bind-fd 13 /authority/worker --ro-bind-fd 15 /authority/nonce --supervisor-channel-fd 16 --mode ordinary-adoption`; it contains no caller or Make vector.
+`--ro-bind-data 12 /authority/capsule --ro-bind-data 13 /authority/worker --ro-bind-data 15 /authority/nonce --supervisor-channel-fd 16 --mode ordinary-adoption`; it contains no caller or Make vector.
 The image-owned namespace helper owns the exact three-row vector table below and runs those rows in
 order; no alternate vector encoding or fourth vector exists. The namespace helper remounts each
 writable tmpfs with its fixed `nr_inodes` cap before the first child and continuously counts bytes and
