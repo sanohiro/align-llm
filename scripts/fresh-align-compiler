@@ -188,6 +188,7 @@ CLEANUP_TIMEOUT = 30
 TOOL_PROBE_TIMEOUT = 5
 MAX_TOOL_RUNTIME_BYTES = 8 * 1024 * 1024 * 1024
 RESOURCE_POLL_SECONDS = 0.25
+CGROUP_ADMISSION_TIMEOUT_SECONDS = 1.0
 READ_CHUNK = 1_048_576
 RENAME_NOREPLACE = 1
 
@@ -2982,6 +2983,24 @@ def cgroup_child_membership(lease: CgroupLease, pid: int) -> None:
         raise CleanupError("cgroup contains an unexpected thread")
 
 
+def wait_cgroup_child_membership(lease: CgroupLease, pid: int) -> None:
+    deadline = time.monotonic() + CGROUP_ADMISSION_TIMEOUT_SECONDS
+    while True:
+        processes = cgroup_members(lease.leaf_fd, "cgroup.procs")
+        if processes:
+            cgroup_child_membership(lease, pid)
+            return
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError as error:
+            raise CleanupError("child exited before cgroup admission") from error
+        except OSError as error:
+            raise CleanupError("child identity could not be checked") from error
+        if time.monotonic() >= deadline:
+            cgroup_child_membership(lease, pid)
+        time.sleep(0.001)
+
+
 def cgroup_group_is_owned(lease: CgroupLease, process_group: int) -> bool:
     members = cgroup_members(lease.leaf_fd, "cgroup.procs") + cgroup_members(
         lease.leaf_fd, "cgroup.threads"
@@ -4150,7 +4169,7 @@ def ordinary_capture_bwrap(
                     pass
                 os._exit(127)
         try:
-            cgroup_child_membership(lease, child)
+            wait_cgroup_child_membership(lease, child)
         except CleanupError as error:
             for stream_name, stream_fd in (("stdout", stdout_read), ("stderr", stderr_read)):
                 try:
