@@ -13,10 +13,9 @@ from request6_adoption import main
 debug_message("python: import passed")
 
 try:
-    os.close(11)
+    os.fstat(11)
 except OSError:
-    pass
-debug_message("python: bundle fd closed")
+    debug_message("python: bundle fd missing")
 
 debug_message("python: calling dispatch")
 raise SystemExit(main())
