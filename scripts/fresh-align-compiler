@@ -4307,7 +4307,7 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
                 "align-source", 18, tools["git"],
                 expected_head=predicate["align_head"], expected_format="sha1",
             )
-            ordinary_debug(f"source identities passed project={project.head} align={align.head}")
+            ordinary_debug(f"source identities passed project={project.revision} align={align.revision}")
             verify_align_pin(project, align)
             ordinary_debug("align pin passed")
             if index_digest(project.view) != predicate["project_index_sha256"]:
