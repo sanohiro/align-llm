@@ -269,6 +269,7 @@ def main() -> int:
     debug("arguments and environment passed")
     descriptors = {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
     if descriptors != REQUIRED_FDS:
+        debug(f"descriptors mismatch {sorted(descriptors)}")
         fail()
     debug("descriptors passed")
     capsule = _read(12, CAPSULE_LIMIT)
