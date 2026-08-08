@@ -82,6 +82,10 @@ def _fail(phase: str) -> int:
     return PHASE_CODES[phase]
 
 
+def _debug(message: str) -> None:
+    os.write(2, ("namespace debug: " + message + "\n").encode("ascii", "backslashreplace"))
+
+
 def _descriptor_set() -> set[int]:
     result: set[int] = set()
     for name in os.listdir("/proc/self/fd"):
@@ -821,6 +825,10 @@ def run(arguments: Sequence[str]) -> int:
         or dict(os.environ) != HELPER_ENVIRONMENT
         or _descriptor_set() != {0, 1, 2, 11, 16}
     ):
+        _debug(
+            f"input mismatch arguments={tuple(arguments)!r} environment={dict(os.environ)!r} "
+            f"descriptors={sorted(_descriptor_set())!r}"
+        )
         raise NamespaceFailure("input")
     _set_subreaper()
     capsule = _read_authority(CAPSULE_PATH, MAX_CAPSULE_BYTES)
@@ -885,8 +893,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
     try:
         return run(tuple(arguments if arguments is not None else os.sys.argv[1:]))
     except NamespaceFailure as error:
+        _debug(f"failure phase={error.phase}")
         return _fail(error.phase)
-    except Exception:
+    except Exception as error:
+        _debug(f"unexpected {type(error).__name__}: {error}")
         return _fail("toolchain")
 
 
