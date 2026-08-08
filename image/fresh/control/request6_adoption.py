@@ -957,16 +957,16 @@ def _launch_worker(worker_fd: int, arguments: Sequence[str]) -> tuple[int, bytes
     stdout = bytes(captures[stdout_fd])
     stderr = bytes(captures[stderr_fd])
     if status < 0:
-        raise AdoptionFailure("unobserved")
+        raise AdoptionFailure("unobserved", f"worker status {status}")
     if status not in range(0, 7):
-        raise AdoptionFailure("unobserved")
+        raise AdoptionFailure("unobserved", f"worker status {status}")
     if status == 0:
         if stdout != b"json-scan adoption: PASS\n" or stderr:
-            raise AdoptionFailure("toolchain")
+            raise AdoptionFailure("toolchain", f"worker output stdout={stdout!r} stderr={stderr!r}")
     else:
         expected = f"json-scan adoption: ERROR {next(name for name, code in PHASE_CODES.items() if code == status)}\n".encode()
         if stdout or stderr != expected:
-            raise AdoptionFailure("toolchain")
+            raise AdoptionFailure("toolchain", f"worker output stdout={stdout!r} stderr={stderr!r}")
     return status, stdout, stderr
 
 
