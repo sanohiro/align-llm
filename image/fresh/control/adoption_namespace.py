@@ -497,7 +497,7 @@ def _handoff(project_head: str, align_revision: str) -> str:
         or len(compiler_raw) != compiler_stat.st_size
         or not stat.S_ISREG(archive_stat.st_mode) or stat.S_IMODE(archive_stat.st_mode) not in (0o444, 0o644)
         or len(archive_raw) != archive_stat.st_size
-        or not stat.S_ISREG(launcher_stat.st_mode) or launcher_stat.st_nlink != 1 or stat.S_IMODE(launcher_stat.st_mode) != 0o755
+        or not stat.S_ISREG(launcher_stat.st_mode) or launcher_stat.st_nlink != 1 or stat.S_IMODE(launcher_stat.st_mode) != 0o555
         or len(launcher_raw) != launcher_stat.st_size
     ):
         raise NamespaceFailure("build")

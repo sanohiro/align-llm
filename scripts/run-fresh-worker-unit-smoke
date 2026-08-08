@@ -731,6 +731,38 @@ def cleanup_success_case(module, temporary: Path) -> None:
     require(not admitted.exists(), "owned private root remained after cleanup")
 
 
+def ordinary_cgroup_cleanup_cases(module) -> None:
+    original_populated = module.cgroup_populated
+    original_kill = module.kill_cgroup
+    original_remove = module.remove_cgroup_leaf
+    original_timeout = module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS
+    calls: list[object] = []
+    try:
+        module.cgroup_populated = lambda _lease: True
+        module.kill_cgroup = lambda _lease, group: calls.append(("kill", group))
+        module.remove_cgroup_leaf = lambda _lease: calls.append("remove")
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = 0.0
+        try:
+            module.cleanup_ordinary_cgroup(object(), 123)
+        except module.CleanupError as error:
+            require("remained populated" in str(error), "ordinary cgroup timeout error changed")
+        else:
+            raise AssertionError("populated ordinary cgroup was not bounded after kill")
+        require(calls == [("kill", 123)], "ordinary cgroup cleanup retried an unsafe action")
+
+        state = iter((True, False))
+        calls.clear()
+        module.cgroup_populated = lambda _lease: next(state)
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = 5.0
+        module.cleanup_ordinary_cgroup(object(), 456)
+        require(calls == [("kill", 456), "remove"], "ordinary cgroup cleanup order changed")
+    finally:
+        module.cgroup_populated = original_populated
+        module.kill_cgroup = original_kill
+        module.remove_cgroup_leaf = original_remove
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = original_timeout
+
+
 def overlay_work_cleanup_case(module, temporary: Path) -> None:
     roots = temporary / "overlay-roots"
     roots.mkdir(mode=0o700)
@@ -1400,6 +1432,7 @@ def main() -> int:
         materialization_mutation_cases(module, temporary)
         private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)
+        ordinary_cgroup_cleanup_cases(module)
         overlay_work_cleanup_case(module, temporary)
         aggregate_quota_case(module, temporary)
         cleanup_replacement_case(module, temporary)

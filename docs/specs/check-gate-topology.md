@@ -573,6 +573,22 @@ ownership gap in the same fresh-worker lifecycle:
    checker aligned with the aggregate's closed executable inventory without exposing the whole
    runtime tree through `PATH`.
 
+6. **Ordinary result emission and bounded finalization.** `fresh-supervise.c` must retain every
+   dispatcher stdout/stderr byte until the child has been reaped and the complete result has passed
+   the exact status grammar; only the validated result may be emitted, exactly once, and malformed
+   or unexpected child bytes must never cross the public boundary. `scripts/fresh-align-compiler`
+   must give the final cgroup-membership drain a monotonic deadline, use the documented
+   terminate/kill/reap order when the deadline expires, and report cleanup failure while retaining
+   the lease evidence rather than waiting indefinitely. The status-grammar and process-lifecycle
+   smokes must cover duplicate-forwarding prevention, malformed child streams, normal cleanup, and
+   a cgroup that remains populated after kill.
+
+7. **Private launcher mode normalization.** The namespace copy boundary converts executable
+   handoff inputs to its canonical private mode `0555`; `_handoff` must validate that same mode
+   after the staged `0755` launcher has crossed the boundary, then publish a single-link `0555`
+   launcher. The installed-image adoption smoke and a focused handoff regression must cover this
+   source-to-private mode transition before the focused row runs.
+
 The repair may not be reviewed as merge-ready until the changed closure rows point to these
 implementations and the focused commands pass with the current exact head.
 
@@ -3609,6 +3625,24 @@ the public line.
 | Baseline identity | baseline owner | Final Makefile source, two samples, oracle, finalization, ancestry, unchanged pin, and explicit read-only descriptor/guard paths through recorder subprocesses | `fresh-v2-baseline-integration-smoke` runs the Section 2.4 chain before capable evidence and asserts recorder Python children use the empty descriptor set and fixed handoff files in fresh mode. |
 | Concurrent independent invocations | worker and image/profile lock parent | The worker owns a descriptor-relative `flock` on `/run/user/<uid>/align-llm-fresh/lock`, validates every protected parent component and `0600` lock identity, opens the profile-created `roots` child with mode `0700` and stable identity, then performs a bounded per-user candidate-name scan; a second `ci`, `adoption`, `build`, or `self-test` is rejected before private-root creation and no process classifies or deletes another root | `fresh-v2-concurrency-smoke` runs every pair of simultaneous modes, checks exact `PLATFORM concurrency`/`FILESYSTEM filesystem` status, replaces or weakens each lock-parent or `roots` component, proves only one root can exist per user, exercises the 65,536-entry/one-second fail-closed scan without shared-`/tmp` interference, and injects cross-root replacement/deletion attempts. |
 | Platform boundary | topology plan | x86-only claim; executable `/tmp`; authenticated-retained-bwrap namespace/overlay/read-only-tools and `/target/tmp`-only no-symlink self-tests; delegated cgroup limits; non-x86 requires separate profile | `fresh-v2-platform-profile-smoke` rejects unsupported or `noexec` `/tmp`, missing cgroup delegation, replaces the mutable bwrap pathname and tool staging source, proves the read-only bundle survives replacement, checks a contained source symlink remains usable, and prevents C7 non-x86 evidence reuse. |
+
+### 9.10.0a Conditional-final review rescope closure rows
+
+| Closure row | Owner | Repair contract | Required regression |
+| --- | --- | --- | --- |
+| Validated dispatcher result emission | `image/fresh/fresh-supervise.c` | Capture stdout/stderr through child reap, validate the complete status grammar before any public write, emit the validated result exactly once, and emit no child bytes for an invalid result. | `run-fresh-image-profile-smoke` plus the status-grammar smoke assert one exact error line and reject malformed child streams. |
+| Bounded final cgroup drain | `scripts/fresh-align-compiler` | Use a monotonic cleanup deadline around post-kill membership drain; preserve the authenticated lease on an unprovable removal and return the documented cleanup failure instead of looping without a bound. | `run-fresh-worker-unit-smoke` injects a populated-after-kill cgroup and requires bounded cleanup failure; the successful ordinary profile proves normal removal. |
+| Private launcher mode normalization | `image/fresh/control/adoption_namespace.py` | Validate the copied private launcher as executable `0555`, matching `_copy_tree`, and retain the final single-link `0555` handoff artifact. | `run-fresh-image-profile-smoke` plus a focused handoff regression cover a `0755` source launcher copied to `0555` before `_handoff`. |
+| `execveat` authority-FD handoff | `image/fresh/fresh-supervise.c` and `image/fresh/request6-adoption-entrypoint.c` | Clear `FD_CLOEXEC` on retained FD 14 before `execveat(AT_EMPTY_PATH)`, then close that authority FD as the first operation in the static dispatcher so the post-exec descriptor set remains exact. | `run-fresh-image-control-smoke` compiles the native pair and `run-fresh-image-profile-smoke` proves the ordinary dispatcher reaches the authenticated capsule/proof path instead of returning native `TRUST supervisor`. |
+| Container PID 1 parent | `image/fresh/fresh-supervise.c` | Permit the trusted native supervisor to be PID 1 inside the profile container; retain `PR_SET_PDEATHSIG` and direct-child reaping without rejecting the valid PID 1 parent identity. | `run-fresh-image-profile-smoke` exercises the installed ordinary profile with the native supervisor as the container init process. |
+
+The conditional final review found the first two missed invariants, and local equivalent-image
+diagnosis found the launcher-mode mismatch, the retained-executable FD handoff failure, and the
+container-PID-1 parent rejection before the repaired image could be accepted. These are one repair
+because all five are terminal result, handoff, dispatch, parent identity, or cleanup ownership in the same
+ordinary worker lifecycle. No new public entrypoint or separate consumer is introduced, so the
+slice remains one independently mergeable Request 6 adoption gate; the repair must be reviewed
+only after these rows and their regressions are covered.
 
 ### 9.10.1 Current FRESH-IMAGE-REQUEST6-BOUNDARY enabling slice
 

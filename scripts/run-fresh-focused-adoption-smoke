@@ -8,6 +8,7 @@ import json
 import re
 import stat
 import sys
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 
@@ -17,7 +18,7 @@ CONTROL = REPOSITORY / "image/fresh/control"
 sys.path.insert(0, str(REPOSITORY / "scripts"))
 sys.path.insert(0, str(CONTROL))
 
-from adoption_namespace import _descriptor_json, _environment, _rows  # noqa: E402
+from adoption_namespace import _copy_tree, _descriptor_json, _environment, _rows  # noqa: E402
 from request6_adoption import (  # noqa: E402
     MAX_RAW_BYTES,
     REQUIRED_DESCRIPTOR_SET,
@@ -171,6 +172,27 @@ def check_source_link_contract() -> None:
     require(not _symlink_stays_inside((b"link",), b"/outside"), "absolute symlink was accepted")
 
 
+def check_launcher_mode_contract() -> None:
+    namespace_source = (CONTROL / "adoption_namespace.py").read_text(encoding="utf-8")
+    require(
+        "stat.S_IMODE(launcher_stat.st_mode) != 0o555" in namespace_source
+        and "stat.S_IMODE(launcher_stat.st_mode) != 0o755" not in namespace_source,
+        "private launcher handoff mode is not canonical",
+    )
+    with tempfile.TemporaryDirectory(prefix="fresh-launcher-mode-") as name:
+        root = Path(name)
+        source = root / "source"
+        source.mkdir(mode=0o700)
+        launcher = source / "adoption-alignc"
+        launcher.write_bytes(b"#!/bin/sh\n")
+        launcher.chmod(0o755)
+        destination = root / "destination"
+        _copy_tree(str(source), str(destination))
+        copied = destination / "adoption-alignc"
+        require(stat.S_IMODE(copied.stat().st_mode) == 0o555, "private launcher copy mode changed")
+        require(copied.read_bytes() == launcher.read_bytes(), "private launcher copy bytes changed")
+
+
 def check_source_contracts() -> None:
     worker = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
     ordinary_start = worker.index("def ordinary_capture_bwrap")
@@ -253,6 +275,7 @@ def main() -> int:
     check_rows()
     check_descriptor_contract()
     check_source_link_contract()
+    check_launcher_mode_contract()
     check_source_contracts()
     check_fixture_and_make_contract()
     print("fresh focused adoption smoke: PASS")

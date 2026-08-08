@@ -1153,7 +1153,6 @@ static int ordinary_parent_loop(pid_t child, int channel_fd, int stdout_fd, int 
         if (failure) break;
         if (reaped && channel_hup && stdout_eof && stderr_eof) break;
     }
-    if (stderr_size > 0) (void)!write(STDERR_FILENO, stderr_buffer, stderr_size);
     if (failure || !reaped || !stdout_eof || !stderr_eof || !channel_hup || !got_capsule || !proof_sent ||
         expected_dispatcher_result(status, stdout_buffer, stdout_size, stderr_buffer, stderr_size) < 0) {
         if (!reaped) {
@@ -1194,17 +1193,17 @@ static void ordinary_dispatcher_child(int child_socket, int stdout_write, int st
     int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
     if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0 || dup2(child_socket, 16) < 0 ||
         dup2(stdout_write, STDOUT_FILENO) < 0 || dup2(stderr_write, STDERR_FILENO) < 0 ||
-        prctl(PR_SET_PDEATHSIG, SIGKILL) < 0 || getppid() <= 1) _exit(127);
+        prctl(PR_SET_PDEATHSIG, SIGKILL) < 0) _exit(127);
     if (null_fd > STDERR_FILENO) close(null_fd);
     if (child_socket != 16) close(child_socket);
     if (stdout_write != STDOUT_FILENO) close(stdout_write);
     if (stderr_write != STDERR_FILENO) close(stderr_write);
     if (set_cloexec(4, 0) < 0 || set_cloexec(6, 0) < 0 || set_cloexec(8, 0) < 0 ||
-        set_cloexec(15, 0) < 0 || set_cloexec(16, 0) < 0 || set_cloexec(18, 0) < 0 ||
-        chdir("/proc/self/fd/4") < 0 || syscall(SYS_close_range, 3U, 3U, 0U) < 0 ||
-        syscall(SYS_close_range, 5U, 5U, 0U) < 0 || syscall(SYS_close_range, 7U, 7U, 0U) < 0 ||
-        syscall(SYS_close_range, 9U, 13U, 0U) < 0 || syscall(SYS_close_range, 17U, 17U, 0U) < 0 ||
-        syscall(SYS_close_range, 19U, UINT_MAX, 0U) < 0) _exit(127);
+        set_cloexec(14, 0) < 0 || set_cloexec(15, 0) < 0 || set_cloexec(16, 0) < 0 ||
+        set_cloexec(18, 0) < 0 || chdir("/proc/self/fd/4") < 0 ||
+        syscall(SYS_close_range, 3U, 3U, 0U) < 0 || syscall(SYS_close_range, 5U, 5U, 0U) < 0 ||
+        syscall(SYS_close_range, 7U, 7U, 0U) < 0 || syscall(SYS_close_range, 9U, 13U, 0U) < 0 ||
+        syscall(SYS_close_range, 17U, 17U, 0U) < 0 || syscall(SYS_close_range, 19U, UINT_MAX, 0U) < 0) _exit(127);
     (void)syscall(SYS_execveat, 14, "", arguments, child_env, AT_EMPTY_PATH);
     _exit(127);
 }

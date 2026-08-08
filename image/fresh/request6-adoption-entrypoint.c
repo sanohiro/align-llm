@@ -156,7 +156,7 @@ static int close_unexpected_descriptors(void) {
 int main(int argc, char **argv) {
     char *child_argv[32];
     int index;
-    if (argc < 2 || argc > 20 || strcmp(argv[0], "request6-adoption-entrypoint") != 0 ||
+    if (close(14) < 0 || argc < 2 || argc > 20 || strcmp(argv[0], "request6-adoption-entrypoint") != 0 ||
         exact_environment() < 0 || descriptor_set_is_exact() < 0 || snapshot_payload() < 0 ||
         close_unexpected_descriptors() < 0) return fail_input();
     child_argv[0] = (char *)PYTHON_PATH;

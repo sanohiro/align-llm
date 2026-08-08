@@ -239,6 +239,7 @@ ORDINARY_ENTRYPOINT_PATH = "/usr/local/libexec/align-llm/request6-adoption-entry
 ORDINARY_REQUIRED_FDS = {0, 1, 2, 4, 12, 13, 15, 16, 18}
 ORDINARY_HELPER_STREAM = 65_536
 ORDINARY_BWRAP_TIMEOUT = 5_000
+ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = 5.0
 MAX_PATH_BYTES = 4096
 MAX_SOURCE_DEPTH = 64
 CANCELLED_SIGNAL: int | None = None
@@ -3177,6 +3178,19 @@ def kill_cgroup(lease: CgroupLease, process_group: int | None) -> None:
         raise CleanupError("child cgroup kill failed") from error
 
 
+def cleanup_ordinary_cgroup(lease: CgroupLease, process_group: int | None) -> None:
+    """Kill an owned ordinary cgroup and bound the final membership drain."""
+    deadline = time.monotonic() + ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS
+    if cgroup_populated(lease):
+        kill_cgroup(lease, process_group)
+    while cgroup_populated(lease):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CleanupError("child cgroup remained populated after kill")
+        time.sleep(min(0.01, remaining))
+    remove_cgroup_leaf(lease)
+
+
 def reap_descendants(
     deadline: float, direct_process: subprocess.Popen[bytes] | None = None
 ) -> None:
@@ -4229,11 +4243,7 @@ def ordinary_capture_bwrap(
                 pass
         if lease is not None:
             try:
-                if cgroup_populated(lease):
-                    kill_cgroup(lease, process_group)
-                while cgroup_populated(lease):
-                    time.sleep(0.01)
-                remove_cgroup_leaf(lease)
+                cleanup_ordinary_cgroup(lease, process_group)
             except (CleanupError, OSError) as error:
                 raise OrdinaryFailure("cleanup") from error
             finally:
