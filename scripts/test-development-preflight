@@ -8,6 +8,8 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -71,6 +73,7 @@ def test_classifier() -> None:
         "scripts/verification_scope.py",
         "scripts/classify-verification",
         "scripts/pre-pr",
+        "scripts/prepare-fresh-image-build",
         "scripts/select-ci-reuse",
         "scripts/test-development-preflight",
     ):
@@ -594,6 +597,36 @@ def test_qualification_modes() -> None:
         ],
         "installed-only mode repeated focused owners",
     )
+    prepared = invoke(
+        "--installed-profile-only",
+        "--require-docker",
+        "--prepared-image",
+        "align-llm-fresh-test:" + "a" * 32,
+        "--image-signing-seed",
+        "/private/image-seed",
+        "--run-signing-seed",
+        "/private/run-seed",
+    )
+    require(
+        prepared
+        == [
+            (
+                "run-fresh-image-profile-smoke",
+                (
+                    sys.executable,
+                    "scripts/run-fresh-image-profile-smoke",
+                    "--require-docker",
+                    "--prepared-image",
+                    "align-llm-fresh-test:" + "a" * 32,
+                    "--image-signing-seed",
+                    "/private/image-seed",
+                    "--run-signing-seed",
+                    "/private/run-seed",
+                ),
+            )
+        ],
+        "installed-only mode did not forward the prepared image identity",
+    )
     complete = invoke("--installed-profile", "--require-docker")
     require(
         len(complete) == len(qualification.FOCUSED_CHECKS) + 1
@@ -617,6 +650,181 @@ def test_qualification_modes() -> None:
 
     require(unavailable() == 77, "optional Docker unavailability no longer reports skip")
     require(unavailable("--require-docker") == 1, "required Docker unavailability did not fail")
+    prior = sys.argv
+    sys.argv = [
+        "run-fresh-image-profile-smoke",
+        "--prepared-image",
+        "align-llm-fresh-test:" + "a" * 32,
+    ]
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                image_profile.main()
+            except SystemExit as error:
+                require(error.code == 2, "partial prepared-image input did not report usage failure")
+            else:
+                raise RuntimeError("partial prepared-image input was accepted")
+    finally:
+        sys.argv = prior
+
+
+def test_image_build_material() -> None:
+    material = load_script(
+        "prepare-fresh-image-build", "align_llm_fresh_image_material_test"
+    )
+    image_profile = load_script(
+        "run-fresh-image-profile-smoke", "align_llm_fresh_image_seed_test"
+    )
+    with tempfile.TemporaryDirectory(prefix="align-llm-image-material-") as temporary:
+        root = Path(temporary)
+        directory = root / "material"
+        output = root / "github-output"
+        output.write_text("prior=value\n", encoding="ascii")
+        material.prepare(directory, output)
+        require(stat.S_IMODE(directory.lstat().st_mode) == 0o700, "material directory is not private")
+        image_seed = directory / material.IMAGE_SEED
+        run_seed = directory / material.RUN_SEED
+        require(
+            stat.S_IMODE(image_seed.lstat().st_mode) == 0o400
+            and stat.S_IMODE(run_seed.lstat().st_mode) == 0o400,
+            "prepared signing seeds are not private",
+        )
+        image_raw = image_profile.prepared_seed(image_seed, "image signing seed")
+        run_raw = image_profile.prepared_seed(run_seed, "run signing seed")
+        require(len(image_raw) == 32 and len(run_raw) == 32 and image_raw != run_raw, "seed generation changed")
+        outputs = output.read_text(encoding="ascii")
+        output_rows = dict(
+            line.split("=", 1) for line in outputs.splitlines() if not line.startswith("prior=")
+        )
+        require(
+            outputs.startswith("prior=value\n")
+            and list(output_rows)
+            == ["image", "image_public_key_hex", "run_public_key_hex", "material_directory"]
+            and material.IMAGE_PATTERN.fullmatch(output_rows["image"]) is not None
+            and output_rows["image_public_key_hex"]
+            == material.ed25519_public_key(image_raw).hex()
+            and output_rows["run_public_key_hex"]
+            == material.ed25519_public_key(run_raw).hex()
+            and output_rows["material_directory"] == str(directory),
+            "public build outputs are incomplete",
+        )
+        require(
+            image_raw.hex() not in outputs and run_raw.hex() not in outputs,
+            "private seed escaped into GitHub output",
+        )
+        original_files = {
+            name: (directory / name).read_bytes() for name in material.OWNED_FILES
+        }
+        try:
+            material.prepare(directory, output)
+        except material.MaterialError:
+            pass
+        else:
+            raise RuntimeError("a second preparation reused live signing material")
+        require(
+            all((directory / name).read_bytes() == value for name, value in original_files.items()),
+            "failed second preparation changed live signing material",
+        )
+        unknown = directory / "unknown"
+        unknown.write_text("do not delete\n", encoding="ascii")
+        try:
+            material.cleanup(directory)
+        except material.MaterialError:
+            pass
+        else:
+            raise RuntimeError("cleanup accepted an unknown entry")
+        require(unknown.exists() and image_seed.exists(), "rejected cleanup mutated material")
+        unknown.unlink()
+
+        marker_path = directory / material.MARKER
+        marker_raw = marker_path.read_bytes()
+        marker_value = json.loads(marker_raw)
+        marker_value["directory"] = str(root / "wrong-directory")
+        marker_path.chmod(0o600)
+        marker_path.write_text(
+            json.dumps(marker_value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="ascii",
+        )
+        marker_path.chmod(0o400)
+        try:
+            material.cleanup(directory)
+        except material.MaterialError:
+            pass
+        else:
+            raise RuntimeError("cleanup accepted a marker for another directory")
+        require(image_seed.exists() and run_seed.exists(), "marker rejection removed signing material")
+        marker_path.chmod(0o600)
+        marker_path.write_bytes(marker_raw)
+        marker_path.chmod(0o400)
+        material.cleanup(directory)
+        require(not directory.exists(), "material cleanup retained its directory")
+
+        cli_directory = root / "cli-material"
+        cli_output = root / "cli-output"
+        cli_output.touch()
+        environment = dict(os.environ)
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        prepared = subprocess.run(
+            (
+                sys.executable,
+                "scripts/prepare-fresh-image-build",
+                "--directory",
+                str(cli_directory),
+                "--github-output",
+                str(cli_output),
+            ),
+            cwd=REPOSITORY,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(
+            prepared.returncode == 0 and not prepared.stdout and not prepared.stderr,
+            "public material preparation CLI failed",
+        )
+        cleaned = subprocess.run(
+            (
+                sys.executable,
+                "scripts/prepare-fresh-image-build",
+                "--cleanup",
+                "--directory",
+                str(cli_directory),
+            ),
+            cwd=REPOSITORY,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(
+            cleaned.returncode == 0
+            and not cleaned.stdout
+            and not cleaned.stderr
+            and not cli_directory.exists(),
+            "public material cleanup CLI failed",
+        )
+
+        failed_directory = root / "failed-material"
+        unavailable_output = root / "output-directory"
+        unavailable_output.mkdir()
+        try:
+            material.prepare(failed_directory, unavailable_output)
+        except material.MaterialError:
+            pass
+        else:
+            raise RuntimeError("unavailable GitHub output was accepted")
+        require(not failed_directory.exists(), "failed preparation retained private material")
+
+        wrong_mode = root / "wrong-mode-seed"
+        wrong_mode.write_bytes(os.urandom(32))
+        wrong_mode.chmod(0o600)
+        try:
+            image_profile.prepared_seed(wrong_mode, "image signing seed")
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("prepared image accepted a noncanonical seed mode")
 
 
 def test_image_profile_plan() -> None:
@@ -692,6 +900,13 @@ def test_image_profile_plan() -> None:
         not in dockerfile,
         "image cache retained the full-history Align clone",
     )
+    require(
+        dockerfile.count("ARG IMAGE_PUBLIC_KEY_HEX") == 1
+        and dockerfile.count("ARG RUN_PUBLIC_KEY_HEX") == 1
+        and dockerfile.index("ARG IMAGE_PUBLIC_KEY_HEX")
+        > dockerfile.index("rm -rf /build"),
+        "random verifier keys invalidate heavy image layers",
+    )
 
 
 def test_workflow_topology() -> None:
@@ -734,6 +949,37 @@ def test_workflow_topology() -> None:
     require(
         "python3 scripts/run-fresh-worker-qualification --installed-profile\n" not in workflow,
         "CI retained the duplicate full qualification",
+    )
+    require(
+        "docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c" in workflow
+        and "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a" in workflow,
+        "CI does not use commit-pinned Buildx owners",
+    )
+    require(
+        "cache-from: type=gha,scope=align-llm-fresh-image-v1" in workflow
+        and "cache-to: type=gha,scope=align-llm-fresh-image-v1,mode=max,ignore-error=true"
+        in workflow,
+        "CI BuildKit cache is unbounded or fails closed on export",
+    )
+    require(
+        "load: ${{ steps.reuse.outputs.reused != 'true' }}" in workflow,
+        "exact merges load the cache-only image into Docker",
+    )
+    require(
+        workflow.count("python3 scripts/prepare-fresh-image-build") == 2
+        and "if: always() && steps.image_material.outcome == 'success'" in workflow,
+        "CI does not prepare and clean per-run signing material",
+    )
+    require(
+        '--prepared-image "$PREPARED_IMAGE"' in workflow
+        and '--image-signing-seed "$IMAGE_SIGNING_SEED"' in workflow
+        and '--run-signing-seed "$RUN_SIGNING_SEED"' in workflow,
+        "CI does not pass the prepared image to the installed owner",
+    )
+    require(
+        "if: steps.reuse.outputs.reused != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
+        in workflow,
+        "exact fresh-image merges do not classify cache publication",
     )
     require(
         workflow.count("python3 scripts/select-ci-reuse") == 2,
@@ -821,6 +1067,7 @@ def main() -> int:
     test_plan()
     test_ci_reuse()
     test_qualification_modes()
+    test_image_build_material()
     test_image_profile_plan()
     test_workflow_topology()
     test_cli()

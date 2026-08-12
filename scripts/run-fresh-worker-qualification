@@ -257,6 +257,9 @@ def main() -> int:
     parser.add_argument("--installed-profile-only", action="store_true")
     parser.add_argument("--require-docker", action="store_true")
     parser.add_argument("--align-repo", type=Path)
+    parser.add_argument("--prepared-image")
+    parser.add_argument("--image-signing-seed", type=Path)
+    parser.add_argument("--run-signing-seed", type=Path)
     values = parser.parse_args()
     installed_profile = values.installed_profile
     installed_profile_only = values.installed_profile_only
@@ -265,6 +268,21 @@ def main() -> int:
         raise SystemExit("--installed-profile and --installed-profile-only are mutually exclusive")
     if require_docker and not (installed_profile or installed_profile_only):
         raise SystemExit("--require-docker requires an installed-profile mode")
+    prepared_values = (
+        values.prepared_image,
+        values.image_signing_seed,
+        values.run_signing_seed,
+    )
+    if any(value is not None for value in prepared_values) and not all(
+        value is not None for value in prepared_values
+    ):
+        raise SystemExit(
+            "--prepared-image, --image-signing-seed, and --run-signing-seed are required together"
+        )
+    if any(value is not None for value in prepared_values) and not (
+        installed_profile or installed_profile_only
+    ):
+        raise SystemExit("prepared image arguments require an installed-profile mode")
     verify_contract_inventory()
     if not installed_profile_only:
         for command, _ in FOCUSED_CHECKS:
@@ -278,6 +296,17 @@ def main() -> int:
             arguments.append("--require-docker")
         if values.align_repo is not None:
             arguments.extend(("--align-repo", str(values.align_repo)))
+        if values.prepared_image is not None:
+            arguments.extend(
+                (
+                    "--prepared-image",
+                    values.prepared_image,
+                    "--image-signing-seed",
+                    str(values.image_signing_seed),
+                    "--run-signing-seed",
+                    str(values.run_signing_seed),
+                )
+            )
         run("run-fresh-image-profile-smoke", *arguments)
     if installed_profile_only:
         mode = "installed profile only"
