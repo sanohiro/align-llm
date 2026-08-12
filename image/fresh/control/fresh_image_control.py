@@ -70,6 +70,8 @@ SUPERVISOR_VERSION = "1.0.0"
 WORKER_INVOCATION_TIMEOUT = 5_000
 CONTROL_STREAM_LIMIT = 65_536
 CONTROL_CGROUP_PREFIX = "align-llm-control-"
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
 BOUNDARY_WORKER_PATH = "scripts/run-json-scan-row-ownership-adoption"
 BOUNDARY_TIMEOUT_SECONDS = 5.0
 
@@ -425,6 +427,44 @@ def _control_pid_start(pid: int) -> str:
     return fields[19].decode("ascii")
 
 
+def _control_require_subreaper() -> None:
+    value = ctypes.c_int()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(value), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "control subreaper query failed")
+    if value.value != 1:
+        raise OSError(errno.EPERM, "control subreaper is not enabled")
+
+
+def _control_set_subreaper() -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "control subreaper setup failed")
+    _control_require_subreaper()
+
+
+def _control_reap_descendants(
+    deadline: float, process: subprocess.Popen[bytes]
+) -> bool:
+    """Reap every child available to this subreaper and prove ECHILD."""
+    while True:
+        reaped = False
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return True
+            if pid == 0:
+                break
+            if pid == process.pid:
+                process.returncode = os.waitstatus_to_exitcode(status)
+            reaped = True
+        if time.monotonic() >= deadline:
+            return False
+        if not reaped:
+            time.sleep(0.01)
+
+
 def _control_terminate(
     process: subprocess.Popen[bytes],
     *,
@@ -434,7 +474,8 @@ def _control_terminate(
     leaf_fd: int,
     leaf_name: str,
     identity: tuple[int, int, int, int, int],
-) -> None:
+) -> bool:
+    forced_termination = process.poll() is None
     populated = _control_cgroup_populated(leaf_fd)
     if process.poll() is None:
         try:
@@ -442,11 +483,11 @@ def _control_terminate(
                 os.killpg(group, signal.SIGTERM)
         except ProcessLookupError:
             pass
-    deadline = time.monotonic() + 1
-    while time.monotonic() < deadline and (process.poll() is None or populated):
-        time.sleep(0.01)
-        populated = _control_cgroup_populated(leaf_fd)
-    if process.poll() is None or populated:
+    grace_deadline = time.monotonic() + 1
+    childless = _control_reap_descendants(grace_deadline, process)
+    populated = _control_cgroup_populated(leaf_fd)
+    if not childless or process.poll() is None or populated:
+        forced_termination = True
         if not _control_cgroup_matches(parent_fd, leaf_fd, leaf_name, identity):
             raise OSError(errno.ESTALE, "control cgroup identity changed")
         _control_cgroup_file_write(leaf_fd, "cgroup.kill", b"1\n")
@@ -454,8 +495,12 @@ def _control_terminate(
         process.wait(timeout=5)
     except subprocess.TimeoutExpired as error:
         raise OSError(errno.ETIMEDOUT, "control child did not exit") from error
+    cleanup_deadline = time.monotonic() + 5
+    if not _control_reap_descendants(cleanup_deadline, process):
+        raise OSError(errno.EBUSY, "control descendants were not reaped")
     if _control_cgroup_populated(leaf_fd):
         raise OSError(errno.EBUSY, "control cgroup remained populated")
+    return forced_termination
 
 
 def _run_controlled_child(
@@ -477,6 +522,7 @@ def _run_controlled_child(
     group = -1
     timed_out = False
     overflow = False
+    forced_termination = False
     result: subprocess.CompletedProcess[bytes] | None = None
     primary_error: BaseException | None = None
     stream_error: BaseException | None = None
@@ -540,23 +586,15 @@ def _run_controlled_child(
                     process.wait(timeout=max(0.1, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
                     timed_out = True
-            if (
-                timed_out
-                or overflow
-                or process.poll() is None
-                or _control_cgroup_populated(leaf_fd)
-            ):
-                _control_terminate(
-                    process,
-                    start=start,
-                    group=group,
-                    parent_fd=parent_fd,
-                    leaf_fd=leaf_fd,
-                    leaf_name=leaf_name,
-                    identity=identity,
-                )
-            else:
-                process.wait()
+            forced_termination = _control_terminate(
+                process,
+                start=start,
+                group=group,
+                parent_fd=parent_fd,
+                leaf_fd=leaf_fd,
+                leaf_name=leaf_name,
+                identity=identity,
+            )
             result = subprocess.CompletedProcess(
                 list(arguments),
                 process.returncode,
@@ -603,6 +641,8 @@ def _run_controlled_child(
         raise subprocess.TimeoutExpired(arguments, timeout)
     if overflow:
         raise ValueError("control child output exceeds bound")
+    if forced_termination:
+        raise OSError(errno.ECHILD, "control descendant required forced termination")
     return result
 
 
@@ -1066,7 +1106,7 @@ def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
                 environment=environment,
                 timeout=5,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise ControlError("SOURCE", "project-source", "Git identity probe failed") from error
         if result.returncode != 0 or result.stderr or len(result.stdout) > 128:
             raise ControlError("SOURCE", "project-source", "Git identity probe rejected")
@@ -1552,6 +1592,10 @@ def supervise(
     _, _, _, manifest_raw = _verify_image_envelope(
         image_envelope, paths=paths, supervisor_raw=supervisor_raw
     )
+    try:
+        _control_set_subreaper()
+    except OSError as error:
+        raise ControlError("PLATFORM", "platform", "control subreaper unavailable") from error
 
     project_path = paths.self_test_project if mode == "self-test" else "."
     try:
@@ -1889,7 +1933,7 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
             result = _run_retained_tool(
                 bwrap_fd, arguments, timeout=20, pass_fds=mount_fds
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise ControlError("TRUST", "bwrap", "bubblewrap namespace probe failed") from error
         finally:
             for descriptor in reversed(mount_fds):
@@ -1929,7 +1973,7 @@ def _platform_self_test(manifest_raw: bytes) -> None:
             raise ControlError("TOOL", "tools", f"tool digest mismatch: {tool['name']}")
         try:
             result = _run_retained_tool(fd, tool["argv"])
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             os.close(fd)
             raise ControlError("TOOL", "tools", f"tool probe failed: {tool['name']}") from error
         if (
@@ -1966,7 +2010,7 @@ def _platform_self_test(manifest_raw: bytes) -> None:
             raise ControlError("PLATFORM", "platform", "Clang is not major 22")
         try:
             help_result = _run_retained_tool(bwrap_fd, [bwrap_argv0, "--help"])
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise ControlError("TRUST", "bwrap", "bubblewrap probe failed") from error
         if help_result.returncode != 0 or not all(
             option in help_result.stdout + help_result.stderr
@@ -2011,7 +2055,7 @@ def _platform_self_test(manifest_raw: bytes) -> None:
         )
         if result.returncode != 0:
             raise ControlError("PLATFORM", "platform", "/tmp is not executable")
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         raise ControlError("PLATFORM", "platform", "/tmp execution probe failed") from error
     finally:
         if source_fd >= 0:
@@ -2232,6 +2276,10 @@ def bootstrap(
     _, run_envelope, manifest_raw, predicate = _bootstrap_verify(
         paths=paths, self_fd=self_fd
     )
+    try:
+        _control_require_subreaper()
+    except OSError as error:
+        raise ControlError("PLATFORM", "platform", "control subreaper unavailable") from error
     if mode == "self-test":
         _platform_self_test(manifest_raw)
     try:
@@ -2264,12 +2312,15 @@ def bootstrap(
         "--run-attestation-fd",
         "9",
     ]
-    result = _run_controlled_child(
-        arguments,
-        environment=WORKER_ENVIRONMENT,
-        pass_fds=(4, 7, 8, 9),
-        timeout=30 if mode == "self-test" else WORKER_INVOCATION_TIMEOUT,
-    )
+    try:
+        result = _run_controlled_child(
+            arguments,
+            environment=WORKER_ENVIRONMENT,
+            pass_fds=(4, 7, 8, 9),
+            timeout=30 if mode == "self-test" else WORKER_INVOCATION_TIMEOUT,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise ControlError("CHILD", "aggregate", "worker lifecycle rejected") from error
     expected = {
         "ci": b"fresh compiler and capable checks: PASS\n",
         "build": b"fresh compiler: PASS\n",

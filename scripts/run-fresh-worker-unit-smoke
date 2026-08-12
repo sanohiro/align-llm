@@ -1007,7 +1007,7 @@ def exited_process_drain_cases(module) -> None:
         module.cgroup_populated = lambda _lease: next(natural_states)
         module.cgroup_entry_matches = lambda _lease: True
         module.cgroup_file_write = lambda fd, name, raw: kills.append((fd, name, raw))
-        module.reap_descendants = lambda _deadline, _process=None: None
+        module.reap_descendants = lambda _deadline, _process=None: True
         forced = module.terminate_owned_process(process, lease, None, None)
         require(not forced and not kills, "naturally draining descendant was terminated")
 
@@ -1055,6 +1055,38 @@ def runtime_tool_precedence_cases(module) -> None:
     finally:
         module.validate_tree_manifest = original_validate
         module.authenticate_tools = original_authenticate
+
+
+def descendant_reap_cases(module) -> None:
+    class DirectProcess:
+        pid = 424242
+        returncode = None
+
+    original_waitpid = module.os.waitpid
+    original_monotonic = module.time.monotonic
+    try:
+        states = iter(((515151, 0), ChildProcessError()))
+
+        def waitpid(_pid: int, _options: int) -> tuple[int, int]:
+            state = next(states)
+            if isinstance(state, BaseException):
+                raise state
+            return state
+
+        module.os.waitpid = waitpid
+        require(
+            module.reap_descendants(module.time.monotonic() + 1, DirectProcess()),
+            "descendant ECHILD proof was not accepted",
+        )
+        module.os.waitpid = lambda _pid, _options: (0, 0)
+        module.time.monotonic = lambda: 2.0
+        require(
+            not module.reap_descendants(1.0, DirectProcess()),
+            "unreaped descendant deadline was accepted",
+        )
+    finally:
+        module.os.waitpid = original_waitpid
+        module.time.monotonic = original_monotonic
 
 
 def published_elf_cases(module) -> None:
@@ -1467,6 +1499,7 @@ def main() -> int:
     run_attestation_cases(module)
     exited_process_drain_cases(module)
     runtime_tool_precedence_cases(module)
+    descendant_reap_cases(module)
     published_elf_cases(module)
     derived_path_alias_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:

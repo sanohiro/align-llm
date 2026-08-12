@@ -44,7 +44,8 @@ file records durable project state.
   lacked a dynamic controller precedence regression; its next-step record was also stale. Repository
   policy ended the v2 repair cycle. The v3 design reopens the lifecycle closure matrix before code,
   assigns both process-owner layers, and names exact failure propagation and dynamic regressions;
-  implementation is not started.
+  design checkpoint `021f8e0` is complete. The current candidate implements that design and its
+  focused owners pass; exact complete preflight is not started.
 
 ## Measurement
 
@@ -109,10 +110,8 @@ file records durable project state.
 
 ## Next steps
 
-1. Implement the author-reviewed v3 lifecycle design once: controller subreaper before its first
-   child, bootstrap exec-preservation check, forced-termination result propagation, `waitpid(-1)`
-   proof through `ECHILD`, and dynamic controller runtime-before-tool regression.
-2. Run affected owners and exact preflight, then obtain a new
+1. Commit the owner-tested v3 implementation and run exact complete preflight.
+2. Obtain a new
    comprehensive review of the redesigned candidate. Publish only after a clean review, require
    hosted CI, then measure build/export/load and
    final integration. Keep PR #69 paused until the final Align revision is named.
@@ -193,6 +192,13 @@ file records durable project state.
   success propagation and descendant-zombie reap were incomplete, controller multi-invalid
   precedence had only static coverage, and the handoff next action was stale. No v2 content may be
   published; v3 must be reviewed as a redesigned candidate.
+- V3 design checkpoint `021f8e0` passed `git diff --check`. The coherent implementation candidate
+  passed `run-fresh-image-control-smoke`, `run-fresh-worker-unit-smoke`,
+  `test-development-preflight`, Python AST parsing, and complete focused
+  `run-fresh-worker-qualification` in 22.925s. The controller owner executes a real double-forked,
+  session-breaking, TERM-ignoring descendant: the zero-exit direct child cannot produce success,
+  production termination selects the authenticated cgroup kill boundary, and the subreaper proves
+  `ECHILD`; its natural-drain control sends no kill. Exact installed evidence remains required.
 
 ## Constraints and intentional state
 

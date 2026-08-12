@@ -297,6 +297,21 @@ def test_runtime_materialization() -> None:
         encoding="utf-8"
     )
     control_self_test = control.split("def _platform_self_test(", maxsplit=1)[1]
+    control_supervisor = control.split("def supervise(", maxsplit=1)[1].split(
+        "\ndef ", maxsplit=1
+    )[0]
+    control_bootstrap = control.split("def bootstrap(", maxsplit=1)[1].split(
+        "\ndef ", maxsplit=1
+    )[0]
+    control_runner = control.split("def _run_controlled_child(", maxsplit=1)[1].split(
+        "\n@dataclass", maxsplit=1
+    )[0]
+    control_termination = control.split("def _control_terminate(", maxsplit=1)[1].split(
+        "\ndef ", maxsplit=1
+    )[0]
+    control_owner = (
+        REPOSITORY / "scripts/run-fresh-image-control-smoke"
+    ).read_text(encoding="utf-8")
     worker = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
     worker_entry = worker.split("def worker(", maxsplit=1)[1]
     worker_authentication = worker.split(
@@ -310,6 +325,19 @@ def test_runtime_materialization() -> None:
         and worker_authentication.index('for binding in manifest["runtime_bindings"]')
         < worker_authentication.index("tools = authenticate_tools(manifest)")
         and "authenticate_runtime_and_tools(manifest)" in worker_entry
+        and control_supervisor.index("_control_set_subreaper()")
+        < control_supervisor.index("_git_identity(")
+        and control_bootstrap.index("_control_require_subreaper()")
+        < control_bootstrap.index("_run_controlled_child(")
+        and 'raise ControlError("CHILD", "aggregate", "worker lifecycle rejected")'
+        in control_bootstrap
+        and "forced_termination = _control_terminate(" in control_runner
+        and 'if forced_termination:' in control_runner
+        and "_control_reap_descendants(cleanup_deadline, process)" in control_termination
+        and "controller_runtime_tool_precedence_case()" in control_owner
+        and "controlled_child_drain_cases()" in control_owner
+        and "controlled_double_fork_forced_case(temporary)" in control_owner
+        and "subreaper_cases()" in control_owner
         and "final control files overlap base package ownership" in runtime_stage
         and 'Path("/var/lib/dpkg/info").glob("*.list")' in runtime_stage,
         "verified runtime tool probe or package identity verification changed",

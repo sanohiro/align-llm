@@ -3164,14 +3164,14 @@ def kill_cgroup(lease: CgroupLease) -> None:
 
 def reap_descendants(
     deadline: float, direct_process: subprocess.Popen[bytes] | None = None
-) -> None:
+) -> bool:
     while time.monotonic() < deadline:
         reaped = False
         while True:
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:
-                return
+                return True
             if pid == 0:
                 break
             if direct_process is not None and pid == direct_process.pid:
@@ -3179,6 +3179,7 @@ def reap_descendants(
             reaped = True
         if not reaped:
             time.sleep(0.01)
+    return False
 
 
 def terminate_owned_process(
@@ -3228,7 +3229,8 @@ def terminate_owned_process(
     except subprocess.TimeoutExpired as error:
         raise CleanupError("owned child did not exit") from error
     cleanup_deadline = time.monotonic() + 5
-    reap_descendants(cleanup_deadline, process)
+    if not reap_descendants(cleanup_deadline, process):
+        raise CleanupError("owned child descendants were not reaped")
     while time.monotonic() < cleanup_deadline:
         try:
             populated = cgroup_populated(lease)
