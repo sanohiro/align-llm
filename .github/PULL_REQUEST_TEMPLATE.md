@@ -1,25 +1,25 @@
-## Scope
+Delete optional sections that the diff does not trigger. Use `N/A` only for a required field whose
+absence needs explanation; do not manufacture evidence for an unrelated risk.
 
-- Consumer-complete capability:
-- Useful end-to-end outcome:
-- What changed:
+## Outcome
+
+- Purpose and observable result:
+- Consumer path (capability rows only):
 - What is intentionally out of scope:
 
 ## Verification
 
 - Changed-owner commands and results:
-- Applicable aggregate (`make ci`, `make hosted-checks`, or N/A with reason):
-- Focused qualification (resource/race/security/fuzz/stress/platform/mutation, or N/A with reason):
-- Align revision (`.align-revision`):
-- Additional evaluation or benchmark:
+- Shared preflight command and result:
+- Named focused qualification, when its owner boundary changed:
+- `make ci`, when an integration/adoption trigger applied:
+- Align revision, when changed or adopted:
 
-## Measurement
+## Measurement (performance claims only)
 
 - Baseline:
 - Hardware/environment:
 - Result:
-
-Use `N/A` with a reason when the change makes no performance claim.
 
 ## Risk and review
 
@@ -34,13 +34,13 @@ Use `N/A` with a reason when the change makes no performance claim.
 - Reviewer:
 - Review kind and scope:
 - Verdict:
-- Complete findings (`none` when there were no findings):
+- Complete findings (`none` when clean):
 - Finding dispositions:
 - Consolidated repair commit (`N/A` when no repair was needed):
 
-### Conditional final review
+### Conditional final review (only when materially triggered)
 
-- Trigger (`N/A`, substantial scope expansion, approach change, or material behavior/design/specification/governance change):
+- Trigger (substantial scope expansion, approach change, or material behavior/design/specification/governance change):
 - Record or link:
 - Reviewed head SHA:
 - Base-tip SHA:
@@ -60,8 +60,8 @@ Use `N/A` with a reason when the change makes no performance claim.
   synthetic merge or equivalent):
 - Required check names, statuses, and links:
 
-- [ ] One comprehensive stable-candidate review completed
+- [ ] The selected workflow row's review requirement is satisfied
 - [ ] A final review was run only if its material-change trigger applied
 - [ ] Required checks pass
 - [ ] No valid review finding remains unresolved
-- [ ] `HANDOFF.md` records the durable capability state when its checkpoint, blocker, or next action changed
+- [ ] `HANDOFF.md` records durable state if its checkpoint, blocker, or next action changed
