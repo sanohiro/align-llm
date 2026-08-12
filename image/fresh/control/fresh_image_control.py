@@ -1086,7 +1086,68 @@ def _reject_environment(environment: Mapping[str, str], *, mode: str) -> str:
     return _normalize_relative(align_repo)
 
 
-def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
+def _retained_runtime_file(manifest_raw: bytes, expected_path: str) -> int:
+    try:
+        manifest = validate_manifest_bytes(manifest_raw)
+    except WireError as error:
+        raise ControlError("TRUST", "manifest", "manifest is invalid") from error
+    candidates = [
+        binding
+        for binding in manifest["runtime_bindings"]
+        if expected_path == binding["source"]
+        or expected_path.startswith(binding["source"].rstrip("/") + "/")
+    ]
+    if not candidates:
+        raise ControlError("TOOL", "tools", "retained runtime identity is missing")
+    longest = max(len(binding["source"]) for binding in candidates)
+    matches = [binding for binding in candidates if len(binding["source"]) == longest]
+    if len(matches) != 1:
+        raise ControlError("TOOL", "tools", "retained runtime identity is ambiguous")
+    binding = matches[0]
+    node = binding["manifest"]
+    relative = expected_path[len(binding["source"]) :].removeprefix("/")
+    for component in relative.split("/") if relative else ():
+        entries = [entry for entry in node["entries"] if entry["name"] == component]
+        if len(entries) != 1:
+            raise ControlError("TOOL", "tools", "retained runtime file is missing")
+        node = entries[0]
+    if node["kind"] != "file" or node["mode"] != "0755":
+        raise ControlError("TOOL", "tools", "retained runtime file is invalid")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            expected_path,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        before = _identity(descriptor)
+        if (
+            not stat.S_ISREG(before.mode)
+            or stat.S_IMODE(before.mode) != 0o755
+            or before.owner != 0
+            or before.links < 1
+            or before.size != node["size"]
+            or before.size > 536_870_912
+        ):
+            raise ControlError("TOOL", "tools", "retained runtime file identity rejected")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        raw = _read_exact_bounded(
+            descriptor,
+            limit=536_870_912,
+            deadline=time.monotonic() + SNAPSHOT_DEADLINE_SECONDS,
+        )
+        if not _same_identity(before, _identity(descriptor)):
+            raise ControlError("TOOL", "tools", "retained runtime file changed")
+    except (OSError, ControlError) as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise ControlError("TOOL", "tools", "retained runtime file snapshot rejected") from error
+    if len(raw) != node["size"] or sha256_hex(raw) != node["sha256"]:
+        os.close(descriptor)
+        raise ControlError("TOOL", "tools", "retained runtime file digest mismatch")
+    return descriptor
+
+
+def _git_identity(project_fd: int, git_fd: int, git_argv0: str) -> tuple[str, str]:
     environment = {
         "PATH": "/usr/bin:/bin",
         "LC_ALL": "C",
@@ -1101,10 +1162,12 @@ def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
     def run(*arguments: str) -> str:
         try:
             result = _run_controlled_child(
-                [git_path, "-c", "safe.directory=*", *arguments],
+                [git_argv0, "-c", "safe.directory=*", *arguments],
                 cwd=cwd,
                 environment=environment,
                 timeout=5,
+                pass_fds=(git_fd,),
+                executable=f"/proc/self/fd/{git_fd}",
             )
         except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise ControlError("SOURCE", "project-source", "Git identity probe failed") from error
@@ -1596,15 +1659,22 @@ def supervise(
         _control_set_subreaper()
     except OSError as error:
         raise ControlError("PLATFORM", "platform", "control subreaper unavailable") from error
+    _platform_self_test(manifest_raw)
+    git_fd = _retained_runtime_file(manifest_raw, paths.git)
 
     project_path = paths.self_test_project if mode == "self-test" else "."
     try:
-        project_fd = os.open(
-            project_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        )
-    except OSError as error:
-        raise ControlError("SOURCE", "project-source", "cannot retain project root") from error
-    object_format, head = _git_identity(project_fd, paths.git)
+        try:
+            project_fd = os.open(
+                project_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+        except OSError as error:
+            raise ControlError(
+                "SOURCE", "project-source", "cannot retain project root"
+            ) from error
+        object_format, head = _git_identity(project_fd, git_fd, paths.git)
+    finally:
+        os.close(git_fd)
     try:
         worker_raw = _worker_snapshot(
             project_fd,
@@ -1641,6 +1711,7 @@ def supervise(
     os.dup2(project_fd, 4, inheritable=True)
     if project_fd != 4:
         os.close(project_fd)
+    os.set_inheritable(4, True)
     _sealed_memfd("align-llm-run", run_envelope, 5)
     if image_fd != 6:
         os.dup2(image_fd, 6, inheritable=True)
@@ -2280,8 +2351,6 @@ def bootstrap(
         _control_require_subreaper()
     except OSError as error:
         raise ControlError("PLATFORM", "platform", "control subreaper unavailable") from error
-    if mode == "self-test":
-        _platform_self_test(manifest_raw)
     try:
         worker_raw = _worker_snapshot(
             4, owner=paths.image_owner if mode == "self-test" else os.geteuid()

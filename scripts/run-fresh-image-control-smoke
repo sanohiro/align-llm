@@ -866,15 +866,35 @@ def subreaper_cases() -> None:
 
 
 def controller_runtime_tool_precedence_case() -> None:
+    original_reject_environment = control._reject_environment
+    original_regular_snapshot = control._regular_snapshot
+    original_read_sealed = control._read_sealed
+    original_verify_image = control._verify_image_envelope
+    original_set_subreaper = control._control_set_subreaper
+    original_git_identity = control._git_identity
     original_validate = control.validate_manifest_bytes
     original_runtime_tree = control._runtime_tree
     original_open = control._open_regular
     tool_opens = []
+    git_calls = []
     manifest = {
         "runtime_bindings": [{"source": "/invalid-runtime", "manifest": {}}],
         "tools": [{"name": "invalid-tool", "path": "/invalid-tool"}],
     }
     try:
+        control._reject_environment = lambda _environment, *, mode: "../align"
+        control._regular_snapshot = lambda *_arguments, **_keywords: b"supervisor"
+        control._read_sealed = lambda *_arguments, **_keywords: b"image envelope"
+        control._verify_image_envelope = lambda *_arguments, **_keywords: (
+            {},
+            b"bootstrap",
+            b"manifest",
+            b"synthetic manifest",
+        )
+        control._control_set_subreaper = lambda: None
+        control._git_identity = lambda *_arguments, **_keywords: git_calls.append(
+            "project git"
+        )
         control.validate_manifest_bytes = lambda _raw: manifest
 
         def invalid_runtime(_path: str):
@@ -883,16 +903,63 @@ def controller_runtime_tool_precedence_case() -> None:
         control._runtime_tree = invalid_runtime
         control._open_regular = lambda *_arguments, **_keywords: tool_opens.append("tool")
         try:
-            control._platform_self_test(b"synthetic manifest")
+            control.supervise(["--mode", "build"], self_fd=10, image_fd=11)
         except ControlError as error:
             assert (error.category, error.phase) == ("TOOL", "tools")
         else:
             raise AssertionError("invalid runtime and tool inputs were accepted")
         assert not tool_opens
+        assert not git_calls
     finally:
+        control._reject_environment = original_reject_environment
+        control._regular_snapshot = original_regular_snapshot
+        control._read_sealed = original_read_sealed
+        control._verify_image_envelope = original_verify_image
+        control._control_set_subreaper = original_set_subreaper
+        control._git_identity = original_git_identity
         control.validate_manifest_bytes = original_validate
         control._runtime_tree = original_runtime_tree
         control._open_regular = original_open
+
+
+def retained_runtime_file_cases() -> None:
+    original_validate = control.validate_manifest_bytes
+    path = "/usr/bin/zipinfo"
+    raw = Path(path).read_bytes()
+    assert Path(path).stat().st_nlink > 1
+    node = {
+        "kind": "dir",
+        "entries": [
+            {
+                "name": "zipinfo",
+                "kind": "file",
+                "mode": "0755",
+                "size": len(raw),
+                "sha256": control.sha256_hex(raw),
+                "entries": [],
+            }
+        ],
+    }
+    manifest = {
+        "runtime_bindings": [{"source": "/usr/bin", "manifest": node}],
+    }
+    try:
+        control.validate_manifest_bytes = lambda _raw: manifest
+        descriptor = control._retained_runtime_file(b"manifest", path)
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            assert os.read(descriptor, len(raw) + 1) == raw
+        finally:
+            os.close(descriptor)
+        node["entries"][0]["sha256"] = "0" * 64
+        try:
+            control._retained_runtime_file(b"manifest", path)
+        except ControlError as error:
+            assert (error.category, error.phase) == ("TOOL", "tools")
+        else:
+            raise AssertionError("changed retained runtime file was accepted")
+    finally:
+        control.validate_manifest_bytes = original_validate
 
 
 def main() -> int:
@@ -950,6 +1017,7 @@ def main() -> int:
         controlled_double_fork_forced_case(temporary)
         subreaper_cases()
         controller_runtime_tool_precedence_case()
+    retained_runtime_file_cases()
 
     original = os.dup(31) if _fd_open(31) else None
     try:

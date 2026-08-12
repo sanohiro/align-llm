@@ -313,6 +313,9 @@ def test_runtime_materialization() -> None:
         REPOSITORY / "scripts/run-fresh-image-control-smoke"
     ).read_text(encoding="utf-8")
     worker = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
+    worker_owner = (
+        REPOSITORY / "scripts/run-fresh-worker-unit-smoke"
+    ).read_text(encoding="utf-8")
     worker_entry = worker.split("def worker(", maxsplit=1)[1]
     worker_authentication = worker.split(
         "def authenticate_runtime_and_tools(", maxsplit=1
@@ -326,7 +329,10 @@ def test_runtime_materialization() -> None:
         < worker_authentication.index("tools = authenticate_tools(manifest)")
         and "authenticate_runtime_and_tools(manifest)" in worker_entry
         and control_supervisor.index("_control_set_subreaper()")
+        < control_supervisor.index("_platform_self_test(manifest_raw)")
+        < control_supervisor.index("_retained_runtime_file(")
         < control_supervisor.index("_git_identity(")
+        and "os.set_inheritable(4, True)" in control_supervisor
         and control_bootstrap.index("_control_require_subreaper()")
         < control_bootstrap.index("_run_controlled_child(")
         and 'raise ControlError("CHILD", "aggregate", "worker lifecycle rejected")'
@@ -335,8 +341,12 @@ def test_runtime_materialization() -> None:
         and 'if forced_termination:' in control_runner
         and "_control_reap_descendants(cleanup_deadline, process)" in control_termination
         and "controller_runtime_tool_precedence_case()" in control_owner
+        and 'control.supervise(["--mode", "build"], self_fd=10, image_fd=11)'
+        in control_owner
         and "controlled_child_drain_cases()" in control_owner
         and "controlled_double_fork_forced_case(temporary)" in control_owner
+        and "run_owned_double_fork_forced_case(module, temporary)" in worker_owner
+        and "module.run_owned(" in worker_owner
         and "subreaper_cases()" in control_owner
         and "final control files overlap base package ownership" in runtime_stage
         and 'Path("/var/lib/dpkg/info").glob("*.list")' in runtime_stage,

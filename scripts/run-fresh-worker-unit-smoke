@@ -8,6 +8,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -1028,6 +1029,147 @@ def exited_process_drain_cases(module) -> None:
         module.time.monotonic = original_monotonic
 
 
+def run_owned_double_fork_forced_case(module, temporary: Path) -> None:
+    marker = temporary / "worker-double-fork-pid"
+    child = temporary / "worker-double-fork.py"
+    child.write_text(
+        "import os,signal,sys,time\n"
+        "marker=sys.argv[1]\n"
+        "pid=os.fork()\n"
+        "if pid:\n"
+        "    deadline=time.monotonic()+2\n"
+        "    while not os.path.exists(marker) and time.monotonic()<deadline:\n"
+        "        time.sleep(0.01)\n"
+        "    os._exit(0 if os.path.exists(marker) else 2)\n"
+        "os.setsid()\n"
+        "with open(marker, 'w', encoding='ascii') as output:\n"
+        "    output.write(str(os.getpid()))\n"
+        "for descriptor in (0, 1, 2):\n"
+        "    try:\n"
+        "        os.close(descriptor)\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "while True:\n"
+        "    signal.pause()\n",
+        encoding="ascii",
+    )
+    cgroup_parent = temporary / "worker-cgroup-parent"
+    cgroup_parent.mkdir(mode=0o700)
+    parent_fd = os.open(
+        cgroup_parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    )
+    parent_identity = module.snapshot_fd(parent_fd)
+    original_open = module.open_cgroup_lease
+    original_read = module.cgroup_file_read
+    original_write = module.cgroup_file_write
+    original_membership = module.cgroup_child_membership
+    original_setrlimit = module.resource.setrlimit
+    writes: list[tuple[int, str, bytes]] = []
+
+    def descendant_pid() -> int | None:
+        try:
+            return int(marker.read_text(encoding="ascii"))
+        except (FileNotFoundError, ValueError):
+            return None
+
+    def descendant_running() -> bool:
+        pid = descendant_pid()
+        if pid is None:
+            return False
+        try:
+            raw = Path(f"/proc/{pid}/stat").read_bytes()
+        except FileNotFoundError:
+            return False
+        close = raw.rfind(b")")
+        return close >= 0 and raw[close + 2 : close + 3] != b"Z"
+
+    def open_lease():
+        leaf_name = f"{module.ROOT_PREFIX}double-fork"
+        os.mkdir(leaf_name, 0o700, dir_fd=parent_fd)
+        leaf_fd = os.open(
+            leaf_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        return module.CgroupLease(
+            os.dup(parent_fd),
+            parent_identity,
+            leaf_fd,
+            module.snapshot_fd(leaf_fd),
+            leaf_name,
+        )
+
+    def read_control(_leaf_fd: int, name: str, _limit: int = 4096) -> bytes:
+        if name == "cgroup.events":
+            return b"populated 1\n" if descendant_running() else b"populated 0\n"
+        return b""
+
+    def write_control(fd: int, name: str, raw: bytes) -> None:
+        writes.append((fd, name, raw))
+        if name == "cgroup.kill":
+            pid = descendant_pid()
+            require(pid is not None, "worker descendant pid is unavailable")
+            os.kill(pid, signal.SIGKILL)
+
+    module.set_subreaper()
+    try:
+        module.open_cgroup_lease = open_lease
+        module.cgroup_file_read = read_control
+        module.cgroup_file_write = write_control
+        module.cgroup_child_membership = lambda _lease, _pid: None
+        module.resource.setrlimit = lambda *_arguments: None
+        try:
+            module.run_owned(
+                [sys.executable, "-I", "-B", str(child), str(marker)],
+                category="TOOL",
+                phase="tools",
+                timeout=5,
+                environment={},
+                return_result=True,
+            )
+        except module.CleanupError as error:
+            require(
+                str(error) == "owned child process tree remained",
+                "worker persistent descendant returned the wrong failure",
+            )
+        else:
+            raise AssertionError("worker persistent descendant was accepted")
+        require(
+            any(name == "cgroup.kill" and raw == b"1\n" for _, name, raw in writes),
+            "worker persistent descendant did not reach production cgroup kill",
+        )
+        require(not descendant_running(), "worker persistent descendant remained alive")
+        try:
+            module.os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            raise AssertionError("worker persistent descendant was not completely reaped")
+        require(not list(cgroup_parent.iterdir()), "worker cgroup leaf was not removed")
+    finally:
+        pid = descendant_pid()
+        if pid is not None:
+            if descendant_running():
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        module.open_cgroup_lease = original_open
+        module.cgroup_file_read = original_read
+        module.cgroup_file_write = original_write
+        module.cgroup_child_membership = original_membership
+        module.resource.setrlimit = original_setrlimit
+        for entry in cgroup_parent.iterdir():
+            entry.rmdir()
+        os.close(parent_fd)
+        cgroup_parent.rmdir()
+
+
 def runtime_tool_precedence_cases(module) -> None:
     original_validate = module.validate_tree_manifest
     original_authenticate = module.authenticate_tools
@@ -1504,6 +1646,7 @@ def main() -> int:
     derived_path_alias_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:
         temporary = Path(name)
+        run_owned_double_fork_forced_case(module, temporary)
         bounded_tool_cases(module, temporary)
         digest_golden(module, temporary)
         cache_cases(module, temporary)

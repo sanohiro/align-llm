@@ -3548,8 +3548,10 @@ grammar so a trust failure has one deterministic status even though no worker ro
    no-symlink-mount, and read-only `/tools` capability probes using the retained bwrap descriptor,
    then no-follow controller-path component checks, bounded regular-file worker snapshot, and every
    retained tool descriptor, digest, mode, version, and probe output; the supervisor completes this
-   admission before `_git_identity`, reopens the manifest-authenticated Git bytes into a retained
-   descriptor, and executes that descriptor rather than its pathname;
+   admission before `_git_identity`, reopens the Git file named by its validated runtime-tree node
+   into a retained descriptor, rechecks that node's exact mode, size, and digest, and executes that
+   descriptor rather than its pathname; the retained reader accepts the materializer's intentional
+   same-inode Git aliases and therefore does not impose a single-link rule;
 6. project-root Git descriptors and policy, raw project tree/index/worktree and its root `.git`,
    `main`, and `target` output/control exceptions, then the exact `.align-revision`, retained
    `ALIGN_REPO` Git descriptors and policy, SHA-1-only pinned Align `HEAD`/tree/index/worktree, its
