@@ -5,7 +5,7 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-13)
 
-- Branch `agent/multistage-fresh-runtime` is based on PR #77 merge commit
+- Branch `agent/multistage-fresh-runtime-v2` is based on PR #77 merge commit
   `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`.
 - Active goal: remove builder-only apt, LLVM, Rust, source, and compilation state from the installed
   fresh image while preserving its exact runtime manifest and complete installed qualification.
@@ -24,11 +24,15 @@ file records durable project state.
   distinguish pinned inputs from mutable apt snapshots. The current branch HEAD is the consolidated
   repair: both stages pin the Ubuntu Linux/amd64 manifest; the final image transfers only Python,
   its symlink-free standard library, and libexpat into system paths after proving zero dpkg ownership
-  overlap; manifest-bound libraries remain below `/runtime`; both controller and worker validate
-  them before fixed-path tool probes; and unreachable systemd/udev/PAM/cryptsetup bytes are omitted.
+  overlap; manifest-bound libraries remain below `/runtime`; and both controller and worker validate
+  them before fixed-path tool probes.
   Repeated installed qualification also exposed a pre-existing end-of-aggregate race: an already
   exited Make leader could have a naturally draining descendant classified as persistent before the
   existing cleanup grace. The repair now distinguishes bounded natural drain from forced termination.
+  The conditionally required final review rejected `d3d3932` because hand-maintained library pruning,
+  its owner test, the reproduction tag, validation-order prose, and cleanup prose were inconsistent.
+  This v2 branch re-scopes the capability to builder-state separation and preserves the complete
+  materialized runtime tree; runtime reachability pruning is deferred to a separately owned gate.
 
 ## Measurement
 
@@ -91,9 +95,11 @@ file records durable project state.
 
 ## Next steps
 
-1. Because the repair materially changed the runtime-library admission approach, obtain the one
-   allowed final comprehensive review. If it finds a non-trivial issue, stop and redesign.
-2. Publish only after a clean final review, require hosted CI, then measure build/export/load and
+1. Commit the re-scoped contract and closure matrix before changing the Dockerfile or owner tests.
+2. Remove per-library pruning, update exact owner coverage, build and measure the re-scoped image,
+   and pass the exact-head complete preflight.
+3. Obtain one fresh comprehensive review of the redesigned candidate. Publish only after a clean
+   review, require hosted CI, then measure build/export/load and
    final integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
@@ -135,8 +141,12 @@ file records durable project state.
   `fde4fad7f1d8dc7f93d6a0a8182131125a76b54f`: development owner 9.107s, pinned Align build 0.608s,
   hosted graph 3.152s, focused qualification 20.452s, installed profile 204.412s, image build 2.200s,
   boundary profile 38.314s, and worker aggregate 107.594s. A separate installed-only repetition also
-  passed in 205.722s with a 108.711s aggregate. The final amended head requires one exact preflight
-  stamp before the final review.
+  passed in 205.722s with a 108.711s aggregate. Complete preflight also passed exact final-review
+  head `d3d39325e4e4ce8677eb356396482377a592961a` and wrote its external stamp: installed profile
+  204.661s and worker aggregate 107.242s. The final reviewer incorrectly reported this stamp absent;
+  that finding is rejected by the existing stamp file. Its four remaining findings are accepted:
+  retained `libcryptsetup.so.12*`, a stale measurement tag, stale validation precedence, and
+  contradictory cleanup prose. Repository policy ended that repair cycle and required this redesign.
 
 ## Constraints and intentional state
 

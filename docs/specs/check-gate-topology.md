@@ -1378,14 +1378,15 @@ The exact primary categories are selected by this immutable order:
 1. bootstrap mode and required environment names/encoding;
 2. external manifest bytes, digest, schema, bootstrap identity, and controller identity;
 3. Linux, architecture, Python, Make, `/proc`, signal, and timer prerequisites;
-4. all declared executable paths, digests, version probes, and fixed tool outputs;
-5. `.align-revision`, retained worktree/Git/common descriptors, Git policy, object/tree/index, and
+4. all manifest-declared runtime-binding trees and digests;
+5. all declared executable paths, digests, version probes, and fixed tool outputs;
+6. `.align-revision`, retained worktree/Git/common descriptors, Git policy, object/tree/index, and
    raw worktree manifest;
-6. cache root, cache manifest, and cache entries;
-7. `/tmp` identity, private-root creation, and source/cache materialization;
-8. build namespace construction, Cargo exit, output containment, and compiler artifact identity;
-9. compiler-launcher descriptor validation and aggregate child exit/output; and
-10. reverse cleanup and final owner-root absence proof.
+7. cache root, cache manifest, and cache entries;
+8. `/tmp` identity, private-root creation, and source/cache materialization;
+9. build namespace construction, Cargo exit, output containment, and compiler artifact identity;
+10. compiler-launcher descriptor validation and aggregate child exit/output; and
+11. reverse cleanup and final owner-root absence proof.
 
 Malformed input is reported only at the first applicable phase. A missing manifest digest is
 `TRUST`, a malformed revision is `SOURCE`, a cache digest or symlink escape is `CACHE`, an absent
@@ -3471,10 +3472,12 @@ tick; a process, open-fd, or private-entry cap-plus-one is terminated and report
 child is admitted. These controls are part of the platform profile, not optional tuning; the platform
 probe rejects an undelegated or writable-by-another-uid cgroup.
 
-On every catchable exit the worker terminates owned descendants, waits for pid start time and
-process-group identity, waits for the aggregate bwrap to release its overlay mount, closes readers
-and handoff files, removes the one known overlayfs work entry with descriptor-relative no-follow
-operations, rescans the private root, and removes only known children. The overlay upper and work
+On every catchable exit the worker proves that owned descendants either drained naturally after a
+normal direct-child exit or were terminated after the applicable grace, waits for pid start time and
+process-group identity when signalling is required, waits for the aggregate bwrap to release its
+overlay mount, closes readers and handoff files, removes the one known overlayfs work entry with
+descriptor-relative no-follow operations, rescans the private root, and removes only known children.
+The overlay upper and work
 directories are inspected before removal: the worker accepts only the declared final `main` output
 and the exact known `work` directory state, and never recursively deletes an upper or work entry it
 cannot classify. Before removing the random root name it
