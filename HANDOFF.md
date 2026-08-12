@@ -44,8 +44,8 @@ file records durable project state.
   lacked a dynamic controller precedence regression; its next-step record was also stale. Repository
   policy ended the v2 repair cycle. The v3 design reopens the lifecycle closure matrix before code,
   assigns both process-owner layers, and names exact failure propagation and dynamic regressions;
-  design checkpoint `021f8e0` is complete. The current candidate implements that design and its
-  focused owners pass; exact complete preflight is not started.
+  design checkpoint `021f8e0` is complete. Implementation checkpoint `e5dae90` completes the
+  redesigned process ownership, its focused owners pass, and exact complete preflight passes.
 
 ## Measurement
 
@@ -110,11 +110,9 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit the owner-tested v3 implementation and run exact complete preflight.
-2. Obtain a new
-   comprehensive review of the redesigned candidate. Publish only after a clean review, require
-   hosted CI, then measure build/export/load and
-   final integration. Keep PR #69 paused until the final Align revision is named.
+1. Obtain a new comprehensive review of the redesigned candidate.
+2. Publish only after a clean review, require hosted CI, then measure build/export/load and final
+   integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
@@ -198,7 +196,14 @@ file records durable project state.
   `run-fresh-worker-qualification` in 22.925s. The controller owner executes a real double-forked,
   session-breaking, TERM-ignoring descendant: the zero-exit direct child cannot produce success,
   production termination selects the authenticated cgroup kill boundary, and the subreaper proves
-  `ECHILD`; its natural-drain control sends no kill. Exact installed evidence remains required.
+  `ECHILD`; its natural-drain control sends no kill. Complete preflight passed implementation
+  checkpoint `e5dae9097f3447524e2dfb901d8a49d678cb8509`: development owner 9.126s, pinned
+  Align build 0.752s, hosted graph 3.266s, focused qualification 22.113s, installed profile
+  253.535s, image build 41.411s, boundary profile 40.867s, worker aggregate 106.299s, and cleanup
+  1.217s. Apt, LLVM, Git, Rust toolchain, materialization, runtime, tool, Cargo-cache, and transferred
+  system-file layers were cache hits; the changed controller and downstream attestation layers
+  rebuilt. Its canonical external stamp records exact base `6a48ab7`, head, owner
+  `development-preflight`, and `fresh-image` scope.
 
 ## Constraints and intentional state
 
