@@ -28,8 +28,12 @@ file records durable project state.
   complete preflight, but its conditionally required final review found that the pinned cache
   action returns success before enforcing cache-miss failure when the cache feature is unavailable.
   v2 is stopped and unpublished. The v3 redesign makes literal `cache-hit=true` a separate required
-  publication assertion. Implementation, verification, one fresh comprehensive review,
-  publication, cache seed, and clean warm measurement remain.
+  publication assertion. That implementation passed complete preflight, and its fresh comprehensive
+  review confirmed the publication and package-vector fixes. The same review found two apt recovery
+  state-machine bugs: stale fixed paths were rejected after root-level repair began, and a retry
+  rejected its own partial keyring. One consolidated repair now validates the complete fixed
+  namespace before dpkg, apt, or network activity and permits retry of only invocation-owned state.
+  Repair verification, publication, cache seed, and clean warm measurement remain.
 
 ## Measurement
 
@@ -71,13 +75,12 @@ file records durable project state.
 
 ## Next steps
 
-1. Implement the v3 literal cache-hit publication assertion and its workflow-owner regressions.
-2. Run the apt archive owner, development-preflight owner, workflow syntax/static checks, and the
+1. Run the apt archive owner, development-preflight owner, workflow syntax/static checks, and the
    proportional fresh qualification selected by the workflow change.
-3. Perform the required independent adversarial review, publish, confirm the PR miss and exact-main
+2. Publish after the reviewed-finding repair is verified, confirm the PR miss and exact-main
    cache seed, then measure one clean warm run before claiming the 10-second install/75-second check
    targets.
-4. Remove the measured repeated Rust setup, then continue with a multi-stage builder/runtime image
+3. Remove the measured repeated Rust setup, then continue with a multi-stage builder/runtime image
    after merge. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
@@ -102,6 +105,10 @@ file records durable project state.
   owner 4.042s, pinned Align build 0.729s, installed profile 206.399s, and every intervening gate
   passed. Its final review failed on the cache-feature-unavailable publication path, so the candidate
   remains stopped and unpublished despite the passing checks.
+- Complete preflight passed on reviewed v3 head `1532b4a9e6679e053b01099fc950bf49d727af0e`:
+  owner 4.063s, pinned Align build 0.668s, installed profile 209.449s, and every intervening gate
+  passed. The comprehensive review closed the v2 findings and found the two apt recovery-state
+  defects now addressed by the unverified consolidated repair.
 
 ## Constraints and intentional state
 

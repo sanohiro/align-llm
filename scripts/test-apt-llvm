@@ -28,6 +28,8 @@ fakeroot="$tmp_dir/root"
 prefix="$tmp_dir/llvm-prefix"
 script="$tmp_dir/ci-apt-llvm-under-test.sh"
 apt_log="$tmp_dir/apt.log"
+activity_log="$tmp_dir/activity.log"
+probe_count="$tmp_dir/probe-count"
 sources="$fakeroot/etc/apt/sources.list.d/align-apt-llvm-org.list"
 keyring="$fakeroot/etc/apt/keyrings/apt-llvm-org.asc"
 keyring_directory="$fakeroot/etc/apt/keyrings"
@@ -91,6 +93,7 @@ STUB
 
 cat > "$bin/dpkg" <<'STUB'
 #!/bin/bash
+printf 'dpkg %s\n' "$*" >> "$STUB_ACTIVITY_LOG"
 case "$1" in
   --print-architecture) echo amd64; exit 0 ;;
   --configure) exit 0 ;;
@@ -129,6 +132,7 @@ STUB
 
 cat > "$bin/wget" <<'STUB'
 #!/bin/bash
+printf 'wget %s\n' "$*" >> "$STUB_ACTIVITY_LOG"
 [[ "${STUB_WGET_FAIL:-0}" == 1 ]] && exit 1
 out=""
 previous=""
@@ -146,10 +150,16 @@ STUB
 # must NOT be accepted as a working repository.
 cat > "$bin/apt-cache" <<'STUB'
 #!/bin/bash
+printf 'apt-cache %s\n' "$*" >> "$STUB_ACTIVITY_LOG"
 suite=""
 [[ -f "$STUB_SOURCES" ]] && suite="$(awk '{ print $(NF-1) }' "$STUB_SOURCES")"
+probe=0
+[[ -f "$STUB_PROBE_COUNT" ]] && read -r probe < "$STUB_PROBE_COUNT"
+probe=$((probe + 1))
+printf '%s\n' "$probe" > "$STUB_PROBE_COUNT"
 printf '%s:\n' "$2"
-if [[ "$suite" == "${STUB_GOOD_SUITE:-}" ]]; then
+if [[ "$suite" == "${STUB_GOOD_SUITE:-}" \
+  && "$probe" -ge "${STUB_GOOD_PROBE:-1}" ]]; then
   printf '  Installed: (none)\n  Candidate: 1:22.1.8-1\n  Version table:\n'
   printf '     1:22.1.8-1 500\n'
   printf '        500 https://apt.llvm.org/noble %s/main amd64 Packages\n' "$suite"
@@ -163,6 +173,7 @@ STUB
 
 cat > "$bin/apt-get" <<'STUB'
 #!/bin/bash
+printf 'apt-get %s\n' "$*" >> "$STUB_ACTIVITY_LOG"
 # Record the call and whether the apt.llvm.org list already existed, so the
 # recovery ordering is assertable rather than assumed.
 {
@@ -226,6 +237,8 @@ export RUNNER_OS=Linux RUNNER_ARCH=X64 ImageVersion=20260803.1.0
 export ALIGN_APT_PACKAGES="llvm-22-dev clang-22"
 export STUB_SOURCES="$sources"
 export STUB_LOG="$apt_log"
+export STUB_ACTIVITY_LOG="$activity_log"
+export STUB_PROBE_COUNT="$probe_count"
 export STUB_GPG_FPR="$key_fingerprint"
 export STUB_GOOD_SUITE=llvm-toolchain-noble-22
 
@@ -288,11 +301,17 @@ seed_archives() { # $1=directory $2=manifest shape
       ;;
     preexisting-conf) : > "$apt_conf" ;;
     dangling-conf) ln -s "$tmp_dir/missing-conf-target" "$apt_conf" ;;
+    preexisting-sources) : > "$sources" ;;
     dangling-sources) ln -s "$tmp_dir/missing-sources-target" "$sources" ;;
     preexisting-keyring)
       mkdir -p "$(dirname "$keyring")"
       : > "$keyring"
       ;;
+    dangling-keyring)
+      mkdir -p "$(dirname "$keyring")"
+      ln -s "$tmp_dir/missing-keyring-target" "$keyring"
+      ;;
+    non-directory-keyring-parent) : > "$keyring_directory" ;;
     dangling-keyring-directory)
       ln -s "$tmp_dir/missing-keyring-directory" "$keyring_directory"
       ;;
@@ -318,6 +337,8 @@ run_install() {
   rm -f "$sources" "$apt_conf"
   rm -rf "$keyring_directory"
   : > "$apt_log"
+  : > "$activity_log"
+  rm -f "$probe_count"
   seed_archives "$run_dir/apt-archives-llvm-22" "$manifest"
 
   # bash 3.2 treats an empty array as unbound under `set -u`.
@@ -342,6 +363,10 @@ expect_apt() {
 }
 refute_apt() {
   grep -Eq "$2" "$apt_log" && fail "$1"
+  return 0
+}
+refute_activity() {
+  [[ -s "$activity_log" ]] && fail "$1"
   return 0
 }
 
@@ -403,6 +428,12 @@ run_install "recovery survives failing repairs" good 0 \
   STUB_DPKG_FAIL=1 STUB_APT_UPDATE_RC=100 STUB_APT_FIX_NOREMOVE_RC=100 STUB_APT_FIX_RC=100 --
 expect_apt "a failing repair blocked the authoritative install" \
   'call=install -y --no-remove llvm-22-dev clang-22'
+run_install "repository retry owns its partial keyring" good 0 \
+  STUB_DPKG_FAIL=1 STUB_GOOD_PROBE=3 --
+expect_output "a later repository probe did not recover" \
+  'apt.llvm.org llvm-toolchain-noble-22 offers'
+[[ "$(grep -c '^wget ' "$activity_log")" == 2 ]] \
+  || fail "repository retry did not perform two independently pinned probes"
 
 # --- empty resolve: fatal only when an entry would be saved from it ---------
 run_install "empty resolve on a miss" empty 1 STUB_APT_RESOLVES=0 --
@@ -422,18 +453,35 @@ expect_output "an empty uncached resolve is treated as a defect" 'already instal
 run_install "pre-existing apt configuration" preexisting-conf 1
 expect_output "pre-existing apt configuration was overwritten" 'refusing pre-existing apt archive configuration'
 [[ -f "$apt_conf" ]] || fail "pre-existing apt configuration was removed"
+refute_activity "pre-existing apt configuration reached dpkg, apt, or repository network"
 run_install "pre-existing apt keyring" preexisting-keyring 1
 expect_output "pre-existing apt keyring was overwritten" 'refusing pre-existing apt.llvm.org repository state'
 [[ -f "$keyring" ]] || fail "pre-existing apt keyring was removed"
+refute_activity "pre-existing apt keyring reached dpkg, apt, or repository network"
 run_install "dangling apt configuration" dangling-conf 1
 expect_output "dangling apt configuration was followed" 'refusing pre-existing apt archive configuration'
 [[ -L "$apt_conf" ]] || fail "dangling apt configuration was removed"
+refute_activity "dangling apt configuration reached dpkg, apt, or repository network"
+run_install "pre-existing repository source" preexisting-sources 1
+expect_output "pre-existing repository source was overwritten" 'refusing pre-existing apt.llvm.org repository state'
+[[ -f "$sources" ]] || fail "pre-existing repository source was removed"
+refute_activity "pre-existing repository source reached dpkg, apt, or repository network"
 run_install "dangling repository source" dangling-sources 1
 expect_output "dangling repository source was followed" 'refusing pre-existing apt.llvm.org repository state'
 [[ -L "$sources" ]] || fail "dangling repository source was removed"
+refute_activity "dangling repository source reached dpkg, apt, or repository network"
+run_install "dangling apt keyring" dangling-keyring 1
+expect_output "dangling apt keyring was followed" 'refusing pre-existing apt.llvm.org repository state'
+[[ -L "$keyring" ]] || fail "dangling apt keyring was removed"
+refute_activity "dangling apt keyring reached dpkg, apt, or repository network"
 run_install "dangling keyring directory" dangling-keyring-directory 1
 expect_output "dangling keyring directory was followed" 'refusing non-directory apt keyring state'
 [[ -L "$keyring_directory" ]] || fail "dangling keyring directory was removed"
+refute_activity "dangling keyring directory reached dpkg, apt, or repository network"
+run_install "non-directory keyring parent" non-directory-keyring-parent 1
+expect_output "non-directory keyring parent was accepted" 'refusing non-directory apt keyring state'
+[[ -f "$keyring_directory" ]] || fail "non-directory keyring parent was removed"
+refute_activity "non-directory keyring parent reached dpkg, apt, or repository network"
 run_install "borrowed keyring directory" existing-keyring-directory 0
 [[ -d "$keyring_directory" && ! -e "$keyring" ]] \
   || fail "a borrowed keyring directory was removed or retained its invocation key"

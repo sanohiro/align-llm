@@ -89,6 +89,24 @@ path_exists() {
   [[ -e "$1" || -L "$1" ]]
 }
 
+# Claim the fixed process-global namespace before dpkg, apt, repository
+# network, or fixed-path mutation. A later retry may reuse only state whose
+# ownership flags were set by this invocation.
+validate_install_state() {
+  if path_exists "$APT_CONF"; then
+    echo "refusing pre-existing apt archive configuration $APT_CONF" >&2
+    return 1
+  fi
+  if path_exists "$LLVM_SOURCES" || path_exists "$LLVM_KEYRING"; then
+    echo "refusing pre-existing apt.llvm.org repository state" >&2
+    return 1
+  fi
+  if [[ -L /etc/apt/keyrings || ( -e /etc/apt/keyrings && ! -d /etc/apt/keyrings ) ]]; then
+    echo "refusing non-directory apt keyring state" >&2
+    return 1
+  fi
+}
+
 parse_packages() {
   local raw="${ALIGN_APT_PACKAGES:-}" token
   local index previous
@@ -225,8 +243,8 @@ llvm_org_candidate() {
 }
 
 # The minimum llvm.sh did that this script actually needs: the signing key and
-# one sources.list entry. Idempotent, because the recovery path adds the
-# repository before the authoritative install also asks for it.
+# one sources.list entry. Retryable within one invocation, because the recovery
+# path adds the repository before the authoritative install also asks for it.
 add_llvm_repository() {
   [[ "$llvm_repository_ready" -eq 1 ]] && return 0
 
@@ -268,7 +286,9 @@ add_llvm_repository() {
     echo "  primary fingerprints offered: ${primary_fingerprints:-none}" >&2
     return 1
   fi
-  if path_exists "$LLVM_KEYRING" || path_exists "$LLVM_SOURCES"; then
+  if { path_exists "$LLVM_KEYRING" && [[ "$llvm_keyring_written" -ne 1 ]]; } \
+    || { path_exists "$LLVM_SOURCES" && [[ "$llvm_sources_written" -ne 1 ]]; }
+  then
     echo "refusing pre-existing apt.llvm.org repository state" >&2
     return 1
   fi
@@ -509,4 +529,5 @@ command -v apt-get >/dev/null 2>&1 || {
   exit 2
 }
 trap cleanup EXIT
+validate_install_state
 install_packages
