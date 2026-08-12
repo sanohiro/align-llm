@@ -415,10 +415,16 @@ Against the image-ID-bound baseline this removes 2,869,774,761 bytes, or 47.3%. 
 transferred Python/libexpat system paths had zero intersections with the final base's dpkg ownership
 lists, but its hand-maintained pruning claim was false: `libcryptsetup.so.12*` remained in both
 runtime library trees. The re-scoped candidate therefore preserves the generated runtime tree
-without per-library pruning; its final footprint is pending. These measurements are `n=1`
-observations under the environment above. The exact-head complete installed profile remains the
-acceptance boundary; intermediate uncommitted probes are diagnostic because the profile intentionally
-clones the committed repository worker.
+without per-library pruning. The re-scoped image
+`sha256:eb9162ba3d17494b41673635166dfd6eb23457bebfd9fd24e558049852024152`, built by the command
+above under the same environment, measured 3,215,474,083 bytes, with a 3,016,219,340-byte
+`/runtime` and 23,056,659-byte Cargo cache. It shares the baseline's exact first rootfs layer and
+removes 2,854,471,033 bytes, or 47.0%, while retaining the complete generated runtime tree. Apt,
+LLVM, Rust, Git, and runtime-materialization layers were cache hits; the Dockerfile-dependent Cargo
+fetch and later control/manifest layers rebuilt. These measurements are `n=1` observations under
+the environment above. The exact-head complete installed profile remains the acceptance boundary;
+intermediate uncommitted probes are diagnostic because the profile intentionally clones the
+committed repository worker.
 
 PR #75 run `31588797654` passed the invalidating hosted path in 568 seconds end to end; the fresh
 job took 564 seconds, its build/export/load step 293 seconds, and installed qualification 225

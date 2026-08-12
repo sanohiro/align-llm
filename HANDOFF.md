@@ -33,6 +33,7 @@ file records durable project state.
   its owner test, the reproduction tag, validation-order prose, and cleanup prose were inconsistent.
   This v2 branch re-scopes the capability to builder-state separation and preserves the complete
   materialized runtime tree; runtime reachability pruning is deferred to a separately owned gate.
+  The re-scoped contract and implementation are committed as `ee9fd0e` and `8f09c6f`.
 
 ## Measurement
 
@@ -79,12 +80,14 @@ file records durable project state.
   This is 72% lower than the 100-second bundle baseline. The same warm run's fresh-image job still
   took 430 seconds, including 165 seconds to build/export/load and 222 seconds for installed
   qualification, making image transfer and qualification the remaining workflow bottleneck.
-- The rejected first multi-stage candidate was 3,800,869,143 bytes. The repaired image observation
-  is 3,200,170,355 bytes versus the image-ID-bound 6,069,945,116-byte baseline, a 47.3% reduction;
-  `/runtime` is 3,000,924,060 bytes and the Cargo cache 23,056,659 bytes. Both images share exact
-  Ubuntu base rootfs layer `42724e4`; future apt content remains mutable, so exact sizes are recorded
-  observations rather than rebuild guarantees. All 1,303 transferred Python/libexpat paths had zero
-  dpkg ownership collisions and builder-only Rustup, Cargo, LLVM, source, and apt state are absent.
+- The rejected first multi-stage candidate was 3,800,869,143 bytes. The rejected hand-pruned repair
+  was 3,200,170,355 bytes but retained cryptsetup libraries despite claiming their absence. The
+  re-scoped, unpruned image is 3,215,474,083 bytes versus the image-ID-bound 6,069,945,116-byte
+  baseline, a 47.0% reduction; `/runtime` is 3,016,219,340 bytes and the Cargo cache 23,056,659
+  bytes. Both images share exact Ubuntu base rootfs layer `42724e4`; future apt content remains
+  mutable, so exact sizes are recorded observations rather than rebuild guarantees. All 1,303
+  transferred Python/libexpat paths had zero dpkg ownership collisions and builder-only Rustup,
+  Cargo, LLVM, source, and apt state are absent.
 
 ## Paused product checkpoint
 
@@ -95,10 +98,7 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit the re-scoped contract and closure matrix before changing the Dockerfile or owner tests.
-2. Remove per-library pruning, update exact owner coverage, build and measure the re-scoped image,
-   and pass the exact-head complete preflight.
-3. Obtain one fresh comprehensive review of the redesigned candidate. Publish only after a clean
+1. Obtain one fresh comprehensive review of the redesigned candidate. Publish only after a clean
    review, require hosted CI, then measure build/export/load and
    final integration. Keep PR #69 paused until the final Align revision is named.
 
@@ -147,6 +147,16 @@ file records durable project state.
   that finding is rejected by the existing stamp file. Its four remaining findings are accepted:
   retained `libcryptsetup.so.12*`, a stale measurement tag, stale validation precedence, and
   contradictory cleanup prose. Repository policy ended that repair cycle and required this redesign.
+- Re-scoped image `sha256:eb9162ba3d17494b41673635166dfd6eb23457bebfd9fd24e558049852024152`
+  passed its final-stage build checks and inventory probes. It is 3,215,474,083 bytes; `/runtime` is
+  3,016,219,340 bytes; Cargo cache is 23,056,659 bytes; its first rootfs layer matches the baseline;
+  all named builder roots and apt lists are absent; and retained cryptsetup libraries demonstrate
+  that this capability preserves rather than hand-prunes the manifest-bound runtime tree.
+- Complete preflight passed re-scoped measurement checkpoint
+  `791c9d5c518b7301bf5fa6ee19e76892fc637c53`: development owner 9.514s, pinned Align build 0.799s,
+  hosted graph 3.633s, focused qualification 22.223s, installed profile 217.113s, image build 3.202s,
+  boundary profile 41.554s, worker aggregate 105.110s, and cleanup 1.192s. The final HANDOFF-amended
+  head requires one exact stamp before review.
 
 ## Constraints and intentional state
 
