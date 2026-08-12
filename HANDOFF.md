@@ -5,10 +5,10 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-13)
 
-- Branch `agent/multistage-fresh-runtime-v4` is based on PR #77 merge commit
-  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`.
-- Active goal: remove builder-only apt, LLVM, Rust, source, and compilation state from the installed
-  fresh image while preserving its exact runtime manifest and complete installed qualification.
+- Branch `agent/cache-cargo-fetch-layout` is based on PR #78 merge commit
+  `dea213d69e79fc6c3ef97ad095051b8c4c2dce1a`.
+- Active goal: keep the pin-owned Cargo dependency fetch reusable when only fresh-image controller,
+  worker, profile, manifest, or self-test inputs change.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
@@ -17,66 +17,21 @@ file records durable project state.
   PR #75 merged hardlink-preserving runtime materialization at `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
   PR #76 merged and seeded the verified hosted LLVM archive cache at `c3deab753a3db4e963817917c1105fe110907a99`.
   PR #77 merged the trusted hosted Align compiler bundle at
-  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`; its exact-main seed and clean warm run passed.
-- In progress: reviewed multi-stage candidate `4780747` split the builder and runtime stages. Its
-  comprehensive review requested changes because installed acceptance had not passed, the complete
-  builder library overlay invalidated final-base package ownership, and the footprint claim did not
-  distinguish pinned inputs from mutable apt snapshots. The repaired boundary pins both stages to
-  the Ubuntu Linux/amd64 manifest; the final image transfers only Python,
-  its symlink-free standard library, and libexpat into system paths after proving zero dpkg ownership
-  overlap; manifest-bound libraries remain below `/runtime`; and both controller and worker validate
-  them before fixed-path tool probes.
-  Repeated installed qualification also exposed a pre-existing end-of-aggregate race: an already
-  exited Make leader could have a naturally draining descendant classified as persistent before the
-  existing cleanup grace. The repair now distinguishes bounded natural drain from forced termination.
-  The conditionally required final review rejected `d3d3932` because hand-maintained library pruning,
-  its owner test, the reproduction tag, validation-order prose, and cleanup prose were inconsistent.
-  This v2 branch re-scopes the capability to builder-state separation and preserves the complete
-  materialized runtime tree; runtime reachability pruning is deferred to a separately owned gate.
-  The re-scoped contract and implementation are committed as `ee9fd0e` and `8f09c6f`; measurement
-  and exact preflight candidate `bc2623b` passed. Its comprehensive review requested one consolidated
-  repair: forced cgroup cleanup must own descendants across process-group changes, normative Section
-  9 must own runtime-before-tool precedence with a real multi-invalid regression, and this handoff
-  must record the existing exact candidate stamp. Consolidated repair `957aa50` closes those three
-  findings and its complete preflight passed; the final evidence head now requires the
-  policy-mandated conditional final review. That final review rejected `7040d75`: controller cleanup
-  did not propagate forced descendant termination, did not prove descendant zombies reaped, and
-  lacked a dynamic controller precedence regression; its next-step record was also stale. Repository
-  policy ended the v2 repair cycle. The v3 design reopens the lifecycle closure matrix before code,
-  assigns both process-owner layers, and names exact failure propagation and dynamic regressions;
-  design checkpoint `021f8e0` is complete. Implementation checkpoint `e5dae90` completes the
-  redesigned process ownership, its focused owners pass, and exact complete preflight passes. A
-  fresh comprehensive review of exact evidence head `236dcbd` requested one consolidated repair:
-  controller runtime/tool admission must precede its public project-Git identity call, and worker
-  lifecycle evidence must exercise production `run_owned` with a real double-forked descendant.
-  The repaired contract retains manifest-authenticated Git by descriptor and assigns that real
-  lifecycle regression to the worker owner. Design checkpoint `30a4835` and consolidated repair
-  `9996837` are complete; focused and installed owners pass. Exact final preflight passed
-  `1ce0b19`, but the policy-mandated final review rejected v3: the reopened controller contract
-  assigned mount/delegation inventory, orphan admission, per-tick procfs sampling, a universal
-  platform classification, and the worker leaf grammar to a controller that owns none of those
-  behaviors; Section 9.9 also ordered bwrap authentication before the runtime-first precedence
-  required by production and its regression. Repository policy ended the v3 repair cycle. V4
-  reopens the closure matrix and assigns clean hierarchy provisioning and residual-leaf refusal to
-  `fresh-profile`, per-child `align-llm-control-*` lifecycle and phase-owned errors to the
-  controller, and the full worker resource boundary to `scripts/fresh-align-compiler`. Runtime
-  bindings precede every tool, including bwrap; bwrap capability checks follow accepted tool
-  identity. The implementation already follows this validation order, so the next checkpoint adds
-  exact contract-owner regressions rather than expanding the controller into a second worker.
-  Design checkpoint `fcbd8e8` and contract-owner checkpoint `05bbfd7` are complete. The controller
-  owner now dynamically proves invalid-runtime-plus-invalid-bwrap precedence through public
-  `supervise`, exact `align-llm-control-<32 hex>` grammar, and SOURCE/TOOL/TRUST phase mapping for
-  Git, retained-tool, and accepted-bwrap capability lifecycle failures. Development, controller,
-  worker, topology, and complete focused owners pass. A fresh comprehensive review of exact head
-  `53eb915` requested four changes: remove superseded foreign-member ownership prose; stop claiming
-  worker `pids.max` readback and child-side rlimit/membership verification; execute the promised
-  installed residual-child-cgroup refusal; and update this handoff's final-gate state. All four are
-  accepted. The consolidated repair makes no new product behavior beyond the named installed
-  regression: it aligns all cgroup prose with the existing empty-leaf/exclusive-writer ownership
-  rule, narrows worker verification to successful pre-exec syscalls plus parent-side membership,
-  and exercises profile cleanup against a real residual child cgroup. Because this repair only
-  implements recorded findings without changing the implementation approach or public behavior,
-  policy does not require another review.
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`; its exact-main seed and clean warm run passed. PR #78
+  merged the multi-stage fresh runtime at `dea213d69e79fc6c3ef97ad095051b8c4c2dce1a`, reducing the
+  observed image from 6,069,945,116 to 3,215,474,083 bytes (47.0%) while preserving the complete
+  installed profile. Its PR run `31633149090` passed; the fresh job's build/export/load took 294
+  seconds and installed qualification took 262 seconds. Exact-main run `31634023665` passed in 281
+  seconds; its cache-only fresh job took 276 seconds and build/export took 257 seconds, while the
+  hosted job seeded the missing trusted apt archive and compiler bundle entries.
+- Complete locally: contract commit `e137168` defines the pin-owned Cargo cache boundary;
+  implementation commit `d94afbc` moves the unchanged fetch before repository-owned image inputs
+  and adds its ordering regression; evidence commit `109f56e` records the baseline and passed exact
+  complete preflight. The comprehensive review of `109f56e` found only that this handoff still
+  pointed at completed work. This narrow repair advances continuity to publication; no runtime,
+  manifest, network-source, or installed-image behavior changed. Remaining work is exact-head
+  preflight for this repair, draft PR publication with the review envelope and disposition, hosted
+  invalidating-path qualification, merge, and exact-main cache measurement.
 
 ## Measurement
 
@@ -131,6 +86,11 @@ file records durable project state.
   mutable, so exact sizes are recorded observations rather than rebuild guarantees. All 1,303
   transferred Python/libexpat paths had zero dpkg ownership collisions and builder-only Rustup,
   Cargo, LLVM, source, and apt state are absent.
+- Cargo-layout checkpoint `d94afbc` passed complete preflight: development owner 9.704s, pinned
+  Align build 0.709s, hosted checks 3.583s, focused qualification 23.645s, and installed profile
+  281.745s. The first relocated Cargo layer resolved its exact shallow source and fetched crates in
+  7.7s; the complete local image build took 42.683s. An immediate fixed-key rebuild took 3.185s and
+  reported the Cargo-fetch layer and all earlier layers `CACHED` (`n=1` each, same Docker daemon).
 
 ## Paused product checkpoint
 
@@ -141,10 +101,11 @@ file records durable project state.
 
 ## Next steps
 
-1. If the consolidated repair head lacks a matching exact-head complete-preflight stamp, run that
-   gate; otherwise publish it and record the existing review envelope plus all four dispositions.
-2. Require hosted CI, then measure build/export/load and final integration. Keep PR #69 paused
-   until the final Align revision is named.
+1. Run exact-head preflight for the narrow continuity repair, then publish the draft PR with the
+   complete review envelope and its resolved HANDOFF disposition.
+2. Require hosted invalidating-path qualification, merge after all gates pass, and measure the
+   exact-main cache publication path.
+3. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 

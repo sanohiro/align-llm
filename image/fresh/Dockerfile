@@ -66,13 +66,42 @@ RUN python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
     if [ -d /usr/share/perl5 ]; then cp -aL /usr/share/perl5 /runtime/system/perl5; else mkdir /runtime/system/perl5; fi && \
     cp -L /lib64/ld-linux-x86-64.so.2 /runtime/system/ld-linux-x86-64.so.2
 
+COPY .align-revision /build/align-llm/.align-revision
+
+RUN mkdir -p /var/cache/align-llm/cargo && \
+    ALIGN_REVISION="$(tr -d '\n' </build/align-llm/.align-revision)" && \
+    test "$(printf '%s' "$ALIGN_REVISION" | wc -c)" = 40 && \
+    git init --quiet /tmp/align-cache-source && \
+    git -C /tmp/align-cache-source remote add origin https://github.com/sanohiro/align.git && \
+    git -C /tmp/align-cache-source -c protocol.version=2 fetch \
+      --depth=1 --filter=blob:none origin "$ALIGN_REVISION" && \
+    git -C /tmp/align-cache-source checkout --detach FETCH_HEAD && \
+    test "$(git -C /tmp/align-cache-source rev-parse HEAD)" = "$ALIGN_REVISION" && \
+    CARGO_HOME=/var/cache/align-llm/cargo \
+      RUSTC=/runtime/rust/bin/rustc \
+      /runtime/rust/bin/cargo fetch --locked \
+        --manifest-path /tmp/align-cache-source/Cargo.toml && \
+    rm -rf /tmp/align-cache-source && \
+    find /var/cache/align-llm/cargo -mindepth 1 -maxdepth 1 \
+      ! -name git ! -name registry -exec rm -rf -- {} + && \
+    mkdir -p /var/cache/align-llm/cargo/git/checkouts \
+      /var/cache/align-llm/cargo/git/db \
+      /var/cache/align-llm/cargo/registry/cache \
+      /var/cache/align-llm/cargo/registry/index \
+      /var/cache/align-llm/cargo/registry/src && \
+    find /var/cache/align-llm/cargo/git -mindepth 1 -maxdepth 1 \
+      ! -name checkouts ! -name db -exec rm -rf -- {} + && \
+    find /var/cache/align-llm/cargo/registry -mindepth 1 -maxdepth 1 \
+      ! -name cache ! -name index ! -name src -exec rm -rf -- {} + && \
+    find /var/cache/align-llm/cargo -type d -exec chmod 0755 {} + && \
+    find /var/cache/align-llm/cargo -type f -exec chmod 0644 {} +
+
 COPY scripts/build-fresh-image-control scripts/fresh_attestation.py scripts/fresh_manifest.py \
      scripts/generate-fresh-toolchain-manifest /build/align-llm/scripts/
 COPY image/fresh /build/align-llm/image/fresh
-COPY .align-revision /build/align-llm/.align-revision
 
 RUN mkdir -p /usr/local/libexec/align-llm /usr/local/share/align-llm \
-      /opt/align-llm/tool-bin /var/cache/align-llm/cargo \
+      /opt/align-llm/tool-bin \
       /tmp/fresh-control-a /tmp/fresh-control-b && \
     python3 /build/align-llm/scripts/build-fresh-image-control \
       --cc /usr/lib/llvm-22/bin/clang --output-dir /tmp/fresh-control-a && \
@@ -155,33 +184,6 @@ for name, path in system.items():
 for path in root.iterdir():
     path.chmod(0o755)
 PY
-
-RUN ALIGN_REVISION="$(tr -d '\n' </build/align-llm/.align-revision)" && \
-    test "$(printf '%s' "$ALIGN_REVISION" | wc -c)" = 40 && \
-    git init --quiet /tmp/align-cache-source && \
-    git -C /tmp/align-cache-source remote add origin https://github.com/sanohiro/align.git && \
-    git -C /tmp/align-cache-source -c protocol.version=2 fetch \
-      --depth=1 --filter=blob:none origin "$ALIGN_REVISION" && \
-    git -C /tmp/align-cache-source checkout --detach FETCH_HEAD && \
-    test "$(git -C /tmp/align-cache-source rev-parse HEAD)" = "$ALIGN_REVISION" && \
-    CARGO_HOME=/var/cache/align-llm/cargo \
-      RUSTC=/runtime/rust/bin/rustc \
-      /runtime/rust/bin/cargo fetch --locked \
-        --manifest-path /tmp/align-cache-source/Cargo.toml && \
-    rm -rf /tmp/align-cache-source && \
-    find /var/cache/align-llm/cargo -mindepth 1 -maxdepth 1 \
-      ! -name git ! -name registry -exec rm -rf -- {} + && \
-    mkdir -p /var/cache/align-llm/cargo/git/checkouts \
-      /var/cache/align-llm/cargo/git/db \
-      /var/cache/align-llm/cargo/registry/cache \
-      /var/cache/align-llm/cargo/registry/index \
-      /var/cache/align-llm/cargo/registry/src && \
-    find /var/cache/align-llm/cargo/git -mindepth 1 -maxdepth 1 \
-      ! -name checkouts ! -name db -exec rm -rf -- {} + && \
-    find /var/cache/align-llm/cargo/registry -mindepth 1 -maxdepth 1 \
-      ! -name cache ! -name index ! -name src -exec rm -rf -- {} + && \
-    find /var/cache/align-llm/cargo -type d -exec chmod 0755 {} + && \
-    find /var/cache/align-llm/cargo -type f -exec chmod 0644 {} +
 
 RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --bootstrap /usr/local/libexec/align-llm/fresh-bootstrap \

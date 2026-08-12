@@ -1289,6 +1289,22 @@ def test_image_profile_plan() -> None:
         not in dockerfile,
         "image cache retained the full-history Align clone",
     )
+    revision_copy = "COPY .align-revision /build/align-llm/.align-revision"
+    cargo_fetch = "/runtime/rust/bin/cargo fetch --locked"
+    control_inputs = (
+        "COPY scripts/build-fresh-image-control scripts/fresh_attestation.py scripts/fresh_manifest.py",
+        "COPY image/fresh /build/align-llm/image/fresh",
+    )
+    require(
+        dockerfile.count(revision_copy) == 1
+        and dockerfile.count(cargo_fetch) == 1
+        and dockerfile.index("for tree in git rust bwrap") < dockerfile.index(revision_copy)
+        and dockerfile.index("/usr/lib/llvm-22 /runtime/cc-suite")
+        < dockerfile.index(revision_copy)
+        and dockerfile.index(revision_copy) < dockerfile.index(cargo_fetch)
+        and all(dockerfile.index(cargo_fetch) < dockerfile.index(source) for source in control_inputs),
+        "pin-owned Cargo fetch does not precede repository-owned image inputs",
+    )
     require(
         dockerfile.count("ARG IMAGE_PUBLIC_KEY_HEX") == 1
         and dockerfile.count("ARG RUN_PUBLIC_KEY_HEX") == 1
