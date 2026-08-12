@@ -30,6 +30,13 @@ file records durable project state.
   The worker reported `BUILD build`, Cargo itself did not return nonzero, cleanup passed, and host
   memory/inodes were ample. The owner is the 250-millisecond private-tree quota callback treating
   Cargo's ordinary live mutation between `listdir` and `stat/open` as a quota failure.
+- Complete locally: contract commit `079e213` and implementation commit `3d55fc1` introduced
+  mutation-tolerant live polling while retaining strict scans elsewhere. The comprehensive review
+  of `3d55fc1` found three valid closure gaps: missing strict post-child scans, an overbroad transient
+  errno set, and stale continuity. The consolidated repair narrows transient handling by syscall,
+  adds strict phase-owned scans before build/aggregate output consumption, extends the focused owner,
+  and updates this checkpoint. The focused worker owner and development-preflight owner pass after
+  repair. Exact-head complete preflight, publication, hosted qualification, and merge remain.
 
 ## Measurement
 
@@ -99,10 +106,9 @@ file records durable project state.
 
 ## Next steps
 
-1. Implement mutation-tolerant live quota polling and focused transient-race/cap regressions while
-   retaining strict staging/final/cleanup scans.
-2. Run the focused worker owner. Defer full installed qualification, review, and publication until
-   this bounded implementation checkpoint is assessed.
+1. Run exact-head complete preflight for the consolidated review repair.
+2. Publish the PR with the complete review envelope, finding dispositions, and final-head check
+   evidence; merge after required GitHub checks pass.
 3. Resume runtime-copy/build reuse optimization after the flake is removed. Keep PR #69 paused until
    the final Align revision is named.
 

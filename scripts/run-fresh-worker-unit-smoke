@@ -846,6 +846,22 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
         vanished.write_bytes(b"bytes")
         count, total = module.scan_private_fd(descriptor, live=True)
         require((count, total) == (1, 0), "live quota scan miscounted a disappearing file")
+
+        def failing_stat(path, *arguments, **keywords):
+            if path == b"stable" and keywords.get("dir_fd") == descriptor:
+                raise OSError(errno.EIO, "injected live scan I/O failure")
+            return original_stat(path, *arguments, **keywords)
+
+        stable = root / "stable"
+        stable.write_bytes(b"bytes")
+        module.os.stat = failing_stat
+        try:
+            module.scan_private_fd(descriptor, live=True)
+        except OSError as error:
+            require(error.errno == errno.EIO, "live quota scan changed a stable I/O error")
+        else:
+            raise AssertionError("live quota scan accepted a stable I/O error")
+        stable.unlink()
         module.os.stat = original_stat
 
         changed = root / "changed"
@@ -884,6 +900,24 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
             pass
         else:
             raise AssertionError("live quota scan accepted cap-plus-one entries")
+
+        source = WORKER.read_text(encoding="utf-8")
+        build_owner = source[source.index("def build_compiler") : source.index("def install_file")]
+        aggregate_owner = source[source.index("def run_aggregate") : source.index("def scan_private_fd")]
+        require(
+            "resource_check=lambda: enforce_private_quota(admission, live=True)" in build_owner
+            and build_owner.index("enforce_private_quota(admission)")
+            > build_owner.index("resource_check=lambda: enforce_private_quota(admission, live=True)"),
+            "build lacks strict post-child quota validation",
+        )
+        require(
+            "resource_check=lambda: enforce_aggregate_quota(admission, live=True)" in aggregate_owner
+            and aggregate_owner.index("enforce_aggregate_quota(admission)")
+            > aggregate_owner.index(
+                "resource_check=lambda: enforce_aggregate_quota(admission, live=True)"
+            ),
+            "aggregate lacks strict post-child quota validation",
+        )
     finally:
         module.os.stat = original_stat
         module.os.open = original_open

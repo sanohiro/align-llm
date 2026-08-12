@@ -3571,6 +3571,10 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
             pass_fds=bind_descriptors,
             resource_check=lambda: enforce_private_quota(admission, live=True),
         )
+        try:
+            enforce_private_quota(admission)
+        except OSError:
+            fail("BUILD", "build")
     finally:
         close_private_mounts(bind_descriptors)
     release_compiler = root / "cargo-target/release/alignc"
@@ -4118,11 +4122,12 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             phase="aggregate",
             timeout=AGGREGATE_TIMEOUT,
             pass_fds=(*overlay_descriptors, *bind_descriptors),
-            resource_check=lambda: enforce_aggregate_quota(admission),
+            resource_check=lambda: enforce_aggregate_quota(admission, live=True),
         )
     finally:
         close_private_mounts(bind_descriptors)
         close_private_mounts(overlay_descriptors)
+    enforce_aggregate_quota(admission)
     upper = root / "aggregate-output/workspace-upper"
     names = sorted(os.listdir(upper), key=os.fsencode)
     if any(name != "main" for name in names):
@@ -4153,11 +4158,6 @@ def scan_private_fd(
     deadline: float | None = None,
     live: bool = False,
 ) -> tuple[int, int]:
-    transient_errnos = frozenset((errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.ESTALE))
-
-    def transient(error: OSError) -> bool:
-        return live and error.errno in transient_errnos
-
     def visit(directory_fd: int, depth: int, count: int, total: int) -> tuple[int, int]:
         if deadline is not None and time.monotonic() >= deadline:
             raise CleanupError("private tree scan timed out")
@@ -4171,7 +4171,7 @@ def scan_private_fd(
             try:
                 value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
             except OSError as error:
-                if transient(error):
+                if live and error.errno == errno.ENOENT:
                     if count > entry_limit:
                         raise CleanupError("private tree exceeds cleanup bound")
                     continue
@@ -4185,7 +4185,7 @@ def scan_private_fd(
                             dir_fd=directory_fd,
                         )
                     except OSError as error:
-                        if transient(error):
+                        if live and error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
                             if count > entry_limit:
                                 raise CleanupError("private tree exceeds cleanup bound")
                             continue
@@ -4217,7 +4217,7 @@ def enforce_private_quota(admission: Admission, *, live: bool = False) -> None:
         raise OSError(errno.EFBIG, "private root exceeds its bound") from error
 
 
-def enforce_aggregate_quota(admission: Admission) -> None:
+def enforce_aggregate_quota(admission: Admission, *, live: bool = False) -> None:
     def scan(
         relative: str, *, opaque_directories: frozenset[bytes] = frozenset()
     ) -> tuple[int, int]:
@@ -4231,7 +4231,7 @@ def enforce_aggregate_quota(admission: Admission) -> None:
                 entry_limit=MAX_PRIVATE_ENTRIES,
                 byte_limit=MAX_AGGREGATE_OVERLAY_BYTES,
                 opaque_directories=opaque_directories,
-                live=True,
+                live=live,
             )
         finally:
             os.close(readable)
