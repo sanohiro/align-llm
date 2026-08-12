@@ -66,9 +66,11 @@ owner before its required aggregate, and records a local exact-HEAD stamp only a
 gate passes. Use `--plan` to inspect the selection without running commands or writing the stamp.
 Fresh-image ownership additionally runs the focused qualification and the installed profile once
 each; the installed invocation removes ambient `DOCKER_HOST` and requires a reachable Docker
-daemon. The classifier and path inventory are shared with GitHub Actions, so local and hosted scope
-cannot drift independently. See `docs/specs/development-preflight.md` for the exact commands and
-failure behavior.
+daemon. It reuses the exact full-history checkout passed through `--align-repo`; the disposable
+profile clones that source without hardlinks and never reads the active checkout's worktree files.
+The classifier and path inventory are shared with GitHub Actions, so local and hosted scope cannot
+drift independently. See `docs/specs/development-preflight.md` for the exact commands and failure
+behavior.
 
 Run `make ci` for the complete capable-host gate. It builds the exact pinned Align release compiler,
 then runs the bounded hosted functional graph, the sandboxed coding corpus, and canonical baseline

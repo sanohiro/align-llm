@@ -94,6 +94,8 @@ def build_plan(
                         "scripts/run-fresh-worker-qualification",
                         "--installed-profile-only",
                         "--require-docker",
+                        "--align-repo",
+                        str(align_repository),
                     ),
                     ("DOCKER_HOST",),
                 ),

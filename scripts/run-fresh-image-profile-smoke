@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -121,25 +122,16 @@ def run(
     )
 
 
-def checkout_pinned_align(target: Path) -> None:
+def checkout_pinned_align(target: Path, source_repository: Path | None) -> None:
     revision = (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()
-    run(["git", "init", "--quiet", str(target)])
-    run(["git", "-C", str(target), "remote", "add", "origin", ALIGN_REPOSITORY])
-    run(
-        [
-            "git",
-            "-C",
-            str(target),
-            "-c",
-            "protocol.version=2",
-            "fetch",
-            "--depth=1",
-            "--filter=blob:none",
-            "origin",
-            revision,
-        ]
-    )
-    run(["git", "-C", str(target), "checkout", "--detach", "FETCH_HEAD"])
+    source = ALIGN_REPOSITORY
+    if source_repository is not None:
+        source = str(source_repository)
+        source_head = run(["git", "-C", source, "rev-parse", "HEAD"]).stdout
+        if source_head.decode("ascii").strip() != revision:
+            raise RuntimeError("provided Align source is not at the pinned revision")
+    run(["git", "clone", "--no-hardlinks", source, str(target)])
+    run(["git", "-C", str(target), "checkout", "--detach", revision])
     actual = run(["git", "-C", str(target), "rev-parse", "HEAD"]).stdout
     if actual.decode("ascii").strip() != revision:
         raise RuntimeError("pinned Align source identity changed after checkout")
@@ -495,10 +487,12 @@ def deployment_copy(source: Path, target: Path) -> None:
 
 
 def main() -> int:
-    require_docker = "--require-docker" in sys.argv[1:]
-    unexpected = [argument for argument in sys.argv[1:] if argument != "--require-docker"]
-    if unexpected:
-        raise SystemExit(f"unsupported fresh image profile option: {unexpected[0]}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-docker", action="store_true")
+    parser.add_argument("--align-repo", type=Path)
+    values = parser.parse_args()
+    require_docker = values.require_docker
+    align_repository = values.align_repo.resolve(strict=True) if values.align_repo else None
     phases = PhaseTracker()
     phases.enter("docker-daemon")
     availability = run(["docker", "info"], check=False)
@@ -842,7 +836,7 @@ def main() -> int:
                     str(source / "project"),
                 ]
             )
-            checkout_pinned_align(source / "align")
+            checkout_pinned_align(source / "align", align_repository)
             run(["docker", "volume", "create", source_volume])
             populate_source_volume(image, source_volume, source)
             run(["docker", "volume", "create", boundary_source_volume])

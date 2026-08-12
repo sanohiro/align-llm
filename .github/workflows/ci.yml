@@ -206,6 +206,30 @@ jobs:
         run: |
           python3 scripts/run-fresh-worker-qualification
 
+      - name: Restore pinned Align source
+        if: steps.scope.outputs.fresh_installed == 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: align-source
+          key: align-full-source-${{ runner.os }}-${{ hashFiles('.align-revision') }}
+
+      - name: Materialize pinned Align source
+        if: steps.scope.outputs.fresh_installed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(tr -d '[:space:]' < .align-revision)"
+          if [[ ! -d align-source/.git ]]; then
+            mkdir align-source
+            git -C align-source init
+            git -C align-source remote add origin https://github.com/sanohiro/align.git
+            git -C align-source fetch origin "$revision"
+            git -C align-source checkout --detach FETCH_HEAD
+          fi
+          test "$(git -C align-source rev-parse HEAD)" = "$revision"
+          test ! -e align-source/.git/shallow
+          test -z "$(git -C align-source status --porcelain --untracked-files=all)"
+
       - name: Enable qualified nested user namespaces
         if: steps.scope.outputs.fresh_installed == 'true'
         id: userns
@@ -237,6 +261,7 @@ jobs:
         run: >-
           env -u DOCKER_HOST python3 scripts/run-fresh-worker-qualification
           --installed-profile-only --require-docker
+          --align-repo "$GITHUB_WORKSPACE/align-source"
 
       - name: Restore user namespace restriction
         if: always() && steps.scope.outputs.fresh_installed == 'true' && steps.userns.outputs.changed == 'true'

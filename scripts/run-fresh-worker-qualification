@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
@@ -251,13 +252,15 @@ def verify_contract_inventory() -> None:
 
 
 def main() -> int:
-    installed_profile = "--installed-profile" in sys.argv[1:]
-    installed_profile_only = "--installed-profile-only" in sys.argv[1:]
-    require_docker = "--require-docker" in sys.argv[1:]
-    accepted = {"--installed-profile", "--installed-profile-only", "--require-docker"}
-    unexpected = [argument for argument in sys.argv[1:] if argument not in accepted]
-    if unexpected:
-        raise SystemExit(f"unsupported qualification option: {unexpected[0]}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--installed-profile", action="store_true")
+    parser.add_argument("--installed-profile-only", action="store_true")
+    parser.add_argument("--require-docker", action="store_true")
+    parser.add_argument("--align-repo", type=Path)
+    values = parser.parse_args()
+    installed_profile = values.installed_profile
+    installed_profile_only = values.installed_profile_only
+    require_docker = values.require_docker
     if installed_profile and installed_profile_only:
         raise SystemExit("--installed-profile and --installed-profile-only are mutually exclusive")
     if require_docker and not (installed_profile or installed_profile_only):
@@ -273,6 +276,8 @@ def main() -> int:
         arguments = [sys.executable, "scripts/run-fresh-image-profile-smoke"]
         if require_docker:
             arguments.append("--require-docker")
+        if values.align_repo is not None:
+            arguments.extend(("--align-repo", str(values.align_repo)))
         run("run-fresh-image-profile-smoke", *arguments)
     if installed_profile_only:
         mode = "installed profile only"
