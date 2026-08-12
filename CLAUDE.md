@@ -42,9 +42,9 @@ Classify the changed surface first and follow only its row. Reclassify when the 
 
 | Change | During development | Before publication | Review |
 | --- | --- | --- | --- |
-| Non-normative Markdown only | Relevant consistency check | `python3 scripts/pre-pr` | Not required |
-| Authoritative specification or governance only | Author consistency check | `python3 scripts/pre-pr` | One comprehensive review |
-| Local implementation checkpoint | Narrow owner test after a coherent batch | Not published by itself unless independently useful | No repeated full-diff review |
+| Classifier-eligible non-normative Markdown additions/modifications | Relevant consistency check | `python3 scripts/pre-pr` | Not required |
+| Classifier-eligible authoritative specification or governance additions/modifications | Author consistency check | `python3 scripts/pre-pr` | One comprehensive review |
+| Local implementation checkpoint | Narrow owner test after a coherent batch | Do not publish; reclassify as an executable consumer capability first | No repeated full-diff review |
 | Executable consumer capability | Narrow owner tests; named qualification when its boundary changes | `python3 scripts/pre-pr --owner-test LABEL -- COMMAND ...` | One comprehensive review |
 | Performance claim | Owner test plus reproducible benchmark | Applicable row above, with baseline and result | Include measurement risk |
 
@@ -52,6 +52,12 @@ Classify the changed surface first and follow only its row. Reclassify when the 
 is not evidence. The successful stamp belongs to the exact unchanged `HEAD`; commit, amend, or
 rebase invalidates it. Do not replace a required installed profile with a Docker skip or an ambient
 `DOCKER_HOST` endpoint.
+
+The Markdown rows apply only when the classifier selects `docs`. Deletions, renames, unknown
+statuses, and other fail-closed cases select executable preflight and require an applicable owner
+command; review remains determined by the changed content. Any implementation checkpoint selected
+for publication must first become a consumer-complete executable row, including its preflight and
+review requirements.
 
 This table is the normal path. Do not promote an isolated incident into a permanent gate without a
 recurring failure class, an identified owner, and maintenance value greater than its cost.
@@ -168,9 +174,10 @@ consumer into one pin update and real-client verification capability.
 
 Verification is evidence for a coherent checkpoint, not an edit-loop ritual.
 
-- Markdown-only changes run `git diff --check` plus applicable static consistency checks. They do
-  not run source tests or aggregates unless they change an executable contract boundary such as a
-  workflow, Makefile, build input, fixture/corpus, `.align-revision`, or `.gitattributes`.
+- Classifier-eligible Markdown additions/modifications run `git diff --check` plus applicable static
+  consistency checks. They do not run source tests or aggregates unless they change an executable
+  contract boundary such as a workflow, Makefile, build input, fixture/corpus, `.align-revision`,
+  or `.gitattributes`. Deletions and renames fail closed as described above.
 - Local implementation runs the narrow compiler, unit, fixture, or smoke owner once the batch is
   coherent.
 - `scripts/pre-pr` runs every publication check selected by the shared classifier. Do not manually

@@ -3,8 +3,8 @@ absence needs explanation; do not manufacture evidence for an unrelated risk.
 
 ## Outcome
 
-- Consumer-complete capability:
-- Useful end-to-end outcome:
+- Purpose and observable result:
+- Consumer path (capability rows only):
 - What is intentionally out of scope:
 
 ## Verification

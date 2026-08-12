@@ -15,8 +15,9 @@ file records durable project state.
   selection.
 - In progress: `CLAUDE.md` now routes work through five proportional rows and delegates high-risk
   contract detail to `docs/review-checklist.md`. The PR template and toolchain guide use the same
-  routing. The stable candidate still needs its targeted checks, comprehensive governance review,
-  and publication flow.
+  routing. One comprehensive governance review of candidate `852ba8b` found three valid P2 boundary
+  ambiguities; their publication-reclassification, fail-closed Markdown, and lightweight-template
+  repairs are consolidated in the current follow-up. Publication remains.
 
 ## Paused product checkpoint
 
@@ -31,20 +32,20 @@ file records durable project state.
 
 ## Next steps
 
-1. Finish the author consistency pass across `CLAUDE.md`, `docs/review-checklist.md`, the pull
-   request template, and `docs/align-development.md`.
-2. Run documentation/static verification and one comprehensive governance review. Consolidate any
-   valid findings and rerun only affected checks.
-3. Run the exact-HEAD documentation preflight, publish, wait for required hosted evidence, and
+1. Run the exact-HEAD documentation preflight, publish, wait for required hosted evidence, and
    merge when terminal conditions are satisfied.
-4. Refresh `main` after merge. Keep PR #69 paused until the final Align revision is named.
+2. Refresh `main` after merge. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
 - Rule inventory: `CLAUDE.md` had grown through about 20 rule-changing commits to 487 lines / 4,463
-  words; the first simplified candidate is 267 lines / 2,151 words.
-- `git diff --check`: PASS for the first governance candidate.
-- Comprehensive governance review and exact-HEAD preflight: not started.
+  words; the repaired simplified candidate is 274 lines / 2,218 words.
+- `git diff --check` and changed-Markdown fence validation: PASS after the consolidated repair. The
+  shared classifier selects the `docs` scope.
+- Independent comprehensive governance review of `852ba8b`: changes required; three P2 findings,
+  all accepted and consolidated in the current follow-up. The repair delta contains no unrelated
+  behavior and does not trigger a final review. Exact preflight state is queried from Git rather
+  than mirrored as durable handoff metadata.
 
 ## Constraints and intentional state
 
