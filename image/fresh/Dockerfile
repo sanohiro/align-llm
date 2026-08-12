@@ -156,8 +156,11 @@ PY
 
 RUN ALIGN_REVISION="$(tr -d '\n' </build/align-llm/.align-revision)" && \
     test "$(printf '%s' "$ALIGN_REVISION" | wc -c)" = 40 && \
-    git clone --filter=blob:none https://github.com/sanohiro/align.git /tmp/align-cache-source && \
-    git -C /tmp/align-cache-source checkout --detach "$ALIGN_REVISION" && \
+    git init --quiet /tmp/align-cache-source && \
+    git -C /tmp/align-cache-source remote add origin https://github.com/sanohiro/align.git && \
+    git -C /tmp/align-cache-source -c protocol.version=2 fetch \
+      --depth=1 --filter=blob:none origin "$ALIGN_REVISION" && \
+    git -C /tmp/align-cache-source checkout --detach FETCH_HEAD && \
     test "$(git -C /tmp/align-cache-source rev-parse HEAD)" = "$ALIGN_REVISION" && \
     CARGO_HOME=/var/cache/align-llm/cargo \
       RUSTC=/runtime/rust/bin/rustc \

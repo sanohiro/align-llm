@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import os
 import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -30,6 +33,35 @@ PROVENANCE_SCRIPTS = (
 ALIGN_REPOSITORY = "https://github.com/sanohiro/align.git"
 TEST_UID = 12345
 WORKER_INVOCATION_TIMEOUT = 5_000
+
+
+class PhaseTracker:
+    def __init__(self) -> None:
+        self.name: str | None = None
+        self.started = 0
+
+    def enter(self, name: str) -> None:
+        self.finish("pass")
+        self.name = name
+        self.started = time.monotonic_ns()
+        self.emit("start", None)
+
+    def finish(self, status: str) -> None:
+        if self.name is None:
+            return
+        duration_ms = max(0, (time.monotonic_ns() - self.started) // 1_000_000)
+        self.emit(status, duration_ms)
+        self.name = None
+
+    def emit(self, status: str, duration_ms: int | None) -> None:
+        record: dict[str, object] = {
+            "event": "fresh-image-profile-phase",
+            "phase": self.name,
+            "status": status,
+        }
+        if duration_ms is not None:
+            record["duration_ms"] = duration_ms
+        print(json.dumps(record, sort_keys=True, separators=(",", ":")), file=sys.stderr)
 
 
 def docker_cgroup_driver(info: bytes) -> str:
@@ -88,6 +120,40 @@ def run(
         check=check,
         timeout=timeout,
     )
+
+
+def checkout_pinned_align(target: Path, source_repository: Path | None) -> None:
+    revision = (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()
+    source = ALIGN_REPOSITORY
+    if source_repository is not None:
+        source = str(source_repository)
+        source_head = run(["git", "-C", source, "rev-parse", "HEAD"]).stdout
+        if source_head.decode("ascii").strip() != revision:
+            raise RuntimeError("provided Align source is not at the pinned revision")
+        shallow = run(
+            ["git", "-C", source, "rev-parse", "--is-shallow-repository"]
+        ).stdout
+        if shallow != b"false\n":
+            raise RuntimeError("provided Align source is shallow")
+        partial = run(
+            [
+                "git",
+                "-C",
+                source,
+                "config",
+                "--get-regexp",
+                r"^(extensions\.partialclone|remote\..*\.promisor)$",
+            ],
+            check=False,
+        )
+        if partial.returncode != 1 or partial.stdout or partial.stderr:
+            raise RuntimeError("provided Align source has partial-clone configuration")
+        run(["git", "-C", source, "fsck", "--connectivity-only", "--no-dangling"])
+    run(["git", "clone", "--no-hardlinks", source, str(target)])
+    run(["git", "-C", str(target), "checkout", "--detach", revision])
+    actual = run(["git", "-C", str(target), "rev-parse", "HEAD"]).stdout
+    if actual.decode("ascii").strip() != revision:
+        raise RuntimeError("pinned Align source identity changed after checkout")
 
 
 def copy_from_image(image: str, source: str, target: Path) -> None:
@@ -229,13 +295,14 @@ def boundary_profile_run(
         "--workdir",
         "/work/project",
     ]
+    environment_values: dict[str, str] = {}
     if align_repo is not None:
-        arguments.extend(["--env", f"ALIGN_REPO={align_repo}"])
+        environment_values["ALIGN_REPO"] = align_repo
     for entry in extra_environment:
-        name, separator, _ = entry.partition("=")
+        name, separator, value = entry.partition("=")
         if not separator or not name:
             raise ValueError(f"invalid boundary test environment entry: {entry!r}")
-        arguments.extend(["--env", entry])
+        environment_values[name] = value
     command = [image, "--mode", "ordinary-adoption-boundary"]
     if cgroup_driver == "cgroupfs":
         arguments.extend(
@@ -244,15 +311,19 @@ def boundary_profile_run(
                 f"/align-llm-fresh/{TEST_UID}",
                 "--user",
                 f"{TEST_UID}:{TEST_UID}",
+                "--entrypoint",
+                "/usr/bin/env",
             ]
         )
+        command = [
+            image,
+            "-i",
+            *(f"{name}={value}" for name, value in environment_values.items()),
+            "/usr/local/libexec/align-llm/fresh-supervise",
+            "--mode",
+            "ordinary-adoption-boundary",
+        ]
     elif cgroup_driver == "systemd":
-        environment_values: dict[str, str] = {}
-        if align_repo is not None:
-            environment_values["ALIGN_REPO"] = align_repo
-        for entry in extra_environment:
-            name, _, value = entry.partition("=")
-            environment_values[name] = value
         environment = repr(environment_values)
         launcher = f"""\
 import os
@@ -435,11 +506,24 @@ def deployment_copy(source: Path, target: Path) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-docker", action="store_true")
+    parser.add_argument("--align-repo", type=Path)
+    values = parser.parse_args()
+    require_docker = values.require_docker
+    align_repository = values.align_repo.resolve(strict=True) if values.align_repo else None
+    phases = PhaseTracker()
+    phases.enter("docker-daemon")
     availability = run(["docker", "info"], check=False)
     if availability.returncode != 0:
+        phases.finish("fail" if require_docker else "skip")
+        if require_docker:
+            print("fresh image profile smoke: ERROR (Docker daemon unavailable)", file=sys.stderr)
+            return 1
         print("fresh image profile smoke: SKIP (Docker daemon unavailable)")
         return 77
     cgroup_driver = docker_cgroup_driver(availability.stdout)
+    phases.finish("pass")
 
     unique = secrets.token_hex(8)
     image = f"align-llm-fresh-test:{unique}"
@@ -459,6 +543,7 @@ def main() -> int:
         image_public = ed25519_public_key(image_seed.read_bytes()).hex()
         run_public = ed25519_public_key(run_seed.read_bytes()).hex()
         try:
+            phases.enter("image-build")
             build = run(
                 [
                     "docker",
@@ -485,6 +570,7 @@ def main() -> int:
             ).stdout.decode("ascii").strip()
             if not image_digest.startswith("sha256:"):
                 raise RuntimeError("Docker image identity is not sha256")
+            phases.enter("image-attestation")
             provenance = source_provenance()
             supervisor = temporary / "fresh-supervise"
             bootstrap = temporary / "fresh-bootstrap"
@@ -542,6 +628,7 @@ def main() -> int:
             (temporary / "provenance-digest").write_text(provenance + "\n", encoding="ascii")
             (temporary / "image-digest").chmod(0o444)
             (temporary / "provenance-digest").chmod(0o444)
+            phases.enter("profile-lifecycle")
             run(["docker", "volume", "create", volume])
             run(["docker", "volume", "create", runtime_volume])
             populate_volume(image, volume, temporary)
@@ -632,6 +719,7 @@ def main() -> int:
                     f"rm /run/user/{TEST_UID}/align-llm-fresh/roots/orphan",
                 ]
             )
+            phases.enter("profile-self-test")
             result = profile_run(image, volume, runtime_volume, cgroup_driver)
             if result.returncode != 0:
                 raise RuntimeError(
@@ -642,6 +730,7 @@ def main() -> int:
             if result.stdout != b"fresh compiler self-test: PASS\n" or result.stderr:
                 raise RuntimeError("profile self-test output is not canonical")
 
+            phases.enter("trust-mutations")
             mutations = []
             corrupt = temporary / "corrupt-attestation"
             deployment_copy(temporary, corrupt)
@@ -683,6 +772,7 @@ def main() -> int:
             finally:
                 run(["docker", "volume", "rm", "-f", missing_volume], check=False)
 
+            phases.enter("runtime-replacements")
             replaced_bootstrap = temporary / "replaced-bootstrap"
             replaced_bootstrap.write_bytes(bootstrap.read_bytes() + b"\x00")
             replaced_bootstrap.chmod(0o755)
@@ -753,6 +843,7 @@ def main() -> int:
                     b"fresh compiler: ERROR TOOL tools\n",
                 )
 
+            phases.enter("boundary-profile")
             source = temporary / "source"
             source.mkdir()
             run(
@@ -764,23 +855,7 @@ def main() -> int:
                     str(source / "project"),
                 ]
             )
-            align_clone = run(
-                [
-                    "git",
-                    "clone",
-                    "--no-hardlinks",
-                    ALIGN_REPOSITORY,
-                    str(source / "align"),
-                ],
-                check=False,
-            )
-            if align_clone.returncode != 0:
-                raise RuntimeError(
-                    "pinned Align source clone failed:\n"
-                    + align_clone.stdout.decode("utf-8", "replace")
-                    + align_clone.stderr.decode("utf-8", "replace")
-                )
-            run(["git", "-C", str(source / "align"), "checkout", "--detach", (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()])
+            checkout_pinned_align(source / "align", align_repository)
             run(["docker", "volume", "create", source_volume])
             populate_source_volume(image, source_volume, source)
             run(["docker", "volume", "create", boundary_source_volume])
@@ -916,6 +991,7 @@ def main() -> int:
                     name,
                     b"json-scan adoption: ERROR revision\n",
                 )
+            phases.enter("worker-aggregate")
             worker_result = worker_profile_run(
                 image, volume, runtime_volume, source_volume, cgroup_driver
             )
@@ -928,6 +1004,8 @@ def main() -> int:
             if worker_result.stdout != b"fresh compiler and capable checks: PASS\n" or worker_result.stderr:
                 raise RuntimeError("fresh worker aggregate output is not canonical")
         finally:
+            phases.finish("fail" if sys.exc_info()[0] is not None else "pass")
+            phases.enter("cleanup")
             if cgroup_ready:
                 run(
                     [
@@ -951,6 +1029,7 @@ def main() -> int:
             run(["docker", "volume", "rm", "-f", source_volume], check=False)
             run(["docker", "volume", "rm", "-f", boundary_source_volume], check=False)
             run(["docker", "image", "rm", "-f", image], check=False)
+            phases.finish("pass")
     print("fresh image profile smoke: PASS")
     return 0
 

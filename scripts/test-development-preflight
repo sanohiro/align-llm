@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""Owner regression for shared verification classification and local preflight."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+SCRIPTS = REPOSITORY / "scripts"
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(SCRIPTS))
+
+import verification_scope as scope_module  # noqa: E402
+
+
+def load_script(name: str, module_name: str) -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader(module_name, str(SCRIPTS / name))
+    specification = importlib.util.spec_from_loader(module_name, loader)
+    if specification is None:
+        raise RuntimeError(f"cannot create a module specification for {name}")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[module_name] = module
+    loader.exec_module(module)
+    return module
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def classify(*changes: tuple[str, str]) -> scope_module.Scope:
+    return scope_module.classify_changes(changes, base="b" * 40, head="h" * 40)
+
+
+def test_classifier() -> None:
+    parsed = scope_module.parse_name_status(b"M\x00docs/a.md\x00A\x00docs/b.md\x00")
+    require(parsed == [("M", "docs/a.md"), ("A", "docs/b.md")], "NUL diff parsing changed")
+    for malformed in (b"M\x00docs/a.md", b"MM\x00docs/a.md\x00", b"Q\x00docs/a.md\x00"):
+        try:
+            scope_module.parse_name_status(malformed)
+        except scope_module.ScopeError:
+            pass
+        else:
+            raise RuntimeError(f"malformed name-status was accepted: {malformed!r}")
+
+    docs = classify(("M", "docs/a.md"), ("A", "HANDOFF.md"))
+    require(docs.scope == "docs" and docs.docs_only and not docs.hosted, "docs scope changed")
+    deleted_docs = classify(("D", "docs/a.md"))
+    require(deleted_docs.scope == "hosted" and deleted_docs.hosted, "deletion became light")
+    hosted = classify(("M", "scripts/run-provider-smoke"))
+    require(hosted.scope == "hosted" and not hosted.fresh_installed, "hosted scope changed")
+    for path in (
+        ".align-revision",
+        "Makefile",
+        ".github/workflows/ci.yml",
+        "src/main.align",
+        "eval/tasks/smoke-v1.json",
+        "image/fresh/Dockerfile",
+        "scripts/run-fresh-worker-qualification",
+        "scripts/verification_scope.py",
+        "scripts/classify-verification",
+        "scripts/pre-pr",
+        "scripts/test-development-preflight",
+    ):
+        selected = classify(("M", path))
+        require(
+            selected.scope == "fresh-image"
+            and selected.hosted
+            and selected.fresh_focused
+            and selected.fresh_installed,
+            f"fresh owner was not selected: {path}",
+        )
+    try:
+        scope_module.classify_changes((), base="b" * 40, head="h" * 40)
+    except scope_module.ScopeError:
+        pass
+    else:
+        raise RuntimeError("empty diff was accepted")
+
+
+def test_plan() -> None:
+    preflight = load_script("pre-pr", "align_llm_pre_pr_test")
+    align = Path("/explicit/align")
+    docs = classify(("M", "docs/a.md"))
+    doc_plan = preflight.build_plan(
+        docs, owner_label=None, owner_command=(), align_repository=align
+    )
+    require([step.label for step in doc_plan] == ["diff-check", "markdown-fences"], "docs plan changed")
+    try:
+        preflight.build_plan(
+            classify(("M", "scripts/run-provider-smoke")),
+            owner_label=None,
+            owner_command=(),
+            align_repository=align,
+        )
+    except preflight.PreflightError:
+        pass
+    else:
+        raise RuntimeError("executable plan accepted no owner")
+    hosted = preflight.build_plan(
+        classify(("M", "scripts/run-provider-smoke")),
+        owner_label="provider-owner",
+        owner_command=("python3", "scripts/run-provider-smoke"),
+        align_repository=align,
+    )
+    require(
+        [step.label for step in hosted]
+        == ["provider-owner", "pinned-align-build", "hosted-checks"],
+        "hosted plan order changed",
+    )
+    fresh = preflight.build_plan(
+        classify(("M", "image/fresh/Dockerfile")),
+        owner_label="workflow-owner",
+        owner_command=("python3", "scripts/test-development-preflight"),
+        align_repository=align,
+    )
+    require(
+        [step.label for step in fresh]
+        == [
+            "workflow-owner",
+            "pinned-align-build",
+            "hosted-checks",
+            "fresh-focused",
+            "fresh-installed",
+        ],
+        "fresh plan order changed",
+    )
+    installed = fresh[-1]
+    require(installed.unset_environment == ("DOCKER_HOST",), "installed plan retained DOCKER_HOST")
+    require(
+        installed.arguments[-4:]
+        == ("--installed-profile-only", "--require-docker", "--align-repo", str(align)),
+        "installed plan does not require the installed-only Docker path and explicit Align source",
+    )
+
+
+def test_qualification_modes() -> None:
+    qualification = load_script(
+        "run-fresh-worker-qualification", "align_llm_fresh_qualification_test"
+    )
+    qualification.verify_contract_inventory = lambda: None
+    calls: list[tuple[str, tuple[str, ...]]] = []
+    qualification.run = lambda owner, *arguments: calls.append((owner, arguments))
+
+    def invoke(*arguments: str) -> list[tuple[str, tuple[str, ...]]]:
+        calls.clear()
+        prior = sys.argv
+        sys.argv = ["run-fresh-worker-qualification", *arguments]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                require(qualification.main() == 0, "qualification mode failed")
+        finally:
+            sys.argv = prior
+        return list(calls)
+
+    focused = invoke()
+    require(len(focused) == len(qualification.FOCUSED_CHECKS), "focused owner count changed")
+    require(
+        all(owner != "run-fresh-image-profile-smoke" for owner, _ in focused),
+        "focused mode ran the installed profile",
+    )
+    installed = invoke(
+        "--installed-profile-only", "--require-docker", "--align-repo", "/full/align"
+    )
+    require(
+        installed
+        == [
+            (
+                "run-fresh-image-profile-smoke",
+                (
+                    sys.executable,
+                    "scripts/run-fresh-image-profile-smoke",
+                    "--require-docker",
+                    "--align-repo",
+                    "/full/align",
+                ),
+            )
+        ],
+        "installed-only mode repeated focused owners",
+    )
+    complete = invoke("--installed-profile", "--require-docker")
+    require(
+        len(complete) == len(qualification.FOCUSED_CHECKS) + 1
+        and complete[-1][0] == "run-fresh-image-profile-smoke",
+        "complete mode does not run each owner once",
+    )
+
+    image_profile = load_script(
+        "run-fresh-image-profile-smoke", "align_llm_fresh_image_profile_test"
+    )
+    image_profile.run = lambda *arguments, **keywords: SimpleNamespace(returncode=1)
+
+    def unavailable(*arguments: str) -> int:
+        prior = sys.argv
+        sys.argv = ["run-fresh-image-profile-smoke", *arguments]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                return image_profile.main()
+        finally:
+            sys.argv = prior
+
+    require(unavailable() == 77, "optional Docker unavailability no longer reports skip")
+    require(unavailable("--require-docker") == 1, "required Docker unavailability did not fail")
+
+
+def test_image_profile_plan() -> None:
+    image_profile = load_script(
+        "run-fresh-image-profile-smoke", "align_llm_fresh_image_profile_plan_test"
+    )
+    revision = (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def capture(arguments: list[str], **keywords: object) -> SimpleNamespace:
+        calls.append((arguments, keywords))
+        if "config" in arguments:
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+        if arguments[-2:] == ["rev-parse", "HEAD"]:
+            stdout = (revision + "\n").encode("ascii")
+        elif arguments[-2:] == ["rev-parse", "--is-shallow-repository"]:
+            stdout = b"false\n"
+        else:
+            stdout = b""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=b"")
+
+    image_profile.run = capture
+    image_profile.checkout_pinned_align(Path("/isolated/align"), Path("/full/align"))
+    require(
+        any(
+            arguments
+            == ["git", "clone", "--no-hardlinks", "/full/align", "/isolated/align"]
+            for arguments, _ in calls
+        ),
+        "installed profile does not isolate the provided full Align source",
+    )
+    require(
+        any(arguments[-3:] == ["checkout", "--detach", revision] for arguments, _ in calls),
+        "Align checkout does not consume the pinned revision",
+    )
+    require(
+        any("fsck" in arguments and "--connectivity-only" in arguments for arguments, _ in calls),
+        "provided Align source connectivity is not checked",
+    )
+
+    calls.clear()
+    image_profile.boundary_profile_run(
+        "image",
+        "profile-volume",
+        "runtime-volume",
+        "source-volume",
+        "cgroupfs",
+        extra_environment=("BOUNDARY_EXTRA=1",),
+    )
+    boundary = calls[-1][0]
+    require("--env" not in boundary, "cgroupfs boundary retained Docker-provided environment")
+    require(
+        boundary[boundary.index("--entrypoint") + 1] == "/usr/bin/env"
+        and boundary[-6:]
+        == [
+            "-i",
+            "ALIGN_REPO=/work/align",
+            "BOUNDARY_EXTRA=1",
+            "/usr/local/libexec/align-llm/fresh-supervise",
+            "--mode",
+            "ordinary-adoption-boundary",
+        ],
+        "cgroupfs boundary does not reconstruct the exact environment",
+    )
+
+    dockerfile = (REPOSITORY / "image/fresh/Dockerfile").read_text(encoding="utf-8")
+    require(
+        "--depth=1 --filter=blob:none origin \"$ALIGN_REVISION\"" in dockerfile,
+        "image cache fetch is not exact and shallow",
+    )
+    require(
+        "git clone --filter=blob:none https://github.com/sanohiro/align.git /tmp/align-cache-source"
+        not in dockerfile,
+        "image cache retained the full-history Align clone",
+    )
+
+
+def test_workflow_topology() -> None:
+    workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    require(workflow.count("python3 scripts/classify-verification") == 6, "CI classifier callsites changed")
+    require(
+        workflow.index("Development workflow self-test")
+        > workflow.index("Classify verification scope"),
+        "CI self-tests selection machinery before scope is known",
+    )
+    self_test = workflow[workflow.index("- name: Development workflow self-test") :]
+    self_test = self_test[: self_test.index("\n      - name:", 1)]
+    require(
+        "if: steps.scope.outputs.hosted == 'true'" in self_test,
+        "docs-only CI runs the executable workflow self-test",
+    )
+    require(
+        workflow.count("case \"$path\"") == 1,
+        "CI retained a duplicate executable-path classifier",
+    )
+    require(
+        "--installed-profile-only --require-docker" in workflow,
+        "CI does not use the required installed-only mode",
+    )
+    require(
+        "actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830" in workflow
+        and "align-full-source-${{ runner.os }}-${{ hashFiles('.align-revision') }}" in workflow,
+        "CI does not cache full Align source by pinned revision",
+    )
+    require(
+        '--align-repo "$GITHUB_WORKSPACE/align-source"' in workflow,
+        "CI does not pass the cached Align source to the installed owner",
+    )
+    require(
+        "fsck --connectivity-only --no-dangling" in workflow
+        and "Pinned Align cache must not be a partial clone" in workflow,
+        "CI does not revalidate cached full-source connectivity",
+    )
+    require(
+        "python3 scripts/run-fresh-worker-qualification --installed-profile\n" not in workflow,
+        "CI retained the duplicate full qualification",
+    )
+
+
+def test_cli() -> None:
+    result = subprocess.run(
+        (sys.executable, "scripts/classify-verification", "--all", "--head", "HEAD"),
+        cwd=REPOSITORY,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    require(result.returncode == 0 and not result.stderr, "classifier CLI failed")
+    record = json.loads(result.stdout)
+    require(record["scope"] == "fresh-image" and record["base"] == "", "all-scope CLI changed")
+    require(not (SCRIPTS / "__pycache__").exists(), "public CLI created repository bytecode")
+
+
+def main() -> int:
+    test_classifier()
+    test_plan()
+    test_qualification_modes()
+    test_image_profile_plan()
+    test_workflow_topology()
+    test_cli()
+    print("development preflight: classifier, plans, qualification modes, and CI topology PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

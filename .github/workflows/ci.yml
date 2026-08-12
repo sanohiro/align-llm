@@ -39,9 +39,9 @@ jobs:
           PUSH_HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          full=false
           base_sha="$BASE_SHA"
           head_sha="$HEAD_SHA"
+          select_all=false
           case "$EVENT_NAME" in
             pull_request)
               ;;
@@ -50,40 +50,35 @@ jobs:
               head_sha="$PUSH_HEAD_SHA"
               ;;
             *)
-              full=true
+              head_sha="$GITHUB_SHA"
+              select_all=true
               ;;
           esac
-          if [[ "$full" == "false" ]]; then
-            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
-              full=true
-            else
-              while IFS= read -r path; do
-                case "$path" in
-                  .align-revision|.gitattributes|Makefile|build.rs|Cargo.*|.github/workflows/*|src/*|scripts/*|tests/*|examples/*|bench/*|*.align|*.py|*.sh)
-                    full=true
-                    break
-                    ;;
-                  eval/*)
-                    if [[ "$path" != *.md ]]; then
-                      full=true
-                      break
-                    fi
-                    ;;
-                esac
-              done < <(git diff --no-renames --name-only "$base_sha" "$head_sha")
+          if [[ -z "$head_sha" || "$head_sha" =~ ^0+$ ]]; then
+            echo "Cannot resolve the event head" >&2
+            exit 1
+          fi
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+            select_all=true
+          fi
+          if [[ "$select_all" == "true" ]]; then
+            python3 scripts/classify-verification \
+              --all --head "$head_sha" --github-output "$GITHUB_OUTPUT"
+          else
+            if ! python3 scripts/classify-verification \
+              --base "$base_sha" --head "$head_sha" --github-output "$GITHUB_OUTPUT"; then
+              echo "Event base is unusable; selecting all verification gates" >&2
+              python3 scripts/classify-verification \
+                --all --head "$head_sha" --github-output "$GITHUB_OUTPUT"
             fi
           fi
-          echo "full=$full" >> "$GITHUB_OUTPUT"
-          echo "base=$base_sha" >> "$GITHUB_OUTPUT"
-          echo "head=$head_sha" >> "$GITHUB_OUTPUT"
-          if [[ "$full" == "true" ]]; then
-            echo "Verification scope: full supported checks"
-          else
-            echo "Verification scope: documentation and static checks only"
-          fi
+
+      - name: Development workflow self-test
+        if: steps.scope.outputs.hosted == 'true'
+        run: python3 scripts/test-development-preflight
 
       - name: Run documentation and static checks
-        if: steps.scope.outputs.full != 'true'
+        if: steps.scope.outputs.docs_only == 'true'
         shell: bash
         env:
           BASE_SHA: ${{ steps.scope.outputs.base }}
@@ -107,14 +102,14 @@ jobs:
           done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
 
       - name: Install Rust
-        if: steps.scope.outputs.full == 'true'
+        if: steps.scope.outputs.hosted == 'true'
         shell: bash
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
 
       - name: Install LLVM and native libraries
-        if: steps.scope.outputs.full == 'true'
+        if: steps.scope.outputs.hosted == 'true'
         shell: bash
         run: |
           wget -q https://apt.llvm.org/llvm.sh
@@ -127,7 +122,7 @@ jobs:
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
       - name: Check out pinned Align revision
-        if: steps.scope.outputs.full == 'true'
+        if: steps.scope.outputs.hosted == 'true'
         shell: bash
         run: |
           revision="$(tr -d '[:space:]' < .align-revision)"
@@ -138,7 +133,7 @@ jobs:
           git -C align checkout --detach FETCH_HEAD
 
       - name: Run supported project checks
-        if: steps.scope.outputs.full == 'true'
+        if: steps.scope.outputs.hosted == 'true'
         env:
           ALIGN_REPO: ${{ github.workspace }}/align
         run: |
@@ -160,7 +155,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Classify FRESH-IMAGE ownership
+      - name: Classify verification scope
         id: scope
         shell: bash
         env:
@@ -171,9 +166,9 @@ jobs:
           PUSH_HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          owned=false
           base_sha="$BASE_SHA"
           head_sha="$HEAD_SHA"
+          select_all=false
           case "$EVENT_NAME" in
             pull_request)
               ;;
@@ -182,34 +177,68 @@ jobs:
               head_sha="$PUSH_HEAD_SHA"
               ;;
             *)
-              owned=true
+              head_sha="$GITHUB_SHA"
+              select_all=true
               ;;
           esac
-          if [[ "$owned" == "false" ]]; then
-            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
-              owned=true
-            else
-              while IFS= read -r path; do
-                case "$path" in
-                  .align-revision|Makefile|src/*|eval/*|image/fresh/*|scripts/alignc|scripts/build-fresh-image-control|scripts/fresh-align-compiler|scripts/fresh-alignc|scripts/fresh-image-attest|scripts/fresh_attestation.py|scripts/fresh_manifest.py|scripts/generate-fresh-toolchain-manifest|scripts/materialize-fresh-tree|scripts/run-baseline-*|scripts/run-coding-task-*|scripts/run-fresh-attestation-wire-smoke|scripts/run-fresh-image-control-smoke|scripts/run-fresh-image-profile-smoke|scripts/run-fresh-worker-*|scripts/run-loop-smoke|.github/workflows/ci.yml)
-                    owned=true
-                    break
-                    ;;
-                esac
-              done < <(git diff --no-renames --name-only "$base_sha" "$head_sha")
+          if [[ -z "$head_sha" || "$head_sha" =~ ^0+$ ]]; then
+            echo "Cannot resolve the event head" >&2
+            exit 1
+          fi
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+            select_all=true
+          fi
+          if [[ "$select_all" == "true" ]]; then
+            python3 scripts/classify-verification \
+              --all --head "$head_sha" --github-output "$GITHUB_OUTPUT"
+          else
+            if ! python3 scripts/classify-verification \
+              --base "$base_sha" --head "$head_sha" --github-output "$GITHUB_OUTPUT"; then
+              echo "Event base is unusable; selecting all verification gates" >&2
+              python3 scripts/classify-verification \
+                --all --head "$head_sha" --github-output "$GITHUB_OUTPUT"
             fi
           fi
-          echo "owned=$owned" >> "$GITHUB_OUTPUT"
 
       - name: Run deterministic control-plane checks
-        if: steps.scope.outputs.owned == 'true'
+        if: steps.scope.outputs.fresh_focused == 'true'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 scripts/run-fresh-worker-qualification
 
+      - name: Restore pinned Align source
+        if: steps.scope.outputs.fresh_installed == 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: align-source
+          key: align-full-source-${{ runner.os }}-${{ hashFiles('.align-revision') }}
+
+      - name: Materialize pinned Align source
+        if: steps.scope.outputs.fresh_installed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(tr -d '[:space:]' < .align-revision)"
+          if [[ ! -d align-source/.git ]]; then
+            mkdir align-source
+            git -C align-source init
+            git -C align-source remote add origin https://github.com/sanohiro/align.git
+            git -C align-source fetch origin "$revision"
+            git -C align-source checkout --detach FETCH_HEAD
+          fi
+          test "$(git -C align-source rev-parse HEAD)" = "$revision"
+          test ! -e align-source/.git/shallow
+          if git -C align-source config --get-regexp \
+            '^(extensions\.partialclone|remote\..*\.promisor)$'; then
+            echo "Pinned Align cache must not be a partial clone" >&2
+            exit 1
+          fi
+          git -C align-source fsck --connectivity-only --no-dangling
+          test -z "$(git -C align-source status --porcelain --untracked-files=all)"
+
       - name: Enable qualified nested user namespaces
-        if: steps.scope.outputs.owned == 'true'
+        if: steps.scope.outputs.fresh_installed == 'true'
         id: userns
         shell: bash
         run: |
@@ -233,13 +262,16 @@ jobs:
           unshare --user --map-root-user true
 
       - name: Complete installed image profile qualification
-        if: steps.scope.outputs.owned == 'true'
+        if: steps.scope.outputs.fresh_installed == 'true'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 scripts/run-fresh-worker-qualification --installed-profile
+        run: >-
+          env -u DOCKER_HOST python3 scripts/run-fresh-worker-qualification
+          --installed-profile-only --require-docker
+          --align-repo "$GITHUB_WORKSPACE/align-source"
 
       - name: Restore user namespace restriction
-        if: always() && steps.scope.outputs.owned == 'true' && steps.userns.outputs.changed == 'true'
+        if: always() && steps.scope.outputs.fresh_installed == 'true' && steps.userns.outputs.changed == 'true'
         shell: bash
         env:
           PREVIOUS_USERNS_RESTRICTION: ${{ steps.userns.outputs.previous }}
@@ -253,5 +285,5 @@ jobs:
             "kernel.apparmor_restrict_unprivileged_userns=$PREVIOUS_USERNS_RESTRICTION"
 
       - name: Report unaffected image profile
-        if: steps.scope.outputs.owned != 'true'
+        if: steps.scope.outputs.fresh_installed != 'true'
         run: echo "FRESH-IMAGE owners are unchanged; focused profile qualification is N/A."

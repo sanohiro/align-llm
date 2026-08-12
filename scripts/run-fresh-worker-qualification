@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -100,8 +103,21 @@ EXPECTED_CASES = {
 }
 
 
-def run(*arguments: str) -> None:
-    subprocess.run(
+def emit_phase(owner: str, status: str, duration_ms: int | None = None) -> None:
+    record: dict[str, object] = {
+        "event": "fresh-qualification-phase",
+        "owner": owner,
+        "status": status,
+    }
+    if duration_ms is not None:
+        record["duration_ms"] = duration_ms
+    print(json.dumps(record, sort_keys=True, separators=(",", ":")), file=sys.stderr)
+
+
+def run(owner: str, *arguments: str) -> None:
+    started = time.monotonic_ns()
+    emit_phase(owner, "start")
+    result = subprocess.run(
         arguments,
         cwd=REPOSITORY,
         env={
@@ -110,8 +126,12 @@ def run(*arguments: str) -> None:
             "HOME": "/nonexistent",
             "PYTHONDONTWRITEBYTECODE": "1",
         },
-        check=True,
+        check=False,
     )
+    duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
+    emit_phase(owner, "pass" if result.returncode == 0 else "fail", duration_ms)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, arguments)
 
 
 def verify_contract_inventory() -> None:
@@ -232,27 +252,50 @@ def verify_contract_inventory() -> None:
 
 
 def main() -> int:
-    installed_profile = "--installed-profile" in sys.argv[1:]
-    unexpected = [argument for argument in sys.argv[1:] if argument != "--installed-profile"]
-    if unexpected:
-        raise SystemExit(f"unsupported qualification option: {unexpected[0]}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--installed-profile", action="store_true")
+    parser.add_argument("--installed-profile-only", action="store_true")
+    parser.add_argument("--require-docker", action="store_true")
+    parser.add_argument("--align-repo", type=Path)
+    values = parser.parse_args()
+    installed_profile = values.installed_profile
+    installed_profile_only = values.installed_profile_only
+    require_docker = values.require_docker
+    if installed_profile and installed_profile_only:
+        raise SystemExit("--installed-profile and --installed-profile-only are mutually exclusive")
+    if require_docker and not (installed_profile or installed_profile_only):
+        raise SystemExit("--require-docker requires an installed-profile mode")
     verify_contract_inventory()
-    for command, _ in FOCUSED_CHECKS:
-        if command == "check-gate-topology --self-test":
-            run(sys.executable, "scripts/check-gate-topology", "--self-test")
-        else:
-            run(sys.executable, f"scripts/{command}")
-    if installed_profile:
-        run(sys.executable, "scripts/run-fresh-image-profile-smoke")
+    if not installed_profile_only:
+        for command, _ in FOCUSED_CHECKS:
+            if command == "check-gate-topology --self-test":
+                run(command, sys.executable, "scripts/check-gate-topology", "--self-test")
+            else:
+                run(command, sys.executable, f"scripts/{command}")
+    if installed_profile or installed_profile_only:
+        arguments = [sys.executable, "scripts/run-fresh-image-profile-smoke"]
+        if require_docker:
+            arguments.append("--require-docker")
+        if values.align_repo is not None:
+            arguments.extend(("--align-repo", str(values.align_repo)))
+        run("run-fresh-image-profile-smoke", *arguments)
+    if installed_profile_only:
+        mode = "installed profile only"
+    elif installed_profile:
+        mode = "focused and installed profile"
+    else:
+        mode = "focused; installed profile deferred"
     print(
         "fresh worker qualification: PASS "
-        + ("(focused and installed profile)" if installed_profile else "(focused; installed profile deferred)")
+        + f"({mode})"
     )
     owners = {case: command for command, cases in FOCUSED_CHECKS for case in cases}
     for name in sorted(EXPECTED_CASES):
-        if name in owners:
+        if installed_profile_only and name in owners:
+            print(f"  {name}: owner={owners[name]} execution=skipped-by-installed-only")
+        elif name in owners:
             print(f"  {name}: owner={owners[name]} execution=focused")
-        elif installed_profile:
+        elif installed_profile or installed_profile_only:
             print(f"  {name}: owner=run-fresh-image-profile-smoke execution=installed-profile")
         else:
             print(
