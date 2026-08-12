@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -817,6 +818,76 @@ def aggregate_quota_case(module, temporary: Path) -> None:
     finally:
         for descriptor in (root_fd, roots_fd, lock_fd):
             os.close(descriptor)
+
+
+def live_quota_mutation_case(module, temporary: Path) -> None:
+    root = temporary / "live-quota"
+    root.mkdir(mode=0o700)
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    original_stat = module.os.stat
+    original_open = module.os.open
+    try:
+        vanished = root / "vanished"
+        vanished.write_bytes(b"bytes")
+
+        def disappearing_stat(path, *arguments, **keywords):
+            if path == b"vanished" and keywords.get("dir_fd") == descriptor:
+                vanished.unlink()
+            return original_stat(path, *arguments, **keywords)
+
+        module.os.stat = disappearing_stat
+        try:
+            module.scan_private_fd(descriptor)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("strict quota scan accepted a disappearing file")
+
+        vanished.write_bytes(b"bytes")
+        count, total = module.scan_private_fd(descriptor, live=True)
+        require((count, total) == (1, 0), "live quota scan miscounted a disappearing file")
+        module.os.stat = original_stat
+
+        changed = root / "changed"
+        changed.mkdir(mode=0o700)
+
+        def changing_open(path, flags, *arguments, **keywords):
+            if path == b"changed" and keywords.get("dir_fd") == descriptor:
+                changed.rmdir()
+                changed.symlink_to("missing")
+            return original_open(path, flags, *arguments, **keywords)
+
+        module.os.open = changing_open
+        try:
+            module.scan_private_fd(descriptor)
+        except OSError as error:
+            require(
+                error.errno in (errno.ENOTDIR, errno.ELOOP),
+                "strict quota scan returned the wrong race error",
+            )
+        else:
+            raise AssertionError("strict quota scan accepted a directory type change")
+
+        changed.unlink()
+        changed.mkdir(mode=0o700)
+        count, total = module.scan_private_fd(descriptor, live=True)
+        require((count, total) == (1, 0), "live quota scan miscounted a directory type change")
+        module.os.open = original_open
+
+        changed.unlink()
+        changed.mkdir(mode=0o700)
+        (changed / "one").write_bytes(b"")
+        (changed / "two").write_bytes(b"")
+        try:
+            module.scan_private_fd(descriptor, entry_limit=2, live=True)
+        except module.CleanupError:
+            pass
+        else:
+            raise AssertionError("live quota scan accepted cap-plus-one entries")
+    finally:
+        module.os.stat = original_stat
+        module.os.open = original_open
+        os.close(descriptor)
 
 
 def private_mount_case(module, temporary: Path) -> None:
@@ -1659,6 +1730,7 @@ def main() -> int:
         cleanup_success_case(module, temporary)
         overlay_work_cleanup_case(module, temporary)
         aggregate_quota_case(module, temporary)
+        live_quota_mutation_case(module, temporary)
         cleanup_replacement_case(module, temporary)
         cleanup_quarantine_race_case(module, temporary)
         compiler_materialization_case(module, temporary)
