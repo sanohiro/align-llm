@@ -7,15 +7,16 @@ file records durable project state.
 
 - Branch `agent/update-checkout-action` is based on `origin/main` merge commit
   `2b0bd32ce0006a5e2cf0117d28afbe3c19c58903`.
-- Active goal: replace the checkout action's deprecated Node 20 runtime with the latest stable,
-  commit-pinned Node 24 release and use the resulting fresh-image PR as the first independent
+- Active goal: replace checkout and cache actions' deprecated Node 20 runtimes with latest stable,
+  commit-pinned Node 24 releases and use the resulting fresh-image PR as the first independent
   consumer of the trusted default-branch BuildKit cache.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
   trusted cache while reusing functional checks and skipping image load and qualification.
-- In progress: both checkout call sites use the official v7.0.1 commit. Owner/static checks,
-  publication, and the hosted warm-cache measurement remain.
+- In progress: both checkout call sites use the official v7.0.1 commit and the Align source cache
+  uses the official v6.1.0 commit. Owner/static checks after review repair, publication, and the
+  hosted warm-cache measurement remain.
 
 ## Measurement
 
@@ -23,11 +24,12 @@ file records durable project state.
   216,344 ms in `image-build` (`n=1`, GitHub `ubuntu-24.04`).
 - A local Buildx `mode=max` probe took 2,076.861 seconds cold under a slow network and 39.568 seconds
   warm with different verifier keys. All 17 pre-key layers were cached; only the final key layer ran.
-- PR #73 cold run `31576652775` passed: 16m43s overall, 11m56s to build/export/load, and 4m06s
-  for complete installed qualification. It published 19 cache records totaling 3,738,896,174 bytes.
-- Main seed run `31578101828` passed in 9m17s. Its cache-only build/export took 9m00s; the reused
-  supported-check job took 7s, and image load plus qualification were skipped. The default-branch
-  cache totals 3,757,595,376 bytes including the pre-existing unrelated cache record.
+- PR #73 cold run `31576652775` passed in 17m00s end to end; the fresh job took 16m43s, including
+  11m56s to build/export/load and 4m06s for complete installed qualification. It published 19
+  BuildKit cache records totaling 3,738,896,174 bytes.
+- Main seed run `31578101828` passed in 9m21s end to end; the fresh job took 9m17s, including a
+  9m00s cache-only build/export. The reused supported-check job took 7s, and image load plus
+  qualification were skipped. Its 19 default-branch BuildKit records total 3,738,896,114 bytes.
 - Hosted target: after one exact merge publishes the `main` cache, a subsequent PR completes image
   build in at most 75 seconds and reduces overall run time at least 25% while the full installed
   qualification still passes. A cache-miss source build must also pass.
