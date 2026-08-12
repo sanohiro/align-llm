@@ -50,7 +50,9 @@ RUN for tree in git rust bwrap; do \
       rm -rf "/runtime/$tree"; \
       mv "/runtime/$tree.materialized" "/runtime/$tree"; \
     done && \
-    test -z "$(find /runtime/git /runtime/rust /runtime/bwrap -type l -print -quit)"
+    test -z "$(find /runtime/git /runtime/rust /runtime/bwrap -type l -print -quit)" && \
+    test "$(stat -c '%d:%i' /runtime/git/bin/git)" = \
+      "$(stat -c '%d:%i' /runtime/git/bin/git-receive-pack)"
 
 RUN python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
       /usr/lib/llvm-22 /runtime/cc-suite && \
