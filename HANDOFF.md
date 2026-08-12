@@ -5,23 +5,17 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-12)
 
-- Branch `agent/cache-fresh-image-build` is based on `origin/main` merge commit
-  `7a7cdc048cf30e4cd8c5ab85f80fbc14e6c18b1e`.
-- Active goal: stop rebuilding and downloading content-identical apt, LLVM, Git, bubblewrap, Rust,
-  and Align Cargo layers on every hosted fresh-image job without weakening per-run signing or the
-  installed-profile qualification.
-- Complete: PR #71 merged the proportional development rules. PR #72 merged exact merged-PR check
-  reuse; its merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
-  (97.8% lower) while both jobs bound the same PR, workflow run, and head.
-- In progress: the follow-on capability defines a branch-scoped BuildKit cache, prepares fresh
-  signing seeds per run, builds the hosted image once, passes the loaded image into the unchanged
-  installed owner, and publishes trusted cache state on an exact merge without loading or repeating
-  functional verification. The independent review of `78a9c4126d7bb7854309164ae44ac45597c26f44`
-  found two valid serialization-boundary issues: partial GitHub output on a non-ASCII path and a
-  non-integer marker version accepted through Python equality. One consolidated repair validates
-  and renders before side effects, writes one record, and enforces the exact schema type. Affected
-  verification and full preflight pass on repair commit
-  `135b7c67abb184c5b884b8736abbec96de456cfc`; publication and hosted cold/warm measurements remain.
+- Branch `agent/update-checkout-action` is based on `origin/main` merge commit
+  `2b0bd32ce0006a5e2cf0117d28afbe3c19c58903`.
+- Active goal: replace the checkout action's deprecated Node 20 runtime with the latest stable,
+  commit-pinned Node 24 release and use the resulting fresh-image PR as the first independent
+  consumer of the trusted default-branch BuildKit cache.
+- Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
+  reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
+  (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
+  trusted cache while reusing functional checks and skipping image load and qualification.
+- In progress: both checkout call sites use the official v7.0.1 commit. Owner/static checks,
+  publication, and the hosted warm-cache measurement remain.
 
 ## Measurement
 
@@ -29,6 +23,11 @@ file records durable project state.
   216,344 ms in `image-build` (`n=1`, GitHub `ubuntu-24.04`).
 - A local Buildx `mode=max` probe took 2,076.861 seconds cold under a slow network and 39.568 seconds
   warm with different verifier keys. All 17 pre-key layers were cached; only the final key layer ran.
+- PR #73 cold run `31576652775` passed: 16m43s overall, 11m56s to build/export/load, and 4m06s
+  for complete installed qualification. It published 19 cache records totaling 3,738,896,174 bytes.
+- Main seed run `31578101828` passed in 9m17s. Its cache-only build/export took 9m00s; the reused
+  supported-check job took 7s, and image load plus qualification were skipped. The default-branch
+  cache totals 3,757,595,376 bytes including the pre-existing unrelated cache record.
 - Hosted target: after one exact merge publishes the `main` cache, a subsequent PR completes image
   build in at most 75 seconds and reduces overall run time at least 25% while the full installed
   qualification still passes. A cache-miss source build must also pass.
@@ -42,14 +41,14 @@ file records durable project state.
 
 ## Next steps
 
-1. Publish the PR with the SHA-bound review, both finding dispositions, and measurement evidence;
-   verify the cold PR build and cache-publishing merge, then verify a subsequent warm PR against
-   the `main` cache.
-2. Keep PR #69 paused until the final Align revision is named.
+1. Run the proportional workflow owner/static checks, publish the checkout update, and verify that
+   its hosted image build imports the `main` cache in at most 75 seconds with no Node 20 annotation.
+2. Record the warm result in pull-request metadata and the next substantive capability checkpoint.
+3. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`: PASS. It covers signing
+- On PR #73, `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`: PASS. It covers signing
   material ownership, modes, disclosure, cleanup, partial failure, CLI behavior, prepared-image
   forwarding, cache topology, exact-merge publication, and the existing selector matrix.
 - Real prepared-image owner invocation with the pinned `/tmp/align` checkout: PASS in 192.336
