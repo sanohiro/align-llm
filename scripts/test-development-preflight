@@ -10,6 +10,7 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -70,6 +71,7 @@ def test_classifier() -> None:
         "scripts/verification_scope.py",
         "scripts/classify-verification",
         "scripts/pre-pr",
+        "scripts/select-ci-reuse",
         "scripts/test-development-preflight",
     ):
         selected = classify(("M", path))
@@ -142,6 +144,198 @@ def test_plan() -> None:
         == ("--installed-profile-only", "--require-docker", "--align-repo", str(align)),
         "installed plan does not require the installed-only Docker path and explicit Align source",
     )
+
+
+def git(repository: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ("git", *arguments),
+        cwd=repository,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    require(result.returncode == 0, f"git fixture failed: {arguments!r}: {result.stderr}")
+    return result.stdout.strip()
+
+
+def test_ci_reuse() -> None:
+    reuse = load_script("select-ci-reuse", "align_llm_ci_reuse_test")
+    repository_name = "sanohiro/align-llm"
+    with tempfile.TemporaryDirectory(prefix="align-llm-ci-reuse-") as temporary:
+        repository = Path(temporary)
+        git(repository, "init", "-b", "main")
+        git(repository, "config", "user.name", "CI reuse fixture")
+        git(repository, "config", "user.email", "ci-reuse@example.invalid")
+        (repository / "value").write_text("base\n", encoding="utf-8")
+        git(repository, "add", "value")
+        git(repository, "commit", "-m", "base")
+        before = git(repository, "rev-parse", "HEAD")
+        git(repository, "checkout", "-b", "feature")
+        (repository / "value").write_text("head\n", encoding="utf-8")
+        git(repository, "commit", "-am", "head")
+        source_head = git(repository, "rev-parse", "HEAD")
+        git(repository, "checkout", "main")
+        git(repository, "merge", "--no-ff", "feature", "-m", "merge")
+        merge_head = git(repository, "rev-parse", "HEAD")
+        event = {
+            "ref": "refs/heads/main",
+            "before": before,
+            "after": merge_head,
+            "created": False,
+            "deleted": False,
+            "forced": False,
+        }
+
+        def api(path: str, *, job_conclusion: str = "success", run_conclusion: str = "success") -> object:
+            if path.startswith(f"/repos/{repository_name}/commits/{source_head}/pulls?"):
+                return [
+                    {
+                        "number": 71,
+                        "state": "closed",
+                        "merged_at": "2026-08-12T00:00:00Z",
+                        "merge_commit_sha": merge_head,
+                        "head": {"sha": source_head},
+                        "base": {
+                            "sha": before,
+                            "ref": "main",
+                            "repo": {"full_name": repository_name},
+                        },
+                    }
+                ]
+            if "/actions/workflows/ci.yml/runs?" in path:
+                return {
+                    "total_count": 1,
+                    "workflow_runs": [
+                        {
+                            "id": 9001,
+                            "run_number": 40,
+                            "run_attempt": 1,
+                            "event": "pull_request",
+                            "head_sha": source_head,
+                            "path": ".github/workflows/ci.yml",
+                            "repository": {"full_name": repository_name},
+                            "status": "completed",
+                            "conclusion": run_conclusion,
+                        }
+                    ],
+                }
+            if path == f"/repos/{repository_name}/actions/runs/9001/jobs?per_page=100":
+                return {
+                    "total_count": 2,
+                    "jobs": [
+                        {
+                            "name": name,
+                            "head_sha": source_head,
+                            "run_id": 9001,
+                            "status": "completed",
+                            "conclusion": job_conclusion,
+                        }
+                        for name in reuse.REQUIRED_JOBS
+                    ],
+                }
+            raise RuntimeError(f"unexpected API path: {path}")
+
+        selected = reuse.decide(
+            event_name="push",
+            event=event,
+            repository=repository_name,
+            api_get=api,
+            git_repository=repository,
+        )
+        require(
+            selected.reused
+            and selected.reason == "exact-merged-pr-checks"
+            and selected.source_head == source_head
+            and selected.pull_request == 71
+            and selected.workflow_run == 9001,
+            "exact merged PR evidence was not reused",
+        )
+
+        for name, changed_event in (
+            ("wrong-before", {**event, "before": "0" * 40}),
+            ("forced", {**event, "forced": True}),
+        ):
+            rejected = reuse.decide(
+                event_name="push",
+                event=changed_event,
+                repository=repository_name,
+                api_get=api,
+                git_repository=repository,
+            )
+            require(not rejected.reused, f"{name} push reused PR evidence")
+
+        failed_run = reuse.decide(
+            event_name="push",
+            event=event,
+            repository=repository_name,
+            api_get=lambda path: api(path, run_conclusion="failure"),
+            git_repository=repository,
+        )
+        require(
+            not failed_run.reused
+            and failed_run.reason == "latest-pull-request-workflow-not-successful",
+            "failed latest workflow run was reused",
+        )
+        failed_job = reuse.decide(
+            event_name="push",
+            event=event,
+            repository=repository_name,
+            api_get=lambda path: api(path, job_conclusion="failure"),
+            git_repository=repository,
+        )
+        require(
+            not failed_job.reused and failed_job.reason == "required-job-not-successful",
+            "failed required job was reused",
+        )
+        unavailable = reuse.decide(
+            event_name="push",
+            event=event,
+            repository=repository_name,
+            api_get=lambda path: (_ for _ in ()).throw(reuse.ReuseError("github-api-unavailable")),
+            git_repository=repository,
+        )
+        require(
+            not unavailable.reused and unavailable.reason == "github-api-unavailable",
+            "API failure did not fall back to normal checks",
+        )
+
+        (repository / "merge-only").write_text("changed merge tree\n", encoding="utf-8")
+        git(repository, "add", "merge-only")
+        git(repository, "commit", "--amend", "--no-edit")
+        changed_merge = git(repository, "rev-parse", "HEAD")
+        changed_tree = reuse.decide(
+            event_name="push",
+            event={**event, "after": changed_merge},
+            repository=repository_name,
+            api_get=api,
+            git_repository=repository,
+        )
+        require(
+            not changed_tree.reused and changed_tree.reason == "merge-tree-changed",
+            "merge-owned tree change reused PR evidence",
+        )
+
+        git(repository, "checkout", "feature")
+        direct_push = reuse.decide(
+            event_name="push",
+            event={**event, "after": source_head},
+            repository=repository_name,
+            api_get=api,
+            git_repository=repository,
+        )
+        require(
+            not direct_push.reused and direct_push.reason == "not-two-parent-merge",
+            "direct push reused PR evidence",
+        )
+
+    non_push = reuse.decide(
+        event_name="pull_request",
+        event={},
+        repository=repository_name,
+        api_get=lambda path: None,
+    )
+    require(not non_push.reused and non_push.reason == "event-not-push", "PR event queried reuse")
 
 
 def test_qualification_modes() -> None:
@@ -299,7 +493,8 @@ def test_workflow_topology() -> None:
     self_test = workflow[workflow.index("- name: Development workflow self-test") :]
     self_test = self_test[: self_test.index("\n      - name:", 1)]
     require(
-        "if: steps.scope.outputs.hosted == 'true'" in self_test,
+        "if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true'"
+        in self_test,
         "docs-only CI runs the executable workflow self-test",
     )
     require(
@@ -328,6 +523,21 @@ def test_workflow_topology() -> None:
         "python3 scripts/run-fresh-worker-qualification --installed-profile\n" not in workflow,
         "CI retained the duplicate full qualification",
     )
+    require(
+        workflow.count("python3 scripts/select-ci-reuse") == 2,
+        "CI does not evaluate merge-push reuse in both jobs",
+    )
+    require(
+        workflow.count("steps.reuse.outputs.reused != 'true'") >= 12,
+        "CI normal steps are not guarded by reuse",
+    )
+    require(
+        "actions: read" in workflow
+        and "pull-requests: read" in workflow
+        and "checks: write" not in workflow
+        and "contents: write" not in workflow,
+        "CI reuse permissions are not read-only and bounded",
+    )
 
 
 def test_cli() -> None:
@@ -342,12 +552,52 @@ def test_cli() -> None:
     require(result.returncode == 0 and not result.stderr, "classifier CLI failed")
     record = json.loads(result.stdout)
     require(record["scope"] == "fresh-image" and record["base"] == "", "all-scope CLI changed")
+
+    with tempfile.TemporaryDirectory(prefix="align-llm-ci-reuse-cli-") as temporary:
+        event = Path(temporary) / "event.json"
+        output = Path(temporary) / "output"
+        event.write_text("{}\n", encoding="utf-8")
+        result = subprocess.run(
+            (
+                sys.executable,
+                "scripts/select-ci-reuse",
+                "--event-name",
+                "pull_request",
+                "--event-path",
+                str(event),
+                "--repository",
+                "sanohiro/align-llm",
+                "--api-url",
+                "https://api.github.com",
+                "--github-output",
+                str(output),
+            ),
+            cwd=REPOSITORY,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(result.returncode == 0 and not result.stderr, "CI reuse CLI failed")
+        record = json.loads(result.stdout)
+        require(
+            record["version"] == 1
+            and record["reused"] is False
+            and record["reason"] == "event-not-push",
+            "CI reuse CLI queried a pull-request event",
+        )
+        require(
+            "version=1\n" in output.read_text(encoding="utf-8")
+            and "reused=false\n" in output.read_text(encoding="utf-8"),
+            "CI reuse CLI omitted GitHub output",
+        )
     require(not (SCRIPTS / "__pycache__").exists(), "public CLI created repository bytecode")
 
 
 def main() -> int:
     test_classifier()
     test_plan()
+    test_ci_reuse()
     test_qualification_modes()
     test_image_profile_plan()
     test_workflow_topology()

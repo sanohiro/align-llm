@@ -78,6 +78,13 @@ The classifier and path inventory are shared with GitHub Actions, so local and h
 drift independently. See `docs/specs/development-preflight.md` for the exact commands and failure
 behavior.
 
+After a pull request merges, the `main` push jobs reuse its successful CI evidence only when the
+merge commit has the exact tested head tree, the tested base as both first parent and parent merge
+base, one matching merged pull request, and one matching successful `ci.yml` run containing both
+required jobs. Direct pushes, squash/rebase or conflict-resolution merges, failed or stale runs,
+and unavailable GitHub evidence run the normal classifier-selected gates. This removes the second
+fresh-image execution after an exact merge without weakening direct-push coverage.
+
 Run `make ci` for the complete capable-host gate. It builds the exact pinned Align release compiler,
 then runs the bounded hosted functional graph, the sandboxed coding corpus, and canonical baseline
 verification in a deterministic order. It is complete for that declared graph, not for every

@@ -8,7 +8,9 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -28,8 +30,31 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Reuse exact merged pull request checks
+        id: reuse
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/select-ci-reuse
+          --event-name "$GITHUB_EVENT_NAME"
+          --event-path "$GITHUB_EVENT_PATH"
+          --repository "$GITHUB_REPOSITORY"
+          --api-url "$GITHUB_API_URL"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Report reused pull request checks
+        if: steps.reuse.outputs.reused == 'true'
+        env:
+          SOURCE_HEAD: ${{ steps.reuse.outputs.source_head }}
+          PULL_REQUEST: ${{ steps.reuse.outputs.pull_request }}
+          WORKFLOW_RUN: ${{ steps.reuse.outputs.workflow_run }}
+        run: >-
+          echo "Reused pull request #$PULL_REQUEST workflow run $WORKFLOW_RUN
+          for exact head $SOURCE_HEAD."
+
       - name: Classify verification scope
         id: scope
+        if: steps.reuse.outputs.reused != 'true'
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -74,11 +99,11 @@ jobs:
           fi
 
       - name: Development workflow self-test
-        if: steps.scope.outputs.hosted == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true'
         run: python3 scripts/test-development-preflight
 
       - name: Run documentation and static checks
-        if: steps.scope.outputs.docs_only == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.docs_only == 'true'
         shell: bash
         env:
           BASE_SHA: ${{ steps.scope.outputs.base }}
@@ -102,14 +127,14 @@ jobs:
           done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
 
       - name: Install Rust
-        if: steps.scope.outputs.hosted == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true'
         shell: bash
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
 
       - name: Install LLVM and native libraries
-        if: steps.scope.outputs.hosted == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true'
         shell: bash
         run: |
           wget -q https://apt.llvm.org/llvm.sh
@@ -122,7 +147,7 @@ jobs:
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
       - name: Check out pinned Align revision
-        if: steps.scope.outputs.hosted == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true'
         shell: bash
         run: |
           revision="$(tr -d '[:space:]' < .align-revision)"
@@ -133,7 +158,7 @@ jobs:
           git -C align checkout --detach FETCH_HEAD
 
       - name: Run supported project checks
-        if: steps.scope.outputs.hosted == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true'
         env:
           ALIGN_REPO: ${{ github.workspace }}/align
         run: |
@@ -155,8 +180,31 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Reuse exact merged pull request checks
+        id: reuse
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/select-ci-reuse
+          --event-name "$GITHUB_EVENT_NAME"
+          --event-path "$GITHUB_EVENT_PATH"
+          --repository "$GITHUB_REPOSITORY"
+          --api-url "$GITHUB_API_URL"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Report reused pull request checks
+        if: steps.reuse.outputs.reused == 'true'
+        env:
+          SOURCE_HEAD: ${{ steps.reuse.outputs.source_head }}
+          PULL_REQUEST: ${{ steps.reuse.outputs.pull_request }}
+          WORKFLOW_RUN: ${{ steps.reuse.outputs.workflow_run }}
+        run: >-
+          echo "Reused pull request #$PULL_REQUEST workflow run $WORKFLOW_RUN
+          for exact head $SOURCE_HEAD."
+
       - name: Classify verification scope
         id: scope
+        if: steps.reuse.outputs.reused != 'true'
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -201,21 +249,21 @@ jobs:
           fi
 
       - name: Run deterministic control-plane checks
-        if: steps.scope.outputs.fresh_focused == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_focused == 'true'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python3 scripts/run-fresh-worker-qualification
 
       - name: Restore pinned Align source
-        if: steps.scope.outputs.fresh_installed == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed == 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: align-source
           key: align-full-source-${{ runner.os }}-${{ hashFiles('.align-revision') }}
 
       - name: Materialize pinned Align source
-        if: steps.scope.outputs.fresh_installed == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -238,7 +286,7 @@ jobs:
           test -z "$(git -C align-source status --porcelain --untracked-files=all)"
 
       - name: Enable qualified nested user namespaces
-        if: steps.scope.outputs.fresh_installed == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed == 'true'
         id: userns
         shell: bash
         run: |
@@ -262,7 +310,7 @@ jobs:
           unshare --user --map-root-user true
 
       - name: Complete installed image profile qualification
-        if: steps.scope.outputs.fresh_installed == 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed == 'true'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: >-
@@ -271,7 +319,7 @@ jobs:
           --align-repo "$GITHUB_WORKSPACE/align-source"
 
       - name: Restore user namespace restriction
-        if: always() && steps.scope.outputs.fresh_installed == 'true' && steps.userns.outputs.changed == 'true'
+        if: always() && steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed == 'true' && steps.userns.outputs.changed == 'true'
         shell: bash
         env:
           PREVIOUS_USERNS_RESTRICTION: ${{ steps.userns.outputs.previous }}
@@ -285,5 +333,5 @@ jobs:
             "kernel.apparmor_restrict_unprivileged_userns=$PREVIOUS_USERNS_RESTRICTION"
 
       - name: Report unaffected image profile
-        if: steps.scope.outputs.fresh_installed != 'true'
+        if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed != 'true'
         run: echo "FRESH-IMAGE owners are unchanged; focused profile qualification is N/A."
