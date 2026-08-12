@@ -8,6 +8,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -978,6 +979,258 @@ def bounded_tool_cases(module, temporary: Path) -> None:
         os.close(python_fd)
 
 
+def exited_process_drain_cases(module) -> None:
+    class ExitedProcess:
+        pid = 424242
+        returncode = 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(*, timeout):
+            return 0
+
+    process = ExitedProcess()
+    class Lease:
+        leaf_fd = 77
+
+    lease = Lease()
+    original_populated = module.cgroup_populated
+    original_entry_matches = module.cgroup_entry_matches
+    original_write = module.cgroup_file_write
+    original_reap = module.reap_descendants
+    original_monotonic = module.time.monotonic
+    kills = []
+    try:
+        natural_states = iter((True, False, False, False, False))
+        module.cgroup_populated = lambda _lease: next(natural_states)
+        module.cgroup_entry_matches = lambda _lease: True
+        module.cgroup_file_write = lambda fd, name, raw: kills.append((fd, name, raw))
+        module.reap_descendants = lambda _deadline, _process=None: True
+        forced = module.terminate_owned_process(process, lease, None, None)
+        require(not forced and not kills, "naturally draining descendant was terminated")
+
+        lingering_states = iter((True, True, False, False))
+        clock = iter((0.0, 2.0, 4.0, 6.0))
+        module.cgroup_populated = lambda _lease: next(lingering_states)
+        module.time.monotonic = lambda: next(clock)
+        forced = module.terminate_owned_process(process, lease, None, None)
+        require(
+            forced and kills == [(77, "cgroup.kill", b"1\n")],
+            "changed-group lingering descendant escaped cgroup termination",
+        )
+    finally:
+        module.cgroup_populated = original_populated
+        module.cgroup_entry_matches = original_entry_matches
+        module.cgroup_file_write = original_write
+        module.reap_descendants = original_reap
+        module.time.monotonic = original_monotonic
+
+
+def run_owned_double_fork_forced_case(module, temporary: Path) -> None:
+    marker = temporary / "worker-double-fork-pid"
+    child = temporary / "worker-double-fork.py"
+    child.write_text(
+        "import os,signal,sys,time\n"
+        "marker=sys.argv[1]\n"
+        "pid=os.fork()\n"
+        "if pid:\n"
+        "    deadline=time.monotonic()+2\n"
+        "    while not os.path.exists(marker) and time.monotonic()<deadline:\n"
+        "        time.sleep(0.01)\n"
+        "    os._exit(0 if os.path.exists(marker) else 2)\n"
+        "os.setsid()\n"
+        "with open(marker, 'w', encoding='ascii') as output:\n"
+        "    output.write(str(os.getpid()))\n"
+        "for descriptor in (0, 1, 2):\n"
+        "    try:\n"
+        "        os.close(descriptor)\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "while True:\n"
+        "    signal.pause()\n",
+        encoding="ascii",
+    )
+    cgroup_parent = temporary / "worker-cgroup-parent"
+    cgroup_parent.mkdir(mode=0o700)
+    parent_fd = os.open(
+        cgroup_parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    )
+    parent_identity = module.snapshot_fd(parent_fd)
+    original_open = module.open_cgroup_lease
+    original_read = module.cgroup_file_read
+    original_write = module.cgroup_file_write
+    original_membership = module.cgroup_child_membership
+    original_setrlimit = module.resource.setrlimit
+    writes: list[tuple[int, str, bytes]] = []
+
+    def descendant_pid() -> int | None:
+        try:
+            return int(marker.read_text(encoding="ascii"))
+        except (FileNotFoundError, ValueError):
+            return None
+
+    def descendant_running() -> bool:
+        pid = descendant_pid()
+        if pid is None:
+            return False
+        try:
+            raw = Path(f"/proc/{pid}/stat").read_bytes()
+        except FileNotFoundError:
+            return False
+        close = raw.rfind(b")")
+        return close >= 0 and raw[close + 2 : close + 3] != b"Z"
+
+    def open_lease():
+        leaf_name = f"{module.ROOT_PREFIX}double-fork"
+        os.mkdir(leaf_name, 0o700, dir_fd=parent_fd)
+        leaf_fd = os.open(
+            leaf_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        return module.CgroupLease(
+            os.dup(parent_fd),
+            parent_identity,
+            leaf_fd,
+            module.snapshot_fd(leaf_fd),
+            leaf_name,
+        )
+
+    def read_control(_leaf_fd: int, name: str, _limit: int = 4096) -> bytes:
+        if name == "cgroup.events":
+            return b"populated 1\n" if descendant_running() else b"populated 0\n"
+        return b""
+
+    def write_control(fd: int, name: str, raw: bytes) -> None:
+        writes.append((fd, name, raw))
+        if name == "cgroup.kill":
+            pid = descendant_pid()
+            require(pid is not None, "worker descendant pid is unavailable")
+            os.kill(pid, signal.SIGKILL)
+
+    module.set_subreaper()
+    try:
+        module.open_cgroup_lease = open_lease
+        module.cgroup_file_read = read_control
+        module.cgroup_file_write = write_control
+        module.cgroup_child_membership = lambda _lease, _pid: None
+        module.resource.setrlimit = lambda *_arguments: None
+        try:
+            module.run_owned(
+                [sys.executable, "-I", "-B", str(child), str(marker)],
+                category="TOOL",
+                phase="tools",
+                timeout=5,
+                environment={},
+                return_result=True,
+            )
+        except module.CleanupError as error:
+            require(
+                str(error) == "owned child process tree remained",
+                "worker persistent descendant returned the wrong failure",
+            )
+        else:
+            raise AssertionError("worker persistent descendant was accepted")
+        require(
+            any(name == "cgroup.kill" and raw == b"1\n" for _, name, raw in writes),
+            "worker persistent descendant did not reach production cgroup kill",
+        )
+        require(not descendant_running(), "worker persistent descendant remained alive")
+        try:
+            module.os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            raise AssertionError("worker persistent descendant was not completely reaped")
+        require(not list(cgroup_parent.iterdir()), "worker cgroup leaf was not removed")
+    finally:
+        pid = descendant_pid()
+        if pid is not None:
+            if descendant_running():
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        module.open_cgroup_lease = original_open
+        module.cgroup_file_read = original_read
+        module.cgroup_file_write = original_write
+        module.cgroup_child_membership = original_membership
+        module.resource.setrlimit = original_setrlimit
+        for entry in cgroup_parent.iterdir():
+            entry.rmdir()
+        os.close(parent_fd)
+        cgroup_parent.rmdir()
+
+
+def runtime_tool_precedence_cases(module) -> None:
+    original_validate = module.validate_tree_manifest
+    original_authenticate = module.authenticate_tools
+    tool_calls = []
+    manifest = {
+        "runtime_bindings": [{"manifest": {}, "source": "/invalid-runtime"}],
+        "tools": [{"name": "invalid-tool"}],
+    }
+    try:
+        def invalid_runtime(_node, _source):
+            raise ValueError("invalid runtime")
+
+        module.validate_tree_manifest = invalid_runtime
+        module.authenticate_tools = lambda _manifest: tool_calls.append("tool")
+        try:
+            module.authenticate_runtime_and_tools(manifest)
+        except module.WorkerError as error:
+            require(
+                (error.category, error.phase) == ("TOOL", "tools"),
+                "runtime failure has the wrong public category",
+            )
+        else:
+            raise AssertionError("invalid runtime and tool inputs were accepted")
+        require(not tool_calls, "tool authentication ran before runtime rejection")
+    finally:
+        module.validate_tree_manifest = original_validate
+        module.authenticate_tools = original_authenticate
+
+
+def descendant_reap_cases(module) -> None:
+    class DirectProcess:
+        pid = 424242
+        returncode = None
+
+    original_waitpid = module.os.waitpid
+    original_monotonic = module.time.monotonic
+    try:
+        states = iter(((515151, 0), ChildProcessError()))
+
+        def waitpid(_pid: int, _options: int) -> tuple[int, int]:
+            state = next(states)
+            if isinstance(state, BaseException):
+                raise state
+            return state
+
+        module.os.waitpid = waitpid
+        require(
+            module.reap_descendants(module.time.monotonic() + 1, DirectProcess()),
+            "descendant ECHILD proof was not accepted",
+        )
+        module.os.waitpid = lambda _pid, _options: (0, 0)
+        module.time.monotonic = lambda: 2.0
+        require(
+            not module.reap_descendants(1.0, DirectProcess()),
+            "unreaped descendant deadline was accepted",
+        )
+    finally:
+        module.os.waitpid = original_waitpid
+        module.time.monotonic = original_monotonic
+
+
 def published_elf_cases(module) -> None:
     executable = Path("/bin/true")
     require(executable.is_file(), "ELF closure fixture is unavailable")
@@ -1386,10 +1639,14 @@ def main() -> int:
     module = load_worker()
     canonical_wire_cases(module)
     run_attestation_cases(module)
+    exited_process_drain_cases(module)
+    runtime_tool_precedence_cases(module)
+    descendant_reap_cases(module)
     published_elf_cases(module)
     derived_path_alias_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:
         temporary = Path(name)
+        run_owned_double_fork_forced_case(module, temporary)
         bounded_tool_cases(module, temporary)
         digest_golden(module, temporary)
         cache_cases(module, temporary)

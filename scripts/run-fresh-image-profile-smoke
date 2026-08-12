@@ -788,6 +788,57 @@ def main() -> int:
                     f"rm /run/user/{TEST_UID}/align-llm-fresh/roots/orphan",
                 ]
             )
+            residual_cgroup = f"profile-residual-{unique}"
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--privileged",
+                    "--cgroupns=host",
+                    "--entrypoint",
+                    "/bin/sh",
+                    image,
+                    "-eu",
+                    "-c",
+                    f"mkdir /sys/fs/cgroup/align-llm-fresh/{TEST_UID}/{residual_cgroup}",
+                ]
+            )
+            refused_cgroup_cleanup = run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--privileged",
+                    "--cgroupns=host",
+                    "--entrypoint",
+                    "/usr/local/libexec/align-llm/fresh-profile",
+                    "--mount",
+                    f"type=volume,src={runtime_volume},dst=/run/user",
+                    image,
+                    "cleanup",
+                    str(TEST_UID),
+                ],
+                check=False,
+            )
+            if refused_cgroup_cleanup.returncode == 0:
+                raise RuntimeError("residual child cgroup cleanup was accepted")
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--privileged",
+                    "--cgroupns=host",
+                    "--entrypoint",
+                    "/bin/sh",
+                    image,
+                    "-eu",
+                    "-c",
+                    f"test -d /sys/fs/cgroup/align-llm-fresh/{TEST_UID}/{residual_cgroup}; "
+                    f"rmdir /sys/fs/cgroup/align-llm-fresh/{TEST_UID}/{residual_cgroup}",
+                ]
+            )
             phases.enter("profile-self-test")
             result = profile_run(image, volume, runtime_volume, cgroup_driver)
             if result.returncode != 0:

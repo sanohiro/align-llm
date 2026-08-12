@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
-import os
+import errno
 import hashlib
+import inspect
+import os
+import re
+import signal
 import struct
 import stat
 import subprocess
@@ -527,6 +531,543 @@ def cgroup_launch_failure_case(temporary: Path) -> None:
         parent.rmdir()
 
 
+def cgroup_changed_group_termination_case() -> None:
+    class ExitedProcess:
+        pid = 424242
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(*, timeout):
+            return 0
+
+    original_populated = control._control_cgroup_populated
+    original_matches = control._control_cgroup_matches
+    original_write = control._control_cgroup_file_write
+    original_reap = control._control_reap_descendants
+    original_monotonic = control.time.monotonic
+    writes = []
+    try:
+        populated = iter((True, True, False))
+        reaped = iter((False, True))
+        control._control_cgroup_populated = lambda _fd: next(populated)
+        control._control_cgroup_matches = lambda *_arguments: True
+        control._control_cgroup_file_write = (
+            lambda fd, name, raw: writes.append((fd, name, raw))
+        )
+        control._control_reap_descendants = lambda _deadline, _process: next(reaped)
+        control.time.monotonic = lambda: 0.0
+        forced = control._control_terminate(
+            ExitedProcess(),
+            start="unchanged",
+            group=999999,
+            parent_fd=70,
+            leaf_fd=71,
+            leaf_name="owned-leaf",
+            identity=(1, 2, stat.S_IFDIR, 0o700, os.geteuid()),
+        )
+        assert forced
+        assert writes == [(71, "cgroup.kill", b"1\n")]
+    finally:
+        control._control_cgroup_populated = original_populated
+        control._control_cgroup_matches = original_matches
+        control._control_cgroup_file_write = original_write
+        control._control_reap_descendants = original_reap
+        control.time.monotonic = original_monotonic
+
+
+def cgroup_descendant_reap_case() -> None:
+    class DirectProcess:
+        pid = 424242
+        returncode = None
+
+    original_waitpid = control.os.waitpid
+    control._control_set_subreaper()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import os,time; pid=os.fork(); "
+            "os._exit(0) if pid else (os.setsid(), time.sleep(0.05), os._exit(0))",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    process.wait(timeout=2)
+    assert control._control_reap_descendants(control.time.monotonic() + 2, process)
+
+    states = iter(((515151, 0), ChildProcessError()))
+    try:
+        def waitpid(_pid: int, _options: int) -> tuple[int, int]:
+            state = next(states)
+            if isinstance(state, BaseException):
+                raise state
+            return state
+
+        control.os.waitpid = waitpid
+        assert control._control_reap_descendants(
+            control.time.monotonic() + 1, DirectProcess()
+        )
+    finally:
+        control.os.waitpid = original_waitpid
+
+
+def controlled_child_drain_cases() -> None:
+    original_lease = control._control_cgroup_lease
+    original_empty = control._control_cgroup_empty
+    original_write = control._control_cgroup_file_write
+    original_membership = control._control_cgroup_child_membership
+    original_populated = control._control_cgroup_populated
+    original_matches = control._control_cgroup_matches
+    original_reap = control._control_reap_descendants
+    original_cleanup = control._control_cleanup_lease
+
+    def run_case(*, persistent: bool) -> list[tuple[int, str, bytes]]:
+        parent_fd = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+        leaf_fd = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+        writes: list[tuple[int, str, bytes]] = []
+        try:
+            control._control_cgroup_lease = lambda: (
+                parent_fd,
+                leaf_fd,
+                "owned-leaf",
+                (1, 2, stat.S_IFDIR, 0o700, os.geteuid()),
+            )
+            control._control_cgroup_empty = lambda _fd: None
+            control._control_cgroup_file_write = (
+                lambda fd, name, raw: writes.append((fd, name, raw))
+            )
+            control._control_cgroup_child_membership = lambda _fd, _pid: None
+            if persistent:
+                populated = iter((True, True, False))
+                reaped = iter((False, True))
+            else:
+                populated = iter((True, False, False))
+                reaped = iter((True, True))
+            control._control_cgroup_populated = lambda _fd: next(populated)
+            control._control_cgroup_matches = lambda *_arguments: True
+            control._control_reap_descendants = (
+                lambda _deadline, _process: next(reaped)
+            )
+            control._control_cleanup_lease = lambda *_arguments: None
+            if persistent:
+                try:
+                    control._run_controlled_child(
+                        ["/bin/true"], environment={}, timeout=5
+                    )
+                except OSError as error:
+                    assert error.errno == errno.ECHILD
+                else:
+                    raise AssertionError("forced descendant termination was accepted")
+            else:
+                result = control._run_controlled_child(
+                    ["/bin/true"], environment={}, timeout=5
+                )
+                assert result.returncode == 0
+            return writes
+        finally:
+            os.close(leaf_fd)
+            os.close(parent_fd)
+
+    try:
+        natural_writes = run_case(persistent=False)
+        assert not any(name == "cgroup.kill" for _, name, _ in natural_writes)
+        forced_writes = run_case(persistent=True)
+        assert any(
+            name == "cgroup.kill" and raw == b"1\n"
+            for _, name, raw in forced_writes
+        )
+    finally:
+        control._control_cgroup_lease = original_lease
+        control._control_cgroup_empty = original_empty
+        control._control_cgroup_file_write = original_write
+        control._control_cgroup_child_membership = original_membership
+        control._control_cgroup_populated = original_populated
+        control._control_cgroup_matches = original_matches
+        control._control_reap_descendants = original_reap
+        control._control_cleanup_lease = original_cleanup
+
+
+def controlled_double_fork_forced_case(temporary: Path) -> None:
+    marker = temporary / "control-double-fork-pid"
+    child = temporary / "control-double-fork.py"
+    child.write_text(
+        "import os,signal,sys,time\n"
+        "marker=sys.argv[1]\n"
+        "pid=os.fork()\n"
+        "if pid:\n"
+        "    deadline=time.monotonic()+2\n"
+        "    while not os.path.exists(marker) and time.monotonic()<deadline:\n"
+        "        time.sleep(0.01)\n"
+        "    os._exit(0 if os.path.exists(marker) else 2)\n"
+        "os.setsid()\n"
+        "with open(marker, 'w', encoding='ascii') as output:\n"
+        "    output.write(str(os.getpid()))\n"
+        "for descriptor in (0, 1, 2):\n"
+        "    try:\n"
+        "        os.close(descriptor)\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "while True:\n"
+        "    signal.pause()\n",
+        encoding="ascii",
+    )
+    original_lease = control._control_cgroup_lease
+    original_empty = control._control_cgroup_empty
+    original_write = control._control_cgroup_file_write
+    original_membership = control._control_cgroup_child_membership
+    original_populated = control._control_cgroup_populated
+    original_matches = control._control_cgroup_matches
+    original_cleanup = control._control_cleanup_lease
+    original_setrlimit = control.resource.setrlimit
+    parent_fd = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+    leaf_fd = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+    writes: list[tuple[int, str, bytes]] = []
+
+    def descendant_pid() -> int | None:
+        try:
+            return int(marker.read_text(encoding="ascii"))
+        except (FileNotFoundError, ValueError):
+            return None
+
+    def descendant_running() -> bool:
+        pid = descendant_pid()
+        if pid is None:
+            return False
+        try:
+            raw = Path(f"/proc/{pid}/stat").read_bytes()
+        except FileNotFoundError:
+            return False
+        close = raw.rfind(b")")
+        return close >= 0 and raw[close + 2 : close + 3] != b"Z"
+
+    def cgroup_write(fd: int, name: str, raw: bytes) -> None:
+        writes.append((fd, name, raw))
+        if name == "cgroup.kill":
+            pid = descendant_pid()
+            assert pid is not None
+            os.kill(pid, signal.SIGKILL)
+
+    control._control_set_subreaper()
+    try:
+        control._control_cgroup_lease = lambda: (
+            parent_fd,
+            leaf_fd,
+            "owned-leaf",
+            (1, 2, stat.S_IFDIR, 0o700, os.geteuid()),
+        )
+        control._control_cgroup_empty = lambda _fd: None
+        control._control_cgroup_file_write = cgroup_write
+        control._control_cgroup_child_membership = lambda _fd, _pid: None
+        control._control_cgroup_populated = lambda _fd: descendant_running()
+        control._control_cgroup_matches = lambda *_arguments: True
+        control._control_cleanup_lease = lambda *_arguments: None
+        control.resource.setrlimit = lambda *_arguments: None
+        try:
+            result = control._run_controlled_child(
+                [sys.executable, "-I", "-B", str(child), str(marker)],
+                environment={},
+                timeout=5,
+            )
+        except OSError as error:
+            assert error.errno == errno.ECHILD
+        else:
+            raise AssertionError(
+                "session-breaking persistent descendant was accepted: "
+                f"returncode={result.returncode} pid={descendant_pid()} "
+                f"running={descendant_running()} writes={writes!r} "
+                f"stderr={result.stderr!r}"
+            )
+        assert any(
+            name == "cgroup.kill" and raw == b"1\n"
+            for _, name, raw in writes
+        )
+        assert not descendant_running()
+        try:
+            control.os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        else:
+            raise AssertionError("persistent descendant was not completely reaped")
+    finally:
+        pid = descendant_pid()
+        if pid is not None:
+            if descendant_running():
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        control._control_cgroup_lease = original_lease
+        control._control_cgroup_empty = original_empty
+        control._control_cgroup_file_write = original_write
+        control._control_cgroup_child_membership = original_membership
+        control._control_cgroup_populated = original_populated
+        control._control_cgroup_matches = original_matches
+        control._control_cleanup_lease = original_cleanup
+        control.resource.setrlimit = original_setrlimit
+        os.close(leaf_fd)
+        os.close(parent_fd)
+
+
+def subreaper_cases() -> None:
+    original_cdll = control.ctypes.CDLL
+    original_bootstrap_verify = control._bootstrap_verify
+    original_require = control._control_require_subreaper
+    control._control_set_subreaper()
+    control._control_require_subreaper()
+
+    class MissingSubreaper:
+        @staticmethod
+        def prctl(option, argument, *_unused):
+            assert option == control.PR_GET_CHILD_SUBREAPER
+            pointer = control.ctypes.cast(
+                argument, control.ctypes.POINTER(control.ctypes.c_int)
+            )
+            pointer.contents.value = 0
+            return 0
+
+    class FailedSet:
+        @staticmethod
+        def prctl(option, *_arguments):
+            assert option == control.PR_SET_CHILD_SUBREAPER
+            return -1
+
+    try:
+        control.ctypes.CDLL = lambda *_arguments, **_keywords: MissingSubreaper()
+        rejected_os(control._control_require_subreaper)
+        control.ctypes.CDLL = lambda *_arguments, **_keywords: FailedSet()
+        rejected_os(control._control_set_subreaper)
+        control.ctypes.CDLL = original_cdll
+        control._bootstrap_verify = lambda **_keywords: (b"", b"", b"{}\n", {})
+
+        def missing_after_exec() -> None:
+            raise OSError(errno.EPERM, "synthetic exec-preservation failure")
+
+        control._control_require_subreaper = missing_after_exec
+        try:
+            control.bootstrap("build", self_fd=10)
+        except ControlError as error:
+            assert (error.category, error.phase) == ("PLATFORM", "platform")
+        else:
+            raise AssertionError("bootstrap accepted missing inherited subreaper state")
+    finally:
+        control.ctypes.CDLL = original_cdll
+        control._bootstrap_verify = original_bootstrap_verify
+        control._control_require_subreaper = original_require
+
+
+def controller_runtime_bwrap_precedence_case() -> None:
+    original_reject_environment = control._reject_environment
+    original_regular_snapshot = control._regular_snapshot
+    original_read_sealed = control._read_sealed
+    original_verify_image = control._verify_image_envelope
+    original_set_subreaper = control._control_set_subreaper
+    original_git_identity = control._git_identity
+    original_validate = control.validate_manifest_bytes
+    original_runtime_tree = control._runtime_tree
+    original_open = control._open_regular
+    tool_opens = []
+    git_calls = []
+    manifest = {
+        "runtime_bindings": [{"source": "/invalid-runtime", "manifest": {}}],
+        "tools": [{"name": "bwrap", "path": "/invalid-bwrap"}],
+    }
+    try:
+        control._reject_environment = lambda _environment, *, mode: "../align"
+        control._regular_snapshot = lambda *_arguments, **_keywords: b"supervisor"
+        control._read_sealed = lambda *_arguments, **_keywords: b"image envelope"
+        control._verify_image_envelope = lambda *_arguments, **_keywords: (
+            {},
+            b"bootstrap",
+            b"manifest",
+            b"synthetic manifest",
+        )
+        control._control_set_subreaper = lambda: None
+        control._git_identity = lambda *_arguments, **_keywords: git_calls.append(
+            "project git"
+        )
+        control.validate_manifest_bytes = lambda _raw: manifest
+
+        def invalid_runtime(_path: str):
+            raise ControlError("TOOL", "tools", "invalid runtime")
+
+        control._runtime_tree = invalid_runtime
+        control._open_regular = lambda *_arguments, **_keywords: tool_opens.append("tool")
+        try:
+            control.supervise(["--mode", "build"], self_fd=10, image_fd=11)
+        except ControlError as error:
+            assert (error.category, error.phase) == ("TOOL", "tools")
+        else:
+            raise AssertionError("invalid runtime and tool inputs were accepted")
+        assert not tool_opens
+        assert not git_calls
+    finally:
+        control._reject_environment = original_reject_environment
+        control._regular_snapshot = original_regular_snapshot
+        control._read_sealed = original_read_sealed
+        control._verify_image_envelope = original_verify_image
+        control._control_set_subreaper = original_set_subreaper
+        control._git_identity = original_git_identity
+        control.validate_manifest_bytes = original_validate
+        control._runtime_tree = original_runtime_tree
+        control._open_regular = original_open
+
+
+def controller_cgroup_contract_case() -> None:
+    assert control.CONTROL_CGROUP_PREFIX == "align-llm-control-"
+    candidate = control.CONTROL_CGROUP_PREFIX + bytes(range(16)).hex()
+    assert re.fullmatch(r"align-llm-control-[0-9a-f]{32}", candidate)
+    lease_source = inspect.getsource(control._control_cgroup_lease)
+    assert "candidate = CONTROL_CGROUP_PREFIX + os.urandom(16).hex()" in lease_source
+    assert "os.listdir(parent_fd)" not in lease_source
+
+
+def controller_phase_mapping_cases() -> None:
+    original_run_child = control._run_controlled_child
+
+    def lifecycle_failure(*_arguments, **_keywords):
+        raise OSError(errno.EIO, "synthetic controller lifecycle failure")
+
+    try:
+        control._run_controlled_child = lifecycle_failure
+        try:
+            control._git_identity(4, 5, "git")
+        except ControlError as error:
+            assert (error.category, error.phase) == ("SOURCE", "project-source")
+        else:
+            raise AssertionError("Git lifecycle failure lost its owning phase")
+    finally:
+        control._run_controlled_child = original_run_child
+
+    original_validate = control.validate_manifest_bytes
+    original_runtime_tree = control._runtime_tree
+    original_open = control._open_regular
+    original_run_tool = control._run_retained_tool
+    raw = b"synthetic retained tool"
+
+    def open_tool(*_arguments, **_keywords):
+        return os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC), raw
+
+    try:
+        control._runtime_tree = lambda _path: {}
+        control._open_regular = open_tool
+        control.validate_manifest_bytes = lambda _raw: {
+            "runtime_bindings": [],
+            "tools": [
+                {
+                    "name": "bwrap",
+                    "path": "/invalid-bwrap",
+                    "sha256": control.sha256_hex(raw),
+                    "argv": ["bwrap", "--version"],
+                    "stdout": b"bubblewrap 0.11.0\n".hex(),
+                    "stderr": "",
+                }
+            ],
+        }
+        control._run_retained_tool = lifecycle_failure
+        try:
+            control._platform_self_test(b"manifest")
+        except ControlError as error:
+            assert (error.category, error.phase) == ("TOOL", "tools")
+        else:
+            raise AssertionError("tool lifecycle failure lost its owning phase")
+
+        outputs = {
+            "git": b"git version 2.45.0\n",
+            "cargo": b"cargo 1.96.0 (synthetic)\n",
+            "rustc": b"rustc 1.96.0 (synthetic)\n",
+            "make": b"GNU Make 4.3\n",
+            "clang": b"clang version 22.0.0\n",
+            "bwrap": b"bubblewrap 0.11.0\n",
+        }
+        tools = [
+            {
+                "name": name,
+                "path": f"/synthetic-{name}",
+                "sha256": control.sha256_hex(raw),
+                "argv": [name, "--version"],
+                "stdout": output.hex(),
+                "stderr": "",
+            }
+            for name, output in outputs.items()
+        ]
+        control.validate_manifest_bytes = lambda _raw: {
+            "runtime_bindings": [],
+            "tools": tools,
+        }
+
+        def capability_failure(_fd, arguments, **_keywords):
+            if arguments == ["bwrap", "--help"]:
+                raise OSError(errno.EIO, "synthetic bwrap capability failure")
+            return subprocess.CompletedProcess(
+                arguments, 0, outputs[arguments[0]], b""
+            )
+
+        control._run_retained_tool = capability_failure
+        try:
+            control._platform_self_test(b"manifest")
+        except ControlError as error:
+            assert (error.category, error.phase) == ("TRUST", "bwrap")
+        else:
+            raise AssertionError("bwrap capability failure lost its owning phase")
+    finally:
+        control.validate_manifest_bytes = original_validate
+        control._runtime_tree = original_runtime_tree
+        control._open_regular = original_open
+        control._run_retained_tool = original_run_tool
+
+
+def retained_runtime_file_cases() -> None:
+    original_validate = control.validate_manifest_bytes
+    path = "/usr/bin/zipinfo"
+    raw = Path(path).read_bytes()
+    assert Path(path).stat().st_nlink > 1
+    node = {
+        "kind": "dir",
+        "entries": [
+            {
+                "name": "zipinfo",
+                "kind": "file",
+                "mode": "0755",
+                "size": len(raw),
+                "sha256": control.sha256_hex(raw),
+                "entries": [],
+            }
+        ],
+    }
+    manifest = {
+        "runtime_bindings": [{"source": "/usr/bin", "manifest": node}],
+    }
+    try:
+        control.validate_manifest_bytes = lambda _raw: manifest
+        descriptor = control._retained_runtime_file(b"manifest", path)
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            assert os.read(descriptor, len(raw) + 1) == raw
+        finally:
+            os.close(descriptor)
+        node["entries"][0]["sha256"] = "0" * 64
+        try:
+            control._retained_runtime_file(b"manifest", path)
+        except ControlError as error:
+            assert (error.category, error.phase) == ("TOOL", "tools")
+        else:
+            raise AssertionError("changed retained runtime file was accepted")
+    finally:
+        control.validate_manifest_bytes = original_validate
+
+
 def main() -> int:
     assert _normalize_relative("../align") == "../align"
     assert _normalize_relative("a/./b/../c") == "a/c"
@@ -576,6 +1117,15 @@ def main() -> int:
         cgroup_membership_case(temporary)
         cgroup_removal_case(temporary)
         cgroup_launch_failure_case(temporary)
+        cgroup_changed_group_termination_case()
+        cgroup_descendant_reap_case()
+        controlled_child_drain_cases()
+        controlled_double_fork_forced_case(temporary)
+        subreaper_cases()
+        controller_runtime_bwrap_precedence_case()
+        controller_cgroup_contract_case()
+        controller_phase_mapping_cases()
+    retained_runtime_file_cases()
 
     original = os.dup(31) if _fd_open(31) else None
     try:

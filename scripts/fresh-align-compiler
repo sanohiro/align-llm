@@ -46,6 +46,11 @@ EXPECTED_ENVIRONMENT = {
     "PYTHONNOUSERSITE": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
 }
+RUNTIME_LIBRARY_PATH = (
+    "/runtime/system/usr-lib-x86_64:"
+    "/runtime/system/lib-x86_64:"
+    "/runtime/system/gcc-x86_64"
+)
 PUBLIC_CATEGORIES = frozenset(
     {
         "ARGUMENT",
@@ -816,7 +821,12 @@ def run_tool(
         phase="tools",
         timeout=timeout,
         environment=environment
-        or {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+        or {
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "HOME": "/nonexistent",
+            "LD_LIBRARY_PATH": RUNTIME_LIBRARY_PATH,
+        },
         pass_fds=pass_fds,
         executable=f"/proc/self/fd/{descriptor}",
         cwd=None if cwd_fd is None else f"/proc/self/fd/{cwd_fd}",
@@ -866,6 +876,25 @@ def authenticate_tools(manifest: Mapping[str, Any]) -> dict[str, int]:
             except OSError:
                 pass
         raise
+
+
+def authenticate_runtime_and_tools(
+    manifest: Mapping[str, Any],
+) -> tuple[int, int, dict[str, int]]:
+    runtime_entry_count = 0
+    runtime_total = 0
+    try:
+        for binding in manifest["runtime_bindings"]:
+            count, total = validate_tree_manifest(binding["manifest"], binding["source"])
+            runtime_entry_count += count
+            runtime_total += total
+    except Exception:
+        fail("TOOL", "tools")
+    try:
+        tools = authenticate_tools(manifest)
+    except Exception:
+        fail("TOOL", "tools")
+    return runtime_entry_count, runtime_total, tools
 
 
 GIT_ENVIRONMENT = {
@@ -2967,19 +2996,6 @@ def cgroup_child_membership(lease: CgroupLease, pid: int) -> None:
         raise CleanupError("cgroup contains an unexpected thread")
 
 
-def cgroup_group_is_owned(lease: CgroupLease, process_group: int) -> bool:
-    members = cgroup_members(lease.leaf_fd, "cgroup.procs") + cgroup_members(
-        lease.leaf_fd, "cgroup.threads"
-    )
-    for pid in members:
-        try:
-            if os.getpgid(pid) != process_group:
-                return False
-        except ProcessLookupError:
-            return False
-    return True
-
-
 def remove_cgroup_leaf(lease: CgroupLease) -> None:
     """Remove one authenticated, empty cgroup-v2 leaf through its parent fd."""
     if not same_cgroup_directory(snapshot_fd(lease.parent_fd), lease.parent_identity):
@@ -3135,12 +3151,10 @@ def cgroup_populated(lease: CgroupLease) -> bool:
     return values["populated"] == "1"
 
 
-def kill_cgroup(lease: CgroupLease, process_group: int | None) -> None:
+def kill_cgroup(lease: CgroupLease) -> None:
     try:
         if not cgroup_entry_matches(lease):
             raise CleanupError("child cgroup identity changed")
-        if process_group is None or not cgroup_group_is_owned(lease, process_group):
-            raise CleanupError("child cgroup contains a foreign process")
         cgroup_file_write(lease.leaf_fd, "cgroup.kill", b"1\n")
     except CleanupError:
         raise
@@ -3150,14 +3164,14 @@ def kill_cgroup(lease: CgroupLease, process_group: int | None) -> None:
 
 def reap_descendants(
     deadline: float, direct_process: subprocess.Popen[bytes] | None = None
-) -> None:
+) -> bool:
     while time.monotonic() < deadline:
         reaped = False
         while True:
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:
-                return
+                return True
             if pid == 0:
                 break
             if direct_process is not None and pid == direct_process.pid:
@@ -3165,6 +3179,7 @@ def reap_descendants(
             reaped = True
         if not reaped:
             time.sleep(0.01)
+    return False
 
 
 def terminate_owned_process(
@@ -3172,8 +3187,9 @@ def terminate_owned_process(
     lease: CgroupLease,
     accepted_start: str | None,
     accepted_group: int | None,
-) -> None:
+) -> bool:
     """Terminate one owned process tree and prove its cgroup is empty."""
+    forced_termination = process.poll() is None
     try:
         populated = cgroup_populated(lease)
     except OSError as error:
@@ -3204,7 +3220,8 @@ def terminate_owned_process(
         try:
             populated = cgroup_populated(lease)
             if process.poll() is None or populated:
-                kill_cgroup(lease, accepted_group)
+                forced_termination = True
+                kill_cgroup(lease)
         except OSError as error:
             raise CleanupError("owned child cgroup could not be terminated") from error
     try:
@@ -3212,7 +3229,8 @@ def terminate_owned_process(
     except subprocess.TimeoutExpired as error:
         raise CleanupError("owned child did not exit") from error
     cleanup_deadline = time.monotonic() + 5
-    reap_descendants(cleanup_deadline, process)
+    if not reap_descendants(cleanup_deadline, process):
+        raise CleanupError("owned child descendants were not reaped")
     while time.monotonic() < cleanup_deadline:
         try:
             populated = cgroup_populated(lease)
@@ -3227,6 +3245,7 @@ def terminate_owned_process(
         raise CleanupError("owned child cgroup could not be inspected") from error
     if populated:
         raise CleanupError("child cgroup remained populated")
+    return forced_termination
 
 
 def run_owned(
@@ -3369,8 +3388,9 @@ def run_owned(
             streams = None
 
         try:
-            process_unhealthy = process.poll() is None or cgroup_populated(lease)
-            terminate_owned_process(process, lease, accepted_start, accepted_group)
+            process_unhealthy = terminate_owned_process(
+                process, lease, accepted_start, accepted_group
+            )
         except CleanupError as error:
             failure = WorkerError(category, phase)
             failure.cleanup_failed = True
@@ -3543,7 +3563,7 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
         )
     )
     try:
-        run_owned(
+        result = run_owned(
             arguments,
             category="BUILD",
             phase="build",
@@ -4584,10 +4604,7 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
     except (OSError, ValueError, UnicodeError):
         fail("TRUST", "manifest")
     verify_platform()
-    try:
-        tools = authenticate_tools(manifest)
-    except Exception:
-        fail("TOOL", "tools")
+    runtime_entry_count, runtime_total, tools = authenticate_runtime_and_tools(manifest)
     align_retained: list[tuple[int, Snapshot]] = []
     align_fd = -1
     try:
@@ -4607,14 +4624,8 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
             verify_align_pin(project, align)
         except Exception:
             fail("SOURCE", "align-source")
-        runtime_entry_count = 0
-        runtime_total = 0
         try:
             cache_manifest = validate_cache(manifest)
-            for binding in manifest["runtime_bindings"]:
-                count, total = validate_tree_manifest(binding["manifest"], binding["source"])
-                runtime_entry_count += count
-                runtime_total += total
             cache_entry_count = cache_manifest["entry_count"] + 1
             cache_total = cache_manifest["total_size"]
         except Exception:

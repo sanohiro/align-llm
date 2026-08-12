@@ -3,13 +3,12 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-12)
+## Active checkpoint (2026-08-13)
 
-- Branch `agent/cache-hosted-align-bundle` is based on PR #76 merge commit
-  `c3deab753a3db4e963817917c1105fe110907a99`.
-- Active goal: replace the measured 36-second cached dpkg replay and 6-second Rust download with a
-  trusted hosted Align compiler bundle that lets normal checks start directly from a verified
-  `alignc`, runtime archive, and LLVM shared library.
+- Branch `agent/multistage-fresh-runtime-v4` is based on PR #77 merge commit
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`.
+- Active goal: remove builder-only apt, LLVM, Rust, source, and compilation state from the installed
+  fresh image while preserving its exact runtime manifest and complete installed qualification.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
@@ -17,17 +16,67 @@ file records durable project state.
   merged the complete Node 24 action migration at `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
   PR #75 merged hardlink-preserving runtime materialization at `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
   PR #76 merged and seeded the verified hosted LLVM archive cache at `c3deab753a3db4e963817917c1105fe110907a99`.
-- In progress: implementation checkpoint `8872b17aceedf413464f9e10f71112028b980615` added the
-  compiler-bundle helper, focused owner, bundle-first workflow routing, main-only post-consumer
-  publication proof, and archive fallback. A local real-client bundle containing only `alignc`,
-  `libalign_runtime.a`, and `libLLVM.so.22.1` is 183,999,150 bytes; helper creation, admission, and
-  complete `hosted-checks` passed against the pinned Align checkout. Reviewed head
-  `5d53224ee11a0c4546fa1f6094207f85017d635f` passed complete proportional preflight. Its independent
-  review requested an injective cache-key encoding, contract-matching multi-invalid precedence,
-  and this durable-state correction. Consolidated repair
-  `a8fb07d42f5e74f5435674548c11dadb8ed129dd` implements all three findings and passed affected
-  bundle-owner, workflow-owner, hosted-graph, focused-fresh, and installed-profile verification.
-  Publication and hosted miss/seed/warm evidence remain.
+  PR #77 merged the trusted hosted Align compiler bundle at
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`; its exact-main seed and clean warm run passed.
+- In progress: reviewed multi-stage candidate `4780747` split the builder and runtime stages. Its
+  comprehensive review requested changes because installed acceptance had not passed, the complete
+  builder library overlay invalidated final-base package ownership, and the footprint claim did not
+  distinguish pinned inputs from mutable apt snapshots. The repaired boundary pins both stages to
+  the Ubuntu Linux/amd64 manifest; the final image transfers only Python,
+  its symlink-free standard library, and libexpat into system paths after proving zero dpkg ownership
+  overlap; manifest-bound libraries remain below `/runtime`; and both controller and worker validate
+  them before fixed-path tool probes.
+  Repeated installed qualification also exposed a pre-existing end-of-aggregate race: an already
+  exited Make leader could have a naturally draining descendant classified as persistent before the
+  existing cleanup grace. The repair now distinguishes bounded natural drain from forced termination.
+  The conditionally required final review rejected `d3d3932` because hand-maintained library pruning,
+  its owner test, the reproduction tag, validation-order prose, and cleanup prose were inconsistent.
+  This v2 branch re-scopes the capability to builder-state separation and preserves the complete
+  materialized runtime tree; runtime reachability pruning is deferred to a separately owned gate.
+  The re-scoped contract and implementation are committed as `ee9fd0e` and `8f09c6f`; measurement
+  and exact preflight candidate `bc2623b` passed. Its comprehensive review requested one consolidated
+  repair: forced cgroup cleanup must own descendants across process-group changes, normative Section
+  9 must own runtime-before-tool precedence with a real multi-invalid regression, and this handoff
+  must record the existing exact candidate stamp. Consolidated repair `957aa50` closes those three
+  findings and its complete preflight passed; the final evidence head now requires the
+  policy-mandated conditional final review. That final review rejected `7040d75`: controller cleanup
+  did not propagate forced descendant termination, did not prove descendant zombies reaped, and
+  lacked a dynamic controller precedence regression; its next-step record was also stale. Repository
+  policy ended the v2 repair cycle. The v3 design reopens the lifecycle closure matrix before code,
+  assigns both process-owner layers, and names exact failure propagation and dynamic regressions;
+  design checkpoint `021f8e0` is complete. Implementation checkpoint `e5dae90` completes the
+  redesigned process ownership, its focused owners pass, and exact complete preflight passes. A
+  fresh comprehensive review of exact evidence head `236dcbd` requested one consolidated repair:
+  controller runtime/tool admission must precede its public project-Git identity call, and worker
+  lifecycle evidence must exercise production `run_owned` with a real double-forked descendant.
+  The repaired contract retains manifest-authenticated Git by descriptor and assigns that real
+  lifecycle regression to the worker owner. Design checkpoint `30a4835` and consolidated repair
+  `9996837` are complete; focused and installed owners pass. Exact final preflight passed
+  `1ce0b19`, but the policy-mandated final review rejected v3: the reopened controller contract
+  assigned mount/delegation inventory, orphan admission, per-tick procfs sampling, a universal
+  platform classification, and the worker leaf grammar to a controller that owns none of those
+  behaviors; Section 9.9 also ordered bwrap authentication before the runtime-first precedence
+  required by production and its regression. Repository policy ended the v3 repair cycle. V4
+  reopens the closure matrix and assigns clean hierarchy provisioning and residual-leaf refusal to
+  `fresh-profile`, per-child `align-llm-control-*` lifecycle and phase-owned errors to the
+  controller, and the full worker resource boundary to `scripts/fresh-align-compiler`. Runtime
+  bindings precede every tool, including bwrap; bwrap capability checks follow accepted tool
+  identity. The implementation already follows this validation order, so the next checkpoint adds
+  exact contract-owner regressions rather than expanding the controller into a second worker.
+  Design checkpoint `fcbd8e8` and contract-owner checkpoint `05bbfd7` are complete. The controller
+  owner now dynamically proves invalid-runtime-plus-invalid-bwrap precedence through public
+  `supervise`, exact `align-llm-control-<32 hex>` grammar, and SOURCE/TOOL/TRUST phase mapping for
+  Git, retained-tool, and accepted-bwrap capability lifecycle failures. Development, controller,
+  worker, topology, and complete focused owners pass. A fresh comprehensive review of exact head
+  `53eb915` requested four changes: remove superseded foreign-member ownership prose; stop claiming
+  worker `pids.max` readback and child-side rlimit/membership verification; execute the promised
+  installed residual-child-cgroup refusal; and update this handoff's final-gate state. All four are
+  accepted. The consolidated repair makes no new product behavior beyond the named installed
+  regression: it aligns all cgroup prose with the existing empty-leaf/exclusive-writer ownership
+  rule, narrows worker verification to successful pre-exec syscalls plus parent-side membership,
+  and exercises profile cleanup against a real residual child cgroup. Because this repair only
+  implements recorded findings without changing the implementation approach or public behavior,
+  policy does not require another review.
 
 ## Measurement
 
@@ -68,6 +117,20 @@ file records durable project state.
   build/export/load and 242 seconds for installed qualification. Apt repository downloads no longer
   repeat, but replay remains too slow. The replacement bundle target is restore plus verification
   at most 10 seconds and a complete normal check job at most 60 seconds (`n=1`, same runner image).
+- PR #77 run `31603728854`, exact-main seed run `31604427226`, and clean same-commit warm run
+  `31604614372` passed. The warm hosted check job took 28 seconds, including one second to restore
+  and one second to verify the bundle; apt, Rust, Align checkout/build, and publication were skipped.
+  This is 72% lower than the 100-second bundle baseline. The same warm run's fresh-image job still
+  took 430 seconds, including 165 seconds to build/export/load and 222 seconds for installed
+  qualification, making image transfer and qualification the remaining workflow bottleneck.
+- The rejected first multi-stage candidate was 3,800,869,143 bytes. The rejected hand-pruned repair
+  was 3,200,170,355 bytes but retained cryptsetup libraries despite claiming their absence. The
+  re-scoped, unpruned image is 3,215,474,083 bytes versus the image-ID-bound 6,069,945,116-byte
+  baseline, a 47.0% reduction; `/runtime` is 3,016,219,340 bytes and the Cargo cache 23,056,659
+  bytes. Both images share exact Ubuntu base rootfs layer `42724e4`; future apt content remains
+  mutable, so exact sizes are recorded observations rather than rebuild guarantees. All 1,303
+  transferred Python/libexpat paths had zero dpkg ownership collisions and builder-only Rustup,
+  Cargo, LLVM, source, and apt state are absent.
 
 ## Paused product checkpoint
 
@@ -78,12 +141,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Publish the candidate, record the SHA-bound review envelope and all three dispositions, and
-   confirm the exact PR-head miss path.
-2. Merge only after final integration checks pass, then confirm the exact-main bundle seed and one
-   clean warm measurement before claiming the 60-second check target.
-3. Continue with a multi-stage builder/runtime image. Keep PR #69 paused until the final Align
-   revision is named.
+1. If the consolidated repair head lacks a matching exact-head complete-preflight stamp, run that
+   gate; otherwise publish it and record the existing review envelope plus all four dispositions.
+2. Require hosted CI, then measure build/export/load and final integration. Keep PR #69 paused
+   until the final Align revision is named.
 
 ## Latest durable evidence
 
@@ -101,6 +162,137 @@ file records durable project state.
   Align build 0.602s, hosted graph 3.081s, focused qualification 20.277s, and installed profile
   198.491s. Complete preflight passed consolidated repair `a8fb07d`: owner 8.742s, pinned Align
   build 0.604s, hosted graph 3.066s, focused qualification 20.260s, and installed profile 195.803s.
+- PR #77's clean warm run `31604614372` passed at merge head
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`: hosted bundle restore plus verification took two
+  seconds and the complete hosted job took 28 seconds. The full run passed in 434 seconds because
+  the unchanged fresh-image job remained dominant.
+- Multi-stage implementation head `060b956` passed `scripts/test-development-preflight`, Dockerfile
+  build checks, complete focused fresh qualification in 20.305 seconds, and `make hosted-checks`.
+  The candidate installed profile passed every phase through both boundaries, then failed worker
+  aggregate. An exact `origin/main` control under the same refreshed `--pull` environment failed
+  the same aggregate phase. Both used the exact clean full-history Align revision
+  `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; only refreshed systemd library files differed from
+  the earlier passing manifest. Hosted complete-profile evidence remains required.
+- Initial comprehensive review covered exact head `4780747aa67b7b4dca12544cca5274849181ef49`
+  against base and merge base `6a48ab797b5c1069342643ef281f7d7fdb2a9b26` and requested the
+  three changes described above. The consolidated repair's static development owner, Dockerfile
+  build check, fixed-base image build, footprint inventory, package-ownership intersection, and
+  unreachable-library inventory pass. Intermediate installed probes correctly used the committed
+  pre-repair worker and therefore are diagnostic only. The first committed repair installed profile
+  passed once, then reproduced the end-of-aggregate race; a temporary diagnostic head identified
+  `CleanupError('owned child process tree remained')`. The bounded-drain owner regression passes.
+  After removing all temporary child-output diagnostics, complete preflight passed repair checkpoint
+  `fde4fad7f1d8dc7f93d6a0a8182131125a76b54f`: development owner 9.107s, pinned Align build 0.608s,
+  hosted graph 3.152s, focused qualification 20.452s, installed profile 204.412s, image build 2.200s,
+  boundary profile 38.314s, and worker aggregate 107.594s. A separate installed-only repetition also
+  passed in 205.722s with a 108.711s aggregate. Complete preflight also passed exact final-review
+  head `d3d39325e4e4ce8677eb356396482377a592961a` and wrote its external stamp: installed profile
+  204.661s and worker aggregate 107.242s. The final reviewer incorrectly reported this stamp absent;
+  that finding is rejected by the existing stamp file. Its four remaining findings are accepted:
+  retained `libcryptsetup.so.12*`, a stale measurement tag, stale validation precedence, and
+  contradictory cleanup prose. Repository policy ended that repair cycle and required this redesign.
+- Re-scoped image `sha256:eb9162ba3d17494b41673635166dfd6eb23457bebfd9fd24e558049852024152`
+  passed its final-stage build checks and inventory probes. It is 3,215,474,083 bytes; `/runtime` is
+  3,016,219,340 bytes; Cargo cache is 23,056,659 bytes; its first rootfs layer matches the baseline;
+  all named builder roots and apt lists are absent; and retained cryptsetup libraries demonstrate
+  that this capability preserves rather than hand-prunes the manifest-bound runtime tree.
+- Complete preflight passed re-scoped measurement checkpoint
+  `791c9d5c518b7301bf5fa6ee19e76892fc637c53`: development owner 9.514s, pinned Align build 0.799s,
+  hosted graph 3.633s, focused qualification 22.223s, installed profile 217.113s, image build 3.202s,
+  boundary profile 41.554s, worker aggregate 105.110s, and cleanup 1.192s. Complete preflight also
+  passed exact comprehensive-review head `bc2623b613b5ba4ed60b2484da7933f13465aec5`: installed
+  profile 200.836s and worker aggregate 104.604s. Its canonical mode-0600 external stamp records
+  exact base `6a48ab7`, head, owner `development-preflight`, and `fresh-image` scope.
+- The redesigned comprehensive review covered exact head
+  `bc2623b613b5ba4ed60b2484da7933f13465aec5` against base and merge base
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26` and requested the three changes described above.
+  The consolidated repair `957aa5096d3980d183c92499ed9f1e870492ee7d` passed worker unit,
+  image-control, development-preflight, topology self-test, and complete preflight: development
+  owner 8.976s, pinned Align build 0.728s, hosted graph 3.351s, focused qualification 20.591s,
+  installed profile 244.307s, image build 36.545s, boundary profile 39.255s, worker aggregate
+  105.608s, and cleanup 1.211s. The apt, LLVM, Git, Rust toolchain, materialization, runtime, tool,
+  Cargo-cache, and transferred system-file layers were cache hits; only the changed control closure
+  and downstream random-attestation layers rebuilt.
+- Exact evidence head `7040d75eef941900cf49151fb5651309eb8ae9f6` also passed complete
+  preflight and has a canonical mode-0600 stamp for base `6a48ab7`, owner
+  `development-preflight`, and `fresh-image` scope: development owner 9.063s, pinned Align build
+  0.609s, hosted graph 3.141s, focused qualification 20.406s, installed profile 204.156s, warm image
+  build 2.147s, boundary profile 37.494s, worker aggregate 108.061s, and cleanup 1.252s. The
+  policy-mandated conditional final review nevertheless requested changes: controller forced-kill
+  success propagation and descendant-zombie reap were incomplete, controller multi-invalid
+  precedence had only static coverage, and the handoff next action was stale. No v2 content may be
+  published; v3 must be reviewed as a redesigned candidate.
+- V3 design checkpoint `021f8e0` passed `git diff --check`. The coherent implementation candidate
+  passed `run-fresh-image-control-smoke`, `run-fresh-worker-unit-smoke`,
+  `test-development-preflight`, Python AST parsing, and complete focused
+  `run-fresh-worker-qualification` in 22.925s. The controller owner executes a real double-forked,
+  session-breaking, TERM-ignoring descendant: the zero-exit direct child cannot produce success,
+  production termination selects the authenticated cgroup kill boundary, and the subreaper proves
+  `ECHILD`; its natural-drain control sends no kill. Complete preflight passed implementation
+  checkpoint `e5dae9097f3447524e2dfb901d8a49d678cb8509`: development owner 9.126s, pinned
+  Align build 0.752s, hosted graph 3.266s, focused qualification 22.113s, installed profile
+  253.535s, image build 41.411s, boundary profile 40.867s, worker aggregate 106.299s, and cleanup
+  1.217s. Apt, LLVM, Git, Rust toolchain, materialization, runtime, tool, Cargo-cache, and transferred
+  system-file layers were cache hits; the changed controller and downstream attestation layers
+  rebuilt. Its canonical external stamp records exact base `6a48ab7`, head, owner
+  `development-preflight`, and `fresh-image` scope.
+- Fresh comprehensive review covered exact head
+  `236dcbdca1f10e1b04eccebb2be806ed59754037` against base and merge base
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26` and requested two changes: the public supervisor ran
+  project Git before controller runtime/tool admission, and the worker's claimed double-fork
+  acceptance remained synthetic. Both findings are accepted; the contract above defines their one
+  consolidated repair.
+- Consolidated repair `9996837` makes full controller runtime/tool admission precede public project
+  Git, reopens the exact runtime-tree Git node into a retained descriptor while preserving its 142
+  intentional hardlinks, explicitly preserves FD 4 across bootstrap exec even when it was allocated
+  directly, and adds a real worker `run_owned` double-fork lifecycle regression. Image-control,
+  worker-unit, development-preflight, topology, and focused qualification owners pass. Installed-only
+  qualification passes in 265.057s: image build 34.354s, profile self-test 15.435s, trust mutations
+  16.363s, runtime replacements 23.597s, boundary profile 39.724s, worker aggregate 124.136s, and
+  cleanup 1.231s. Apt, LLVM, Git, Rust toolchain, runtime materialization, and transferred runtime
+  layers were cache hits. A controller-only change still invalidates the later Cargo-fetch layer
+  because its Dockerfile `COPY image/fresh` precedes that fetch; moving the pin-owned Cargo fetch
+  before controller inputs is the next cache-layout optimization after this capability.
+- Complete preflight passed exact evidence head
+  `be49ca494f42ae4aed0eba3e9de36c86118c91f5`: development owner 9.980s, pinned Align build
+  0.689s, hosted graph 3.778s, focused qualification 29.248s, installed profile 259.501s, warm image
+  build 2.707s, profile self-test 17.667s, trust mutations 16.968s, runtime replacements 29.361s,
+  boundary profile 43.354s, worker aggregate 138.205s, and cleanup 1.336s. The canonical external
+  stamp records exact base `6a48ab7`, head, owner `development-preflight`, and `fresh-image` scope.
+- Complete preflight passed v3 final evidence head
+  `1ce0b197adddf36a474a32d3cb90aeea3d23a746`: development owner 10.161s, pinned Align build
+  0.722s, hosted graph 3.728s, focused qualification 24.122s, installed profile 230.258s, warm image
+  build 3.407s, profile self-test 13.174s, trust mutations 15.942s, runtime replacements 24.976s,
+  boundary profile 39.716s, worker aggregate 123.048s, and cleanup 1.290s. Its mode-0600 stamp binds
+  exact base `6a48ab7`, head, owner `development-preflight`, and `fresh-image` scope.
+- The conditionally required v3 final review covered exact head `1ce0b19` against base and merge
+  base `6a48ab7` and requested the two contract corrections described in the active checkpoint.
+  Both are accepted. No v3 content may be published; v4 is a redesigned candidate and requires one
+  fresh comprehensive review after its own final evidence.
+- V4 design checkpoint `fcbd8e8` passed `git diff --check`. Contract-owner checkpoint `05bbfd7`
+  passed `run-fresh-image-control-smoke`, `run-fresh-worker-unit-smoke`,
+  `test-development-preflight`, `check-gate-topology --self-test`, and complete focused
+  `run-fresh-worker-qualification` in 25.040s.
+- Complete preflight passed v4 implementation evidence head
+  `b9b7189c34608fc1fff3b88ba81a504c46eed980`: development owner 9.550s, pinned Align build
+  0.768s, hosted graph 3.392s, focused qualification 23.105s, and installed profile 238.407s. The
+  cached image build took 3.862s, profile self-test 19.794s, trust mutations 15.542s, runtime
+  replacements 24.492s, boundary profile 40.994s, worker aggregate 122.324s, and cleanup 1.267s.
+  Apt, LLVM, Git, Rust, Cargo, runtime materialization, and transferred runtime layers were cache
+  hits. Its mode-0600 stamp binds exact base `6a48ab7`, head, owner `development-preflight`, and
+  `fresh-image` scope.
+- Complete preflight also passed exact v4 review head
+  `53eb915c45521a8f73d255d3a55cf4467a4c64c1`: development owner 9.710s, pinned Align build
+  0.635s, hosted graph 3.375s, focused qualification 23.194s, and installed profile 228.348s. The
+  cached image build took 2.148s, profile self-test 13.332s, trust mutations 15.621s, runtime
+  replacements 25.440s, boundary profile 37.777s, worker aggregate 124.098s, and cleanup 1.286s.
+  The mode-0600 external stamp binds exact base `6a48ab7`, head, owner `development-preflight`, and
+  `fresh-image` scope.
+- Fresh comprehensive review covered exact head `53eb915` against base and merge base `6a48ab7`.
+  Its verdict was changes requested with the four complete findings and accepted dispositions in
+  the active checkpoint. The v4-specific runtime-before-invalid-bwrap rule, controller leaf
+  grammar, and phase-owned Git/tool/bwrap mappings passed review; the reviewer also reconfirmed the
+  `eb9162ba...` image identity, footprint, runtime/Cargo sizes, and absent builder roots/apt lists.
 
 ## Constraints and intentional state
 

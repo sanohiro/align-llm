@@ -258,7 +258,7 @@ def test_runtime_materialization() -> None:
 
     dockerfile = (REPOSITORY / "image/fresh/Dockerfile").read_text(encoding="utf-8")
     require(
-        dockerfile.count("/usr/local/libexec/align-llm/materialize-fresh-tree") == 3
+        dockerfile.count("/usr/local/libexec/align-llm/materialize-fresh-tree") == 4
         and "for tree in git rust bwrap" in dockerfile
         and "/usr/lib/llvm-22 /runtime/cc-suite" in dockerfile,
         "Dockerfile materialization ownership changed",
@@ -267,6 +267,158 @@ def test_runtime_materialization() -> None:
         "stat -c '%d:%i' /runtime/git/bin/git" in dockerfile
         and "stat -c '%d:%i' /runtime/git/bin/git-receive-pack" in dockerfile,
         "Dockerfile does not enforce Git hardlink materialization",
+    )
+    require(
+        dockerfile.count("FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467") == 2
+        and "AS builder" in dockerfile
+        and "AS runtime" in dockerfile,
+        "Dockerfile stage ownership changed",
+    )
+    runtime_stage = dockerfile.split(" AS runtime", maxsplit=1)[1]
+    for forbidden in ("apt-get", "apt.llvm.org", "curl ", "wget ", "git clone", "cargo fetch"):
+        require(forbidden not in runtime_stage, f"runtime stage retained builder operation: {forbidden}")
+    for transfer in (
+        "COPY --from=builder /runtime /runtime",
+        "COPY --from=builder /opt/align-llm/tool-bin /opt/align-llm/tool-bin",
+        "COPY --from=builder /var/cache/align-llm/cargo /var/cache/align-llm/cargo",
+        "COPY --from=builder /image-control/usr/bin/ /usr/bin/",
+        "COPY --from=builder /image-control/usr/lib/python3.12 /usr/lib/python3.12",
+        "COPY --from=builder /image-control/usr/lib/x86_64-linux-gnu/libexpat.so.1",
+        "COPY --from=builder /usr/local/share/align-llm /usr/local/share/align-llm",
+    ):
+        require(transfer in runtime_stage, f"runtime stage transfer is missing: {transfer}")
+    require(
+        "outer Python control tree contains a symlink" in dockerfile
+        and "final outer Python control tree contains a symlink" in runtime_stage
+        and "unexpected final control executable inventory" in runtime_stage,
+        "outer Python closure is not verified across the stage boundary",
+    )
+    control = (REPOSITORY / "image/fresh/control/fresh_image_control.py").read_text(
+        encoding="utf-8"
+    )
+    control_self_test = control.split("def _platform_self_test(", maxsplit=1)[1]
+    control_supervisor = control.split("def supervise(", maxsplit=1)[1].split(
+        "\ndef ", maxsplit=1
+    )[0]
+    control_bootstrap = control.split("def bootstrap(", maxsplit=1)[1].split(
+        "\ndef ", maxsplit=1
+    )[0]
+    control_runner = control.split("def _run_controlled_child(", maxsplit=1)[1].split(
+        "\n@dataclass", maxsplit=1
+    )[0]
+    control_termination = control.split("def _control_terminate(", maxsplit=1)[1].split(
+        "\ndef ", maxsplit=1
+    )[0]
+    control_owner = (
+        REPOSITORY / "scripts/run-fresh-image-control-smoke"
+    ).read_text(encoding="utf-8")
+    profile_owner = (
+        REPOSITORY / "scripts/run-fresh-image-profile-smoke"
+    ).read_text(encoding="utf-8")
+    worker = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
+    worker_owner = (
+        REPOSITORY / "scripts/run-fresh-worker-unit-smoke"
+    ).read_text(encoding="utf-8")
+    worker_entry = worker.split("def worker(", maxsplit=1)[1]
+    worker_authentication = worker.split(
+        "def authenticate_runtime_and_tools(", maxsplit=1
+    )[1].split("\ndef ", maxsplit=1)[0]
+    require(
+        '"LD_LIBRARY_PATH": (' in control
+        and control_self_test.index('for binding in manifest["runtime_bindings"]')
+        < control_self_test.index('for tool in manifest["tools"]')
+        and '"LD_LIBRARY_PATH": RUNTIME_LIBRARY_PATH' in worker
+        and worker_authentication.index('for binding in manifest["runtime_bindings"]')
+        < worker_authentication.index("tools = authenticate_tools(manifest)")
+        and "authenticate_runtime_and_tools(manifest)" in worker_entry
+        and control_supervisor.index("_control_set_subreaper()")
+        < control_supervisor.index("_platform_self_test(manifest_raw)")
+        < control_supervisor.index("_retained_runtime_file(")
+        < control_supervisor.index("_git_identity(")
+        and "os.set_inheritable(4, True)" in control_supervisor
+        and control_bootstrap.index("_control_require_subreaper()")
+        < control_bootstrap.index("_run_controlled_child(")
+        and 'raise ControlError("CHILD", "aggregate", "worker lifecycle rejected")'
+        in control_bootstrap
+        and "forced_termination = _control_terminate(" in control_runner
+        and 'if forced_termination:' in control_runner
+        and "_control_reap_descendants(cleanup_deadline, process)" in control_termination
+        and "controller_runtime_bwrap_precedence_case()" in control_owner
+        and 'control.supervise(["--mode", "build"], self_fd=10, image_fd=11)'
+        in control_owner
+        and 'CONTROL_CGROUP_PREFIX = "align-llm-control-"' in control
+        and "candidate = CONTROL_CGROUP_PREFIX + os.urandom(16).hex()" in control
+        and "controller_cgroup_contract_case()" in control_owner
+        and "controller_phase_mapping_cases()" in control_owner
+        and "residual child cgroup cleanup was accepted" in profile_owner
+        and "profile-residual-" in profile_owner
+        and "controlled_child_drain_cases()" in control_owner
+        and "controlled_double_fork_forced_case(temporary)" in control_owner
+        and "run_owned_double_fork_forced_case(module, temporary)" in worker_owner
+        and "module.run_owned(" in worker_owner
+        and "subreaper_cases()" in control_owner
+        and "final control files overlap base package ownership" in runtime_stage
+        and 'Path("/var/lib/dpkg/info").glob("*.list")' in runtime_stage,
+        "verified runtime tool probe or package identity verification changed",
+    )
+    for forbidden_pruning in (
+        '/runtime/system/$tree/cryptsetup',
+        '/runtime/system/$tree/systemd',
+        '/runtime/system/$tree/libsystemd.so',
+        '/runtime/system/$tree/libudev.so',
+        '/runtime/system/$tree/security/pam_systemd',
+    ):
+        require(
+            forbidden_pruning not in dockerfile,
+            f"manifest runtime tree is pruned after materialization: {forbidden_pruning}",
+        )
+    topology = (REPOSITORY / "docs/specs/check-gate-topology.md").read_text(encoding="utf-8")
+    validation_order = topology.split("### 9.9 Validation order and failure categories", maxsplit=1)[
+        1
+    ].split("### 9.10 Closure matrix", maxsplit=1)[0]
+    require(
+        validation_order.index("manifest-declared runtime-binding source tree")
+        < validation_order.index("retained tool descriptor")
+        < validation_order.index("project-root Git descriptors")
+        < validation_order.index("cache root"),
+        "public runtime/tool/source/cache validation order changed",
+    )
+    require(
+        "`tools` to `TOOL` including runtime-binding identity failures" in validation_order,
+        "public runtime-binding failure category changed",
+    )
+    require(
+        "runtime-binding failure therefore wins over a simultaneously invalid bwrap binding"
+        in validation_order
+        and "`align-llm-control-<32 lowercase random hex>`" in topology
+        and "controller lease admission maps to the public phase" in topology
+        and "Per-tick descendant procfs-fd enumeration is N/A" in topology
+        and "profile cleanup refuses any residual leaf" in topology,
+        "public controller/profile ownership contract changed",
+    )
+    require(
+        "foreign member is a platform/cleanup failure and is never killed as owned"
+        not in topology
+        and "no child-side\nrlimit readback handshake is claimed" in topology,
+        "superseded cgroup ownership or worker readback contract remains",
+    )
+    require(
+        "either drained naturally after a\nnormal direct-child exit or were terminated"
+        in topology
+        and "On every catchable exit the worker terminates owned descendants" not in topology,
+        "public natural-drain cleanup contract changed",
+    )
+    require(
+        "COPY --from=builder /runtime/system/usr-lib-x86_64/" not in runtime_stage,
+        "runtime stage overwrites the final base library inventory",
+    )
+    for path in ("/root/.rustup", "/root/.cargo", "/usr/lib/llvm-22", "/build"):
+        require(path in runtime_stage, f"builder-only path is not rejected: {path}")
+    require(
+        runtime_stage.index("COPY --from=builder /runtime /runtime")
+        < runtime_stage.index("ARG IMAGE_PUBLIC_KEY_HEX")
+        < runtime_stage.index("ENTRYPOINT"),
+        "random verifier key ordering changed",
     )
 
 

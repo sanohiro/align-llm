@@ -530,9 +530,12 @@ ownership gap in the same fresh-worker lifecycle:
 
 1. **Cgroup admission and cleanup.** `open_cgroup_lease` and the image-control lease must parse
    both membership files and prove them empty before configuration, before child attachment, and
-   during cleanup. After attachment, the only permitted membership is the admitted child and its
-   kernel-created threads; a foreign member is a platform/cleanup failure and is never killed as
-   owned. Because cgroup-v2 disallows `rename(2)`, cleanup uses the unique leaf name as its
+   during cleanup. Immediately after attachment, the direct process and its kernel-created threads
+   are the required membership proof. Initial emptiness plus the exclusive profile-writer boundary
+   establishes ownership; after that gate every later member is an owned descendant even when it
+   changes session or process group, and authoritative cleanup may kill it through `cgroup.kill`.
+   A non-cooperating same-UID writer that attaches an unrelated process is outside the profile
+   threat model. Because cgroup-v2 disallows `rename(2)`, cleanup uses the unique leaf name as its
    quarantine identity, rechecks the retained parent/leaf descriptors and empty membership, and
    removes only that name with descriptor-relative `rmdir`. The delegated cgroup parent is an
    exclusive worker/profile writer boundary, so non-cooperating same-UID writers are explicitly
@@ -752,7 +755,7 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Self-test child output and lifecycle | `scripts/check-gate-topology` | own a new-session child group; concurrently drain binary pipes in fixed chunks; retain at most 4,096 bytes per stream; enforce the deadline; terminate, kill, reap, join, and close in order; reject overflow or non-UTF-8 | A simultaneous two-pipe overflow child sets both overflow bits with exactly 4,096 retained bytes per stream; after a bounded readiness handshake, a hanging child plus descendant is terminated without a live process-group member or pipe reader; missing readiness plus synthetic launch, nonzero, invalid-UTF-8, stderr, and wrong-stdout cases reject; the real Make child returns exact PASS stdout and empty stderr within 10 seconds. |
 | Self-test child OS-operation faults | `scripts/check-gate-topology` | put every operation after successful `Popen` inside the cleanup guard and track only successfully started readers | Injected first-reader start failure enters cleanup, reaps the direct child, closes both pipes, and leaves no process-group member. DEFERRED: deterministic injection of pipe-read, wait, signal, thread-join, and pipe-close failures requires a substitutable process-operation seam that this repository does not otherwise need. The implementation review audits the remaining post-launch exception paths against the specified cleanup order; timeout plus descendant and launch-failure regressions cover the executable lifecycle. A separate child-runner hardening slice must add the seam before claiming the remaining fault-injection coverage. |
 | Worker tool/Git child ownership | `scripts/fresh-align-compiler` | route `run_tool` and `git` through the same descriptor-bound owned-child runner as build and aggregate; no direct `Popen` remains in probe or source identity paths | Unit smoke starts a probe and a Git child that create a session-breaking descendant, exceed each stream cap, and time out; the runner records start/group identity, terminates the group and cgroup, reaps descendants, closes pipes, and leaves no owned member. Static inspection rejects a direct probe/source `Popen` call outside the runner. |
-| Cgroup leaf ownership | `scripts/fresh-align-compiler` and `image/fresh/control/fresh_image_control.py` | retain parent/leaf descriptors and snapshots; use descriptor-relative cgroup controls, strict membership proofs, the cgroup-v2 unique-leaf/rmdir cleanup primitive under the protected profile writer boundary, and non-ignored cleanup in both worker and image self-test; image-control launch and early-setup failures enter the same post-lease finalizer | The worker lifecycle smoke exercises leaf replacement before cleanup, nonempty/malformed membership, PID reuse, successful descriptor-relative rmdir, and failed removal; the image control smoke exercises the same admission, identity, rmdir, cleanup-failure, and injected child-launch-failure cases, verifies no leaf remains on the successful cleanup path, and requires the platform error when removal cannot be proved. |
+| Cgroup profile and leaf ownership | `image/fresh/fresh-profile`, `scripts/fresh-align-compiler`, and `image/fresh/control/fresh_image_control.py` | Profile setup owns clean hierarchy creation and `pids` delegation; profile cleanup refuses any residual leaf. Worker and controller retain parent/leaf descriptors and snapshots, use their distinct fixed leaf prefixes, prove empty and sole-child membership, and use the cgroup-v2 unique-leaf/rmdir cleanup primitive under the protected profile writer boundary. The worker requires a successful `pids.max` write and parent-side membership proof; only the controller additionally reads the configured value back. Controller launch and early-setup failures enter the same post-lease finalizer, but controller failures retain the owning public child phase while worker pre-command lease failure is `PLATFORM platform`. Mount-table reinventory, unrelated-leaf reclamation, child-side rlimit readback, and per-descendant procfs-fd sampling are explicitly N/A at the controller/worker boundary described here. | The installed profile smoke covers duplicate setup, exact delegation use, runtime-root refusal, residual-child-cgroup refusal, and empty cleanup. The worker lifecycle smoke exercises leaf replacement before cleanup, nonempty/malformed membership, PID reuse, successful descriptor-relative rmdir, and failed removal. The image-control smoke exercises controller admission, exact `align-llm-control-` grammar, identity, rmdir, cleanup failure, and injected child-launch failure, verifies no leaf remains on each catchable successful path, and checks phase-owned error propagation. |
 | Private-root entry cleanup ownership | `scripts/fresh-align-compiler` | retain opened child/root descriptors through final identity validation and descriptor-relative removal; never close the identity witness before removal | Unit smoke injects replacement before and during child/root removal, verifies the replacement marker and moved original remain unchanged, and requires cleanup failure with all retained descriptors closed. |
 | Direct hosted success | `Makefile` | one explicit `-j1` child Make over the ordered hosted goals | Run with the pinned compiler; the offline Git 2.45 locked-input unit and all existing hosted-compatible focused smokes pass. |
 | Direct hosted failure | owning focused target | Make propagates nonzero | Invoke the aggregate with an invalid `ALIGNC`; the graph fails nonzero without fallback. |
@@ -1378,14 +1381,15 @@ The exact primary categories are selected by this immutable order:
 1. bootstrap mode and required environment names/encoding;
 2. external manifest bytes, digest, schema, bootstrap identity, and controller identity;
 3. Linux, architecture, Python, Make, `/proc`, signal, and timer prerequisites;
-4. all declared executable paths, digests, version probes, and fixed tool outputs;
-5. `.align-revision`, retained worktree/Git/common descriptors, Git policy, object/tree/index, and
+4. all manifest-declared runtime-binding trees and digests;
+5. all declared executable paths, digests, version probes, and fixed tool outputs;
+6. `.align-revision`, retained worktree/Git/common descriptors, Git policy, object/tree/index, and
    raw worktree manifest;
-6. cache root, cache manifest, and cache entries;
-7. `/tmp` identity, private-root creation, and source/cache materialization;
-8. build namespace construction, Cargo exit, output containment, and compiler artifact identity;
-9. compiler-launcher descriptor validation and aggregate child exit/output; and
-10. reverse cleanup and final owner-root absence proof.
+7. cache root, cache manifest, and cache entries;
+8. `/tmp` identity, private-root creation, and source/cache materialization;
+9. build namespace construction, Cargo exit, output containment, and compiler artifact identity;
+10. compiler-launcher descriptor validation and aggregate child exit/output; and
+11. reverse cleanup and final owner-root absence proof.
 
 Malformed input is reported only at the first applicable phase. A missing manifest digest is
 `TRUST`, a malformed revision is `SOURCE`, a cache digest or symlink escape is `CACHE`, an absent
@@ -1766,7 +1770,7 @@ The final public contract is:
 | ordinary-adoption request | The exact evidence-bearing Request 6 public request is a direct runner `execve` of `/usr/local/libexec/align-llm/fresh-supervise --mode ordinary-adoption` with the five fixed environment entries plus the required absolute `ALIGN_REPO`. The supervisor validates the image envelope and schema-2 manifest, component-walks and retains the canonical sibling path as FD 18, creates the one-time supervisor channel, forks exactly one dispatcher child, keeps the parent endpoint, passes the child endpoint as FD 16 plus FD 18, sends one ticket, and remains alive until the helper exits. Only the child invokes the retained FD-14 dispatcher with `argv[0] = request6-adoption-entrypoint`, `--mode ordinary-adoption --project-root-fd 4 --image-attestation-fd 6 --manifest-fd 8 --align-repo-root-fd 18 --align-repo-absolute <normalized-absolute> --align-repo-relative <canonical-relative> --invocation-nonce-fd 15 --supervisor-channel-fd 16`. The dispatcher authenticates its current-parent channel peer, stable PID start-time, controlled procfs executable, exact supervisor command line, ticket, project/Align/raw-tree/exception snapshot, fresh nonce, and sealed worker before any repository Make process; direct `env`, dispatcher, worker, or repository-script paths are non-evidence. Before FD-14 dispatch, failure is exit 1 with empty stdout and exactly `fresh compiler: ERROR TRUST supervisor\n` on stderr. After dispatch, success is exit 0 with empty stderr and exactly `json-scan adoption: PASS\n` on stdout; failure is exit 1 with empty stdout and exactly `json-scan adoption: ERROR <phase>\n` on stderr, where the closed phase set is `input`, `toolchain`, `revision`, `build`, `fixture`, or `cleanup`, the special worker-death outcome is `json-scan adoption: ERROR unobserved\n`, the first failed phase wins, and cleanup never replaces the primary phase. |
 | legacy run capsule | For legacy `ci`, fresh `adoption`, `build`, and `self-test` only, a supervisor-signed `runner-invocation/v1` DSSE envelope on descriptor 5 binds the current repository head/object format, canonical `ALIGN_REPO` relative path, `scripts/fresh-align-compiler` relative path and SHA-256, image-attestation digest, and image-manifest digest to this invocation. Ordinary Request 6 uses only `ordinary-adoption/v2` plus the supervisor-created fresh nonce, one-time channel ticket, and signed source-exception digest; its original authority FDs are consumed by bwrap as fixed read-only bind sources. |
 | image deployment inputs | The image contains only the two root-owned public keys. The read-only `/run/align-llm-fresh` deployment mount contains root-owned `image-attestation.dsse` mode `0444`, `image-digest` mode `0444`, and `provenance-digest` mode `0444`, plus invoking-uid-owned `run-signing-seed` mode `0400`; all are single-link regular files. `scripts/fresh-image-attest` is the offline image-attestation producer; the seed files remain outside Git and OCI layers. |
-| `fresh-profile setup <uid>` | Root-only image helper. It provisions the mode-`0700`, uid-owned `/run/user/<uid>/align-llm-fresh/{roots,lock}` profile (`lock` is a mode-`0600` single-link regular file) and delegated `/sys/fs/cgroup/align-llm-fresh/<uid>` parent with `pids` enabled. `cleanup <uid>` removes only an empty profile whose exact ownership and modes still match. |
+| `fresh-profile setup <uid>` | Root-only image helper. It provisions the mode-`0700`, uid-owned `/run/user/<uid>/align-llm-fresh/{roots,lock}` profile (`lock` is a mode-`0600` single-link regular file) and a previously absent delegated `/sys/fs/cgroup/align-llm-fresh/<uid>` parent with `pids` enabled. Duplicate setup fails. `cleanup <uid>` removes only an exact, empty profile and parent; any direct membership or child cgroup is refused and never reclaimed by this helper. |
 | `fresh-bootstrap --mode build` | Image-supervisor-only diagnostic invocation with both sealed image/run attestation descriptors and fixed repository inputs as `ci`; it builds and authenticates the private compiler bundle, performs cleanup, and never launches `capable-checks` or claims consumer adoption. Its success bytes are exactly `fresh compiler: PASS\n`. |
 | `fresh-bootstrap --mode adoption` | Image-supervisor-only focused adoption invocation with both sealed image/run attestation descriptors and fixed repository inputs. It authenticates and materializes the private compiler/runtime boundary, launches only the fixed focused adoption goal, performs cleanup, and never launches a routine aggregate or claims complete-gate evidence. Its success bytes are exactly `fresh compiler adoption: PASS\n`. |
 | `fresh-bootstrap --mode self-test` | Image-supervisor-only synthetic contract invocation with both sealed attestation descriptors. It uses only checked-in fixtures and image-attested tools, creates no project or Align build output, and proves the manifest, namespace, launcher, process, admission-lock, resource-limit, and cleanup unit matrix. Its success bytes are exactly `fresh compiler self-test: PASS\n`. |
@@ -3425,52 +3429,96 @@ fixtures before an output marker can run.
 
 ### 9.8 Process ownership, status, and cleanup
 
-The worker enables Linux child-subreaper mode before its first child, starts each probe, build bwrap,
-aggregate bwrap, and identity check in a new session, and retains pid start time, parent relation,
-process-group identity, and every worker-owned fd identity. It drains stdout and stderr concurrently in
-8,192-byte chunks and retains at most 65,536 bytes per phase stream. Probe streams are compared to
-the manifest before the next probe; build and aggregate bytes are internal diagnostics only. The
-worker uses monotonic deadlines of 5 seconds per probe, 120 seconds for validation/materialization,
-1,800 seconds for build and aggregate, 1 second TERM grace, 5 seconds KILL/reap, and 30 seconds
-cleanup. Signal handlers convert `SIGINT`, `SIGTERM`, and `SIGHUP` to one cancellation path.
+The image supervisor enables Linux child-subreaper mode before its first Git or tool child and
+preserves that process attribute when it execs the fixed bootstrap. The bootstrap verifies that the
+attribute remains enabled before it starts the worker. The worker independently enables subreaper
+mode before its first child. Each owner starts its probes, worker, build bwrap, aggregate bwrap, and
+identity checks in a new session and retains pid start time, parent relation, process-group identity,
+and every owner-held fd identity. Both controller and worker drain stdout and stderr concurrently;
+the controller uses its declared per-call limits and the worker uses 8,192-byte chunks with at most
+65,536 retained bytes per phase stream. Probe streams are compared to the manifest before the next
+probe; build and aggregate bytes are internal diagnostics only. The worker uses monotonic deadlines
+of 5 seconds per probe, 120 seconds for validation/materialization, 1,800 seconds for build and
+aggregate, 1 second TERM grace, 5 seconds KILL/reap, and 30 seconds cleanup. Signal handlers convert
+`SIGINT`, `SIGTERM`, and `SIGHUP` to one cancellation path.
 
 The image/profile exposes one delegated cgroup-v2 parent at
-`/sys/fs/cgroup/align-llm-fresh/<uid>`. Before root creation the worker verifies that the parent is
-on the expected cgroup-v2 mount, has the recorded device/inode and delegation, is writable only by
-the effective uid, has no unknown `align-llm-fresh-*` child, and has the required controllers. The
-parent path is fixed profile state, not an environment or command-line input. Before each child
-`execve`, the worker creates a fresh leaf named `align-llm-fresh-<32 lowercase random hex>` under
-that parent, records the parent/leaf device and inode, requires empty `cgroup.procs` and
-`cgroup.threads`, writes `pids.max=512`, and attaches only the just-created child after fork. The
-child and its descendants inherit that leaf; no worker or unrelated process is attached. A changed
-parent, pre-existing leaf, failed empty-membership proof, leaf replacement, or failed attach is a
-`PLATFORM` failure before the real command starts.
+`/sys/fs/cgroup/align-llm-fresh/<uid>`. Its three owners have deliberately different checkpoints.
+The root-only `fresh-profile setup` command creates a previously absent uid parent, enables the
+`pids` controller through the profile hierarchy, and transfers the exact control-file authority
+needed by the uid. `fresh-profile cleanup` accepts only an empty parent with no child cgroup and
+removes the profile; it never classifies or reclaims an unexpected leaf. The worker's platform gate
+requires the fixed parent to be a mode-`0700`, effective-uid-owned directory with the `pids`
+controller before private-root creation. The controller does not duplicate the worker's complete
+platform admission. Before each controller child it opens the fixed parent no-follow, requires the
+same directory owner and mode, and retains that descriptor through cleanup.
 
-The worker applies hard and soft `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and
-`RLIMIT_FSIZE=536870912` before `execve`, and verifies the exact values and cgroup membership from
-the child side before the command is admitted. A child write past `RLIMIT_FSIZE` fails with the
-kernel file-size-limit result and is classified at the owning phase (`BUILD`/`aggregate`); it does
-not override the smaller generated-`main`, tmpfs, overlay, or root-byte bounds. Failure to configure
-or verify a cgroup or rlimit is a `PLATFORM` failure before child side effects.
+Before each owned child `execve`, the controller creates
+`align-llm-control-<32 lowercase random hex>` and the worker creates
+`align-llm-fresh-<32 lowercase random hex>` under that parent. Each owner records the parent/leaf
+device and inode, requires empty `cgroup.procs` and `cgroup.threads`, configures `pids.max=512`, and
+attaches only the just-created child after fork. The controller reads the configured value back;
+the worker relies on a successful control write and verifies sole direct-child and kernel-thread
+membership from the parent. The child and its descendants inherit that leaf; no owner or unrelated
+process is attached. Leaf creation and control-file
+operations are the executable cgroup-v2 proof; an additional controller mount-table or controller
+inventory scan is N/A because profile setup owns initial hierarchy construction and profile cleanup
+refuses any residual child. A changed parent, failed empty-membership proof, leaf replacement, or
+failed attach is rejected before the real command starts. Worker lease admission maps to
+`PLATFORM platform`; controller lease admission maps to the public phase of the child being
+admitted, as defined below.
 
-After every normal exit, timeout, or signal, the worker terminates and reaps the owned process tree,
-waits for the leaf's `cgroup.procs` and `cgroup.threads` to become empty, rechecks the parent/leaf
-identity, and removes only that empty leaf. A nonempty, replaced, or unprovable leaf is never
-removed and produces the documented cleanup failure. The delegated parent is an exclusive
-worker/profile writer boundary for this lifecycle; a non-cooperating same-UID writer is outside
-the profile threat model. An uncatchable worker death leaves the unique
-leaf for the bounded orphan policy; the next invocation fails closed before creating a root until a
-separately supervised profile cleanup proves the leaf empty and removes it. The worker's own fd table
-is checked before root creation, after every descriptor handoff, and before cleanup.
-The subreaper samples descendant count and every owned `/proc/<pid>/fd` directory at each deadline
-tick; a process, open-fd, or private-entry cap-plus-one is terminated and reported before another
-child is admitted. These controls are part of the platform profile, not optional tuning; the platform
-probe rejects an undelegated or writable-by-another-uid cgroup.
+Both controller and worker apply hard and soft `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and
+`RLIMIT_FSIZE=536870912` in the pre-exec child path; syscall failure prevents `execve`. The parent
+then verifies exact cgroup process/thread membership before accepting output, but no child-side
+rlimit readback handshake is claimed. A child write past `RLIMIT_FSIZE` fails with the kernel
+file-size-limit result and is classified at the owning phase (`BUILD`/`aggregate`); it does not
+override the smaller generated-`main`, tmpfs, overlay, or root-byte bounds. Worker failure to
+configure a cgroup or rlimit, or to verify membership, is `PLATFORM platform`; the controller
+retains its owning child phase.
 
-On every catchable exit the worker terminates owned descendants, waits for pid start time and
-process-group identity, waits for the aggregate bwrap to release its overlay mount, closes readers
-and handoff files, removes the one known overlayfs work entry with descriptor-relative no-follow
-operations, rescans the private root, and removes only known children. The overlay upper and work
+After the direct child exits normally, both controller and worker give already-exiting descendants
+the same fixed one-second grace to drain and be reaped; natural drain during that bound is success
+and sends no signal. Each production termination helper returns whether a direct child or descendant
+required forced termination. A still-running direct child or descendant after the grace is killed
+and makes the owning operation fail even when the direct child returned zero and cleanup subsequently
+succeeds. After every normal exit, timeout, or signal, the owning subreaper calls `waitpid(-1)` until
+it proves `ECHILD`; an empty cgroup alone is insufficient because exited descendants may be zombies.
+It also waits for the leaf's `cgroup.procs` and `cgroup.threads` to become empty, rechecks the
+parent/leaf identity, and removes only that empty leaf. A nonempty, replaced, unreaped, or unprovable
+leaf/tree is never accepted and produces the documented cleanup failure. The delegated parent is an
+exclusive controller/worker profile-writer boundary for this lifecycle; a non-cooperating same-UID
+writer is outside the profile threat model. The initial empty-leaf and direct-child membership proof establishes
+ownership before the child is admitted. After that gate, every member of the authenticated leaf is
+owned regardless of a later process-group or session change: `SIGTERM` targets the authenticated
+direct child's original group when it still exists, while `cgroup.kill` is the authoritative
+forced-termination boundary for every remaining member. An uncatchable worker death leaves its
+private root for the bounded worker orphan policy; the next worker invocation fails closed before
+creating another root. An uncatchable controller death can instead leave its unique control leaf.
+Automatic in-process reclamation of that leaf is N/A: the external profile cleanup refuses the
+nonempty hierarchy, and separately supervised or manual recovery is outside this profile. No
+controller success path may leave a leaf. The worker's own fd table is checked before root creation,
+after every descriptor handoff, and before cleanup. Children inherit `RLIMIT_NOFILE` and the leaf's
+`pids.max`; enumerating every descendant's procfs fd table at each controller or worker deadline tick
+is N/A because those kernel limits own the two dimensions. Long worker build and aggregate
+operations additionally sample their owned private-tree byte and entry quotas. These controls are
+fixed profile behavior rather than optional tuning.
+
+Controller lease, launch, lifecycle, and forced-termination errors retain the public phase that
+owns the child: Git identity maps to `SOURCE project-source`, retained runtime/tool probes to
+`TOOL tools`, bwrap capability probes to `TRUST bwrap`, platform probes to `PLATFORM platform`, and
+the bootstrap-owned worker to `CHILD aggregate`. This phase-owned mapping is intentional; only the
+worker's pre-command lease gate has the universal `PLATFORM platform` mapping. Timeout and
+output-overflow statuses keep their existing higher-priority public result; forced termination is
+still completed and fully reaped before that result is emitted. A zero-exit direct child with a
+persistent descendant never produces a `CompletedProcess` success.
+
+On every catchable exit the worker proves that owned descendants either drained naturally after a
+normal direct-child exit or were terminated after the applicable grace, waits for pid start time and
+process-group identity when signalling is required, waits for the aggregate bwrap to release its
+overlay mount, closes readers and handoff files, removes the one known overlayfs work entry with
+descriptor-relative no-follow operations, rescans the private root, and removes only known children.
+The overlay upper and work
 directories are inspected before removal: the worker accepts only the declared final `main` output
 and the exact known `work` directory state, and never recursively deletes an upper or work entry it
 cannot classify. Before removing the random root name it
@@ -3515,11 +3563,20 @@ grammar so a trust failure has one deterministic status even though no worker ro
 1. image supervisor and both signed attestation descriptors;
 2. bootstrap mode, required input names, rejected caller manifest path/digest overrides, and ASCII/UTF-8 encoding;
 3. image-attested manifest snapshot, schema, canonical order, and bounds;
-4. fixed bootstrap, Python, Linux, architecture, `/proc`, and timer capabilities, followed by
-   bwrap descriptor authentication and retention; no bwrap child runs in this phase;
-5. namespace, overlay, no-symlink-mount, and read-only `/tools` capability probes using the retained
-   bwrap descriptor, then no-follow controller-path component checks, bounded regular-file worker
-   snapshot, and every other retained tool descriptor, digest, mode, version, and probe output;
+4. fixed bootstrap, Python, Linux, architecture, `/proc`, and timer capabilities; controller
+   subreaper setup before its first child and bootstrap verification that the setting survived exec;
+5. every manifest-declared runtime-binding source tree and digest before any manifest-declared tool
+   is opened or executed; then each retained tool descriptor, digest, mode, version, and exact probe
+   output, including the bwrap tool identity; then bwrap help, namespace, overlay,
+   no-symlink-mount, and read-only `/tools` capability probes using that retained descriptor; then
+   no-follow controller-path component checks and the bounded regular-file worker snapshot. A
+   runtime-binding failure therefore wins over a simultaneously invalid bwrap binding and returns
+   `TOOL tools`; after the bwrap tool itself is accepted, its capability-probe failures return
+   `TRUST bwrap`. The supervisor completes this admission before `_git_identity`, reopens the Git
+   file named by its validated runtime-tree node into a retained descriptor, rechecks that node's
+   exact mode, size, and digest, and executes that descriptor rather than its pathname; the retained
+   reader accepts the materializer's intentional same-inode Git aliases and therefore does not
+   impose a single-link rule;
 6. project-root Git descriptors and policy, raw project tree/index/worktree and its root `.git`,
    `main`, and `target` output/control exceptions, then the exact `.align-revision`, retained
    `ALIGN_REPO` Git descriptors and policy, SHA-1-only pinned Align `HEAD`/tree/index/worktree, its
@@ -3548,7 +3605,8 @@ are supplied together, phase `input` wins and the result is exactly
 
 The category for each primary phase is fixed rather than selected by an implementation detail:
 `supervisor` and `manifest` map to `TRUST`, `input` to `ARGUMENT`, `platform` and `concurrency` to
-`PLATFORM`, `bwrap` to `TRUST`, `tools` to `TOOL`, both source phases to `SOURCE`, `cache` to
+`PLATFORM`, `bwrap` to `TRUST`, `tools` to `TOOL` including runtime-binding identity failures, both
+source phases to `SOURCE`, `cache` to
 `CACHE`, `filesystem` to `FILESYSTEM`, `build` to `BUILD`, `compiler` to `COMPILER`, `aggregate`
 to `CHILD`, and `internal` to `INTERNAL`. A malformed or mismatched value is therefore reported at
 the first phase that owns its validation, with no path, errno, or free-form subcategory appended to
@@ -3573,8 +3631,8 @@ the public line.
 | Digest tree and cache wire | worker | Exact file/dir schema with raw/staged modes, structural hash, canonical JSON hash, raw-byte order, schema-2 cache manifest, and the five fixed Cargo prefixes | `fresh-v2-digest-tree-golden` checks the runtime `abc` vector; `fresh-v2-cache-manifest-golden` checks the nested `registry/index/a` bytes, allowed-prefix array, all digests, mode mapping, count, total, and malformed or out-of-prefix cache manifests. |
 | Source-manifest wire | worker | Legacy schema-1 source identity bytes remain unchanged: object-format field, raw-byte path encoding/order, raw `.git/index` preimage including extensions/checksum, explicit root Git-control exception, Git tree/blob objects for directory/file/symlink in both SHA-1 and SHA-256 formats, raw/staged modes including `null` symlink modes, both root target exceptions, and descriptor digest; the project source may use either object format but the Align source is SHA-1-only in this profile. Ordinary Request 6 uses the separate `raw-tree/v1` and `source-exception/v2` wires, whose complete exception identity is carried by `ordinary-adoption/v2.source_exception_sha256`; it does not alter schema-1 readers. | `fresh-v2-source-manifest-golden`, `fresh-v2-source-manifest-symlink-golden`, and `fresh-v2-source-manifest-object-format-golden` independently recompute the unchanged schema-1 bytes; `raw-tree-v1-golden` and the Request 6 exception golden independently recompute `8b30014d36e10e32e230fcbbcbe12b6933903da48c8569140cadd62795caad77` and `0c685027b378e6ef448e8efd807532eb8f056de04f550e884d56a5ef0834ead0`, including semantic-to-byte and byte-to-semantic negatives for `.git`, both `HANDOFF.md` control rows, raw order, invalid paths, and symlink targets. `fresh-v2-source-identity-smoke` rejects a SHA-256 Align pin before source acceptance. |
 | Bwrap trust and capability probe | worker | Authenticate and retain the exact image-owned `/usr/bin/bwrap` binding at FD 27 before any bwrap execution; the worker remains the outer owner, forks one launcher child, and that child invokes FD 27 with `execveat(AT_EMPTY_PATH)`, so successful exec closes FD 27 through its construction `FD_CLOEXEC` flag and bwrap/helper never receive it or list it in a Python `pass_fds` tuple; require and exercise descriptor-backed read-only/writable binds plus overlay support, `--as-pid-1 --sync-fd 16`, `--unshare-ipc`, run every platform probe from that descriptor, and reject mutable-path replacement. Every post-FD-14 launcher/bind/platform failure maps to `toolchain`; pre-dispatch image failure remains `TRUST supervisor`. | `fresh-v2-bwrap-trust-smoke` injects caller manifest overrides, mutates the fixed image manifest and bwrap sources before and during descriptor-bind, namespace, overlay, no-symlink, IPC-isolation, and read-only-tools probes, proves FD 27 survives only to the immediate exec edge, exercises `--sync-fd` with and without `--as-pid-1`, and requires the retained bytes or the exact `toolchain`/`TRUST` rejection before private-root creation. |
-| Tool identity | worker | Canonical no-symlink host path, retained no-follow descriptor, full hash, probe from retained bytes, copied private bytes, exact probe | `fresh-v2-tool-identity-smoke` covers symlink aliases, replacement after open, version, timeout, overflow, unlisted names, retained-descriptor execution, and copied-byte mutation. |
-| Runtime/loader/Python/compiler identity | worker plus bwrap | Complete ELF interpreter/DT_NEEDED closure for staged tools and generated `main`, authenticated derived linker/loader/pkg-config paths, stable installed-runtime hardlinks with complete before/copy byte proof, actual ordinal staging paths, CPython stdlib and `lib-dynload` trees, the self-contained `/runtime/cc-suite` driver/helper/resource/header closure, executable runtime modes 0555 versus data modes 0444, and no Python bytecode writes or host import | `fresh-v2-runtime-closure-smoke` replaces a library, interpreter, stdlib module, native extension, compiler-suite helper/resource/header, and product dependency, checks stable runtime-hardlink admission while cache hardlinks still reject, checks build and aggregate, proves identical structural library-tree and file aliases collapse in first-manifest order while byte-distinct aliases remain ambiguous, proves derived paths and final-output closure, proves descriptor paths name the copied ordinal object, rejects host GCC fallback/marker helpers, and proves no `__pycache__` or host path appears. |
+| Tool identity | image controller plus worker | Canonical no-symlink host path, retained no-follow descriptor, full hash, probe from retained bytes, copied private snapshot, exact probe; self-test controller and worker both reject runtime identity before opening or probing an invalid tool | `fresh-v2-tool-identity-smoke` covers symlink aliases, replacement after open, version, timeout, overflow, unlisted names, retained-descriptor execution, and copied-byte mutation; `run-fresh-image-control-smoke` and `run-fresh-worker-unit-smoke` each execute a runtime-invalid plus tool-invalid case through the production admission function, require `TOOL tools`, and prove the tool open/probe owner was not called. |
+| Runtime/loader/Python/compiler identity | image controller, worker, plus bwrap | Complete ELF interpreter/DT_NEEDED closure for staged tools and generated `main`, authenticated derived linker/loader/pkg-config paths, stable installed-runtime hardlinks with complete before/copy byte proof, actual ordinal staging paths, CPython stdlib and `lib-dynload` trees, the self-contained `/runtime/cc-suite` driver/helper/resource/header closure, executable runtime modes 0555 versus data modes 0444, runtime-before-tool admission in both self-test owners, and no Python bytecode writes or host import | `fresh-v2-runtime-closure-smoke` replaces a library, interpreter, stdlib module, native extension, compiler-suite helper/resource/header, and product dependency, checks stable runtime-hardlink admission while cache hardlinks still reject, checks build and aggregate, proves identical structural library-tree and file aliases collapse in first-manifest order while byte-distinct aliases remain ambiguous, proves derived paths and final-output closure, proves descriptor paths name the copied ordinal object, rejects host GCC fallback/marker helpers, and proves no `__pycache__` or host path appears; the controller and worker multi-invalid owners named above protect the shared precedence. |
 | Cache placement/copy | worker | External manifest outside root with canonical schema-2 digest, exact five-prefix allowlist, semantically correct non-root count, pre-copy per-file/total bounds, retained source descriptors, directory-aware no-follow/nonblocking copy, complete descriptor-relative pre/post tree snapshot (names, types, modes, symlink targets, file sizes/digests, and directory metadata), raw/staged mode proof, destination rehash, and postscan | `fresh-v2-cache-smoke` covers manifest-in-root, malformed wire, the corrected three-node `registry/index/a` golden, every out-of-prefix config/wrapper case, symlink, FIFO/special-file races that must fail without blocking, hardlink, rename, 512-MiB file and 20-GiB total limits, raw/staged mode mismatch, digest, offline cases, and deterministic add/replace plus same-size post-write mutations after enumeration and during recursion. |
 | Git/source identity | worker | Separate retained project and `ALIGN_REPO` worktree/Git/common descriptors, scan-capable no-follow reopen from each admitted `O_PATH` root, worker-owned procfs paths that survive Git closing inherited descriptors, project `HEAD`/object-format equality with the signed run capsule before source acceptance, exact SHA-1-only Align pin HEAD/tree/index/clean-worktree proof, explicit root `.git` control exclusion, raw-byte normalization of Git tree order, both raw manifests and exception metadata, raw-to-staged mode mapping, descriptor-relative copies with post-copy proof, fixed tracked Cargo config policy, no helper/config/filter | `fresh-v2-source-identity-smoke` covers `O_PATH` admission, a directory/file-name pair whose Git order differs from raw-byte order, ordinary and linked-worktree roots, root `.git` file/directory handling, common-directory replacement, ancestor ABA, project run-capsule-head mismatch, sibling SHA-1/SHA-256 pin and dirty-tree rejection, source replacement during copy, replacement refs, hidden inputs, contained symlinks, project `main`, both root `target` exceptions, exact `.cargo/config.toml`, mode normalization, and same-HEAD extra Rust input. The separate `raw-tree-v1-output-exception-golden` covers handoff content digests, exception metadata, and proves no exception bytes enter `entries`. |
 | Private staging | worker plus admission lock | 0700 owner-only `project-source`, `align-source`, and baseline Git view; fixed source/tool/runtime/Git byte, entry, depth, inode, object, descriptor, process, root-byte, and overflow bounds; bounded source descriptor window with re-opened parent identity checks; root-relative no-follow mount descriptors consumed by bwrap fd-bind or self-fd overlay operations; pre-created build `/target/tmp` and `cargo-target/fresh-bundle`, namespace-owned aggregate tmpfs, same-filesystem overlay upper/work, descriptor-relative quarantine cleanup using `renameat2(RENAME_NOREPLACE)`, profile-owned protected per-user `roots` parent, and one-root-per-user admission | `fresh-v2-root-staging-smoke` covers protected-parent collisions, executable-bit preservation, every cap and cap-plus-one/overflow case, mixed 200,000-entry source fd-window exhaustion, directory replacement, symlink target replacement, both source copies, baseline Git copy, modes, target seed, compiler-output hardlink materialization, aggregate tmpfs/no-follow mount, upper/work ownership, known overlay `work` cleanup, output escape, overlay unmount, and cleanup quarantine replacement/identity cases. |
@@ -3598,7 +3656,7 @@ the public line.
 | Aggregate topology | supervisor/worker/Makefile | For `ci`, exactly one bwrap aggregate, UID/GID 0 with `CAP_SYS_ADMIN`/`CAP_SETFCAP` plus temporary setup-only `CAP_SETUID`/`CAP_SETGID`, mount-guard preparation of the one descendant validation user namespace, reduction to `CAP_SETFCAP` plus `no_new_privs` before Make, closed executable inventory including `seq`, supervisor exact request validation and direct-bootstrap argv/env/fd-4/5/6 boundary, private-source-only Make parsing, fixed internal `-f /workspace/Makefile`, complete normalized GNU Make 4.3 option/alias matrix with a separate accepted `--no-print-directory` row, separated/attached/`--name=value` arguments, explicit rejections for newer `--jobserver-style`/`--shuffle`, empty inherited-fd set after bootstrap, explicit `ALIGNC_CACHE=off`, `PYTHONDONTWRITEBYTECODE=1`, derived linker paths, private project Git environment, and fixed goal order; for `adoption`, exactly one focused bwrap with the same staged process/tool/source/cache/tmpfs boundary, no overlay upper/work, no prepared validation user namespace, no `/workspace/main`, and the fixed focused goal | `fresh-v2-aggregate-topology-smoke` covers every aggregate-plus-focused/aggregate order, every minimum-version option/alias/argument spelling/assignment, accepted-request and newer-option rejection, tracked and untracked alternate makefile bypass, fixed internal Makefile selection, repository Makefile supervisor bypass, loader-variable injection, read-only-tools identity, private Git propagation to eval/loop, cache-off and bytecode-disable propagation, inventory completeness, exact fd map, and empty descriptor propagation except for the single prepared user-namespace fd at the nested coding-task boundary; the qualification inventory additionally asserts the nested `--cap-drop ALL --cap-add CAP_SYS_ADMIN --cap-add CAP_SETFCAP` order, no nested `--unshare-all`/`--unshare-user`, prepared `--userns` descriptor use, the aggregate `--prepare-validation-userns` flag, root `--size 268435456`, authenticated `/tools/fresh-alignc`, bounded Git view, and published-ELF closure owners. `fresh-v2-focused-adoption-request-smoke` covers the adoption vector's omitted overlay/userns objects, read-only source workspace, fixed goal, no-publication proof, and focused cleanup. |
 | Ordinary adoption concurrency and orphan cleanup | wrapper plus installed profile lock/cgroup parent | The ordinary wrapper and Section 9 fresh modes share the fixed per-user `flock` at `/run/user/<uid>/align-llm-fresh/lock`; `LOCK_NB` rejects every second ordinary/fresh entrypoint before cgroup, root, namespace, or Make side effects. A normal owner releases the lock only after child/cgroup/namespace/root cleanup; a `SIGKILL` owner relies on `--die-with-parent` and cgroup emptiness, and the next owner fails closed on an unprovable quarantine candidate. | `run-json-scan-row-ownership-adoption-smoke` runs ordinary+ordinary, ordinary+fresh in both orders, recursive entry, failed-second markers, orphaned cgroup/root, and replacement-before-admission cases with exact ordinary/fresh status bytes and no cross-root deletion. |
 | Ordinary resource boundary | outer wrapper cgroup gate plus `adoption-namespace` | The installed profile supplies the existing delegated per-user cgroup parent under `/sys/fs/cgroup/align-llm-fresh/<uid>` with `pids.max=512`; memory cgroup enforcement is N/A because that profile delegates only pids. The outer wrapper owns the unique leaf, empty admission, start-gated bwrap attach, membership proof, and descriptor-relative leaf cleanup; the namespace never mounts host cgroup state. Every child inherits and verifies `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and `RLIMIT_FSIZE=536870912`. The ordinary namespace remounts root and private build trees at `68719476736` bytes/`2000000` inodes, `/private-cargo-home` at `25769803776` bytes/`400000` inodes, `/private-compiler-cache` at `8589934592` bytes/`400000` inodes, setup-only `/private-tool-inventory` at `268435456` bytes/`65536` inodes (unmounted before any child), `/private-tool-bin` at `268435456` bytes/`65536` inodes, and `/tmp` at `268435456` bytes/`65536` inodes. Sealed inputs are admitted only when their checked aggregate is at most 48 GiB and 1,500,000 entries. Cargo admission uses the schema-2 20 GiB/200,000-entry logical limit plus the page-rounded file, directory, and 2 GiB metadata-reserve formula, capped at the 24 GiB Cargo-home size. The supervisor counts bytes and entries during each vector, rejects cap-plus-one, and owns no host-writable target/cache bind. | `run-json-scan-row-ownership-adoption-smoke` covers process/fd/file-size/cgroup start-gate and membership limits, every tmpfs byte/inode boundary, the logical 20 GiB and materialized 24 GiB Cargo-home boundaries, the 1,500,000-entry sealed-input boundary, private-entry cap-plus-one, stream cap, host-root cleanup, and cleanup after timeout, signal, or uncatchable owner death. |
-| Process ownership | worker plus per-invocation cgroup/rlimit boundary | Subreaper, sessions, bounded streams/deadlines, PID start-time checks, descendant reap, a unique worker-owned delegated cgroup leaf with strict empty admission and post-attach membership proof, cgroup-v2 unique-leaf/rmdir cleanup under the protected writer boundary, `pids.max=512`, `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, `RLIMIT_FSIZE=536870912`, source active-window accounting, and bounded worker fd scans | `fresh-v2-process-lifecycle-smoke` covers build/aggregate hangs, stream overflow, double fork, signal, PID reuse, reader closure, process cap-plus-one, source-window cap-plus-one, total-fd cap-plus-one, exact file-size-limit boundary, cgroup leaf replacement-before-cleanup/nonempty cleanup, admission nonempty/malformed/foreign membership, successful descriptor-relative rmdir, uncatchable worker death, and missing cgroup delegation. |
+| Process ownership | image supervisor/bootstrap and worker plus per-child cgroup/rlimit boundary | Supervisor sets subreaper before its first child, bootstrap verifies the exec-preserved setting, and worker independently sets it; sessions, bounded streams/deadlines, PID start-time checks, `waitpid(-1)` to `ECHILD`, a returned forced-termination state that rejects an otherwise successful operation, and a unique owner-authenticated delegated cgroup leaf with strict empty admission and post-attach membership proof; process-group/session changes do not weaken the authoritative cgroup kill boundary; cgroup-v2 unique-leaf/rmdir cleanup, `pids.max=512`, `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, `RLIMIT_FSIZE=536870912`, source active-window accounting, bounded owner fd checks, and sampled worker private-tree quotas. Per-tick descendant procfs-fd enumeration is N/A because inherited rlimits and cgroup limits own those bounds. | `run-fresh-image-control-smoke` covers the public `supervise` runtime-before-any-tool-before-Git boundary, invalid-runtime plus invalid-bwrap precedence through `controller_runtime_bwrap_precedence_case`, the exact controller leaf grammar through `controller_cgroup_contract_case`, natural drain, and a real persistent session-breaking double-fork descendant through production `_run_controlled_child`; `run-fresh-worker-unit-smoke` covers natural drain and a real persistent session-breaking double-fork descendant through production `run_owned`. Both persistent cases use production termination, forced-failure propagation, and descendant reaping while replacing only the local cgroupfs transport below the production `cgroup.kill` owner; both prove no child, an empty authenticated simulated leaf, and leaf removal. Controller cases also cover failed subreaper set/exec-preservation verification. `fresh-v2-process-lifecycle-smoke` retains build/aggregate hangs, stream overflow, signal, PID reuse, reader closure, process/fd/file-size caps, leaf replacement/nonempty cleanup, admission failures, uncatchable worker death, and missing delegation. |
 | Cleanup success | worker | Reverse descriptor-relative quarantine removal, stable parent/root device-inode/type/mode/owner identity while owned content metadata changes, destination identity proof after every move, root absent before PASS | `fresh-v2-cleanup-smoke` proves normal staging metadata changes are accepted, while no private root, handoff file, cache copy, target, marker, or child remains; deterministic replacement-before-move cases leave the replacement and the admitted tree untouched. |
 | Cleanup failure | worker plus admission lock | Never delete replacement/unowned path within the protected writer boundary; atomic no-replace private-root moves, cgroup-v2 unique-leaf/rmdir identity and empty proofs, exact primary/cleanup precedence; uncatchable death leaves one bounded root, releases only the kernel lock, and makes the next invocation fail closed before root creation | `fresh-v2-cleanup-failure-smoke` injects close, private quarantine move and identity mismatch, cgroup leaf identity/nonempty/rmdir failures, unlink, parent replacement, live child, catchable signal, successful-phase cleanup failures, worker `SIGKILL`, repeated death attempts, and later invocations that must leave the unprovable root untouched and refuse a second root. |
 | Baseline Git identity | worker plus baseline runners | Normal baseline and project Git calls use a worker-copied read-only `/baseline-git` view; negative replacement fixtures use a separate `/target/tmp` private view; explicit `GIT_DIR`/`GIT_COMMON_DIR`/`GIT_WORK_TREE`, copied objects, fixed hardening variables, and the standalone chain checker's exact fresh executable and private-view tuple never resolve the hidden workspace, source common dir, host Git, or an unlisted runtime executable | `fresh-v2-baseline-scratch-smoke` plus `run-baseline-invalid-smoke` run normal, eval, loop, invalid-baseline, and chain-environment paths, check linked-worktree object resolution, private-object replacement, hardening-variable preservation, alternate rejection, fixture-variable clearing, partial/different fresh executable settings, mismatched Git-view settings, and unchanged project source-control state. |

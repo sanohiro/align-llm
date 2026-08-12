@@ -70,6 +70,8 @@ SUPERVISOR_VERSION = "1.0.0"
 WORKER_INVOCATION_TIMEOUT = 5_000
 CONTROL_STREAM_LIMIT = 65_536
 CONTROL_CGROUP_PREFIX = "align-llm-control-"
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
 BOUNDARY_WORKER_PATH = "scripts/run-json-scan-row-ownership-adoption"
 BOUNDARY_TIMEOUT_SECONDS = 5.0
 
@@ -255,19 +257,6 @@ def _control_cgroup_child_membership(leaf_fd: int, pid: int) -> None:
         raise OSError(errno.EBUSY, "control cgroup contains an unexpected thread")
 
 
-def _control_cgroup_group_is_owned(leaf_fd: int, process_group: int) -> bool:
-    members = _control_cgroup_members(leaf_fd, "cgroup.procs") + _control_cgroup_members(
-        leaf_fd, "cgroup.threads"
-    )
-    for pid in members:
-        try:
-            if os.getpgid(pid) != process_group:
-                return False
-        except ProcessLookupError:
-            return False
-    return True
-
-
 def _control_cgroup_lease() -> tuple[int, int, str, tuple[int, int, int, int, int]]:
     parent_path = f"/sys/fs/cgroup/align-llm-fresh/{os.geteuid()}"
     parent_fd = os.open(
@@ -438,6 +427,44 @@ def _control_pid_start(pid: int) -> str:
     return fields[19].decode("ascii")
 
 
+def _control_require_subreaper() -> None:
+    value = ctypes.c_int()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(value), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "control subreaper query failed")
+    if value.value != 1:
+        raise OSError(errno.EPERM, "control subreaper is not enabled")
+
+
+def _control_set_subreaper() -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "control subreaper setup failed")
+    _control_require_subreaper()
+
+
+def _control_reap_descendants(
+    deadline: float, process: subprocess.Popen[bytes]
+) -> bool:
+    """Reap every child available to this subreaper and prove ECHILD."""
+    while True:
+        reaped = False
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return True
+            if pid == 0:
+                break
+            if pid == process.pid:
+                process.returncode = os.waitstatus_to_exitcode(status)
+            reaped = True
+        if time.monotonic() >= deadline:
+            return False
+        if not reaped:
+            time.sleep(0.01)
+
+
 def _control_terminate(
     process: subprocess.Popen[bytes],
     *,
@@ -447,7 +474,8 @@ def _control_terminate(
     leaf_fd: int,
     leaf_name: str,
     identity: tuple[int, int, int, int, int],
-) -> None:
+) -> bool:
+    forced_termination = process.poll() is None
     populated = _control_cgroup_populated(leaf_fd)
     if process.poll() is None:
         try:
@@ -455,22 +483,24 @@ def _control_terminate(
                 os.killpg(group, signal.SIGTERM)
         except ProcessLookupError:
             pass
-    deadline = time.monotonic() + 1
-    while time.monotonic() < deadline and (process.poll() is None or populated):
-        time.sleep(0.01)
-        populated = _control_cgroup_populated(leaf_fd)
-    if process.poll() is None or populated:
+    grace_deadline = time.monotonic() + 1
+    childless = _control_reap_descendants(grace_deadline, process)
+    populated = _control_cgroup_populated(leaf_fd)
+    if not childless or process.poll() is None or populated:
+        forced_termination = True
         if not _control_cgroup_matches(parent_fd, leaf_fd, leaf_name, identity):
             raise OSError(errno.ESTALE, "control cgroup identity changed")
-        if not _control_cgroup_group_is_owned(leaf_fd, group):
-            raise OSError(errno.EPERM, "control cgroup contains a foreign process")
         _control_cgroup_file_write(leaf_fd, "cgroup.kill", b"1\n")
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired as error:
         raise OSError(errno.ETIMEDOUT, "control child did not exit") from error
+    cleanup_deadline = time.monotonic() + 5
+    if not _control_reap_descendants(cleanup_deadline, process):
+        raise OSError(errno.EBUSY, "control descendants were not reaped")
     if _control_cgroup_populated(leaf_fd):
         raise OSError(errno.EBUSY, "control cgroup remained populated")
+    return forced_termination
 
 
 def _run_controlled_child(
@@ -492,6 +522,7 @@ def _run_controlled_child(
     group = -1
     timed_out = False
     overflow = False
+    forced_termination = False
     result: subprocess.CompletedProcess[bytes] | None = None
     primary_error: BaseException | None = None
     stream_error: BaseException | None = None
@@ -555,23 +586,15 @@ def _run_controlled_child(
                     process.wait(timeout=max(0.1, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
                     timed_out = True
-            if (
-                timed_out
-                or overflow
-                or process.poll() is None
-                or _control_cgroup_populated(leaf_fd)
-            ):
-                _control_terminate(
-                    process,
-                    start=start,
-                    group=group,
-                    parent_fd=parent_fd,
-                    leaf_fd=leaf_fd,
-                    leaf_name=leaf_name,
-                    identity=identity,
-                )
-            else:
-                process.wait()
+            forced_termination = _control_terminate(
+                process,
+                start=start,
+                group=group,
+                parent_fd=parent_fd,
+                leaf_fd=leaf_fd,
+                leaf_name=leaf_name,
+                identity=identity,
+            )
             result = subprocess.CompletedProcess(
                 list(arguments),
                 process.returncode,
@@ -618,6 +641,8 @@ def _run_controlled_child(
         raise subprocess.TimeoutExpired(arguments, timeout)
     if overflow:
         raise ValueError("control child output exceeds bound")
+    if forced_termination:
+        raise OSError(errno.ECHILD, "control descendant required forced termination")
     return result
 
 
@@ -1061,7 +1086,68 @@ def _reject_environment(environment: Mapping[str, str], *, mode: str) -> str:
     return _normalize_relative(align_repo)
 
 
-def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
+def _retained_runtime_file(manifest_raw: bytes, expected_path: str) -> int:
+    try:
+        manifest = validate_manifest_bytes(manifest_raw)
+    except WireError as error:
+        raise ControlError("TRUST", "manifest", "manifest is invalid") from error
+    candidates = [
+        binding
+        for binding in manifest["runtime_bindings"]
+        if expected_path == binding["source"]
+        or expected_path.startswith(binding["source"].rstrip("/") + "/")
+    ]
+    if not candidates:
+        raise ControlError("TOOL", "tools", "retained runtime identity is missing")
+    longest = max(len(binding["source"]) for binding in candidates)
+    matches = [binding for binding in candidates if len(binding["source"]) == longest]
+    if len(matches) != 1:
+        raise ControlError("TOOL", "tools", "retained runtime identity is ambiguous")
+    binding = matches[0]
+    node = binding["manifest"]
+    relative = expected_path[len(binding["source"]) :].removeprefix("/")
+    for component in relative.split("/") if relative else ():
+        entries = [entry for entry in node["entries"] if entry["name"] == component]
+        if len(entries) != 1:
+            raise ControlError("TOOL", "tools", "retained runtime file is missing")
+        node = entries[0]
+    if node["kind"] != "file" or node["mode"] != "0755":
+        raise ControlError("TOOL", "tools", "retained runtime file is invalid")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            expected_path,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        before = _identity(descriptor)
+        if (
+            not stat.S_ISREG(before.mode)
+            or stat.S_IMODE(before.mode) != 0o755
+            or before.owner != 0
+            or before.links < 1
+            or before.size != node["size"]
+            or before.size > 536_870_912
+        ):
+            raise ControlError("TOOL", "tools", "retained runtime file identity rejected")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        raw = _read_exact_bounded(
+            descriptor,
+            limit=536_870_912,
+            deadline=time.monotonic() + SNAPSHOT_DEADLINE_SECONDS,
+        )
+        if not _same_identity(before, _identity(descriptor)):
+            raise ControlError("TOOL", "tools", "retained runtime file changed")
+    except (OSError, ControlError) as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise ControlError("TOOL", "tools", "retained runtime file snapshot rejected") from error
+    if len(raw) != node["size"] or sha256_hex(raw) != node["sha256"]:
+        os.close(descriptor)
+        raise ControlError("TOOL", "tools", "retained runtime file digest mismatch")
+    return descriptor
+
+
+def _git_identity(project_fd: int, git_fd: int, git_argv0: str) -> tuple[str, str]:
     environment = {
         "PATH": "/usr/bin:/bin",
         "LC_ALL": "C",
@@ -1076,12 +1162,14 @@ def _git_identity(project_fd: int, git_path: str) -> tuple[str, str]:
     def run(*arguments: str) -> str:
         try:
             result = _run_controlled_child(
-                [git_path, "-c", "safe.directory=*", *arguments],
+                [git_argv0, "-c", "safe.directory=*", *arguments],
                 cwd=cwd,
                 environment=environment,
                 timeout=5,
+                pass_fds=(git_fd,),
+                executable=f"/proc/self/fd/{git_fd}",
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise ControlError("SOURCE", "project-source", "Git identity probe failed") from error
         if result.returncode != 0 or result.stderr or len(result.stdout) > 128:
             raise ControlError("SOURCE", "project-source", "Git identity probe rejected")
@@ -1567,15 +1655,26 @@ def supervise(
     _, _, _, manifest_raw = _verify_image_envelope(
         image_envelope, paths=paths, supervisor_raw=supervisor_raw
     )
+    try:
+        _control_set_subreaper()
+    except OSError as error:
+        raise ControlError("PLATFORM", "platform", "control subreaper unavailable") from error
+    _platform_self_test(manifest_raw)
+    git_fd = _retained_runtime_file(manifest_raw, paths.git)
 
     project_path = paths.self_test_project if mode == "self-test" else "."
     try:
-        project_fd = os.open(
-            project_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        )
-    except OSError as error:
-        raise ControlError("SOURCE", "project-source", "cannot retain project root") from error
-    object_format, head = _git_identity(project_fd, paths.git)
+        try:
+            project_fd = os.open(
+                project_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+        except OSError as error:
+            raise ControlError(
+                "SOURCE", "project-source", "cannot retain project root"
+            ) from error
+        object_format, head = _git_identity(project_fd, git_fd, paths.git)
+    finally:
+        os.close(git_fd)
     try:
         worker_raw = _worker_snapshot(
             project_fd,
@@ -1612,6 +1711,7 @@ def supervise(
     os.dup2(project_fd, 4, inheritable=True)
     if project_fd != 4:
         os.close(project_fd)
+    os.set_inheritable(4, True)
     _sealed_memfd("align-llm-run", run_envelope, 5)
     if image_fd != 6:
         os.dup2(image_fd, 6, inheritable=True)
@@ -1789,7 +1889,16 @@ def _run_retained_tool(
     return _run_controlled_child(
         list(arguments),
         executable=f"/proc/self/fd/{descriptor}",
-        environment={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+        environment={
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "HOME": "/nonexistent",
+            "LD_LIBRARY_PATH": (
+                "/runtime/system/usr-lib-x86_64:"
+                "/runtime/system/lib-x86_64:"
+                "/runtime/system/gcc-x86_64"
+            ),
+        },
         pass_fds=tuple(dict.fromkeys((descriptor, *pass_fds))),
         timeout=timeout,
     )
@@ -1895,7 +2004,7 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
             result = _run_retained_tool(
                 bwrap_fd, arguments, timeout=20, pass_fds=mount_fds
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise ControlError("TRUST", "bwrap", "bubblewrap namespace probe failed") from error
         finally:
             for descriptor in reversed(mount_fds):
@@ -1935,7 +2044,7 @@ def _platform_self_test(manifest_raw: bytes) -> None:
             raise ControlError("TOOL", "tools", f"tool digest mismatch: {tool['name']}")
         try:
             result = _run_retained_tool(fd, tool["argv"])
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             os.close(fd)
             raise ControlError("TOOL", "tools", f"tool probe failed: {tool['name']}") from error
         if (
@@ -1972,7 +2081,7 @@ def _platform_self_test(manifest_raw: bytes) -> None:
             raise ControlError("PLATFORM", "platform", "Clang is not major 22")
         try:
             help_result = _run_retained_tool(bwrap_fd, [bwrap_argv0, "--help"])
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
             raise ControlError("TRUST", "bwrap", "bubblewrap probe failed") from error
         if help_result.returncode != 0 or not all(
             option in help_result.stdout + help_result.stderr
@@ -2017,7 +2126,7 @@ def _platform_self_test(manifest_raw: bytes) -> None:
         )
         if result.returncode != 0:
             raise ControlError("PLATFORM", "platform", "/tmp is not executable")
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         raise ControlError("PLATFORM", "platform", "/tmp execution probe failed") from error
     finally:
         if source_fd >= 0:
@@ -2238,8 +2347,10 @@ def bootstrap(
     _, run_envelope, manifest_raw, predicate = _bootstrap_verify(
         paths=paths, self_fd=self_fd
     )
-    if mode == "self-test":
-        _platform_self_test(manifest_raw)
+    try:
+        _control_require_subreaper()
+    except OSError as error:
+        raise ControlError("PLATFORM", "platform", "control subreaper unavailable") from error
     try:
         worker_raw = _worker_snapshot(
             4, owner=paths.image_owner if mode == "self-test" else os.geteuid()
@@ -2270,12 +2381,15 @@ def bootstrap(
         "--run-attestation-fd",
         "9",
     ]
-    result = _run_controlled_child(
-        arguments,
-        environment=WORKER_ENVIRONMENT,
-        pass_fds=(4, 7, 8, 9),
-        timeout=30 if mode == "self-test" else WORKER_INVOCATION_TIMEOUT,
-    )
+    try:
+        result = _run_controlled_child(
+            arguments,
+            environment=WORKER_ENVIRONMENT,
+            pass_fds=(4, 7, 8, 9),
+            timeout=30 if mode == "self-test" else WORKER_INVOCATION_TIMEOUT,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise ControlError("CHILD", "aggregate", "worker lifecycle rejected") from error
     expected = {
         "ci": b"fresh compiler and capable checks: PASS\n",
         "build": b"fresh compiler: PASS\n",
