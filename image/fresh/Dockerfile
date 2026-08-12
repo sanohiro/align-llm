@@ -64,14 +64,7 @@ RUN python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
     cp -aL /usr/include /runtime/system/include && \
     cp -aL /usr/share/git-core /runtime/system/git-core && \
     if [ -d /usr/share/perl5 ]; then cp -aL /usr/share/perl5 /runtime/system/perl5; else mkdir /runtime/system/perl5; fi && \
-    cp -L /lib64/ld-linux-x86-64.so.2 /runtime/system/ld-linux-x86-64.so.2 && \
-    for tree in usr-lib-x86_64 lib-x86_64; do \
-      rm -rf "/runtime/system/$tree/cryptsetup" "/runtime/system/$tree/systemd" && \
-      rm -f "/runtime/system/$tree/libsystemd.so.0"* \
-        "/runtime/system/$tree/libudev.so.1"* \
-        "/runtime/system/$tree/security/pam_systemd.so" \
-        "/runtime/system/$tree/security/pam_systemd_loadkey.so"; \
-    done
+    cp -L /lib64/ld-linux-x86-64.so.2 /runtime/system/ld-linux-x86-64.so.2
 
 COPY scripts/build-fresh-image-control scripts/fresh_attestation.py scripts/fresh_manifest.py \
      scripts/generate-fresh-toolchain-manifest /build/align-llm/scripts/

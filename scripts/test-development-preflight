@@ -310,15 +310,34 @@ def test_runtime_materialization() -> None:
         and 'Path("/var/lib/dpkg/info").glob("*.list")' in runtime_stage,
         "verified runtime tool probe or package identity verification changed",
     )
-    for excluded in (
-        '"/runtime/system/$tree/cryptsetup"',
-        '"/runtime/system/$tree/systemd"',
-        '"/runtime/system/$tree/libsystemd.so.0"*',
-        '"/runtime/system/$tree/libudev.so.1"*',
-        '"/runtime/system/$tree/security/pam_systemd.so"',
-        '"/runtime/system/$tree/security/pam_systemd_loadkey.so"',
+    for forbidden_pruning in (
+        '/runtime/system/$tree/cryptsetup',
+        '/runtime/system/$tree/systemd',
+        '/runtime/system/$tree/libsystemd.so',
+        '/runtime/system/$tree/libudev.so',
+        '/runtime/system/$tree/security/pam_systemd',
     ):
-        require(excluded in dockerfile, f"unreachable host library exclusion is missing: {excluded}")
+        require(
+            forbidden_pruning not in dockerfile,
+            f"manifest runtime tree is pruned after materialization: {forbidden_pruning}",
+        )
+    topology = (REPOSITORY / "docs/specs/check-gate-topology.md").read_text(encoding="utf-8")
+    validation_order = topology.split(
+        "The exact primary categories are selected by this immutable order:", maxsplit=1
+    )[1].split("Malformed input is reported", maxsplit=1)[0]
+    require(
+        validation_order.index("manifest-declared runtime-binding trees")
+        < validation_order.index("declared executable paths")
+        < validation_order.index(".align-revision")
+        < validation_order.index("cache root"),
+        "public runtime/tool/source/cache validation order changed",
+    )
+    require(
+        "either drained naturally after a\nnormal direct-child exit or were terminated"
+        in topology
+        and "On every catchable exit the worker terminates owned descendants" not in topology,
+        "public natural-drain cleanup contract changed",
+    )
     require(
         "COPY --from=builder /runtime/system/usr-lib-x86_64/" not in runtime_stage,
         "runtime stage overwrites the final base library inventory",
