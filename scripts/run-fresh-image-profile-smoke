@@ -121,6 +121,30 @@ def run(
     )
 
 
+def checkout_pinned_align(target: Path) -> None:
+    revision = (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()
+    run(["git", "init", "--quiet", str(target)])
+    run(["git", "-C", str(target), "remote", "add", "origin", ALIGN_REPOSITORY])
+    run(
+        [
+            "git",
+            "-C",
+            str(target),
+            "-c",
+            "protocol.version=2",
+            "fetch",
+            "--depth=1",
+            "--filter=blob:none",
+            "origin",
+            revision,
+        ]
+    )
+    run(["git", "-C", str(target), "checkout", "--detach", "FETCH_HEAD"])
+    actual = run(["git", "-C", str(target), "rev-parse", "HEAD"]).stdout
+    if actual.decode("ascii").strip() != revision:
+        raise RuntimeError("pinned Align source identity changed after checkout")
+
+
 def copy_from_image(image: str, source: str, target: Path) -> None:
     container = run(["docker", "create", image], check=True).stdout.decode("ascii").strip()
     try:
@@ -260,13 +284,14 @@ def boundary_profile_run(
         "--workdir",
         "/work/project",
     ]
+    environment_values: dict[str, str] = {}
     if align_repo is not None:
-        arguments.extend(["--env", f"ALIGN_REPO={align_repo}"])
+        environment_values["ALIGN_REPO"] = align_repo
     for entry in extra_environment:
-        name, separator, _ = entry.partition("=")
+        name, separator, value = entry.partition("=")
         if not separator or not name:
             raise ValueError(f"invalid boundary test environment entry: {entry!r}")
-        arguments.extend(["--env", entry])
+        environment_values[name] = value
     command = [image, "--mode", "ordinary-adoption-boundary"]
     if cgroup_driver == "cgroupfs":
         arguments.extend(
@@ -275,15 +300,19 @@ def boundary_profile_run(
                 f"/align-llm-fresh/{TEST_UID}",
                 "--user",
                 f"{TEST_UID}:{TEST_UID}",
+                "--entrypoint",
+                "/usr/bin/env",
             ]
         )
+        command = [
+            image,
+            "-i",
+            *(f"{name}={value}" for name, value in environment_values.items()),
+            "/usr/local/libexec/align-llm/fresh-supervise",
+            "--mode",
+            "ordinary-adoption-boundary",
+        ]
     elif cgroup_driver == "systemd":
-        environment_values: dict[str, str] = {}
-        if align_repo is not None:
-            environment_values["ALIGN_REPO"] = align_repo
-        for entry in extra_environment:
-            name, _, value = entry.partition("=")
-            environment_values[name] = value
         environment = repr(environment_values)
         launcher = f"""\
 import os
@@ -813,23 +842,7 @@ def main() -> int:
                     str(source / "project"),
                 ]
             )
-            align_clone = run(
-                [
-                    "git",
-                    "clone",
-                    "--no-hardlinks",
-                    ALIGN_REPOSITORY,
-                    str(source / "align"),
-                ],
-                check=False,
-            )
-            if align_clone.returncode != 0:
-                raise RuntimeError(
-                    "pinned Align source clone failed:\n"
-                    + align_clone.stdout.decode("utf-8", "replace")
-                    + align_clone.stderr.decode("utf-8", "replace")
-                )
-            run(["git", "-C", str(source / "align"), "checkout", "--detach", (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()])
+            checkout_pinned_align(source / "align")
             run(["docker", "volume", "create", source_volume])
             populate_source_volume(image, source_volume, source)
             run(["docker", "volume", "create", boundary_source_volume])

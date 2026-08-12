@@ -208,6 +208,65 @@ def test_qualification_modes() -> None:
     require(unavailable("--require-docker") == 1, "required Docker unavailability did not fail")
 
 
+def test_image_profile_plan() -> None:
+    image_profile = load_script(
+        "run-fresh-image-profile-smoke", "align_llm_fresh_image_profile_plan_test"
+    )
+    revision = (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def capture(arguments: list[str], **keywords: object) -> SimpleNamespace:
+        calls.append((arguments, keywords))
+        stdout = (revision + "\n").encode("ascii") if arguments[-2:] == ["rev-parse", "HEAD"] else b""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=b"")
+
+    image_profile.run = capture
+    image_profile.checkout_pinned_align(Path("/isolated/align"))
+    fetch = next(arguments for arguments, _ in calls if "fetch" in arguments)
+    require("--depth=1" in fetch and "--filter=blob:none" in fetch, "Align fetch is not shallow")
+    require(fetch[-1] == revision, "Align fetch does not name the pinned revision")
+    require(
+        any(arguments[-3:] == ["checkout", "--detach", "FETCH_HEAD"] for arguments, _ in calls),
+        "Align checkout does not consume the fetched revision",
+    )
+
+    calls.clear()
+    image_profile.boundary_profile_run(
+        "image",
+        "profile-volume",
+        "runtime-volume",
+        "source-volume",
+        "cgroupfs",
+        extra_environment=("BOUNDARY_EXTRA=1",),
+    )
+    boundary = calls[-1][0]
+    require("--env" not in boundary, "cgroupfs boundary retained Docker-provided environment")
+    require(
+        boundary[boundary.index("--entrypoint") + 1] == "/usr/bin/env"
+        and boundary[-6:]
+        == [
+            "-i",
+            "ALIGN_REPO=/work/align",
+            "BOUNDARY_EXTRA=1",
+            "/usr/local/libexec/align-llm/fresh-supervise",
+            "--mode",
+            "ordinary-adoption-boundary",
+        ],
+        "cgroupfs boundary does not reconstruct the exact environment",
+    )
+
+    dockerfile = (REPOSITORY / "image/fresh/Dockerfile").read_text(encoding="utf-8")
+    require(
+        "--depth=1 --filter=blob:none origin \"$ALIGN_REVISION\"" in dockerfile,
+        "image cache fetch is not exact and shallow",
+    )
+    require(
+        "git clone --filter=blob:none https://github.com/sanohiro/align.git /tmp/align-cache-source"
+        not in dockerfile,
+        "image cache retained the full-history Align clone",
+    )
+
+
 def test_workflow_topology() -> None:
     workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     require(workflow.count("python3 scripts/classify-verification") == 6, "CI classifier callsites changed")
@@ -249,6 +308,7 @@ def main() -> int:
     test_classifier()
     test_plan()
     test_qualification_modes()
+    test_image_profile_plan()
     test_workflow_topology()
     test_cli()
     print("development preflight: classifier, plans, qualification modes, and CI topology PASS")
