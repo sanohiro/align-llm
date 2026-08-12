@@ -530,9 +530,12 @@ ownership gap in the same fresh-worker lifecycle:
 
 1. **Cgroup admission and cleanup.** `open_cgroup_lease` and the image-control lease must parse
    both membership files and prove them empty before configuration, before child attachment, and
-   during cleanup. After attachment, the only permitted membership is the admitted child and its
-   kernel-created threads; a foreign member is a platform/cleanup failure and is never killed as
-   owned. Because cgroup-v2 disallows `rename(2)`, cleanup uses the unique leaf name as its
+   during cleanup. Immediately after attachment, the direct process and its kernel-created threads
+   are the required membership proof. Initial emptiness plus the exclusive profile-writer boundary
+   establishes ownership; after that gate every later member is an owned descendant even when it
+   changes session or process group, and authoritative cleanup may kill it through `cgroup.kill`.
+   A non-cooperating same-UID writer that attaches an unrelated process is outside the profile
+   threat model. Because cgroup-v2 disallows `rename(2)`, cleanup uses the unique leaf name as its
    quarantine identity, rechecks the retained parent/leaf descriptors and empty membership, and
    removes only that name with descriptor-relative `rmdir`. The delegated cgroup parent is an
    exclusive worker/profile writer boundary, so non-cooperating same-UID writers are explicitly
@@ -752,7 +755,7 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Self-test child output and lifecycle | `scripts/check-gate-topology` | own a new-session child group; concurrently drain binary pipes in fixed chunks; retain at most 4,096 bytes per stream; enforce the deadline; terminate, kill, reap, join, and close in order; reject overflow or non-UTF-8 | A simultaneous two-pipe overflow child sets both overflow bits with exactly 4,096 retained bytes per stream; after a bounded readiness handshake, a hanging child plus descendant is terminated without a live process-group member or pipe reader; missing readiness plus synthetic launch, nonzero, invalid-UTF-8, stderr, and wrong-stdout cases reject; the real Make child returns exact PASS stdout and empty stderr within 10 seconds. |
 | Self-test child OS-operation faults | `scripts/check-gate-topology` | put every operation after successful `Popen` inside the cleanup guard and track only successfully started readers | Injected first-reader start failure enters cleanup, reaps the direct child, closes both pipes, and leaves no process-group member. DEFERRED: deterministic injection of pipe-read, wait, signal, thread-join, and pipe-close failures requires a substitutable process-operation seam that this repository does not otherwise need. The implementation review audits the remaining post-launch exception paths against the specified cleanup order; timeout plus descendant and launch-failure regressions cover the executable lifecycle. A separate child-runner hardening slice must add the seam before claiming the remaining fault-injection coverage. |
 | Worker tool/Git child ownership | `scripts/fresh-align-compiler` | route `run_tool` and `git` through the same descriptor-bound owned-child runner as build and aggregate; no direct `Popen` remains in probe or source identity paths | Unit smoke starts a probe and a Git child that create a session-breaking descendant, exceed each stream cap, and time out; the runner records start/group identity, terminates the group and cgroup, reaps descendants, closes pipes, and leaves no owned member. Static inspection rejects a direct probe/source `Popen` call outside the runner. |
-| Cgroup profile and leaf ownership | `image/fresh/fresh-profile`, `scripts/fresh-align-compiler`, and `image/fresh/control/fresh_image_control.py` | Profile setup owns clean hierarchy creation and `pids` delegation; profile cleanup refuses any residual leaf. Worker and controller retain parent/leaf descriptors and snapshots, use their distinct fixed leaf prefixes, prove empty and sole-child membership, and use the cgroup-v2 unique-leaf/rmdir cleanup primitive under the protected profile writer boundary. Controller launch and early-setup failures enter the same post-lease finalizer, but controller failures retain the owning public child phase while worker pre-command lease failure is `PLATFORM platform`. Mount-table reinventory, unrelated-leaf reclamation, and per-descendant procfs-fd sampling are explicitly N/A at the controller boundary. | The profile smoke covers duplicate setup, exact delegation use, empty cleanup, and residual-child cleanup refusal. The worker lifecycle smoke exercises leaf replacement before cleanup, nonempty/malformed membership, PID reuse, successful descriptor-relative rmdir, and failed removal. The image-control smoke exercises controller admission, exact `align-llm-control-` grammar, identity, rmdir, cleanup failure, and injected child-launch failure, verifies no leaf remains on each catchable successful path, and checks phase-owned error propagation. |
+| Cgroup profile and leaf ownership | `image/fresh/fresh-profile`, `scripts/fresh-align-compiler`, and `image/fresh/control/fresh_image_control.py` | Profile setup owns clean hierarchy creation and `pids` delegation; profile cleanup refuses any residual leaf. Worker and controller retain parent/leaf descriptors and snapshots, use their distinct fixed leaf prefixes, prove empty and sole-child membership, and use the cgroup-v2 unique-leaf/rmdir cleanup primitive under the protected profile writer boundary. The worker requires a successful `pids.max` write and parent-side membership proof; only the controller additionally reads the configured value back. Controller launch and early-setup failures enter the same post-lease finalizer, but controller failures retain the owning public child phase while worker pre-command lease failure is `PLATFORM platform`. Mount-table reinventory, unrelated-leaf reclamation, child-side rlimit readback, and per-descendant procfs-fd sampling are explicitly N/A at the controller/worker boundary described here. | The installed profile smoke covers duplicate setup, exact delegation use, runtime-root refusal, residual-child-cgroup refusal, and empty cleanup. The worker lifecycle smoke exercises leaf replacement before cleanup, nonempty/malformed membership, PID reuse, successful descriptor-relative rmdir, and failed removal. The image-control smoke exercises controller admission, exact `align-llm-control-` grammar, identity, rmdir, cleanup failure, and injected child-launch failure, verifies no leaf remains on each catchable successful path, and checks phase-owned error propagation. |
 | Private-root entry cleanup ownership | `scripts/fresh-align-compiler` | retain opened child/root descriptors through final identity validation and descriptor-relative removal; never close the identity witness before removal | Unit smoke injects replacement before and during child/root removal, verifies the replacement marker and moved original remain unchanged, and requires cleanup failure with all retained descriptors closed. |
 | Direct hosted success | `Makefile` | one explicit `-j1` child Make over the ordered hosted goals | Run with the pinned compiler; the offline Git 2.45 locked-input unit and all existing hosted-compatible focused smokes pass. |
 | Direct hosted failure | owning focused target | Make propagates nonzero | Invoke the aggregate with an invalid `ALIGNC`; the graph fails nonzero without fallback. |
@@ -3455,8 +3458,9 @@ Before each owned child `execve`, the controller creates
 `align-llm-fresh-<32 lowercase random hex>` under that parent. Each owner records the parent/leaf
 device and inode, requires empty `cgroup.procs` and `cgroup.threads`, configures `pids.max=512`, and
 attaches only the just-created child after fork. The controller reads the configured value back;
-the worker verifies the limits and cgroup membership from the child side. The child and its
-descendants inherit that leaf; no owner or unrelated process is attached. Leaf creation and control-file
+the worker relies on a successful control write and verifies sole direct-child and kernel-thread
+membership from the parent. The child and its descendants inherit that leaf; no owner or unrelated
+process is attached. Leaf creation and control-file
 operations are the executable cgroup-v2 proof; an additional controller mount-table or controller
 inventory scan is N/A because profile setup owns initial hierarchy construction and profile cleanup
 refuses any residual child. A changed parent, failed empty-membership proof, leaf replacement, or
@@ -3465,12 +3469,13 @@ failed attach is rejected before the real command starts. Worker lease admission
 admitted, as defined below.
 
 Both controller and worker apply hard and soft `RLIMIT_NPROC=512`, `RLIMIT_NOFILE=4096`, and
-`RLIMIT_FSIZE=536870912` before `execve`; the worker additionally verifies the exact values and
-cgroup membership from the child side before the command is admitted. A child write past
-`RLIMIT_FSIZE` fails with the kernel file-size-limit result and is classified at the owning phase
-(`BUILD`/`aggregate`); it does not override the smaller generated-`main`, tmpfs, overlay, or
-root-byte bounds. Worker failure to configure or verify a cgroup or rlimit is `PLATFORM platform`;
-the controller retains its owning child phase.
+`RLIMIT_FSIZE=536870912` in the pre-exec child path; syscall failure prevents `execve`. The parent
+then verifies exact cgroup process/thread membership before accepting output, but no child-side
+rlimit readback handshake is claimed. A child write past `RLIMIT_FSIZE` fails with the kernel
+file-size-limit result and is classified at the owning phase (`BUILD`/`aggregate`); it does not
+override the smaller generated-`main`, tmpfs, overlay, or root-byte bounds. Worker failure to
+configure a cgroup or rlimit, or to verify membership, is `PLATFORM platform`; the controller
+retains its owning child phase.
 
 After the direct child exits normally, both controller and worker give already-exiting descendants
 the same fixed one-second grace to drain and be reaped; natural drain during that bound is success

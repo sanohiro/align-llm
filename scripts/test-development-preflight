@@ -312,6 +312,9 @@ def test_runtime_materialization() -> None:
     control_owner = (
         REPOSITORY / "scripts/run-fresh-image-control-smoke"
     ).read_text(encoding="utf-8")
+    profile_owner = (
+        REPOSITORY / "scripts/run-fresh-image-profile-smoke"
+    ).read_text(encoding="utf-8")
     worker = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
     worker_owner = (
         REPOSITORY / "scripts/run-fresh-worker-unit-smoke"
@@ -347,6 +350,8 @@ def test_runtime_materialization() -> None:
         and "candidate = CONTROL_CGROUP_PREFIX + os.urandom(16).hex()" in control
         and "controller_cgroup_contract_case()" in control_owner
         and "controller_phase_mapping_cases()" in control_owner
+        and "residual child cgroup cleanup was accepted" in profile_owner
+        and "profile-residual-" in profile_owner
         and "controlled_child_drain_cases()" in control_owner
         and "controlled_double_fork_forced_case(temporary)" in control_owner
         and "run_owned_double_fork_forced_case(module, temporary)" in worker_owner
@@ -390,6 +395,12 @@ def test_runtime_materialization() -> None:
         and "Per-tick descendant procfs-fd enumeration is N/A" in topology
         and "profile cleanup refuses any residual leaf" in topology,
         "public controller/profile ownership contract changed",
+    )
+    require(
+        "foreign member is a platform/cleanup failure and is never killed as owned"
+        not in topology
+        and "no child-side\nrlimit readback handshake is claimed" in topology,
+        "superseded cgroup ownership or worker readback contract remains",
     )
     require(
         "either drained naturally after a\nnormal direct-child exit or were terminated"

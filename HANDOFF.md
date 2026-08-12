@@ -67,7 +67,16 @@ file records durable project state.
   owner now dynamically proves invalid-runtime-plus-invalid-bwrap precedence through public
   `supervise`, exact `align-llm-control-<32 hex>` grammar, and SOURCE/TOOL/TRUST phase mapping for
   Git, retained-tool, and accepted-bwrap capability lifecycle failures. Development, controller,
-  worker, topology, and complete focused owners pass.
+  worker, topology, and complete focused owners pass. A fresh comprehensive review of exact head
+  `53eb915` requested four changes: remove superseded foreign-member ownership prose; stop claiming
+  worker `pids.max` readback and child-side rlimit/membership verification; execute the promised
+  installed residual-child-cgroup refusal; and update this handoff's final-gate state. All four are
+  accepted. The consolidated repair makes no new product behavior beyond the named installed
+  regression: it aligns all cgroup prose with the existing empty-leaf/exclusive-writer ownership
+  rule, narrows worker verification to successful pre-exec syscalls plus parent-side membership,
+  and exercises profile cleanup against a real residual child cgroup. Because this repair only
+  implements recorded findings without changing the implementation approach or public behavior,
+  policy does not require another review.
 
 ## Measurement
 
@@ -132,10 +141,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Run exact-head complete preflight for the final evidence commit and obtain one fresh
-   comprehensive review of v4.
-2. Publish only after a clean review, require hosted CI, then measure build/export/load and final
-   integration. Keep PR #69 paused until the final Align revision is named.
+1. If the consolidated repair head lacks a matching exact-head complete-preflight stamp, run that
+   gate; otherwise publish it and record the existing review envelope plus all four dispositions.
+2. Require hosted CI, then measure build/export/load and final integration. Keep PR #69 paused
+   until the final Align revision is named.
 
 ## Latest durable evidence
 
@@ -272,6 +281,18 @@ file records durable project state.
   Apt, LLVM, Git, Rust, Cargo, runtime materialization, and transferred runtime layers were cache
   hits. Its mode-0600 stamp binds exact base `6a48ab7`, head, owner `development-preflight`, and
   `fresh-image` scope.
+- Complete preflight also passed exact v4 review head
+  `53eb915c45521a8f73d255d3a55cf4467a4c64c1`: development owner 9.710s, pinned Align build
+  0.635s, hosted graph 3.375s, focused qualification 23.194s, and installed profile 228.348s. The
+  cached image build took 2.148s, profile self-test 13.332s, trust mutations 15.621s, runtime
+  replacements 25.440s, boundary profile 37.777s, worker aggregate 124.098s, and cleanup 1.286s.
+  The mode-0600 external stamp binds exact base `6a48ab7`, head, owner `development-preflight`, and
+  `fresh-image` scope.
+- Fresh comprehensive review covered exact head `53eb915` against base and merge base `6a48ab7`.
+  Its verdict was changes requested with the four complete findings and accepted dispositions in
+  the active checkpoint. The v4-specific runtime-before-invalid-bwrap rule, controller leaf
+  grammar, and phase-owned Git/tool/bwrap mappings passed review; the reviewer also reconfirmed the
+  `eb9162ba...` image identity, footprint, runtime/Cargo sizes, and absent builder roots/apt lists.
 
 ## Constraints and intentional state
 
