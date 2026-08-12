@@ -63,6 +63,11 @@ file records durable project state.
   bindings precede every tool, including bwrap; bwrap capability checks follow accepted tool
   identity. The implementation already follows this validation order, so the next checkpoint adds
   exact contract-owner regressions rather than expanding the controller into a second worker.
+  Design checkpoint `fcbd8e8` and contract-owner checkpoint `05bbfd7` are complete. The controller
+  owner now dynamically proves invalid-runtime-plus-invalid-bwrap precedence through public
+  `supervise`, exact `align-llm-control-<32 hex>` grammar, and SOURCE/TOOL/TRUST phase mapping for
+  Git, retained-tool, and accepted-bwrap capability lifecycle failures. Development, controller,
+  worker, topology, and complete focused owners pass.
 
 ## Measurement
 
@@ -127,10 +132,8 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit the v4 design checkpoint, add exact profile/controller/worker ownership and
-   invalid-runtime-plus-invalid-bwrap regressions, and run the affected focused owners.
-2. Run exact-head complete preflight and obtain one fresh comprehensive review of v4.
-3. Publish only after a clean review, require hosted CI, then measure build/export/load and final
+1. Run exact-head complete preflight and obtain one fresh comprehensive review of v4.
+2. Publish only after a clean review, require hosted CI, then measure build/export/load and final
    integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
@@ -256,6 +259,10 @@ file records durable project state.
   base `6a48ab7` and requested the two contract corrections described in the active checkpoint.
   Both are accepted. No v3 content may be published; v4 is a redesigned candidate and requires one
   fresh comprehensive review after its own final evidence.
+- V4 design checkpoint `fcbd8e8` passed `git diff --check`. Contract-owner checkpoint `05bbfd7`
+  passed `run-fresh-image-control-smoke`, `run-fresh-worker-unit-smoke`,
+  `test-development-preflight`, `check-gate-topology --self-test`, and complete focused
+  `run-fresh-worker-qualification` in 25.040s.
 
 ## Constraints and intentional state
 
