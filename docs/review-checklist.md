@@ -1,109 +1,115 @@
 # Review checklist
 
-Use this checklist for pull requests that change code, evaluation behavior, authoritative designs or
-specifications, or repository governance. Scope each section to the diff; it is a risk guide, not a
-request for speculative refactoring. The policy and design section is required for authoritative
-documentation changes; mark other inapplicable sections as `N/A` rather than inventing evidence.
+Use this checklist in two situations:
 
-## Scope and capability
+- while designing a surface that triggers `CLAUDE.md`'s proportional design gate; or
+- for the one comprehensive review of code, authoritative design/specification, or governance.
 
-- The pull request names one consumer-complete capability and the useful end-to-end outcome it adds.
-- Design, Align adoption, automation, generated artifacts, and product changes are included only
-  when they are directly required to make that capability usable; distinct failure domains and
-  unrelated governance remain excluded.
-- Internal acceptance labels and closure cells are organized as commits/tests, not treated as pull
-  request boundaries without an independent consumer.
-- Completion claims cite an observable consumer path and its evidence.
-- Aggregate gate names are checked against their actual command graph. The pull request names any
-  relevant focused gate that the aggregate does not invoke instead of inferring coverage from the
-  aggregate's name.
+Review only the sections triggered by the diff. An untriggered section is omitted, not expanded
+into speculative `N/A` evidence. Within a triggered contract ledger or closure matrix, however,
+every listed dimension must be answered or marked `N/A` with a concrete reason.
 
-## Policy and design integrity
+## Every reviewed change
 
-- Instructions are internally executable, non-contradictory, and explicit about terminal
-  conditions, required evidence, and applicable or `N/A` contract dimensions.
-- A changed non-trivial public contract has one authoritative ledger, and an author-side consistency
-  pass maps every normative promise, field, state combination, ownership/allocation rule, canonical
-  encoding rule, identity rule, and prerequisite to a reproducible acceptance test or measurement
-  before implementation starts.
-- Cross-cutting plans name intended owner modules, failure and cleanup paths, and exact regression
-  tests before coding. Their closure matrices cover formation, construction, move and return,
-  cleanup, malformed input, affected control-flow joins, interface/per-unit paths, provenance, and
-  allocation parity, then map those cells to the final implementation before code review or record
-  an explicit deferral with its rationale in the plan of record.
-- Compatibility claims are exercised on the minimum declared tool or platform version. Option or
-  environment isolation tests prove both that excluded state does not cross the boundary and that
-  every documented surviving input retains its exact value and documented source or precedence
-  semantics.
-- Concurrency closure classifies every combination of individually supported public entrypoints that
-  can share state in one process tree, including aggregate-plus-aggregate and
-  aggregate-plus-focused operations, and separately defines the policy for concurrent independent
-  processes.
-- One comprehensive stable-candidate review reports all findings before repair starts, preferably
-  before pull request publication. Findings are
-  scrutinized, grouped by root-cause class, and resolved in one consolidated follow-up when
-  practical; the history does not contain a review after each individual fix.
-- An ordinary repair that implements only recorded findings does not trigger another review. One
-  final comprehensive review is required only after a substantial scope expansion, implementation
-  approach change, or material behavior, design, specification, or governance change. If that
-  final review requires another non-trivial change, the work is re-scoped or redesigned instead of
-  entering another review loop.
-- The comprehensive review envelope records the reviewed head SHA, base-tip SHA, merge-base SHA,
-  reviewer, review kind and scope, verdict, and complete finding list. The pull request records each
-  disposition and the consolidated repair commit. A conditionally required final review records the
-  same complete SHA-bound envelope, findings, and dispositions. Check evidence separately records
-  the final head, tested base-tip, merge-base, and tested integration commit or tree.
-- Merge readiness requires the comprehensive review, any conditionally required one-time final
-  review, passing final checks, and no unresolved valid finding. Multiple independent review
-  envelopes are not required for the same unchanged diff.
-- `HANDOFF.md` identifies the active branch and relevant commit, completed and unfinished work,
-  exact next actions, durable verification evidence, blockers, intentional uncommitted files, and
-  expected post-merge work without mirroring transient pull request status.
-- If an artifact requires commits from the current repository to remain reachable, the contract
-  names permitted integration methods; the exact reviewed head contains those commits as ancestors,
-  and the selected merge method preserves them. External revisions are checked against their named
-  repository and reachability rule instead.
+- The pull request delivers one consumer-complete outcome and excludes unrelated failure domains.
+- Completion names an observable consumer path and exact evidence. Aggregate coverage is checked
+  against the command graph; focused targets outside it are named explicitly.
+- Instructions and contracts are internally consistent, executable, and clear about terminal
+  conditions, errors, evidence, and ownership.
+- The diff uses the narrowest durable regression owner and does not add expensive qualification to
+  a routine aggregate merely for reachability.
+- Findings are complete before repair begins, validated rather than accepted blindly, grouped by
+  root-cause class, and dispositioned. Repairs do not contain unrelated behavior.
+- Verification matches the changed owners and publication lane. Performance claims include the
+  baseline, hardware/environment, sample count, and reproducible command.
+- `HANDOFF.md` changes only when durable execution state changed; GitHub retains transient review
+  and check evidence.
+
+## Public contract ledger
+
+Trigger this section only for a changed public CLI/API, persisted or exchanged format,
+ownership/process/network boundary, or coordinated invariant across three or more modules.
+
+- Exact commands, types, and signatures; inputs and defaults; results, statuses, errors, and
+  deterministic multi-invalid precedence are authoritative in one ledger.
+- Public arguments and results define validation, ownership, lifetime, allocation, construction,
+  move-in/out, source nulling, replacement, return, and cleanup or `Drop`.
+- Text and wire boundaries define encoding, embedded-NUL behavior, validation before side effects,
+  scalar widths and tags, record/sequence order, malformed-input rejection, and semantic-to-byte
+  plus byte-to-semantic golden vectors.
+- Persisted and cache identity define schema/version, producer and consumer, nominal versus
+  structural fingerprinting, and the complete reachable definition graph when structural.
+- CLI, build, option, and environment inputs are explicit. Isolation is tested in both directions:
+  excluded state cannot cross, and documented surviving inputs retain exact values and source or
+  precedence semantics.
+- Every combination of detail level, discriminator, verification state, and option state defines
+  field presence, row order, ordinal, and unavailable-value behavior.
+- Runtime-inspection fields have producer-owned data or thunks, without hidden reflection or
+  artifact/source reads.
+- Normative examples have syntax checks and distinguish declarations from positional calls.
+- Minimum supported tool/platform versions have required acceptance evidence; evidence from newer
+  environments is supplementary.
+- Milestones do not consume a decision or capability assigned to a later slice.
+- Every promise maps to an acceptance test, focused qualification, or named metric/benchmark.
+
+## Cross-cutting closure matrix
+
+Trigger this section when the design gate spans ownership, shared state, external processes, or
+three or more implementation modules.
+
+- Each affected type and module covers formation/validation, construction, success, failure,
+  malformed input, early exit, move-in/out, source nulling, replacement, return, and cleanup.
+- Every affected `if`, `match`, `else`, `?`, `map_err`, branch join, loop join, and error path has a
+  named implementation owner and regression test.
+- Generic monomorphization, interface serialization, whole-program and per-unit compilation,
+  runtime ownership provenance, and allocation parity are covered when applicable.
+- Shared process/connection state classifies every supported entrypoint pairing, including
+  aggregate-plus-aggregate and aggregate-plus-focused, as serialized, rejected before side
+  effects, or unsupported. Concurrent independent-process policy is stated separately.
+- Exhaustion, a failed second operation, error cleanup, and restoration order leave no stale
+  process-global or connection-global state.
+- The final matrix-to-diff pass points every applicable cell to implementation and passing evidence
+  or to an explicit deferral in the plan of record.
 
 ## Align correctness
 
-- The code uses only the pinned compiler surface and follows the relevant Align guide or
-  compiler-tested example.
+Trigger this section for Align source or an Align surface adoption.
+
+- Code uses only the pinned compiler surface and follows the relevant sibling guide, compiling
+  example, or compiler test.
 - Move values, borrowed views, allocation, failure, and process ownership remain explicit.
-- Captured stdout and stderr are cloned before escaping their owning process handle.
-- Reused loop inputs are borrowed rather than accidentally moved on the first iteration.
-- A newly surfaced language or standard-library gap is recorded in `docs/align-requests.md`, not
-  hidden behind a fragile application workaround.
+- Captured stdout/stderr are cloned before escaping an owning process handle; reused loop inputs are
+  borrowed rather than moved on the first iteration.
+- A real language or standard-library gap follows `docs/align-requests.md`; no local workaround or
+  hypothetical API is introduced.
 
-## Evaluation integrity
+## Evaluation and repository integrity
 
-- Task inputs, repository revision, expected result, timeout, and scoring rule are explicit.
-- Corpus ordering and result output are deterministic.
-- Empty input, skipped tasks, missing fixtures, and default values cannot silently pass.
-- Performance claims include the baseline, hardware, sample count, and reproducible command.
-- Provider-specific behavior does not leak into provider-independent scoring.
-- Repository-internal test refs and namespaces resolve the Git common directory rather than assuming
-  `.git` is a directory, and ordinary-clone, linked-worktree, normal-cleanup, and abnormal-exit
-  cleanup paths are exercised when that behavior changes.
+Trigger the applicable bullets for evaluation, corpus, Git plumbing, or exact-source helpers.
 
-## Verification and regression risk
+- Task input, repository revision, expected result, timeout, scoring rule, corpus order, and output
+  are explicit and deterministic. Empty input, skipped tasks, missing fixtures, and defaults cannot
+  silently pass.
+- Provider-specific behavior does not leak into provider-independent scoring. Failure and timeout
+  paths affected by the change are exercised and retain useful diagnostics.
+- Repository-internal refs resolve the Git common directory and cover ordinary clones, linked
+  worktrees, normal cleanup, and abnormal cleanup.
+- Exact-source regression helpers execute the reviewed bytes. A helper-owned cache is allowed only
+  when cache behavior is the subject and path, ownership, expected identities, outcomes, cleanup,
+  caller-owned cache snapshots, and process-global restoration are verified.
+- Artifacts requiring in-repository ancestry name permitted integration methods and are reachable
+  from the exact merging head; external revisions use their own named repository and rule.
 
-- Changed owners pass their focused checks. `make ci` passes only when the change reaches a named
-  integration/adoption gate, changes aggregate topology or identity-bound inputs, or needs fresh
-  base-tip integration evidence; documentation-only changes do not run source aggregates.
-- Routine aggregates stay bounded to stable functional integration. Security, resource-limit,
-  race, fuzz, stress, platform, mutation, and benchmark qualification use their named focused
-  commands and triggers unless the pull request justifies permanent aggregate admission with
-  measured runtime and maintenance cost.
-- A regression helper executes repository source under review from its exact bytes; import settings
-  alone are not exact-source evidence. When cache behavior is itself the regression subject, the
-  helper may additionally exercise a named helper-owned cache only after validating its path,
-  ownership, expected cached-versus-source identities, and outcomes. On every exit, caller-owned
-  repository cache paths and bytes match their complete pre-run snapshot, including the absence of
-  newly created paths; named helper-owned cache fixtures are removed; and modified process-global
-  interpreter values are restored to their exact prior values.
-- Tests or corpus tasks exercise failure and timeout paths affected by the change.
-- Diagnostics needed to reproduce a failure remain available.
-- The pull request records valid review findings and explains rejected findings.
-- A capability-level retrospective or meaningful incident produced a reusable lesson when this
-  change claims to address one; ordinary per-pull-request observations and one-off conditions are
-  not promoted into policy.
+## Verification and terminal state
+
+- Focused owner checks pass. `make ci` appears only for a named integration/adoption gate, pin or
+  topology change, changed integration behavior, or fresh base-integration evidence.
+- Required security, resource, race, fuzz, stress, platform, mutation, or benchmark qualification
+  runs under its named owner command when its boundary changed.
+- The pull request contains the comprehensive review envelope, every finding disposition, any
+  consolidated repair commit, and separate final integration check evidence required by
+  `CLAUDE.md`.
+- A final review occurred only if the repair materially triggered it. If that review found another
+  non-trivial issue, the capability was redesigned or re-scoped rather than patched through another
+  loop.
+- Required checks pass and no valid finding remains unresolved.

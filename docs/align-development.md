@@ -55,10 +55,12 @@ make run
 ./scripts/alignc size src/main.align --profile tiny
 ```
 
-Before publishing a completed branch, run the shared local preflight with the narrow owner command:
+Before publishing an executable branch, run the shared local preflight with the narrow owner
+command. A Markdown-only branch omits the owner arguments:
 
 ```sh
 python3 scripts/pre-pr --owner-test provider-smoke -- make provider-smoke
+python3 scripts/pre-pr
 ```
 
 `scripts/pre-pr` computes the merge base with `origin/main`, classifies the exact diff, runs the
