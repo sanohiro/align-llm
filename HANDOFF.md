@@ -5,7 +5,7 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-13)
 
-- Branch `agent/multistage-fresh-runtime-v2` is based on PR #77 merge commit
+- Branch `agent/multistage-fresh-runtime-v3` is based on PR #77 merge commit
   `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`.
 - Active goal: remove builder-only apt, LLVM, Rust, source, and compilation state from the installed
   fresh image while preserving its exact runtime manifest and complete installed qualification.
@@ -39,7 +39,12 @@ file records durable project state.
   9 must own runtime-before-tool precedence with a real multi-invalid regression, and this handoff
   must record the existing exact candidate stamp. Consolidated repair `957aa50` closes those three
   findings and its complete preflight passed; the final evidence head now requires the
-  policy-mandated conditional final review.
+  policy-mandated conditional final review. That final review rejected `7040d75`: controller cleanup
+  did not propagate forced descendant termination, did not prove descendant zombies reaped, and
+  lacked a dynamic controller precedence regression; its next-step record was also stale. Repository
+  policy ended the v2 repair cycle. The v3 design reopens the lifecycle closure matrix before code,
+  assigns both process-owner layers, and names exact failure propagation and dynamic regressions;
+  implementation is not started.
 
 ## Measurement
 
@@ -104,9 +109,12 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit this durable evidence, rerun exact preflight for that head, and obtain the one conditional
-   final review required by the material cleanup ownership change.
-2. Publish only after a clean final review, require hosted CI, then measure build/export/load and
+1. Implement the author-reviewed v3 lifecycle design once: controller subreaper before its first
+   child, bootstrap exec-preservation check, forced-termination result propagation, `waitpid(-1)`
+   proof through `ECHILD`, and dynamic controller runtime-before-tool regression.
+2. Run affected owners and exact preflight, then obtain a new
+   comprehensive review of the redesigned candidate. Publish only after a clean review, require
+   hosted CI, then measure build/export/load and
    final integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
@@ -176,6 +184,15 @@ file records durable project state.
   105.608s, and cleanup 1.211s. The apt, LLVM, Git, Rust toolchain, materialization, runtime, tool,
   Cargo-cache, and transferred system-file layers were cache hits; only the changed control closure
   and downstream random-attestation layers rebuilt.
+- Exact evidence head `7040d75eef941900cf49151fb5651309eb8ae9f6` also passed complete
+  preflight and has a canonical mode-0600 stamp for base `6a48ab7`, owner
+  `development-preflight`, and `fresh-image` scope: development owner 9.063s, pinned Align build
+  0.609s, hosted graph 3.141s, focused qualification 20.406s, installed profile 204.156s, warm image
+  build 2.147s, boundary profile 37.494s, worker aggregate 108.061s, and cleanup 1.252s. The
+  policy-mandated conditional final review nevertheless requested changes: controller forced-kill
+  success propagation and descendant-zombie reap were incomplete, controller multi-invalid
+  precedence had only static coverage, and the handoff next action was stale. No v2 content may be
+  published; v3 must be reviewed as a redesigned candidate.
 
 ## Constraints and intentional state
 
