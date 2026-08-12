@@ -5,35 +5,24 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-12)
 
-- Branch `agent/cache-hosted-apt-llvm-v3` is based on `origin/main` merge commit
-  `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
-- Active goal: replace repeated hosted apt.llvm.org resolution with sibling Align's verified
-  replayable archive cache, while using the unchanged Dockerfile as the first exact warm consumer
-  of the smaller fresh-image cache.
+- Branch `agent/cache-hosted-align-bundle` is based on PR #76 merge commit
+  `c3deab753a3db4e963817917c1105fe110907a99`.
+- Active goal: replace the measured 36-second cached dpkg replay and 6-second Rust download with a
+  trusted hosted Align compiler bundle that lets normal checks start directly from a verified
+  `alignc`, runtime archive, and LLVM shared library.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
   trusted cache while reusing functional checks and skipping image load and qualification. PR #74
   merged the complete Node 24 action migration at `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
   PR #75 merged hardlink-preserving runtime materialization at `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
-- In progress: the first apt archive candidate was stopped after its conditional final review found
-  that manifest membership was not exact and the cleanup ownership model still missed dangling
-  symlinks, a conditionally created directory, and retention after cleanup failure. The v2 branch
-  reopens the closure matrix around one transactional rule: a cache candidate becomes saveable only
-  after exact archive membership, the real hosted consumer, and all non-archive cleanup succeed.
-  The redesigned candidate passed complete preflight. Its comprehensive review found that it still
-  needed post-consumer byte verification plus exact-key publication confirmation because the
-  save-only action can warn and exit zero without publishing, and that the package vector needed a
-  strict grammar. One consolidated repair added both gates and shared package parsing and passed
-  complete preflight, but its conditionally required final review found that the pinned cache
-  action returns success before enforcing cache-miss failure when the cache feature is unavailable.
-  v2 is stopped and unpublished. The v3 redesign makes literal `cache-hit=true` a separate required
-  publication assertion. That implementation passed complete preflight, and its fresh comprehensive
-  review confirmed the publication and package-vector fixes. The same review found two apt recovery
-  state-machine bugs: stale fixed paths were rejected after root-level repair began, and a retry
-  rejected its own partial keyring. One consolidated repair now validates the complete fixed
-  namespace before dpkg, apt, or network activity and permits retry of only invocation-owned state.
-  Repair verification, publication, cache seed, and clean warm measurement remain.
+  PR #76 merged and seeded the verified hosted LLVM archive cache at `c3deab753a3db4e963817917c1105fe110907a99`.
+- In progress: design the compiler bundle contract before implementation. A local real-client probe
+  copied only `alignc`, `libalign_runtime.a`, and `libLLVM.so.22.1` (183,999,150 bytes total), bound
+  the shared library through `LD_LIBRARY_PATH`, and passed the complete `hosted-checks`. The bundle
+  cache will be keyed by the pinned Align revision, exact runner image, OS/architecture, Rust
+  version, LLVM major, and manual schema generation. Pull requests restore but never publish;
+  exact main misses build, consume, verify, save, exact-lookup, and require literal cache hit.
 
 ## Measurement
 
@@ -62,9 +51,18 @@ file records durable project state.
   `main` cache in a 3m03s fresh job while the reused check job took 8s. On PR #75 the normal check
   job took 102 seconds, including 43 seconds for LLVM/native installation; these are the apt-cache
   baseline values (`n=1`, GitHub `ubuntu-24.04`).
-- Hosted target: after one exact merge publishes the `main` cache, a subsequent PR completes image
-  build in at most 75 seconds and reduces overall run time at least 25% while the full installed
-  qualification still passes. A cache-miss source build must also pass.
+- PR #76 miss run `31597025980` passed: the check job took 85 seconds, apt resolution/install 17
+  seconds, Rust 7 seconds, and supported checks 49 seconds. The fresh job took 422 seconds; image
+  build/export/load took 137 seconds and installed qualification 243 seconds.
+- Main seed run `31597640816` passed the exact archive consumer, save, lookup, and literal-hit gates.
+  Its check job took 85 seconds; the cache-only fresh job took 81 seconds and image build/export
+  took 62 seconds, meeting the 75-second cache-only build target.
+- Clean warm run `31597786779` passed but disproved the archive replay performance target: restore
+  took 3 seconds, cached dpkg install 36 seconds, Rust 6 seconds, supported checks 39 seconds, and
+  the check job 100 seconds. The full fresh job took 405 seconds, including 114 seconds for image
+  build/export/load and 242 seconds for installed qualification. Apt repository downloads no longer
+  repeat, but replay remains too slow. The replacement bundle target is restore plus verification
+  at most 10 seconds and a complete normal check job at most 60 seconds (`n=1`, same runner image).
 
 ## Paused product checkpoint
 
@@ -75,40 +73,25 @@ file records durable project state.
 
 ## Next steps
 
-1. Run the apt archive owner, development-preflight owner, workflow syntax/static checks, and the
-   proportional fresh qualification selected by the workflow change.
-2. Publish after the reviewed-finding repair is verified, confirm the PR miss and exact-main
-   cache seed, then measure one clean warm run before claiming the 10-second install/75-second check
-   targets.
-3. Remove the measured repeated Rust setup, then continue with a multi-stage builder/runtime image
-   after merge. Keep PR #69 paused until the final Align revision is named.
+1. Finish the hosted compiler-bundle public ledger and closure matrix, then perform the author
+   consistency/risk pass.
+2. Implement strict create/verify/key ownership, workflow hit/miss/publication routing, and focused
+   regressions. Preserve the archive path as the miss fallback.
+3. Run proportional preflight, independent review, PR miss, exact-main seed, and one clean warm
+   measurement before claiming the 60-second check target.
+4. Continue with a multi-stage builder/runtime image. Keep PR #69 paused until the final Align
+   revision is named.
 
 ## Latest durable evidence
 
-- PR #75 independent review: PASS with no findings. Local final installed qualification and hosted
-  run `31588797654` both passed; the baseline and candidate toolchain and Cargo manifests were
-  identical.
-- `scripts/test-apt-llvm`: PASS after adapting sibling Align's cache hit, miss, corruption, repair,
-  repository provenance, signing-key, round-trip, cache-key, and argument regression.
-- `python3 scripts/test-development-preflight`, `python3 scripts/check-gate-topology --self-test`,
-  workflow YAML parsing, Bash syntax, and `git diff --check`: PASS on the uncommitted candidate.
-- The stopped candidate's final preflight passed at `7e74856deb964e6cc4b7064a9e07abc90f23aea1`,
-  but its final review failed and that evidence is not publication authority.
-- On the uncommitted v2 candidate, `scripts/test-apt-llvm`, development preflight, gate-topology
-  self-test, workflow YAML parsing, Bash syntax, and `git diff --check`: PASS. The focused owner now
-  covers exact manifest membership, symlink targets, borrowed/created keyring-directory ownership,
-  and injected cleanup failure at every owned path.
-- Complete preflight passed on reviewed v2 head `0c80091bae34716a8270aa212d811f9167dd089a`:
-  owner 4.240s, pinned Align build 0.728s, installed profile 211.155s, and every intervening gate
-  passed. The review repair invalidates that stamp; its affected owner/static checks pass locally.
-- Complete preflight passed on repaired v2 head `fc559ec6166b79594b416970ff030c15c46b8476`:
-  owner 4.042s, pinned Align build 0.729s, installed profile 206.399s, and every intervening gate
-  passed. Its final review failed on the cache-feature-unavailable publication path, so the candidate
-  remains stopped and unpublished despite the passing checks.
-- Complete preflight passed on reviewed v3 head `1532b4a9e6679e053b01099fc950bf49d727af0e`:
-  owner 4.063s, pinned Align build 0.668s, installed profile 209.449s, and every intervening gate
-  passed. The comprehensive review closed the v2 findings and found the two apt recovery-state
-  defects now addressed by the unverified consolidated repair.
+- PR #76 final review passed at `fa56846af74af9208abdd01ecc72a6437f05d267` with no findings after
+  one consolidated repair. Complete preflight passed: apt owner 4.421s, pinned Align build 0.647s,
+  installed profile 206.879s, and worker aggregate 109.049s.
+- PR, exact-main seed, and clean warm GitHub runs `31597025980`, `31597640816`, and `31597786779`
+  all passed. The clean warm run is the evidence that redirects the next capability from archive
+  replay toward the verified compiler bundle.
+- Local bundle probe: exact three-file bundle, 183,999,150 bytes; `LD_LIBRARY_PATH` resolved
+  `libLLVM.so.22.1` from the bundle; `alignc --version` and complete `make hosted-checks` passed.
 
 ## Constraints and intentional state
 
