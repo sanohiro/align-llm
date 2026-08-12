@@ -3569,8 +3569,12 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
             phase="build",
             timeout=BUILD_TIMEOUT,
             pass_fds=bind_descriptors,
-            resource_check=lambda: enforce_private_quota(admission),
+            resource_check=lambda: enforce_private_quota(admission, live=True),
         )
+        try:
+            enforce_private_quota(admission)
+        except OSError:
+            fail("BUILD", "build")
     finally:
         close_private_mounts(bind_descriptors)
     release_compiler = root / "cargo-target/release/alignc"
@@ -4118,11 +4122,12 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
             phase="aggregate",
             timeout=AGGREGATE_TIMEOUT,
             pass_fds=(*overlay_descriptors, *bind_descriptors),
-            resource_check=lambda: enforce_aggregate_quota(admission),
+            resource_check=lambda: enforce_aggregate_quota(admission, live=True),
         )
     finally:
         close_private_mounts(bind_descriptors)
         close_private_mounts(overlay_descriptors)
+    enforce_aggregate_quota(admission)
     upper = root / "aggregate-output/workspace-upper"
     names = sorted(os.listdir(upper), key=os.fsencode)
     if any(name != "main" for name in names):
@@ -4151,6 +4156,7 @@ def scan_private_fd(
     byte_limit: int = MAX_ROOT_BYTES,
     opaque_directories: frozenset[bytes] = frozenset(),
     deadline: float | None = None,
+    live: bool = False,
 ) -> tuple[int, int]:
     def visit(directory_fd: int, depth: int, count: int, total: int) -> tuple[int, int]:
         if deadline is not None and time.monotonic() >= deadline:
@@ -4161,15 +4167,29 @@ def scan_private_fd(
             if deadline is not None and time.monotonic() >= deadline:
                 raise CleanupError("private tree scan timed out")
             raw_name = os.fsencode(name)
-            value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
             count += 1
+            try:
+                value = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError as error:
+                if live and error.errno == errno.ENOENT:
+                    if count > entry_limit:
+                        raise CleanupError("private tree exceeds cleanup bound")
+                    continue
+                raise
             if stat.S_ISDIR(value.st_mode):
                 if raw_name not in opaque_directories:
-                    child = os.open(
-                        raw_name,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                        dir_fd=directory_fd,
-                    )
+                    try:
+                        child = os.open(
+                            raw_name,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=directory_fd,
+                        )
+                    except OSError as error:
+                        if live and error.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+                            if count > entry_limit:
+                                raise CleanupError("private tree exceeds cleanup bound")
+                            continue
+                        raise
                     try:
                         count, total = visit(child, depth + 1, count, total)
                     finally:
@@ -4185,18 +4205,19 @@ def scan_private_fd(
     return visit(root_fd, 0, 0, 0)
 
 
-def enforce_private_quota(admission: Admission) -> None:
+def enforce_private_quota(admission: Admission, *, live: bool = False) -> None:
     try:
         scan_private_fd(
             admission.root_fd,
             entry_limit=MAX_PRIVATE_ENTRIES,
             byte_limit=MAX_ROOT_BYTES,
+            live=live,
         )
     except (CleanupError, OSError) as error:
         raise OSError(errno.EFBIG, "private root exceeds its bound") from error
 
 
-def enforce_aggregate_quota(admission: Admission) -> None:
+def enforce_aggregate_quota(admission: Admission, *, live: bool = False) -> None:
     def scan(
         relative: str, *, opaque_directories: frozenset[bytes] = frozenset()
     ) -> tuple[int, int]:
@@ -4210,6 +4231,7 @@ def enforce_aggregate_quota(admission: Admission) -> None:
                 entry_limit=MAX_PRIVATE_ENTRIES,
                 byte_limit=MAX_AGGREGATE_OVERLAY_BYTES,
                 opaque_directories=opaque_directories,
+                live=live,
             )
         finally:
             os.close(readable)

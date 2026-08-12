@@ -5,10 +5,10 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-13)
 
-- Branch `agent/cache-cargo-fetch-layout` is based on PR #78 merge commit
-  `dea213d69e79fc6c3ef97ad095051b8c4c2dce1a`.
-- Active goal: keep the pin-owned Cargo dependency fetch reusable when only fresh-image controller,
-  worker, profile, manifest, or self-test inputs change.
+- Branch `agent/fresh-quota-scan-race` is based on PR #79 merge commit
+  `378d909a8b0667b74af560345d4be2574545a1fe`.
+- Active goal: eliminate the reproducible fresh-worker build failure caused by strict quota polling
+  racing Cargo's live create, rename, and unlink operations.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
@@ -23,15 +23,20 @@ file records durable project state.
   installed profile. Its PR run `31633149090` passed; the fresh job's build/export/load took 294
   seconds and installed qualification took 262 seconds. Exact-main run `31634023665` passed in 281
   seconds; its cache-only fresh job took 276 seconds and build/export took 257 seconds, while the
-  hosted job seeded the missing trusted apt archive and compiler bundle entries.
-- Complete locally: contract commit `e137168` defines the pin-owned Cargo cache boundary;
-  implementation commit `d94afbc` moves the unchanged fetch before repository-owned image inputs
-  and adds its ordering regression; evidence commit `109f56e` records the baseline and passed exact
-  complete preflight. The comprehensive review of `109f56e` found only that this handoff still
-  pointed at completed work. This narrow repair advances continuity to publication; no runtime,
-  manifest, network-source, or installed-image behavior changed. Remaining work is exact-head
-  preflight for this repair, draft PR publication with the review envelope and disposition, hosted
-  invalidating-path qualification, merge, and exact-main cache measurement.
+  hosted job seeded the missing trusted apt archive and compiler bundle entries. PR #79 merged the
+  Cargo-fetch layout at `378d909a8b0667b74af560345d4be2574545a1fe`; PR run `31636754175`
+  passed in 484 seconds and exact-main run `31637540088` passed in 151 seconds.
+- In progress: an isolated build-only probe reproduced the installed failure on invocation four.
+  The worker reported `BUILD build`, Cargo itself did not return nonzero, cleanup passed, and host
+  memory/inodes were ample. The owner is the 250-millisecond private-tree quota callback treating
+  Cargo's ordinary live mutation between `listdir` and `stat/open` as a quota failure.
+- Complete locally: contract commit `079e213` and implementation commit `3d55fc1` introduced
+  mutation-tolerant live polling while retaining strict scans elsewhere. The comprehensive review
+  of `3d55fc1` found three valid closure gaps: missing strict post-child scans, an overbroad transient
+  errno set, and stale continuity. The consolidated repair narrows transient handling by syscall,
+  adds strict phase-owned scans before build/aggregate output consumption, extends the focused owner,
+  and updates this checkpoint. The focused worker owner and development-preflight owner pass after
+  repair. Exact-head complete preflight, publication, hosted qualification, and merge remain.
 
 ## Measurement
 
@@ -101,11 +106,11 @@ file records durable project state.
 
 ## Next steps
 
-1. Run exact-head preflight for the narrow continuity repair, then publish the draft PR with the
-   complete review envelope and its resolved HANDOFF disposition.
-2. Require hosted invalidating-path qualification, merge after all gates pass, and measure the
-   exact-main cache publication path.
-3. Keep PR #69 paused until the final Align revision is named.
+1. Run exact-head complete preflight for the consolidated review repair.
+2. Publish the PR with the complete review envelope, finding dispositions, and final-head check
+   evidence; merge after required GitHub checks pass.
+3. Resume runtime-copy/build reuse optimization after the flake is removed. Keep PR #69 paused until
+   the final Align revision is named.
 
 ## Latest durable evidence
 
