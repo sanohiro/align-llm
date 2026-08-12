@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -72,6 +73,7 @@ def test_classifier() -> None:
         "scripts/run-fresh-worker-qualification",
         "scripts/verification_scope.py",
         "scripts/classify-verification",
+        "scripts/materialize-fresh-tree",
         "scripts/pre-pr",
         "scripts/prepare-fresh-image-build",
         "scripts/select-ci-reuse",
@@ -91,6 +93,179 @@ def test_classifier() -> None:
         pass
     else:
         raise RuntimeError("empty diff was accepted")
+
+
+def test_runtime_materialization() -> None:
+    materializer = load_script(
+        "materialize-fresh-tree", "align_llm_materialize_fresh_tree_test"
+    )
+    manifest_generator = load_script(
+        "generate-fresh-toolchain-manifest",
+        "align_llm_generate_fresh_toolchain_manifest_test",
+    )
+    with tempfile.TemporaryDirectory(prefix="align-llm-materialize-") as temporary:
+        root = Path(temporary)
+        source = root / "source"
+        target = root / "target"
+        source.mkdir(mode=0o751)
+        source.chmod(0o751)
+        original = source / "a-original"
+        original.write_bytes(b"shared executable bytes")
+        original.chmod(0o640)
+        os.link(original, source / "b-hardlink")
+        (source / "c-file-alias").symlink_to("a-original")
+        (source / "d-dangling").symlink_to("missing")
+        directory = source / "e-directory"
+        directory.mkdir(mode=0o750)
+        directory.chmod(0o750)
+        child = directory / "child"
+        child.write_bytes(b"directory child")
+        child.chmod(0o751)
+        (directory / "cycle").symlink_to("..")
+        (source / "f-directory-alias").symlink_to("e-directory")
+
+        result = subprocess.run(
+            (sys.executable, "scripts/materialize-fresh-tree", str(source), str(target)),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            result.returncode == 0 and not result.stdout and not result.stderr,
+            "materializer failed",
+        )
+        require(stat.S_IMODE(target.stat().st_mode) == 0o751, "materialized root mode changed")
+        require(
+            stat.S_IMODE((target / "a-original").stat().st_mode) == 0o640,
+            "materialized file mode changed",
+        )
+        regular_identities = {
+            (target / name).stat().st_ino
+            for name in ("a-original", "b-hardlink", "c-file-alias")
+        }
+        require(len(regular_identities) == 1, "resolved regular aliases were duplicated")
+        require((target / "a-original").stat().st_nlink == 3, "regular link count changed")
+        require(not (target / "d-dangling").exists(), "dangling symlink was retained")
+        require(not (target / "e-directory/cycle").exists(), "directory cycle was retained")
+        require(
+            stat.S_IMODE((target / "e-directory").stat().st_mode) == 0o750
+            and stat.S_IMODE((target / "e-directory/child").stat().st_mode) == 0o751,
+            "materialized directory modes changed",
+        )
+        require(
+            (target / "e-directory/child").stat().st_ino
+            == (target / "f-directory-alias/child").stat().st_ino,
+            "repeated directory alias duplicated a regular file",
+        )
+        require(
+            not any(path.is_symlink() for path in target.rglob("*")),
+            "materialized tree retained a symlink",
+        )
+        independent = root / "independent-copies"
+        shutil.copytree(target, independent, copy_function=shutil.copy2)
+        require(
+            manifest_generator.digest_tree(target, cache=False)
+            == manifest_generator.digest_tree(independent, cache=False),
+            "hardlink materialization changed the logical digest tree",
+        )
+
+        existing = subprocess.run(
+            (sys.executable, "scripts/materialize-fresh-tree", str(source), str(target)),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            existing.returncode != 0 and "target already exists" in existing.stderr,
+            "materializer accepted an existing target",
+        )
+
+        unsupported = root / "unsupported"
+        os.mkfifo(unsupported)
+        unsupported_target = root / "unsupported-target"
+        invalid = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(unsupported),
+                str(unsupported_target),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            invalid.returncode != 0
+            and "unsupported runtime entry" in invalid.stderr
+            and not unsupported_target.exists(),
+            "materializer accepted an unsupported entry",
+        )
+
+        dangling = root / "dangling"
+        dangling.symlink_to("missing")
+        dangling_target = root / "dangling-target"
+        missing = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(dangling),
+                str(dangling_target),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            missing.returncode != 0
+            and "source did not materialize" in missing.stderr
+            and not dangling_target.exists(),
+            "materializer accepted a source with no root",
+        )
+
+        failure_source = root / "failure-source"
+        failure_source.mkdir()
+        (failure_source / "a").write_bytes(b"same")
+        os.link(failure_source / "a", failure_source / "b")
+        real_link = materializer.os.link
+
+        def fail_link(*_arguments: object, **_keywords: object) -> None:
+            raise OSError("injected hardlink failure")
+
+        materializer.os.link = fail_link
+        try:
+            try:
+                materializer.copy_entry(failure_source, root / "failure-target", frozenset(), {})
+            except OSError as error:
+                require(str(error) == "injected hardlink failure", "hardlink failure changed")
+            else:
+                raise RuntimeError("materializer ignored a hardlink failure")
+        finally:
+            materializer.os.link = real_link
+
+    dockerfile = (REPOSITORY / "image/fresh/Dockerfile").read_text(encoding="utf-8")
+    require(
+        dockerfile.count("/usr/local/libexec/align-llm/materialize-fresh-tree") == 3
+        and "for tree in git rust bwrap" in dockerfile
+        and "/usr/lib/llvm-22 /runtime/cc-suite" in dockerfile,
+        "Dockerfile materialization ownership changed",
+    )
+    require(
+        "stat -c '%d:%i' /runtime/git/bin/git" in dockerfile
+        and "stat -c '%d:%i' /runtime/git/bin/git-receive-pack" in dockerfile,
+        "Dockerfile does not enforce Git hardlink materialization",
+    )
 
 
 def test_plan() -> None:
@@ -1131,6 +1306,7 @@ def test_cli() -> None:
 
 def main() -> int:
     test_classifier()
+    test_runtime_materialization()
     test_plan()
     test_ci_reuse()
     test_qualification_modes()
@@ -1138,7 +1314,10 @@ def main() -> int:
     test_image_profile_plan()
     test_workflow_topology()
     test_cli()
-    print("development preflight: classifier, plans, qualification modes, and CI topology PASS")
+    print(
+        "development preflight: classifier, runtime materialization, plans, "
+        "qualification modes, and CI topology PASS"
+    )
     return 0
 
 

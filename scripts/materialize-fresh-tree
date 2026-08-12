@@ -11,7 +11,12 @@ import stat
 from pathlib import Path
 
 
-def copy_entry(source: Path, target: Path, ancestors: frozenset[tuple[int, int]]) -> None:
+def copy_entry(
+    source: Path,
+    target: Path,
+    ancestors: frozenset[tuple[int, int]],
+    regular_targets: dict[tuple[int, int], Path],
+) -> None:
     try:
         value = source.stat()
     except OSError as error:
@@ -27,12 +32,22 @@ def copy_entry(source: Path, target: Path, ancestors: frozenset[tuple[int, int]]
         with os.scandir(source) as entries:
             ordered = sorted(entries, key=lambda entry: os.fsencode(entry.name))
         for entry in ordered:
-            copy_entry(source / entry.name, target / entry.name, next_ancestors)
+            copy_entry(
+                source / entry.name,
+                target / entry.name,
+                next_ancestors,
+                regular_targets,
+            )
         target.chmod(stat.S_IMODE(value.st_mode))
         return
     if stat.S_ISREG(value.st_mode):
+        existing = regular_targets.get(identity)
+        if existing is not None:
+            os.link(existing, target, follow_symlinks=False)
+            return
         shutil.copyfile(source, target, follow_symlinks=True)
         target.chmod(stat.S_IMODE(value.st_mode))
+        regular_targets[identity] = target
         return
     raise RuntimeError(f"unsupported runtime entry: {source}")
 
@@ -44,7 +59,9 @@ def main() -> int:
     arguments = parser.parse_args()
     if arguments.target.exists(follow_symlinks=False):
         raise SystemExit("target already exists")
-    copy_entry(arguments.source, arguments.target, frozenset())
+    copy_entry(arguments.source, arguments.target, frozenset(), {})
+    if not arguments.target.exists(follow_symlinks=False):
+        raise SystemExit("source did not materialize")
     return 0
 
 

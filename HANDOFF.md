@@ -5,18 +5,19 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-12)
 
-- Branch `agent/update-checkout-action` is based on `origin/main` merge commit
-  `2b0bd32ce0006a5e2cf0117d28afbe3c19c58903`.
-- Active goal: replace checkout and cache actions' deprecated Node 20 runtimes with latest stable,
-  commit-pinned Node 24 releases and use the resulting fresh-image PR as the first independent
-  consumer of the trusted default-branch BuildKit cache.
+- Branch `agent/slim-fresh-runtime-image` is based on `origin/main` merge commit
+  `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
+- Active goal: reduce fresh-image transfer and load cost by preserving resolved regular-file
+  hardlinks while materializing image-owned runtime trees, without changing manifests, runtime
+  paths, worker behavior, or the pinned Align revision.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
-  trusted cache while reusing functional checks and skipping image load and qualification.
-- In progress: both checkout call sites use the official v7.0.1 commit and the Align source cache
-  uses the official v6.1.0 commit. Owner/static checks after review repair, publication, and the
-  hosted warm-cache measurement remain.
+  trusted cache while reusing functional checks and skipping image load and qualification. PR #74
+  merged the complete Node 24 action migration at `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
+- In progress: the materializer contract, implementation, synthetic alias/cycle/failure regression,
+  Dockerfile enforcement, exact base/candidate image measurement, and installed qualification are
+  complete locally. Independent review, publication, and hosted measurement remain.
 
 ## Measurement
 
@@ -30,6 +31,16 @@ file records durable project state.
 - Main seed run `31578101828` passed in 9m21s end to end; the fresh job took 9m17s, including a
   9m00s cache-only build/export. The reused supported-check job took 7s, and image load plus
   qualification were skipped. Its 19 default-branch BuildKit records total 3,738,896,114 bytes.
+- PR #74 warm-cache run `31579614586` passed in 7m52s; the fresh job took 7m48s, image
+  build/export/load 182 seconds, and qualification 246 seconds. Heavy instructions were cached,
+  but materialization and export/load still moved 1.50 GB and 1.25 GB layers. Overall time improved
+  only 6.0%, so the existing 75-second build and 25% overall targets were not met. Main run
+  `31580371758` completed its cache-only fresh job in 1m42s, including 88 seconds for build/export.
+- The exact local `d433e4d` comparison passed the footprint gate: image size fell from
+  10,451,313,589 to 6,069,945,116 bytes (41.9%), `/runtime` from 7,397,588,418 to 3,016,219,340
+  bytes (59.2%), and `/runtime/git` from 2,617,299,268 to 83,290,477 bytes (96.8%). Git and
+  `git-receive-pack` now share one 142-link inode. The 1,084.585-second cold base build and
+  44.283-second warm candidate build are diagnostic only because their cache states differ.
 - Hosted target: after one exact merge publishes the `main` cache, a subsequent PR completes image
   build in at most 75 seconds and reduces overall run time at least 25% while the full installed
   qualification still passes. A cache-miss source build must also pass.
@@ -43,28 +54,29 @@ file records durable project state.
 
 ## Next steps
 
-1. Run the proportional workflow owner/static checks, publish the checkout update, and verify that
-   its hosted image build imports the `main` cache in at most 75 seconds with no Node 20 annotation.
-2. Record the warm result in pull-request metadata and the next substantive capability checkpoint.
-3. Keep PR #69 paused until the final Align revision is named.
+1. Run the final development-preflight/static checks, then perform the required independent
+   adversarial review and one consolidated repair if needed.
+2. Publish the capability, record hosted cache/build/qualification evidence, and merge only when
+   checks and review dispositions are complete.
+3. Continue with Align-style apt/LLVM archive caching for the normal hosted job after merge; because
+   that workflow-only capability leaves the Dockerfile unchanged, it is also the first clean warm
+   consumer measurement for this image cache. A multi-stage builder/runtime image follows. Keep
+   PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
-- On PR #73, `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`: PASS. It covers signing
-  material ownership, modes, disclosure, cleanup, partial failure, CLI behavior, prepared-image
-  forwarding, cache topology, exact-merge publication, and the existing selector matrix.
-- Real prepared-image owner invocation with the pinned `/tmp/align` checkout: PASS in 192.336
-  seconds; image admission was 29 ms and worker aggregate was 104.657 seconds. The immediately prior
-  invocation reached the aggregate but returned the existing `ERROR CHILD aggregate`; the identical
-  path passed on retry, so retain this as a flaky-candidate observation rather than cache evidence.
-- `python3 scripts/check-gate-topology --self-test`, Python syntax parsing, Ruby YAML parsing,
-  `git diff --check`, and no repository bytecode: PASS. Full preflight on reviewed head `78a9c41`
-  passed: owner 1.287 seconds, pinned Align build 0.744 seconds, hosted graph 3.316 seconds, focused
-  qualification 20.677 seconds, and installed profile 204.399 seconds. After the review repair,
-  `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`, Ruby YAML parsing,
-  `git diff --check`, and no bytecode pass. Full preflight on repair commit `135b7c6` also passed:
-  owner 1.538 seconds, pinned Align build 0.696 seconds, hosted graph 3.138 seconds, focused
-  qualification 20.094 seconds, and installed profile 204.536 seconds.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`: PASS after the materializer
+  implementation. It now covers true hardlinks, file and directory aliases, preserved bytes and
+  modes, dangling links, directory cycles, unsupported types, an existing target, injected link
+  failure, Dockerfile ownership, and the existing workflow matrix.
+- Complete installed qualification against `/tmp/align` and the candidate image: PASS. On the final
+  candidate invocation the installed profile took 191.372 seconds, including a 2.749-second fully
+  warm image build and a 102.098-second worker aggregate. An immediately preceding uninstrumented
+  invocation reached the aggregate but returned the existing `ERROR CHILD aggregate`; a diagnostic
+  reproduction and the final unchanged path both passed, so hosted CI must still confirm the
+  aggregate rather than treating the local warm pass as sufficient.
+- Python syntax parsing, `git diff --check`, and no repository bytecode: PASS at this local
+  checkpoint.
 
 ## Constraints and intentional state
 

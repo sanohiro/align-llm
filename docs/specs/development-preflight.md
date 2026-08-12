@@ -14,6 +14,7 @@ behavior, the fresh-worker trust contract, or the pinned Align revision.
 | `python3 scripts/pre-pr [--base REF] [--align-repo PATH] --owner-test LABEL -- COMMAND ...` | Require a named non-`main` branch, a clean worktree, a non-empty merge-base diff, and one owner command for executable changes. Run the owner first, then the classifier-selected local CI-parity gates. Documentation-only changes run `git diff --check` and Markdown fence validation. Executable changes build the exact pinned sibling Align compiler and run `hosted-checks`. Fresh-image changes additionally run the focused qualification once and the installed profile once with `DOCKER_HOST` removed and Docker required. Recheck the exact HEAD and clean worktree, then write a versioned stamp below `git rev-parse --git-path align-llm-preflight`. `--plan` prints the selected commands without side effects and writes no stamp. |
 | `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker [--align-repo PATH] [--prepared-image IMAGE --image-signing-seed PATH --run-signing-seed PATH]` | Verify the qualification inventory, skip the already-owned focused commands, and run only the installed profile. `--installed-profile` retains the complete focused-plus-installed capability gate. `--require-docker` turns an unavailable Docker daemon into failure instead of a skip. `--align-repo` forwards an explicit full pinned checkout to the image owner. The three prepared-image arguments are all-or-none, require an installed-profile mode, and are forwarded unchanged. Every invoked owner emits one start and one terminal timing record. |
 | `python3 scripts/prepare-fresh-image-build --directory PATH --github-output PATH` | Create a new current-user-owned mode-0700 directory containing two independent 32-byte current-user-owned mode-0400 signing seeds and a schema-1 ownership marker bound to the exact directory and generated image tag. Refuse an existing target, symlink, non-ASCII/non-line-safe or relative material path, or unavailable output file. Validate and ASCII-encode the complete output record before creating the directory, then append `image`, `image_public_key_hex`, `run_public_key_hex`, and `material_directory` in one write; never print either seed or expose partial rows after an encoding rejection. `--cleanup --directory PATH` accepts only the exact marked directory and known regular files, validates directory, inventory, image seed, run seed, then the exact integer marker version and remaining schema, removes the seeds before the marker, and finally removes the directory. Preparation cleans up its own partial output on every error. |
+| `python3 scripts/materialize-fresh-tree SOURCE TARGET` | Materialize one image-owned runtime tree at a new target without retaining symlinks. Traverse entries in bytewise name order, follow regular-file and directory symlinks, omit dangling child links and directory cycles, preserve resolved modes and bytes, and reject an unsupported resolved entry type or a source that produces no root. All resolved regular-file entries with the same source device and inode share one target inode, including true hardlinks and file aliases reached through symlinks or repeated directory aliases. Refuse an existing target before reading the source. The helper exits zero only after the complete target exists; an argument error exits 2 and a traversal, copy, or hardlink failure exits nonzero so the Docker build discards the failed layer. |
 | `python3 scripts/run-fresh-image-profile-smoke [--prepared-image IMAGE --image-signing-seed PATH --run-signing-seed PATH]` | With none of the prepared-image arguments, generate per-run signing seeds and build the image locally as before. With all three, validate the generated tag and two private regular 32-byte seed files before Docker side effects, use the already loaded image without rebuilding it, and run the unchanged attestation, lifecycle, trust-mutation, boundary, and worker-aggregate qualification. Partial prepared-image input is rejected. The image owner removes the loaded image and all Docker state on success or failure; the preparation owner retains seed-directory cleanup. |
 | `python3 scripts/select-ci-reuse --event-name NAME --event-path PATH --repository OWNER/REPO --api-url URL [--github-output PATH]` | Select reuse only for a `push` to `refs/heads/main` whose checked-out commit has exactly two parents, whose first parent equals the event `before` SHA, whose first parent is the merge base of the two parents, and whose tree equals the second-parent tree. Through the GitHub API, require exactly one associated merged pull request whose base, head, merge commit, repository, and `main` ref equal those Git identities. Then require the uniquely identified latest successful `pull_request` run of `.github/workflows/ci.yml` at that exact second-parent head. Both required jobs must have completed successfully in the same run, and each must contain one successful API-visible step whose name binds that merged pull-request number, base SHA, and head SHA. Print a stable JSON record and optional GitHub output rows. Every malformed event, Git/API/read error, truncated response, recursion failure, pagination or latest-run ambiguity, missing field, identity mismatch, direct push, non-merge commit, missing job or evidence step, or non-success result selects `reused=false`; it never fails the workflow or suppresses verification. The token is read only from `GITHUB_TOKEN` and never printed or persisted. |
 | Installed fresh-image source setup | Reuse the explicit full-history `.align-revision` checkout already built by local preflight, or clone the remote when no checkout is supplied. Clone without hardlinks into the disposable profile source, verify the checked-out identity, and preserve the FRESH-WORKER prohibition on shallow, promisor, alternate-object, and replacement-object repositories. The Docker build's Cargo-cache-only source may use an exact depth-1 filtered fetch because it is never admitted as worker source. Reconstruct the exact boundary environment before `fresh-supervise` on both supported cgroup drivers so Docker-injected variables cannot change validation precedence. |
@@ -53,6 +54,18 @@ build arguments occur only in the last layer, so every run rebuilds the trust-ke
 retaining immutable toolchain layers.
 The Cargo-cache image layer avoids unrelated Align history without weakening worker source
 admission.
+
+Runtime materialization is an image-size and transfer optimization, not a manifest-format change.
+The helper owns construction of the new target within one Docker build layer; the Docker builder
+owns rollback of a failed layer and the installed image owns the completed target. Its explicit
+path arguments are the only inputs, there are no environment defaults, and its cache identity is
+the source layer plus the helper bytes. The source trees are builder-owned and immutable during one
+invocation, so concurrent source mutation and independent-process sharing are unsupported rather
+than hidden synchronization contracts. Target hardlinks do not change per-path modes, bytes,
+manifest digests, runtime-binding paths, or the worker's later private-copy behavior. There is no
+persisted schema, wire encoding, migration, allocation transfer, product ownership surface, or
+minimum tool-version contract; those dimensions are N/A because the output is an internal Linux
+filesystem layer consumed and attested by the existing image owner.
 
 GitHub cache access is branch-scoped. Pull requests may read the trusted `main` cache and their own
 cache but cannot publish into `main`; an exact merge therefore builds and publishes cache state
@@ -147,6 +160,7 @@ output-to-semantic rows rather than a persisted byte format.
 | Docker unavailable | image smoke and qualification runner | optional direct smoke reports SKIP; required preflight/CI mode fails |
 | Signing-material preparation, partial failure, malformed reuse, and cleanup | preparation helper and image smoke | new absolute directory with two private 32-byte seeds and public-only outputs; no seed disclosure; partial prepared input, wrong mode/type/size/tag, unknown cleanup entry, or ownership marker mismatch is rejected before Docker; preparation failure removes owned partial state; workflow cleanup runs after build or qualification failure |
 | Scratch and prepared image construction | image smoke and workflow | local/default mode builds with random public keys; hosted mode builds and loads the exact random-key image once, then the installed owner admits it without a second build and removes it on every exit |
+| Runtime materialization success, aliases, cycles, and failure | materialization helper and Dockerfile | deterministic traversal preserves bytes and modes, removes all symlinks, omits dangling links and directory cycles, maps every repeated resolved regular-file identity to one target inode, and produces the same logical digest tree as independent copies; an existing target or unsupported entry fails nonzero; the Dockerfile continues to materialize Git, Rust, bubblewrap, and LLVM before manifest generation |
 | Build cache hit, miss, invalidation, export outage, and branch scope | Buildx workflow | a hit reuses all content-identical layers but rebuilds the random-key layer; a miss or invalidated layer builds from source; export failure is non-fatal; exact fresh-image merges publish `main` cache without repeating functional qualification; PR caches never become trusted `main` cache. Cache-service import transport failure is N/A as an independent fallback boundary because the job already depends on the same Actions service for checkout, event, and step execution. |
 | Pinned Align source setup | preflight, qualification runner, image smoke, workflow, and Dockerfile regression | explicit full source propagates to the installed owner and is cloned without hardlinks; checked-out identity is exact; shallow/promisor source is not admitted; CI caches the immutable full source by revision; only the non-worker Cargo-cache layer uses an exact depth-1 filtered fetch |
 | Boundary profile on `cgroupfs` or `systemd` | image smoke | exact allowed environment reaches `fresh-supervise`; missing, malformed, relative, or extra inputs retain deterministic precedence |
@@ -213,6 +227,53 @@ the default-branch cache, and a subsequent pull request imports it, rebuilds the
 the complete installed qualification, and reduces the image-build step to at most 75 seconds and
 the overall PR run by at least 25% relative to PR #72. Cache-miss execution must also pass from
 source; no result may rely solely on cache-hit coverage.
+
+PR #74 provided the first hosted warm-cache result: run `31579614586` completed in 472 seconds,
+the fresh-image job in 468 seconds, image build/export/load in 182 seconds, and installed
+qualification in 246 seconds (`n=1`, GitHub `ubuntu-24.04`). Every content-heavy Docker instruction
+was reported `CACHED`, but cached-layer materialization and final image export/load dominated the
+build. The result reduced overall time only 6.0% from 502 seconds and therefore missed both hosted
+targets. Its default-branch merge run `31580371758` completed the cache-only fresh-image job in 102
+seconds, including 88 seconds for build/export, without loading or qualifying the image. Reproduce
+the job steps and BuildKit cache evidence with:
+
+```text
+gh run view 31579614586 --json createdAt,updatedAt,jobs
+gh run view 31579614586 --job 94059472166 --log
+gh run view 31580371758 --json createdAt,updatedAt,jobs
+```
+
+The next optimization gate measures the loaded image's Docker-reported virtual size and the
+hardlink-aware apparent bytes under `/runtime/git` and `/runtime` before and after materialization,
+using the same base commit, Docker daemon, Dockerfile inputs, and fixed public-key build arguments
+(`n=1` each). It must preserve the complete installed qualification and reduce `/runtime/git` bytes
+by at least 90%; hosted wall-time remains the cross-environment acceptance metric and must still meet
+the existing 75-second image-build and 25% overall-reduction targets before an end-to-end speedup is
+claimed. Build the first tag from a detached `d433e4d` worktree and the second from the candidate
+worktree with the same command inputs:
+
+```text
+env -u DOCKER_HOST docker build --progress=plain -f image/fresh/Dockerfile --build-arg IMAGE_PUBLIC_KEY_HEX=1111111111111111111111111111111111111111111111111111111111111111 --build-arg RUN_PUBLIC_KEY_HEX=2222222222222222222222222222222222222222222222222222222222222222 -t align-llm-slim-measure:base .
+env -u DOCKER_HOST docker build --progress=plain -f image/fresh/Dockerfile --build-arg IMAGE_PUBLIC_KEY_HEX=1111111111111111111111111111111111111111111111111111111111111111 --build-arg RUN_PUBLIC_KEY_HEX=2222222222222222222222222222222222222222222222222222222222222222 -t align-llm-slim-measure:candidate .
+```
+
+The 2026-08-12 local comparison used Docker Desktop 29.5.3's default Linux/amd64 builder from WSL2.
+The exact `d433e4d` baseline was 10,451,313,589 image bytes, 7,397,588,418 `/runtime` bytes, and
+2,617,299,268 `/runtime/git` bytes; its Git and `git-receive-pack` paths were distinct single-link
+inodes. The hardlink-preserving candidate was 6,069,945,116 image bytes, 3,016,219,340 `/runtime`
+bytes, and 83,290,477 `/runtime/git` bytes; both checked Git paths shared one 142-link inode. That is
+a 41.9% image reduction, 59.2% runtime-tree reduction, and 96.8% Git-runtime reduction, satisfying
+the local footprint gate. The baseline build took 1,084.585 seconds cold and the candidate took
+44.283 seconds with its six heavy parent instructions cached; those build times have different cache
+states and are diagnostics, not a wall-time speedup comparison. Reproduce each tag's footprint
+records with:
+
+```text
+env -u DOCKER_HOST docker image inspect IMAGE --format 'image_bytes={{.Size}} image_id={{.Id}}'
+env -u DOCKER_HOST docker run --rm --entrypoint /usr/bin/du IMAGE -sb /runtime/git
+env -u DOCKER_HOST docker run --rm --entrypoint /usr/bin/du IMAGE -sb /runtime
+env -u DOCKER_HOST docker run --rm --entrypoint /usr/bin/stat IMAGE -c '%d:%i links=%h' /runtime/git/bin/git /runtime/git/bin/git-receive-pack
+```
 
 Before merge, run the local preflight when the pinned Align checkout is available without modifying
 the paused Request 6 branch. The hosted CI jobs are final environment evidence. Compare the next
