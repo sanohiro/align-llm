@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_COMMIT=f94b90ad6e49cc7f15c4171c5a434aa459e82d2d
@@ -218,6 +218,127 @@ RUN mkdir -p /usr/local/share/align-llm/self-test/project/scripts \
     GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \
       git -C /usr/local/share/align-llm/self-test/project commit -m 'Install synthetic worker' && \
     rm -rf /build
+
+RUN mkdir -p /image-control/usr/bin /image-control/usr/lib && \
+    install -m 0755 /usr/bin/python3.12 /image-control/usr/bin/python3.12 && \
+    ln /image-control/usr/bin/python3.12 /image-control/usr/bin/python3 && \
+    python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
+      /usr/lib/python3.12 /image-control/usr/lib/python3.12
+
+RUN python3 - <<'PY'
+import os
+import stat
+from pathlib import Path
+
+root = Path("/image-control")
+expected = {
+    "usr",
+    "usr/bin",
+    "usr/bin/python3",
+    "usr/bin/python3.12",
+    "usr/lib",
+    "usr/lib/python3.12",
+}
+actual = {str(path.relative_to(root)) for path in root.rglob("*")}
+if not expected <= actual:
+    raise SystemExit("incomplete outer Python control tree")
+if any(path.is_symlink() for path in root.rglob("*")):
+    raise SystemExit("outer Python control tree contains a symlink")
+for name in ("python3", "python3.12"):
+    path = root / "usr/bin" / name
+    if not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o755:
+        raise SystemExit(f"invalid outer Python executable: {name}")
+if (root / "usr/bin/python3").stat().st_ino != (root / "usr/bin/python3.12").stat().st_ino:
+    raise SystemExit("outer Python executable aliases were duplicated")
+if set(os.listdir(root)) != {"usr"} or set(os.listdir(root / "usr")) != {"bin", "lib"}:
+    raise SystemExit("unexpected outer Python control root")
+if set(os.listdir(root / "usr/bin")) != {"python3", "python3.12"}:
+    raise SystemExit("unexpected outer Python executable")
+if set(os.listdir(root / "usr/lib")) != {"python3.12"}:
+    raise SystemExit("unexpected outer Python library")
+PY
+
+RUN env -i \
+      LD_LIBRARY_PATH=/runtime/system/usr-lib-x86_64 \
+      /image-control/usr/bin/python3 -I -B -c \
+      'import base64, ctypes, dataclasses, fcntl, hashlib, json, pathlib, resource, selectors, struct, subprocess, tempfile'
+
+FROM ubuntu:24.04 AS runtime
+
+COPY --from=builder /runtime /runtime
+COPY --from=builder /opt/align-llm/tool-bin /opt/align-llm/tool-bin
+COPY --from=builder /var/cache/align-llm/cargo /var/cache/align-llm/cargo
+COPY --from=builder /image-control/usr/bin/ /usr/bin/
+COPY --from=builder /image-control/usr/lib/python3.12 /usr/lib/python3.12
+COPY --from=builder /runtime/system/usr-lib-x86_64/ \
+     /usr/lib/x86_64-linux-gnu/
+COPY --from=builder \
+     /usr/local/libexec/align-llm/fresh-supervise \
+     /usr/local/libexec/align-llm/fresh-bootstrap \
+     /usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint \
+     /usr/local/libexec/align-llm/fresh-profile \
+     /usr/local/libexec/align-llm/
+COPY --from=builder /usr/local/share/align-llm /usr/local/share/align-llm
+
+RUN python3 -I -B - <<'PY'
+import base64
+import ctypes
+import dataclasses
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import pathlib
+import posixpath
+import re
+import resource
+import selectors
+import signal
+import stat
+import struct
+import subprocess
+import tempfile
+import time
+import typing
+from pathlib import Path
+
+expected_controls = {
+    "fresh-bootstrap",
+    "fresh-profile",
+    "fresh-supervise",
+    "request6-adoption-boundary-entrypoint",
+}
+control_root = Path("/usr/local/libexec/align-llm")
+if set(os.listdir(control_root)) != expected_controls:
+    raise SystemExit("unexpected final control executable inventory")
+for path in control_root.iterdir():
+    if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o755:
+        raise SystemExit(f"invalid final control executable: {path.name}")
+python_root = Path("/usr/lib/python3.12")
+if any(path.is_symlink() for path in python_root.rglob("*")):
+    raise SystemExit("final outer Python control tree contains a symlink")
+for name in ("python3", "python3.12"):
+    path = Path("/usr/bin") / name
+    if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o755:
+        raise SystemExit(f"invalid final outer Python executable: {name}")
+for path in (Path("/root/.rustup"), Path("/root/.cargo"), Path("/usr/lib/llvm-22"), Path("/build")):
+    if path.exists() or path.is_symlink():
+        raise SystemExit(f"builder-only path reached final image: {path}")
+apt_lists = Path("/var/lib/apt/lists")
+if apt_lists.exists() and any(apt_lists.iterdir()):
+    raise SystemExit("builder apt metadata reached final image")
+for path in (
+    Path("/runtime"),
+    Path("/opt/align-llm/tool-bin"),
+    Path("/var/cache/align-llm/cargo"),
+    Path("/usr/local/share/align-llm/fresh-cargo-cache.json"),
+    Path("/usr/local/share/align-llm/fresh-toolchain.json"),
+    Path("/usr/local/share/align-llm/self-test"),
+):
+    if not path.exists() or path.is_symlink():
+        raise SystemExit(f"missing final runtime artifact: {path}")
+PY
 
 ARG IMAGE_PUBLIC_KEY_HEX
 ARG RUN_PUBLIC_KEY_HEX
