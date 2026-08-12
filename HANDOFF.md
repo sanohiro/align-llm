@@ -5,8 +5,8 @@ this file records durable project state.
 
 ## Active continuation checkpoint (2026-08-12)
 
-- Branch `agent/local-preflight` is at installed-profile-tested implementation commit
-  `485dddd5bb5caf49284cd698f6b535b3e9fed406`, based on `main` commit
+- Branch `agent/local-preflight` is at reviewed repair commit
+  `ff6bea1e453163a55620e3098988be8698f7da44`, based on `main` commit
   `d17e474b365df447593ba91764cf6662489835de`.
 - Active goal: deliver the local development-preflight capability before resuming Request 6. It
   gives local and hosted execution one verification classifier, exact-HEAD local evidence,
@@ -16,8 +16,11 @@ this file records durable project state.
   and stamp path, CI adoption, installed-profile-only execution, required-Docker handling, phase
   records, owner regression, full pinned-source reuse/cache, `cgroupfs` boundary isolation, and the
   clean-worktree repair are implemented. Focused and installed qualification both pass.
-- In progress: the stable-candidate matrix-to-diff pass, final exact-HEAD preflight, and the one
-  comprehensive review. No pull request has been published.
+- Complete: the matrix-to-diff pass and one high-effort comprehensive review of candidate
+  `5e93bb2` are complete. Its two valid findings were consolidated in `ff6bea1`: executable
+  self-test leakage into docs-only CI and a non-comparable performance claim. No final review is
+  required because the repair only implements those recorded findings.
+- In progress: final exact-HEAD preflight and publication. No pull request has been published.
 
 ## Paused product checkpoint
 
@@ -32,11 +35,9 @@ this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Perform the matrix-to-diff pass, commit this handoff checkpoint, and run one comprehensive
-   stable-candidate review. Apply all valid findings in one consolidated repair if needed.
-2. Rerun only affected owners, then execute the full local preflight against the isolated pin so
+1. Execute the full local preflight against the isolated pin so
    its stamp belongs to the final exact HEAD. Publish only after that local evidence is complete.
-3. After this workflow capability merges, refresh `main`. Keep PR #69 paused until the user names
+2. After this workflow capability merges, refresh `main`. Keep PR #69 paused until the user names
    the completed Align revision; workflow completion does not authorize Request 6 resumption.
 
 ## Latest verification
@@ -60,7 +61,9 @@ this file records durable project state.
   worker source and is not the final preflight checkout.
 - `git diff --check`: PASS. Python compilation passed. `actionlint` and PyYAML are unavailable, so
   workflow syntax currently relies on the owner topology test and later hosted parsing.
-- Full exact-HEAD preflight and comprehensive review are not yet complete.
+- `codex review --base main`: complete at high effort for candidate `5e93bb2`; two P2 findings,
+  both accepted and repaired in `ff6bea1`. The affected owner regression passes after repair.
+- Full exact-HEAD preflight is not yet complete.
 
 ## Constraints and intentional state
 
