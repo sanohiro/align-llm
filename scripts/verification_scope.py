@@ -42,6 +42,7 @@ FRESH_IMAGE_PATTERNS = (
     "scripts/run-fresh-image-profile-smoke",
     "scripts/run-fresh-worker-*",
     "scripts/run-loop-smoke",
+    "scripts/select-ci-reuse",
     "scripts/test-development-preflight",
     "scripts/verification_scope.py",
 )

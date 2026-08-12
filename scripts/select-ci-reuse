@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Fail closed unless a main push can reuse one exact pull-request CI run."""
+
+from __future__ import annotations
+
+import argparse
+import http.client
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Callable, Mapping, Sequence
+
+
+sys.dont_write_bytecode = True
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+REQUIRED_JOBS = (
+    "Pinned Align compiler and supported checks",
+    "Installed Ubuntu 24.04 fresh-image profile",
+)
+MAX_API_BYTES = 1_048_576
+
+
+@dataclass(frozen=True)
+class Decision:
+    version: int = field(default=1, init=False)
+    reused: bool
+    reason: str
+    source_head: str = ""
+    pull_request: int = 0
+    workflow_run: int = 0
+
+    def outputs(self) -> dict[str, str]:
+        return {
+            "version": str(self.version),
+            "reused": str(self.reused).lower(),
+            "reason": self.reason,
+            "source_head": self.source_head,
+            "pull_request": str(self.pull_request),
+            "workflow_run": str(self.workflow_run),
+        }
+
+
+class ReuseError(RuntimeError):
+    """An expected identity or evidence boundary was unavailable."""
+
+
+def evidence_step_name(pull_request: int, base: str, head: str) -> str:
+    return f"Bind pull request evidence pr={pull_request} base={base} head={head}"
+
+
+def exact_sha(value: object, label: str) -> str:
+    if not isinstance(value, str) or SHA_PATTERN.fullmatch(value) is None:
+        raise ReuseError(f"invalid-{label}")
+    return value
+
+
+def exact_integer(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ReuseError(f"invalid-{label}")
+    return value
+
+
+def git_output(repository: Path, *arguments: str) -> str:
+    try:
+        result = subprocess.run(
+            ("git", *arguments),
+            cwd=repository,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise ReuseError("git-identity-unavailable") from error
+    if result.returncode != 0:
+        raise ReuseError("git-identity-unavailable")
+    return result.stdout.strip()
+
+
+def merge_identity(repository: Path, before: str, after: str) -> tuple[str, str]:
+    if git_output(repository, "rev-parse", "HEAD") != after:
+        raise ReuseError("checkout-head-mismatch")
+    parents = git_output(repository, "show", "-s", "--format=%P", after).split()
+    if len(parents) != 2 or any(SHA_PATTERN.fullmatch(parent) is None for parent in parents):
+        raise ReuseError("not-two-parent-merge")
+    first, second = parents
+    if first != before:
+        raise ReuseError("event-before-mismatch")
+    if git_output(repository, "merge-base", first, second) != first:
+        raise ReuseError("head-not-based-on-merge-parent")
+    if git_output(repository, "rev-parse", f"{after}^{{tree}}") != git_output(
+        repository, "rev-parse", f"{second}^{{tree}}"
+    ):
+        raise ReuseError("merge-tree-changed")
+    return first, second
+
+
+def api_base_url(value: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError as error:
+        raise ReuseError("invalid-api-url") from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ReuseError("invalid-api-url")
+    return value.rstrip("/")
+
+
+class GitHubApi:
+    def __init__(self, base_url: str, token: str):
+        self.base_url = api_base_url(base_url)
+        if not token or "\n" in token or "\r" in token:
+            raise ReuseError("missing-api-token")
+        self.token = token
+
+    def __call__(self, path: str) -> object:
+        request = urllib.request.Request(
+            self.base_url + path,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {self.token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "align-llm-ci-reuse",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                payload = response.read(MAX_API_BYTES + 1)
+        except (
+            OSError,
+            http.client.HTTPException,
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+        ) as error:
+            raise ReuseError("github-api-unavailable") from error
+        if len(payload) > MAX_API_BYTES:
+            raise ReuseError("github-api-response-too-large")
+        try:
+            return json.loads(payload)
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
+            raise ReuseError("github-api-invalid-json") from error
+
+
+def nested(record: object, *names: str) -> object:
+    value = record
+    for name in names:
+        if not isinstance(value, Mapping) or name not in value:
+            raise ReuseError("github-api-missing-field")
+        value = value[name]
+    return value
+
+
+def select_pull_request(
+    api_get: Callable[[str], object], repository: str, first: str, second: str, after: str
+) -> int:
+    encoded_head = urllib.parse.quote(second, safe="")
+    response = api_get(f"/repos/{repository}/commits/{encoded_head}/pulls?per_page=100")
+    if not isinstance(response, list):
+        raise ReuseError("github-api-invalid-pulls")
+    if len(response) >= 100:
+        raise ReuseError("github-api-pulls-paginated")
+    matches = []
+    for pull in response:
+        if not isinstance(pull, Mapping):
+            raise ReuseError("github-api-invalid-pull")
+        if (
+            pull.get("state") == "closed"
+            and isinstance(pull.get("merged_at"), str)
+            and pull.get("merge_commit_sha") == after
+            and nested(pull, "head", "sha") == second
+            and nested(pull, "base", "sha") == first
+            and nested(pull, "base", "ref") == "main"
+            and nested(pull, "base", "repo", "full_name") == repository
+        ):
+            matches.append(exact_integer(pull.get("number"), "pull-request-number"))
+    if len(matches) != 1:
+        raise ReuseError("exact-merged-pull-request-not-found")
+    return matches[0]
+
+
+def select_workflow_run(
+    api_get: Callable[[str], object], repository: str, source_head: str
+) -> int:
+    encoded_head = urllib.parse.quote(source_head, safe="")
+    response = api_get(
+        f"/repos/{repository}/actions/workflows/ci.yml/runs"
+        f"?event=pull_request&head_sha={encoded_head}&per_page=100"
+    )
+    if not isinstance(response, Mapping) or not isinstance(response.get("workflow_runs"), list):
+        raise ReuseError("github-api-invalid-workflow-runs")
+    runs = response["workflow_runs"]
+    total = exact_integer(response.get("total_count"), "workflow-run-count")
+    if total > len(runs) or len(runs) >= 100:
+        raise ReuseError("github-api-workflow-runs-paginated")
+    candidates = []
+    for run in runs:
+        if not isinstance(run, Mapping):
+            raise ReuseError("github-api-invalid-workflow-run")
+        if (
+            run.get("event") == "pull_request"
+            and run.get("head_sha") == source_head
+            and run.get("path") == ".github/workflows/ci.yml"
+            and nested(run, "repository", "full_name") == repository
+        ):
+            candidates.append(run)
+    if not candidates:
+        raise ReuseError("pull-request-workflow-run-not-found")
+    latest = max(
+        candidates,
+        key=lambda run: (
+            exact_integer(run.get("run_number"), "workflow-run-number"),
+            exact_integer(run.get("run_attempt"), "workflow-run-attempt"),
+            exact_integer(run.get("id"), "workflow-run-id"),
+        ),
+    )
+    latest_identity = (
+        exact_integer(latest.get("run_number"), "workflow-run-number"),
+        exact_integer(latest.get("run_attempt"), "workflow-run-attempt"),
+        exact_integer(latest.get("id"), "workflow-run-id"),
+    )
+    if (
+        sum(
+            1
+            for run in candidates
+            if (
+                exact_integer(run.get("run_number"), "workflow-run-number"),
+                exact_integer(run.get("run_attempt"), "workflow-run-attempt"),
+                exact_integer(run.get("id"), "workflow-run-id"),
+            )
+            == latest_identity
+        )
+        != 1
+    ):
+        raise ReuseError("latest-workflow-run-not-unique")
+    if latest.get("status") != "completed" or latest.get("conclusion") != "success":
+        raise ReuseError("latest-pull-request-workflow-not-successful")
+    return exact_integer(latest.get("id"), "workflow-run-id")
+
+
+def require_jobs(
+    api_get: Callable[[str], object],
+    repository: str,
+    workflow_run: int,
+    source_head: str,
+    first_parent: str,
+    pull_request: int,
+) -> None:
+    response = api_get(
+        f"/repos/{repository}/actions/runs/{workflow_run}/jobs?per_page=100"
+    )
+    if not isinstance(response, Mapping) or not isinstance(response.get("jobs"), list):
+        raise ReuseError("github-api-invalid-jobs")
+    jobs = response["jobs"]
+    total = exact_integer(response.get("total_count"), "job-count")
+    if total > len(jobs) or len(jobs) >= 100:
+        raise ReuseError("github-api-jobs-paginated")
+    evidence_name = evidence_step_name(pull_request, first_parent, source_head)
+    for required in REQUIRED_JOBS:
+        matches = [job for job in jobs if isinstance(job, Mapping) and job.get("name") == required]
+        if len(matches) != 1:
+            raise ReuseError("required-job-not-unique")
+        job = matches[0]
+        if (
+            job.get("head_sha") != source_head
+            or job.get("run_id") != workflow_run
+            or job.get("status") != "completed"
+            or job.get("conclusion") != "success"
+        ):
+            raise ReuseError("required-job-not-successful")
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            raise ReuseError("github-api-invalid-job-steps")
+        evidence = [
+            step
+            for step in steps
+            if isinstance(step, Mapping) and step.get("name") == evidence_name
+        ]
+        if len(evidence) != 1:
+            raise ReuseError("pull-request-evidence-not-unique")
+        if (
+            evidence[0].get("status") != "completed"
+            or evidence[0].get("conclusion") != "success"
+        ):
+            raise ReuseError("pull-request-evidence-not-successful")
+
+
+def decide(
+    *,
+    event_name: str,
+    event: object,
+    repository: str,
+    api_get: Callable[[str], object],
+    git_repository: Path = REPOSITORY,
+) -> Decision:
+    if event_name != "push":
+        return Decision(False, "event-not-push")
+    if not isinstance(event, Mapping):
+        return Decision(False, "invalid-event")
+    try:
+        if (
+            event.get("ref") != "refs/heads/main"
+            or event.get("created") is not False
+            or event.get("deleted") is not False
+            or event.get("forced") is not False
+        ):
+            raise ReuseError("push-not-normal-main-update")
+        if REPOSITORY_PATTERN.fullmatch(repository) is None:
+            raise ReuseError("invalid-repository")
+        before = exact_sha(event.get("before"), "event-before")
+        after = exact_sha(event.get("after"), "event-after")
+        first, second = merge_identity(git_repository, before, after)
+        pull_request = select_pull_request(api_get, repository, first, second, after)
+        workflow_run = select_workflow_run(api_get, repository, second)
+        require_jobs(api_get, repository, workflow_run, second, first, pull_request)
+        return Decision(True, "exact-merged-pr-checks", second, pull_request, workflow_run)
+    except ReuseError as error:
+        return Decision(False, str(error))
+
+
+def read_event(path: Path) -> object:
+    try:
+        with path.open("rb") as event_file:
+            payload = event_file.read(MAX_API_BYTES + 1)
+        if len(payload) > MAX_API_BYTES:
+            raise ReuseError("event-too-large")
+        return json.loads(payload)
+    except ReuseError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as error:
+        raise ReuseError("event-unavailable") from error
+
+
+def write_outputs(path: Path, decision: Decision) -> None:
+    with path.open("a", encoding="utf-8", newline="\n") as output:
+        for name, value in decision.outputs().items():
+            output.write(f"{name}={value}\n")
+
+
+def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--event-name", required=True)
+    parser.add_argument("--event-path", type=Path, required=True)
+    parser.add_argument("--repository", required=True)
+    parser.add_argument("--api-url", required=True)
+    parser.add_argument("--github-output", type=Path)
+    return parser.parse_args(arguments)
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    values = parse_arguments(sys.argv[1:] if arguments is None else arguments)
+    try:
+        event = read_event(values.event_path)
+        if values.event_name == "push":
+            api_get: Callable[[str], object] = GitHubApi(
+                values.api_url, os.environ.get("GITHUB_TOKEN", "")
+            )
+        else:
+            api_get = lambda path: None
+        decision = decide(
+            event_name=values.event_name,
+            event=event,
+            repository=values.repository,
+            api_get=api_get,
+        )
+    except ReuseError as error:
+        decision = Decision(False, str(error))
+    print(json.dumps(asdict(decision), sort_keys=True, separators=(",", ":")))
+    if values.github_output is not None:
+        try:
+            write_outputs(values.github_output, decision)
+        except OSError as error:
+            print(f"CI reuse output failed: {type(error).__name__}", file=sys.stderr)
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
