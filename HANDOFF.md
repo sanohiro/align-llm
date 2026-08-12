@@ -15,9 +15,10 @@ file records durable project state.
   of `eb1af874b93eaed155b5ddfc58c911d1e93ee37d` found four valid issues; one consolidated repair now
   binds both source job records to the exact PR/base/head, covers response-read and Git launch
   failures, expands the fail-closed matrix, and makes the baseline reproducible.
-- In progress: the repair materially changed the evidence strategy, so it requires the one allowed
-  final comprehensive review. The stable candidate then needs its final exact-HEAD preflight,
-  publication, hosted PR evidence, merge, and merge-push measurement.
+- Complete: because the repair materially changed the evidence strategy, the one allowed final
+  comprehensive review covered the full repaired capability and passed with no findings.
+- In progress: the stable candidate needs its final exact-HEAD preflight, publication, hosted PR
+  evidence, merge, and merge-push measurement.
 
 ## Measurement
 
@@ -37,12 +38,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Run the one final comprehensive review of the repaired evidence strategy; if it finds a new
-   non-trivial issue, re-scope instead of entering another repair loop.
-2. Run the final exact-HEAD shared preflight, including required fresh-image qualification.
-3. Publish the pull request with both review envelopes and finding dispositions, confirm its normal
+1. Run the final exact-HEAD shared preflight, including required fresh-image qualification.
+2. Publish the pull request with both review envelopes and finding dispositions, confirm its normal
    jobs and PR/base/head evidence steps pass, merge, and measure the merge-push reuse.
-4. Refresh `main`; keep PR #69 paused until the final Align revision is named.
+3. Refresh `main`; keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
