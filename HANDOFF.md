@@ -5,7 +5,7 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-12)
 
-- Branch `agent/cache-hosted-apt-llvm-v2` is based on `origin/main` merge commit
+- Branch `agent/cache-hosted-apt-llvm-v3` is based on `origin/main` merge commit
   `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
 - Active goal: replace repeated hosted apt.llvm.org resolution with sibling Align's verified
   replayable archive cache, while using the unchanged Dockerfile as the first exact warm consumer
@@ -24,9 +24,12 @@ file records durable project state.
   The redesigned candidate passed complete preflight. Its comprehensive review found that it still
   needed post-consumer byte verification plus exact-key publication confirmation because the
   save-only action can warn and exit zero without publishing, and that the package vector needed a
-  strict grammar. One consolidated repair adds both gates and shared package parsing. Repair
-  verification, any conditionally required final review, publication, cache seed, and clean warm
-  measurement remain.
+  strict grammar. One consolidated repair added both gates and shared package parsing and passed
+  complete preflight, but its conditionally required final review found that the pinned cache
+  action returns success before enforcing cache-miss failure when the cache feature is unavailable.
+  v2 is stopped and unpublished. The v3 redesign makes literal `cache-hit=true` a separate required
+  publication assertion. Implementation, verification, one fresh comprehensive review,
+  publication, cache seed, and clean warm measurement remain.
 
 ## Measurement
 
@@ -68,13 +71,14 @@ file records durable project state.
 
 ## Next steps
 
-1. Run the apt archive owner, development-preflight owner, workflow syntax/static checks, and the
+1. Implement the v3 literal cache-hit publication assertion and its workflow-owner regressions.
+2. Run the apt archive owner, development-preflight owner, workflow syntax/static checks, and the
    proportional fresh qualification selected by the workflow change.
-2. Perform the required independent adversarial review, publish, confirm the PR miss and exact-main
+3. Perform the required independent adversarial review, publish, confirm the PR miss and exact-main
    cache seed, then measure one clean warm run before claiming the 10-second install/75-second check
    targets.
-3. Continue with a multi-stage builder/runtime image after merge. Keep PR #69 paused until the
-   final Align revision is named.
+4. Remove the measured repeated Rust setup, then continue with a multi-stage builder/runtime image
+   after merge. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
@@ -94,6 +98,10 @@ file records durable project state.
 - Complete preflight passed on reviewed v2 head `0c80091bae34716a8270aa212d811f9167dd089a`:
   owner 4.240s, pinned Align build 0.728s, installed profile 211.155s, and every intervening gate
   passed. The review repair invalidates that stamp; its affected owner/static checks pass locally.
+- Complete preflight passed on repaired v2 head `fc559ec6166b79594b416970ff030c15c46b8476`:
+  owner 4.042s, pinned Align build 0.729s, installed profile 206.399s, and every intervening gate
+  passed. Its final review failed on the cache-feature-unavailable publication path, so the candidate
+  remains stopped and unpublished despite the passing checks.
 
 ## Constraints and intentional state
 
