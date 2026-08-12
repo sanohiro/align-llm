@@ -77,9 +77,12 @@ class Identity:
     @property
     def cache_key(self) -> str:
         return (
-            f"hosted-align-bundle-g{CACHE_GENERATION}-{self.align_revision}-"
-            f"{self.image_version}-{self.runner_os}-{self.runner_arch}-"
-            f"rust-{self.rust_version}-llvm-{self.llvm_major}"
+            f"hosted-align-bundle-g{CACHE_GENERATION}-rev-{self.align_revision}-"
+            f"image-{len(self.image_version)}-{self.image_version}-"
+            f"os-{len(self.runner_os)}-{self.runner_os}-"
+            f"arch-{len(self.runner_arch)}-{self.runner_arch}-"
+            f"rust-{len(self.rust_version)}-{self.rust_version}-"
+            f"llvm-{self.llvm_major}"
         )
 
 
@@ -158,14 +161,20 @@ def parse_arguments(arguments: Sequence[str]) -> tuple[argparse.Namespace, Ident
     revision = require_ascii(parsed.align_revision, "Align revision")
     if REVISION_PATTERN.fullmatch(revision) is None:
         raise UsageError("Align revision must be a lowercase 40-hex commit")
+    image_version = require_token(parsed.image_version, "runner image version")
+    runner_os = require_token(parsed.runner_os, "runner OS")
+    runner_arch = require_token(parsed.runner_arch, "runner architecture")
+    rust_version = require_token(parsed.rust_version, "Rust version")
+    llvm_major = parse_llvm_major(parsed.llvm_major)
+    directory = require_directory(parsed.directory)
     identity = Identity(
-        directory=require_directory(parsed.directory),
+        directory=directory,
         align_revision=revision,
-        image_version=require_token(parsed.image_version, "runner image version"),
-        runner_os=require_token(parsed.runner_os, "runner OS"),
-        runner_arch=require_token(parsed.runner_arch, "runner architecture"),
-        rust_version=require_token(parsed.rust_version, "Rust version"),
-        llvm_major=parse_llvm_major(parsed.llvm_major),
+        image_version=image_version,
+        runner_os=runner_os,
+        runner_arch=runner_arch,
+        rust_version=rust_version,
+        llvm_major=llvm_major,
     )
     return parsed, identity
 

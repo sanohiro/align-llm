@@ -246,14 +246,29 @@ def test_bundle() -> None:
         key = run("key", *common(bundle, revision))
         expected_key = (
             f"path={bundle}\n"
-            f"key=hosted-align-bundle-g1-{revision}-20260720.247.2-"
-            "Linux-X64-rust-1.96.0-llvm-22\n"
+            f"key=hosted-align-bundle-g1-rev-{revision}-"
+            "image-14-20260720.247.2-os-5-Linux-arch-3-X64-"
+            "rust-6-1.96.0-llvm-22\n"
         )
         require(
             key.returncode == 0 and key.stdout == expected_key and not key.stderr,
             "cache identity output changed",
         )
         require(not bundle.exists(), "key mode touched the bundle path")
+
+        collision_left = replace_option(
+            replace_option(["key", *common(root / "collision-left", revision)], "--image-version", "a-b"),
+            "--runner-os",
+            "c",
+        )
+        collision_right = replace_option(
+            replace_option(["key", *common(root / "collision-right", revision)], "--image-version", "a"),
+            "--runner-os",
+            "b-c",
+        )
+        left_key = run(*collision_left).stdout.splitlines()[1]
+        right_key = run(*collision_right).stdout.splitlines()[1]
+        require(left_key != right_key, "valid identity tuples collided in the cache key")
 
         created = run(*create_arguments(bundle, revision, align_repository, llvm))
         bundle_bytes = sum(
@@ -385,6 +400,31 @@ def test_bundle() -> None:
                 and invalid.stderr.startswith("ci-align-bundle:"),
                 f"invalid arguments escaped usage failure: {arguments}",
             )
+
+        invalid_precedence = replace_option(
+            ["key", *common(Path("relative"), revision)],
+            "--image-version",
+            "bad/value",
+        )
+        precedence_result = run(*invalid_precedence)
+        require(
+            precedence_result.returncode == 2
+            and precedence_result.stderr
+            == "ci-align-bundle: runner image version has an invalid identity\n",
+            "scalar identity no longer precedes directory validation",
+        )
+        ownership_precedence = run(
+            "key",
+            *replace_option(common(root / "ownership-precedence", revision), "--align-revision", "A" * 40),
+            "--align-repo",
+            str(align_repository),
+        )
+        require(
+            ownership_precedence.returncode == 2
+            and ownership_precedence.stderr
+            == "ci-align-bundle: --align-repo and --llvm-library are create-only\n",
+            "option ownership no longer precedes scalar validation",
+        )
 
         existing_directory = root / "existing-directory"
         existing_directory.mkdir()

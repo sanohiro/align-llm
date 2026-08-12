@@ -21,10 +21,11 @@ file records durable project state.
   compiler-bundle helper, focused owner, bundle-first workflow routing, main-only post-consumer
   publication proof, and archive fallback. A local real-client bundle containing only `alignc`,
   `libalign_runtime.a`, and `libLLVM.so.22.1` is 183,999,150 bytes; helper creation, admission, and
-  complete `hosted-checks` passed against the pinned Align checkout. Complete proportional
-  preflight passed at that checkpoint. The final author consistency fix adds the manifest's own
-  mode admission, bounds cache-key identity tokens, and synchronizes the GitHub Actions ledger;
-  exact-head verification and independent review remain.
+  complete `hosted-checks` passed against the pinned Align checkout. Reviewed head
+  `5d53224ee11a0c4546fa1f6094207f85017d635f` passed complete proportional preflight. Its independent
+  review requested an injective cache-key encoding, contract-matching multi-invalid precedence,
+  and this durable-state correction. One consolidated repair implements those three findings;
+  affected exact-head verification and publication remain.
 
 ## Measurement
 
@@ -75,9 +76,9 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit the final author consistency fix, rerun proportional preflight at the exact head, and
-   obtain the mandatory fresh independent comprehensive review.
-2. Publish the reviewed candidate and confirm the PR miss path, exact-main seed, and one clean warm
+1. Run affected owner/static checks and proportional preflight on the consolidated review repair,
+   then record all three finding dispositions against the reviewed head and repair commit.
+2. Publish the candidate and confirm the PR miss path, exact-main seed, and one clean warm
    measurement before claiming the 60-second check target.
 3. Continue with a multi-stage builder/runtime image. Keep PR #69 paused until the final Align
    revision is named.
@@ -94,7 +95,9 @@ file records durable project state.
   `libLLVM.so.22.1` from the bundle; `alignc --version` and complete `make hosted-checks` passed.
 - Complete preflight at implementation checkpoint `8872b17`: bundle/development owner 8.294s,
   pinned Align build 15.333s, hosted graph 3.059s, focused qualification 20.428s, and installed
-  profile 207.512s. The final author consistency fix requires fresh exact-head evidence.
+  profile 207.512s. Complete preflight also passed reviewed head `5d53224`: owner 8.523s, pinned
+  Align build 0.602s, hosted graph 3.081s, focused qualification 20.277s, and installed profile
+  198.491s. The consolidated review repair requires fresh exact-head evidence.
 
 ## Constraints and intentional state
 
