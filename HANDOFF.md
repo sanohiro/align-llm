@@ -5,11 +5,10 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-12)
 
-- Branch `agent/cache-hosted-align-bundle` is based on PR #76 merge commit
-  `c3deab753a3db4e963817917c1105fe110907a99`.
-- Active goal: replace the measured 36-second cached dpkg replay and 6-second Rust download with a
-  trusted hosted Align compiler bundle that lets normal checks start directly from a verified
-  `alignc`, runtime archive, and LLVM shared library.
+- Branch `agent/multistage-fresh-runtime` is based on PR #77 merge commit
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`.
+- Active goal: remove builder-only apt, LLVM, Rust, source, and compilation state from the installed
+  fresh image while preserving its exact runtime manifest and complete installed qualification.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
@@ -17,17 +16,13 @@ file records durable project state.
   merged the complete Node 24 action migration at `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
   PR #75 merged hardlink-preserving runtime materialization at `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
   PR #76 merged and seeded the verified hosted LLVM archive cache at `c3deab753a3db4e963817917c1105fe110907a99`.
-- In progress: implementation checkpoint `8872b17aceedf413464f9e10f71112028b980615` added the
-  compiler-bundle helper, focused owner, bundle-first workflow routing, main-only post-consumer
-  publication proof, and archive fallback. A local real-client bundle containing only `alignc`,
-  `libalign_runtime.a`, and `libLLVM.so.22.1` is 183,999,150 bytes; helper creation, admission, and
-  complete `hosted-checks` passed against the pinned Align checkout. Reviewed head
-  `5d53224ee11a0c4546fa1f6094207f85017d635f` passed complete proportional preflight. Its independent
-  review requested an injective cache-key encoding, contract-matching multi-invalid precedence,
-  and this durable-state correction. Consolidated repair
-  `a8fb07d42f5e74f5435674548c11dadb8ed129dd` implements all three findings and passed affected
-  bundle-owner, workflow-owner, hosted-graph, focused-fresh, and installed-profile verification.
-  Publication and hosted miss/seed/warm evidence remain.
+  PR #77 merged the trusted hosted Align compiler bundle at
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`; its exact-main seed and clean warm run passed.
+- In progress: the multi-stage image contract is being settled from the current 6,069,945,116-byte
+  image baseline. Read-only inspection found `/runtime` at 3,064,524,800 bytes, while the final
+  single-stage image also retains `/root/.rustup` at 613,281,792 bytes, `/usr/lib/llvm-22` at
+  626,454,528 bytes, and `/usr` at 1,719,996,416 bytes. The stage-boundary plan of record is settled;
+  the next checkpoint is its static owner plus the Dockerfile implementation.
 
 ## Measurement
 
@@ -68,6 +63,12 @@ file records durable project state.
   build/export/load and 242 seconds for installed qualification. Apt repository downloads no longer
   repeat, but replay remains too slow. The replacement bundle target is restore plus verification
   at most 10 seconds and a complete normal check job at most 60 seconds (`n=1`, same runner image).
+- PR #77 run `31603728854`, exact-main seed run `31604427226`, and clean same-commit warm run
+  `31604614372` passed. The warm hosted check job took 28 seconds, including one second to restore
+  and one second to verify the bundle; apt, Rust, Align checkout/build, and publication were skipped.
+  This is 72% lower than the 100-second bundle baseline. The same warm run's fresh-image job still
+  took 430 seconds, including 165 seconds to build/export/load and 222 seconds for installed
+  qualification, making image transfer and qualification the remaining workflow bottleneck.
 
 ## Paused product checkpoint
 
@@ -78,12 +79,11 @@ file records durable project state.
 
 ## Next steps
 
-1. Publish the candidate, record the SHA-bound review envelope and all three dispositions, and
-   confirm the exact PR-head miss path.
-2. Merge only after final integration checks pass, then confirm the exact-main bundle seed and one
-   clean warm measurement before claiming the 60-second check target.
-3. Continue with a multi-stage builder/runtime image. Keep PR #69 paused until the final Align
-   revision is named.
+1. Finish the authoritative multi-stage contract and closure-matrix consistency pass.
+2. Implement the named builder/final-runtime split and its exact control-closure owner regression.
+3. Build and measure the candidate, run the complete installed profile, and obtain the mandatory
+   fresh independent review before publication. Keep PR #69 paused until the final Align revision
+   is named.
 
 ## Latest durable evidence
 
@@ -101,6 +101,10 @@ file records durable project state.
   Align build 0.602s, hosted graph 3.081s, focused qualification 20.277s, and installed profile
   198.491s. Complete preflight passed consolidated repair `a8fb07d`: owner 8.742s, pinned Align
   build 0.604s, hosted graph 3.066s, focused qualification 20.260s, and installed profile 195.803s.
+- PR #77's clean warm run `31604614372` passed at merge head
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`: hosted bundle restore plus verification took two
+  seconds and the complete hosted job took 28 seconds. The full run passed in 434 seconds because
+  the unchanged fresh-image job remained dominant.
 
 ## Constraints and intentional state
 
