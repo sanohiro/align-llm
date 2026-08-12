@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Executable adapter for the shared verification classifier."""
+
+from verification_scope import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -30,6 +32,35 @@ PROVENANCE_SCRIPTS = (
 ALIGN_REPOSITORY = "https://github.com/sanohiro/align.git"
 TEST_UID = 12345
 WORKER_INVOCATION_TIMEOUT = 5_000
+
+
+class PhaseTracker:
+    def __init__(self) -> None:
+        self.name: str | None = None
+        self.started = 0
+
+    def enter(self, name: str) -> None:
+        self.finish("pass")
+        self.name = name
+        self.started = time.monotonic_ns()
+        self.emit("start", None)
+
+    def finish(self, status: str) -> None:
+        if self.name is None:
+            return
+        duration_ms = max(0, (time.monotonic_ns() - self.started) // 1_000_000)
+        self.emit(status, duration_ms)
+        self.name = None
+
+    def emit(self, status: str, duration_ms: int | None) -> None:
+        record: dict[str, object] = {
+            "event": "fresh-image-profile-phase",
+            "phase": self.name,
+            "status": status,
+        }
+        if duration_ms is not None:
+            record["duration_ms"] = duration_ms
+        print(json.dumps(record, sort_keys=True, separators=(",", ":")), file=sys.stderr)
 
 
 def docker_cgroup_driver(info: bytes) -> str:
@@ -435,11 +466,22 @@ def deployment_copy(source: Path, target: Path) -> None:
 
 
 def main() -> int:
+    require_docker = "--require-docker" in sys.argv[1:]
+    unexpected = [argument for argument in sys.argv[1:] if argument != "--require-docker"]
+    if unexpected:
+        raise SystemExit(f"unsupported fresh image profile option: {unexpected[0]}")
+    phases = PhaseTracker()
+    phases.enter("docker-daemon")
     availability = run(["docker", "info"], check=False)
     if availability.returncode != 0:
+        phases.finish("fail" if require_docker else "skip")
+        if require_docker:
+            print("fresh image profile smoke: ERROR (Docker daemon unavailable)", file=sys.stderr)
+            return 1
         print("fresh image profile smoke: SKIP (Docker daemon unavailable)")
         return 77
     cgroup_driver = docker_cgroup_driver(availability.stdout)
+    phases.finish("pass")
 
     unique = secrets.token_hex(8)
     image = f"align-llm-fresh-test:{unique}"
@@ -459,6 +501,7 @@ def main() -> int:
         image_public = ed25519_public_key(image_seed.read_bytes()).hex()
         run_public = ed25519_public_key(run_seed.read_bytes()).hex()
         try:
+            phases.enter("image-build")
             build = run(
                 [
                     "docker",
@@ -485,6 +528,7 @@ def main() -> int:
             ).stdout.decode("ascii").strip()
             if not image_digest.startswith("sha256:"):
                 raise RuntimeError("Docker image identity is not sha256")
+            phases.enter("image-attestation")
             provenance = source_provenance()
             supervisor = temporary / "fresh-supervise"
             bootstrap = temporary / "fresh-bootstrap"
@@ -542,6 +586,7 @@ def main() -> int:
             (temporary / "provenance-digest").write_text(provenance + "\n", encoding="ascii")
             (temporary / "image-digest").chmod(0o444)
             (temporary / "provenance-digest").chmod(0o444)
+            phases.enter("profile-lifecycle")
             run(["docker", "volume", "create", volume])
             run(["docker", "volume", "create", runtime_volume])
             populate_volume(image, volume, temporary)
@@ -632,6 +677,7 @@ def main() -> int:
                     f"rm /run/user/{TEST_UID}/align-llm-fresh/roots/orphan",
                 ]
             )
+            phases.enter("profile-self-test")
             result = profile_run(image, volume, runtime_volume, cgroup_driver)
             if result.returncode != 0:
                 raise RuntimeError(
@@ -642,6 +688,7 @@ def main() -> int:
             if result.stdout != b"fresh compiler self-test: PASS\n" or result.stderr:
                 raise RuntimeError("profile self-test output is not canonical")
 
+            phases.enter("trust-mutations")
             mutations = []
             corrupt = temporary / "corrupt-attestation"
             deployment_copy(temporary, corrupt)
@@ -683,6 +730,7 @@ def main() -> int:
             finally:
                 run(["docker", "volume", "rm", "-f", missing_volume], check=False)
 
+            phases.enter("runtime-replacements")
             replaced_bootstrap = temporary / "replaced-bootstrap"
             replaced_bootstrap.write_bytes(bootstrap.read_bytes() + b"\x00")
             replaced_bootstrap.chmod(0o755)
@@ -753,6 +801,7 @@ def main() -> int:
                     b"fresh compiler: ERROR TOOL tools\n",
                 )
 
+            phases.enter("boundary-profile")
             source = temporary / "source"
             source.mkdir()
             run(
@@ -916,6 +965,7 @@ def main() -> int:
                     name,
                     b"json-scan adoption: ERROR revision\n",
                 )
+            phases.enter("worker-aggregate")
             worker_result = worker_profile_run(
                 image, volume, runtime_volume, source_volume, cgroup_driver
             )
@@ -928,6 +978,8 @@ def main() -> int:
             if worker_result.stdout != b"fresh compiler and capable checks: PASS\n" or worker_result.stderr:
                 raise RuntimeError("fresh worker aggregate output is not canonical")
         finally:
+            phases.finish("fail" if sys.exc_info()[0] is not None else "pass")
+            phases.enter("cleanup")
             if cgroup_ready:
                 run(
                     [
@@ -951,6 +1003,7 @@ def main() -> int:
             run(["docker", "volume", "rm", "-f", source_volume], check=False)
             run(["docker", "volume", "rm", "-f", boundary_source_volume], check=False)
             run(["docker", "image", "rm", "-f", image], check=False)
+            phases.finish("pass")
     print("fresh image profile smoke: PASS")
     return 0
 

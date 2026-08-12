@@ -55,6 +55,21 @@ make run
 ./scripts/alignc size src/main.align --profile tiny
 ```
 
+Before publishing a completed branch, run the shared local preflight with the narrow owner command:
+
+```sh
+python3 scripts/pre-pr --owner-test provider-smoke -- make provider-smoke
+```
+
+`scripts/pre-pr` computes the merge base with `origin/main`, classifies the exact diff, runs the
+owner before its required aggregate, and records a local exact-HEAD stamp only after every selected
+gate passes. Use `--plan` to inspect the selection without running commands or writing the stamp.
+Fresh-image ownership additionally runs the focused qualification and the installed profile once
+each; the installed invocation removes ambient `DOCKER_HOST` and requires a reachable Docker
+daemon. The classifier and path inventory are shared with GitHub Actions, so local and hosted scope
+cannot drift independently. See `docs/specs/development-preflight.md` for the exact commands and
+failure behavior.
+
 Run `make ci` for the complete capable-host gate. It builds the exact pinned Align release compiler,
 then runs the bounded hosted functional graph, the sandboxed coding corpus, and canonical baseline
 verification in a deterministic order. It is complete for that declared graph, not for every

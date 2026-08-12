@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""Run change-owned local verification and stamp the exact candidate HEAD."""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Mapping, Sequence
+
+from verification_scope import REPOSITORY, Scope, ScopeError, classify_refs, diff_changes
+
+
+class PreflightError(RuntimeError):
+    """Raised when a candidate cannot produce valid local evidence."""
+
+
+@dataclass(frozen=True)
+class PlanStep:
+    label: str
+    arguments: tuple[str, ...]
+    unset_environment: tuple[str, ...] = ()
+
+    def record(self) -> dict[str, object]:
+        return {
+            "label": self.label,
+            "arguments": list(self.arguments),
+            "unset_environment": list(self.unset_environment),
+        }
+
+
+def command_output(*arguments: str, repository: Path = REPOSITORY) -> str:
+    result = subprocess.run(
+        arguments,
+        cwd=repository,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise PreflightError(result.stderr.strip() or f"{' '.join(arguments)} failed")
+    return result.stdout.strip()
+
+
+def build_plan(
+    scope: Scope,
+    *,
+    owner_label: str | None,
+    owner_command: Sequence[str],
+    align_repository: Path,
+) -> list[PlanStep]:
+    if scope.docs_only:
+        if owner_label is not None or owner_command:
+            raise PreflightError("documentation preflight does not accept an owner command")
+        return [
+            PlanStep("diff-check", ("git", "diff", "--check", f"{scope.base}...{scope.head}")),
+            PlanStep("markdown-fences", ("internal:markdown-fences",)),
+        ]
+    if not owner_label or not owner_command:
+        raise PreflightError("executable preflight requires --owner-test LABEL -- COMMAND ...")
+    alignc = align_repository / "target" / "release" / "alignc"
+    plan = [
+        PlanStep(owner_label, tuple(owner_command)),
+        PlanStep(
+            "pinned-align-build",
+            ("make", "align-build", f"ALIGN_REPO={align_repository}"),
+        ),
+        PlanStep(
+            "hosted-checks",
+            ("make", "hosted-checks", f"ALIGNC={alignc}"),
+        ),
+    ]
+    if scope.fresh_installed:
+        plan.extend(
+            (
+                PlanStep(
+                    "fresh-focused",
+                    (sys.executable, "scripts/run-fresh-worker-qualification"),
+                ),
+                PlanStep(
+                    "fresh-installed",
+                    (
+                        sys.executable,
+                        "scripts/run-fresh-worker-qualification",
+                        "--installed-profile-only",
+                        "--require-docker",
+                    ),
+                    ("DOCKER_HOST",),
+                ),
+            )
+        )
+    return plan
+
+
+def emit_phase(label: str, status: str, duration_ms: int | None = None) -> None:
+    record: dict[str, object] = {"event": "preflight-phase", "label": label, "status": status}
+    if duration_ms is not None:
+        record["duration_ms"] = duration_ms
+    print(json.dumps(record, sort_keys=True, separators=(",", ":")), file=sys.stderr)
+
+
+def run_step(step: PlanStep, repository: Path) -> None:
+    environment: Mapping[str, str] | None = None
+    if step.unset_environment:
+        selected = dict(os.environ)
+        for name in step.unset_environment:
+            selected.pop(name, None)
+        environment = selected
+    started = time.monotonic_ns()
+    emit_phase(step.label, "start")
+    result = subprocess.run(step.arguments, cwd=repository, env=environment, check=False)
+    duration = max(0, (time.monotonic_ns() - started) // 1_000_000)
+    emit_phase(step.label, "pass" if result.returncode == 0 else "fail", duration)
+    if result.returncode != 0:
+        raise PreflightError(f"{step.label} failed with status {result.returncode}")
+
+
+def validate_markdown_fences(scope: Scope, repository: Path) -> None:
+    for status, relative in diff_changes(scope.base, scope.head, repository):
+        if status == "D" or not relative.endswith(".md"):
+            continue
+        path = repository / relative
+        try:
+            fences = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("```"))
+        except (OSError, UnicodeError) as error:
+            raise PreflightError(f"cannot validate Markdown fences in {relative}: {error}") from error
+        if fences % 2 != 0:
+            raise PreflightError(f"unbalanced Markdown fences: {relative}")
+
+
+def clean_worktree(repository: Path) -> bool:
+    return not command_output(
+        "git", "status", "--porcelain", "--untracked-files=all", repository=repository
+    )
+
+
+def stamp_path(repository: Path, head: str) -> Path:
+    raw = command_output("git", "rev-parse", "--git-path", "align-llm-preflight", repository=repository)
+    directory = Path(raw)
+    if not directory.is_absolute():
+        directory = repository / directory
+    return directory / head
+
+
+def write_stamp(path: Path, scope: Scope, owner_label: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = {
+        "version": 1,
+        "head": scope.head,
+        "base": scope.base,
+        "scope": scope.scope,
+        "owner_test": owner_label,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
+    }
+    descriptor, temporary_name = tempfile.mkstemp(prefix="preflight-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
+            json.dump(content, output, sort_keys=True, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", default="origin/main")
+    parser.add_argument("--align-repo", default="../align")
+    parser.add_argument("--owner-test")
+    parser.add_argument("--plan", action="store_true")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    values = parser.parse_args(arguments)
+    if values.command and values.command[0] == "--":
+        values.command = values.command[1:]
+    return values
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    values = parse_arguments(sys.argv[1:] if arguments is None else arguments)
+    try:
+        branch = command_output("git", "branch", "--show-current")
+        if not branch or branch == "main":
+            raise PreflightError("preflight requires a named non-main branch")
+        if not clean_worktree(REPOSITORY):
+            raise PreflightError("preflight requires a clean worktree")
+        scope = classify_refs(values.base, "HEAD", REPOSITORY)
+        align_repository = Path(values.align_repo)
+        if not align_repository.is_absolute():
+            align_repository = REPOSITORY / align_repository
+        align_repository = align_repository.resolve(strict=False)
+        plan = build_plan(
+            scope,
+            owner_label=values.owner_test,
+            owner_command=values.command,
+            align_repository=align_repository,
+        )
+        if values.plan:
+            print(
+                json.dumps(
+                    {"scope": scope.scope, "base": scope.base, "head": scope.head, "steps": [step.record() for step in plan]},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            return 0
+        for step in plan:
+            if step.label == "markdown-fences":
+                started = time.monotonic_ns()
+                emit_phase(step.label, "start")
+                validate_markdown_fences(scope, REPOSITORY)
+                emit_phase(
+                    step.label,
+                    "pass",
+                    max(0, (time.monotonic_ns() - started) // 1_000_000),
+                )
+            else:
+                run_step(step, REPOSITORY)
+        current_head = command_output("git", "rev-parse", "HEAD")
+        if current_head != scope.head or not clean_worktree(REPOSITORY):
+            raise PreflightError("HEAD or worktree changed during preflight")
+        path = stamp_path(REPOSITORY, scope.head)
+        write_stamp(path, scope, values.owner_test or "none")
+        print(f"preflight recorded for {scope.head} ({scope.scope}; owner {values.owner_test or 'none'})")
+        return 0
+    except (OSError, ScopeError, PreflightError) as error:
+        print(f"preflight error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -390,6 +390,11 @@ capability or internal checkpoint, not an edit-loop ritual.
   implementation/adoption gate, before a merge that changes integration behavior, after a pin or
   check-topology change, or when fresh base-tip integration evidence is required. A docs-only
   change is not a reason to run it.
+- Before publishing a completed branch, use `python3 scripts/pre-pr` with the narrow owner command.
+  Its shared classifier selects documentation, hosted, or fresh-image verification, and its stamp
+  belongs only to the exact unchanged HEAD. Use `--plan` only to inspect selection; it is not check
+  evidence. Do not replace its required installed profile with a Docker-unavailable skip or an
+  ambient `DOCKER_HOST` endpoint.
 - Batch related edits before verification. After review, apply all valid findings from the one
   comprehensive review in one consolidated repair, then rerun only affected verification. An
   ordinary repair implementing recorded findings does not require another review.
