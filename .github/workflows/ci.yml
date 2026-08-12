@@ -201,6 +201,7 @@ jobs:
           key: ${{ steps.apt-llvm.outputs.key }}
 
       - name: Confirm the published apt package cache
+        id: apt-llvm-confirm
         if: steps.apt-llvm-save.outcome == 'success'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -208,6 +209,17 @@ jobs:
           key: ${{ steps.apt-llvm.outputs.key }}
           lookup-only: true
           fail-on-cache-miss: true
+
+      - name: Require the published apt package cache
+        if: always() && steps.apt-llvm-save.outcome == 'success'
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.apt-llvm-confirm.outputs.cache-hit }}
+        run: |
+          if [[ "$CACHE_HIT" != "true" ]]; then
+            echo "The exact apt package cache is not branch-visible after publication." >&2
+            exit 1
+          fi
 
       - name: Bind pull request evidence pr=${{ github.event.pull_request.number }} base=${{ github.event.pull_request.base.sha }} head=${{ github.event.pull_request.head.sha }}
         if: always() && github.event_name == 'pull_request'

@@ -1217,17 +1217,23 @@ def test_workflow_topology() -> None:
         and save_condition in workflow
         and "id: apt-llvm-candidate" in workflow
         and "id: apt-llvm-save" in workflow
+        and "id: apt-llvm-confirm" in workflow
         and "if: steps.apt-llvm-candidate.outcome == 'success'" in workflow
         and "if: steps.apt-llvm-save.outcome == 'success'" in workflow
         and "lookup-only: true" in workflow
         and "fail-on-cache-miss: true" in workflow
+        and "if: always() && steps.apt-llvm-save.outcome == 'success'" in workflow
+        and "CACHE_HIT: ${{ steps.apt-llvm-confirm.outputs.cache-hit }}" in workflow
+        and 'if [[ "$CACHE_HIT" != "true" ]]; then' in workflow
         and workflow.index("- name: Reverify the apt package cache candidate")
         > workflow.index("- name: Run supported project checks")
         and workflow.index("- name: Save the apt package cache")
         > workflow.index("- name: Reverify the apt package cache candidate")
         and workflow.index("- name: Confirm the published apt package cache")
-        > workflow.index("- name: Save the apt package cache"),
-        "CI does not reverify, save, and confirm an exact main candidate after its real consumer",
+        > workflow.index("- name: Save the apt package cache")
+        and workflow.index("- name: Require the published apt package cache")
+        > workflow.index("- name: Confirm the published apt package cache"),
+        "CI does not reverify, save, confirm, and require an exact main candidate after its consumer",
     )
     require(workflow.count("python3 scripts/classify-verification") == 6, "CI classifier callsites changed")
     require(
