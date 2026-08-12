@@ -37,7 +37,9 @@ file records durable project state.
   and exact preflight candidate `bc2623b` passed. Its comprehensive review requested one consolidated
   repair: forced cgroup cleanup must own descendants across process-group changes, normative Section
   9 must own runtime-before-tool precedence with a real multi-invalid regression, and this handoff
-  must record the existing exact candidate stamp.
+  must record the existing exact candidate stamp. Consolidated repair `957aa50` closes those three
+  findings and its complete preflight passed; the final evidence head now requires the
+  policy-mandated conditional final review.
 
 ## Measurement
 
@@ -102,9 +104,8 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit the consolidated comprehensive-review repair and rerun affected owner checks plus exact
-   preflight. Because the cleanup ownership behavior changes materially, obtain the one conditional
-   final review.
+1. Commit this durable evidence, rerun exact preflight for that head, and obtain the one conditional
+   final review required by the material cleanup ownership change.
 2. Publish only after a clean final review, require hosted CI, then measure build/export/load and
    final integration. Keep PR #69 paused until the final Align revision is named.
 
@@ -165,6 +166,16 @@ file records durable project state.
   passed exact comprehensive-review head `bc2623b613b5ba4ed60b2484da7933f13465aec5`: installed
   profile 200.836s and worker aggregate 104.604s. Its canonical mode-0600 external stamp records
   exact base `6a48ab7`, head, owner `development-preflight`, and `fresh-image` scope.
+- The redesigned comprehensive review covered exact head
+  `bc2623b613b5ba4ed60b2484da7933f13465aec5` against base and merge base
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26` and requested the three changes described above.
+  The consolidated repair `957aa5096d3980d183c92499ed9f1e870492ee7d` passed worker unit,
+  image-control, development-preflight, topology self-test, and complete preflight: development
+  owner 8.976s, pinned Align build 0.728s, hosted graph 3.351s, focused qualification 20.591s,
+  installed profile 244.307s, image build 36.545s, boundary profile 39.255s, worker aggregate
+  105.608s, and cleanup 1.211s. The apt, LLVM, Git, Rust toolchain, materialization, runtime, tool,
+  Cargo-cache, and transferred system-file layers were cache hits; only the changed control closure
+  and downstream random-attestation layers rebuilt.
 
 ## Constraints and intentional state
 
