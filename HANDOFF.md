@@ -24,11 +24,14 @@ file records durable project state.
   seconds and installed qualification took 262 seconds. Exact-main run `31634023665` passed in 281
   seconds; its cache-only fresh job took 276 seconds and build/export took 257 seconds, while the
   hosted job seeded the missing trusted apt archive and compiler bundle entries.
-- In progress: settle and implement the Docker cache boundary that copies only `.align-revision`
-  and completes the exact shallow Cargo fetch after the pinned Git/Rust runtimes but before any
-  repository-owned fresh-image source. The public contract and closure owner must be updated before
-  the Dockerfile move; the owner regression must prove both sides of that ordering. No runtime,
-  manifest, network-source, or installed-image behavior changes.
+- Complete locally: contract commit `e137168` defines the pin-owned Cargo cache boundary;
+  implementation commit `d94afbc` moves the unchanged fetch before repository-owned image inputs
+  and adds its ordering regression; evidence commit `109f56e` records the baseline and passed exact
+  complete preflight. The comprehensive review of `109f56e` found only that this handoff still
+  pointed at completed work. This narrow repair advances continuity to publication; no runtime,
+  manifest, network-source, or installed-image behavior changed. Remaining work is exact-head
+  preflight for this repair, draft PR publication with the review envelope and disposition, hosted
+  invalidating-path qualification, merge, and exact-main cache measurement.
 
 ## Measurement
 
@@ -98,10 +101,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit the Cargo-layout evidence update and rerun exact-head preflight so its external stamp
-   binds the final candidate.
-2. Obtain one fresh comprehensive review, then publish the consumer-complete cache-layout
-   capability and measure the hosted invalidating and exact-main paths.
+1. Run exact-head preflight for the narrow continuity repair, then publish the draft PR with the
+   complete review envelope and its resolved HANDOFF disposition.
+2. Require hosted invalidating-path qualification, merge after all gates pass, and measure the
+   exact-main cache publication path.
 3. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
