@@ -12,10 +12,12 @@ behavior, the fresh-worker trust contract, or the pinned Align revision.
 | --- | --- |
 | `python3 scripts/classify-verification --base REF --head REF` | Resolve both refs as commits, compute their merge base, inspect the no-renames name-status diff, and print a stable JSON object containing `scope`, `base`, `head`, `docs_only`, `hosted`, `fresh_focused`, and `fresh_installed`. `--github-output PATH` writes the same scalar fields as GitHub output rows. `--all --head REF` selects every executable gate when no trustworthy base exists. Invalid refs, malformed Git output, deletions, unknown statuses, and unknown non-Markdown paths fail closed to executable verification. |
 | `python3 scripts/pre-pr [--base REF] [--align-repo PATH] --owner-test LABEL -- COMMAND ...` | Require a named non-`main` branch, a clean worktree, a non-empty merge-base diff, and one owner command for executable changes. Run the owner first, then the classifier-selected local CI-parity gates. Documentation-only changes run `git diff --check` and Markdown fence validation. Executable changes build the exact pinned sibling Align compiler and run `hosted-checks`. Fresh-image changes additionally run the focused qualification once and the installed profile once with `DOCKER_HOST` removed and Docker required. Recheck the exact HEAD and clean worktree, then write a versioned stamp below `git rev-parse --git-path align-llm-preflight`. `--plan` prints the selected commands without side effects and writes no stamp. |
-| `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker [--align-repo PATH]` | Verify the qualification inventory, skip the already-owned focused commands, and run only the installed profile. `--installed-profile` retains the complete focused-plus-installed capability gate. `--require-docker` turns an unavailable Docker daemon into failure instead of a skip. `--align-repo` forwards an explicit full pinned checkout to the image owner. Every invoked owner emits one start and one terminal timing record. |
+| `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker [--align-repo PATH] [--prepared-image IMAGE --image-signing-seed PATH --run-signing-seed PATH]` | Verify the qualification inventory, skip the already-owned focused commands, and run only the installed profile. `--installed-profile` retains the complete focused-plus-installed capability gate. `--require-docker` turns an unavailable Docker daemon into failure instead of a skip. `--align-repo` forwards an explicit full pinned checkout to the image owner. The three prepared-image arguments are all-or-none, require an installed-profile mode, and are forwarded unchanged. Every invoked owner emits one start and one terminal timing record. |
+| `python3 scripts/prepare-fresh-image-build --directory PATH --github-output PATH` | Create a new current-user-owned mode-0700 directory containing two independent 32-byte current-user-owned mode-0400 signing seeds and a schema-1 ownership marker bound to the exact directory and generated image tag. Refuse an existing target, symlink, non-ASCII/non-line-safe or relative material path, or unavailable output file. Validate and ASCII-encode the complete output record before creating the directory, then append `image`, `image_public_key_hex`, `run_public_key_hex`, and `material_directory` in one write; never print either seed or expose partial rows after an encoding rejection. `--cleanup --directory PATH` accepts only the exact marked directory and known regular files, validates directory, inventory, image seed, run seed, then the exact integer marker version and remaining schema, removes the seeds before the marker, and finally removes the directory. Preparation cleans up its own partial output on every error. |
+| `python3 scripts/run-fresh-image-profile-smoke [--prepared-image IMAGE --image-signing-seed PATH --run-signing-seed PATH]` | With none of the prepared-image arguments, generate per-run signing seeds and build the image locally as before. With all three, validate the generated tag and two private regular 32-byte seed files before Docker side effects, use the already loaded image without rebuilding it, and run the unchanged attestation, lifecycle, trust-mutation, boundary, and worker-aggregate qualification. Partial prepared-image input is rejected. The image owner removes the loaded image and all Docker state on success or failure; the preparation owner retains seed-directory cleanup. |
 | `python3 scripts/select-ci-reuse --event-name NAME --event-path PATH --repository OWNER/REPO --api-url URL [--github-output PATH]` | Select reuse only for a `push` to `refs/heads/main` whose checked-out commit has exactly two parents, whose first parent equals the event `before` SHA, whose first parent is the merge base of the two parents, and whose tree equals the second-parent tree. Through the GitHub API, require exactly one associated merged pull request whose base, head, merge commit, repository, and `main` ref equal those Git identities. Then require the uniquely identified latest successful `pull_request` run of `.github/workflows/ci.yml` at that exact second-parent head. Both required jobs must have completed successfully in the same run, and each must contain one successful API-visible step whose name binds that merged pull-request number, base SHA, and head SHA. Print a stable JSON record and optional GitHub output rows. Every malformed event, Git/API/read error, truncated response, recursion failure, pagination or latest-run ambiguity, missing field, identity mismatch, direct push, non-merge commit, missing job or evidence step, or non-success result selects `reused=false`; it never fails the workflow or suppresses verification. The token is read only from `GITHUB_TOKEN` and never printed or persisted. |
 | Installed fresh-image source setup | Reuse the explicit full-history `.align-revision` checkout already built by local preflight, or clone the remote when no checkout is supplied. Clone without hardlinks into the disposable profile source, verify the checked-out identity, and preserve the FRESH-WORKER prohibition on shallow, promisor, alternate-object, and replacement-object repositories. The Docker build's Cargo-cache-only source may use an exact depth-1 filtered fetch because it is never admitted as worker source. Reconstruct the exact boundary environment before `fresh-supervise` on both supported cgroup drivers so Docker-injected variables cannot change validation precedence. |
-| GitHub Actions | On each job, first evaluate exact merged-PR reuse. Every pull-request job finishes with an API-visible evidence step whose name contains the event's pull-request number, base SHA, and head SHA. When both merge-push jobs independently select the same valid reviewed head evidence and find that exact successful binding step in both source jobs, report reuse and skip classification and execution. Otherwise resolve event refs, invoke the shared classifier, run documentation/static checks only for `docs_only`, run the compiler and hosted graph only for `hosted`, and run focused plus installed-image qualification only for `fresh_installed`. Workflow dispatch, direct push, non-exact merge, unavailable evidence, or an unusable event base runs the normal gates. The installed step uses `--installed-profile-only`, so focused qualification executes exactly once per executing job. Its full Align source cache is keyed by `.align-revision`; every restored checkout is revalidated before use. Workflow permissions remain read-only and add only `actions: read` and `pull-requests: read` for the evidence queries. |
+| GitHub Actions | On each job, first evaluate exact merged-PR reuse. Every pull-request job finishes with an API-visible evidence step whose name contains the event's pull-request number, base SHA, and head SHA. When both merge-push jobs independently select the same valid reviewed head evidence and find that exact successful binding step in both source jobs, report reuse and skip functional verification. Otherwise resolve event refs, invoke the shared classifier, run documentation/static checks only for `docs_only`, run the compiler and hosted graph only for `hosted`, and run focused plus installed-image qualification only for `fresh_installed`. Workflow dispatch, direct push, non-exact merge, unavailable evidence, or an unusable event base runs the normal gates. The installed step uses `--installed-profile-only`, so focused qualification executes exactly once per executing job. Its full Align source cache is keyed by `.align-revision`; every restored checkout is revalidated before use. For `fresh_installed`, a commit-pinned Docker Buildx action builds the exact per-run-keyed image with `pull` enabled, imports the branch-visible GitHub Actions cache under schema scope `align-llm-fresh-image-v1`, and exports a complete cache with export errors ignored. Pull requests and non-reused runs load the image for qualification; exact merge pushes with reused functional evidence publish cache without loading the multi-gigabyte image into the daemon. A cache miss performs the same build from source. Exact merges publish the cache on `main`, making the trusted default-branch cache readable by later pull requests without repeating product qualification. Signing material is always prepared anew and cleaned in an `always()` step. Workflow permissions remain read-only and add only `actions: read` and `pull-requests: read` for the evidence queries; the cache service uses the run-scoped Actions credential and no registry or package write. |
 
 Inputs are explicit command arguments or GitHub event fields. The stamp is local evidence only; it
 is not a persisted product artifact or a substitute for the review envelope and hosted check
@@ -40,11 +42,27 @@ fresh-image  hosted + focused fresh qualification + required installed profile
 ```
 
 Security, race, mutation, and resource qualifications that are not in the existing
-`run-fresh-worker-qualification` inventory remain outside this capability. Cached versus scratch
-image construction is a later capability; this change preserves a scratch installed-image build.
-Local preflight reuses its already required full pinned checkout, while CI stores that immutable
-source under a revision-keyed cache. The Cargo-cache image layer avoids unrelated Align history
-without weakening worker source admission.
+`run-fresh-worker-qualification` inventory remain outside this capability. Local preflight keeps
+the ordinary Docker daemon build and its local layer cache. Hosted CI uses BuildKit's
+content-addressed cache: the base-image digest, Dockerfile instructions, copied file bytes and
+modes, `.align-revision`, pinned Git and bubblewrap commits, and Rust version form the effective
+build identity. A source or instruction change invalidates that layer and its descendants. Mutable
+apt repository state is deliberately refreshed by incrementing the committed cache-scope schema,
+which forces one cache-miss source build; it is not an unnamed clock input. The random public-key
+build arguments occur only in the last layer, so every run rebuilds the trust-key binding while
+retaining immutable toolchain layers.
+The Cargo-cache image layer avoids unrelated Align history without weakening worker source
+admission.
+
+GitHub cache access is branch-scoped. Pull requests may read the trusted `main` cache and their own
+cache but cannot publish into `main`; an exact merge therefore builds and publishes cache state
+even when its already-passing functional checks are reused. Cache data is only a BuildKit
+optimization: content digests are verified by BuildKit, a miss builds from source, an export
+failure does not fail an otherwise valid build, and the loaded image still passes the
+complete attestation and installed-profile owner on pull requests. Cache archives, signing seeds,
+and prepared image tags are transient schema-N/A implementation data and are never product
+artifacts. Concurrent jobs may race to export the same scope; content addressing makes either
+result usable, and no check consumes another live job's output.
 
 The implementation, regression, CI adoption, documentation, and timing records form one
 consumer-complete capability. The candidate is roughly 1,200 changed hand-written lines because
@@ -52,6 +70,11 @@ the shared classifier must be adopted by both local preflight and both CI jobs, 
 runner must expose the non-duplicating mode before either consumer can use it. Splitting those
 pieces would leave an unused producer or retain a second path inventory and would make drift more,
 not less, likely during integration.
+
+The hosted image cache is a follow-on consumer-complete capability. Its preparation helper,
+prepared-image admission, workflow build owner, owner regressions, and cache-publication path must
+land together: splitting them would either expose private signing material to ad hoc shell or build
+the image twice. It does not change the installed image contract or qualify fewer behaviors.
 
 Merge-push reuse is check evidence reuse, not a new test tier. The exact PR head remains the tested
 tree, and the merge commit is accepted only when it has that identical tree and the exact tested
@@ -81,6 +104,31 @@ the same immutable identities, but neither depends on the other's result. These 
 for product ownership, wire encoding beyond GitHub JSON/UTF-8, schema migration, and model metrics
 because the selector produces only transient verification routing.
 
+The signing-material helper exits 0 after complete preparation or cleanup, 1 for an operational or
+validation failure, and 2 for invalid argument combinations. Preparation validates the target path
+and its output encoding, generates image seed, run seed, tag, and the complete output buffer in
+memory, then creates the directory, writes the seeds and marker, and performs one append; failure
+removes only helper-owned known entries. Cleanup validates the absolute
+line-safe path, directory type/owner/mode, exact inventory, both seed types/owners/modes/sizes, and
+the bounded UTF-8 JSON marker in that order before deletion. The helper owns the directory and
+files until cleanup; the image owner borrows seed bytes, copies them into its own temporary
+directory, and never mutates the originals. There is no move-out, source nulling, replacement,
+runtime inspection, reflection, or persisted migration because the material lives for one Actions
+job. GitHub output is newline-delimited ASCII in the fixed row order named above; all values are
+line-safe and embedded NUL is rejected through path validation. The marker uses sorted compact JSON
+with schema `version: 1`; its semantic fields, rather than file bytes, are the cleanup identity.
+
+Prepared-image options admit exactly two states: all absent, which owns seed generation and a local
+Docker build; or all present, which validates before Docker and borrows an already loaded image.
+Every partial combination is rejected before side effects. Concurrent use of one material path is
+rejected by exclusive directory creation; independent absolute paths are supported. Aggregate and
+focused verification do not share material, and cache exports are content-addressed independent
+processes. Scalar-width, interface serialization, monomorphization, allocation parity, wire golden
+vectors, and minimum Docker CLI versions are N/A: this is Ubuntu 24.04 hosted automation using
+commit-pinned actions that install their owned Buildx version, while the unchanged local path uses
+the repository's existing Docker prerequisite. The owner regression checks semantic-to-output and
+output-to-semantic rows rather than a persisted byte format.
+
 ## Closure matrix
 
 | Path | Owner | Regression |
@@ -97,6 +145,9 @@ because the selector produces only transient verification routing.
 | Installed-only qualification | qualification runner | inventory check, no focused owner, installed owner exactly once |
 | Complete qualification | qualification runner | focused owners once followed by installed owner once |
 | Docker unavailable | image smoke and qualification runner | optional direct smoke reports SKIP; required preflight/CI mode fails |
+| Signing-material preparation, partial failure, malformed reuse, and cleanup | preparation helper and image smoke | new absolute directory with two private 32-byte seeds and public-only outputs; no seed disclosure; partial prepared input, wrong mode/type/size/tag, unknown cleanup entry, or ownership marker mismatch is rejected before Docker; preparation failure removes owned partial state; workflow cleanup runs after build or qualification failure |
+| Scratch and prepared image construction | image smoke and workflow | local/default mode builds with random public keys; hosted mode builds and loads the exact random-key image once, then the installed owner admits it without a second build and removes it on every exit |
+| Build cache hit, miss, invalidation, export outage, and branch scope | Buildx workflow | a hit reuses all content-identical layers but rebuilds the random-key layer; a miss or invalidated layer builds from source; export failure is non-fatal; exact fresh-image merges publish `main` cache without repeating functional qualification; PR caches never become trusted `main` cache. Cache-service import transport failure is N/A as an independent fallback boundary because the job already depends on the same Actions service for checkout, event, and step execution. |
 | Pinned Align source setup | preflight, qualification runner, image smoke, workflow, and Dockerfile regression | explicit full source propagates to the installed owner and is cloned without hardlinks; checked-out identity is exact; shallow/promisor source is not admitted; CI caches the immutable full source by revision; only the non-worker Cargo-cache layer uses an exact depth-1 filtered fetch |
 | Boundary profile on `cgroupfs` or `systemd` | image smoke | exact allowed environment reaches `fresh-supervise`; missing, malformed, relative, or extra inputs retain deterministic precedence |
 | Owner success/failure | qualification runner | start/terminal records contain owner, status, and non-negative duration; failure propagates |
@@ -108,7 +159,11 @@ because the selector produces only transient verification routing.
 The workflow regression loads the production classifier and reuse selector as modules, crosses
 every path and failure class above, checks plan ordering and environment isolation, and statically
 confirms that CI invokes both selectors, grants only their read permissions, guards normal steps,
-and retains installed-only qualification. Reuse tests use deterministic event, Git, PR, workflow,
+uses commit-pinned Buildx actions with the bounded cache scope and non-fatal export, prepares and
+cleans per-run signing material, forwards the prepared image through installed-only qualification,
+and retains installed-only qualification. Preparation and prepared-image tests cover the exact
+filesystem, argument, output, disclosure, validation-order, and cleanup contract without Docker.
+Reuse tests use deterministic event, Git, PR, workflow,
 and job fixtures; acceptance also queries one historical merged PR through the same selector when
 network evidence is available. The existing focused fresh owners continue to test their product
 contracts; this capability does not duplicate them.
@@ -136,6 +191,28 @@ for run in 31561096413 31561600798; do gh api "repos/sanohiro/align-llm/actions/
 
 The target is at least 95% lower merge-push wall time for an exact fresh-image merge, without
 changing PR wall time or direct-push coverage.
+
+PR #72 met that preceding target: run `31570429008` completed in 11 seconds, a 97.8% reduction from
+the 492-second baseline, while both jobs independently bound reuse to PR #72, workflow run
+`31569819343`, and head `9ce09f9a26465e68c357b8331d47d0226a073f9f`.
+
+The cached-image baseline is PR #72 run `31569819343`, job `94029193340`: 502 seconds end to end for
+the run and 216,344 ms for its `image-build` phase on GitHub's `ubuntu-24.04` hosted environment
+(`n=1`). Reproduce the phase record with:
+
+```text
+gh run view 31569819343 --job 94029193340 --log | grep '"phase":"image-build"'
+```
+
+A local Buildx probe on 2026-08-12 built the same source once into a `mode=max` local cache and then
+rebuilt with different public-key arguments. The cold invocation took 2,076.861 seconds under a
+slow network; the warm invocation took 39.568 seconds, with all 17 pre-key layers reported `CACHED`
+and only the final key layer re-executed. This demonstrates layer separability, not a hosted
+performance claim. Hosted acceptance requires two runs: the first exact fresh-image merge publishes
+the default-branch cache, and a subsequent pull request imports it, rebuilds the key layer, passes
+the complete installed qualification, and reduces the image-build step to at most 75 seconds and
+the overall PR run by at least 25% relative to PR #72. Cache-miss execution must also pass from
+source; no result may rely solely on cache-hit coverage.
 
 Before merge, run the local preflight when the pinned Align checkout is available without modifying
 the paused Request 6 branch. The hosted CI jobs are final environment evidence. Compare the next

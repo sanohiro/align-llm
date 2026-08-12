@@ -7,8 +7,10 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,6 +35,7 @@ PROVENANCE_SCRIPTS = (
 ALIGN_REPOSITORY = "https://github.com/sanohiro/align.git"
 TEST_UID = 12345
 WORKER_INVOCATION_TIMEOUT = 5_000
+PREPARED_IMAGE_PATTERN = re.compile(r"align-llm-fresh-test:[0-9a-f]{32}\Z")
 
 
 class PhaseTracker:
@@ -120,6 +123,41 @@ def run(
         check=check,
         timeout=timeout,
     )
+
+
+def prepared_seed(path: Path, label: str) -> bytes:
+    if not path.is_absolute():
+        raise RuntimeError(f"{label} must be an absolute path")
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RuntimeError(f"{label} is unavailable") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"{label} is not a regular file")
+        if metadata.st_uid != os.geteuid():
+            raise RuntimeError(f"{label} has the wrong owner")
+        if stat.S_IMODE(metadata.st_mode) != 0o400:
+            raise RuntimeError(f"{label} has the wrong mode")
+        if metadata.st_size != 32:
+            raise RuntimeError(f"{label} has the wrong size")
+        value = bytearray()
+        while len(value) <= 32:
+            block = os.read(descriptor, 33 - len(value))
+            if not block:
+                break
+            value.extend(block)
+        if len(value) != 32:
+            raise RuntimeError(f"{label} changed while reading")
+        return bytes(value)
+    except OSError as error:
+        raise RuntimeError(f"{label} cannot be read") from error
+    finally:
+        os.close(descriptor)
 
 
 def checkout_pinned_align(target: Path, source_repository: Path | None) -> None:
@@ -509,9 +547,37 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-docker", action="store_true")
     parser.add_argument("--align-repo", type=Path)
+    parser.add_argument("--prepared-image")
+    parser.add_argument("--image-signing-seed", type=Path)
+    parser.add_argument("--run-signing-seed", type=Path)
     values = parser.parse_args()
     require_docker = values.require_docker
     align_repository = values.align_repo.resolve(strict=True) if values.align_repo else None
+    prepared_values = (
+        values.prepared_image,
+        values.image_signing_seed,
+        values.run_signing_seed,
+    )
+    if any(value is not None for value in prepared_values) and not all(
+        value is not None for value in prepared_values
+    ):
+        parser.error(
+            "--prepared-image, --image-signing-seed, and --run-signing-seed are required together"
+        )
+    prepared = values.prepared_image is not None
+    if prepared:
+        if PREPARED_IMAGE_PATTERN.fullmatch(values.prepared_image) is None:
+            parser.error("--prepared-image is not a generated fresh-image tag")
+        try:
+            prepared_image_seed = prepared_seed(
+                values.image_signing_seed, "image signing seed"
+            )
+            prepared_run_seed = prepared_seed(values.run_signing_seed, "run signing seed")
+        except RuntimeError as error:
+            parser.error(str(error))
+    else:
+        prepared_image_seed = None
+        prepared_run_seed = None
     phases = PhaseTracker()
     phases.enter("docker-daemon")
     availability = run(["docker", "info"], check=False)
@@ -526,7 +592,7 @@ def main() -> int:
     phases.finish("pass")
 
     unique = secrets.token_hex(8)
-    image = f"align-llm-fresh-test:{unique}"
+    image = values.prepared_image if prepared else f"align-llm-fresh-test:{unique}"
     volume = f"align-llm-fresh-secrets-{unique}"
     runtime_volume = f"align-llm-fresh-runtime-{unique}"
     source_volume = f"align-llm-fresh-source-{unique}"
@@ -536,35 +602,38 @@ def main() -> int:
         temporary = Path(temporary_name)
         image_seed = temporary / "image-signing-seed"
         run_seed = temporary / "run-signing-seed"
-        image_seed.write_bytes(os.urandom(32))
-        run_seed.write_bytes(os.urandom(32))
+        image_seed.write_bytes(prepared_image_seed if prepared else os.urandom(32))
+        run_seed.write_bytes(prepared_run_seed if prepared else os.urandom(32))
         image_seed.chmod(0o400)
         run_seed.chmod(0o400)
         image_public = ed25519_public_key(image_seed.read_bytes()).hex()
         run_public = ed25519_public_key(run_seed.read_bytes()).hex()
         try:
-            phases.enter("image-build")
-            build = run(
-                [
-                    "docker",
-                    "build",
-                    "--pull",
-                    "--build-arg",
-                    f"IMAGE_PUBLIC_KEY_HEX={image_public}",
-                    "--build-arg",
-                    f"RUN_PUBLIC_KEY_HEX={run_public}",
-                    "-f",
-                    "image/fresh/Dockerfile",
-                    "-t",
-                    image,
-                    ".",
-                ],
-                check=False,
-                stdout=None,
-                stderr=None,
-            )
-            if build.returncode != 0:
-                raise RuntimeError("FRESH-IMAGE build failed")
+            if prepared:
+                phases.enter("image-admission")
+            else:
+                phases.enter("image-build")
+                build = run(
+                    [
+                        "docker",
+                        "build",
+                        "--pull",
+                        "--build-arg",
+                        f"IMAGE_PUBLIC_KEY_HEX={image_public}",
+                        "--build-arg",
+                        f"RUN_PUBLIC_KEY_HEX={run_public}",
+                        "-f",
+                        "image/fresh/Dockerfile",
+                        "-t",
+                        image,
+                        ".",
+                    ],
+                    check=False,
+                    stdout=None,
+                    stderr=None,
+                )
+                if build.returncode != 0:
+                    raise RuntimeError("FRESH-IMAGE build failed")
             image_digest = run(
                 ["docker", "image", "inspect", "--format", "{{.Id}}", image]
             ).stdout.decode("ascii").strip()

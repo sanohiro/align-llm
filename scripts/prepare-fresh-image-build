@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Prepare or clean the ephemeral signing material for a hosted image build."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(REPOSITORY / "scripts"))
+
+from fresh_attestation import ed25519_public_key  # noqa: E402
+
+
+MARKER = "ownership.json"
+IMAGE_SEED = "image-signing-seed"
+RUN_SEED = "run-signing-seed"
+OWNED_FILES = (IMAGE_SEED, RUN_SEED, MARKER)
+KNOWN_FILES = frozenset(OWNED_FILES)
+IMAGE_PATTERN = re.compile(r"align-llm-fresh-test:[0-9a-f]{32}\Z")
+
+
+class MaterialError(RuntimeError):
+    pass
+
+
+def require_absolute(path: Path, label: str) -> Path:
+    raw = str(path)
+    if not path.is_absolute() or any(character in raw for character in ("\x00", "\n", "\r")):
+        raise MaterialError(f"{label} must be an absolute path")
+    return path
+
+
+def require_ascii_scalar(value: str, label: str) -> str:
+    try:
+        value.encode("ascii", "strict")
+    except UnicodeEncodeError as error:
+        raise MaterialError(f"{label} must be ASCII") from error
+    if any(character in value for character in ("\x00", "\n", "\r")):
+        raise MaterialError(f"{label} must be line-safe")
+    return value
+
+
+def private_regular(path: Path, expected_size: int) -> bytes:
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise MaterialError(f"signing material is unavailable: {path.name}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise MaterialError(f"signing material is not a regular file: {path.name}")
+        if metadata.st_uid != os.geteuid():
+            raise MaterialError(f"signing material has the wrong owner: {path.name}")
+        if stat.S_IMODE(metadata.st_mode) != 0o400:
+            raise MaterialError(f"signing material has the wrong mode: {path.name}")
+        if metadata.st_size != expected_size:
+            raise MaterialError(f"signing material has the wrong size: {path.name}")
+        value = bytearray()
+        while len(value) <= expected_size:
+            block = os.read(descriptor, expected_size + 1 - len(value))
+            if not block:
+                break
+            value.extend(block)
+        if len(value) != expected_size:
+            raise MaterialError(f"signing material changed while reading: {path.name}")
+        return bytes(value)
+    except OSError as error:
+        raise MaterialError(f"signing material cannot be read: {path.name}") from error
+    finally:
+        os.close(descriptor)
+
+
+def write_private(path: Path, value: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o400)
+    try:
+        os.fchmod(descriptor, 0o400)
+        written = os.write(descriptor, value)
+        if written != len(value):
+            raise MaterialError(f"short write for {path.name}")
+    finally:
+        os.close(descriptor)
+
+
+def owned_partial_cleanup(directory: Path) -> None:
+    for name in OWNED_FILES:
+        path = directory / name
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        directory.rmdir()
+    except FileNotFoundError:
+        pass
+
+
+def render_outputs(rows: tuple[tuple[str, str], ...]) -> bytes:
+    try:
+        return "".join(f"{name}={value}\n" for name, value in rows).encode(
+            "ascii", "strict"
+        )
+    except UnicodeEncodeError as error:
+        raise MaterialError("GitHub output values must be ASCII") from error
+
+
+def write_outputs(path: Path, raw: bytes) -> None:
+    require_absolute(path, "GitHub output")
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise MaterialError("GitHub output is unavailable") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise MaterialError("GitHub output is not a regular file")
+        written = os.write(descriptor, raw)
+        if written != len(raw):
+            raise MaterialError("GitHub output append was incomplete")
+    except OSError as error:
+        raise MaterialError("GitHub output cannot be appended") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def prepare(directory: Path, github_output: Path) -> None:
+    require_absolute(directory, "material directory")
+    directory_value = require_ascii_scalar(str(directory), "material directory")
+    image_seed = os.urandom(32)
+    run_seed = os.urandom(32)
+    if image_seed == run_seed:
+        raise MaterialError("independent signing seed generation failed")
+    image = "align-llm-fresh-test:" + os.urandom(16).hex()
+    rows = (
+        ("image", image),
+        ("image_public_key_hex", ed25519_public_key(image_seed).hex()),
+        ("run_public_key_hex", ed25519_public_key(run_seed).hex()),
+        ("material_directory", directory_value),
+    )
+    output_bytes = render_outputs(rows)
+    try:
+        directory.mkdir(mode=0o700)
+        directory.chmod(0o700)
+    except OSError as error:
+        raise MaterialError("material directory cannot be created") from error
+    try:
+        write_private(directory / IMAGE_SEED, image_seed)
+        write_private(directory / RUN_SEED, run_seed)
+        marker = {
+            "directory": directory_value,
+            "files": [IMAGE_SEED, RUN_SEED],
+            "image": image,
+            "version": 1,
+        }
+        marker_bytes = (
+            json.dumps(marker, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("ascii")
+        write_private(directory / MARKER, marker_bytes)
+        write_outputs(github_output, output_bytes)
+    except BaseException:
+        owned_partial_cleanup(directory)
+        raise
+
+
+def cleanup(directory: Path) -> None:
+    require_absolute(directory, "material directory")
+    directory_value = require_ascii_scalar(str(directory), "material directory")
+    try:
+        metadata = directory.lstat()
+    except OSError as error:
+        raise MaterialError("material directory is unavailable") from error
+    if not stat.S_ISDIR(metadata.st_mode) or directory.is_symlink():
+        raise MaterialError("material directory is not a directory")
+    if metadata.st_uid != os.geteuid():
+        raise MaterialError("material directory has the wrong owner")
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise MaterialError("material directory has the wrong mode")
+    try:
+        entries = {entry.name for entry in directory.iterdir()}
+    except OSError as error:
+        raise MaterialError("material directory cannot be listed") from error
+    if entries != KNOWN_FILES:
+        raise MaterialError("material directory contains unknown or missing entries")
+    private_regular(directory / IMAGE_SEED, 32)
+    private_regular(directory / RUN_SEED, 32)
+    marker_path = directory / MARKER
+    try:
+        marker_size = marker_path.lstat().st_size
+    except OSError as error:
+        raise MaterialError("ownership marker is unavailable") from error
+    if marker_size <= 0 or marker_size > 4_096:
+        raise MaterialError("ownership marker has the wrong size")
+    raw_marker = private_regular(marker_path, marker_size)
+    try:
+        marker = json.loads(raw_marker)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MaterialError("ownership marker is malformed") from error
+    if (
+        not isinstance(marker, dict)
+        or type(marker.get("version")) is not int
+        or marker["version"] != 1
+        or marker.get("directory") != directory_value
+        or marker.get("files") != [IMAGE_SEED, RUN_SEED]
+        or not isinstance(marker.get("image"), str)
+        or IMAGE_PATTERN.fullmatch(marker["image"]) is None
+        or set(marker) != {"directory", "files", "image", "version"}
+    ):
+        raise MaterialError("ownership marker is invalid")
+    owned_partial_cleanup(directory)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--directory", required=True, type=Path)
+    parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--cleanup", action="store_true")
+    values = parser.parse_args()
+    try:
+        if values.cleanup:
+            if values.github_output is not None:
+                parser.error("--cleanup does not accept --github-output")
+            cleanup(values.directory)
+        else:
+            if values.github_output is None:
+                parser.error("preparation requires --github-output")
+            prepare(values.directory, values.github_output)
+    except MaterialError as error:
+        print(f"fresh image build material: ERROR ({error})", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

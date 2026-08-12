@@ -35,6 +35,7 @@ FRESH_IMAGE_PATTERNS = (
     "scripts/generate-fresh-toolchain-manifest",
     "scripts/materialize-fresh-tree",
     "scripts/pre-pr",
+    "scripts/prepare-fresh-image-build",
     "scripts/run-baseline-*",
     "scripts/run-coding-task-*",
     "scripts/run-fresh-attestation-wire-smoke",
