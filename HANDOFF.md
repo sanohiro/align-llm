@@ -116,10 +116,9 @@ file records durable project state.
 
 ## Next steps
 
-1. Run exact complete preflight and commit its durable evidence.
-2. Because the repair changes public supervisor admission, obtain the one policy-allowed final
+1. Because the repair changes public supervisor admission, obtain the one policy-allowed final
    comprehensive review.
-3. Publish only after a clean review, require hosted CI, then measure build/export/load and final
+2. Publish only after a clean review, require hosted CI, then measure build/export/load and final
    integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
@@ -229,6 +228,12 @@ file records durable project state.
   layers were cache hits. A controller-only change still invalidates the later Cargo-fetch layer
   because its Dockerfile `COPY image/fresh` precedes that fetch; moving the pin-owned Cargo fetch
   before controller inputs is the next cache-layout optimization after this capability.
+- Complete preflight passed exact evidence head
+  `be49ca494f42ae4aed0eba3e9de36c86118c91f5`: development owner 9.980s, pinned Align build
+  0.689s, hosted graph 3.778s, focused qualification 29.248s, installed profile 259.501s, warm image
+  build 2.707s, profile self-test 17.667s, trust mutations 16.968s, runtime replacements 29.361s,
+  boundary profile 43.354s, worker aggregate 138.205s, and cleanup 1.336s. The canonical external
+  stamp records exact base `6a48ab7`, head, owner `development-preflight`, and `fresh-image` scope.
 
 ## Constraints and intentional state
 
