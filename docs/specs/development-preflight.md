@@ -93,8 +93,10 @@ and PR #69. A 2026-08-12 local baseline reached 681.372 seconds before exposing 
 `cgroupfs` environment leak; its boundary phase took 435.077 seconds and its image build took
 195.235 seconds. Exact shallow source reduced the boundary phase to 86.945 seconds but was
 correctly rejected by the worker's full-history source contract, so it is not an adopted result.
-The valid exact shallow optimization for the Docker-only Cargo source reduced the image build to
-144.999 seconds. With that layer warm and a reusable full source checkout, the complete installed
-profile passed in 198.572 seconds: image build 4.555 seconds, boundary profile 36.441 seconds, and
-worker aggregate 104.677 seconds. This is a 70.9% reduction from the failed baseline invocation;
-hosted results remain the cross-environment evidence.
+After adopting the valid exact shallow fetch for the Docker-only Cargo source, a later invocation
+observed a 144.999-second image build. With that layer warm and a reusable full source checkout,
+the complete installed profile passed in 198.572 seconds: image build 4.555 seconds, boundary
+profile 36.441 seconds, and worker aggregate 104.677 seconds. These failed cold/network and passing
+warm/reused invocations are diagnostic observations under different conditions, not a reproducible
+speedup comparison. An equivalent passing baseline and candidate run remain required before making
+an end-to-end performance claim; hosted results remain the cross-environment evidence.

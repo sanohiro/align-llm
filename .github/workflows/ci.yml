@@ -28,9 +28,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Development workflow self-test
-        run: python3 scripts/test-development-preflight
-
       - name: Classify verification scope
         id: scope
         shell: bash
@@ -75,6 +72,10 @@ jobs:
                 --all --head "$head_sha" --github-output "$GITHUB_OUTPUT"
             fi
           fi
+
+      - name: Development workflow self-test
+        if: steps.scope.outputs.hosted == 'true'
+        run: python3 scripts/test-development-preflight
 
       - name: Run documentation and static checks
         if: steps.scope.outputs.docs_only == 'true'

@@ -293,8 +293,14 @@ def test_workflow_topology() -> None:
     require(workflow.count("python3 scripts/classify-verification") == 6, "CI classifier callsites changed")
     require(
         workflow.index("Development workflow self-test")
-        < workflow.index("Classify verification scope"),
-        "CI classifies before testing its selection machinery",
+        > workflow.index("Classify verification scope"),
+        "CI self-tests selection machinery before scope is known",
+    )
+    self_test = workflow[workflow.index("- name: Development workflow self-test") :]
+    self_test = self_test[: self_test.index("\n      - name:", 1)]
+    require(
+        "if: steps.scope.outputs.hosted == 'true'" in self_test,
+        "docs-only CI runs the executable workflow self-test",
     )
     require(
         workflow.count("case \"$path\"") == 1,
