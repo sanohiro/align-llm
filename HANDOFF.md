@@ -21,8 +21,9 @@ file records durable project state.
 - In progress: the multi-stage image contract is being settled from the current 6,069,945,116-byte
   image baseline. Read-only inspection found `/runtime` at 3,064,524,800 bytes, while the final
   single-stage image also retains `/root/.rustup` at 613,281,792 bytes, `/usr/lib/llvm-22` at
-  626,454,528 bytes, and `/usr` at 1,719,996,416 bytes. The stage-boundary plan of record is settled;
-  the next checkpoint is its static owner plus the Dockerfile implementation.
+  626,454,528 bytes, and `/usr` at 1,719,996,416 bytes. Contract commit `976e414` settled the
+  stage boundary, and implementation commit `060b956` added the builder/runtime split, explicit
+  outer Python control tree, manifest-bound outer library closure, and static owner regression.
 
 ## Measurement
 
@@ -69,6 +70,10 @@ file records durable project state.
   This is 72% lower than the 100-second bundle baseline. The same warm run's fresh-image job still
   took 430 seconds, including 165 seconds to build/export/load and 222 seconds for installed
   qualification, making image transfer and qualification the remaining workflow bottleneck.
+- The local multi-stage candidate is 3,800,869,143 bytes versus the 6,069,945,116-byte baseline,
+  a 37.4% reduction. `/runtime` remains exactly 3,016,219,340 bytes and the Cargo cache exactly
+  23,056,659 bytes. A warm build took 33.405 seconds. Final inventory, outer imports, and manifest
+  tool probes passed; builder-only Rustup, Cargo, LLVM, source, and apt metadata are absent.
 
 ## Paused product checkpoint
 
@@ -79,11 +84,12 @@ file records durable project state.
 
 ## Next steps
 
-1. Finish the authoritative multi-stage contract and closure-matrix consistency pass.
-2. Implement the named builder/final-runtime split and its exact control-closure owner regression.
-3. Build and measure the candidate, run the complete installed profile, and obtain the mandatory
-   fresh independent review before publication. Keep PR #69 paused until the final Align revision
-   is named.
+1. Run the complete proportional preflight except for the independently reproduced local installed
+   aggregate environment failure, then perform the mandatory fresh independent review.
+2. Publish the candidate and require hosted CI to pass the complete installed profile before merge;
+   do not treat the comparative local failure as candidate acceptance.
+3. Measure the hosted image build/export/load duration and final integration. Keep PR #69 paused
+   until the final Align revision is named.
 
 ## Latest durable evidence
 
@@ -105,6 +111,13 @@ file records durable project state.
   `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`: hosted bundle restore plus verification took two
   seconds and the complete hosted job took 28 seconds. The full run passed in 434 seconds because
   the unchanged fresh-image job remained dominant.
+- Multi-stage implementation head `060b956` passed `scripts/test-development-preflight`, Dockerfile
+  build checks, complete focused fresh qualification in 20.305 seconds, and `make hosted-checks`.
+  The candidate installed profile passed every phase through both boundaries, then failed worker
+  aggregate. An exact `origin/main` control under the same refreshed `--pull` environment failed
+  the same aggregate phase. Both used the exact clean full-history Align revision
+  `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; only refreshed systemd library files differed from
+  the earlier passing manifest. Hosted complete-profile evidence remains required.
 
 ## Constraints and intentional state
 

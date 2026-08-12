@@ -398,6 +398,19 @@ env -u DOCKER_HOST docker run --rm --entrypoint /usr/bin/du align-llm-multistage
 env -u DOCKER_HOST docker run --rm --entrypoint /bin/sh align-llm-multistage-measure:candidate -eu -c 'for path in /root/.rustup /root/.cargo /usr/lib/llvm-22 /build; do test ! -e "$path"; done; test -z "$(find /var/lib/apt/lists -mindepth 1 -print -quit)"'
 ```
 
+The first local candidate measured 3,800,869,143 Docker-reported bytes with the same
+3,016,219,340-byte `/runtime` and 23,056,659-byte Cargo cache as the baseline. This removes
+2,269,075,973 bytes, or 37.4%, and passes the footprint gate. Its warm local build took 33.405
+seconds with the existing builder parents cached; this is diagnostic only because export shape and
+cache state differ from the single-stage baseline. The candidate passed image attestation,
+lifecycle, self-test, trust-mutation, runtime-replacement, and both boundary profiles. Its worker
+aggregate then failed with the canonical `CHILD aggregate` result. An exact `origin/main` control
+run under the same refreshed `--pull` environment failed in the same phase, while the pinned Align
+checkout remained exact and the earlier same-day hosted and local profiles passed. The changed
+toolchain manifest was isolated to the refreshed systemd library files under the mutable Ubuntu
+package snapshot. This is comparative environment evidence, not candidate acceptance; the hosted
+pull-request run must still pass the complete installed profile before merge.
+
 PR #75 run `31588797654` passed the invalidating hosted path in 568 seconds end to end; the fresh
 job took 564 seconds, its build/export/load step 293 seconds, and installed qualification 225
 seconds (`n=1`, GitHub `ubuntu-24.04`). The build produced the new downstream layers in about 68
