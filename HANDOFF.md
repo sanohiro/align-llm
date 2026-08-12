@@ -45,7 +45,12 @@ file records durable project state.
   policy ended the v2 repair cycle. The v3 design reopens the lifecycle closure matrix before code,
   assigns both process-owner layers, and names exact failure propagation and dynamic regressions;
   design checkpoint `021f8e0` is complete. Implementation checkpoint `e5dae90` completes the
-  redesigned process ownership, its focused owners pass, and exact complete preflight passes.
+  redesigned process ownership, its focused owners pass, and exact complete preflight passes. A
+  fresh comprehensive review of exact evidence head `236dcbd` requested one consolidated repair:
+  controller runtime/tool admission must precede its public project-Git identity call, and worker
+  lifecycle evidence must exercise production `run_owned` with a real double-forked descendant.
+  The repaired contract retains manifest-authenticated Git by descriptor and assigns that real
+  lifecycle regression to the worker owner.
 
 ## Measurement
 
@@ -110,8 +115,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Obtain a new comprehensive review of the redesigned candidate.
-2. Publish only after a clean review, require hosted CI, then measure build/export/load and final
+1. Apply the consolidated `236dcbd` review repair and run its affected owners plus exact preflight.
+2. Because the repair changes public supervisor admission, obtain the one policy-allowed final
+   comprehensive review.
+3. Publish only after a clean review, require hosted CI, then measure build/export/load and final
    integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
@@ -204,6 +211,12 @@ file records durable project state.
   system-file layers were cache hits; the changed controller and downstream attestation layers
   rebuilt. Its canonical external stamp records exact base `6a48ab7`, head, owner
   `development-preflight`, and `fresh-image` scope.
+- Fresh comprehensive review covered exact head
+  `236dcbdca1f10e1b04eccebb2be806ed59754037` against base and merge base
+  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26` and requested two changes: the public supervisor ran
+  project Git before controller runtime/tool admission, and the worker's claimed double-fork
+  acceptance remained synthetic. Both findings are accepted; the contract above defines their one
+  consolidated repair.
 
 ## Constraints and intentional state
 
