@@ -5,7 +5,7 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-13)
 
-- Branch `agent/multistage-fresh-runtime-v3` is based on PR #77 merge commit
+- Branch `agent/multistage-fresh-runtime-v4` is based on PR #77 merge commit
   `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`.
 - Active goal: remove builder-only apt, LLVM, Rust, source, and compilation state from the installed
   fresh image while preserving its exact runtime manifest and complete installed qualification.
@@ -51,7 +51,18 @@ file records durable project state.
   lifecycle evidence must exercise production `run_owned` with a real double-forked descendant.
   The repaired contract retains manifest-authenticated Git by descriptor and assigns that real
   lifecycle regression to the worker owner. Design checkpoint `30a4835` and consolidated repair
-  `9996837` are complete; focused and installed owners pass.
+  `9996837` are complete; focused and installed owners pass. Exact final preflight passed
+  `1ce0b19`, but the policy-mandated final review rejected v3: the reopened controller contract
+  assigned mount/delegation inventory, orphan admission, per-tick procfs sampling, a universal
+  platform classification, and the worker leaf grammar to a controller that owns none of those
+  behaviors; Section 9.9 also ordered bwrap authentication before the runtime-first precedence
+  required by production and its regression. Repository policy ended the v3 repair cycle. V4
+  reopens the closure matrix and assigns clean hierarchy provisioning and residual-leaf refusal to
+  `fresh-profile`, per-child `align-llm-control-*` lifecycle and phase-owned errors to the
+  controller, and the full worker resource boundary to `scripts/fresh-align-compiler`. Runtime
+  bindings precede every tool, including bwrap; bwrap capability checks follow accepted tool
+  identity. The implementation already follows this validation order, so the next checkpoint adds
+  exact contract-owner regressions rather than expanding the controller into a second worker.
 
 ## Measurement
 
@@ -116,9 +127,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Because the repair changes public supervisor admission, obtain the one policy-allowed final
-   comprehensive review.
-2. Publish only after a clean review, require hosted CI, then measure build/export/load and final
+1. Commit the v4 design checkpoint, add exact profile/controller/worker ownership and
+   invalid-runtime-plus-invalid-bwrap regressions, and run the affected focused owners.
+2. Run exact-head complete preflight and obtain one fresh comprehensive review of v4.
+3. Publish only after a clean review, require hosted CI, then measure build/export/load and final
    integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
@@ -234,6 +246,16 @@ file records durable project state.
   build 2.707s, profile self-test 17.667s, trust mutations 16.968s, runtime replacements 29.361s,
   boundary profile 43.354s, worker aggregate 138.205s, and cleanup 1.336s. The canonical external
   stamp records exact base `6a48ab7`, head, owner `development-preflight`, and `fresh-image` scope.
+- Complete preflight passed v3 final evidence head
+  `1ce0b197adddf36a474a32d3cb90aeea3d23a746`: development owner 10.161s, pinned Align build
+  0.722s, hosted graph 3.728s, focused qualification 24.122s, installed profile 230.258s, warm image
+  build 3.407s, profile self-test 13.174s, trust mutations 15.942s, runtime replacements 24.976s,
+  boundary profile 39.716s, worker aggregate 123.048s, and cleanup 1.290s. Its mode-0600 stamp binds
+  exact base `6a48ab7`, head, owner `development-preflight`, and `fresh-image` scope.
+- The conditionally required v3 final review covered exact head `1ce0b19` against base and merge
+  base `6a48ab7` and requested the two contract corrections described in the active checkpoint.
+  Both are accepted. No v3 content may be published; v4 is a redesigned candidate and requires one
+  fresh comprehensive review after its own final evidence.
 
 ## Constraints and intentional state
 
