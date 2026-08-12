@@ -21,8 +21,9 @@ file records durable project state.
   merged the multi-stage fresh runtime at `dea213d69e79fc6c3ef97ad095051b8c4c2dce1a`, reducing the
   observed image from 6,069,945,116 to 3,215,474,083 bytes (47.0%) while preserving the complete
   installed profile. Its PR run `31633149090` passed; the fresh job's build/export/load took 294
-  seconds and installed qualification took 262 seconds. Exact-main trusted-cache publication is in
-  progress in run `31634023665`.
+  seconds and installed qualification took 262 seconds. Exact-main run `31634023665` passed in 281
+  seconds; its cache-only fresh job took 276 seconds and build/export took 257 seconds, while the
+  hosted job seeded the missing trusted apt archive and compiler bundle entries.
 - In progress: settle and implement the Docker cache boundary that copies only `.align-revision`
   and completes the exact shallow Cargo fetch after the pinned Git/Rust runtimes but before any
   repository-owned fresh-image source. The public contract and closure owner must be updated before
@@ -82,6 +83,11 @@ file records durable project state.
   mutable, so exact sizes are recorded observations rather than rebuild guarantees. All 1,303
   transferred Python/libexpat paths had zero dpkg ownership collisions and builder-only Rustup,
   Cargo, LLVM, source, and apt state are absent.
+- Cargo-layout checkpoint `d94afbc` passed complete preflight: development owner 9.704s, pinned
+  Align build 0.709s, hosted checks 3.583s, focused qualification 23.645s, and installed profile
+  281.745s. The first relocated Cargo layer resolved its exact shallow source and fetched crates in
+  7.7s; the complete local image build took 42.683s. An immediate fixed-key rebuild took 3.185s and
+  reported the Cargo-fetch layer and all earlier layers `CACHED` (`n=1` each, same Docker daemon).
 
 ## Paused product checkpoint
 
@@ -92,12 +98,11 @@ file records durable project state.
 
 ## Next steps
 
-1. Finish PR #78's exact-main cache publication and record its step durations.
-2. Commit the Cargo-fetch cache-boundary contract, then move the pin-only layer and add the exact
-   Dockerfile ordering regression.
-3. Run the proportional owner and installed acceptance, obtain one fresh comprehensive review, and
-   publish the consumer-complete cache-layout capability. Keep PR #69 paused until the final Align
-   revision is named.
+1. Commit the Cargo-layout evidence update and rerun exact-head preflight so its external stamp
+   binds the final candidate.
+2. Obtain one fresh comprehensive review, then publish the consumer-complete cache-layout
+   capability and measure the hosted invalidating and exact-main paths.
+3. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 

@@ -439,6 +439,22 @@ seconds. Merge run `31589611628` then published the smaller trusted `main` cache
 fresh job while reusing functional and qualification evidence. These are migration/cache-publication
 measurements, not the clean warm-image result.
 
+PR #78 run `31633149090` passed the final multi-stage candidate in 605 seconds end to end; the
+fresh job took 600 seconds, build/export/load 294 seconds, and installed qualification 262 seconds
+(`n=1`, GitHub `ubuntu-24.04`). Exact-main run `31634023665` then passed in 281 seconds; its
+cache-only fresh job took 276 seconds and build/export took 257 seconds while functional and
+installed evidence were reused. These are the Cargo-layout capability's source baseline. On local
+checkpoint `d94afbc`, relocating the unchanged pin-owned fetch took 7.7 seconds on its first layer
+execution and the complete image build took 42.683 seconds. An immediate fixed-key rebuild took
+3.185 seconds and reported the Cargo-fetch layer and every preceding toolchain layer `CACHED`
+(`n=1` each, same Docker daemon). This local pair proves the new layer is reusable; the hosted PR
+and exact-main runs remain the acceptance for branch-visible import and publication. Reproduce the
+hosted timestamps with:
+
+```text
+for run in 31633149090 31634023665; do gh run view "$run" --json createdAt,updatedAt,jobs; done
+```
+
 The hosted apt baseline is the same PR #75 run: the check job took 102 seconds and `Install LLVM
 and native libraries` took 43 seconds (`n=1`, GitHub `ubuntu-24.04`). The first pull request for the
 archive cache exercises a miss and must pass; its exact merge must seed the trusted `main` entry.
