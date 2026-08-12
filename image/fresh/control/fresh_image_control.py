@@ -255,19 +255,6 @@ def _control_cgroup_child_membership(leaf_fd: int, pid: int) -> None:
         raise OSError(errno.EBUSY, "control cgroup contains an unexpected thread")
 
 
-def _control_cgroup_group_is_owned(leaf_fd: int, process_group: int) -> bool:
-    members = _control_cgroup_members(leaf_fd, "cgroup.procs") + _control_cgroup_members(
-        leaf_fd, "cgroup.threads"
-    )
-    for pid in members:
-        try:
-            if os.getpgid(pid) != process_group:
-                return False
-        except ProcessLookupError:
-            return False
-    return True
-
-
 def _control_cgroup_lease() -> tuple[int, int, str, tuple[int, int, int, int, int]]:
     parent_path = f"/sys/fs/cgroup/align-llm-fresh/{os.geteuid()}"
     parent_fd = os.open(
@@ -462,8 +449,6 @@ def _control_terminate(
     if process.poll() is None or populated:
         if not _control_cgroup_matches(parent_fd, leaf_fd, leaf_name, identity):
             raise OSError(errno.ESTALE, "control cgroup identity changed")
-        if not _control_cgroup_group_is_owned(leaf_fd, group):
-            raise OSError(errno.EPERM, "control cgroup contains a foreign process")
         _control_cgroup_file_write(leaf_fd, "cgroup.kill", b"1\n")
     try:
         process.wait(timeout=5)

@@ -527,6 +527,49 @@ def cgroup_launch_failure_case(temporary: Path) -> None:
         parent.rmdir()
 
 
+def cgroup_changed_group_termination_case() -> None:
+    class ExitedProcess:
+        pid = 424242
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(*, timeout):
+            return 0
+
+    original_populated = control._control_cgroup_populated
+    original_matches = control._control_cgroup_matches
+    original_write = control._control_cgroup_file_write
+    original_monotonic = control.time.monotonic
+    writes = []
+    try:
+        populated = iter((True, False))
+        clock = iter((0.0, 2.0))
+        control._control_cgroup_populated = lambda _fd: next(populated)
+        control._control_cgroup_matches = lambda *_arguments: True
+        control._control_cgroup_file_write = (
+            lambda fd, name, raw: writes.append((fd, name, raw))
+        )
+        control.time.monotonic = lambda: next(clock)
+        control._control_terminate(
+            ExitedProcess(),
+            start="unchanged",
+            group=999999,
+            parent_fd=70,
+            leaf_fd=71,
+            leaf_name="owned-leaf",
+            identity=(1, 2, stat.S_IFDIR, 0o700, os.geteuid()),
+        )
+        assert writes == [(71, "cgroup.kill", b"1\n")]
+    finally:
+        control._control_cgroup_populated = original_populated
+        control._control_cgroup_matches = original_matches
+        control._control_cgroup_file_write = original_write
+        control.time.monotonic = original_monotonic
+
+
 def main() -> int:
     assert _normalize_relative("../align") == "../align"
     assert _normalize_relative("a/./b/../c") == "a/c"
@@ -576,6 +619,7 @@ def main() -> int:
         cgroup_membership_case(temporary)
         cgroup_removal_case(temporary)
         cgroup_launch_failure_case(temporary)
+        cgroup_changed_group_termination_case()
 
     original = os.dup(31) if _fd_open(31) else None
     try:

@@ -992,16 +992,21 @@ def exited_process_drain_cases(module) -> None:
             return 0
 
     process = ExitedProcess()
-    lease = object()
+    class Lease:
+        leaf_fd = 77
+
+    lease = Lease()
     original_populated = module.cgroup_populated
-    original_kill = module.kill_cgroup
+    original_entry_matches = module.cgroup_entry_matches
+    original_write = module.cgroup_file_write
     original_reap = module.reap_descendants
     original_monotonic = module.time.monotonic
     kills = []
     try:
         natural_states = iter((True, False, False, False, False))
         module.cgroup_populated = lambda _lease: next(natural_states)
-        module.kill_cgroup = lambda _lease, _group: kills.append("kill")
+        module.cgroup_entry_matches = lambda _lease: True
+        module.cgroup_file_write = lambda fd, name, raw: kills.append((fd, name, raw))
         module.reap_descendants = lambda _deadline, _process=None: None
         forced = module.terminate_owned_process(process, lease, None, None)
         require(not forced and not kills, "naturally draining descendant was terminated")
@@ -1011,12 +1016,45 @@ def exited_process_drain_cases(module) -> None:
         module.cgroup_populated = lambda _lease: next(lingering_states)
         module.time.monotonic = lambda: next(clock)
         forced = module.terminate_owned_process(process, lease, None, None)
-        require(forced and kills == ["kill"], "lingering descendant escaped termination")
+        require(
+            forced and kills == [(77, "cgroup.kill", b"1\n")],
+            "changed-group lingering descendant escaped cgroup termination",
+        )
     finally:
         module.cgroup_populated = original_populated
-        module.kill_cgroup = original_kill
+        module.cgroup_entry_matches = original_entry_matches
+        module.cgroup_file_write = original_write
         module.reap_descendants = original_reap
         module.time.monotonic = original_monotonic
+
+
+def runtime_tool_precedence_cases(module) -> None:
+    original_validate = module.validate_tree_manifest
+    original_authenticate = module.authenticate_tools
+    tool_calls = []
+    manifest = {
+        "runtime_bindings": [{"manifest": {}, "source": "/invalid-runtime"}],
+        "tools": [{"name": "invalid-tool"}],
+    }
+    try:
+        def invalid_runtime(_node, _source):
+            raise ValueError("invalid runtime")
+
+        module.validate_tree_manifest = invalid_runtime
+        module.authenticate_tools = lambda _manifest: tool_calls.append("tool")
+        try:
+            module.authenticate_runtime_and_tools(manifest)
+        except module.WorkerError as error:
+            require(
+                (error.category, error.phase) == ("TOOL", "tools"),
+                "runtime failure has the wrong public category",
+            )
+        else:
+            raise AssertionError("invalid runtime and tool inputs were accepted")
+        require(not tool_calls, "tool authentication ran before runtime rejection")
+    finally:
+        module.validate_tree_manifest = original_validate
+        module.authenticate_tools = original_authenticate
 
 
 def published_elf_cases(module) -> None:
@@ -1428,6 +1466,7 @@ def main() -> int:
     canonical_wire_cases(module)
     run_attestation_cases(module)
     exited_process_drain_cases(module)
+    runtime_tool_precedence_cases(module)
     published_elf_cases(module)
     derived_path_alias_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:

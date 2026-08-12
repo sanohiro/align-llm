@@ -299,13 +299,17 @@ def test_runtime_materialization() -> None:
     control_self_test = control.split("def _platform_self_test(", maxsplit=1)[1]
     worker = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
     worker_entry = worker.split("def worker(", maxsplit=1)[1]
+    worker_authentication = worker.split(
+        "def authenticate_runtime_and_tools(", maxsplit=1
+    )[1].split("\ndef ", maxsplit=1)[0]
     require(
         '"LD_LIBRARY_PATH": (' in control
         and control_self_test.index('for binding in manifest["runtime_bindings"]')
         < control_self_test.index('for tool in manifest["tools"]')
         and '"LD_LIBRARY_PATH": RUNTIME_LIBRARY_PATH' in worker
-        and worker_entry.index('for binding in manifest["runtime_bindings"]')
-        < worker_entry.index("tools = authenticate_tools(manifest)")
+        and worker_authentication.index('for binding in manifest["runtime_bindings"]')
+        < worker_authentication.index("tools = authenticate_tools(manifest)")
+        and "authenticate_runtime_and_tools(manifest)" in worker_entry
         and "final control files overlap base package ownership" in runtime_stage
         and 'Path("/var/lib/dpkg/info").glob("*.list")' in runtime_stage,
         "verified runtime tool probe or package identity verification changed",
@@ -322,15 +326,19 @@ def test_runtime_materialization() -> None:
             f"manifest runtime tree is pruned after materialization: {forbidden_pruning}",
         )
     topology = (REPOSITORY / "docs/specs/check-gate-topology.md").read_text(encoding="utf-8")
-    validation_order = topology.split(
-        "The exact primary categories are selected by this immutable order:", maxsplit=1
-    )[1].split("Malformed input is reported", maxsplit=1)[0]
+    validation_order = topology.split("### 9.9 Validation order and failure categories", maxsplit=1)[
+        1
+    ].split("### 9.10 Closure matrix", maxsplit=1)[0]
     require(
-        validation_order.index("manifest-declared runtime-binding trees")
-        < validation_order.index("declared executable paths")
-        < validation_order.index(".align-revision")
+        validation_order.index("manifest-declared runtime-binding source tree")
+        < validation_order.index("retained tool descriptor")
+        < validation_order.index("project-root Git descriptors")
         < validation_order.index("cache root"),
         "public runtime/tool/source/cache validation order changed",
+    )
+    require(
+        "`tools` to `TOOL` including runtime-binding identity failures" in validation_order,
+        "public runtime-binding failure category changed",
     )
     require(
         "either drained naturally after a\nnormal direct-child exit or were terminated"

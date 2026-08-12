@@ -21,8 +21,8 @@ file records durable project state.
 - In progress: reviewed multi-stage candidate `4780747` split the builder and runtime stages. Its
   comprehensive review requested changes because installed acceptance had not passed, the complete
   builder library overlay invalidated final-base package ownership, and the footprint claim did not
-  distinguish pinned inputs from mutable apt snapshots. The current branch HEAD is the consolidated
-  repair: both stages pin the Ubuntu Linux/amd64 manifest; the final image transfers only Python,
+  distinguish pinned inputs from mutable apt snapshots. The repaired boundary pins both stages to
+  the Ubuntu Linux/amd64 manifest; the final image transfers only Python,
   its symlink-free standard library, and libexpat into system paths after proving zero dpkg ownership
   overlap; manifest-bound libraries remain below `/runtime`; and both controller and worker validate
   them before fixed-path tool probes.
@@ -33,7 +33,11 @@ file records durable project state.
   its owner test, the reproduction tag, validation-order prose, and cleanup prose were inconsistent.
   This v2 branch re-scopes the capability to builder-state separation and preserves the complete
   materialized runtime tree; runtime reachability pruning is deferred to a separately owned gate.
-  The re-scoped contract and implementation are committed as `ee9fd0e` and `8f09c6f`.
+  The re-scoped contract and implementation are committed as `ee9fd0e` and `8f09c6f`; measurement
+  and exact preflight candidate `bc2623b` passed. Its comprehensive review requested one consolidated
+  repair: forced cgroup cleanup must own descendants across process-group changes, normative Section
+  9 must own runtime-before-tool precedence with a real multi-invalid regression, and this handoff
+  must record the existing exact candidate stamp.
 
 ## Measurement
 
@@ -98,8 +102,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Obtain one fresh comprehensive review of the redesigned candidate. Publish only after a clean
-   review, require hosted CI, then measure build/export/load and
+1. Commit the consolidated comprehensive-review repair and rerun affected owner checks plus exact
+   preflight. Because the cleanup ownership behavior changes materially, obtain the one conditional
+   final review.
+2. Publish only after a clean final review, require hosted CI, then measure build/export/load and
    final integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
@@ -155,8 +161,10 @@ file records durable project state.
 - Complete preflight passed re-scoped measurement checkpoint
   `791c9d5c518b7301bf5fa6ee19e76892fc637c53`: development owner 9.514s, pinned Align build 0.799s,
   hosted graph 3.633s, focused qualification 22.223s, installed profile 217.113s, image build 3.202s,
-  boundary profile 41.554s, worker aggregate 105.110s, and cleanup 1.192s. The final HANDOFF-amended
-  head requires one exact stamp before review.
+  boundary profile 41.554s, worker aggregate 105.110s, and cleanup 1.192s. Complete preflight also
+  passed exact comprehensive-review head `bc2623b613b5ba4ed60b2484da7933f13465aec5`: installed
+  profile 200.836s and worker aggregate 104.604s. Its canonical mode-0600 external stamp records
+  exact base `6a48ab7`, head, owner `development-preflight`, and `fresh-image` scope.
 
 ## Constraints and intentional state
 

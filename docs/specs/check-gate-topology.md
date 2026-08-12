@@ -3463,7 +3463,11 @@ the leaf's `cgroup.procs` and `cgroup.threads` to become empty, rechecks the par
 and removes only that empty leaf. A nonempty, replaced, or unprovable leaf is never removed and
 produces the documented cleanup failure. The delegated parent is an exclusive
 worker/profile writer boundary for this lifecycle; a non-cooperating same-UID writer is outside
-the profile threat model. An uncatchable worker death leaves the unique
+the profile threat model. The initial empty-leaf and direct-child membership proof establishes
+ownership before the child is admitted. After that gate, every member of the authenticated leaf is
+owned regardless of a later process-group or session change: `SIGTERM` targets the authenticated
+direct child's original group when it still exists, while `cgroup.kill` is the authoritative
+forced-termination boundary for every remaining member. An uncatchable worker death leaves the unique
 leaf for the bounded orphan policy; the next invocation fails closed before creating a root until a
 separately supervised profile cleanup proves the leaf empty and removes it. The worker's own fd table
 is checked before root creation, after every descriptor handoff, and before cleanup.
@@ -3524,9 +3528,10 @@ grammar so a trust failure has one deterministic status even though no worker ro
 3. image-attested manifest snapshot, schema, canonical order, and bounds;
 4. fixed bootstrap, Python, Linux, architecture, `/proc`, and timer capabilities, followed by
    bwrap descriptor authentication and retention; no bwrap child runs in this phase;
-5. namespace, overlay, no-symlink-mount, and read-only `/tools` capability probes using the retained
-   bwrap descriptor, then no-follow controller-path component checks, bounded regular-file worker
-   snapshot, and every other retained tool descriptor, digest, mode, version, and probe output;
+5. every manifest-declared runtime-binding source tree and digest, then namespace, overlay,
+   no-symlink-mount, and read-only `/tools` capability probes using the retained bwrap descriptor,
+   then no-follow controller-path component checks, bounded regular-file worker snapshot, and every
+   retained tool descriptor, digest, mode, version, and probe output;
 6. project-root Git descriptors and policy, raw project tree/index/worktree and its root `.git`,
    `main`, and `target` output/control exceptions, then the exact `.align-revision`, retained
    `ALIGN_REPO` Git descriptors and policy, SHA-1-only pinned Align `HEAD`/tree/index/worktree, its
@@ -3555,7 +3560,8 @@ are supplied together, phase `input` wins and the result is exactly
 
 The category for each primary phase is fixed rather than selected by an implementation detail:
 `supervisor` and `manifest` map to `TRUST`, `input` to `ARGUMENT`, `platform` and `concurrency` to
-`PLATFORM`, `bwrap` to `TRUST`, `tools` to `TOOL`, both source phases to `SOURCE`, `cache` to
+`PLATFORM`, `bwrap` to `TRUST`, `tools` to `TOOL` including runtime-binding identity failures, both
+source phases to `SOURCE`, `cache` to
 `CACHE`, `filesystem` to `FILESYSTEM`, `build` to `BUILD`, `compiler` to `COMPILER`, `aggregate`
 to `CHILD`, and `internal` to `INTERNAL`. A malformed or mismatched value is therefore reported at
 the first phase that owns its validation, with no path, errno, or free-form subcategory appended to
