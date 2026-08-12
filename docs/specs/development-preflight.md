@@ -52,6 +52,7 @@ image construction is a later capability; this change preserves a scratch instal
 | Dirty tree, `main`, empty diff, missing owner, owner failure, gate failure | preflight | reject before stamp; later gates do not replace the first failure |
 | HEAD/worktree mutation during a gate | preflight | reject after the command sequence and write no stamp |
 | Plan mode | preflight | stable plan, no command execution, no stamp, and no sibling build |
+| Python entrypoints | classifier, preflight, and workflow owner | imports create no repository `__pycache__` or `.pyc`; a clean candidate remains clean before and after plan mode |
 | Focused-only qualification | qualification runner | inventory check plus every focused owner exactly once; installed owner absent |
 | Installed-only qualification | qualification runner | inventory check, no focused owner, installed owner exactly once |
 | Complete qualification | qualification runner | focused owners once followed by installed owner once |

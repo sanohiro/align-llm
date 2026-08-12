@@ -16,6 +16,7 @@ from types import ModuleType, SimpleNamespace
 
 REPOSITORY = Path(__file__).resolve().parent.parent
 SCRIPTS = REPOSITORY / "scripts"
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(SCRIPTS))
 
 import verification_scope as scope_module  # noqa: E402
@@ -241,6 +242,7 @@ def test_cli() -> None:
     require(result.returncode == 0 and not result.stderr, "classifier CLI failed")
     record = json.loads(result.stdout)
     require(record["scope"] == "fresh-image" and record["base"] == "", "all-scope CLI changed")
+    require(not (SCRIPTS / "__pycache__").exists(), "public CLI created repository bytecode")
 
 
 def main() -> int:
