@@ -94,5 +94,7 @@ and PR #69. A 2026-08-12 local baseline reached 681.372 seconds before exposing 
 195.235 seconds. Exact shallow source reduced the boundary phase to 86.945 seconds but was
 correctly rejected by the worker's full-history source contract, so it is not an adopted result.
 The valid exact shallow optimization for the Docker-only Cargo source reduced the image build to
-144.999 seconds. The complete installed profile with reused full source must pass before this
-candidate claims an end-to-end improvement; hosted results remain the cross-environment evidence.
+144.999 seconds. With that layer warm and a reusable full source checkout, the complete installed
+profile passed in 198.572 seconds: image build 4.555 seconds, boundary profile 36.441 seconds, and
+worker aggregate 104.677 seconds. This is a 70.9% reduction from the failed baseline invocation;
+hosted results remain the cross-environment evidence.

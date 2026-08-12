@@ -222,7 +222,14 @@ def test_image_profile_plan() -> None:
 
     def capture(arguments: list[str], **keywords: object) -> SimpleNamespace:
         calls.append((arguments, keywords))
-        stdout = (revision + "\n").encode("ascii") if arguments[-2:] == ["rev-parse", "HEAD"] else b""
+        if "config" in arguments:
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+        if arguments[-2:] == ["rev-parse", "HEAD"]:
+            stdout = (revision + "\n").encode("ascii")
+        elif arguments[-2:] == ["rev-parse", "--is-shallow-repository"]:
+            stdout = b"false\n"
+        else:
+            stdout = b""
         return SimpleNamespace(returncode=0, stdout=stdout, stderr=b"")
 
     image_profile.run = capture
@@ -238,6 +245,10 @@ def test_image_profile_plan() -> None:
     require(
         any(arguments[-3:] == ["checkout", "--detach", revision] for arguments, _ in calls),
         "Align checkout does not consume the pinned revision",
+    )
+    require(
+        any("fsck" in arguments and "--connectivity-only" in arguments for arguments, _ in calls),
+        "provided Align source connectivity is not checked",
     )
 
     calls.clear()
@@ -301,6 +312,11 @@ def test_workflow_topology() -> None:
     require(
         '--align-repo "$GITHUB_WORKSPACE/align-source"' in workflow,
         "CI does not pass the cached Align source to the installed owner",
+    )
+    require(
+        "fsck --connectivity-only --no-dangling" in workflow
+        and "Pinned Align cache must not be a partial clone" in workflow,
+        "CI does not revalidate cached full-source connectivity",
     )
     require(
         "python3 scripts/run-fresh-worker-qualification --installed-profile\n" not in workflow,

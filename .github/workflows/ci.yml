@@ -228,6 +228,12 @@ jobs:
           fi
           test "$(git -C align-source rev-parse HEAD)" = "$revision"
           test ! -e align-source/.git/shallow
+          if git -C align-source config --get-regexp \
+            '^(extensions\.partialclone|remote\..*\.promisor)$'; then
+            echo "Pinned Align cache must not be a partial clone" >&2
+            exit 1
+          fi
+          git -C align-source fsck --connectivity-only --no-dangling
           test -z "$(git -C align-source status --porcelain --untracked-files=all)"
 
       - name: Enable qualified nested user namespaces

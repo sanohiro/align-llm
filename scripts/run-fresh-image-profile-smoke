@@ -130,6 +130,25 @@ def checkout_pinned_align(target: Path, source_repository: Path | None) -> None:
         source_head = run(["git", "-C", source, "rev-parse", "HEAD"]).stdout
         if source_head.decode("ascii").strip() != revision:
             raise RuntimeError("provided Align source is not at the pinned revision")
+        shallow = run(
+            ["git", "-C", source, "rev-parse", "--is-shallow-repository"]
+        ).stdout
+        if shallow != b"false\n":
+            raise RuntimeError("provided Align source is shallow")
+        partial = run(
+            [
+                "git",
+                "-C",
+                source,
+                "config",
+                "--get-regexp",
+                r"^(extensions\.partialclone|remote\..*\.promisor)$",
+            ],
+            check=False,
+        )
+        if partial.returncode != 1 or partial.stdout or partial.stderr:
+            raise RuntimeError("provided Align source has partial-clone configuration")
+        run(["git", "-C", source, "fsck", "--connectivity-only", "--no-dangling"])
     run(["git", "clone", "--no-hardlinks", source, str(target)])
     run(["git", "-C", str(target), "checkout", "--detach", revision])
     actual = run(["git", "-C", str(target), "rev-parse", "HEAD"]).stdout

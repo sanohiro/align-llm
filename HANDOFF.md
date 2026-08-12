@@ -5,8 +5,8 @@ this file records durable project state.
 
 ## Active continuation checkpoint (2026-08-12)
 
-- Branch `agent/local-preflight` is at owner-tested implementation commit
-  `646828dca2bf7577ed3d13da53ec960e20d30f2a`, based on `main` commit
+- Branch `agent/local-preflight` is at installed-profile-tested implementation commit
+  `485dddd5bb5caf49284cd698f6b535b3e9fed406`, based on `main` commit
   `d17e474b365df447593ba91764cf6662489835de`.
 - Active goal: deliver the local development-preflight capability before resuming Request 6. It
   gives local and hosted execution one verification classifier, exact-HEAD local evidence,
@@ -14,10 +14,10 @@ this file records durable project state.
   timings. The public contract and closure matrix are in `docs/specs/development-preflight.md`.
 - Complete: shared `docs` / `hosted` / `fresh-image` classification, local `scripts/pre-pr` plan
   and stamp path, CI adoption, installed-profile-only execution, required-Docker handling, phase
-  records, owner regression, documentation, and the clean-worktree repair are implemented. The
-  focused qualification passes through the timing wrapper.
-- In progress: exact installed-profile verification, the stable-candidate matrix-to-diff pass, and
-  the one comprehensive review. No pull request has been published.
+  records, owner regression, full pinned-source reuse/cache, `cgroupfs` boundary isolation, and the
+  clean-worktree repair are implemented. Focused and installed qualification both pass.
+- In progress: the stable-candidate matrix-to-diff pass, final exact-HEAD preflight, and the one
+  comprehensive review. No pull request has been published.
 
 ## Paused product checkpoint
 
@@ -32,14 +32,11 @@ this file records durable project state.
 
 ## Next steps, in priority order
 
-1. Run the installed-only profile from this changed tree with `DOCKER_HOST` absent and Docker
-   required. Use an isolated exact-pin Align checkout for later full preflight; do not build or
-   modify the active sibling Align worktree.
-2. Perform the matrix-to-diff pass, commit this handoff checkpoint, and run one comprehensive
+1. Perform the matrix-to-diff pass, commit this handoff checkpoint, and run one comprehensive
    stable-candidate review. Apply all valid findings in one consolidated repair if needed.
-3. Rerun only affected owners, then execute the full local preflight against the isolated pin so
+2. Rerun only affected owners, then execute the full local preflight against the isolated pin so
    its stamp belongs to the final exact HEAD. Publish only after that local evidence is complete.
-4. After this workflow capability merges, refresh `main`. Keep PR #69 paused until the user names
+3. After this workflow capability merges, refresh `main`. Keep PR #69 paused until the user names
    the completed Align revision; workflow completion does not authorize Request 6 resumption.
 
 ## Latest verification
@@ -52,9 +49,18 @@ this file records durable project state.
   scripts/test-development-preflight`: PASS on commit `646828d`; selected owner, pinned Align
   build, hosted checks, focused qualification, and installed-only required-Docker qualification in
   that order, with `DOCKER_HOST` removed from the installed step.
+- `env -u DOCKER_HOST python3 scripts/run-fresh-worker-qualification
+  --installed-profile-only --require-docker --align-repo
+  /tmp/align-llm-preflight-full-align`: PASS in 198.572 seconds. The valid full-source boundary
+  passed in 36.441 seconds and the worker aggregate passed in 104.677 seconds. The initial
+  full-network baseline failed after 681.372 seconds; its boundary phase took 435.077 seconds.
+- `make hosted-checks ALIGN_REPO=/tmp/align-pin-fetch.noHVWR`: PASS against the exact pin.
+- `make eval-coding baseline-check ALIGN_REPO=/tmp/align-pin-fetch.noHVWR`: PASS. This diagnostic
+  checkout was shallow and was used only for host checks; it was correctly rejected as installed
+  worker source and is not the final preflight checkout.
 - `git diff --check`: PASS. Python compilation passed. `actionlint` and PyYAML are unavailable, so
   workflow syntax currently relies on the owner topology test and later hosted parsing.
-- Installed-profile, full preflight, comprehensive review, and hosted checks are not yet complete.
+- Full exact-HEAD preflight and comprehensive review are not yet complete.
 
 ## Constraints and intentional state
 
