@@ -5,19 +5,35 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-12)
 
-- Branch `agent/slim-fresh-runtime-image` is based on `origin/main` merge commit
-  `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
-- Active goal: reduce fresh-image transfer and load cost by preserving resolved regular-file
-  hardlinks while materializing image-owned runtime trees, without changing manifests, runtime
-  paths, worker behavior, or the pinned Align revision.
+- Branch `agent/cache-hosted-apt-llvm-v3` is based on `origin/main` merge commit
+  `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
+- Active goal: replace repeated hosted apt.llvm.org resolution with sibling Align's verified
+  replayable archive cache, while using the unchanged Dockerfile as the first exact warm consumer
+  of the smaller fresh-image cache.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
   trusted cache while reusing functional checks and skipping image load and qualification. PR #74
   merged the complete Node 24 action migration at `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
-- In progress: the materializer contract, implementation, synthetic alias/cycle/failure regression,
-  Dockerfile enforcement, exact base/candidate image measurement, and installed qualification are
-  complete locally. Independent review, publication, and hosted measurement remain.
+  PR #75 merged hardlink-preserving runtime materialization at `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
+- In progress: the first apt archive candidate was stopped after its conditional final review found
+  that manifest membership was not exact and the cleanup ownership model still missed dangling
+  symlinks, a conditionally created directory, and retention after cleanup failure. The v2 branch
+  reopens the closure matrix around one transactional rule: a cache candidate becomes saveable only
+  after exact archive membership, the real hosted consumer, and all non-archive cleanup succeed.
+  The redesigned candidate passed complete preflight. Its comprehensive review found that it still
+  needed post-consumer byte verification plus exact-key publication confirmation because the
+  save-only action can warn and exit zero without publishing, and that the package vector needed a
+  strict grammar. One consolidated repair added both gates and shared package parsing and passed
+  complete preflight, but its conditionally required final review found that the pinned cache
+  action returns success before enforcing cache-miss failure when the cache feature is unavailable.
+  v2 is stopped and unpublished. The v3 redesign makes literal `cache-hit=true` a separate required
+  publication assertion. That implementation passed complete preflight, and its fresh comprehensive
+  review confirmed the publication and package-vector fixes. The same review found two apt recovery
+  state-machine bugs: stale fixed paths were rejected after root-level repair began, and a retry
+  rejected its own partial keyring. One consolidated repair now validates the complete fixed
+  namespace before dpkg, apt, or network activity and permits retry of only invocation-owned state.
+  Repair verification, publication, cache seed, and clean warm measurement remain.
 
 ## Measurement
 
@@ -41,6 +57,11 @@ file records durable project state.
   bytes (59.2%), and `/runtime/git` from 2,617,299,268 to 83,290,477 bytes (96.8%). Git and
   `git-receive-pack` now share one 142-link inode. The 1,084.585-second cold base build and
   44.283-second warm candidate build are diagnostic only because their cache states differ.
+- PR #75 run `31588797654` passed in 9m28s; its fresh job took 9m24s, image build/export/load
+  293 seconds, and qualification 225 seconds. Merge run `31589611628` published the smaller trusted
+  `main` cache in a 3m03s fresh job while the reused check job took 8s. On PR #75 the normal check
+  job took 102 seconds, including 43 seconds for LLVM/native installation; these are the apt-cache
+  baseline values (`n=1`, GitHub `ubuntu-24.04`).
 - Hosted target: after one exact merge publishes the `main` cache, a subsequent PR completes image
   build in at most 75 seconds and reduces overall run time at least 25% while the full installed
   qualification still passes. A cache-miss source build must also pass.
@@ -54,29 +75,40 @@ file records durable project state.
 
 ## Next steps
 
-1. Run the final development-preflight/static checks, then perform the required independent
-   adversarial review and one consolidated repair if needed.
-2. Publish the capability, record hosted cache/build/qualification evidence, and merge only when
-   checks and review dispositions are complete.
-3. Continue with Align-style apt/LLVM archive caching for the normal hosted job after merge; because
-   that workflow-only capability leaves the Dockerfile unchanged, it is also the first clean warm
-   consumer measurement for this image cache. A multi-stage builder/runtime image follows. Keep
-   PR #69 paused until the final Align revision is named.
+1. Run the apt archive owner, development-preflight owner, workflow syntax/static checks, and the
+   proportional fresh qualification selected by the workflow change.
+2. Publish after the reviewed-finding repair is verified, confirm the PR miss and exact-main
+   cache seed, then measure one clean warm run before claiming the 10-second install/75-second check
+   targets.
+3. Remove the measured repeated Rust setup, then continue with a multi-stage builder/runtime image
+   after merge. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`: PASS after the materializer
-  implementation. It now covers true hardlinks, file and directory aliases, preserved bytes and
-  modes, dangling links, directory cycles, unsupported types, an existing target, injected link
-  failure, Dockerfile ownership, and the existing workflow matrix.
-- Complete installed qualification against `/tmp/align` and the candidate image: PASS. On the final
-  candidate invocation the installed profile took 191.372 seconds, including a 2.749-second fully
-  warm image build and a 102.098-second worker aggregate. An immediately preceding uninstrumented
-  invocation reached the aggregate but returned the existing `ERROR CHILD aggregate`; a diagnostic
-  reproduction and the final unchanged path both passed, so hosted CI must still confirm the
-  aggregate rather than treating the local warm pass as sufficient.
-- Python syntax parsing, `git diff --check`, and no repository bytecode: PASS at this local
-  checkpoint.
+- PR #75 independent review: PASS with no findings. Local final installed qualification and hosted
+  run `31588797654` both passed; the baseline and candidate toolchain and Cargo manifests were
+  identical.
+- `scripts/test-apt-llvm`: PASS after adapting sibling Align's cache hit, miss, corruption, repair,
+  repository provenance, signing-key, round-trip, cache-key, and argument regression.
+- `python3 scripts/test-development-preflight`, `python3 scripts/check-gate-topology --self-test`,
+  workflow YAML parsing, Bash syntax, and `git diff --check`: PASS on the uncommitted candidate.
+- The stopped candidate's final preflight passed at `7e74856deb964e6cc4b7064a9e07abc90f23aea1`,
+  but its final review failed and that evidence is not publication authority.
+- On the uncommitted v2 candidate, `scripts/test-apt-llvm`, development preflight, gate-topology
+  self-test, workflow YAML parsing, Bash syntax, and `git diff --check`: PASS. The focused owner now
+  covers exact manifest membership, symlink targets, borrowed/created keyring-directory ownership,
+  and injected cleanup failure at every owned path.
+- Complete preflight passed on reviewed v2 head `0c80091bae34716a8270aa212d811f9167dd089a`:
+  owner 4.240s, pinned Align build 0.728s, installed profile 211.155s, and every intervening gate
+  passed. The review repair invalidates that stamp; its affected owner/static checks pass locally.
+- Complete preflight passed on repaired v2 head `fc559ec6166b79594b416970ff030c15c46b8476`:
+  owner 4.042s, pinned Align build 0.729s, installed profile 206.399s, and every intervening gate
+  passed. Its final review failed on the cache-feature-unavailable publication path, so the candidate
+  remains stopped and unpublished despite the passing checks.
+- Complete preflight passed on reviewed v3 head `1532b4a9e6679e053b01099fc950bf49d727af0e`:
+  owner 4.063s, pinned Align build 0.668s, installed profile 209.449s, and every intervening gate
+  passed. The comprehensive review closed the v2 findings and found the two apt recovery-state
+  defects now addressed by the unverified consolidated repair.
 
 ## Constraints and intentional state
 

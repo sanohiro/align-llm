@@ -1144,6 +1144,24 @@ def test_image_profile_plan() -> None:
     )
 
 
+def test_apt_llvm_cache() -> None:
+    result = subprocess.run(
+        (str(SCRIPTS / "test-apt-llvm"),),
+        cwd=REPOSITORY,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    require(
+        result.returncode == 0
+        and result.stdout == "scripts/test-apt-llvm: all cases passed\n"
+        and not result.stderr,
+        "apt LLVM archive owner failed",
+    )
+
+
 def test_workflow_topology() -> None:
     workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     require(
@@ -1152,6 +1170,70 @@ def test_workflow_topology() -> None:
         )
         == 2,
         "CI does not use the reviewed Node 24 checkout action in both jobs",
+    )
+    cache_pin = "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0"
+    save_pin = "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0"
+    require(
+        workflow.count(cache_pin) == 2
+        and workflow.count(save_pin) == 1
+        and workflow.count(
+            "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0"
+        )
+        == 1,
+        "CI does not use the reviewed Node 24 cache action at all four owners",
+    )
+    require(
+        "llvm-22-dev clang-22 libclang-rt-22-dev lld-22\n"
+        "        libssl-dev zlib1g-dev libzstd-dev make perl" in workflow
+        and workflow.count("scripts/ci-apt-llvm.sh key") == 1
+        and workflow.count("scripts/ci-apt-llvm.sh install") == 1
+        and workflow.count("scripts/ci-apt-llvm.sh verify") == 1
+        and "https://apt.llvm.org/llvm.sh" not in workflow,
+        "CI does not own the exact replayable hosted package request",
+    )
+    apt_route = (
+        "if: (steps.reuse.outputs.reused != 'true' && "
+        "steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && "
+        "github.event_name == 'push' && github.ref == 'refs/heads/main')"
+    )
+    require(
+        workflow.count(apt_route) == 2,
+        "CI does not resolve and restore apt archives for hosted checks and exact main merges",
+    )
+    apt_consumer_route = (
+        "if: (steps.reuse.outputs.reused != 'true' && "
+        "steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && "
+        "github.event_name == 'push' && github.ref == 'refs/heads/main' && "
+        "steps.apt-llvm-cache.outputs.cache-hit != 'true')"
+    )
+    save_condition = (
+        "if: steps.apt-llvm-cache.outcome == 'success' && "
+        "steps.supported-checks.outcome == 'success' && github.event_name == 'push' && "
+        "github.ref == 'refs/heads/main' && "
+        "steps.apt-llvm-cache.outputs.cache-hit != 'true'"
+    )
+    require(
+        workflow.count(apt_consumer_route) == 4
+        and save_condition in workflow
+        and "id: apt-llvm-candidate" in workflow
+        and "id: apt-llvm-save" in workflow
+        and "id: apt-llvm-confirm" in workflow
+        and "if: steps.apt-llvm-candidate.outcome == 'success'" in workflow
+        and "if: steps.apt-llvm-save.outcome == 'success'" in workflow
+        and "lookup-only: true" in workflow
+        and "fail-on-cache-miss: true" in workflow
+        and "if: always() && steps.apt-llvm-save.outcome == 'success'" in workflow
+        and "CACHE_HIT: ${{ steps.apt-llvm-confirm.outputs.cache-hit }}" in workflow
+        and 'if [[ "$CACHE_HIT" != "true" ]]; then' in workflow
+        and workflow.index("- name: Reverify the apt package cache candidate")
+        > workflow.index("- name: Run supported project checks")
+        and workflow.index("- name: Save the apt package cache")
+        > workflow.index("- name: Reverify the apt package cache candidate")
+        and workflow.index("- name: Confirm the published apt package cache")
+        > workflow.index("- name: Save the apt package cache")
+        and workflow.index("- name: Require the published apt package cache")
+        > workflow.index("- name: Confirm the published apt package cache"),
+        "CI does not reverify, save, confirm, and require an exact main candidate after its consumer",
     )
     require(workflow.count("python3 scripts/classify-verification") == 6, "CI classifier callsites changed")
     require(
@@ -1175,8 +1257,7 @@ def test_workflow_topology() -> None:
         "CI does not use the required installed-only mode",
     )
     require(
-        "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0" in workflow
-        and "align-full-source-${{ runner.os }}-${{ hashFiles('.align-revision') }}" in workflow,
+        "align-full-source-${{ runner.os }}-${{ hashFiles('.align-revision') }}" in workflow,
         "CI does not cache full Align source with the reviewed Node 24 action by pinned revision",
     )
     require(
@@ -1312,10 +1393,11 @@ def main() -> int:
     test_qualification_modes()
     test_image_build_material()
     test_image_profile_plan()
+    test_apt_llvm_cache()
     test_workflow_topology()
     test_cli()
     print(
-        "development preflight: classifier, runtime materialization, plans, "
+        "development preflight: classifier, runtime materialization, apt archives, plans, "
         "qualification modes, and CI topology PASS"
     )
     return 0
