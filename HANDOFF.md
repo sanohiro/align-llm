@@ -20,8 +20,8 @@ file records durable project state.
   found two valid serialization-boundary issues: partial GitHub output on a non-ASCII path and a
   non-integer marker version accepted through Python equality. One consolidated repair validates
   and renders before side effects, writes one record, and enforces the exact schema type. Affected
-  verification passes; the repair commit, final exact preflight, publication, and hosted cold/warm
-  measurements remain.
+  verification and full preflight pass on repair commit
+  `135b7c67abb184c5b884b8736abbec96de456cfc`; publication and hosted cold/warm measurements remain.
 
 ## Measurement
 
@@ -42,11 +42,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit the consolidated review repair and rerun exact-HEAD preflight.
-2. Publish the PR with the SHA-bound review, both finding dispositions, and measurement evidence;
+1. Publish the PR with the SHA-bound review, both finding dispositions, and measurement evidence;
    verify the cold PR build and cache-publishing merge, then verify a subsequent warm PR against
    the `main` cache.
-3. Keep PR #69 paused until the final Align revision is named.
+2. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
@@ -62,7 +61,9 @@ file records durable project state.
   passed: owner 1.287 seconds, pinned Align build 0.744 seconds, hosted graph 3.316 seconds, focused
   qualification 20.677 seconds, and installed profile 204.399 seconds. After the review repair,
   `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`, Ruby YAML parsing,
-  `git diff --check`, and no bytecode pass; final exact-HEAD preflight is pending.
+  `git diff --check`, and no bytecode pass. Full preflight on repair commit `135b7c6` also passed:
+  owner 1.538 seconds, pinned Align build 0.696 seconds, hosted graph 3.138 seconds, focused
+  qualification 20.094 seconds, and installed profile 204.536 seconds.
 
 ## Constraints and intentional state
 
