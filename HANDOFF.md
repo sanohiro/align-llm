@@ -50,7 +50,8 @@ file records durable project state.
   controller runtime/tool admission must precede its public project-Git identity call, and worker
   lifecycle evidence must exercise production `run_owned` with a real double-forked descendant.
   The repaired contract retains manifest-authenticated Git by descriptor and assigns that real
-  lifecycle regression to the worker owner.
+  lifecycle regression to the worker owner. Design checkpoint `30a4835` and consolidated repair
+  `9996837` are complete; focused and installed owners pass.
 
 ## Measurement
 
@@ -115,7 +116,7 @@ file records durable project state.
 
 ## Next steps
 
-1. Apply the consolidated `236dcbd` review repair and run its affected owners plus exact preflight.
+1. Run exact complete preflight and commit its durable evidence.
 2. Because the repair changes public supervisor admission, obtain the one policy-allowed final
    comprehensive review.
 3. Publish only after a clean review, require hosted CI, then measure build/export/load and final
@@ -217,6 +218,17 @@ file records durable project state.
   project Git before controller runtime/tool admission, and the worker's claimed double-fork
   acceptance remained synthetic. Both findings are accepted; the contract above defines their one
   consolidated repair.
+- Consolidated repair `9996837` makes full controller runtime/tool admission precede public project
+  Git, reopens the exact runtime-tree Git node into a retained descriptor while preserving its 142
+  intentional hardlinks, explicitly preserves FD 4 across bootstrap exec even when it was allocated
+  directly, and adds a real worker `run_owned` double-fork lifecycle regression. Image-control,
+  worker-unit, development-preflight, topology, and focused qualification owners pass. Installed-only
+  qualification passes in 265.057s: image build 34.354s, profile self-test 15.435s, trust mutations
+  16.363s, runtime replacements 23.597s, boundary profile 39.724s, worker aggregate 124.136s, and
+  cleanup 1.231s. Apt, LLVM, Git, Rust toolchain, runtime materialization, and transferred runtime
+  layers were cache hits. A controller-only change still invalidates the later Cargo-fetch layer
+  because its Dockerfile `COPY image/fresh` precedes that fetch; moving the pin-owned Cargo fetch
+  before controller inputs is the next cache-layout optimization after this capability.
 
 ## Constraints and intentional state
 
