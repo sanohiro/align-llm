@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -53,6 +54,10 @@ class ReuseError(RuntimeError):
     """An expected identity or evidence boundary was unavailable."""
 
 
+def evidence_step_name(pull_request: int, base: str, head: str) -> str:
+    return f"Bind pull request evidence pr={pull_request} base={base} head={head}"
+
+
 def exact_sha(value: object, label: str) -> str:
     if not isinstance(value, str) or SHA_PATTERN.fullmatch(value) is None:
         raise ReuseError(f"invalid-{label}")
@@ -66,14 +71,17 @@ def exact_integer(value: object, label: str) -> int:
 
 
 def git_output(repository: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ("git", *arguments),
-        cwd=repository,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ("git", *arguments),
+            cwd=repository,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise ReuseError("git-identity-unavailable") from error
     if result.returncode != 0:
         raise ReuseError("git-identity-unavailable")
     return result.stdout.strip()
@@ -98,7 +106,10 @@ def merge_identity(repository: Path, before: str, after: str) -> tuple[str, str]
 
 
 def api_base_url(value: str) -> str:
-    parsed = urllib.parse.urlsplit(value)
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError as error:
+        raise ReuseError("invalid-api-url") from error
     if (
         parsed.scheme != "https"
         or not parsed.netloc
@@ -131,13 +142,18 @@ class GitHubApi:
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
                 payload = response.read(MAX_API_BYTES + 1)
-        except (OSError, urllib.error.HTTPError, urllib.error.URLError) as error:
+        except (
+            OSError,
+            http.client.HTTPException,
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+        ) as error:
             raise ReuseError("github-api-unavailable") from error
         if len(payload) > MAX_API_BYTES:
             raise ReuseError("github-api-response-too-large")
         try:
             return json.loads(payload)
-        except (UnicodeError, json.JSONDecodeError) as error:
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
             raise ReuseError("github-api-invalid-json") from error
 
 
@@ -213,13 +229,37 @@ def select_workflow_run(
             exact_integer(run.get("id"), "workflow-run-id"),
         ),
     )
+    latest_identity = (
+        exact_integer(latest.get("run_number"), "workflow-run-number"),
+        exact_integer(latest.get("run_attempt"), "workflow-run-attempt"),
+        exact_integer(latest.get("id"), "workflow-run-id"),
+    )
+    if (
+        sum(
+            1
+            for run in candidates
+            if (
+                exact_integer(run.get("run_number"), "workflow-run-number"),
+                exact_integer(run.get("run_attempt"), "workflow-run-attempt"),
+                exact_integer(run.get("id"), "workflow-run-id"),
+            )
+            == latest_identity
+        )
+        != 1
+    ):
+        raise ReuseError("latest-workflow-run-not-unique")
     if latest.get("status") != "completed" or latest.get("conclusion") != "success":
         raise ReuseError("latest-pull-request-workflow-not-successful")
     return exact_integer(latest.get("id"), "workflow-run-id")
 
 
 def require_jobs(
-    api_get: Callable[[str], object], repository: str, workflow_run: int, source_head: str
+    api_get: Callable[[str], object],
+    repository: str,
+    workflow_run: int,
+    source_head: str,
+    first_parent: str,
+    pull_request: int,
 ) -> None:
     response = api_get(
         f"/repos/{repository}/actions/runs/{workflow_run}/jobs?per_page=100"
@@ -230,6 +270,7 @@ def require_jobs(
     total = exact_integer(response.get("total_count"), "job-count")
     if total > len(jobs) or len(jobs) >= 100:
         raise ReuseError("github-api-jobs-paginated")
+    evidence_name = evidence_step_name(pull_request, first_parent, source_head)
     for required in REQUIRED_JOBS:
         matches = [job for job in jobs if isinstance(job, Mapping) and job.get("name") == required]
         if len(matches) != 1:
@@ -242,6 +283,21 @@ def require_jobs(
             or job.get("conclusion") != "success"
         ):
             raise ReuseError("required-job-not-successful")
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            raise ReuseError("github-api-invalid-job-steps")
+        evidence = [
+            step
+            for step in steps
+            if isinstance(step, Mapping) and step.get("name") == evidence_name
+        ]
+        if len(evidence) != 1:
+            raise ReuseError("pull-request-evidence-not-unique")
+        if (
+            evidence[0].get("status") != "completed"
+            or evidence[0].get("conclusion") != "success"
+        ):
+            raise ReuseError("pull-request-evidence-not-successful")
 
 
 def decide(
@@ -271,7 +327,7 @@ def decide(
         first, second = merge_identity(git_repository, before, after)
         pull_request = select_pull_request(api_get, repository, first, second, after)
         workflow_run = select_workflow_run(api_get, repository, second)
-        require_jobs(api_get, repository, workflow_run, second)
+        require_jobs(api_get, repository, workflow_run, second, first, pull_request)
         return Decision(True, "exact-merged-pr-checks", second, pull_request, workflow_run)
     except ReuseError as error:
         return Decision(False, str(error))
@@ -279,10 +335,14 @@ def decide(
 
 def read_event(path: Path) -> object:
     try:
-        if path.stat().st_size > MAX_API_BYTES:
+        with path.open("rb") as event_file:
+            payload = event_file.read(MAX_API_BYTES + 1)
+        if len(payload) > MAX_API_BYTES:
             raise ReuseError("event-too-large")
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        return json.loads(payload)
+    except ReuseError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise ReuseError("event-unavailable") from error
 
 

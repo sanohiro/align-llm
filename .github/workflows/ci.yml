@@ -170,6 +170,10 @@ jobs:
           python3 scripts/check-gate-topology --self-test
           make -j8 ALIGNC="$ALIGN_REPO/target/release/alignc" hosted-checks
 
+      - name: Bind pull request evidence pr=${{ github.event.pull_request.number }} base=${{ github.event.pull_request.base.sha }} head=${{ github.event.pull_request.head.sha }}
+        if: always() && github.event_name == 'pull_request'
+        run: echo "This successful step binds the job record to the pull request event identities."
+
   fresh-image-profile:
     name: Installed Ubuntu 24.04 fresh-image profile
     runs-on: ubuntu-24.04
@@ -335,3 +339,7 @@ jobs:
       - name: Report unaffected image profile
         if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed != 'true'
         run: echo "FRESH-IMAGE owners are unchanged; focused profile qualification is N/A."
+
+      - name: Bind pull request evidence pr=${{ github.event.pull_request.number }} base=${{ github.event.pull_request.base.sha }} head=${{ github.event.pull_request.head.sha }}
+        if: always() && github.event_name == 'pull_request'
+        run: echo "This successful step binds the job record to the pull request event identities."

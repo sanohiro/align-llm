@@ -187,62 +187,89 @@ def test_ci_reuse() -> None:
             "forced": False,
         }
 
-        def api(path: str, *, job_conclusion: str = "success", run_conclusion: str = "success") -> object:
-            if path.startswith(f"/repos/{repository_name}/commits/{source_head}/pulls?"):
-                return [
+        def fixtures() -> tuple[list[object], dict[str, object], dict[str, object]]:
+            evidence = reuse.evidence_step_name(71, before, source_head)
+            pulls: list[object] = [
+                {
+                    "number": 71,
+                    "state": "closed",
+                    "merged_at": "2026-08-12T00:00:00Z",
+                    "merge_commit_sha": merge_head,
+                    "head": {"sha": source_head},
+                    "base": {
+                        "sha": before,
+                        "ref": "main",
+                        "repo": {"full_name": repository_name},
+                    },
+                }
+            ]
+            runs: dict[str, object] = {
+                "total_count": 1,
+                "workflow_runs": [
                     {
-                        "number": 71,
-                        "state": "closed",
-                        "merged_at": "2026-08-12T00:00:00Z",
-                        "merge_commit_sha": merge_head,
-                        "head": {"sha": source_head},
-                        "base": {
-                            "sha": before,
-                            "ref": "main",
-                            "repo": {"full_name": repository_name},
-                        },
+                        "id": 9001,
+                        "run_number": 40,
+                        "run_attempt": 1,
+                        "event": "pull_request",
+                        "head_sha": source_head,
+                        "path": ".github/workflows/ci.yml",
+                        "repository": {"full_name": repository_name},
+                        "status": "completed",
+                        "conclusion": "success",
                     }
-                ]
-            if "/actions/workflows/ci.yml/runs?" in path:
-                return {
-                    "total_count": 1,
-                    "workflow_runs": [
-                        {
-                            "id": 9001,
-                            "run_number": 40,
-                            "run_attempt": 1,
-                            "event": "pull_request",
-                            "head_sha": source_head,
-                            "path": ".github/workflows/ci.yml",
-                            "repository": {"full_name": repository_name},
-                            "status": "completed",
-                            "conclusion": run_conclusion,
-                        }
-                    ],
-                }
-            if path == f"/repos/{repository_name}/actions/runs/9001/jobs?per_page=100":
-                return {
-                    "total_count": 2,
-                    "jobs": [
-                        {
-                            "name": name,
-                            "head_sha": source_head,
-                            "run_id": 9001,
-                            "status": "completed",
-                            "conclusion": job_conclusion,
-                        }
-                        for name in reuse.REQUIRED_JOBS
-                    ],
-                }
-            raise RuntimeError(f"unexpected API path: {path}")
+                ],
+            }
+            jobs: dict[str, object] = {
+                "total_count": 2,
+                "jobs": [
+                    {
+                        "name": name,
+                        "head_sha": source_head,
+                        "run_id": 9001,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "steps": [
+                            {
+                                "name": evidence,
+                                "status": "completed",
+                                "conclusion": "success",
+                            }
+                        ],
+                    }
+                    for name in reuse.REQUIRED_JOBS
+                ],
+            }
+            return pulls, runs, jobs
 
-        selected = reuse.decide(
-            event_name="push",
-            event=event,
-            repository=repository_name,
-            api_get=api,
-            git_repository=repository,
-        )
+        def decide_with(
+            mutate: object | None = None,
+            *,
+            api_error: str = "",
+        ) -> object:
+            pulls, runs, jobs = fixtures()
+            if callable(mutate):
+                mutate(pulls, runs, jobs)
+
+            def api(path: str) -> object:
+                if api_error:
+                    raise reuse.ReuseError(api_error)
+                if path.startswith(f"/repos/{repository_name}/commits/{source_head}/pulls?"):
+                    return pulls
+                if "/actions/workflows/ci.yml/runs?" in path:
+                    return runs
+                if path == f"/repos/{repository_name}/actions/runs/9001/jobs?per_page=100":
+                    return jobs
+                raise RuntimeError(f"unexpected API path: {path}")
+
+            return reuse.decide(
+                event_name="push",
+                event=event,
+                repository=repository_name,
+                api_get=api,
+                git_repository=repository,
+            )
+
+        selected = decide_with()
         require(
             selected.reused
             and selected.reason == "exact-merged-pr-checks"
@@ -252,49 +279,132 @@ def test_ci_reuse() -> None:
             "exact merged PR evidence was not reused",
         )
 
-        for name, changed_event in (
-            ("wrong-before", {**event, "before": "0" * 40}),
-            ("forced", {**event, "forced": True}),
+        for name, changed_event, reason in (
+            ("wrong-before", {**event, "before": "0" * 40}, "event-before-mismatch"),
+            ("forced", {**event, "forced": True}, "push-not-normal-main-update"),
+            ("created", {**event, "created": True}, "push-not-normal-main-update"),
+            ("deleted", {**event, "deleted": True}, "push-not-normal-main-update"),
+            (
+                "wrong-ref",
+                {**event, "ref": "refs/heads/release"},
+                "push-not-normal-main-update",
+            ),
         ):
             rejected = reuse.decide(
                 event_name="push",
                 event=changed_event,
                 repository=repository_name,
-                api_get=api,
+                api_get=lambda path: None,
                 git_repository=repository,
             )
-            require(not rejected.reused, f"{name} push reused PR evidence")
+            require(
+                not rejected.reused and rejected.reason == reason,
+                f"{name} push did not fail closed: {rejected}",
+            )
 
-        failed_run = reuse.decide(
-            event_name="push",
-            event=event,
-            repository=repository_name,
-            api_get=lambda path: api(path, run_conclusion="failure"),
-            git_repository=repository,
+        def duplicate_pull(pulls: list[object], runs: dict[str, object], jobs: dict[str, object]) -> None:
+            pulls.append(json.loads(json.dumps(pulls[0])))
+
+        def duplicate_run(pulls: list[object], runs: dict[str, object], jobs: dict[str, object]) -> None:
+            records = runs["workflow_runs"]
+            require(isinstance(records, list), "workflow fixture changed")
+            records.append(json.loads(json.dumps(records[0])))
+            runs["total_count"] = 2
+
+        rejection_cases = (
+            (
+                "wrong-pr-base",
+                lambda pulls, runs, jobs: pulls[0]["base"].__setitem__("sha", "9" * 40),
+                "exact-merged-pull-request-not-found",
+            ),
+            (
+                "wrong-pr-ref",
+                lambda pulls, runs, jobs: pulls[0]["base"].__setitem__("ref", "release"),
+                "exact-merged-pull-request-not-found",
+            ),
+            (
+                "wrong-pr-repository",
+                lambda pulls, runs, jobs: pulls[0]["base"]["repo"].__setitem__(
+                    "full_name", "elsewhere/align-llm"
+                ),
+                "exact-merged-pull-request-not-found",
+            ),
+            ("ambiguous-pulls", duplicate_pull, "exact-merged-pull-request-not-found"),
+            (
+                "pulls-paginated",
+                lambda pulls, runs, jobs: pulls.extend(
+                    json.loads(json.dumps(pulls[0])) for _ in range(99)
+                ),
+                "github-api-pulls-paginated",
+            ),
+            (
+                "failed-run",
+                lambda pulls, runs, jobs: runs["workflow_runs"][0].__setitem__(
+                    "conclusion", "failure"
+                ),
+                "latest-pull-request-workflow-not-successful",
+            ),
+            ("ambiguous-runs", duplicate_run, "latest-workflow-run-not-unique"),
+            (
+                "runs-paginated",
+                lambda pulls, runs, jobs: runs.__setitem__("total_count", 2),
+                "github-api-workflow-runs-paginated",
+            ),
+            (
+                "missing-job",
+                lambda pulls, runs, jobs: (
+                    jobs["jobs"].pop(),
+                    jobs.__setitem__("total_count", 1),
+                ),
+                "required-job-not-unique",
+            ),
+            (
+                "failed-job",
+                lambda pulls, runs, jobs: jobs["jobs"][0].__setitem__(
+                    "conclusion", "failure"
+                ),
+                "required-job-not-successful",
+            ),
+            (
+                "wrong-pr-evidence",
+                lambda pulls, runs, jobs: jobs["jobs"][0]["steps"][0].__setitem__(
+                    "name", reuse.evidence_step_name(999, before, source_head)
+                ),
+                "pull-request-evidence-not-unique",
+            ),
+            (
+                "wrong-base-evidence",
+                lambda pulls, runs, jobs: jobs["jobs"][0]["steps"][0].__setitem__(
+                    "name", reuse.evidence_step_name(71, "9" * 40, source_head)
+                ),
+                "pull-request-evidence-not-unique",
+            ),
+            (
+                "failed-evidence",
+                lambda pulls, runs, jobs: jobs["jobs"][0]["steps"][0].__setitem__(
+                    "conclusion", "failure"
+                ),
+                "pull-request-evidence-not-successful",
+            ),
+            (
+                "jobs-paginated",
+                lambda pulls, runs, jobs: jobs.__setitem__("total_count", 3),
+                "github-api-jobs-paginated",
+            ),
+            (
+                "malformed-runs",
+                lambda pulls, runs, jobs: runs.__setitem__("workflow_runs", None),
+                "github-api-invalid-workflow-runs",
+            ),
         )
-        require(
-            not failed_run.reused
-            and failed_run.reason == "latest-pull-request-workflow-not-successful",
-            "failed latest workflow run was reused",
-        )
-        failed_job = reuse.decide(
-            event_name="push",
-            event=event,
-            repository=repository_name,
-            api_get=lambda path: api(path, job_conclusion="failure"),
-            git_repository=repository,
-        )
-        require(
-            not failed_job.reused and failed_job.reason == "required-job-not-successful",
-            "failed required job was reused",
-        )
-        unavailable = reuse.decide(
-            event_name="push",
-            event=event,
-            repository=repository_name,
-            api_get=lambda path: (_ for _ in ()).throw(reuse.ReuseError("github-api-unavailable")),
-            git_repository=repository,
-        )
+        for name, mutate, reason in rejection_cases:
+            rejected = decide_with(mutate)
+            require(
+                not rejected.reused and rejected.reason == reason,
+                f"{name} did not fail closed: {rejected}",
+            )
+
+        unavailable = decide_with(api_error="github-api-unavailable")
         require(
             not unavailable.reused and unavailable.reason == "github-api-unavailable",
             "API failure did not fall back to normal checks",
@@ -308,7 +418,7 @@ def test_ci_reuse() -> None:
             event_name="push",
             event={**event, "after": changed_merge},
             repository=repository_name,
-            api_get=api,
+            api_get=lambda path: None,
             git_repository=repository,
         )
         require(
@@ -321,13 +431,115 @@ def test_ci_reuse() -> None:
             event_name="push",
             event={**event, "after": source_head},
             repository=repository_name,
-            api_get=api,
+            api_get=lambda path: None,
             git_repository=repository,
         )
         require(
             not direct_push.reused and direct_push.reason == "not-two-parent-merge",
             "direct push reused PR evidence",
         )
+
+    class ApiResponse:
+        def __init__(self, payload: bytes = b"{}", error: Exception | None = None):
+            self.payload = payload
+            self.error = error
+
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *arguments: object) -> None:
+            return None
+
+        def read(self, limit: int) -> bytes:
+            if self.error is not None:
+                raise self.error
+            return self.payload
+
+    original_urlopen = reuse.urllib.request.urlopen
+    try:
+        api_failure_cases = (
+            (
+                "incomplete-response",
+                ApiResponse(error=reuse.http.client.IncompleteRead(b"{}", 8)),
+                "github-api-unavailable",
+            ),
+            ("malformed-json", ApiResponse(payload=b"{"), "github-api-invalid-json"),
+            (
+                "oversized-response",
+                ApiResponse(payload=b"x" * (reuse.MAX_API_BYTES + 1)),
+                "github-api-response-too-large",
+            ),
+        )
+        for name, response, reason in api_failure_cases:
+            reuse.urllib.request.urlopen = lambda request, timeout, response=response: response
+            try:
+                reuse.GitHubApi("https://api.github.com", "test-token")("/rate_limit")
+            except reuse.ReuseError as error:
+                require(str(error) == reason, f"{name} reported {error}")
+            else:
+                raise RuntimeError(f"{name} escaped the API fail-closed boundary")
+    finally:
+        reuse.urllib.request.urlopen = original_urlopen
+
+    try:
+        reuse.api_base_url("https://[invalid")
+    except reuse.ReuseError as error:
+        require(str(error) == "invalid-api-url", "invalid API URL escaped validation")
+    else:
+        raise RuntimeError("invalid API URL was accepted")
+
+    original_run = reuse.subprocess.run
+    try:
+        def unavailable_git(*arguments: object, **keywords: object) -> object:
+            raise OSError("git unavailable")
+
+        reuse.subprocess.run = unavailable_git
+        try:
+            reuse.git_output(REPOSITORY, "rev-parse", "HEAD")
+        except reuse.ReuseError as error:
+            require(str(error) == "git-identity-unavailable", "Git launch failure escaped fallback")
+        else:
+            raise RuntimeError("Git launch failure was accepted")
+    finally:
+        reuse.subprocess.run = original_run
+
+    with tempfile.TemporaryDirectory(prefix="align-llm-ci-reuse-io-") as temporary:
+        root = Path(temporary)
+        malformed = root / "malformed.json"
+        malformed.write_bytes(b"{")
+        oversized = root / "oversized.json"
+        oversized.write_bytes(b"x" * (reuse.MAX_API_BYTES + 1))
+        for path, reason in (
+            (malformed, "event-unavailable"),
+            (oversized, "event-too-large"),
+        ):
+            try:
+                reuse.read_event(path)
+            except reuse.ReuseError as error:
+                require(str(error) == reason, f"event input reported {error}")
+            else:
+                raise RuntimeError(f"event input did not fail closed: {path.name}")
+
+        valid = root / "valid.json"
+        valid.write_text("{}\n", encoding="utf-8")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = reuse.main(
+                (
+                    "--event-name",
+                    "pull_request",
+                    "--event-path",
+                    str(valid),
+                    "--repository",
+                    repository_name,
+                    "--api-url",
+                    "https://api.github.com",
+                    "--github-output",
+                    str(root),
+                )
+            )
+        require(status == 1 and "CI reuse output failed" in stderr.getvalue(), "output failure passed")
 
     non_push = reuse.decide(
         event_name="pull_request",
@@ -526,6 +738,16 @@ def test_workflow_topology() -> None:
     require(
         workflow.count("python3 scripts/select-ci-reuse") == 2,
         "CI does not evaluate merge-push reuse in both jobs",
+    )
+    require(
+        workflow.count(
+            "Bind pull request evidence pr=${{ github.event.pull_request.number }} "
+            "base=${{ github.event.pull_request.base.sha }} "
+            "head=${{ github.event.pull_request.head.sha }}"
+        )
+        == 2
+        and workflow.count("if: always() && github.event_name == 'pull_request'") == 2,
+        "CI does not bind both successful job records to exact pull request identities",
     )
     require(
         workflow.count("steps.reuse.outputs.reused != 'true'") >= 12,
