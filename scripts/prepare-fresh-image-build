@@ -38,6 +38,16 @@ def require_absolute(path: Path, label: str) -> Path:
     return path
 
 
+def require_ascii_scalar(value: str, label: str) -> str:
+    try:
+        value.encode("ascii", "strict")
+    except UnicodeEncodeError as error:
+        raise MaterialError(f"{label} must be ASCII") from error
+    if any(character in value for character in ("\x00", "\n", "\r")):
+        raise MaterialError(f"{label} must be line-safe")
+    return value
+
+
 def private_regular(path: Path, expected_size: int) -> bytes:
     flags = os.O_RDONLY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -98,7 +108,16 @@ def owned_partial_cleanup(directory: Path) -> None:
         pass
 
 
-def write_outputs(path: Path, rows: tuple[tuple[str, str], ...]) -> None:
+def render_outputs(rows: tuple[tuple[str, str], ...]) -> bytes:
+    try:
+        return "".join(f"{name}={value}\n" for name, value in rows).encode(
+            "ascii", "strict"
+        )
+    except UnicodeEncodeError as error:
+        raise MaterialError("GitHub output values must be ASCII") from error
+
+
+def write_outputs(path: Path, raw: bytes) -> None:
     require_absolute(path, "GitHub output")
     flags = os.O_WRONLY | os.O_APPEND | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -111,10 +130,9 @@ def write_outputs(path: Path, rows: tuple[tuple[str, str], ...]) -> None:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise MaterialError("GitHub output is not a regular file")
-        with os.fdopen(descriptor, "a", encoding="ascii", newline="\n") as output:
-            descriptor = -1
-            for name, value in rows:
-                output.write(f"{name}={value}\n")
+        written = os.write(descriptor, raw)
+        if written != len(raw):
+            raise MaterialError("GitHub output append was incomplete")
     except OSError as error:
         raise MaterialError("GitHub output cannot be appended") from error
     finally:
@@ -124,21 +142,29 @@ def write_outputs(path: Path, rows: tuple[tuple[str, str], ...]) -> None:
 
 def prepare(directory: Path, github_output: Path) -> None:
     require_absolute(directory, "material directory")
+    directory_value = require_ascii_scalar(str(directory), "material directory")
+    image_seed = os.urandom(32)
+    run_seed = os.urandom(32)
+    if image_seed == run_seed:
+        raise MaterialError("independent signing seed generation failed")
+    image = "align-llm-fresh-test:" + os.urandom(16).hex()
+    rows = (
+        ("image", image),
+        ("image_public_key_hex", ed25519_public_key(image_seed).hex()),
+        ("run_public_key_hex", ed25519_public_key(run_seed).hex()),
+        ("material_directory", directory_value),
+    )
+    output_bytes = render_outputs(rows)
     try:
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
     except OSError as error:
         raise MaterialError("material directory cannot be created") from error
     try:
-        image_seed = os.urandom(32)
-        run_seed = os.urandom(32)
-        if image_seed == run_seed:
-            raise MaterialError("independent signing seed generation failed")
-        image = "align-llm-fresh-test:" + os.urandom(16).hex()
         write_private(directory / IMAGE_SEED, image_seed)
         write_private(directory / RUN_SEED, run_seed)
         marker = {
-            "directory": str(directory),
+            "directory": directory_value,
             "files": [IMAGE_SEED, RUN_SEED],
             "image": image,
             "version": 1,
@@ -147,15 +173,7 @@ def prepare(directory: Path, github_output: Path) -> None:
             json.dumps(marker, sort_keys=True, separators=(",", ":")) + "\n"
         ).encode("ascii")
         write_private(directory / MARKER, marker_bytes)
-        write_outputs(
-            github_output,
-            (
-                ("image", image),
-                ("image_public_key_hex", ed25519_public_key(image_seed).hex()),
-                ("run_public_key_hex", ed25519_public_key(run_seed).hex()),
-                ("material_directory", str(directory)),
-            ),
-        )
+        write_outputs(github_output, output_bytes)
     except BaseException:
         owned_partial_cleanup(directory)
         raise
@@ -163,6 +181,7 @@ def prepare(directory: Path, github_output: Path) -> None:
 
 def cleanup(directory: Path) -> None:
     require_absolute(directory, "material directory")
+    directory_value = require_ascii_scalar(str(directory), "material directory")
     try:
         metadata = directory.lstat()
     except OSError as error:
@@ -195,8 +214,9 @@ def cleanup(directory: Path) -> None:
         raise MaterialError("ownership marker is malformed") from error
     if (
         not isinstance(marker, dict)
-        or marker.get("version") != 1
-        or marker.get("directory") != str(directory)
+        or type(marker.get("version")) is not int
+        or marker["version"] != 1
+        or marker.get("directory") != directory_value
         or marker.get("files") != [IMAGE_SEED, RUN_SEED]
         or not isinstance(marker.get("image"), str)
         or IMAGE_PATTERN.fullmatch(marker["image"]) is None

@@ -16,8 +16,11 @@ file records durable project state.
 - In progress: the follow-on capability defines a branch-scoped BuildKit cache, prepares fresh
   signing seeds per run, builds the hosted image once, passes the loaded image into the unchanged
   installed owner, and publishes trusted cache state on an exact merge without loading or repeating
-  functional verification. Owner regression and a real prepared-image installed qualification pass;
-  author review, mandatory independent review, exact preflight, publication, and hosted cold/warm
+  functional verification. The independent review of `78a9c4126d7bb7854309164ae44ac45597c26f44`
+  found two valid serialization-boundary issues: partial GitHub output on a non-ASCII path and a
+  non-integer marker version accepted through Python equality. One consolidated repair validates
+  and renders before side effects, writes one record, and enforces the exact schema type. Affected
+  verification passes; the repair commit, final exact preflight, publication, and hosted cold/warm
   measurements remain.
 
 ## Measurement
@@ -39,12 +42,11 @@ file records durable project state.
 
 ## Next steps
 
-1. Finish the matrix-to-diff author pass and run affected owner/static verification.
-2. Commit the stable candidate and obtain one fresh independent comprehensive review; apply all
-   valid findings in one repair and rerun affected owners.
-3. Run exact-HEAD preflight, publish the PR with review and measurement evidence, verify the cold PR
-   build and cache-publishing merge, then verify a subsequent warm PR against the `main` cache.
-4. Keep PR #69 paused until the final Align revision is named.
+1. Commit the consolidated review repair and rerun exact-HEAD preflight.
+2. Publish the PR with the SHA-bound review, both finding dispositions, and measurement evidence;
+   verify the cold PR build and cache-publishing merge, then verify a subsequent warm PR against
+   the `main` cache.
+3. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
@@ -56,7 +58,11 @@ file records durable project state.
   invocation reached the aggregate but returned the existing `ERROR CHILD aggregate`; the identical
   path passed on retry, so retain this as a flaky-candidate observation rather than cache evidence.
 - `python3 scripts/check-gate-topology --self-test`, Python syntax parsing, Ruby YAML parsing,
-  `git diff --check`, and no repository bytecode: PASS. Exact-HEAD preflight is pending.
+  `git diff --check`, and no repository bytecode: PASS. Full preflight on reviewed head `78a9c41`
+  passed: owner 1.287 seconds, pinned Align build 0.744 seconds, hosted graph 3.316 seconds, focused
+  qualification 20.677 seconds, and installed profile 204.399 seconds. After the review repair,
+  `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`, Ruby YAML parsing,
+  `git diff --check`, and no bytecode pass; final exact-HEAD preflight is pending.
 
 ## Constraints and intentional state
 

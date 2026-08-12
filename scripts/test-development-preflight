@@ -756,8 +756,68 @@ def test_image_build_material() -> None:
         marker_path.chmod(0o600)
         marker_path.write_bytes(marker_raw)
         marker_path.chmod(0o400)
+        for invalid_version in (True, 1.0):
+            marker_value = json.loads(marker_raw)
+            marker_value["version"] = invalid_version
+            marker_path.chmod(0o600)
+            marker_path.write_text(
+                json.dumps(marker_value, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="ascii",
+            )
+            marker_path.chmod(0o400)
+            try:
+                material.cleanup(directory)
+            except material.MaterialError:
+                pass
+            else:
+                raise RuntimeError(f"cleanup accepted marker version {invalid_version!r}")
+            require(
+                image_seed.exists() and run_seed.exists(),
+                "schema-version rejection removed signing material",
+            )
+        marker_path.chmod(0o600)
+        marker_path.write_bytes(marker_raw)
+        marker_path.chmod(0o400)
         material.cleanup(directory)
         require(not directory.exists(), "material cleanup retained its directory")
+
+        unicode_directory = root / "mät"
+        unicode_output = root / "unicode-output"
+        unicode_output.write_text("unchanged=value\n", encoding="ascii")
+        try:
+            material.prepare(unicode_directory, unicode_output)
+        except material.MaterialError:
+            pass
+        else:
+            raise RuntimeError("non-ASCII material path was accepted")
+        require(
+            not unicode_directory.exists()
+            and unicode_output.read_text(encoding="ascii") == "unchanged=value\n",
+            "encoding rejection created material or partial GitHub output",
+        )
+
+        unicode_cli = subprocess.run(
+            (
+                sys.executable,
+                "scripts/prepare-fresh-image-build",
+                "--directory",
+                str(unicode_directory),
+                "--github-output",
+                str(unicode_output),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(
+            unicode_cli.returncode == 1
+            and not unicode_cli.stdout
+            and b"Traceback" not in unicode_cli.stderr
+            and unicode_output.read_text(encoding="ascii") == "unchanged=value\n",
+            "public CLI leaked partial output or a traceback on encoding rejection",
+        )
 
         cli_directory = root / "cli-material"
         cli_output = root / "cli-output"
