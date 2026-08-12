@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import inspect
 import os
+import re
 import signal
 import struct
 import stat
@@ -865,7 +867,7 @@ def subreaper_cases() -> None:
         control._control_require_subreaper = original_require
 
 
-def controller_runtime_tool_precedence_case() -> None:
+def controller_runtime_bwrap_precedence_case() -> None:
     original_reject_environment = control._reject_environment
     original_regular_snapshot = control._regular_snapshot
     original_read_sealed = control._read_sealed
@@ -879,7 +881,7 @@ def controller_runtime_tool_precedence_case() -> None:
     git_calls = []
     manifest = {
         "runtime_bindings": [{"source": "/invalid-runtime", "manifest": {}}],
-        "tools": [{"name": "invalid-tool", "path": "/invalid-tool"}],
+        "tools": [{"name": "bwrap", "path": "/invalid-bwrap"}],
     }
     try:
         control._reject_environment = lambda _environment, *, mode: "../align"
@@ -920,6 +922,110 @@ def controller_runtime_tool_precedence_case() -> None:
         control.validate_manifest_bytes = original_validate
         control._runtime_tree = original_runtime_tree
         control._open_regular = original_open
+
+
+def controller_cgroup_contract_case() -> None:
+    assert control.CONTROL_CGROUP_PREFIX == "align-llm-control-"
+    candidate = control.CONTROL_CGROUP_PREFIX + bytes(range(16)).hex()
+    assert re.fullmatch(r"align-llm-control-[0-9a-f]{32}", candidate)
+    lease_source = inspect.getsource(control._control_cgroup_lease)
+    assert "candidate = CONTROL_CGROUP_PREFIX + os.urandom(16).hex()" in lease_source
+    assert "os.listdir(parent_fd)" not in lease_source
+
+
+def controller_phase_mapping_cases() -> None:
+    original_run_child = control._run_controlled_child
+
+    def lifecycle_failure(*_arguments, **_keywords):
+        raise OSError(errno.EIO, "synthetic controller lifecycle failure")
+
+    try:
+        control._run_controlled_child = lifecycle_failure
+        try:
+            control._git_identity(4, 5, "git")
+        except ControlError as error:
+            assert (error.category, error.phase) == ("SOURCE", "project-source")
+        else:
+            raise AssertionError("Git lifecycle failure lost its owning phase")
+    finally:
+        control._run_controlled_child = original_run_child
+
+    original_validate = control.validate_manifest_bytes
+    original_runtime_tree = control._runtime_tree
+    original_open = control._open_regular
+    original_run_tool = control._run_retained_tool
+    raw = b"synthetic retained tool"
+
+    def open_tool(*_arguments, **_keywords):
+        return os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC), raw
+
+    try:
+        control._runtime_tree = lambda _path: {}
+        control._open_regular = open_tool
+        control.validate_manifest_bytes = lambda _raw: {
+            "runtime_bindings": [],
+            "tools": [
+                {
+                    "name": "bwrap",
+                    "path": "/invalid-bwrap",
+                    "sha256": control.sha256_hex(raw),
+                    "argv": ["bwrap", "--version"],
+                    "stdout": b"bubblewrap 0.11.0\n".hex(),
+                    "stderr": "",
+                }
+            ],
+        }
+        control._run_retained_tool = lifecycle_failure
+        try:
+            control._platform_self_test(b"manifest")
+        except ControlError as error:
+            assert (error.category, error.phase) == ("TOOL", "tools")
+        else:
+            raise AssertionError("tool lifecycle failure lost its owning phase")
+
+        outputs = {
+            "git": b"git version 2.45.0\n",
+            "cargo": b"cargo 1.96.0 (synthetic)\n",
+            "rustc": b"rustc 1.96.0 (synthetic)\n",
+            "make": b"GNU Make 4.3\n",
+            "clang": b"clang version 22.0.0\n",
+            "bwrap": b"bubblewrap 0.11.0\n",
+        }
+        tools = [
+            {
+                "name": name,
+                "path": f"/synthetic-{name}",
+                "sha256": control.sha256_hex(raw),
+                "argv": [name, "--version"],
+                "stdout": output.hex(),
+                "stderr": "",
+            }
+            for name, output in outputs.items()
+        ]
+        control.validate_manifest_bytes = lambda _raw: {
+            "runtime_bindings": [],
+            "tools": tools,
+        }
+
+        def capability_failure(_fd, arguments, **_keywords):
+            if arguments == ["bwrap", "--help"]:
+                raise OSError(errno.EIO, "synthetic bwrap capability failure")
+            return subprocess.CompletedProcess(
+                arguments, 0, outputs[arguments[0]], b""
+            )
+
+        control._run_retained_tool = capability_failure
+        try:
+            control._platform_self_test(b"manifest")
+        except ControlError as error:
+            assert (error.category, error.phase) == ("TRUST", "bwrap")
+        else:
+            raise AssertionError("bwrap capability failure lost its owning phase")
+    finally:
+        control.validate_manifest_bytes = original_validate
+        control._runtime_tree = original_runtime_tree
+        control._open_regular = original_open
+        control._run_retained_tool = original_run_tool
 
 
 def retained_runtime_file_cases() -> None:
@@ -1016,7 +1122,9 @@ def main() -> int:
         controlled_child_drain_cases()
         controlled_double_fork_forced_case(temporary)
         subreaper_cases()
-        controller_runtime_tool_precedence_case()
+        controller_runtime_bwrap_precedence_case()
+        controller_cgroup_contract_case()
+        controller_phase_mapping_cases()
     retained_runtime_file_cases()
 
     original = os.dup(31) if _fd_open(31) else None

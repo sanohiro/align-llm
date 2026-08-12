@@ -340,9 +340,13 @@ def test_runtime_materialization() -> None:
         and "forced_termination = _control_terminate(" in control_runner
         and 'if forced_termination:' in control_runner
         and "_control_reap_descendants(cleanup_deadline, process)" in control_termination
-        and "controller_runtime_tool_precedence_case()" in control_owner
+        and "controller_runtime_bwrap_precedence_case()" in control_owner
         and 'control.supervise(["--mode", "build"], self_fd=10, image_fd=11)'
         in control_owner
+        and 'CONTROL_CGROUP_PREFIX = "align-llm-control-"' in control
+        and "candidate = CONTROL_CGROUP_PREFIX + os.urandom(16).hex()" in control
+        and "controller_cgroup_contract_case()" in control_owner
+        and "controller_phase_mapping_cases()" in control_owner
         and "controlled_child_drain_cases()" in control_owner
         and "controlled_double_fork_forced_case(temporary)" in control_owner
         and "run_owned_double_fork_forced_case(module, temporary)" in worker_owner
@@ -377,6 +381,15 @@ def test_runtime_materialization() -> None:
     require(
         "`tools` to `TOOL` including runtime-binding identity failures" in validation_order,
         "public runtime-binding failure category changed",
+    )
+    require(
+        "runtime-binding failure therefore wins over a simultaneously invalid bwrap binding"
+        in validation_order
+        and "`align-llm-control-<32 lowercase random hex>`" in topology
+        and "controller lease admission maps to the public phase" in topology
+        and "Per-tick descendant procfs-fd enumeration is N/A" in topology
+        and "profile cleanup refuses any residual leaf" in topology,
+        "public controller/profile ownership contract changed",
     )
     require(
         "either drained naturally after a\nnormal direct-child exit or were terminated"
