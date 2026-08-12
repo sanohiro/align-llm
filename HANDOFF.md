@@ -21,8 +21,12 @@ file records durable project state.
   symlinks, a conditionally created directory, and retention after cleanup failure. The v2 branch
   reopens the closure matrix around one transactional rule: a cache candidate becomes saveable only
   after exact archive membership, the real hosted consumer, and all non-archive cleanup succeed.
-  The redesigned implementation and focused regressions are present locally; complete preflight,
-  independent review, publication, cache seed, and clean warm measurement remain.
+  The redesigned candidate passed complete preflight. Its comprehensive review found that it still
+  needed post-consumer byte verification plus exact-key publication confirmation because the
+  save-only action can warn and exit zero without publishing, and that the package vector needed a
+  strict grammar. One consolidated repair adds both gates and shared package parsing. Repair
+  verification, any conditionally required final review, publication, cache seed, and clean warm
+  measurement remain.
 
 ## Measurement
 
@@ -87,6 +91,9 @@ file records durable project state.
   self-test, workflow YAML parsing, Bash syntax, and `git diff --check`: PASS. The focused owner now
   covers exact manifest membership, symlink targets, borrowed/created keyring-directory ownership,
   and injected cleanup failure at every owned path.
+- Complete preflight passed on reviewed v2 head `0c80091bae34716a8270aa212d811f9167dd089a`:
+  owner 4.240s, pinned Align build 0.728s, installed profile 211.155s, and every intervening gate
+  passed. The review repair invalidates that stamp; its affected owner/static checks pass locally.
 
 ## Constraints and intentional state
 

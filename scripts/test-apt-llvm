@@ -449,6 +449,25 @@ expect_output "a cache miss does not report its archives" 'resolved 2 archives .
   || fail "a successful cache miss retained owned apt repository state"
 [[ ! -e "$keyring_directory" ]] \
   || fail "a successful cache miss retained its invocation-created keyring directory"
+# The publication verifier runs after the real consumer and neither invokes apt
+# nor removes the candidate it just proved.
+: > "$apt_log"
+output="$(env RUNNER_TEMP="$tmp_dir/run" STUB_ARCHIVES="$archives_dir" \
+  /bin/bash "$script" verify 2>&1)" || fail "the retained candidate did not verify"
+expect_output "candidate verification did not report success" \
+  'verified the apt cache candidate \(2 archives\)'
+refute_apt "candidate verification invoked apt" '.'
+[[ -f "$archives_dir/SHA256SUMS" ]] || fail "candidate verification removed the candidate"
+printf 'mutated' > "$archives_dir/clang-22_1.deb"
+status=0
+env RUNNER_TEMP="$tmp_dir/run" STUB_ARCHIVES="$archives_dir" \
+  /bin/bash "$script" verify >/dev/null 2>&1 || status=$?
+[[ "$status" == 1 ]] || fail "a post-consumer mutation verified with exit $status"
+rm -rf "$archives_dir"
+status=0
+env RUNNER_TEMP="$tmp_dir/run" STUB_ARCHIVES="$archives_dir" \
+  /bin/bash "$script" verify >/dev/null 2>&1 || status=$?
+[[ "$status" == 1 ]] || fail "a missing post-consumer candidate verified with exit $status"
 for cleanup_target in "$apt_conf" "$sources" "$keyring" "$keyring_directory"; do
   run_install "cleanup failure at $cleanup_target" empty 1 STUB_FAIL_REMOVE="$cleanup_target" --
   [[ ! -e "$archives_dir" ]] \
@@ -533,10 +552,6 @@ image_key="$(key_of ImageVersion=20260810.1.0 ALIGN_APT_PACKAGES="$hosted_list")
 [[ "$hosted_key" != "$os_key" ]] || fail "different runner operating systems share one cache entry"
 [[ "$hosted_key" != "$arch_key" ]] || fail "different runner architectures share one cache entry"
 [[ "$hosted_key" != "$image_key" ]] || fail "different runner images share one cache entry"
-# set -f keeps a glob-hostile entry literal instead of expanding it in cwd.
-glob_key="$(key_of ALIGN_APT_PACKAGES="llvm-22-dev *")"
-glob_digest="$(printf '%s' '* llvm-22-dev ' | sha256sum | cut -c1-16)"
-grep -q "$glob_digest" <<< "$glob_key" || fail "a glob in the package list was expanded: $glob_key"
 
 # --- argument handling ------------------------------------------------------
 expect_exit() { # $1=label $2=expected exit; rest: arguments
@@ -552,6 +567,7 @@ expect_exit "unknown mode" 2 bogus
 expect_exit "unknown install flag" 2 install --cached
 expect_exit "extra install argument" 2 install --uncached extra
 expect_exit "argument after key" 2 key --uncached
+expect_exit "argument after verify" 2 verify extra
 env -u ImageVersion RUNNER_TEMP="$tmp_dir/key" ALIGN_APT_PACKAGES="llvm-22-dev" \
   /bin/bash "$under_test" key >/dev/null 2>&1 \
   && fail "a missing ImageVersion produced a cache key"
@@ -561,6 +577,14 @@ env -u RUNNER_TEMP ALIGN_APT_PACKAGES="llvm-22-dev" \
 env RUNNER_TEMP="$tmp_dir/key" ALIGN_APT_PACKAGES="" \
   /bin/bash "$under_test" key >/dev/null 2>&1 \
   && fail "an empty package list produced a cache key"
+for invalid_packages in $' \t ' "llvm-22-dev --fix-broken" "llvm-22-dev *" \
+  "LLVM" "llvm-22-dev llvm-22-dev" $'llvm-22-dev\nclang-22' "x"; do
+  status=0
+  env RUNNER_TEMP="$tmp_dir/key" ALIGN_APT_PACKAGES="$invalid_packages" \
+    /bin/bash "$under_test" key >/dev/null 2>&1 || status=$?
+  [[ "$status" == 2 ]] \
+    || fail "an invalid package vector exited $status instead of 2: $invalid_packages"
+done
 mkdir -p "$tmp_dir/no-apt-path"
 status=0
 env PATH="$tmp_dir/no-apt-path" RUNNER_TEMP="$tmp_dir/key" \

@@ -3,7 +3,8 @@
 #
 # `key` identifies the runner image and normalized request. `install` replays a
 # checksum-verified restored set with dpkg, or performs the same signed apt
-# install used on a miss. `install --uncached` retains the full path without
+# install used on a miss. `verify` rechecks the retained candidate immediately
+# before publication. `install --uncached` retains the full path without
 # leaving archives for a cache consumer.
 #
 # Only ALIGN_APT_PACKAGES and their dependency closure are installed. The
@@ -38,11 +39,12 @@ readonly LLVM_KEY_FINGERPRINT=6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
 readonly CACHE_GENERATION=g2
 
 usage() {
-  echo "usage: scripts/ci-apt-llvm.sh {key | install [--uncached]}" >&2
+  echo "usage: scripts/ci-apt-llvm.sh {key | install [--uncached] | verify}" >&2
   echo "  key                 print the cache path and key for actions/cache" >&2
   echo "  install             install the restored archive set, or resolve it" >&2
   echo "                      through apt and leave the archives for the cache" >&2
   echo "  install --uncached  resolve through apt for a caller with no cache" >&2
+  echo "  verify              verify the retained candidate without changing it" >&2
   echo "  ALIGN_APT_PACKAGES must list the packages to install." >&2
 }
 
@@ -87,13 +89,43 @@ path_exists() {
   [[ -e "$1" || -L "$1" ]]
 }
 
+parse_packages() {
+  local raw="${ALIGN_APT_PACKAGES:-}" token
+  local index previous
+  package_args=()
+  if [[ "$raw" == *$'\n'* || "$raw" == *$'\r'* ]]; then
+    echo "ALIGN_APT_PACKAGES must be one line" >&2
+    return 2
+  fi
+  read -r -a package_args <<< "$raw" || true
+  if [[ ${#package_args[@]} -eq 0 ]]; then
+    echo "ALIGN_APT_PACKAGES contains no package names" >&2
+    return 2
+  fi
+  for ((index = 0; index < ${#package_args[@]}; index++)); do
+    token="${package_args[$index]}"
+    # Debian binary package names are at least two characters, start with a
+    # lowercase letter or digit, and otherwise contain lowercase alphanumerics,
+    # plus, minus, and dot. Deliberately exclude apt options, globs, versions,
+    # architecture qualifiers, and other request syntax from this CI surface.
+    if [[ ! "$token" =~ ^[a-z0-9][a-z0-9+.-]+$ ]]; then
+      echo "ALIGN_APT_PACKAGES item $((index + 1)) is not a binary package name" >&2
+      return 2
+    fi
+    for ((previous = 0; previous < index; previous++)); do
+      if [[ "$token" == "${package_args[$previous]}" ]]; then
+        echo "ALIGN_APT_PACKAGES contains a duplicate package name" >&2
+        return 2
+      fi
+    done
+  done
+  packages="${package_args[*]}"
+}
+
 # Sorted so that reordering the caller's list does not churn the cache entry.
 cache_key() {
   local normalized digest
-  set -f
-  # shellcheck disable=SC2086 # the package list is deliberately word-split.
-  normalized="$(printf '%s\n' $packages | LC_ALL=C sort | tr '\n' ' ')"
-  set +f
+  normalized="$(printf '%s\n' "${package_args[@]}" | LC_ALL=C sort | tr '\n' ' ')"
   digest="$(printf '%s' "$normalized" | sha256sum | cut -c1-16)"
   # ImageVersion is the dependency baseline the archive set was resolved
   # against. Fail closed rather than key every image to one bucket.
@@ -111,11 +143,7 @@ cache_key() {
 # the loop above noticing.
 toolchain_complete() {
   local package status
-  set -f
-  # shellcheck disable=SC2086 # the package list is deliberately word-split.
-  set -- $packages
-  set +f
-  for package in "$@"; do
+  for package in "${package_args[@]}"; do
     status="$(dpkg-query --show --showformat='${db:Status-Status}' "$package" 2>/dev/null || true)"
     [[ "$status" == "installed" ]] || return 1
   done
@@ -330,17 +358,13 @@ install_from_apt() {
     echo "cannot add the apt.llvm.org repository for LLVM $LLVM_VERSION" >&2
     exit 1
   }
-  set -f
-  # shellcheck disable=SC2086 # the package list is deliberately word-split.
-  set -- $packages
-  set +f
   # --no-remove turns "this request is dpkg-replayable" from a claim into a
   # gate. An apt transaction that removes a package cannot be replayed by
   # `dpkg --install` on a later hit, which is exactly how the g1 entries broke;
   # failing here means main never saves such an entry in the first place. It is
   # unconditional so every cache miss proves the entry is replayable before it
   # can be published.
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-remove "$@"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-remove "${package_args[@]}"
 
   sudo rm -f "$APT_CONF"
   apt_conf_written=0
@@ -420,10 +444,27 @@ install_packages() {
   }
 }
 
+verify_candidate() {
+  local candidate_archives=()
+  shopt -s nullglob
+  candidate_archives=("$archives"/*.deb)
+  shopt -u nullglob
+  if [[ ${#candidate_archives[@]} -eq 0 ]]; then
+    echo "the apt cache candidate contains no archives" >&2
+    return 1
+  fi
+  verify_archives "${#candidate_archives[@]}" || return 1
+  toolchain_complete || {
+    echo "LLVM ${LLVM_VERSION} and $packages are not fully installed" >&2
+    return 1
+  }
+  echo "verified the apt cache candidate (${#candidate_archives[@]} archives)"
+}
+
 mode="${1:-}"
 uncached=0
 case "$mode" in
-  key)
+  key | verify)
     [[ $# -eq 1 ]] || { usage; exit 2; }
     ;;
   install)
@@ -440,12 +481,9 @@ case "$mode" in
     ;;
 esac
 
-packages="${ALIGN_APT_PACKAGES:-}"
-if [[ -z "$packages" ]]; then
-  echo "ALIGN_APT_PACKAGES is empty" >&2
-  usage
-  exit 2
-fi
+package_args=()
+packages=""
+parse_packages || { usage; exit 2; }
 archives="${RUNNER_TEMP:?RUNNER_TEMP must be set}/apt-archives-llvm-${LLVM_VERSION}"
 
 if [[ "$mode" == "key" ]]; then
@@ -459,6 +497,11 @@ if [[ "$mode" == "key" ]]; then
   printf 'path=%s\n' "$archives"
   printf 'key=%s\n' "$key"
   exit 0
+fi
+
+if [[ "$mode" == "verify" ]]; then
+  verify_candidate
+  exit
 fi
 
 command -v apt-get >/dev/null 2>&1 || {

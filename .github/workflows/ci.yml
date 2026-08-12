@@ -186,12 +186,28 @@ jobs:
           python3 scripts/check-gate-topology --self-test
           make -j8 ALIGNC="$ALIGN_REPO/target/release/alignc" hosted-checks
 
-      - name: Save the apt package cache
+      - name: Reverify the apt package cache candidate
+        id: apt-llvm-candidate
         if: steps.apt-llvm-cache.outcome == 'success' && steps.supported-checks.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.apt-llvm-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: scripts/ci-apt-llvm.sh verify
+
+      - name: Save the apt package cache
+        id: apt-llvm-save
+        if: steps.apt-llvm-candidate.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.apt-llvm.outputs.path }}
           key: ${{ steps.apt-llvm.outputs.key }}
+
+      - name: Confirm the published apt package cache
+        if: steps.apt-llvm-save.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.apt-llvm.outputs.path }}
+          key: ${{ steps.apt-llvm.outputs.key }}
+          lookup-only: true
+          fail-on-cache-miss: true
 
       - name: Bind pull request evidence pr=${{ github.event.pull_request.number }} base=${{ github.event.pull_request.base.sha }} head=${{ github.event.pull_request.head.sha }}
         if: always() && github.event_name == 'pull_request'
