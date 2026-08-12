@@ -132,7 +132,8 @@ file records durable project state.
 
 ## Next steps
 
-1. Run exact-head complete preflight and obtain one fresh comprehensive review of v4.
+1. Run exact-head complete preflight for the final evidence commit and obtain one fresh
+   comprehensive review of v4.
 2. Publish only after a clean review, require hosted CI, then measure build/export/load and final
    integration. Keep PR #69 paused until the final Align revision is named.
 
@@ -263,6 +264,14 @@ file records durable project state.
   passed `run-fresh-image-control-smoke`, `run-fresh-worker-unit-smoke`,
   `test-development-preflight`, `check-gate-topology --self-test`, and complete focused
   `run-fresh-worker-qualification` in 25.040s.
+- Complete preflight passed v4 implementation evidence head
+  `b9b7189c34608fc1fff3b88ba81a504c46eed980`: development owner 9.550s, pinned Align build
+  0.768s, hosted graph 3.392s, focused qualification 23.105s, and installed profile 238.407s. The
+  cached image build took 3.862s, profile self-test 19.794s, trust mutations 15.542s, runtime
+  replacements 24.492s, boundary profile 40.994s, worker aggregate 122.324s, and cleanup 1.267s.
+  Apt, LLVM, Git, Rust, Cargo, runtime materialization, and transferred runtime layers were cache
+  hits. Its mode-0600 stamp binds exact base `6a48ab7`, head, owner `development-preflight`, and
+  `fresh-image` scope.
 
 ## Constraints and intentional state
 
