@@ -3453,10 +3453,14 @@ kernel file-size-limit result and is classified at the owning phase (`BUILD`/`ag
 not override the smaller generated-`main`, tmpfs, overlay, or root-byte bounds. Failure to configure
 or verify a cgroup or rlimit is a `PLATFORM` failure before child side effects.
 
-After every normal exit, timeout, or signal, the worker terminates and reaps the owned process tree,
-waits for the leaf's `cgroup.procs` and `cgroup.threads` to become empty, rechecks the parent/leaf
-identity, and removes only that empty leaf. A nonempty, replaced, or unprovable leaf is never
-removed and produces the documented cleanup failure. The delegated parent is an exclusive
+After the direct child exits normally, the worker gives already-exiting descendants the same fixed
+one-second grace to drain and be reaped; natural drain during that bound is success and sends no
+signal. A still-running direct child or descendant that remains after the grace requires
+termination and makes the owning operation fail even when cleanup subsequently succeeds. After
+every normal exit, timeout, or signal, the worker proves the owned process tree is reaped, waits for
+the leaf's `cgroup.procs` and `cgroup.threads` to become empty, rechecks the parent/leaf identity,
+and removes only that empty leaf. A nonempty, replaced, or unprovable leaf is never removed and
+produces the documented cleanup failure. The delegated parent is an exclusive
 worker/profile writer boundary for this lifecycle; a non-cooperating same-UID writer is outside
 the profile threat model. An uncatchable worker death leaves the unique
 leaf for the bounded orphan policy; the next invocation fails closed before creating a root until a

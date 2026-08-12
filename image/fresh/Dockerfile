@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_COMMIT=f94b90ad6e49cc7f15c4171c5a434aa459e82d2d
@@ -64,7 +64,14 @@ RUN python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
     cp -aL /usr/include /runtime/system/include && \
     cp -aL /usr/share/git-core /runtime/system/git-core && \
     if [ -d /usr/share/perl5 ]; then cp -aL /usr/share/perl5 /runtime/system/perl5; else mkdir /runtime/system/perl5; fi && \
-    cp -L /lib64/ld-linux-x86-64.so.2 /runtime/system/ld-linux-x86-64.so.2
+    cp -L /lib64/ld-linux-x86-64.so.2 /runtime/system/ld-linux-x86-64.so.2 && \
+    for tree in usr-lib-x86_64 lib-x86_64; do \
+      rm -rf "/runtime/system/$tree/cryptsetup" "/runtime/system/$tree/systemd" && \
+      rm -f "/runtime/system/$tree/libsystemd.so.0"* \
+        "/runtime/system/$tree/libudev.so.1"* \
+        "/runtime/system/$tree/security/pam_systemd.so" \
+        "/runtime/system/$tree/security/pam_systemd_loadkey.so"; \
+    done
 
 COPY scripts/build-fresh-image-control scripts/fresh_attestation.py scripts/fresh_manifest.py \
      scripts/generate-fresh-toolchain-manifest /build/align-llm/scripts/
@@ -219,9 +226,11 @@ RUN mkdir -p /usr/local/share/align-llm/self-test/project/scripts \
       git -C /usr/local/share/align-llm/self-test/project commit -m 'Install synthetic worker' && \
     rm -rf /build
 
-RUN mkdir -p /image-control/usr/bin /image-control/usr/lib && \
+RUN mkdir -p /image-control/usr/bin /image-control/usr/lib/x86_64-linux-gnu && \
     install -m 0755 /usr/bin/python3.12 /image-control/usr/bin/python3.12 && \
     ln /image-control/usr/bin/python3.12 /image-control/usr/bin/python3 && \
+    install -m 0644 "$(readlink -f /usr/lib/x86_64-linux-gnu/libexpat.so.1)" \
+      /image-control/usr/lib/x86_64-linux-gnu/libexpat.so.1 && \
     python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
       /usr/lib/python3.12 /image-control/usr/lib/python3.12
 
@@ -238,6 +247,8 @@ expected = {
     "usr/bin/python3.12",
     "usr/lib",
     "usr/lib/python3.12",
+    "usr/lib/x86_64-linux-gnu",
+    "usr/lib/x86_64-linux-gnu/libexpat.so.1",
 }
 actual = {str(path.relative_to(root)) for path in root.rglob("*")}
 if not expected <= actual:
@@ -254,8 +265,14 @@ if set(os.listdir(root)) != {"usr"} or set(os.listdir(root / "usr")) != {"bin", 
     raise SystemExit("unexpected outer Python control root")
 if set(os.listdir(root / "usr/bin")) != {"python3", "python3.12"}:
     raise SystemExit("unexpected outer Python executable")
-if set(os.listdir(root / "usr/lib")) != {"python3.12"}:
+if set(os.listdir(root / "usr/lib")) != {"python3.12", "x86_64-linux-gnu"}:
     raise SystemExit("unexpected outer Python library")
+library_root = root / "usr/lib/x86_64-linux-gnu"
+if set(os.listdir(library_root)) != {"libexpat.so.1"}:
+    raise SystemExit("unexpected outer Python shared library")
+expat = library_root / "libexpat.so.1"
+if expat.is_symlink() or not expat.is_file() or stat.S_IMODE(expat.stat().st_mode) != 0o644:
+    raise SystemExit("invalid outer Python shared library")
 PY
 
 RUN env -i \
@@ -263,15 +280,15 @@ RUN env -i \
       /image-control/usr/bin/python3 -I -B -c \
       'import base64, ctypes, dataclasses, fcntl, hashlib, json, pathlib, resource, selectors, struct, subprocess, tempfile'
 
-FROM ubuntu:24.04 AS runtime
+FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467 AS runtime
 
 COPY --from=builder /runtime /runtime
 COPY --from=builder /opt/align-llm/tool-bin /opt/align-llm/tool-bin
 COPY --from=builder /var/cache/align-llm/cargo /var/cache/align-llm/cargo
 COPY --from=builder /image-control/usr/bin/ /usr/bin/
 COPY --from=builder /image-control/usr/lib/python3.12 /usr/lib/python3.12
-COPY --from=builder /runtime/system/usr-lib-x86_64/ \
-     /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /image-control/usr/lib/x86_64-linux-gnu/libexpat.so.1 \
+     /usr/lib/x86_64-linux-gnu/libexpat.so.1
 COPY --from=builder \
      /usr/local/libexec/align-llm/fresh-supervise \
      /usr/local/libexec/align-llm/fresh-bootstrap \
@@ -297,7 +314,6 @@ import selectors
 import signal
 import stat
 import struct
-import subprocess
 import tempfile
 import time
 import typing
@@ -338,6 +354,24 @@ for path in (
 ):
     if not path.exists() or path.is_symlink():
         raise SystemExit(f"missing final runtime artifact: {path}")
+package_lists = tuple(Path("/var/lib/dpkg/info").glob("*.list"))
+if not package_lists:
+    raise SystemExit("final base package ownership inventory is missing")
+package_owned = set()
+for package_list in package_lists:
+    package_owned.update(package_list.read_text(encoding="utf-8").splitlines())
+transferred_system_paths = {
+    Path("/usr/bin/python3"),
+    Path("/usr/bin/python3.12"),
+    Path("/usr/lib/x86_64-linux-gnu/libexpat.so.1"),
+    python_root,
+    *python_root.rglob("*"),
+}
+conflicts = sorted(str(path) for path in transferred_system_paths if str(path) in package_owned)
+if conflicts:
+    raise SystemExit(
+        "final control files overlap base package ownership: " + ", ".join(conflicts)
+    )
 PY
 
 ARG IMAGE_PUBLIC_KEY_HEX

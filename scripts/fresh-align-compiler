@@ -46,6 +46,11 @@ EXPECTED_ENVIRONMENT = {
     "PYTHONNOUSERSITE": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
 }
+RUNTIME_LIBRARY_PATH = (
+    "/runtime/system/usr-lib-x86_64:"
+    "/runtime/system/lib-x86_64:"
+    "/runtime/system/gcc-x86_64"
+)
 PUBLIC_CATEGORIES = frozenset(
     {
         "ARGUMENT",
@@ -816,7 +821,12 @@ def run_tool(
         phase="tools",
         timeout=timeout,
         environment=environment
-        or {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+        or {
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "HOME": "/nonexistent",
+            "LD_LIBRARY_PATH": RUNTIME_LIBRARY_PATH,
+        },
         pass_fds=pass_fds,
         executable=f"/proc/self/fd/{descriptor}",
         cwd=None if cwd_fd is None else f"/proc/self/fd/{cwd_fd}",
@@ -3172,8 +3182,9 @@ def terminate_owned_process(
     lease: CgroupLease,
     accepted_start: str | None,
     accepted_group: int | None,
-) -> None:
+) -> bool:
     """Terminate one owned process tree and prove its cgroup is empty."""
+    forced_termination = process.poll() is None
     try:
         populated = cgroup_populated(lease)
     except OSError as error:
@@ -3204,6 +3215,7 @@ def terminate_owned_process(
         try:
             populated = cgroup_populated(lease)
             if process.poll() is None or populated:
+                forced_termination = True
                 kill_cgroup(lease, accepted_group)
         except OSError as error:
             raise CleanupError("owned child cgroup could not be terminated") from error
@@ -3227,6 +3239,7 @@ def terminate_owned_process(
         raise CleanupError("owned child cgroup could not be inspected") from error
     if populated:
         raise CleanupError("child cgroup remained populated")
+    return forced_termination
 
 
 def run_owned(
@@ -3369,8 +3382,9 @@ def run_owned(
             streams = None
 
         try:
-            process_unhealthy = process.poll() is None or cgroup_populated(lease)
-            terminate_owned_process(process, lease, accepted_start, accepted_group)
+            process_unhealthy = terminate_owned_process(
+                process, lease, accepted_start, accepted_group
+            )
         except CleanupError as error:
             failure = WorkerError(category, phase)
             failure.cleanup_failed = True
@@ -3543,7 +3557,7 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
         )
     )
     try:
-        run_owned(
+        result = run_owned(
             arguments,
             category="BUILD",
             phase="build",
@@ -4584,6 +4598,15 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
     except (OSError, ValueError, UnicodeError):
         fail("TRUST", "manifest")
     verify_platform()
+    runtime_entry_count = 0
+    runtime_total = 0
+    try:
+        for binding in manifest["runtime_bindings"]:
+            count, total = validate_tree_manifest(binding["manifest"], binding["source"])
+            runtime_entry_count += count
+            runtime_total += total
+    except Exception:
+        fail("CACHE", "cache")
     try:
         tools = authenticate_tools(manifest)
     except Exception:
@@ -4607,14 +4630,8 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
             verify_align_pin(project, align)
         except Exception:
             fail("SOURCE", "align-source")
-        runtime_entry_count = 0
-        runtime_total = 0
         try:
             cache_manifest = validate_cache(manifest)
-            for binding in manifest["runtime_bindings"]:
-                count, total = validate_tree_manifest(binding["manifest"], binding["source"])
-                runtime_entry_count += count
-                runtime_total += total
             cache_entry_count = cache_manifest["entry_count"] + 1
             cache_total = cache_manifest["total_size"]
         except Exception:

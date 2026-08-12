@@ -1789,7 +1789,16 @@ def _run_retained_tool(
     return _run_controlled_child(
         list(arguments),
         executable=f"/proc/self/fd/{descriptor}",
-        environment={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/nonexistent"},
+        environment={
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "HOME": "/nonexistent",
+            "LD_LIBRARY_PATH": (
+                "/runtime/system/usr-lib-x86_64:"
+                "/runtime/system/lib-x86_64:"
+                "/runtime/system/gcc-x86_64"
+            ),
+        },
         pass_fds=tuple(dict.fromkeys((descriptor, *pass_fds))),
         timeout=timeout,
     )

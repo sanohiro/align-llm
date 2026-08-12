@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-12)
+## Active checkpoint (2026-08-13)
 
 - Branch `agent/multistage-fresh-runtime` is based on PR #77 merge commit
   `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`.
@@ -18,12 +18,17 @@ file records durable project state.
   PR #76 merged and seeded the verified hosted LLVM archive cache at `c3deab753a3db4e963817917c1105fe110907a99`.
   PR #77 merged the trusted hosted Align compiler bundle at
   `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`; its exact-main seed and clean warm run passed.
-- In progress: the multi-stage image contract is being settled from the current 6,069,945,116-byte
-  image baseline. Read-only inspection found `/runtime` at 3,064,524,800 bytes, while the final
-  single-stage image also retains `/root/.rustup` at 613,281,792 bytes, `/usr/lib/llvm-22` at
-  626,454,528 bytes, and `/usr` at 1,719,996,416 bytes. Contract commit `976e414` settled the
-  stage boundary, and implementation commit `060b956` added the builder/runtime split, explicit
-  outer Python control tree, manifest-bound outer library closure, and static owner regression.
+- In progress: reviewed multi-stage candidate `4780747` split the builder and runtime stages. Its
+  comprehensive review requested changes because installed acceptance had not passed, the complete
+  builder library overlay invalidated final-base package ownership, and the footprint claim did not
+  distinguish pinned inputs from mutable apt snapshots. The current branch HEAD is the consolidated
+  repair: both stages pin the Ubuntu Linux/amd64 manifest; the final image transfers only Python,
+  its symlink-free standard library, and libexpat into system paths after proving zero dpkg ownership
+  overlap; manifest-bound libraries remain below `/runtime`; both controller and worker validate
+  them before fixed-path tool probes; and unreachable systemd/udev/PAM/cryptsetup bytes are omitted.
+  Repeated installed qualification also exposed a pre-existing end-of-aggregate race: an already
+  exited Make leader could have a naturally draining descendant classified as persistent before the
+  existing cleanup grace. The repair now distinguishes bounded natural drain from forced termination.
 
 ## Measurement
 
@@ -70,10 +75,12 @@ file records durable project state.
   This is 72% lower than the 100-second bundle baseline. The same warm run's fresh-image job still
   took 430 seconds, including 165 seconds to build/export/load and 222 seconds for installed
   qualification, making image transfer and qualification the remaining workflow bottleneck.
-- The local multi-stage candidate is 3,800,869,143 bytes versus the 6,069,945,116-byte baseline,
-  a 37.4% reduction. `/runtime` remains exactly 3,016,219,340 bytes and the Cargo cache exactly
-  23,056,659 bytes. A warm build took 33.405 seconds. Final inventory, outer imports, and manifest
-  tool probes passed; builder-only Rustup, Cargo, LLVM, source, and apt metadata are absent.
+- The rejected first multi-stage candidate was 3,800,869,143 bytes. The repaired image observation
+  is 3,200,170,355 bytes versus the image-ID-bound 6,069,945,116-byte baseline, a 47.3% reduction;
+  `/runtime` is 3,000,924,060 bytes and the Cargo cache 23,056,659 bytes. Both images share exact
+  Ubuntu base rootfs layer `42724e4`; future apt content remains mutable, so exact sizes are recorded
+  observations rather than rebuild guarantees. All 1,303 transferred Python/libexpat paths had zero
+  dpkg ownership collisions and builder-only Rustup, Cargo, LLVM, source, and apt state are absent.
 
 ## Paused product checkpoint
 
@@ -84,12 +91,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Run the complete proportional preflight except for the independently reproduced local installed
-   aggregate environment failure, then perform the mandatory fresh independent review.
-2. Publish the candidate and require hosted CI to pass the complete installed profile before merge;
-   do not treat the comparative local failure as candidate acceptance.
-3. Measure the hosted image build/export/load duration and final integration. Keep PR #69 paused
-   until the final Align revision is named.
+1. Because the repair materially changed the runtime-library admission approach, obtain the one
+   allowed final comprehensive review. If it finds a non-trivial issue, stop and redesign.
+2. Publish only after a clean final review, require hosted CI, then measure build/export/load and
+   final integration. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
@@ -118,6 +123,20 @@ file records durable project state.
   the same aggregate phase. Both used the exact clean full-history Align revision
   `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`; only refreshed systemd library files differed from
   the earlier passing manifest. Hosted complete-profile evidence remains required.
+- Initial comprehensive review covered exact head `4780747aa67b7b4dca12544cca5274849181ef49`
+  against base and merge base `6a48ab797b5c1069342643ef281f7d7fdb2a9b26` and requested the
+  three changes described above. The consolidated repair's static development owner, Dockerfile
+  build check, fixed-base image build, footprint inventory, package-ownership intersection, and
+  unreachable-library inventory pass. Intermediate installed probes correctly used the committed
+  pre-repair worker and therefore are diagnostic only. The first committed repair installed profile
+  passed once, then reproduced the end-of-aggregate race; a temporary diagnostic head identified
+  `CleanupError('owned child process tree remained')`. The bounded-drain owner regression passes.
+  After removing all temporary child-output diagnostics, complete preflight passed repair checkpoint
+  `fde4fad7f1d8dc7f93d6a0a8182131125a76b54f`: development owner 9.107s, pinned Align build 0.608s,
+  hosted graph 3.152s, focused qualification 20.452s, installed profile 204.412s, image build 2.200s,
+  boundary profile 38.314s, and worker aggregate 107.594s. A separate installed-only repetition also
+  passed in 205.722s with a 108.711s aggregate. The final amended head requires one exact preflight
+  stamp before the final review.
 
 ## Constraints and intentional state
 

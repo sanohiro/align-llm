@@ -978,6 +978,47 @@ def bounded_tool_cases(module, temporary: Path) -> None:
         os.close(python_fd)
 
 
+def exited_process_drain_cases(module) -> None:
+    class ExitedProcess:
+        pid = 424242
+        returncode = 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(*, timeout):
+            return 0
+
+    process = ExitedProcess()
+    lease = object()
+    original_populated = module.cgroup_populated
+    original_kill = module.kill_cgroup
+    original_reap = module.reap_descendants
+    original_monotonic = module.time.monotonic
+    kills = []
+    try:
+        natural_states = iter((True, False, False, False, False))
+        module.cgroup_populated = lambda _lease: next(natural_states)
+        module.kill_cgroup = lambda _lease, _group: kills.append("kill")
+        module.reap_descendants = lambda _deadline, _process=None: None
+        forced = module.terminate_owned_process(process, lease, None, None)
+        require(not forced and not kills, "naturally draining descendant was terminated")
+
+        lingering_states = iter((True, True, False, False))
+        clock = iter((0.0, 2.0, 4.0, 6.0))
+        module.cgroup_populated = lambda _lease: next(lingering_states)
+        module.time.monotonic = lambda: next(clock)
+        forced = module.terminate_owned_process(process, lease, None, None)
+        require(forced and kills == ["kill"], "lingering descendant escaped termination")
+    finally:
+        module.cgroup_populated = original_populated
+        module.kill_cgroup = original_kill
+        module.reap_descendants = original_reap
+        module.time.monotonic = original_monotonic
+
+
 def published_elf_cases(module) -> None:
     executable = Path("/bin/true")
     require(executable.is_file(), "ELF closure fixture is unavailable")
@@ -1386,6 +1427,7 @@ def main() -> int:
     module = load_worker()
     canonical_wire_cases(module)
     run_attestation_cases(module)
+    exited_process_drain_cases(module)
     published_elf_cases(module)
     derived_path_alias_cases(module)
     with tempfile.TemporaryDirectory(prefix="fresh-worker-unit-") as name:
