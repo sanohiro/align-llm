@@ -24,8 +24,10 @@ file records durable project state.
   complete `hosted-checks` passed against the pinned Align checkout. Reviewed head
   `5d53224ee11a0c4546fa1f6094207f85017d635f` passed complete proportional preflight. Its independent
   review requested an injective cache-key encoding, contract-matching multi-invalid precedence,
-  and this durable-state correction. One consolidated repair implements those three findings;
-  affected exact-head verification and publication remain.
+  and this durable-state correction. Consolidated repair
+  `a8fb07d42f5e74f5435674548c11dadb8ed129dd` implements all three findings and passed affected
+  bundle-owner, workflow-owner, hosted-graph, focused-fresh, and installed-profile verification.
+  Publication and hosted miss/seed/warm evidence remain.
 
 ## Measurement
 
@@ -76,10 +78,10 @@ file records durable project state.
 
 ## Next steps
 
-1. Run affected owner/static checks and proportional preflight on the consolidated review repair,
-   then record all three finding dispositions against the reviewed head and repair commit.
-2. Publish the candidate and confirm the PR miss path, exact-main seed, and one clean warm
-   measurement before claiming the 60-second check target.
+1. Publish the candidate, record the SHA-bound review envelope and all three dispositions, and
+   confirm the exact PR-head miss path.
+2. Merge only after final integration checks pass, then confirm the exact-main bundle seed and one
+   clean warm measurement before claiming the 60-second check target.
 3. Continue with a multi-stage builder/runtime image. Keep PR #69 paused until the final Align
    revision is named.
 
@@ -97,7 +99,8 @@ file records durable project state.
   pinned Align build 15.333s, hosted graph 3.059s, focused qualification 20.428s, and installed
   profile 207.512s. Complete preflight also passed reviewed head `5d53224`: owner 8.523s, pinned
   Align build 0.602s, hosted graph 3.081s, focused qualification 20.277s, and installed profile
-  198.491s. The consolidated review repair requires fresh exact-head evidence.
+  198.491s. Complete preflight passed consolidated repair `a8fb07d`: owner 8.742s, pinned Align
+  build 0.604s, hosted graph 3.066s, focused qualification 20.260s, and installed profile 195.803s.
 
 ## Constraints and intentional state
 
