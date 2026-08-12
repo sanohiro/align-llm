@@ -24,6 +24,7 @@ SCHEMA_VERSION = 1
 CACHE_GENERATION = 1
 MAX_MANIFEST_BYTES = 16_384
 MAX_U64 = (1 << 64) - 1
+MAX_TOKEN_BYTES = 64
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 REVISION_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
@@ -110,7 +111,7 @@ def require_ascii(value: str, label: str) -> str:
 
 def require_token(value: str, label: str) -> str:
     require_ascii(value, label)
-    if TOKEN_PATTERN.fullmatch(value) is None:
+    if len(value) > MAX_TOKEN_BYTES or TOKEN_PATTERN.fullmatch(value) is None:
         raise UsageError(f"{label} has an invalid identity")
     return value
 
@@ -188,7 +189,7 @@ def require_real_directory(path: Path, label: str) -> None:
         raise BundleError(f"{label} is not a real directory: {path}")
 
 
-def read_regular(path: Path, maximum: int) -> bytes:
+def read_regular(path: Path, maximum: int, expected_mode: int) -> bytes:
     flags = os.O_RDONLY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -200,6 +201,8 @@ def read_regular(path: Path, maximum: int) -> bytes:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise BundleError(f"bundle entry is not regular: {path.name}")
+        if stat.S_IMODE(metadata.st_mode) != expected_mode:
+            raise BundleError(f"bundle entry has the wrong mode: {path.name}")
         if metadata.st_size < 0 or metadata.st_size > maximum:
             raise BundleError(f"bundle entry has an invalid size: {path.name}")
         raw = bytearray()
@@ -438,13 +441,14 @@ def inspect_runtime(identity: Identity) -> None:
 def verify_bundle(identity: Identity, inspect_executable: bool = True) -> int:
     require_real_directory(identity.directory, "bundle directory")
     try:
-        entries = {entry.name for entry in os.scandir(identity.directory)}
+        with os.scandir(identity.directory) as scanner:
+            entries = {entry.name for entry in scanner}
     except OSError as error:
         raise BundleError("bundle directory cannot be listed") from error
     expected = {"manifest.json", "alignc", "libalign_runtime.a", identity.llvm_name}
     if entries != expected:
         raise BundleError("bundle inventory is not exact")
-    raw = read_regular(identity.directory / "manifest.json", MAX_MANIFEST_BYTES)
+    raw = read_regular(identity.directory / "manifest.json", MAX_MANIFEST_BYTES, 0o644)
     _, records = parse_manifest(raw, identity)
     for expected_record in records:
         actual = inspect_regular(identity.directory / expected_record.name, expected_record.mode)

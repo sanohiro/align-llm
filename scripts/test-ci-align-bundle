@@ -312,6 +312,15 @@ def test_bundle() -> None:
         (wrong_mode / "alignc").chmod(0o700)
         require_rejected_before_execution(wrong_mode, revision, marker, "wrong mode was accepted")
 
+        wrong_manifest_mode = copy_bundle(bundle, root, "invalid-manifest-mode")
+        (wrong_manifest_mode / "manifest.json").chmod(0o600)
+        require_rejected_before_execution(
+            wrong_manifest_mode,
+            revision,
+            marker,
+            "wrong manifest mode was accepted",
+        )
+
         corrupt = copy_bundle(bundle, root, "invalid-checksum")
         with (corrupt / "libalign_runtime.a").open("ab") as target:
             target.write(b"corruption")
@@ -361,6 +370,7 @@ def test_bundle() -> None:
             ["key", *common(root / "bad:path", revision)],
             replace_option(["key", *common(root / "invalid-revision", revision)], "--align-revision", "A" * 40),
             replace_option(["key", *common(root / "invalid-token", revision)], "--runner-os", "Linux/bad"),
+            replace_option(["key", *common(root / "long-token", revision)], "--runner-os", "L" * 65),
             replace_option(["key", *common(root / "zero-major", revision)], "--llvm-major", "0"),
             replace_option(["key", *common(root / "wide-major", revision)], "--llvm-major", "65536"),
             replace_option(["key", *common(root / "noncanonical-major", revision)], "--llvm-major", "022"),

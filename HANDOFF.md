@@ -17,12 +17,14 @@ file records durable project state.
   merged the complete Node 24 action migration at `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
   PR #75 merged hardlink-preserving runtime materialization at `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
   PR #76 merged and seeded the verified hosted LLVM archive cache at `c3deab753a3db4e963817917c1105fe110907a99`.
-- In progress: design the compiler bundle contract before implementation. A local real-client probe
-  copied only `alignc`, `libalign_runtime.a`, and `libLLVM.so.22.1` (183,999,150 bytes total), bound
-  the shared library through `LD_LIBRARY_PATH`, and passed the complete `hosted-checks`. The bundle
-  cache will be keyed by the pinned Align revision, exact runner image, OS/architecture, Rust
-  version, LLVM major, and manual schema generation. Pull requests restore but never publish;
-  exact main misses build, consume, verify, save, exact-lookup, and require literal cache hit.
+- In progress: implementation checkpoint `8872b17aceedf413464f9e10f71112028b980615` added the
+  compiler-bundle helper, focused owner, bundle-first workflow routing, main-only post-consumer
+  publication proof, and archive fallback. A local real-client bundle containing only `alignc`,
+  `libalign_runtime.a`, and `libLLVM.so.22.1` is 183,999,150 bytes; helper creation, admission, and
+  complete `hosted-checks` passed against the pinned Align checkout. Complete proportional
+  preflight passed at that checkpoint. The final author consistency fix adds the manifest's own
+  mode admission, bounds cache-key identity tokens, and synchronizes the GitHub Actions ledger;
+  exact-head verification and independent review remain.
 
 ## Measurement
 
@@ -73,13 +75,11 @@ file records durable project state.
 
 ## Next steps
 
-1. Finish the hosted compiler-bundle public ledger and closure matrix, then perform the author
-   consistency/risk pass.
-2. Implement strict create/verify/key ownership, workflow hit/miss/publication routing, and focused
-   regressions. Preserve the archive path as the miss fallback.
-3. Run proportional preflight, independent review, PR miss, exact-main seed, and one clean warm
+1. Commit the final author consistency fix, rerun proportional preflight at the exact head, and
+   obtain the mandatory fresh independent comprehensive review.
+2. Publish the reviewed candidate and confirm the PR miss path, exact-main seed, and one clean warm
    measurement before claiming the 60-second check target.
-4. Continue with a multi-stage builder/runtime image. Keep PR #69 paused until the final Align
+3. Continue with a multi-stage builder/runtime image. Keep PR #69 paused until the final Align
    revision is named.
 
 ## Latest durable evidence
@@ -92,6 +92,9 @@ file records durable project state.
   replay toward the verified compiler bundle.
 - Local bundle probe: exact three-file bundle, 183,999,150 bytes; `LD_LIBRARY_PATH` resolved
   `libLLVM.so.22.1` from the bundle; `alignc --version` and complete `make hosted-checks` passed.
+- Complete preflight at implementation checkpoint `8872b17`: bundle/development owner 8.294s,
+  pinned Align build 15.333s, hosted graph 3.059s, focused qualification 20.428s, and installed
+  profile 207.512s. The final author consistency fix requires fresh exact-head evidence.
 
 ## Constraints and intentional state
 
