@@ -1,0 +1,622 @@
+#!/usr/bin/env python3
+"""Create and admit the immutable hosted Align compiler bundle."""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import errno
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import NoReturn, Sequence
+
+
+SCHEMA_VERSION = 1
+CACHE_GENERATION = 1
+MAX_MANIFEST_BYTES = 16_384
+MAX_U64 = (1 << 64) - 1
+MAX_TOKEN_BYTES = 64
+TOKEN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+REVISION_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
+DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+COMMON_KEYS = (
+    "schema_version",
+    "align_revision",
+    "image_version",
+    "runner_os",
+    "runner_arch",
+    "rust_version",
+    "llvm_major",
+    "bundle_bytes",
+    "files",
+)
+FILE_KEYS = ("name", "size", "mode", "sha256")
+BASE_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin",
+    "LANG": "C",
+    "LC_ALL": "C",
+}
+
+
+class BundleError(RuntimeError):
+    """An operational or admission failure."""
+
+
+class UsageError(RuntimeError):
+    """An invalid public argument."""
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise UsageError(message)
+
+
+@dataclass(frozen=True)
+class Identity:
+    directory: Path
+    align_revision: str
+    image_version: str
+    runner_os: str
+    runner_arch: str
+    rust_version: str
+    llvm_major: int
+
+    @property
+    def llvm_name(self) -> str:
+        return f"libLLVM.so.{self.llvm_major}.1"
+
+    @property
+    def cache_key(self) -> str:
+        return (
+            f"hosted-align-bundle-g{CACHE_GENERATION}-rev-{self.align_revision}-"
+            f"image-{len(self.image_version)}-{self.image_version}-"
+            f"os-{len(self.runner_os)}-{self.runner_os}-"
+            f"arch-{len(self.runner_arch)}-{self.runner_arch}-"
+            f"rust-{len(self.rust_version)}-{self.rust_version}-"
+            f"llvm-{self.llvm_major}"
+        )
+
+
+@dataclass(frozen=True)
+class FileRecord:
+    name: str
+    size: int
+    mode: int
+    sha256: str
+
+    def json_value(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "size": self.size,
+            "mode": self.mode,
+            "sha256": self.sha256,
+        }
+
+
+def require_ascii(value: str, label: str) -> str:
+    try:
+        value.encode("ascii", "strict")
+    except UnicodeEncodeError as error:
+        raise UsageError(f"{label} must be ASCII") from error
+    if any(character in value for character in ("\x00", "\n", "\r")):
+        raise UsageError(f"{label} must be line-safe")
+    return value
+
+
+def require_token(value: str, label: str) -> str:
+    require_ascii(value, label)
+    if len(value) > MAX_TOKEN_BYTES or TOKEN_PATTERN.fullmatch(value) is None:
+        raise UsageError(f"{label} has an invalid identity")
+    return value
+
+
+def require_directory(raw: str) -> Path:
+    require_ascii(raw, "bundle directory")
+    if ":" in raw:
+        raise UsageError("bundle directory must not contain ':'")
+    path = Path(raw)
+    if not path.is_absolute():
+        raise UsageError("bundle directory must be absolute")
+    return path
+
+
+def parse_llvm_major(raw: str) -> int:
+    if re.fullmatch(r"[1-9][0-9]*", raw) is None:
+        raise UsageError("LLVM major must be a positive canonical decimal integer")
+    value = int(raw)
+    if value > 65_535:
+        raise UsageError("LLVM major is outside the unsigned 16-bit range")
+    return value
+
+
+def parse_arguments(arguments: Sequence[str]) -> tuple[argparse.Namespace, Identity]:
+    parser = Parser(add_help=True)
+    parser.add_argument("command", choices=("key", "create", "verify"))
+    parser.add_argument("--directory", required=True)
+    parser.add_argument("--align-revision", required=True)
+    parser.add_argument("--image-version", required=True)
+    parser.add_argument("--runner-os", required=True)
+    parser.add_argument("--runner-arch", required=True)
+    parser.add_argument("--rust-version", required=True)
+    parser.add_argument("--llvm-major", required=True)
+    parser.add_argument("--align-repo")
+    parser.add_argument("--llvm-library")
+    parsed = parser.parse_args(arguments)
+
+    create_values = (parsed.align_repo, parsed.llvm_library)
+    if parsed.command == "create" and any(value is None for value in create_values):
+        raise UsageError("create requires --align-repo and --llvm-library")
+    if parsed.command != "create" and any(value is not None for value in create_values):
+        raise UsageError("--align-repo and --llvm-library are create-only")
+
+    revision = require_ascii(parsed.align_revision, "Align revision")
+    if REVISION_PATTERN.fullmatch(revision) is None:
+        raise UsageError("Align revision must be a lowercase 40-hex commit")
+    image_version = require_token(parsed.image_version, "runner image version")
+    runner_os = require_token(parsed.runner_os, "runner OS")
+    runner_arch = require_token(parsed.runner_arch, "runner architecture")
+    rust_version = require_token(parsed.rust_version, "Rust version")
+    llvm_major = parse_llvm_major(parsed.llvm_major)
+    directory = require_directory(parsed.directory)
+    identity = Identity(
+        directory=directory,
+        align_revision=revision,
+        image_version=image_version,
+        runner_os=runner_os,
+        runner_arch=runner_arch,
+        rust_version=rust_version,
+        llvm_major=llvm_major,
+    )
+    return parsed, identity
+
+
+def path_exists(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise BundleError(f"cannot inspect path: {path}") from error
+    return True
+
+
+def require_real_directory(path: Path, label: str) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise BundleError(f"{label} is unavailable: {path}") from error
+    if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+        raise BundleError(f"{label} is not a real directory: {path}")
+
+
+def read_regular(path: Path, maximum: int, expected_mode: int) -> bytes:
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise BundleError(f"bundle entry is unavailable: {path.name}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise BundleError(f"bundle entry is not regular: {path.name}")
+        if stat.S_IMODE(metadata.st_mode) != expected_mode:
+            raise BundleError(f"bundle entry has the wrong mode: {path.name}")
+        if metadata.st_size < 0 or metadata.st_size > maximum:
+            raise BundleError(f"bundle entry has an invalid size: {path.name}")
+        raw = bytearray()
+        while len(raw) <= maximum:
+            block = os.read(descriptor, min(65_536, maximum + 1 - len(raw)))
+            if not block:
+                break
+            raw.extend(block)
+        if len(raw) != metadata.st_size:
+            raise BundleError(f"bundle entry changed while reading: {path.name}")
+        return bytes(raw)
+    except OSError as error:
+        raise BundleError(f"bundle entry cannot be read: {path.name}") from error
+    finally:
+        os.close(descriptor)
+
+
+def inspect_regular(path: Path, expected_mode: int | None = None) -> FileRecord:
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise BundleError(f"file is unavailable or is a symlink: {path}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise BundleError(f"file is not regular: {path}")
+        mode = stat.S_IMODE(metadata.st_mode)
+        if expected_mode is not None and mode != expected_mode:
+            raise BundleError(f"file has the wrong mode: {path.name}")
+        if metadata.st_size < 0 or metadata.st_size > MAX_U64:
+            raise BundleError(f"file is too large: {path.name}")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            size += len(block)
+        if size != metadata.st_size:
+            raise BundleError(f"file changed while reading: {path.name}")
+        return FileRecord(path.name, size, mode, digest.hexdigest())
+    except OSError as error:
+        raise BundleError(f"file cannot be read: {path}") from error
+    finally:
+        os.close(descriptor)
+
+
+def run_git(repository: Path, *arguments: str) -> bytes:
+    try:
+        result = subprocess.run(
+            ("/usr/bin/git", "-C", str(repository), *arguments),
+            env=BASE_ENVIRONMENT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise BundleError("Align checkout identity cannot be inspected") from error
+    if result.returncode != 0:
+        raise BundleError("Align checkout identity cannot be inspected")
+    return result.stdout
+
+
+def require_clean_checkout(repository: Path, revision: str) -> None:
+    if not repository.is_absolute():
+        raise UsageError("Align repository must be absolute")
+    require_real_directory(repository, "Align repository")
+    head = run_git(repository, "rev-parse", "--verify", "HEAD").decode("ascii", "strict").strip()
+    if head != revision:
+        raise BundleError("Align checkout is not at the requested revision")
+    if run_git(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z"):
+        raise BundleError("Align checkout is not clean")
+
+
+def manifest_value(identity: Identity, records: Sequence[FileRecord]) -> dict[str, object]:
+    bundle_bytes = sum(record.size for record in records)
+    if bundle_bytes > MAX_U64:
+        raise BundleError("bundle size is outside the unsigned 64-bit range")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "align_revision": identity.align_revision,
+        "image_version": identity.image_version,
+        "runner_os": identity.runner_os,
+        "runner_arch": identity.runner_arch,
+        "rust_version": identity.rust_version,
+        "llvm_major": identity.llvm_major,
+        "bundle_bytes": bundle_bytes,
+        "files": [record.json_value() for record in records],
+    }
+
+
+def render_manifest(value: dict[str, object]) -> bytes:
+    return (json.dumps(value, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii")
+
+
+def reject_constant(value: str) -> NoReturn:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def require_integer(value: object, label: str, maximum: int) -> int:
+    if type(value) is not int or value < 0 or value > maximum:
+        raise BundleError(f"manifest {label} has an invalid integer")
+    return value
+
+
+def parse_manifest(raw: bytes, identity: Identity) -> tuple[dict[str, object], list[FileRecord]]:
+    try:
+        text = raw.decode("ascii", "strict")
+        value = json.loads(
+            text,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise BundleError("manifest is malformed") from error
+    if not isinstance(value, dict) or tuple(value) != COMMON_KEYS:
+        raise BundleError("manifest field set or order is invalid")
+    expected_scalars = {
+        "schema_version": SCHEMA_VERSION,
+        "align_revision": identity.align_revision,
+        "image_version": identity.image_version,
+        "runner_os": identity.runner_os,
+        "runner_arch": identity.runner_arch,
+        "rust_version": identity.rust_version,
+        "llvm_major": identity.llvm_major,
+    }
+    for key, expected in expected_scalars.items():
+        if type(value[key]) is not type(expected) or value[key] != expected:
+            raise BundleError(f"manifest identity does not match: {key}")
+    require_integer(value["llvm_major"], "LLVM major", 65_535)
+    bundle_bytes = require_integer(value["bundle_bytes"], "bundle size", MAX_U64)
+    files = value["files"]
+    if not isinstance(files, list) or len(files) != 3:
+        raise BundleError("manifest file list is invalid")
+    expected_names = ("alignc", "libalign_runtime.a", identity.llvm_name)
+    expected_modes = (0o755, 0o644, 0o644)
+    records: list[FileRecord] = []
+    for index, item in enumerate(files):
+        if not isinstance(item, dict) or tuple(item) != FILE_KEYS:
+            raise BundleError("manifest file field set or order is invalid")
+        name = item["name"]
+        digest = item["sha256"]
+        size = require_integer(item["size"], "file size", MAX_U64)
+        mode = require_integer(item["mode"], "file mode", MAX_U64)
+        if type(name) is not str or name != expected_names[index]:
+            raise BundleError("manifest file name or order is invalid")
+        if mode != expected_modes[index]:
+            raise BundleError(f"manifest file mode is invalid: {name}")
+        if type(digest) is not str or DIGEST_PATTERN.fullmatch(digest) is None:
+            raise BundleError(f"manifest digest is invalid: {name}")
+        records.append(FileRecord(name, size, mode, digest))
+    if sum(record.size for record in records) != bundle_bytes:
+        raise BundleError("manifest bundle size is invalid")
+    if render_manifest(value) != raw:
+        raise BundleError("manifest is not canonical")
+    return value, records
+
+
+def run_admitted(command: Sequence[str], identity: Identity) -> subprocess.CompletedProcess[bytes]:
+    environment = {
+        **BASE_ENVIRONMENT,
+        "LD_LIBRARY_PATH": str(identity.directory),
+    }
+    try:
+        result = subprocess.run(
+            command,
+            cwd=identity.directory,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise BundleError("admitted executable inspection failed") from error
+    if len(result.stdout) + len(result.stderr) > 65_536:
+        raise BundleError("admitted executable output is too large")
+    return result
+
+
+def inspect_runtime(identity: Identity) -> None:
+    compiler = identity.directory / "alignc"
+    library = identity.directory / identity.llvm_name
+    loader = run_admitted(("/usr/bin/ldd", str(compiler)), identity)
+    if loader.returncode != 0 or loader.stderr:
+        raise BundleError("dynamic loader inspection failed")
+    try:
+        lines = loader.stdout.decode("ascii", "strict").splitlines()
+    except UnicodeDecodeError as error:
+        raise BundleError("dynamic loader output is not ASCII") from error
+    matches = []
+    prefix = identity.llvm_name + " => "
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(prefix) and " (" in stripped:
+            matches.append(stripped[len(prefix) :].rsplit(" (", 1)[0])
+    if len(matches) != 1:
+        raise BundleError("dynamic loader did not resolve exactly one bundled LLVM library")
+    try:
+        resolved = Path(matches[0]).resolve(strict=True)
+        expected = library.resolve(strict=True)
+    except OSError as error:
+        raise BundleError("dynamic loader resolved an unavailable LLVM library") from error
+    if resolved != expected:
+        raise BundleError("dynamic loader resolved LLVM outside the bundle")
+
+    version = run_admitted((str(compiler), "--version"), identity)
+    try:
+        output = version.stdout.decode("ascii", "strict")
+    except UnicodeDecodeError as error:
+        raise BundleError("alignc version output is not ASCII") from error
+    if (
+        version.returncode != 0
+        or version.stderr
+        or not output.endswith("\n")
+        or output.count("\n") != 1
+        or not output.startswith("alignc ")
+    ):
+        raise BundleError("admitted alignc version check failed")
+
+
+def verify_bundle(identity: Identity, inspect_executable: bool = True) -> int:
+    require_real_directory(identity.directory, "bundle directory")
+    try:
+        with os.scandir(identity.directory) as scanner:
+            entries = {entry.name for entry in scanner}
+    except OSError as error:
+        raise BundleError("bundle directory cannot be listed") from error
+    expected = {"manifest.json", "alignc", "libalign_runtime.a", identity.llvm_name}
+    if entries != expected:
+        raise BundleError("bundle inventory is not exact")
+    raw = read_regular(identity.directory / "manifest.json", MAX_MANIFEST_BYTES, 0o644)
+    _, records = parse_manifest(raw, identity)
+    for expected_record in records:
+        actual = inspect_regular(identity.directory / expected_record.name, expected_record.mode)
+        if actual != expected_record:
+            raise BundleError(f"bundle file does not match the manifest: {expected_record.name}")
+    if inspect_executable:
+        inspect_runtime(identity)
+    return sum(record.size for record in records)
+
+
+def require_source_file(path: Path, label: str) -> FileRecord:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise BundleError(f"{label} is unavailable") from error
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise BundleError(f"{label} must be a regular non-symlink file")
+    return inspect_regular(path)
+
+
+def write_exclusive(path: Path, raw: bytes, mode: int) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, mode)
+    try:
+        os.fchmod(descriptor, mode)
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written <= 0:
+                raise OSError(errno.EIO, "manifest write made no progress")
+            offset += written
+    finally:
+        os.close(descriptor)
+
+
+def rename_without_replacement(source: Path, target: Path) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    function = getattr(library, "renameat2", None)
+    if function is None:
+        raise BundleError("atomic no-replace rename is unavailable")
+    function.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    function.restype = ctypes.c_int
+    at_fdcwd = -100
+    rename_noreplace = 1
+    result = function(
+        at_fdcwd,
+        os.fsencode(source),
+        at_fdcwd,
+        os.fsencode(target),
+        rename_noreplace,
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise BundleError("bundle target already exists")
+    raise BundleError("bundle target cannot be established") from OSError(error_number, os.strerror(error_number))
+
+
+def create_bundle(identity: Identity, align_repo_raw: str, llvm_library_raw: str) -> int:
+    align_repo_value = require_ascii(align_repo_raw, "Align repository")
+    llvm_library_value = require_ascii(llvm_library_raw, "LLVM library")
+    align_repo = Path(align_repo_value)
+    llvm_input = Path(llvm_library_value)
+    if not llvm_input.is_absolute():
+        raise UsageError("LLVM library must be absolute")
+    if path_exists(identity.directory):
+        raise BundleError("bundle target already exists")
+    require_real_directory(identity.directory.parent, "bundle parent")
+    require_clean_checkout(align_repo, identity.align_revision)
+
+    compiler_source = align_repo / "target/release/alignc"
+    runtime_source = align_repo / "target/release/libalign_runtime.a"
+    compiler_record = require_source_file(compiler_source, "release alignc")
+    runtime_record = require_source_file(runtime_source, "release runtime archive")
+    try:
+        llvm_source = llvm_input.resolve(strict=True)
+    except OSError as error:
+        raise BundleError("LLVM library cannot be resolved") from error
+    if llvm_source.name != identity.llvm_name:
+        raise BundleError("LLVM library has the wrong SONAME filename")
+    llvm_record = require_source_file(llvm_source, "LLVM library")
+    expected_sources = (
+        FileRecord("alignc", compiler_record.size, 0o755, compiler_record.sha256),
+        FileRecord("libalign_runtime.a", runtime_record.size, 0o644, runtime_record.sha256),
+        FileRecord(identity.llvm_name, llvm_record.size, 0o644, llvm_record.sha256),
+    )
+    sources = (compiler_source, runtime_source, llvm_source)
+
+    staging: Path | None = None
+    try:
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{identity.directory.name}.staging-",
+                dir=identity.directory.parent,
+            )
+        )
+        staging.chmod(0o700)
+        for source, record in zip(sources, expected_sources, strict=True):
+            target = staging / record.name
+            shutil.copyfile(source, target, follow_symlinks=True)
+            target.chmod(record.mode)
+            if inspect_regular(target, record.mode) != record:
+                raise BundleError(f"source changed while copying: {record.name}")
+        staging_identity = Identity(
+            directory=staging,
+            align_revision=identity.align_revision,
+            image_version=identity.image_version,
+            runner_os=identity.runner_os,
+            runner_arch=identity.runner_arch,
+            rust_version=identity.rust_version,
+            llvm_major=identity.llvm_major,
+        )
+        manifest = render_manifest(manifest_value(staging_identity, expected_sources))
+        if len(manifest) > MAX_MANIFEST_BYTES:
+            raise BundleError("manifest exceeds its size limit")
+        write_exclusive(staging / "manifest.json", manifest, 0o644)
+        verify_bundle(staging_identity)
+        rename_without_replacement(staging, identity.directory)
+        staging = None
+    except BaseException as original:
+        if staging is not None:
+            try:
+                shutil.rmtree(staging)
+            except OSError as cleanup_error:
+                raise BundleError("bundle staging cleanup failed") from cleanup_error
+        raise original
+    return sum(record.size for record in expected_sources)
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    try:
+        parsed, identity = parse_arguments(sys.argv[1:] if arguments is None else arguments)
+        if parsed.command == "key":
+            print(f"path={identity.directory}")
+            print(f"key={identity.cache_key}")
+            return 0
+        if parsed.command == "create":
+            size = create_bundle(identity, parsed.align_repo, parsed.llvm_library)
+            print(f"created bundle: {identity.directory} ({size} bytes)")
+            return 0
+        size = verify_bundle(identity)
+        print(f"verified bundle: {identity.directory} ({size} bytes)")
+        return 0
+    except UsageError as error:
+        print(f"ci-align-bundle: {error}", file=sys.stderr)
+        return 2
+    except (BundleError, OSError, UnicodeError, ValueError) as error:
+        print(f"ci-align-bundle: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

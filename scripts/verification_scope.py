@@ -26,6 +26,7 @@ FRESH_IMAGE_PATTERNS = (
     "image/fresh/*",
     "scripts/alignc",
     "scripts/build-fresh-image-control",
+    "scripts/ci-align-bundle",
     "scripts/classify-verification",
     "scripts/fresh-align-compiler",
     "scripts/fresh-alignc",
@@ -45,6 +46,7 @@ FRESH_IMAGE_PATTERNS = (
     "scripts/run-loop-smoke",
     "scripts/select-ci-reuse",
     "scripts/test-development-preflight",
+    "scripts/test-ci-align-bundle",
     "scripts/verification_scope.py",
 )
 
