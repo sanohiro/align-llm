@@ -240,7 +240,7 @@ def verify_contract_inventory() -> None:
     image = IMAGE_DOCKERFILE.read_text(encoding="utf-8")
     for token in (
         "libzstd-dev",
-        "cp -aL /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64",
+        "/usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64",
         "--runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu",
         "--runtime /usr/bin/dash=/bin/sh",
         "--runtime /usr/bin/bash=/bin/bash",
