@@ -48,6 +48,7 @@ MAX_CAPSULE_BYTES = 1_048_576
 MAX_WORKER_BYTES = 4_194_304
 MAX_NONCE_BYTES = 32
 MAX_STREAM_BYTES = 65_536
+MAX_CHILDREN_BYTES = 65_536
 ROW_TIMEOUT_SECONDS = 1_800
 REVISION_TIMEOUT_SECONDS = 10
 FOCUSED_TIMEOUT_SECONDS = 120
@@ -90,6 +91,11 @@ class NamespaceFailure(Exception):
     def __init__(self, phase: str) -> None:
         super().__init__(phase)
         self.phase = phase
+
+
+MS_RDONLY = 1
+MS_REMOUNT = 32
+MNT_DETACH = 2
 
 
 def _fail(phase: str) -> int:
@@ -424,6 +430,58 @@ def _write_bytes(destination: str, raw: bytes, mode: int) -> None:
         raise NamespaceFailure("build") from error
 
 
+def _unmount(path: str) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.umount2(os.fsencode(path), MNT_DETACH) != 0:
+        error = ctypes.get_errno()
+        raise NamespaceFailure("toolchain") from OSError(error, os.strerror(error))
+
+
+def _remount(path: str, *, read_only: bool) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    flags = MS_REMOUNT | (MS_RDONLY if read_only else 0)
+    if libc.mount(None, os.fsencode(path), None, flags, None) != 0:
+        error = ctypes.get_errno()
+        raise NamespaceFailure("toolchain") from OSError(error, os.strerror(error))
+
+
+def _seal_staged_inputs() -> None:
+    tool_inputs = sorted(
+        Path("/input-tools").iterdir(), key=lambda item: os.fsencode(item.name)
+    )
+    for entry in tool_inputs:
+        _unmount(str(entry))
+        try:
+            entry.unlink()
+        except OSError as error:
+            raise NamespaceFailure("toolchain") from error
+    for path in (
+        "/input-project",
+        "/input-align",
+        "/input-rust",
+        "/input-llvm",
+        "/input-native",
+        "/input-cargo-cache",
+        "/input-launcher-source",
+    ):
+        _unmount(path)
+        try:
+            if any(Path(path).iterdir()):
+                raise NamespaceFailure("toolchain")
+        except OSError as error:
+            raise NamespaceFailure("toolchain") from error
+    _unmount("/private-tool-inventory")
+    _remount("/private-tool-bin", read_only=True)
+    _remount("/", read_only=True)
+
+
+def _prepare_compiler_handoff(project_head: str, align_revision: str) -> str:
+    _remount("/private-tool-bin", read_only=False)
+    launcher_sha256 = _handoff(project_head, align_revision)
+    _remount("/private-tool-bin", read_only=True)
+    return launcher_sha256
+
+
 def _descriptor_json(value: Mapping[str, Any]) -> bytes:
     try:
         return (json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode(
@@ -460,6 +518,7 @@ def _stage_inputs() -> None:
             entry.unlink()
     except OSError as error:
         raise NamespaceFailure("toolchain") from error
+    _seal_staged_inputs()
 
 
 def _handoff(project_head: str, align_revision: str) -> str:
@@ -608,6 +667,41 @@ def _channel_alive(channel: socket.socket) -> None:
     raise NamespaceFailure("toolchain")
 
 
+def _owned_children() -> tuple[int, ...]:
+    path = f"/proc/self/task/{os.getpid()}/children"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            raw = os.read(descriptor, MAX_CHILDREN_BYTES + 1)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        raise NamespaceFailure("unobserved") from error
+    if len(raw) > MAX_CHILDREN_BYTES:
+        raise NamespaceFailure("unobserved")
+    try:
+        children = tuple(int(value) for value in raw.split())
+    except ValueError as error:
+        raise NamespaceFailure("unobserved") from error
+    if any(child <= 0 for child in children) or len(set(children)) != len(children):
+        raise NamespaceFailure("unobserved")
+    return children
+
+
+def _kill_owned_children(phase: str) -> None:
+    try:
+        children = _owned_children()
+    except NamespaceFailure as error:
+        raise NamespaceFailure(phase) from error
+    for child in children:
+        try:
+            os.kill(child, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            raise NamespaceFailure(phase) from error
+
+
 def _run_row(
     arguments: Sequence[str],
     environment: Mapping[str, str],
@@ -666,7 +760,8 @@ def _run_row(
             except ProcessLookupError:
                 pass
             except OSError as error:
-                raise NamespaceFailure("unobserved") from error
+                raise NamespaceFailure(phase) from error
+        _kill_owned_children(phase)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired as error:
@@ -677,19 +772,23 @@ def _run_row(
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired as reap_error:
-                raise NamespaceFailure("unobserved") from reap_error
-            raise NamespaceFailure("unobserved") from error
+                raise NamespaceFailure(phase) from reap_error
+            raise NamespaceFailure(phase) from error
         reap_deadline = time.monotonic() + 5
         while time.monotonic() < reap_deadline:
+            _kill_owned_children(phase)
             active, _ = reap_descendants()
             if not active:
                 return
             time.sleep(0.01)
-        raise NamespaceFailure("unobserved")
+        raise NamespaceFailure(phase)
 
     try:
         while selector.get_map() or process.poll() is None or descendants_active:
-            _channel_alive(channel)
+            try:
+                _channel_alive(channel)
+            except NamespaceFailure as error:
+                raise NamespaceFailure(phase) from error
             if process.poll() is not None:
                 descendants_active, failed = reap_descendants()
                 descendant_failure = descendant_failure or failed
@@ -914,7 +1013,10 @@ def run(arguments: Sequence[str]) -> int:
     )
     _run_row(_row_payload(rows[0][0]), rows[0][1], rows[0][2], rows[0][3], channel)
     _run_row(_row_payload(rows[1][0]), rows[1][1], rows[1][2], rows[1][3], channel)
-    launcher_sha256 = _handoff(predicate["project_head"], predicate["align_head"])
+    launcher_sha256 = _prepare_compiler_handoff(
+        predicate["project_head"], predicate["align_head"]
+    )
+    _drop_child_capabilities()
     focused = _rows(
         launcher_sha256=launcher_sha256,
         align_revision=predicate["align_head"],

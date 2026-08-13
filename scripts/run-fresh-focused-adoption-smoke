@@ -274,6 +274,55 @@ def check_source_contracts() -> None:
         "ordinary_close_cgroup_lease(lease, active)" in ordinary,
         "ordinary cgroup cleanup precedence is not explicit",
     )
+    require(
+        ordinary.index('cgroup_file_write(lease.leaf_fd, "cgroup.procs"')
+        < ordinary.index('os.write(gate_write, b"1")')
+        and ordinary.index('os.read(gate_read, 2) != b"1"')
+        < ordinary.index("ordinary_execveat(27, arguments)"),
+        "ordinary bwrap child is not held behind the parent-controlled cgroup gate",
+    )
+    require(
+        "10,\n        11," in worker[worker.index("def ordinary_reserve_bind_fds") : ordinary_start]
+        and "expected_count = 10 +" in worker[worker.index("def ordinary_reserve_bind_fds") : ordinary_start],
+        "ordinary cgroup gate descriptors are not reserved before source/tool opens",
+    )
+    require(
+        'except SourceMutationError as error:\n        raise OrdinaryFailure("revision")' in worker
+        and 'except WorkerError as error:\n        raise OrdinaryFailure("toolchain")' in worker_lifecycle,
+        "ordinary source/setup failures do not preserve the phase contract",
+    )
+    require(
+        'try:\n        verify_platform()\n    except WorkerError as error:\n        raise OrdinaryFailure("toolchain")'
+        in worker_lifecycle,
+        "ordinary platform rejection is not translated to toolchain",
+    )
+    namespace = (CONTROL / "adoption_namespace.py").read_text(encoding="utf-8")
+    stage_start = namespace.index("def _stage_inputs")
+    handoff_start = namespace.index("def _handoff")
+    run_start = namespace.index("def run(arguments")
+    require(
+        "_seal_staged_inputs()" in namespace[stage_start:handoff_start]
+        and '_unmount("/private-tool-inventory")' in namespace
+        and '_remount("/", read_only=True)' in namespace
+        and '_remount("/private-tool-bin", read_only=True)' in namespace,
+        "ordinary namespace does not detach setup binds and seal copied tools",
+    )
+    require(
+        namespace[run_start:].index("_prepare_compiler_handoff(")
+        < namespace[run_start:].index("_drop_child_capabilities()")
+        < namespace[run_start:].index("_run_row(_row_payload(focused[0])"),
+        "ordinary compiler handoff is not sealed before the focused child",
+    )
+    row_owner = namespace[namespace.index("def _run_row") : namespace.index("def _runtime_paths")]
+    require(
+        "_kill_owned_children(phase)" in row_owner,
+        "ordinary row teardown does not kill session-breaking descendants",
+    )
+    require(
+        'except NamespaceFailure as error:\n                raise NamespaceFailure(phase) from error'
+        in row_owner,
+        "ordinary row channel loss does not retain the active phase",
+    )
     native = (REPOSITORY / "image/fresh/fresh-supervise.c").read_text(encoding="utf-8")
     for token in (
         "ordinary_preflight", "ordinary_dispatcher_child", "SYS_execveat",

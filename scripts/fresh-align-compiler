@@ -271,6 +271,10 @@ class CleanupError(Exception):
     pass
 
 
+class SourceMutationError(OSError):
+    pass
+
+
 def fail(category: str, phase: str) -> None:
     raise WorkerError(category, phase)
 
@@ -2266,23 +2270,30 @@ def copy_source(identity: SourceIdentity, destination: Path) -> None:
         check_phase_deadline()
         path = destination / os.fsdecode(entry.path)
         if entry.kind == "dir":
-            descriptor, accepted, retained = open_source_entry(
-                identity.view.root_fd,
-                entry.path,
-                os.O_PATH | os.O_DIRECTORY,
-            )
+            retained: list[tuple[int, Snapshot]] = []
             try:
+                descriptor, accepted, retained = open_source_entry(
+                    identity.view.root_fd,
+                    entry.path,
+                    os.O_PATH | os.O_DIRECTORY,
+                )
                 if accepted != entry.source_snapshot:
-                    raise OSError(errno.ESTALE, "source directory changed")
+                    raise SourceMutationError("source directory changed")
+            except SourceMutationError:
+                raise
+            except (CleanupError, OSError, ValueError) as error:
+                raise SourceMutationError("source directory changed") from error
             finally:
-                close_retained(retained)
+                if retained:
+                    close_retained(retained)
             path.mkdir(mode=entry.staged_mode or 0o700)
             continue
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if entry.kind == "symlink":
             assert entry.symlink_target is not None
-            parent_fd, name, retained = open_source_parent(identity.view.root_fd, entry.path)
+            retained = []
             try:
+                parent_fd, name, retained = open_source_parent(identity.view.root_fd, entry.path)
                 current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
                 target = os.fsencode(os.readlink(name, dir_fd=parent_fd))
                 if (
@@ -2293,33 +2304,50 @@ def copy_source(identity: SourceIdentity, destination: Path) -> None:
                     )
                     != entry.source_snapshot
                 ):
-                    raise OSError(errno.ESTALE, "source symlink changed")
+                    raise SourceMutationError("source symlink changed")
                 for descriptor, accepted in retained:
                     assert_snapshot(descriptor, accepted)
+            except SourceMutationError:
+                raise
+            except (CleanupError, OSError, ValueError) as error:
+                raise SourceMutationError("source symlink changed") from error
             finally:
-                close_retained(retained)
+                if retained:
+                    close_retained(retained)
             os.symlink(os.fsdecode(entry.symlink_target), path)
             if os.fsencode(os.readlink(path)) != entry.symlink_target:
                 raise OSError(errno.EIO, "staged symlink changed")
             continue
         assert entry.staged_mode is not None and entry.digest is not None
-        source, accepted, retained = open_source_entry(
-            identity.view.root_fd,
-            entry.path,
-            os.O_RDONLY | os.O_NONBLOCK,
-        )
-        if accepted != entry.source_snapshot:
-            close_retained(retained)
-            raise OSError(errno.ESTALE, "source file changed")
+        retained = []
+        try:
+            source, accepted, retained = open_source_entry(
+                identity.view.root_fd,
+                entry.path,
+                os.O_RDONLY | os.O_NONBLOCK,
+            )
+            if accepted != entry.source_snapshot:
+                raise SourceMutationError("source file changed")
+        except SourceMutationError:
+            if retained:
+                close_retained(retained)
+            raise
+        except (CleanupError, OSError, ValueError) as error:
+            if retained:
+                close_retained(retained)
+            raise SourceMutationError("source file changed") from error
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, entry.staged_mode)
         try:
             digest = hashlib.sha256()
             offset = 0
             while offset < accepted.size:
                 check_phase_deadline()
-                block = os.pread(source, min(READ_CHUNK, accepted.size - offset), offset)
+                try:
+                    block = os.pread(source, min(READ_CHUNK, accepted.size - offset), offset)
+                except OSError as error:
+                    raise SourceMutationError("source file read failed") from error
                 if not block:
-                    raise OSError(errno.EIO, "short source read")
+                    raise SourceMutationError("short source read")
                 digest.update(block)
                 view = memoryview(block)
                 while view:
@@ -2328,10 +2356,13 @@ def copy_source(identity: SourceIdentity, destination: Path) -> None:
                         raise OSError(errno.EIO, "short source write")
                     view = view[count:]
                 offset += len(block)
-            for current, snapshot in retained:
-                assert_snapshot(current, snapshot)
+            try:
+                for current, snapshot in retained:
+                    assert_snapshot(current, snapshot)
+            except (CleanupError, OSError, ValueError) as error:
+                raise SourceMutationError("source file changed") from error
             if digest.hexdigest() != entry.digest:
-                raise OSError(errno.ESTALE, "source digest changed")
+                raise SourceMutationError("source digest changed")
             os.fchmod(descriptor, entry.staged_mode)
             os.fsync(descriptor)
         finally:
@@ -2339,7 +2370,10 @@ def copy_source(identity: SourceIdentity, destination: Path) -> None:
             close_retained(retained)
         if sha256(read_path(str(path), MAX_FILE_BYTES)) != entry.digest or stat.S_IMODE(path.stat().st_mode) != entry.staged_mode:
             raise OSError(errno.EIO, "staged source verification failed")
-    assert_source_worktree(identity)
+    try:
+        assert_source_worktree(identity)
+    except (CleanupError, OSError, ValueError) as error:
+        raise SourceMutationError("source worktree changed") from error
 
 
 def open_manifest_source(source: Path) -> tuple[int, list[tuple[int, Snapshot]]]:
@@ -4075,6 +4109,8 @@ def ordinary_stage(
         return runtime
     except OrdinaryFailure:
         raise
+    except SourceMutationError as error:
+        raise OrdinaryFailure("revision") from error
     except (CleanupError, OSError, ValueError) as error:
         raise OrdinaryFailure("toolchain") from error
 
@@ -4148,11 +4184,13 @@ def ordinary_close_child_fds(allowed: set[int]) -> None:
 
 def ordinary_reserve_bind_fds(manifest: Mapping[str, Any]) -> set[int]:
     targets = {
+        10,
+        11,
         *range(20, 28),
         *(40 + index for index, _ in enumerate(manifest["runtime_bindings"])),
         *(400 + index for index, _ in enumerate(manifest["tools"])),
     }
-    expected_count = 8 + len(manifest["runtime_bindings"]) + len(manifest["tools"])
+    expected_count = 10 + len(manifest["runtime_bindings"]) + len(manifest["tools"])
     if len(targets) != expected_count or ordinary_descriptor_set() != ORDINARY_REQUIRED_FDS:
         raise OrdinaryFailure("toolchain")
     placeholder = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
@@ -4182,6 +4220,7 @@ def ordinary_capture_bwrap(
     runtime_fds: list[int] = []
     tool_fds: list[int] = []
     stdout_read = stdout_write = stderr_read = stderr_write = -1
+    gate_read = gate_write = -1
     lease: CgroupLease | None = None
     child = -1
     try:
@@ -4264,10 +4303,18 @@ def ordinary_capture_bwrap(
         )
         stdout_read, stdout_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         stderr_read, stderr_write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+        created_gate_read, created_gate_write = os.pipe2(os.O_CLOEXEC)
+        os.dup2(created_gate_read, 10, inheritable=False)
+        os.dup2(created_gate_write, 11, inheritable=False)
+        os.close(created_gate_read)
+        os.close(created_gate_write)
+        gate_read, gate_write = 10, 11
         lease = open_cgroup_lease()
         child = os.fork()
         if child == 0:
             try:
+                os.close(gate_write)
+                gate_write = -1
                 os.dup2(stdout_write, 1)
                 os.dup2(stderr_write, 2)
                 for descriptor in (stdout_read, stdout_write, stderr_read, stderr_write):
@@ -4275,8 +4322,15 @@ def ordinary_capture_bwrap(
                         os.close(descriptor)
                     except OSError:
                         pass
-                child_preexec(lease.leaf_fd)
                 os.close(lease.leaf_fd)
+                if os.read(gate_read, 2) != b"1":
+                    raise OSError(errno.EIO, "ordinary cgroup gate rejected")
+                os.close(gate_read)
+                gate_read = -1
+                resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
+                resource.setrlimit(resource.RLIMIT_NOFILE, (MAX_OPEN_FDS, MAX_OPEN_FDS))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_FILE_BYTES, MAX_FILE_BYTES))
+                os.setsid()
                 ordinary_close_child_fds(
                     {0, 1, 2, 12, 13, 15, 16, 20, 21, 22, 23, 24, 25, 26, 27, *runtime_fds_tuple, *tool_fds_tuple}
                 )
@@ -4287,10 +4341,22 @@ def ordinary_capture_bwrap(
                 except OSError:
                     pass
                 os._exit(127)
+        os.close(gate_read)
+        reserved_bind_fds.discard(gate_read)
+        gate_read = -1
+        accepted_start = pid_start_time(child)
+        cgroup_file_write(lease.leaf_fd, "cgroup.procs", f"{child}\n".encode("ascii"))
         try:
             wait_cgroup_child_membership(lease, child)
         except CleanupError as error:
             raise OrdinaryFailure("toolchain") from error
+        if pid_start_time(child) != accepted_start:
+            raise OrdinaryFailure("toolchain")
+        if os.write(gate_write, b"1") != 1:
+            raise OrdinaryFailure("toolchain")
+        os.close(gate_write)
+        reserved_bind_fds.discard(gate_write)
+        gate_write = -1
         os.close(stdout_write)
         stdout_write = -1
         os.close(stderr_write)
@@ -4344,12 +4410,20 @@ def ordinary_capture_bwrap(
         raise
     finally:
         active = sys.exc_info()[1]
-        for descriptor in (stdout_read, stdout_write, stderr_read, stderr_write):
+        for descriptor in (
+            stdout_read,
+            stdout_write,
+            stderr_read,
+            stderr_write,
+            gate_read,
+            gate_write,
+        ):
             if descriptor >= 0:
                 try:
                     os.close(descriptor)
                 except OSError:
                     pass
+                reserved_bind_fds.discard(descriptor)
         for descriptor in reversed((*tool_fds, *runtime_fds, *bound)):
             try:
                 os.close(descriptor)
@@ -4476,7 +4550,10 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
         raise
     except (OSError, ValueError, UnicodeError) as error:
         ordinary_fail("toolchain")
-    verify_platform()
+    try:
+        verify_platform()
+    except WorkerError as error:
+        raise OrdinaryFailure("toolchain") from error
     reserved_bind_fds = ordinary_reserve_bind_fds(manifest)
     tools: Mapping[str, int] = {}
     project: SourceIdentity | None = None
@@ -4531,7 +4608,7 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
         except OrdinaryFailure as error:
             raise
         except WorkerError as error:
-            raise OrdinaryFailure("build") from error
+            raise OrdinaryFailure("toolchain") from error
         except (CleanupError, OSError, ValueError, subprocess.SubprocessError) as error:
             raise OrdinaryFailure("toolchain") from error
     finally:
