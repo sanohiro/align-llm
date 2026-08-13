@@ -24,6 +24,16 @@ file records durable project state.
   and `aarch64`. The immutable Ubuntu OCI index, native Rust/Debian/ELF/loader tuple, manifest
   admission, runtime roots, controller, worker, Docker owner, and CI matrix now reject
   architecture mismatch; emulation is explicitly non-acceptance evidence.
+- Native implementation checkpoints are `00d7faaf550f` (dual-native Request 6 profile),
+  `ad59e63e5cd0` (execute the focused payload after its variable-length handoff prefix), and
+  `b5e485b87802` (use the image-owned Git for installed mutation fixtures).
+- The native ARM installed profile now passes image attestation, lifecycle, self-test, trust
+  mutations, runtime replacements, the valid ordinary Request 6 consumer, and the complete
+  boundary rejection matrix. Its worker aggregate reaches the canonical baseline gate.
+- Baseline commits `db2c88d24574` and `cceaf15fdf0c` intentionally remain historical failed
+  measurement evidence: the first ARM helper lacked `/usr/bin/bwrap`, so both recorded tasks were
+  non-passing. Do not accept that chain; supersede it from a new clean source commit with native
+  bubblewrap present and require two passing samples before committing the replacement oracle.
 
 ## Contract and decisions to preserve
 
@@ -60,6 +70,12 @@ file records durable project state.
   `run-fresh-worker-unit-smoke`, and the complete `run-fresh-worker-qualification` all PASS. The
   ARM run exposed a same-size post-copy mutation whose filesystem timestamps did not change; the
   worker now re-digests the retained source after materialization and the existing regression passes.
+- Native Linux `aarch64` installed profile through `boundary-profile`: PASS. This run exposed and
+  repaired the focused-row prefix slicing and bare-Git fixture setup bugs; the focused adoption
+  owner passes after both repairs. Warm signed-image builds reuse the architecture/toolchain layers,
+  reducing the observed image-build phase from 1,065,794 ms to roughly 20-31 seconds.
+- The first ARM baseline recorder invocation completed but produced two FAIL samples solely because
+  its helper did not install `/usr/bin/bwrap`; schema inspection rejected it as canonical evidence.
 - `python3 scripts/test-development-preflight`: PASS in the native Linux `aarch64` capable helper;
   `docker build --check -f image/fresh/Dockerfile .`: PASS with no warnings.
 - Local `/usr/bin/make` is GNU Make 3.81, below the supported Make 4.3 floor, and cannot parse the
@@ -70,19 +86,21 @@ file records durable project state.
 
 ## Next actions
 
-1. Finish the native ARM product-image build and complete installed profile; repair any
-   current-source failure without reusing PR #69 evidence.
-2. Commit the migrated dual-native profile as the next internal C6/adoption checkpoint, then obtain
-   the separate native `x86_64` CI owner alongside the native `aarch64` owner.
-3. Pass the ordinary and authenticated fresh Request 6 adoption vectors with the `25b1201b...`
-   compiler and one final capable `make ci`.
+1. From the clean HANDOFF source commit, install native ARM bubblewrap in the capable helper,
+   record two passing deterministic-reference samples, and create a replacement oracle-only and
+   finalization-only baseline chain.
+2. Rerun the full native ARM installed profile and require `worker-aggregate` plus cleanup to pass.
+3. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
+   final capable `make ci` with the `25b1201b...` compiler.
 4. Update Request 6 lifecycle evidence, perform one comprehensive
    review, and publish the consumer-complete profile/adoption candidate.
 
 ## Recovery and preservation
 
-- The migrated profile diff is intentional until its internal checkpoint commit; no generated
-  compiler, image, cache, seed, or signing material belongs in Git.
+- The failed non-passing baseline chain is superseded evidence, not an accepted checkpoint. Preserve
+  its commits in history and replace it through the required source -> oracle -> finalization chain;
+  do not amend or rewrite it.
+- No generated compiler, image, cache, seed, or signing material belongs in Git.
 - Preserve the paused PR #69 branch and its GitHub record until the migrated candidate supersedes it.
 - Do not use destructive checkout/reset or broad cleanup. Keep code, documentation, commits, pull
   request metadata, review records, and diagnostics in English.
