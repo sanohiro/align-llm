@@ -5,51 +5,31 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-13)
 
-- Branch `agent/fresh-runtime-hardlinks` is based on PR #80 merge commit
-  `60326e236f4a2304a4c071d6c388b341ed662469`.
-- Active goal: reduce the complete fresh image without changing its Ubuntu 24.04 platform or
-  runtime path inventory by preserving identical builder inode identity across LLVM and system
-  runtime roots.
-- Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
-  reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
-  (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
-  trusted cache while reusing functional checks and skipping image load and qualification. PR #74
-  merged the complete Node 24 action migration at `d433e4d66a180e077cb667edcc3ff6050a3f0542`.
-  PR #75 merged hardlink-preserving runtime materialization at `530da31d74b9ef79a7cfc2efafbeaee5c927ef4f`.
-  PR #76 merged and seeded the verified hosted LLVM archive cache at `c3deab753a3db4e963817917c1105fe110907a99`.
-  PR #77 merged the trusted hosted Align compiler bundle at
-  `6a48ab797b5c1069342643ef281f7d7fdb2a9b26`; its exact-main seed and clean warm run passed. PR #78
-  merged the multi-stage fresh runtime at `dea213d69e79fc6c3ef97ad095051b8c4c2dce1a`, reducing the
-  observed image from 6,069,945,116 to 3,215,474,083 bytes (47.0%) while preserving the complete
-  installed profile. Its PR run `31633149090` passed; the fresh job's build/export/load took 294
-  seconds and installed qualification took 262 seconds. Exact-main run `31634023665` passed in 281
-  seconds; its cache-only fresh job took 276 seconds and build/export took 257 seconds, while the
-  hosted job seeded the missing trusted apt archive and compiler bundle entries. PR #79 merged the
-  Cargo-fetch layout at `378d909a8b0667b74af560345d4be2574545a1fe`; PR run `31636754175`
-  passed in 484 seconds and exact-main run `31637540088` passed in 151 seconds. PR #80 merged the
-  mutation-tolerant live quota polling repair at
-  `60326e236f4a2304a4c071d6c388b341ed662469`; its PR checks passed in 29 seconds and 7m02s.
-- Complete locally through reviewed head `015a71d`: runtime materialization accepts a validated ordered pair
-  vector, shares one source-inode table across its roots, and leaves equal-byte distinct identities
-  separate. The Dockerfile uses one invocation for LLVM and system roots and proves representative
-  aliases remain one inode after transfer. The owner regression, Dockerfile check, exact image
-  measurement, and complete installed profile pass.
-- Measured fixed-key image
-  `sha256:1ad39927516cf238a885abe65c7275442565a6235be91a217f65f3f439fecc1c` at 2,234,647,037 bytes
-  versus the 3,215,474,083-byte baseline (30.5% reduction); `/runtime` is 2,035,380,006 bytes versus
-  3,016,219,340 (32.5% reduction). The three representative LLVM paths share one 12-link inode.
-- Exact-head complete preflight passed `015a71d`: development owner 9.805s, pinned Align build
-  0.841s, hosted graph 3.779s, focused qualification 24.380s, and installed profile 227.011s. The
-  comprehensive review of that head requested three changes: assert hardlinks after the BuildKit
-  stage transfer, canonicalize and reject source/target topology intersections before construction,
-  and update this continuity record. All are accepted and implemented in the consolidated review
-  repair. The development owner, Buildx Dockerfile check, final fixed-key build, footprint, and
-  post-transfer inode checks pass without changing the measured bytes; final exact-head complete
-  preflight remains.
-- Not started: final exact-head preflight, publication, and hosted verification.
+- Branch `agent/main-image-reuse` is based on PR #81 merge commit
+  `370e4fbbee7682cf6da527bc31c43c7eb06c3a08`.
+- Active goal: restore fast exact-merge completion by reusing the exact successful PR image evidence
+  without rebuilding a cache-only signed image on `main`.
+- Complete: PR #81 merged cross-root hardlink sharing. Its qualified image is 2,234,647,037 bytes
+  versus the 3,215,474,083-byte baseline (30.5% reduction), with the complete Ubuntu 24.04 runtime
+  inventory and installed behavior preserved. PR #81's checks passed, but exact-main run
+  `31665748310` still took 373 seconds end to end: the reused fresh-image job spent 341 of its 361
+  seconds rebuilding/exporting an image that it neither loaded nor qualified.
+- Complete through implementation checkpoint `122cf40`: the plan now treats BuildKit state as a
+  non-authoritative PR-scoped optimization. When the existing fail-closed selector proves the exact
+  two-parent merge, tree, PR, base/head identities, successful workflow, both required jobs, and
+  both evidence steps, the fresh-image job reports reuse and skips classification, Buildx, signing
+  material, build/export, source setup, user-namespace mutation, qualification, and cleanup. Any
+  missing or invalid evidence retains the normal classifier-selected path. The workflow owner,
+  topology self-test, YAML parse, and diff check pass.
+- In progress: exact-head complete preflight and one comprehensive review. Not started: PR hosted
+  validation, exact-main timing acceptance, and merge.
 
 ## Measurement
 
+- Exact-main bypass baseline run `31665748310`, job `94339817556`: 373 seconds end to end, 361
+  seconds for the fresh-image job, and 341 seconds for cache-only image build/export (`n=1`, GitHub
+  `ubuntu-24.04`). The target is at least 90% lower merge-push wall time and a fresh-image job at
+  most 30 seconds while retaining normal execution for every failed reuse decision.
 - Cached-image baseline PR #72 run `31569819343`, job `94029193340`: 502 seconds end to end and
   216,344 ms in `image-build` (`n=1`, GitHub `ubuntu-24.04`).
 - A local Buildx `mode=max` probe took 2,076.861 seconds cold under a slow network and 39.568 seconds
@@ -116,14 +96,19 @@ file records durable project state.
 
 ## Next steps
 
-1. Run exact-head complete preflight for the consolidated review repair.
-2. Inspect the repair delta for unrelated behavior; no second review is required for these narrow
-   recorded-finding fixes.
-3. Publish and merge after the required GitHub checks pass. Keep PR #69 paused until the final Align
-   revision is named.
+1. Run exact-head complete preflight for the exact-merge image bypass.
+2. Obtain one fresh comprehensive review of the settled workflow/spec/owner diff and apply any
+   valid findings in one consolidated repair.
+3. Publish after affected verification passes. Require the PR's normal fresh-image qualification,
+   then merge and confirm the exact-main fresh job skips every named image owner and finishes in at
+   most 30 seconds. Keep PR #69 paused until the final Align revision is named.
 
 ## Latest durable evidence
 
+- Exact-main PR #81 run `31665748310` passed but took 373 seconds end to end. Its fresh-image job
+  took 361 seconds and cache-only image build/export took 341 seconds; no installed qualification
+  ran. Local implementation checkpoint `122cf40` passes `scripts/test-development-preflight`,
+  `check-gate-topology --self-test`, Ruby workflow YAML parsing, and `git diff --check`.
 - PR #76 final review passed at `fa56846af74af9208abdd01ecc72a6437f05d267` with no findings after
   one consolidated repair. Complete preflight passed: apt owner 4.421s, pinned Align build 0.647s,
   installed profile 206.879s, and worker aggregate 109.049s.
