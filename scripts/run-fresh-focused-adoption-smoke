@@ -18,7 +18,14 @@ CONTROL = REPOSITORY / "image/fresh/control"
 sys.path.insert(0, str(REPOSITORY / "scripts"))
 sys.path.insert(0, str(CONTROL))
 
-from adoption_namespace import _copy_tree, _descriptor_json, _environment, _rows  # noqa: E402
+from adoption_namespace import (  # noqa: E402
+    NamespaceFailure,
+    _copy_tree,
+    _descriptor_json,
+    _environment,
+    _row_payload,
+    _rows,
+)
 from request6_adoption import (  # noqa: E402
     MAX_RAW_BYTES,
     REQUIRED_DESCRIPTOR_SET,
@@ -104,6 +111,19 @@ def check_rows() -> None:
         "/private-launcher-source/adoption-alignc", "a" * 64, "b" * 40, "c" * 40,
         "--", *common, "json-scan-row-ownership-adoption",
     ), "focused row changed")
+    require(_row_payload(rows[0][0]) == (*common, "align-revision"), "revision payload changed")
+    require(_row_payload(rows[1][0]) == (*common, "align-build-only"), "build payload changed")
+    require(
+        _row_payload(rows[2][0]) == (*common, "json-scan-row-ownership-adoption"),
+        "focused payload retained its compiler handoff prefix",
+    )
+    for malformed in (("/usr/bin/adoption-namespace",), ("/usr/bin/adoption-namespace", "--")):
+        try:
+            _row_payload(malformed)
+        except NamespaceFailure as error:
+            require(error.phase == "toolchain", "malformed row payload used the wrong phase")
+        else:
+            raise RuntimeError("malformed row payload was accepted")
     common_environment = {
         "PATH": "/private-native/bin:/private-rust/bin:/private-llvm/bin:/tools:/usr/bin:/bin",
         "ALIGN_REPO": "/private-align",

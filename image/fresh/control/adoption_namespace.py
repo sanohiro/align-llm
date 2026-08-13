@@ -836,6 +836,17 @@ def _rows(
     return rows
 
 
+def _row_payload(arguments: Sequence[str]) -> tuple[str, ...]:
+    try:
+        separator = arguments.index("--")
+    except ValueError as error:
+        raise NamespaceFailure("toolchain") from error
+    payload = tuple(arguments[separator + 1 :])
+    if not payload:
+        raise NamespaceFailure("toolchain")
+    return payload
+
+
 def run(arguments: Sequence[str]) -> int:
     expected = (
         "--capsule-path", CAPSULE_PATH,
@@ -892,8 +903,8 @@ def run(arguments: Sequence[str]) -> int:
         loader_path=loader_path,
         pkgconfig_path=pkgconfig_path,
     )
-    _run_row(rows[0][0][5:], rows[0][1], rows[0][2], rows[0][3], channel)
-    _run_row(rows[1][0][5:], rows[1][1], rows[1][2], rows[1][3], channel)
+    _run_row(_row_payload(rows[0][0]), rows[0][1], rows[0][2], rows[0][3], channel)
+    _run_row(_row_payload(rows[1][0]), rows[1][1], rows[1][2], rows[1][3], channel)
     launcher_sha256 = _handoff(predicate["project_head"], predicate["align_head"])
     focused = _rows(
         launcher_sha256=launcher_sha256,
@@ -903,7 +914,7 @@ def run(arguments: Sequence[str]) -> int:
         loader_path=loader_path,
         pkgconfig_path=pkgconfig_path,
     )[2]
-    _run_row(focused[0][5:], focused[1], focused[2], focused[3], channel)
+    _run_row(_row_payload(focused[0]), focused[1], focused[2], focused[3], channel)
     _channel_alive(channel)
     os.write(1, b"json-scan adoption: PASS\n")
     return 0
