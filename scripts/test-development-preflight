@@ -1566,6 +1566,16 @@ def test_align_bundle() -> None:
 
 def test_workflow_topology() -> None:
     workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    fresh_workflow = workflow[workflow.index("  fresh-image-profile:") :]
+
+    def fresh_step(name: str) -> str:
+        marker = f"      - name: {name}\n"
+        start = fresh_workflow.index(marker)
+        end = fresh_workflow.find("\n      - name:", start + len(marker))
+        if end < 0:
+            end = len(fresh_workflow)
+        return fresh_workflow[start:end]
+
     require(
         workflow.count(
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
@@ -1743,8 +1753,8 @@ def test_workflow_topology() -> None:
         "CI BuildKit cache is unbounded or fails closed on export",
     )
     require(
-        "load: ${{ steps.reuse.outputs.reused != 'true' }}" in workflow,
-        "exact merges load the cache-only image into Docker",
+        "load: true" in fresh_step("Build installed image with shared layers"),
+        "normally executing fresh-image builds do not load their qualified image",
     )
     require(
         workflow.count("python3 scripts/prepare-fresh-image-build") == 2
@@ -1758,9 +1768,34 @@ def test_workflow_topology() -> None:
         "CI does not pass the prepared image to the installed owner",
     )
     require(
-        "if: steps.reuse.outputs.reused != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
-        in workflow,
-        "exact fresh-image merges do not classify cache publication",
+        "if: steps.reuse.outputs.reused != 'true'" in fresh_step("Classify verification scope")
+        and "github.event_name == 'push'" not in fresh_step("Classify verification scope")
+        and "if: steps.reuse.outputs.reused == 'true'"
+        in fresh_step("Report reused pull request checks"),
+        "exact fresh-image merges still classify cache publication",
+    )
+    normal_installed_condition = (
+        "if: steps.reuse.outputs.reused != 'true' && "
+        "steps.scope.outputs.fresh_installed == 'true'"
+    )
+    require(
+        all(
+            normal_installed_condition in fresh_step(name)
+            for name in (
+                "Set up Docker Buildx",
+                "Prepare installed image signing material",
+                "Build installed image with shared layers",
+                "Restore pinned Align source",
+                "Materialize pinned Align source",
+                "Enable qualified nested user namespaces",
+                "Complete installed image profile qualification",
+            )
+        )
+        and "steps.reuse.outputs.reused != 'true'"
+        in fresh_step("Restore user namespace restriction")
+        and "steps.image_material.outcome == 'success'"
+        in fresh_step("Clean installed image signing material"),
+        "exact fresh-image reuse does not skip every build, source, policy, and qualification owner",
     )
     require(
         workflow.count("python3 scripts/select-ci-reuse") == 2,
