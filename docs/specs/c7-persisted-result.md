@@ -110,7 +110,7 @@ The first consumer depends on these exact conditions:
 | Prerequisite | Required state | C7 consequence |
 | --- | --- | --- |
 | Request 7, `core.json` escape grammar | `ALIGN_MERGED` at a named commit, with its original align-llm acceptance gate passing | The C7 `note` vectors may contain escaped controls, embedded NUL, and multibyte UTF-8. C7 does not reimplement or redefine the grammar. |
-| Request 9, owned direct JSON fields | `ALIGN_MERGED` at a named Align commit, with the sibling release compiler/runtime rebuilt | C7 may use only the shipped direct `string` and direct `Option<string>` shapes named in §4. |
+| Request 9, owned direct JSON fields | `ALIGN_MERGED` at a named Align commit, with its managed pinned release compiler/runtime materialized | C7 may use only the shipped direct `string` and direct `Option<string>` shapes named in §4. |
 | Align memory-model update required by Request 9 | Merged with Request 9 or an explicitly named prerequisite commit | The decoder may materialize a free-standing owned record inside the helper scope and return it after the input owner expires. |
 | `.align-revision` and fresh compiler topology | Updated only after the common topology design/implementation prerequisites, then verified through `make ci` | No C7 implementation or adoption evidence may use an unpinned newer sibling checkout. |
 
@@ -627,8 +627,9 @@ persisted-result-qualification: build
   -> ./scripts/run-persisted-result-qualification "<selected-compiler>" "<absolute-project-root>/main"
 ```
 
-The resolution step follows the existing repository selection order at the repository root:
-explicit `ALIGNC`, sibling release compiler, sibling debug compiler, then `alignc` on `PATH`.
+The resolution step follows the repository selection order at the repository root: authenticated
+fresh compiler when required, explicit `ALIGNC`, explicit `ALIGN_REPO` release/debug compiler, then
+the managed `.align-revision` release compiler. There is no implicit sibling or `PATH` fallback.
 It resolves the selected executable with `realpath -e`, requires an absolute regular executable,
 and passes that real compiler path to the runner. The default `scripts/alignc` wrapper is a
 selector only; it is never passed to a child whose working directory changes, and it is never
@@ -781,8 +782,8 @@ The minimum C7 acceptance environment is the repository's pinned Align environme
   `PKG_CONFIG_PATH` are the only OpenSSL paths admitted to the runner;
 - macOS uses the Align CI's native `openssl@3` Homebrew dependency and its
   `LIBRARY_PATH=$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib` setup;
-- the exact Align revision recorded in `.align-revision`, rebuilt as the sibling release compiler and
-  runtime before adoption.
+- the exact Align revision recorded in `.align-revision`, materialized as the managed release
+  compiler and runtime before adoption.
 
 The common fresh-compiler topology in Section 9 of `docs/specs/check-gate-topology.md` is only the
 Linux x86_64 platform profile. The sibling Align release targets `aarch64-unknown-linux-gnu` on

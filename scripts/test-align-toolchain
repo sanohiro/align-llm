@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Focused owner for the developer-managed pinned Align checkout."""
+
+from __future__ import annotations
+
+import os
+import stat
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Sequence
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def run(arguments: Sequence[str], *, cwd: Path, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(arguments, cwd=cwd, env=environment, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr or f"command failed: {arguments}")
+    return result
+
+
+def executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def commit(repository: Path, content: str) -> str:
+    (repository / "input.txt").write_text(content, encoding="utf-8")
+    (repository / ".gitignore").write_text("/target/\n", encoding="ascii")
+    run(("git", "add", "input.txt", ".gitignore"), cwd=repository)
+    run(("git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", content), cwd=repository)
+    return run(("git", "rev-parse", "HEAD"), cwd=repository).stdout.strip()
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="align-toolchain-owner-") as raw:
+        temporary = Path(raw)
+        project = temporary / "project"
+        source = temporary / "source"
+        project.mkdir()
+        source.mkdir()
+        (project / "scripts").mkdir()
+        for name in ("align-toolchain", "alignc"):
+            (project / "scripts" / name).write_bytes((ROOT / "scripts" / name).read_bytes())
+            (project / "scripts" / name).chmod(0o755)
+        run(("git", "init", "--quiet"), cwd=source)
+        revision = commit(source, "fixture")
+        (project / ".align-revision").write_text(revision + "\n", encoding="ascii")
+        cargo = temporary / "cargo"
+        executable(
+            cargo,
+            "#!/bin/sh\nset -eu\nprintf 'build\\n' >>\"$ALIGN_OWNER_LOG\"\nsleep 0.1\ncase \"${ALIGN_OWNER_MODE:-normal}\" in fail) exit 9;; esac\nmkdir -p target/release\nif [ \"${ALIGN_OWNER_MODE:-normal}\" = probe ]; then printf '%s\\n' '#!/bin/sh' 'exit 7' >target/release/alignc; else printf '%s\\n' '#!/bin/sh' \"printf 'alignc fixture\\\\n'\" >target/release/alignc; fi\nchmod 755 target/release/alignc\nif [ \"${ALIGN_OWNER_MODE:-normal}\" != missing ]; then printf archive >target/release/libalign_runtime.a; fi\n",
+        )
+        environment = dict(os.environ)
+        environment.update(
+            {
+                "ALIGN_TOOLCHAIN_ROOT": str(temporary / "cache"),
+                "ALIGN_TOOLCHAIN_REPOSITORY": str(source),
+                "CARGO": str(cargo),
+                "ALIGN_OWNER_LOG": str(temporary / "build.log"),
+            }
+        )
+        helper = str(project / "scripts" / "align-toolchain")
+        predicted = run((helper, "path", "compiler"), cwd=project, environment=environment).stdout.strip()
+        left = subprocess.Popen((helper, "ensure", "compiler"), cwd=project, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        right = subprocess.Popen((helper, "ensure", "compiler"), cwd=project, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        left_output, left_error = left.communicate()
+        right_output, right_error = right.communicate()
+        require(left.returncode == right.returncode == 0, f"cooperative ensure failed: {left_error}{right_error}")
+        first = left_output.strip()
+        require(right_output.strip() == first, "cooperative ensure selected a different compiler")
+        second = run((helper, "ensure", "compiler"), cwd=project, environment=environment).stdout.strip()
+        require(first == second == predicted, "warm ensure selected a different compiler")
+        require((temporary / "build.log").read_text(encoding="ascii") == "build\n", "warm ensure rebuilt Align")
+        require(run((helper, "verify"), cwd=project, environment=environment).stdout.strip() == revision, "verify returned the wrong revision")
+
+        wrapper_environment = dict(environment)
+        wrapper_environment.pop("ALIGNC", None)
+        wrapper_environment.pop("ALIGN_REPO", None)
+        selected = run((str(project / "scripts" / "alignc"), "--version"), cwd=project, environment=wrapper_environment)
+        require(selected.stdout == "alignc fixture\n", "default wrapper did not use managed compiler")
+        wrapper = (project / "scripts" / "alignc").read_text(encoding="utf-8")
+        require("../align" not in wrapper and "command -v alignc" not in wrapper, "wrapper retained ambient fallback")
+
+        direct = temporary / "direct-alignc"
+        executable(direct, "#!/bin/sh\nprintf 'direct override\\n'\n")
+        direct_environment = dict(wrapper_environment)
+        direct_environment["ALIGNC"] = str(direct)
+        require(run((str(project / "scripts" / "alignc"),), cwd=project, environment=direct_environment).stdout == "direct override\n", "ALIGNC override failed")
+
+        explicit_repo = temporary / "explicit"
+        (explicit_repo / "target" / "release").mkdir(parents=True)
+        executable(explicit_repo / "target" / "release" / "alignc", "#!/bin/sh\nprintf 'repository override\\n'\n")
+        repo_environment = dict(wrapper_environment)
+        repo_environment["ALIGN_REPO"] = str(explicit_repo)
+        require(run((str(project / "scripts" / "alignc"),), cwd=project, environment=repo_environment).stdout == "repository override\n", "ALIGN_REPO override failed")
+
+        managed_source = Path(first).parents[2]
+        (managed_source / "untracked").write_text("dirty\n", encoding="ascii")
+        rejected = subprocess.run((helper, "verify"), cwd=project, env=environment, text=True, capture_output=True, check=False)
+        require(rejected.returncode != 0 and "dirty" in rejected.stderr, "dirty managed checkout was admitted")
+        (managed_source / "untracked").unlink()
+        archive = managed_source / "target" / "release" / "libalign_runtime.a"
+        archive_bytes = archive.read_bytes()
+        archive.unlink()
+        missing_output = subprocess.run((helper, "verify"), cwd=project, env=environment, text=True, capture_output=True, check=False)
+        require(missing_output.returncode != 0 and "output is unavailable" in missing_output.stderr, "missing output was admitted")
+        archive.write_bytes(archive_bytes)
+        compiler = managed_source / "target" / "release" / "alignc"
+        compiler_bytes = compiler.read_bytes()
+        executable(compiler, "#!/bin/sh\nexit 8\n")
+        probe_failure = subprocess.run((helper, "verify"), cwd=project, env=environment, text=True, capture_output=True, check=False)
+        require(probe_failure.returncode != 0, "failing compiler probe was admitted")
+        compiler.write_bytes(compiler_bytes)
+        compiler.chmod(0o755)
+
+        for mode in ("fail", "missing", "probe"):
+            failed_revision = commit(source, mode)
+            (project / ".align-revision").write_text(failed_revision + "\n", encoding="ascii")
+            failed_environment = dict(environment)
+            failed_environment["ALIGN_OWNER_MODE"] = mode
+            failed = subprocess.run((helper, "ensure", "compiler"), cwd=project, env=failed_environment, text=True, capture_output=True, check=False)
+            require(failed.returncode != 0, f"{mode} preparation unexpectedly succeeded")
+            generated_root = Path(environment["ALIGN_TOOLCHAIN_ROOT"]) / "dev-v1"
+            require(not (generated_root / failed_revision).exists(), f"{mode} preparation published a checkout")
+            require(not list(generated_root.glob(f".{failed_revision}.tmp-*")), f"{mode} preparation retained temporary state")
+
+        whitespace_environment = dict(environment)
+        whitespace_environment["ALIGN_TOOLCHAIN_ROOT"] = str(temporary / "cache with space")
+        whitespace = subprocess.run((helper, "path", "source"), cwd=project, env=whitespace_environment, text=True, capture_output=True, check=False)
+        require(whitespace.returncode != 0 and "without whitespace" in whitespace.stderr, "whitespace cache root was accepted")
+        make_whitespace = subprocess.run(("make", "-n", f"ALIGNC={temporary / 'compiler with space'}", "check"), cwd=ROOT, text=True, capture_output=True, check=False)
+        require(make_whitespace.returncode != 0 and "without whitespace" in make_whitespace.stderr, "whitespace ALIGNC was accepted by Make")
+
+    print("managed Align checkout: pin, warm reuse, validation, and overrides PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

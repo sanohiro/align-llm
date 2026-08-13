@@ -2,33 +2,52 @@
 
 Align is developed in parallel with this project. There is no Align project manifest, package registry, general test runner, or configurable source search path yet. A program starts from one `.align` entry file, and imports resolve to files beneath that entry file's directory.
 
-## Local repository layout
+## Managed local toolchain
 
-The default development layout keeps the language and engine repositories next to each other:
+Ordinary align-llm development does not use an ambient sibling Align checkout. `.align-revision`
+contains the exact compiler source commit. The wrapper materializes that commit outside Git at:
 
 ```text
-Projects/
-  align/
-    target/release/alignc
-    docs/
-    examples/
-    apps/web/pkg/
-  align-llm/
-    src/main.align
+${XDG_CACHE_HOME:-$HOME/.cache}/align-llm/align/dev-v1/<full-commit-sha>/
+  target/release/alignc
+  target/release/libalign_runtime.a
 ```
 
 `scripts/alignc` selects a compiler in this order:
 
-1. The executable named by `ALIGNC`.
-2. `../align/target/release/alignc`.
-3. `../align/target/debug/alignc`.
-4. `alignc` on `PATH`.
+1. The authenticated `/tools/fresh-alignc` when the fresh profile requires it.
+2. The executable named explicitly by `ALIGNC`.
+3. The release, then debug compiler under an explicitly supplied `ALIGN_REPO`.
+4. The managed release compiler for `.align-revision`.
 
-This makes local work track the active language checkout while still allowing packaged compilers and CI-specific paths.
+There is no implicit `../align` or `PATH` fallback. `make check`, `run`, `build`, `fmt`, and their
+recursive smoke targets therefore use the same pin after one file changes. The first command fetches
+and release-builds the pin; later commands validate and reuse the checkout. Prepare it directly
+with:
+
+```sh
+scripts/align-toolchain ensure compiler
+```
+
+`ALIGN_TOOLCHAIN_ROOT` changes the absolute cache base. `ALIGN_TOOLCHAIN_REPOSITORY` changes the
+source remote, and `CARGO` changes the build command. This is trusted, mutable, single-user
+development state: the first build intentionally uses the developer's ordinary Cargo/Rust
+environment, it is not a reproducible artifact or hostile-process boundary, and changing those
+inputs requires removing that revision directory before rebuilding. Generation `dev-v1` keeps the
+checkout separate from earlier cache contracts. Active cross-repository development remains explicit:
+
+```sh
+make check ALIGNC=../align/target/release/alignc
+make check ALIGN_REPO=../align
+```
+
+These overrides deliberately bypass the managed default. Use them only when testing Align work that
+has not yet become the repository pin.
 
 ## What to read
 
-Use the sibling repository as the source of truth:
+Use the Align repository as the source of truth. When coordinating live Align changes, the sibling
+checkout remains the convenient documentation and implementation workspace:
 
 - Start with `../align/CLAUDE.md` for current implementation status and invariants.
 - Read `../align/draft.md` for the authoritative language design.
@@ -69,11 +88,13 @@ applicable owner command; the classifier remains authoritative when path shape i
 
 `scripts/pre-pr` computes the merge base with `origin/main`, classifies the exact diff, runs the
 owner before its required aggregate, and records a local exact-HEAD stamp only after every selected
-gate passes. Use `--plan` to inspect the selection without running commands or writing the stamp.
-Fresh-image ownership additionally runs the focused qualification and the installed profile once
-each; the installed invocation removes ambient `DOCKER_HOST` and requires a reachable Docker
-daemon. It reuses the exact full-history checkout passed through `--align-repo`; the disposable
-profile clones that source without hardlinks and never reads the active checkout's worktree files.
+gate passes. With no `--align-repo`, the printed plan runs the owner first, then ensures and uses the
+same managed full-history source as the wrapper. Use `--plan` to inspect every phase and predicted path without fetching, building,
+running commands, or writing the stamp. An explicit `--align-repo` remains available for a named
+exact checkout. Fresh-image ownership additionally runs the focused qualification and the installed
+profile once each; the installed invocation removes ambient `DOCKER_HOST` and requires a reachable
+Docker daemon. The disposable profile clones the selected source without hardlinks and never reads
+another active checkout's worktree files.
 The classifier and path inventory are shared with GitHub Actions, so local and hosted scope cannot
 drift independently. See `docs/specs/development-preflight.md` for the exact commands and failure
 behavior.
@@ -85,7 +106,7 @@ required jobs. Direct pushes, squash/rebase or conflict-resolution merges, faile
 and unavailable GitHub evidence run the normal classifier-selected gates. This removes the second
 fresh-image execution after an exact merge without weakening direct-push coverage.
 
-Run `make ci` for the complete capable-host gate. It builds the exact pinned Align release compiler,
+Run `make ci` for the complete capable-host gate. It uses the exact managed pinned Align release compiler,
 then runs the bounded hosted functional graph, the sandboxed coding corpus, and canonical baseline
 verification in a deterministic order. It is complete for that declared graph, not for every
 focused qualification script in the repository. Run `make hosted-checks` only on hosts that cannot
@@ -115,8 +136,8 @@ When the engine needs a feature that does not compile in the current Align check
    in `HANDOFF.md`. Continue valid independent work without assuming the proposed surface.
 5. Implement and test that capability in `../align` as a separate, reviewable change.
 6. Update this repository only after the Align change is available at a named commit or release.
-7. Batch merged prerequisites needed by the next consumer when practical. Rebuild the pinned Align
-   release compiler, update `.align-revision` once, run every original request acceptance target and
+7. Batch merged prerequisites needed by the next consumer when practical. Update `.align-revision`
+   once, materialize its managed release compiler, run every original request acceptance target and
    one final `make ci`, and record the real-client verification before closing each request.
 
 This separation keeps engine work reproducible and prevents application code from becoming an accidental language specification.

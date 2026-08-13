@@ -81,8 +81,8 @@ python3 scripts/finalize-canonical-baseline.py \
 The finalizer writes `eval/baselines/coding-v1-reference.json` and its digest. Remove the pending
 file after the canonical result is committed.
 
-The recorder verifies and release-builds the pinned sibling Align compiler, rebuilds `main`, and
-rechecks source cleanliness before measurement. It accepts complete non-passing suite results so
+The recorder verifies and uses the managed pinned Align compiler, rebuilds `main`, and rechecks
+source cleanliness before measurement. It accepts complete non-passing suite results so
 provider failures remain measurable; the CI smoke suite exercises that path with a complete failing
 JSON Lines result and nonzero evaluator exit. Environment metadata records both the requested and
 resolved absolute Python executable, plus the version used by the measured corpus task.
