@@ -166,6 +166,202 @@ def test_runtime_materialization() -> None:
             not any(path.is_symlink() for path in target.rglob("*")),
             "materialized tree retained a symlink",
         )
+
+        multi_source_a = root / "multi-source-a"
+        multi_source_b = root / "multi-source-b"
+        multi_source_a.mkdir()
+        multi_source_b.mkdir()
+        shared = multi_source_a / "shared"
+        shared.write_bytes(b"cross-root identity")
+        shared.chmod(0o640)
+        os.link(shared, multi_source_b / "shared-alias")
+        (multi_source_a / "equal-a").write_bytes(b"equal but independent")
+        (multi_source_b / "equal-b").write_bytes(b"equal but independent")
+        multi_target_a = root / "multi-target-a"
+        multi_target_b = root / "multi-target-b"
+        multi = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(multi_target_a),
+                str(multi_source_b),
+                str(multi_target_b),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            multi.returncode == 0 and not multi.stdout and not multi.stderr,
+            "multi-root materialization failed",
+        )
+        require(
+            (multi_target_a / "shared").stat().st_ino
+            == (multi_target_b / "shared-alias").stat().st_ino,
+            "cross-root source identity was duplicated",
+        )
+        require(
+            (multi_target_a / "equal-a").stat().st_ino
+            != (multi_target_b / "equal-b").stat().st_ino,
+            "equal-byte distinct source identities were merged",
+        )
+
+        guarded_target_a = root / "guarded-target-a"
+        guarded_target_b = root / "guarded-target-b"
+        guarded_target_b.mkdir()
+        guarded = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(guarded_target_a),
+                str(multi_source_b),
+                str(guarded_target_b),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            guarded.returncode != 0
+            and "target already exists" in guarded.stderr
+            and not guarded_target_a.exists(),
+            "later existing target allowed earlier target construction",
+        )
+
+        incomplete = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(root / "incomplete-target"),
+                str(multi_source_b),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            incomplete.returncode == 2
+            and "expected one or more SOURCE TARGET pairs" in incomplete.stderr,
+            "incomplete source/target vector was accepted",
+        )
+
+        overlapping_target = root / "overlapping-target"
+        overlapping = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(overlapping_target),
+                str(multi_source_b),
+                str(overlapping_target / "child"),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            overlapping.returncode == 2
+            and "target roots must be distinct and non-overlapping" in overlapping.stderr
+            and not overlapping_target.exists(),
+            "overlapping target roots were accepted",
+        )
+
+        descendant_target = multi_source_a / "generated"
+        descendant = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(descendant_target),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            descendant.returncode == 2
+            and "source and target roots must be non-overlapping" in descendant.stderr
+            and not descendant_target.exists(),
+            "source-descendant target was accepted",
+        )
+
+        later_source = root / "later-source"
+        later_source.mkdir()
+        (later_source / "file").write_bytes(b"later source")
+        earlier_target = later_source / "earlier-target"
+        later_target = root / "later-target"
+        source_intersection = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(earlier_target),
+                str(later_source),
+                str(later_target),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            source_intersection.returncode == 2
+            and "source and target roots must be non-overlapping" in source_intersection.stderr
+            and not earlier_target.exists()
+            and not later_target.exists(),
+            "earlier target inside a later source was accepted",
+        )
+
+        real_parent = root / "real-parent"
+        real_parent.mkdir()
+        alias_parent = root / "alias-parent"
+        alias_parent.symlink_to(real_parent, target_is_directory=True)
+        real_target = real_parent / "same-target"
+        alias_target = alias_parent / "same-target"
+        aliased_targets = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(real_target),
+                str(multi_source_b),
+                str(alias_target),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            aliased_targets.returncode == 2
+            and "target roots must be distinct and non-overlapping" in aliased_targets.stderr
+            and not real_target.exists()
+            and not alias_target.exists(),
+            "symlink-parent alias targets were accepted",
+        )
+
         independent = root / "independent-copies"
         shutil.copytree(target, independent, copy_function=shutil.copy2)
         require(
@@ -260,7 +456,13 @@ def test_runtime_materialization() -> None:
     require(
         dockerfile.count("/usr/local/libexec/align-llm/materialize-fresh-tree") == 4
         and "for tree in git rust bwrap" in dockerfile
-        and "/usr/lib/llvm-22 /runtime/cc-suite" in dockerfile,
+        and "/usr/lib/llvm-22 /runtime/cc-suite" in dockerfile
+        and "/usr/lib/x86_64-linux-gnu /runtime/system/usr-lib-x86_64" in dockerfile
+        and "/usr/lib/x86_64-linux-gnu /runtime/system/lib-x86_64" in dockerfile
+        and "/usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64" in dockerfile
+        and "/usr/lib/python3.12 /runtime/system/python3.12" in dockerfile
+        and "/usr/include /runtime/system/include" in dockerfile
+        and "/usr/share/git-core /runtime/system/git-core" in dockerfile,
         "Dockerfile materialization ownership changed",
     )
     require(
@@ -275,6 +477,18 @@ def test_runtime_materialization() -> None:
         "Dockerfile stage ownership changed",
     )
     runtime_stage = dockerfile.split(" AS runtime", maxsplit=1)[1]
+    require(
+        runtime_stage.count("stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1") == 1
+        and runtime_stage.count(
+            "stat -c '%d:%i' /runtime/system/usr-lib-x86_64/libLLVM.so.22.1"
+        )
+        == 1
+        and runtime_stage.count(
+            "stat -c '%d:%i' /runtime/system/lib-x86_64/libLLVM.so.22.1"
+        )
+        == 1,
+        "runtime stage does not enforce cross-root LLVM hardlinks after transfer",
+    )
     for forbidden in ("apt-get", "apt.llvm.org", "curl ", "wget ", "git clone", "cargo fetch"):
         require(forbidden not in runtime_stage, f"runtime stage retained builder operation: {forbidden}")
     for transfer in (

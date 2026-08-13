@@ -5,10 +5,11 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-13)
 
-- Branch `agent/fresh-quota-scan-race` is based on PR #79 merge commit
-  `378d909a8b0667b74af560345d4be2574545a1fe`.
-- Active goal: eliminate the reproducible fresh-worker build failure caused by strict quota polling
-  racing Cargo's live create, rename, and unlink operations.
+- Branch `agent/fresh-runtime-hardlinks` is based on PR #80 merge commit
+  `60326e236f4a2304a4c071d6c388b341ed662469`.
+- Active goal: reduce the complete fresh image without changing its Ubuntu 24.04 platform or
+  runtime path inventory by preserving identical builder inode identity across LLVM and system
+  runtime roots.
 - Complete: PR #71 merged proportional development rules. PR #72 merged exact merged-PR check
   reuse; merge-push run `31570429008` completed in 11 seconds versus the 492-second baseline
   (97.8% lower). PR #73 merged shared fresh-image layers and main run `31578101828` published the
@@ -25,18 +26,27 @@ file records durable project state.
   seconds; its cache-only fresh job took 276 seconds and build/export took 257 seconds, while the
   hosted job seeded the missing trusted apt archive and compiler bundle entries. PR #79 merged the
   Cargo-fetch layout at `378d909a8b0667b74af560345d4be2574545a1fe`; PR run `31636754175`
-  passed in 484 seconds and exact-main run `31637540088` passed in 151 seconds.
-- In progress: an isolated build-only probe reproduced the installed failure on invocation four.
-  The worker reported `BUILD build`, Cargo itself did not return nonzero, cleanup passed, and host
-  memory/inodes were ample. The owner is the 250-millisecond private-tree quota callback treating
-  Cargo's ordinary live mutation between `listdir` and `stat/open` as a quota failure.
-- Complete locally: contract commit `079e213` and implementation commit `3d55fc1` introduced
-  mutation-tolerant live polling while retaining strict scans elsewhere. The comprehensive review
-  of `3d55fc1` found three valid closure gaps: missing strict post-child scans, an overbroad transient
-  errno set, and stale continuity. The consolidated repair narrows transient handling by syscall,
-  adds strict phase-owned scans before build/aggregate output consumption, extends the focused owner,
-  and updates this checkpoint. The focused worker owner and development-preflight owner pass after
-  repair. Exact-head complete preflight, publication, hosted qualification, and merge remain.
+  passed in 484 seconds and exact-main run `31637540088` passed in 151 seconds. PR #80 merged the
+  mutation-tolerant live quota polling repair at
+  `60326e236f4a2304a4c071d6c388b341ed662469`; its PR checks passed in 29 seconds and 7m02s.
+- Complete locally through reviewed head `015a71d`: runtime materialization accepts a validated ordered pair
+  vector, shares one source-inode table across its roots, and leaves equal-byte distinct identities
+  separate. The Dockerfile uses one invocation for LLVM and system roots and proves representative
+  aliases remain one inode after transfer. The owner regression, Dockerfile check, exact image
+  measurement, and complete installed profile pass.
+- Measured fixed-key image
+  `sha256:1ad39927516cf238a885abe65c7275442565a6235be91a217f65f3f439fecc1c` at 2,234,647,037 bytes
+  versus the 3,215,474,083-byte baseline (30.5% reduction); `/runtime` is 2,035,380,006 bytes versus
+  3,016,219,340 (32.5% reduction). The three representative LLVM paths share one 12-link inode.
+- Exact-head complete preflight passed `015a71d`: development owner 9.805s, pinned Align build
+  0.841s, hosted graph 3.779s, focused qualification 24.380s, and installed profile 227.011s. The
+  comprehensive review of that head requested three changes: assert hardlinks after the BuildKit
+  stage transfer, canonicalize and reject source/target topology intersections before construction,
+  and update this continuity record. All are accepted and implemented in the consolidated review
+  repair. The development owner, Buildx Dockerfile check, final fixed-key build, footprint, and
+  post-transfer inode checks pass without changing the measured bytes; final exact-head complete
+  preflight remains.
+- Not started: final exact-head preflight, publication, and hosted verification.
 
 ## Measurement
 
@@ -107,10 +117,10 @@ file records durable project state.
 ## Next steps
 
 1. Run exact-head complete preflight for the consolidated review repair.
-2. Publish the PR with the complete review envelope, finding dispositions, and final-head check
-   evidence; merge after required GitHub checks pass.
-3. Resume runtime-copy/build reuse optimization after the flake is removed. Keep PR #69 paused until
-   the final Align revision is named.
+2. Inspect the repair delta for unrelated behavior; no second review is required for these narrow
+   recorded-finding fixes.
+3. Publish and merge after the required GitHub checks pass. Keep PR #69 paused until the final Align
+   revision is named.
 
 ## Latest durable evidence
 

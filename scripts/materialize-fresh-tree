@@ -52,16 +52,42 @@ def copy_entry(
     raise RuntimeError(f"unsupported runtime entry: {source}")
 
 
+def canonical(path: Path) -> Path:
+    return Path(os.path.realpath(path))
+
+
+def overlaps(first: Path, second: Path) -> bool:
+    return first == second or first in second.parents or second in first.parents
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("source", type=Path)
-    parser.add_argument("target", type=Path)
+    parser.add_argument("paths", nargs="+", type=Path, metavar="SOURCE_OR_TARGET")
     arguments = parser.parse_args()
-    if arguments.target.exists(follow_symlinks=False):
-        raise SystemExit("target already exists")
-    copy_entry(arguments.source, arguments.target, frozenset(), {})
-    if not arguments.target.exists(follow_symlinks=False):
-        raise SystemExit("source did not materialize")
+    if len(arguments.paths) % 2 != 0:
+        parser.error("expected one or more SOURCE TARGET pairs")
+    pairs = tuple(zip(arguments.paths[::2], arguments.paths[1::2], strict=True))
+    canonical_sources = tuple(canonical(source) for source, _target in pairs)
+    canonical_targets: list[Path] = []
+    for _source, target in pairs:
+        normalized = canonical(target)
+        if any(
+            overlaps(normalized, other)
+            for other in canonical_targets
+        ):
+            parser.error("target roots must be distinct and non-overlapping")
+        if any(overlaps(normalized, source) for source in canonical_sources):
+            parser.error("source and target roots must be non-overlapping")
+        canonical_targets.append(normalized)
+    for _source, target in pairs:
+        if target.exists(follow_symlinks=False):
+            raise SystemExit(f"target already exists: {target}")
+
+    regular_targets: dict[tuple[int, int], Path] = {}
+    for source, target in pairs:
+        copy_entry(source, target, frozenset(), regular_targets)
+        if not target.exists(follow_symlinks=False):
+            raise SystemExit(f"source did not materialize: {source}")
     return 0
 
 
