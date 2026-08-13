@@ -1,6 +1,8 @@
 # FRESH-IMAGE profile
 
-This directory builds the installed Ubuntu 24.04 x86_64 trust root for the Section 9 fresh compiler.
+This directory builds the installed Ubuntu 24.04 native x86_64 or aarch64 trust root for the
+Section 9 fresh compiler. Each architecture is built and qualified natively; emulation is not
+acceptance evidence.
 It is deliberately independent of the repository worker delivered by FRESH-WORKER.
 
 The image contains the ELF `fresh-supervise`, `fresh-bootstrap`, and non-evidence

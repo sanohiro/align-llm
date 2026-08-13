@@ -1,0 +1,10 @@
+import core.json
+
+Inner { items: array<i64> }
+Row { inner: Option<Inner>, score: i64 }
+
+fn main() -> Result<(), Error> {
+  decoded: Row := json.decode("{\"inner\":{\"items\":[1,2]},\"score\":3}")?
+  print(json.encode(decoded))
+  return Ok(())
+}

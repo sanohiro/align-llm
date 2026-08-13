@@ -867,6 +867,41 @@ def subreaper_cases() -> None:
         control._control_require_subreaper = original_require
 
 
+def native_runtime_bindings() -> list[dict[str, object]]:
+    node: dict[str, object] = {
+        "kind": "file",
+        "mode": "0755",
+        "staged_mode": "0755",
+        "size": 0,
+        "sha256": hashlib.sha256(b"").hexdigest(),
+        "entries": [],
+    }
+    digest = control.serialized_digest(node)
+    return [
+        {
+            "source": source,
+            "target": target,
+            "manifest": node,
+            "manifest_sha256": digest,
+        }
+        for source, target in (
+            (
+                f"/runtime/system/usr-lib-{control.NATIVE_ARCHITECTURE}",
+                f"/usr/lib/{control.NATIVE_MULTIARCH}",
+            ),
+            (
+                f"/runtime/system/lib-{control.NATIVE_ARCHITECTURE}",
+                f"/lib/{control.NATIVE_MULTIARCH}",
+            ),
+            (
+                f"/runtime/system/gcc-{control.NATIVE_ARCHITECTURE}",
+                f"/usr/lib/gcc/{control.NATIVE_MULTIARCH}",
+            ),
+            ("/runtime/system/dynamic-loader", control.NATIVE_LOADER_TARGET),
+        )
+    ]
+
+
 def controller_runtime_bwrap_precedence_case() -> None:
     original_reject_environment = control._reject_environment
     original_regular_snapshot = control._regular_snapshot
@@ -880,7 +915,11 @@ def controller_runtime_bwrap_precedence_case() -> None:
     tool_opens = []
     git_calls = []
     manifest = {
-        "runtime_bindings": [{"source": "/invalid-runtime", "manifest": {}}],
+        "platform": {"architecture": control.NATIVE_ARCHITECTURE},
+        "runtime_bindings": [
+            {"source": "/invalid-runtime", "target": "/invalid-target", "manifest": {}},
+            *native_runtime_bindings(),
+        ],
         "tools": [{"name": "bwrap", "path": "/invalid-bwrap"}],
     }
     try:
@@ -960,10 +999,31 @@ def controller_phase_mapping_cases() -> None:
         return os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC), raw
 
     try:
-        control._runtime_tree = lambda _path: {}
+        runtime_calls: list[str] = []
+
+        def retained_runtime(path: str):
+            runtime_calls.append(path)
+            return native_runtime_bindings()[0]["manifest"]
+
+        control._runtime_tree = retained_runtime
         control._open_regular = open_tool
+        foreign = "x86_64" if control.NATIVE_ARCHITECTURE == "aarch64" else "aarch64"
         control.validate_manifest_bytes = lambda _raw: {
-            "runtime_bindings": [],
+            "platform": {"architecture": foreign},
+            "runtime_bindings": native_runtime_bindings(),
+            "tools": [],
+        }
+        try:
+            control._platform_self_test(b"manifest")
+        except ControlError as error:
+            assert (error.category, error.phase) == ("PLATFORM", "platform")
+        else:
+            raise AssertionError("foreign manifest architecture was accepted")
+        assert not runtime_calls
+
+        control.validate_manifest_bytes = lambda _raw: {
+            "platform": {"architecture": control.NATIVE_ARCHITECTURE},
+            "runtime_bindings": native_runtime_bindings(),
             "tools": [
                 {
                     "name": "bwrap",
@@ -982,6 +1042,7 @@ def controller_phase_mapping_cases() -> None:
             assert (error.category, error.phase) == ("TOOL", "tools")
         else:
             raise AssertionError("tool lifecycle failure lost its owning phase")
+        runtime_calls.clear()
 
         outputs = {
             "git": b"git version 2.45.0\n",
@@ -1003,7 +1064,8 @@ def controller_phase_mapping_cases() -> None:
             for name, output in outputs.items()
         ]
         control.validate_manifest_bytes = lambda _raw: {
-            "runtime_bindings": [],
+            "platform": {"architecture": control.NATIVE_ARCHITECTURE},
+            "runtime_bindings": native_runtime_bindings(),
             "tools": tools,
         }
 
@@ -1021,6 +1083,15 @@ def controller_phase_mapping_cases() -> None:
             assert (error.category, error.phase) == ("TRUST", "bwrap")
         else:
             raise AssertionError("bwrap capability failure lost its owning phase")
+
+        mismatched = native_runtime_bindings()
+        mismatched[-1] = {**mismatched[-1], "target": "/foreign-loader"}
+        try:
+            control._require_native_runtime_contract(mismatched)
+        except ControlError as error:
+            assert (error.category, error.phase) == ("PLATFORM", "platform")
+        else:
+            raise AssertionError("foreign native runtime tuple was accepted")
     finally:
         control.validate_manifest_bytes = original_validate
         control._runtime_tree = original_runtime_tree

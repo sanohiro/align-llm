@@ -733,6 +733,38 @@ def cleanup_success_case(module, temporary: Path) -> None:
     require(not admitted.exists(), "owned private root remained after cleanup")
 
 
+def ordinary_cgroup_cleanup_cases(module) -> None:
+    original_populated = module.cgroup_populated
+    original_kill = module.kill_cgroup
+    original_remove = module.remove_cgroup_leaf
+    original_timeout = module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS
+    calls: list[object] = []
+    try:
+        module.cgroup_populated = lambda _lease: True
+        module.kill_cgroup = lambda _lease: calls.append("kill")
+        module.remove_cgroup_leaf = lambda _lease: calls.append("remove")
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = 0.0
+        try:
+            module.cleanup_ordinary_cgroup(object())
+        except module.CleanupError as error:
+            require("remained populated" in str(error), "ordinary cgroup timeout error changed")
+        else:
+            raise AssertionError("populated ordinary cgroup was not bounded after kill")
+        require(calls == ["kill"], "ordinary cgroup cleanup retried an unsafe action")
+
+        state = iter((True, False))
+        calls.clear()
+        module.cgroup_populated = lambda _lease: next(state)
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = 5.0
+        module.cleanup_ordinary_cgroup(object())
+        require(calls == ["kill", "remove"], "ordinary cgroup cleanup order changed")
+    finally:
+        module.cgroup_populated = original_populated
+        module.kill_cgroup = original_kill
+        module.remove_cgroup_leaf = original_remove
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = original_timeout
+
+
 def overlay_work_cleanup_case(module, temporary: Path) -> None:
     roots = temporary / "overlay-roots"
     roots.mkdir(mode=0o700)
@@ -1275,6 +1307,120 @@ def run_owned_double_fork_forced_case(module, temporary: Path) -> None:
         cgroup_parent.rmdir()
 
 
+def native_runtime_contract_cases(module) -> None:
+    pairs = [
+        {"source": source, "target": target}
+        for source, target in (
+            (
+                f"/runtime/system/usr-lib-{module.NATIVE_ARCHITECTURE}",
+                f"/usr/lib/{module.NATIVE_MULTIARCH}",
+            ),
+            (
+                f"/runtime/system/lib-{module.NATIVE_ARCHITECTURE}",
+                f"/lib/{module.NATIVE_MULTIARCH}",
+            ),
+            (
+                f"/runtime/system/gcc-{module.NATIVE_ARCHITECTURE}",
+                f"/usr/lib/gcc/{module.NATIVE_MULTIARCH}",
+            ),
+            ("/runtime/system/dynamic-loader", module.NATIVE_LOADER_TARGET),
+        )
+    ]
+    module.require_native_runtime_contract(pairs)
+    pairs[-1]["target"] = "/foreign-loader"
+    try:
+        module.require_native_runtime_contract(pairs)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("foreign worker runtime tuple was accepted")
+
+    node: OrderedDict[str, object] = OrderedDict(
+        (
+            ("kind", "file"),
+            ("mode", "0755"),
+            ("staged_mode", "0755"),
+            ("size", 0),
+            ("sha256", module.sha256(b"")),
+            ("entries", []),
+        )
+    )
+    node_digest = module.sha256(module.canonical_json(node))
+    bindings = [
+        OrderedDict(
+            (
+                ("source", pair["source"]),
+                ("target", pair["target"]),
+                ("kind", "file"),
+                ("manifest", node),
+                ("manifest_sha256", node_digest),
+            )
+        )
+        for pair in [
+            {
+                "source": f"/runtime/system/usr-lib-{module.NATIVE_ARCHITECTURE}",
+                "target": f"/usr/lib/{module.NATIVE_MULTIARCH}",
+            },
+            {
+                "source": f"/runtime/system/lib-{module.NATIVE_ARCHITECTURE}",
+                "target": f"/lib/{module.NATIVE_MULTIARCH}",
+            },
+            {
+                "source": f"/runtime/system/gcc-{module.NATIVE_ARCHITECTURE}",
+                "target": f"/usr/lib/gcc/{module.NATIVE_MULTIARCH}",
+            },
+            {
+                "source": "/runtime/system/dynamic-loader",
+                "target": module.NATIVE_LOADER_TARGET,
+            },
+        ]
+    ]
+    manifest: OrderedDict[str, object] = OrderedDict(
+        (
+            ("schema_version", 2),
+            (
+                "controller",
+                OrderedDict((("path", module.CONTROLLER_PATH), ("api", 1))),
+            ),
+            ("bootstrap", OrderedDict()),
+            (
+                "platform",
+                OrderedDict(
+                    (
+                        ("os", "linux"),
+                        ("architecture", module.NATIVE_ARCHITECTURE),
+                        ("kernel_minimum", "6.8"),
+                        ("python_minimum", "3.12"),
+                        ("make_minimum", "4.3"),
+                    )
+                ),
+            ),
+            ("tools", [{"name": name} for name in module.TOOL_NAMES]),
+            ("runtime_bindings", bindings),
+            (
+                "cargo_cache",
+                OrderedDict(
+                    (
+                        ("root", "/cache"),
+                        ("manifest", "/cache-manifest"),
+                        ("manifest_sha256", "0" * 64),
+                        ("entry_count", 0),
+                    )
+                ),
+            ),
+        )
+    )
+    module.validate_manifest(module.canonical_json(manifest))
+    foreign = "x86_64" if module.NATIVE_ARCHITECTURE == "aarch64" else "aarch64"
+    manifest["platform"]["architecture"] = foreign
+    try:
+        module.validate_manifest(module.canonical_json(manifest))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("foreign worker manifest architecture was accepted")
+
+
 def runtime_tool_precedence_cases(module) -> None:
     original_validate = module.validate_tree_manifest
     original_authenticate = module.authenticate_tools
@@ -1745,6 +1891,7 @@ def main() -> int:
     canonical_wire_cases(module)
     run_attestation_cases(module)
     exited_process_drain_cases(module)
+    native_runtime_contract_cases(module)
     runtime_tool_precedence_cases(module)
     descendant_reap_cases(module)
     published_elf_cases(module)
@@ -1762,6 +1909,7 @@ def main() -> int:
         materialization_mutation_cases(module, temporary)
         private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)
+        ordinary_cgroup_cleanup_cases(module)
         overlay_work_cleanup_case(module, temporary)
         aggregate_quota_case(module, temporary)
         live_quota_mutation_case(module, temporary)

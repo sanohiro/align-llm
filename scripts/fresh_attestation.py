@@ -23,9 +23,14 @@ IMAGE_PREDICATE_TYPE = "https://align-llm.dev/attestations/runner-image/v1"
 INVOCATION_PREDICATE_TYPE = (
     "https://align-llm.dev/attestations/runner-invocation/v1"
 )
+ORDINARY_ADOPTION_PREDICATE_TYPE = (
+    "https://align-llm.dev/attestations/ordinary-adoption/v2"
+)
 IMAGE_KEY_ID = "align-llm-runner-image-v1"
 RUN_KEY_ID = "align-llm-run-v1"
 CONTROLLER_PATH = "scripts/fresh-align-compiler"
+ORDINARY_ADOPTION_REQUEST = "json-scan-row-ownership-adoption"
+ORDINARY_WORKER_PATH = "scripts/run-json-scan-row-ownership-adoption"
 MAX_STRING_BYTES = 4096
 MAX_PREDICATE_BYTES = 64 * 1024
 MAX_ENVELOPE_BYTES = 256 * 1024
@@ -101,15 +106,21 @@ def _render_json(value: Any, level: int = 0) -> str:
     raise WireError(f"unsupported JSON value: {type(value).__name__}")
 
 
+def canonical_json_value_bytes(value: Any) -> bytes:
+    """Serialize any supported JSON value with the Section 9 grammar."""
+
+    try:
+        return (_render_json(value) + "\n").encode("utf-8", "strict")
+    except UnicodeEncodeError as error:
+        raise WireError("canonical JSON is not valid UTF-8") from error
+
+
 def canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
     """Serialize an ordered JSON object with the Section 9 grammar."""
 
     if not isinstance(value, Mapping):
         raise WireError("canonical root is not an object")
-    try:
-        return (_render_json(value) + "\n").encode("utf-8", "strict")
-    except UnicodeEncodeError as error:
-        raise WireError("canonical JSON is not valid UTF-8") from error
+    return canonical_json_value_bytes(value)
 
 
 def _duplicate_check(pairs: list[tuple[str, Any]]) -> OrderedDict[str, Any]:
@@ -182,6 +193,8 @@ def _string(value: Any, name: str, *, nonempty: bool = True) -> str:
         raise WireError(f"{name} is not a string")
     if "\x00" in value:
         raise WireError(f"{name} contains NUL")
+    if any(ord(character) < 0x20 for character in value):
+        raise WireError(f"{name} contains a control character")
     try:
         size = len(value.encode("utf-8", "strict"))
     except UnicodeEncodeError as error:
@@ -306,6 +319,64 @@ def validate_invocation_predicate(value: Mapping[str, Any]) -> Mapping[str, Any]
     if _string(value["supervisor_key_id"], "supervisor_key_id") != RUN_KEY_ID:
         raise WireError("wrong supervisor key id")
     _sha256(value["supervisor_key_sha256"], "supervisor_key_sha256")
+    return value
+
+
+def validate_ordinary_adoption_predicate(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate the canonical Request 6 ordinary-adoption capsule predicate."""
+
+    fields = (
+        "api",
+        "request",
+        "invocation_nonce",
+        "dispatch_ticket_sha256",
+        "project_head",
+        "project_object_format",
+        "project_index_sha256",
+        "project_raw_tree_sha256",
+        "source_exception_sha256",
+        "align_head",
+        "align_object_format",
+        "align_repo_relative",
+        "worker_relative",
+        "worker_size",
+        "worker_sha256",
+        "image_digest",
+        "image_attestation_sha256",
+        "manifest_sha256",
+        "entrypoint_sha256",
+    )
+    _fields(value, fields, "ordinary-adoption predicate")
+    if _string(value["api"], "api") != "ordinary-adoption/v2":
+        raise WireError("ordinary-adoption api is invalid")
+    if _string(value["request"], "request") != ORDINARY_ADOPTION_REQUEST:
+        raise WireError("ordinary-adoption request is invalid")
+    _strict_b64url(value["invocation_nonce"], name="invocation_nonce", expected_size=32)
+    _sha256(value["dispatch_ticket_sha256"], "dispatch_ticket_sha256")
+    for name in (
+        "project_index_sha256",
+        "project_raw_tree_sha256",
+        "source_exception_sha256",
+        "worker_sha256",
+        "image_attestation_sha256",
+        "manifest_sha256",
+        "entrypoint_sha256",
+    ):
+        _sha256(value[name], name)
+    for name in ("project_head", "align_head"):
+        head = _string(value[name], name)
+        if len(head) != 40 or not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise WireError(f"{name} is not lowercase SHA-1 hex")
+    for name in ("project_object_format", "align_object_format"):
+        if _string(value[name], name) != "sha1":
+            raise WireError(f"{name} is not the fixed SHA-1 profile")
+    _relative_path(value["align_repo_relative"], "align_repo_relative")
+    if _string(value["worker_relative"], "worker_relative") != ORDINARY_WORKER_PATH:
+        raise WireError("worker_relative is invalid")
+    size = value["worker_size"]
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0 or size > 4_194_304:
+        raise WireError("worker_size is outside its bound")
+    _sha256_tagged(value["image_digest"], "image_digest")
     return value
 
 

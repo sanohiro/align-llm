@@ -1,0 +1,8 @@
+import core.json
+
+OwnedRow { items: array<i64> }
+
+fn main() -> Result<(), Error> {
+  rows: json.scanner<OwnedRow> := json.scan("[{\"items\":[1,2]}]")
+  return Ok(())
+}

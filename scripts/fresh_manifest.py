@@ -485,15 +485,16 @@ def validate_manifest(value: Mapping[str, Any]) -> None:
     if not isinstance(platform, Mapping):
         raise ManifestError("platform is not an object")
     _fields(platform, PLATFORM_FIELDS, "platform")
+    architecture = platform.get("architecture")
     expected_platform = {
         "os": "linux",
-        "architecture": "x86_64",
+        "architecture": architecture,
         "kernel_minimum": "6.8",
         "python_minimum": "3.12",
         "make_minimum": "4.3",
     }
-    if dict(platform) != expected_platform:
-        raise ManifestError("platform profile is not the fixed Linux x86_64 profile")
+    if architecture not in ("x86_64", "aarch64") or dict(platform) != expected_platform:
+        raise ManifestError("platform profile is not a supported native Linux profile")
     tools = value["tools"]
     if not isinstance(tools, list) or not tools or len(tools) > MAX_TOOLS:
         raise ManifestError("manifest tools inventory is empty or too large")
