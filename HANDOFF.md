@@ -44,11 +44,12 @@ file records durable project state.
 - `.align-revision` is the only implicit compiler selector. Ordinary commands use the managed exact
   pin; `ALIGNC` and `ALIGN_REPO` remain explicit overrides.
 - ALIGN-ADOPTION is an ordered checkpoint inside the next consumer capability, not a pin-only pull
-  request. Request 6 cannot advance to `ALIGN_LLM_VERIFIED` until the full installed profile,
-  ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci` all pass.
+  request. Request 6 advanced through `ALIGN_LLM_VERIFIED` to `CLOSED` only after the full installed
+  profile, ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci`
+  passed.
 - C6-LIFECYCLE remains blocked from product implementation on Align Requests 7, 8, 10, 12, and 13,
-  which are still `PROPOSED`. Do not consume or imitate those APIs. The Request 6 profile is safe
-  independent prerequisite work while those consumer cells remain blocked.
+  which are still `PROPOSED`. Do not consume or imitate those APIs. Request 6 is closed and no
+  longer blocks their eligible prerequisite work.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -60,7 +61,7 @@ file records durable project state.
   recorded in execution and baseline evidence. This is a deferred design note, not an implemented
   or accepted contract. The canonical native ARM profile remains fixed at `CARGO_BUILD_JOBS=1`
   until multi-job memory measurements justify a change; native x86_64 currently uses Cargo's
-  default parallelism for the pending 128 GiB owner.
+  default parallelism as qualified by the 128 GiB owner.
 
 ## Latest durable verification
 
@@ -115,8 +116,8 @@ file records durable project state.
 - Architecture-specific Cargo job owners at `6438dd4a6181`: PASS. Native `aarch64` selects
   `CARGO_BUILD_JOBS=1`; native `x86_64` omits the variable. The full native Linux `aarch64` image
   profile passes with the fixed ARM policy: boundary profile in 288,027 ms, worker aggregate in
-  186,162 ms, and cleanup in 2,846 ms. Native `x86_64` execution remains pending on the 128 GiB
-  owner.
+  186,162 ms, and cleanup in 2,846 ms. The later required native `x86_64` 128 GiB CI owner passed
+  at the final PR #84 head.
 - Comprehensive `codex review --base origin/main` reviewed `fff8370c017a` against base tip and
   merge base `350ea497fbf1`. It found seven valid ordinary-isolation defects: staged input mounts
   and tool directories remained reachable or writable; the child could run before parent-verified
@@ -151,8 +152,7 @@ file records durable project state.
 
 ## Next actions
 
-1. Close Request 6's merged adoption lifecycle in the register and preserve PR #84's exact client
-   evidence.
+1. Publish and merge the reviewed Request 6 closure record with both consistency findings repaired.
 2. Inspect the sibling Align source of truth for Request 8, the shallowest remaining C6-LIFECYCLE
    implementation prerequisite, and advance only an already accepted contract.
 3. After each consumer-complete capability, complete publication preflight, comprehensive review,
@@ -164,6 +164,6 @@ file records durable project state.
   its commits in history and replace it through the required source -> oracle -> finalization chain;
   do not amend or rewrite it.
 - No generated compiler, image, cache, seed, or signing material belongs in Git.
-- Preserve the paused PR #69 branch and its GitHub record until the migrated candidate supersedes it.
+- PR #84 supersedes paused PR #69; retain GitHub history as provenance, not as active evidence.
 - Do not use destructive checkout/reset or broad cleanup. Keep code, documentation, commits, pull
   request metadata, review records, and diagnostics in English.

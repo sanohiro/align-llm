@@ -41,12 +41,12 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 The currently pinned Align commit is
 `25b1201b3a4181f6a90921227596bdcb76ab715e`. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
-capabilities are merged. The active Request 6 installed-profile capability extends that same trust
-boundary to two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not
-acceptance evidence. A request may change `.align-revision`, run verification against a new
-compiler, or advance to `ALIGN_LLM_VERIFIED` only after its required native row and feature-specific
-adoption gate pass at the exact head. A consumer outside those two Linux rows must still name and
-merge a reviewed platform profile and implementation.
+capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
+two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
+evidence. A later request may change `.align-revision`, run verification against a new compiler, or
+advance to `ALIGN_LLM_VERIFIED` only after its required native row and feature-specific adoption
+gate pass at the exact head. A consumer outside those two Linux rows must still name and merge a
+reviewed platform profile and implementation.
 
 A blocking request pauses only its dependent consumer capability. Record that pause and its resume
 condition in `HANDOFF.md`; continue independent work when it remains valid. Do not implement a
@@ -1003,13 +1003,12 @@ align-llm verification: CLOSED by align-llm PR #84, merged as c0fc3046bff05d33ad
 ```
 
 The first scheduled dependent slice is Request 7 implementation: its strict-string grammar matrix
-uses only rows admitted by this recursively Copy boundary, so Request 6 is now blocking even though
-no align-llm product path directly consumes `json.scan`. The first align-llm real-client consumer
-remains the concrete adoption target specified below. It starts only after this request is
-`ALIGN_MERGED`, runs the positive Copy-row aggregate plus the exact fail-closed Move-row negatives,
-and pins the shipped compiler before closing the request. A consumer that actually needs a Move row
-belongs exclusively to a separate per-row ownership request and is not a consumer of this
-rejection capability.
+uses only rows admitted by this recursively Copy boundary. Request 6 no longer blocks that slice;
+Request 7's separately registered prerequisites still do. The first align-llm real-client consumer
+was the concrete adoption target specified below. It ran the positive Copy-row aggregate plus the
+exact fail-closed Move-row negatives against the pinned shipped compiler before this request closed.
+A consumer that actually needs a Move row belongs exclusively to a separate per-row ownership
+request and is not a consumer of this rejection capability.
 
 ### Motivation
 
