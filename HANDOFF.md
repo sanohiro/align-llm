@@ -39,7 +39,9 @@ file records durable project state.
 - The failed chain and its first passing replacement were superseded after a later full-profile run
   exposed a separate resource bug: after roughly 8.5 GB of authenticated runtime copying, Cargo
   inherited all eight Docker CPUs and `rustc align_sema` was killed with `SIGKILL` in the 8 GB VM.
-  Source `cbcde22600e7` fixes `CARGO_BUILD_JOBS=1` in both fresh compiler build paths; native ARM
+  Source `cbcde22600e7` introduced `CARGO_BUILD_JOBS=1` in both fresh compiler build paths; the
+  current policy retains that bound only on native `aarch64`, while native `x86_64` omits the
+  override and uses Cargo's default parallelism. Native ARM
   oracle `12cce0199762` records two passing samples, and finalization `be0131f85c3c` owns the matching
   canonical baseline and digest. `scripts/check-baseline-chain` passes on that exact chain.
 
@@ -56,14 +58,15 @@ file records durable project state.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
-- Future resource tuning may replace the fixed Cargo job count with an authenticated
+- Future resource tuning may replace the temporary architecture-specific Cargo job policy with an authenticated
   `--cargo-build-jobs auto|N` profile input. The candidate automatic policy is the smaller of
   `max(1, effective CPU affinity count - 1)` and a conservative budget derived from the cgroup hard
   memory limit, with physical memory only as an unlimited-cgroup fallback. An explicit value would
   remain bounded by effective CPUs and the qualified memory budget, and the resolved value would be
   recorded in execution and baseline evidence. This is a deferred design note, not an implemented
-  or accepted contract; the canonical native ARM profile remains fixed at `CARGO_BUILD_JOBS=1`
-  until multi-job memory measurements justify a change.
+  or accepted contract. The canonical native ARM profile remains fixed at `CARGO_BUILD_JOBS=1`
+  until multi-job memory measurements justify a change; native x86_64 currently uses Cargo's
+  default parallelism for the qualified 128 GiB owner.
 
 ## Latest durable verification
 

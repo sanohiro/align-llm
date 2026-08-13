@@ -2177,14 +2177,16 @@ The row environment is also fixed. Every row receives exactly the common set
 `ALIGN_REPO=/private-align`, `CARGO_NET_OFFLINE=true`, `HOME=/nonexistent`, `LANG=C`, `LC_ALL=C`,
 `MAKEFLAGS=`, `GNUMAKEFLAGS=`, `MAKEOVERRIDES=`, `PATH=/private-native/bin:/private-rust/bin:/private-llvm/bin:/tools:/usr/bin:/bin`,
 `PYTHONDONTWRITEBYTECODE=1`, and `TMPDIR=/tmp`. Row 2 adds
-`CARGO=/private-rust/bin/cargo`, `CARGO_BUILD_JOBS=1`, `RUSTC=/private-rust/bin/rustc`, `CARGO_HOME=/private-cargo-home`,
+`CARGO=/private-rust/bin/cargo`, `RUSTC=/private-rust/bin/rustc`, `CARGO_HOME=/private-cargo-home`,
 `CARGO_TARGET_DIR=/private-cargo-target`, `LLVM_CONFIG=/private-llvm/bin/llvm-config`,
 `LLVM_SYS_221_PREFIX=/private-llvm`, `CC=/private-native/bin/cc`, `CXX=/private-native/bin/cxx`,
 `AR=/private-native/bin/ar`, `RANLIB=/private-native/bin/ranlib`, `LD=/private-llvm/bin/ld.lld`,
 `LIBRARY_PATH=<authenticated-native-library-path>`, `LD_LIBRARY_PATH=<authenticated-loader-path>`,
 and `PKG_CONFIG_PATH=<authenticated-pkg-config-path>`. Row 3 adds the same build variables plus
 `ALIGNC=/private-tool-bin/adoption-alignc`, `ALIGNC_DESCRIPTOR=/private-tool-bin/adoption-handoff`,
-and `ALIGNC_CACHE=/private-compiler-cache`. No other variable or descriptor is inherited, and the
+and `ALIGNC_CACHE=/private-compiler-cache`. On native `aarch64`, rows 2 and 3 additionally receive
+`CARGO_BUILD_JOBS=1`; on native `x86_64`, that variable is absent and Cargo uses its native default
+parallelism. No other variable or descriptor is inherited, and the
 golden child-plan test compares all three arrays and environment sets byte-for-byte before any child.
 
 The authority lifetime is equally fixed: bwrap closes source FD `12`, FD `13`, FD `15`, every setup
@@ -2299,12 +2301,14 @@ the interpreter and data argument separately and reject any project-script path 
 
 Each child receives `ALIGN_REPO=/private-align` and the same authenticated read-only toolchain,
 cache, and empty Make-control environment. The `align-build-only` child additionally receives
-`CARGO=/private-rust/bin/cargo`, `CARGO_BUILD_JOBS=1`, `RUSTC=/private-rust/bin/rustc`,
+`CARGO=/private-rust/bin/cargo`, `RUSTC=/private-rust/bin/rustc`,
 `CARGO_HOME=/private-cargo-home`, `CARGO_TARGET_DIR=/private-cargo-target`,
 `CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=/private-llvm/bin/llvm-config`,
 `LLVM_SYS_221_PREFIX=/private-llvm`, `CC=/private-native/bin/cc`,
-`CXX=/private-native/bin/cxx`, and the authenticated native search paths. The wrapper materializes
-`/private-native/bin/cc` and `/private-native/bin/cxx` as create-exclusive copies of the authenticated
+`CXX=/private-native/bin/cxx`, and the authenticated native search paths. On native `aarch64` only,
+the child additionally receives `CARGO_BUILD_JOBS=1`; native `x86_64` omits the variable and uses
+Cargo's native default parallelism. The wrapper materializes `/private-native/bin/cc` and
+`/private-native/bin/cxx` as create-exclusive copies of the authenticated
 `clang` and `clang++` runtime bytes, with their complete ELF closure; the manifest's `cc` and `cxx`
 forwarders are identity records, not executed aliases. These are explicit staged aliases, not an
 unlisted `c++` name. Every focused child

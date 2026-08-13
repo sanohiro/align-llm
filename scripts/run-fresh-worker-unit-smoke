@@ -1019,8 +1019,11 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
             "build lacks strict post-child quota validation",
         )
         require(
-            '"CARGO_BUILD_JOBS",\n            "1",' in build_owner,
-            "build lacks the fixed single-job Cargo resource bound",
+            module.cargo_build_job_arguments("aarch64")
+            == ("--setenv", "CARGO_BUILD_JOBS", "1")
+            and module.cargo_build_job_arguments("x86_64") == ()
+            and "*cargo_build_job_arguments(NATIVE_ARCHITECTURE)" in build_owner,
+            "build lacks the architecture-specific Cargo resource policy",
         )
         require(
             "resource_check=lambda: enforce_aggregate_quota(admission, live=True)" in aggregate_owner

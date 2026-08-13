@@ -3553,6 +3553,14 @@ def run_owned(
                         raise CleanupError("cgroup descriptor close failed") from error
 
 
+def cargo_build_job_arguments(architecture: str) -> tuple[str, ...]:
+    if architecture == "aarch64":
+        return "--setenv", "CARGO_BUILD_JOBS", "1"
+    if architecture == "x86_64":
+        return ()
+    raise ValueError("unsupported Cargo build architecture")
+
+
 def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> tuple[Path, Path]:
     root = admission.root_path
     tool_bin = root / "tool-bin"
@@ -3618,9 +3626,7 @@ def build_compiler(admission: Admission, runtime: Sequence[RuntimeBinding]) -> t
             "--setenv",
             "CARGO_TARGET_DIR",
             "/target",
-            "--setenv",
-            "CARGO_BUILD_JOBS",
-            "1",
+            *cargo_build_job_arguments(NATIVE_ARCHITECTURE),
             "--setenv",
             "CARGO_NET_OFFLINE",
             "true",

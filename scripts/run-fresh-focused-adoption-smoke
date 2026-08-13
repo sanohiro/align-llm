@@ -19,7 +19,9 @@ sys.path.insert(0, str(REPOSITORY / "scripts"))
 sys.path.insert(0, str(CONTROL))
 
 from adoption_namespace import (  # noqa: E402
+    NATIVE_ARCHITECTURE,
     NamespaceFailure,
+    _cargo_build_job_environment,
     _copy_tree,
     _descriptor_json,
     _environment,
@@ -139,13 +141,25 @@ def check_rows() -> None:
         "TMPDIR": "/tmp",
     }
     require(set(rows[0][1]) == set(common_environment), "revision environment has an override")
-    require(set(rows[1][1]) == set(common_environment) | {
-        "CARGO", "CARGO_BUILD_JOBS", "RUSTC", "CARGO_HOME", "CARGO_TARGET_DIR", "LLVM_CONFIG",
+    build_environment = {
+        "CARGO", "RUSTC", "CARGO_HOME", "CARGO_TARGET_DIR", "LLVM_CONFIG",
         "LLVM_SYS_221_PREFIX", "CC", "CXX", "AR", "RANLIB", "LD",
         "LIBRARY_PATH", "LD_LIBRARY_PATH", "PKG_CONFIG_PATH",
-    }, "build environment has an override")
-    require(rows[1][1]["CARGO_BUILD_JOBS"] == "1", "build job bound changed")
-    require(rows[2][1]["CARGO_BUILD_JOBS"] == "1", "focused build job bound changed")
+    } | set(_cargo_build_job_environment(NATIVE_ARCHITECTURE))
+    require(
+        set(rows[1][1]) == set(common_environment) | build_environment,
+        "build environment has an override",
+    )
+    require(
+        _cargo_build_job_environment("aarch64") == {"CARGO_BUILD_JOBS": "1"}
+        and _cargo_build_job_environment("x86_64") == {},
+        "architecture-specific Cargo job policy changed",
+    )
+    for row in rows[1:]:
+        require(
+            row[1].get("CARGO_BUILD_JOBS") == ("1" if NATIVE_ARCHITECTURE == "aarch64" else None),
+            "native build row uses the wrong Cargo job policy",
+        )
     require(rows[2][1]["ALIGNC"] == "/private-tool-bin/adoption-alignc", "focused compiler path changed")
     require(rows[2][1]["ALIGNC_DESCRIPTOR"] == "/private-tool-bin/adoption-handoff", "focused descriptor path changed")
     require(rows[2][1]["ALIGNC_CACHE"] == "/private-compiler-cache", "focused cache path changed")

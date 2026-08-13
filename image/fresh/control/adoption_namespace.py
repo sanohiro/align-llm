@@ -756,6 +756,14 @@ def _runtime_paths() -> tuple[str, str, str]:
     return ":".join(libraries), ":".join(loaders), ":".join(pkgconfig)
 
 
+def _cargo_build_job_environment(architecture: str) -> dict[str, str]:
+    if architecture == "aarch64":
+        return {"CARGO_BUILD_JOBS": "1"}
+    if architecture == "x86_64":
+        return {}
+    raise NamespaceFailure("toolchain")
+
+
 def _environment(
     *, build: bool, focused: bool, library_path: str, loader_path: str, pkgconfig_path: str
 ) -> dict[str, str]:
@@ -776,7 +784,7 @@ def _environment(
         result.update(
             {
                 "CARGO": "/private-rust/bin/cargo",
-                "CARGO_BUILD_JOBS": "1",
+                **_cargo_build_job_environment(NATIVE_ARCHITECTURE),
                 "RUSTC": "/private-rust/bin/rustc",
                 "CARGO_HOME": "/private-cargo-home",
                 "CARGO_TARGET_DIR": "/private-cargo-target",
