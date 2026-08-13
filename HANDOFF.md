@@ -66,7 +66,7 @@ file records durable project state.
   recorded in execution and baseline evidence. This is a deferred design note, not an implemented
   or accepted contract. The canonical native ARM profile remains fixed at `CARGO_BUILD_JOBS=1`
   until multi-job memory measurements justify a change; native x86_64 currently uses Cargo's
-  default parallelism for the qualified 128 GiB owner.
+  default parallelism for the pending 128 GiB owner.
 
 ## Latest durable verification
 
@@ -118,6 +118,11 @@ file records durable project state.
   repair. Image build passed in 23,143 ms, boundary profile in 257,071 ms, worker aggregate in
   174,881 ms, and cleanup in 3,983 ms. Success is now emitted only after the worker-owned root,
   source views, tools, bind placeholders, and cgroup are cleaned.
+- Architecture-specific Cargo job owners at `6438dd4a6181`: PASS. Native `aarch64` selects
+  `CARGO_BUILD_JOBS=1`; native `x86_64` omits the variable. The full native Linux `aarch64` image
+  profile passes with the fixed ARM policy: boundary profile in 288,027 ms, worker aggregate in
+  186,162 ms, and cleanup in 2,846 ms. Native `x86_64` execution remains pending on the 128 GiB
+  owner.
 - The first ARM baseline recorder invocation completed but produced two FAIL samples solely because
   its helper did not install `/usr/bin/bwrap`; schema inspection rejected it as canonical evidence.
 - `python3 scripts/test-development-preflight`: PASS in the native Linux `aarch64` capable helper;
