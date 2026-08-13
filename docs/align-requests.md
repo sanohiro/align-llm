@@ -2371,6 +2371,11 @@ ordinary host wrapper or trust its artifacts.
 The worker remains the outer wrapper process that owns the single bwrap/namespace-supervisor child,
 the cgroup admission, and the host staging root. It opens and authenticates image-owned bwrap as FD
 `27`, creates the unique cgroup leaf and start-gate pipe, and forks exactly one bwrap launcher child.
+Before opening any tool or source-identity descriptor, it reserves the complete fixed bind-FD set
+`{20..27} ∪ {40+i for each runtime binding} ∪ {400+i for each tool}` with non-inheritable
+placeholders. Each bind atomically replaces only its placeholder, so constructing the bwrap vector
+cannot overwrite a retained tool or Git-view descriptor; unused placeholders remain worker-owned
+and are closed during reverse cleanup.
 The launcher child closes its parent-side gate FD `11`, blocks on the read end at fixed launcher-child
 FD `10`, and performs no bwrap operation while blocked. The worker parent records the child's PID and
 start time, attaches that PID to the empty leaf with `pids.max=512`, proves membership, and releases
@@ -2395,6 +2400,15 @@ leaf empty and unchanged, removes that leaf descriptor-relatively, rescans the h
 and performs its descriptor-relative cleanup/quarantine; it never asks the namespace supervisor to
 remove a host pathname. A failure leaves no child and emits the one phase error; a failed cleanup
 emits `json-scan adoption: ERROR cleanup\n` and leaves the unprovable path untouched.
+
+The complete ordinary timeout hierarchy is fixed and strictly nested. The worker gives the one
+bwrap/namespace child 5,000 seconds, then owns a separately bounded 5-second final cgroup drain. The
+dispatcher deadline is 5,020 seconds, the native supervisor deadline is 5,040 seconds, and the
+installed-profile owner deadline is 5,100 seconds. The increasing bounds reserve time for the inner
+owner to kill, reap, close, and report before an outer owner intervenes. No caller may override a
+deadline. A primary phase remains authoritative if its
+reverse cleanup also fails; a cleanup failure after otherwise successful work becomes the sole
+`cleanup` result, and no PASS bytes are written until all worker-owned cleanup has succeeded.
 
 The ordinary namespace has enforceable resource bounds, not only post-run accounting. The fixed
 installed profile provisions the delegated cgroup-v2 parent

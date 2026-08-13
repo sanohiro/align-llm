@@ -34,7 +34,7 @@ PROVENANCE_SCRIPTS = (
 )
 ALIGN_REPOSITORY = "https://github.com/sanohiro/align.git"
 TEST_UID = 12345
-WORKER_INVOCATION_TIMEOUT = 5_000
+WORKER_INVOCATION_TIMEOUT = 5_100
 PREPARED_IMAGE_PATTERN = re.compile(r"align-llm-fresh-test:[0-9a-f]{32}\Z")
 
 

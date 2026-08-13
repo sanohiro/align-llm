@@ -17,6 +17,7 @@ import tempfile
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from fresh_attestation import (
     IMAGE_KEY_ID,
@@ -763,6 +764,81 @@ def ordinary_cgroup_cleanup_cases(module) -> None:
         module.kill_cgroup = original_kill
         module.remove_cgroup_leaf = original_remove
         module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = original_timeout
+
+
+def ordinary_cleanup_precedence_cases(module) -> None:
+    original_cgroup_cleanup = module.cleanup_ordinary_cgroup
+    original_cleanup = module.cleanup
+    original_close_git_view = module.close_git_view
+
+    def closed(descriptor: int) -> bool:
+        try:
+            os.fstat(descriptor)
+        except OSError as error:
+            return error.errno == errno.EBADF
+        return False
+
+    def failing_cgroup_cleanup(_lease) -> None:
+        raise module.CleanupError("injected cgroup cleanup failure")
+
+    def cgroup_lease():
+        leaf_fd, parent_fd = os.pipe()
+        return SimpleNamespace(leaf_fd=leaf_fd, parent_fd=parent_fd)
+
+    try:
+        module.cleanup_ordinary_cgroup = failing_cgroup_cleanup
+        lease = cgroup_lease()
+        try:
+            module.ordinary_close_cgroup_lease(lease, None)
+        except module.OrdinaryFailure as error:
+            require(error.phase == "cleanup", "successful cgroup work did not report cleanup failure")
+        else:
+            raise AssertionError("successful cgroup work ignored cleanup failure")
+        require(closed(lease.leaf_fd) and closed(lease.parent_fd), "cgroup lease descriptors remained open")
+
+        lease = cgroup_lease()
+        module.ordinary_close_cgroup_lease(lease, module.OrdinaryFailure("build"))
+        require(closed(lease.leaf_fd) and closed(lease.parent_fd), "primary failure leaked cgroup lease descriptors")
+
+        calls: list[object] = []
+
+        def failing_cleanup(_admission) -> None:
+            calls.append("admission")
+            raise module.CleanupError("injected admission cleanup failure")
+
+        def failing_close_git_view(view) -> None:
+            calls.append(view)
+            raise module.CleanupError("injected Git view cleanup failure")
+
+        module.cleanup = failing_cleanup
+        module.close_git_view = failing_close_git_view
+        for active in (None, module.OrdinaryFailure("build")):
+            tool_fd, tool_peer = os.pipe()
+            try:
+                try:
+                    module.ordinary_cleanup_worker_inputs(
+                        object(),
+                        SimpleNamespace(view="align"),
+                        SimpleNamespace(view="project"),
+                        {"tool": tool_fd},
+                        set(),
+                        active,
+                    )
+                except module.OrdinaryFailure as error:
+                    require(active is None and error.phase == "cleanup", "cleanup replaced the primary phase")
+                else:
+                    require(active is not None, "successful worker work ignored cleanup failure")
+                require(closed(tool_fd), "worker tool descriptor remained open")
+            finally:
+                os.close(tool_peer)
+        require(
+            calls == ["admission", "align", "project"] * 2,
+            "worker cleanup stopped before all owned inputs were closed",
+        )
+    finally:
+        module.cleanup_ordinary_cgroup = original_cgroup_cleanup
+        module.cleanup = original_cleanup
+        module.close_git_view = original_close_git_view
 
 
 def overlay_work_cleanup_case(module, temporary: Path) -> None:
@@ -1914,6 +1990,7 @@ def main() -> int:
         private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)
         ordinary_cgroup_cleanup_cases(module)
+        ordinary_cleanup_precedence_cases(module)
         overlay_work_cleanup_case(module, temporary)
         aggregate_quota_case(module, temporary)
         live_quota_mutation_case(module, temporary)

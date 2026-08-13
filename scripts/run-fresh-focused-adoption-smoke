@@ -29,6 +29,7 @@ from adoption_namespace import (  # noqa: E402
 from request6_adoption import (  # noqa: E402
     MAX_RAW_BYTES,
     REQUIRED_DESCRIPTOR_SET,
+    WORKER_TIMEOUT_SECONDS,
     AdoptionFailure,
     _strict_arguments,
     _symlink_stays_inside,
@@ -218,7 +219,7 @@ def check_launcher_mode_contract() -> None:
 def check_source_contracts() -> None:
     worker = (REPOSITORY / "scripts/fresh-align-compiler").read_text(encoding="utf-8")
     ordinary_start = worker.index("def ordinary_capture_bwrap")
-    ordinary_end = worker.index("def ordinary_result", ordinary_start)
+    ordinary_end = worker.index("def ordinary_validate_result", ordinary_start)
     ordinary = worker[ordinary_start:ordinary_end]
     for token in (
         '"--as-pid-1"', '"--unshare-ipc"', '"--sync-fd", "16"',
@@ -232,6 +233,33 @@ def check_source_contracts() -> None:
         require(token in ordinary, f"ordinary bwrap contract is missing: {token}")
     for forbidden in ('"--overlay"', '"--userns"', '"/workspace"'):
         require(forbidden not in ordinary, f"ordinary bwrap contract leaked aggregate state: {forbidden}")
+    worker_start = worker.index("def ordinary_worker")
+    worker_end = worker.index("def install_bundle", worker_start)
+    worker_lifecycle = worker[worker_start:worker_end]
+    require(
+        worker_lifecycle.index("finally:") < worker_lifecycle.index("return ordinary_emit_result(result)"),
+        "ordinary success is emitted before worker cleanup",
+    )
+    require(
+        "result = ordinary_validate_result(" in worker_lifecycle
+        and "*ordinary_capture_bwrap(admission, runtime, tools, reserved_bind_fds)"
+        in worker_lifecycle,
+        "ordinary child result is not validated before worker cleanup",
+    )
+    require(
+        "admission, align, project, tools, reserved_bind_fds, sys.exc_info()[1]"
+        in worker_lifecycle,
+        "ordinary worker cleanup precedence is not explicit",
+    )
+    require(
+        worker_lifecycle.index("reserved_bind_fds = ordinary_reserve_bind_fds(manifest)")
+        < worker_lifecycle.index("tools = authenticate_tools(manifest)"),
+        "ordinary bind descriptors are not reserved before tool and source identity opens",
+    )
+    require(
+        "ordinary_close_cgroup_lease(lease, active)" in ordinary,
+        "ordinary cgroup cleanup precedence is not explicit",
+    )
     native = (REPOSITORY / "image/fresh/fresh-supervise.c").read_text(encoding="utf-8")
     for token in (
         "ordinary_preflight", "ordinary_dispatcher_child", "SYS_execveat",
@@ -239,6 +267,8 @@ def check_source_contracts() -> None:
         "return WEXITSTATUS(status) == 0 ? 0 : 1",
     ):
         require(token in native, f"native ordinary parent contract is missing: {token}")
+    native_timeout = re.search(r"#define ORDINARY_WORKER_SECONDS (\d+)", native)
+    require(native_timeout is not None, "native ordinary deadline is missing")
     for path in (
         REPOSITORY / "image/fresh/control/request6_adoption.py",
         REPOSITORY / "image/fresh/control/adoption_namespace.py",
@@ -247,6 +277,14 @@ def check_source_contracts() -> None:
         require("communicate(" not in path.read_text(encoding="utf-8"), f"unbounded subprocess boundary in {path.name}")
     installed_profile = (REPOSITORY / "scripts/run-fresh-image-profile-smoke").read_text(
         encoding="utf-8"
+    )
+    installed_timeout = re.search(r"WORKER_INVOCATION_TIMEOUT = ([\d_]+)", installed_profile)
+    require(installed_timeout is not None, "installed owner deadline is missing")
+    require(
+        5_000 + 5 < WORKER_TIMEOUT_SECONDS
+        < int(native_timeout.group(1))
+        < int(installed_timeout.group(1).replace("_", "")),
+        "ordinary nested deadlines do not preserve cleanup margins",
     )
     require(
         installed_profile.count("/runtime/git/bin/git -C /work/project") == 4,

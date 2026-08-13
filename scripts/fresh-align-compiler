@@ -4140,10 +4140,36 @@ def ordinary_close_child_fds(allowed: set[int]) -> None:
                 pass
 
 
+def ordinary_reserve_bind_fds(manifest: Mapping[str, Any]) -> set[int]:
+    targets = {
+        *range(20, 28),
+        *(40 + index for index, _ in enumerate(manifest["runtime_bindings"])),
+        *(400 + index for index, _ in enumerate(manifest["tools"])),
+    }
+    expected_count = 8 + len(manifest["runtime_bindings"]) + len(manifest["tools"])
+    if len(targets) != expected_count or ordinary_descriptor_set() != ORDINARY_REQUIRED_FDS:
+        raise OrdinaryFailure("toolchain")
+    placeholder = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        for descriptor in sorted(targets):
+            os.dup2(placeholder, descriptor, inheritable=False)
+    except OSError as error:
+        for descriptor in targets:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise OrdinaryFailure("toolchain") from error
+    finally:
+        os.close(placeholder)
+    return targets
+
+
 def ordinary_capture_bwrap(
     admission: Admission,
     runtime: Sequence[RuntimeBinding],
     tools: Mapping[str, int],
+    reserved_bind_fds: set[int],
 ) -> tuple[int, bytes, bytes]:
     root = admission.root_path
     bound: list[int] = []
@@ -4311,6 +4337,7 @@ def ordinary_capture_bwrap(
                     break
         raise
     finally:
+        active = sys.exc_info()[1]
         for descriptor in (stdout_read, stdout_write, stderr_read, stderr_write):
             if descriptor >= 0:
                 try:
@@ -4322,33 +4349,86 @@ def ordinary_capture_bwrap(
                 os.close(descriptor)
             except OSError:
                 pass
-        if lease is not None:
-            try:
-                cleanup_ordinary_cgroup(lease)
-            except (CleanupError, OSError) as error:
-                raise OrdinaryFailure("cleanup") from error
             finally:
-                for descriptor in (lease.leaf_fd, lease.parent_fd):
-                    try:
-                        os.close(descriptor)
-                    except OSError:
-                        pass
+                reserved_bind_fds.discard(descriptor)
+        if lease is not None:
+            ordinary_close_cgroup_lease(lease, active)
 
 
-def ordinary_result(status: int, stdout: bytes, stderr: bytes) -> int:
+def ordinary_close_cgroup_lease(
+    lease: CgroupLease,
+    active: BaseException | None,
+) -> None:
+    failure: BaseException | None = None
+    try:
+        cleanup_ordinary_cgroup(lease)
+    except (CleanupError, OSError) as error:
+        failure = error
+    finally:
+        for descriptor in (lease.leaf_fd, lease.parent_fd):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    if active is None and failure is not None:
+        raise OrdinaryFailure("cleanup") from failure
+
+
+def ordinary_validate_result(status: int, stdout: bytes, stderr: bytes) -> tuple[int, int, bytes]:
     phases = ("input", "toolchain", "revision", "build", "fixture", "cleanup", "unobserved")
     if status == 0:
         if stdout != b"json-scan adoption: PASS\n" or stderr:
             ordinary_fail("toolchain")
-        os.write(1, stdout)
-        return 0
+        return 0, 1, stdout
     if status < 1 or status > len(phases) or stdout:
         ordinary_fail("toolchain")
     expected = f"json-scan adoption: ERROR {phases[status - 1]}\n".encode("ascii")
     if stderr != expected:
         ordinary_fail("toolchain")
-    os.write(2, stderr)
+    return status, 2, stderr
+
+
+def ordinary_emit_result(result: tuple[int, int, bytes]) -> int:
+    status, descriptor, payload = result
+    os.write(descriptor, payload)
     return status
+
+
+def ordinary_cleanup_worker_inputs(
+    admission: Admission | None,
+    align: SourceIdentity | None,
+    project: SourceIdentity | None,
+    tools: Mapping[str, int],
+    reserved_bind_fds: set[int],
+    active: BaseException | None,
+) -> None:
+    failure: BaseException | None = None
+    if admission is not None:
+        try:
+            cleanup(admission)
+        except CleanupError as error:
+            failure = error
+    for identity in (align, project):
+        if identity is not None:
+            try:
+                close_git_view(identity.view)
+            except CleanupError as error:
+                if failure is None:
+                    failure = error
+    for descriptor in tools.values():
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            if failure is None:
+                failure = error
+    for descriptor in reserved_bind_fds:
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            if failure is None:
+                failure = error
+    if active is None and failure is not None:
+        raise OrdinaryFailure("cleanup") from failure
 
 
 def ordinary_worker(arguments: Sequence[str]) -> int:
@@ -4391,14 +4471,17 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
     except (OSError, ValueError, UnicodeError) as error:
         ordinary_fail("toolchain")
     verify_platform()
-    try:
-        tools = authenticate_tools(manifest)
-    except Exception as error:
-        raise OrdinaryFailure("toolchain") from error
+    reserved_bind_fds = ordinary_reserve_bind_fds(manifest)
+    tools: Mapping[str, int] = {}
     project: SourceIdentity | None = None
     align: SourceIdentity | None = None
     admission: Admission | None = None
+    result: tuple[int, int, bytes] | None = None
     try:
+        try:
+            tools = authenticate_tools(manifest)
+        except Exception as error:
+            raise OrdinaryFailure("toolchain") from error
         try:
             project = source_identity(
                 "project-source", 4, tools["git"],
@@ -4436,8 +4519,9 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
             admission = admit_root()
             ordinary_make_root(admission)
             runtime = ordinary_stage(admission, project, align, manifest, cache_manifest, tools)
-            status, stdout, stderr = ordinary_capture_bwrap(admission, runtime, tools)
-            return ordinary_result(status, stdout, stderr)
+            result = ordinary_validate_result(
+                *ordinary_capture_bwrap(admission, runtime, tools, reserved_bind_fds)
+            )
         except OrdinaryFailure as error:
             raise
         except WorkerError as error:
@@ -4445,25 +4529,12 @@ def ordinary_worker(arguments: Sequence[str]) -> int:
         except (CleanupError, OSError, ValueError, subprocess.SubprocessError) as error:
             raise OrdinaryFailure("toolchain") from error
     finally:
-        if admission is not None:
-            try:
-                cleanup(admission)
-            except CleanupError as error:
-                if sys.exc_info()[1] is None:
-                    raise OrdinaryFailure("cleanup") from error
-        for identity in (align, project):
-            if identity is not None:
-                try:
-                    close_git_view(identity.view)
-                except CleanupError:
-                    if sys.exc_info()[1] is None:
-                        raise OrdinaryFailure("cleanup")
-        for descriptor in tools.values():
-            try:
-                os.close(descriptor)
-            except OSError:
-                if sys.exc_info()[1] is None:
-                    raise OrdinaryFailure("cleanup")
+        ordinary_cleanup_worker_inputs(
+            admission, align, project, tools, reserved_bind_fds, sys.exc_info()[1]
+        )
+    if result is None:
+        raise OrdinaryFailure("unobserved")
+    return ordinary_emit_result(result)
 
 
 def install_bundle(
