@@ -123,6 +123,25 @@ file records durable project state.
   profile passes with the fixed ARM policy: boundary profile in 288,027 ms, worker aggregate in
   186,162 ms, and cleanup in 2,846 ms. Native `x86_64` execution remains pending on the 128 GiB
   owner.
+- Comprehensive `codex review --base origin/main` reviewed `fff8370c017a` against base tip and
+  merge base `350ea497fbf1`. It found seven valid ordinary-isolation defects: staged input mounts
+  and tool directories remained reachable or writable; the child could run before parent-verified
+  cgroup admission; session-breaking descendants could escape teardown; a phase-channel failure
+  could lose the active row phase; source mutation during staging was classified as `toolchain`;
+  platform rejection was classified as `unobserved`; and setup failures were classified as
+  `build`. Repair `d50373fc14af` closes all seven findings. It seals staged inputs and the namespace
+  root, adds a parent-controlled cgroup start gate, kills all subreaper-owned children, preserves
+  the active phase on channel loss, and corrects the three failure mappings. The repair implements
+  the already reviewed lifecycle contract without expanding capability scope, so its focused delta
+  was inspected without triggering another comprehensive review.
+- Native Linux `aarch64` owners at `d50373fc14af`: `run-fresh-focused-adoption-smoke` and
+  `run-fresh-worker-unit-smoke` PASS in the pinned capable image; Python syntax parsing,
+  `check-format`, `check-baseline-chain`, and `git diff --check` PASS. The complete
+  `run-fresh-image-profile-smoke --require-docker` passes against a clean checkout of pinned Align
+  `25b1201b...`: image build in 29,701 ms, image attestation in 3,597 ms, profile lifecycle in
+  3,173 ms, profile self-test in 14,771 ms, trust mutations in 13,740 ms, runtime replacements in
+  22,496 ms, boundary profile in 275,309 ms, worker aggregate in 185,239 ms, and cleanup in
+  3,410 ms.
 - The first ARM baseline recorder invocation completed but produced two FAIL samples solely because
   its helper did not install `/usr/bin/bwrap`; schema inspection rejected it as canonical evidence.
 - `python3 scripts/test-development-preflight`: PASS in the native Linux `aarch64` capable helper;
@@ -135,10 +154,13 @@ file records durable project state.
 
 ## Next actions
 
-1. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
-   final capable `make ci` with the `25b1201b...` compiler.
-2. Publish the consumer-complete profile/adoption candidate with the reviewed-head envelope, all
-   three finding dispositions, repair commit `b82d3b97ec83`, and exact final verification evidence.
+1. Run the exact-HEAD publication preflight, push the consumer-complete profile/adoption candidate,
+   and publish the reviewed-head envelope with all seven finding dispositions and repair commit
+   `d50373fc14af`.
+2. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
+   final capable `make ci` with the `25b1201b...` compiler and merge the candidate.
+3. Refresh `main` after merge and start the next eligible roadmap capability while Align Requests
+   7, 8, 10, 12, and 13 remain blocked.
 
 ## Recovery and preservation
 
