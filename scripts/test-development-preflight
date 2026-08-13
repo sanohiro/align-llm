@@ -1566,6 +1566,61 @@ def test_align_bundle() -> None:
 
 def test_workflow_topology() -> None:
     workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    def fresh_step(source: str, name: str) -> str:
+        fresh_workflow = source[source.index("  fresh-image-profile:") :]
+        marker = f"      - name: {name}\n"
+        start = fresh_workflow.index(marker)
+        end = fresh_workflow.find("\n      - name:", start + len(marker))
+        if end < 0:
+            end = len(fresh_workflow)
+        return fresh_workflow[start:end]
+
+    def fresh_condition(source: str, name: str) -> str:
+        rows = [
+            line.removeprefix("        if: ")
+            for line in fresh_step(source, name).splitlines()
+            if line.startswith("        if: ")
+        ]
+        require(len(rows) == 1, f"fresh step does not have one if condition: {name}")
+        return rows[0]
+
+    normal_installed_condition = (
+        "steps.reuse.outputs.reused != 'true' && "
+        "steps.scope.outputs.fresh_installed == 'true'"
+    )
+
+    def require_fresh_reuse_routing(source: str) -> None:
+        expected = {
+            "Report reused pull request checks": "steps.reuse.outputs.reused == 'true'",
+            "Classify verification scope": "steps.reuse.outputs.reused != 'true'",
+            "Run deterministic control-plane checks": (
+                "steps.reuse.outputs.reused != 'true' && "
+                "steps.scope.outputs.fresh_focused == 'true'"
+            ),
+            "Set up Docker Buildx": normal_installed_condition,
+            "Prepare installed image signing material": normal_installed_condition,
+            "Build installed image with shared layers": normal_installed_condition,
+            "Restore pinned Align source": normal_installed_condition,
+            "Materialize pinned Align source": normal_installed_condition,
+            "Enable qualified nested user namespaces": normal_installed_condition,
+            "Complete installed image profile qualification": normal_installed_condition,
+            "Restore user namespace restriction": (
+                "always() && steps.reuse.outputs.reused != 'true' && "
+                "steps.scope.outputs.fresh_installed == 'true' && "
+                "steps.userns.outputs.changed == 'true'"
+            ),
+            "Clean installed image signing material": (
+                "always() && steps.image_material.outcome == 'success'"
+            ),
+            "Report unaffected image profile": (
+                "steps.reuse.outputs.reused != 'true' && "
+                "steps.scope.outputs.fresh_installed != 'true'"
+            ),
+        }
+        actual = {name: fresh_condition(source, name) for name in expected}
+        require(actual == expected, "fresh-image reuse routing conditions changed")
+
     require(
         workflow.count(
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
@@ -1743,8 +1798,8 @@ def test_workflow_topology() -> None:
         "CI BuildKit cache is unbounded or fails closed on export",
     )
     require(
-        "load: ${{ steps.reuse.outputs.reused != 'true' }}" in workflow,
-        "exact merges load the cache-only image into Docker",
+        "load: true" in fresh_step(workflow, "Build installed image with shared layers"),
+        "normally executing fresh-image builds do not load their qualified image",
     )
     require(
         workflow.count("python3 scripts/prepare-fresh-image-build") == 2
@@ -1757,11 +1812,20 @@ def test_workflow_topology() -> None:
         and '--run-signing-seed "$RUN_SIGNING_SEED"' in workflow,
         "CI does not pass the prepared image to the installed owner",
     )
-    require(
-        "if: steps.reuse.outputs.reused != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')"
-        in workflow,
-        "exact fresh-image merges do not classify cache publication",
-    )
+    require_fresh_reuse_routing(workflow)
+    for name in ("Set up Docker Buildx", "Clean installed image signing material"):
+        condition = fresh_condition(workflow, name)
+        weakened = workflow.replace(
+            f"        if: {condition}\n",
+            f"        if: {condition} || steps.reuse.outputs.reused == 'true'\n",
+            1,
+        )
+        try:
+            require_fresh_reuse_routing(weakened)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(f"fresh reuse routing mutation was accepted: {name}")
     require(
         workflow.count("python3 scripts/select-ci-reuse") == 2,
         "CI does not evaluate merge-push reuse in both jobs",
