@@ -56,6 +56,14 @@ file records durable project state.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
+- Future resource tuning may replace the fixed Cargo job count with an authenticated
+  `--cargo-build-jobs auto|N` profile input. The candidate automatic policy is the smaller of
+  `max(1, effective CPU affinity count - 1)` and a conservative budget derived from the cgroup hard
+  memory limit, with physical memory only as an unlimited-cgroup fallback. An explicit value would
+  remain bounded by effective CPUs and the qualified memory budget, and the resolved value would be
+  recorded in execution and baseline evidence. This is a deferred design note, not an implemented
+  or accepted contract; the canonical native ARM profile remains fixed at `CARGO_BUILD_JOBS=1`
+  until multi-job memory measurements justify a change.
 
 ## Latest durable verification
 
