@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-13)
+## Active checkpoint (2026-08-14)
 
 - Branch `agent/c6-lifecycle-latest-align` is based directly on `origin/main`
   `350ea497fbf14b4780ac3d0e1cf8b15c6d4f3663` (PR #83).
@@ -26,7 +26,10 @@ file records durable project state.
   architecture mismatch; emulation is explicitly non-acceptance evidence.
 - Native implementation checkpoints are `00d7faaf550f` (dual-native Request 6 profile),
   `ad59e63e5cd0` (execute the focused payload after its variable-length handoff prefix), and
-  `b5e485b87802` (use the image-owned Git for installed mutation fixtures).
+  `b5e485b87802` (use the image-owned Git for installed mutation fixtures). Review repair
+  `b82d3b97ec83` defers ordinary result emission until cleanup, preserves the primary phase through
+  cleanup failure, reserves fixed bwrap bind descriptors before tool/source identity opens, and
+  gives each outer process owner a bounded deadline margin.
 - The native ARM installed profile now passes image attestation, lifecycle, self-test, trust
   mutations, runtime replacements, the valid ordinary Request 6 consumer, the complete boundary
   rejection matrix, the worker aggregate, and cleanup.
@@ -92,6 +95,18 @@ file records durable project state.
 - `python3 scripts/run-fresh-image-profile-smoke --require-docker --align-repo
   <clean-pinned-Align-checkout>` at `be0131f85c3c`: PASS on native Linux `aarch64`. Boundary profile
   passed in 282,213 ms, worker aggregate in 190,201 ms, and cleanup in 3,345 ms.
+- Comprehensive `codex review --base origin/main` reviewed `dae654a` against base tip and merge base
+  `350ea497fbf1`. It found three valid ordinary-lifecycle defects: success could be emitted before
+  outer cleanup, cgroup cleanup could replace an active build/fixture phase, and equal nested
+  deadlines let an outer owner preempt inner cleanup. `b82d3b97ec83` repairs all three; the newly
+  visible cleanup failure additionally exposed and repaired fixed bind-FD collision with retained
+  Git/tool descriptors. The repair stayed within the reviewed ordinary lifecycle and timeout
+  contract, and its focused delta was inspected without triggering another comprehensive review.
+- `python3 scripts/run-fresh-image-profile-smoke --require-docker --align-repo
+  <clean-pinned-Align-checkout>` at `b82d3b97ec83`: PASS on native Linux `aarch64` after the review
+  repair. Image build passed in 23,143 ms, boundary profile in 257,071 ms, worker aggregate in
+  174,881 ms, and cleanup in 3,983 ms. Success is now emitted only after the worker-owned root,
+  source views, tools, bind placeholders, and cgroup are cleaned.
 - The first ARM baseline recorder invocation completed but produced two FAIL samples solely because
   its helper did not install `/usr/bin/bwrap`; schema inspection rejected it as canonical evidence.
 - `python3 scripts/test-development-preflight`: PASS in the native Linux `aarch64` capable helper;
@@ -106,8 +121,8 @@ file records durable project state.
 
 1. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
    final capable `make ci` with the `25b1201b...` compiler.
-2. Update Request 6 lifecycle evidence, perform one comprehensive
-   review, and publish the consumer-complete profile/adoption candidate.
+2. Publish the consumer-complete profile/adoption candidate with the reviewed-head envelope, all
+   three finding dispositions, repair commit `b82d3b97ec83`, and exact final verification evidence.
 
 ## Recovery and preservation
 
