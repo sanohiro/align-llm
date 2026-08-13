@@ -166,6 +166,121 @@ def test_runtime_materialization() -> None:
             not any(path.is_symlink() for path in target.rglob("*")),
             "materialized tree retained a symlink",
         )
+
+        multi_source_a = root / "multi-source-a"
+        multi_source_b = root / "multi-source-b"
+        multi_source_a.mkdir()
+        multi_source_b.mkdir()
+        shared = multi_source_a / "shared"
+        shared.write_bytes(b"cross-root identity")
+        shared.chmod(0o640)
+        os.link(shared, multi_source_b / "shared-alias")
+        (multi_source_a / "equal-a").write_bytes(b"equal but independent")
+        (multi_source_b / "equal-b").write_bytes(b"equal but independent")
+        multi_target_a = root / "multi-target-a"
+        multi_target_b = root / "multi-target-b"
+        multi = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(multi_target_a),
+                str(multi_source_b),
+                str(multi_target_b),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            multi.returncode == 0 and not multi.stdout and not multi.stderr,
+            "multi-root materialization failed",
+        )
+        require(
+            (multi_target_a / "shared").stat().st_ino
+            == (multi_target_b / "shared-alias").stat().st_ino,
+            "cross-root source identity was duplicated",
+        )
+        require(
+            (multi_target_a / "equal-a").stat().st_ino
+            != (multi_target_b / "equal-b").stat().st_ino,
+            "equal-byte distinct source identities were merged",
+        )
+
+        guarded_target_a = root / "guarded-target-a"
+        guarded_target_b = root / "guarded-target-b"
+        guarded_target_b.mkdir()
+        guarded = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(guarded_target_a),
+                str(multi_source_b),
+                str(guarded_target_b),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            guarded.returncode != 0
+            and "target already exists" in guarded.stderr
+            and not guarded_target_a.exists(),
+            "later existing target allowed earlier target construction",
+        )
+
+        incomplete = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(root / "incomplete-target"),
+                str(multi_source_b),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            incomplete.returncode == 2
+            and "expected one or more SOURCE TARGET pairs" in incomplete.stderr,
+            "incomplete source/target vector was accepted",
+        )
+
+        overlapping_target = root / "overlapping-target"
+        overlapping = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(overlapping_target),
+                str(multi_source_b),
+                str(overlapping_target / "child"),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            overlapping.returncode == 2
+            and "target roots must be distinct and non-overlapping" in overlapping.stderr
+            and not overlapping_target.exists(),
+            "overlapping target roots were accepted",
+        )
+
         independent = root / "independent-copies"
         shutil.copytree(target, independent, copy_function=shutil.copy2)
         require(
@@ -260,13 +375,25 @@ def test_runtime_materialization() -> None:
     require(
         dockerfile.count("/usr/local/libexec/align-llm/materialize-fresh-tree") == 4
         and "for tree in git rust bwrap" in dockerfile
-        and "/usr/lib/llvm-22 /runtime/cc-suite" in dockerfile,
+        and "/usr/lib/llvm-22 /runtime/cc-suite" in dockerfile
+        and "/usr/lib/x86_64-linux-gnu /runtime/system/usr-lib-x86_64" in dockerfile
+        and "/usr/lib/x86_64-linux-gnu /runtime/system/lib-x86_64" in dockerfile
+        and "/usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64" in dockerfile
+        and "/usr/lib/python3.12 /runtime/system/python3.12" in dockerfile
+        and "/usr/include /runtime/system/include" in dockerfile
+        and "/usr/share/git-core /runtime/system/git-core" in dockerfile,
         "Dockerfile materialization ownership changed",
     )
     require(
         "stat -c '%d:%i' /runtime/git/bin/git" in dockerfile
         and "stat -c '%d:%i' /runtime/git/bin/git-receive-pack" in dockerfile,
         "Dockerfile does not enforce Git hardlink materialization",
+    )
+    require(
+        dockerfile.count("stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1") == 2
+        and "stat -c '%d:%i' /runtime/system/usr-lib-x86_64/libLLVM.so.22.1" in dockerfile
+        and "stat -c '%d:%i' /runtime/system/lib-x86_64/libLLVM.so.22.1" in dockerfile,
+        "Dockerfile does not enforce cross-root LLVM hardlinks",
     )
     require(
         dockerfile.count("FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467") == 2

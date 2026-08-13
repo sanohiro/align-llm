@@ -54,17 +54,21 @@ RUN for tree in git rust bwrap; do \
     test "$(stat -c '%d:%i' /runtime/git/bin/git)" = \
       "$(stat -c '%d:%i' /runtime/git/bin/git-receive-pack)"
 
-RUN python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
-      /usr/lib/llvm-22 /runtime/cc-suite && \
-    mkdir -p /runtime/system && \
-    cp -aL /usr/lib/x86_64-linux-gnu /runtime/system/usr-lib-x86_64 && \
-    cp -aL /usr/lib/x86_64-linux-gnu /runtime/system/lib-x86_64 && \
-    cp -aL /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64 && \
-    cp -aL /usr/lib/python3.12 /runtime/system/python3.12 && \
-    cp -aL /usr/include /runtime/system/include && \
-    cp -aL /usr/share/git-core /runtime/system/git-core && \
+RUN mkdir -p /runtime/system && \
+    python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
+      /usr/lib/llvm-22 /runtime/cc-suite \
+      /usr/lib/x86_64-linux-gnu /runtime/system/usr-lib-x86_64 \
+      /usr/lib/x86_64-linux-gnu /runtime/system/lib-x86_64 \
+      /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64 \
+      /usr/lib/python3.12 /runtime/system/python3.12 \
+      /usr/include /runtime/system/include \
+      /usr/share/git-core /runtime/system/git-core && \
     if [ -d /usr/share/perl5 ]; then cp -aL /usr/share/perl5 /runtime/system/perl5; else mkdir /runtime/system/perl5; fi && \
-    cp -L /lib64/ld-linux-x86-64.so.2 /runtime/system/ld-linux-x86-64.so.2
+    cp -L /lib64/ld-linux-x86-64.so.2 /runtime/system/ld-linux-x86-64.so.2 && \
+    test "$(stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1)" = \
+      "$(stat -c '%d:%i' /runtime/system/usr-lib-x86_64/libLLVM.so.22.1)" && \
+    test "$(stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1)" = \
+      "$(stat -c '%d:%i' /runtime/system/lib-x86_64/libLLVM.so.22.1)"
 
 COPY .align-revision /build/align-llm/.align-revision
 
