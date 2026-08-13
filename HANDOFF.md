@@ -5,31 +5,25 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-14)
 
-- Branch `agent/c6-lifecycle-latest-align` is based directly on `origin/main`
-  `350ea497fbf14b4780ac3d0e1cf8b15c6d4f3663` (PR #83).
+- Branch `agent/close-request6-adoption` is based directly on `main` at
+  `c0fc3046bff05d33ad0753f9c273da8bb48d2fa1`, the merge commit for align-llm PR #84.
 - Align PR #786 merged the checked-HIR `string.clone()` compatibility repair as
   `25b1201b3a4181f6a90921227596bdcb76ab715e`. `.align-revision` now selects that exact merged
   commit, and its managed release compiler/runtime materialized successfully under `dev-v1`.
 - The managed compiler passes `./scripts/alignc check-per-unit src/main.align`: all 15 units pass
   with the three existing lossy-conversion/large-copy warnings.
-- The FRESH-IMAGE-REQUEST6 installed adoption profile is implemented and passes its complete local
-  native ARM profile. Its net implementation from paused PR #69 at
-  `2d8e10aa66b9d46bb1c9a9f76716827f87ea6687` is migrated onto current `main`; the old branch remains
-  historical input, and none of its hosted or adoption results apply to this branch.
+- The FRESH-IMAGE-REQUEST6 installed adoption profile is merged and passes its complete native
+  Linux `aarch64` and `x86_64` profiles. Request 6 is now `CLOSED`.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
   compiler handoff, installed-profile bindings, fixtures, and owner tests.
-- The installed profile is being extended as one native-platform capability for Linux `x86_64`
-  and `aarch64`. The immutable Ubuntu OCI index, native Rust/Debian/ELF/loader tuple, manifest
+- The installed profile supports one native-platform capability for Linux `x86_64` and `aarch64`.
+  The immutable Ubuntu OCI index, native Rust/Debian/ELF/loader tuple, manifest
   admission, runtime roots, controller, worker, Docker owner, and CI matrix now reject
   architecture mismatch; emulation is explicitly non-acceptance evidence.
-- Native implementation checkpoints are `00d7faaf550f` (dual-native Request 6 profile),
-  `ad59e63e5cd0` (execute the focused payload after its variable-length handoff prefix), and
-  `b5e485b87802` (use the image-owned Git for installed mutation fixtures). Review repair
-  `b82d3b97ec83` defers ordinary result emission until cleanup, preserves the primary phase through
-  cleanup failure, reserves fixed bwrap bind descriptors before tool/source identity opens, and
-  gives each outer process owner a bounded deadline margin.
+- PR #84's final reviewed head is `031917b5518170f905793af65b9cb347b837d178`; its consolidated
+  repair commit is `d50373fc14afe2994176bc26fdaa55ad5e9c64b2`.
 - The native ARM installed profile now passes image attestation, lifecycle, self-test, trust
   mutations, runtime replacements, the valid ordinary Request 6 consumer, the complete boundary
   rejection matrix, the worker aggregate, and cleanup.
@@ -50,11 +44,12 @@ file records durable project state.
 - `.align-revision` is the only implicit compiler selector. Ordinary commands use the managed exact
   pin; `ALIGNC` and `ALIGN_REPO` remain explicit overrides.
 - ALIGN-ADOPTION is an ordered checkpoint inside the next consumer capability, not a pin-only pull
-  request. Request 6 cannot advance to `ALIGN_LLM_VERIFIED` until the full installed profile,
-  ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci` all pass.
+  request. Request 6 advanced through `ALIGN_LLM_VERIFIED` to `CLOSED` only after the full installed
+  profile, ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci`
+  passed.
 - C6-LIFECYCLE remains blocked from product implementation on Align Requests 7, 8, 10, 12, and 13,
-  which are still `PROPOSED`. Do not consume or imitate those APIs. The Request 6 profile is safe
-  independent prerequisite work while those consumer cells remain blocked.
+  which are still `PROPOSED`. Do not consume or imitate those APIs. Request 6 is closed and no
+  longer blocks their eligible prerequisite work.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -66,7 +61,7 @@ file records durable project state.
   recorded in execution and baseline evidence. This is a deferred design note, not an implemented
   or accepted contract. The canonical native ARM profile remains fixed at `CARGO_BUILD_JOBS=1`
   until multi-job memory measurements justify a change; native x86_64 currently uses Cargo's
-  default parallelism for the pending 128 GiB owner.
+  default parallelism as qualified by the 128 GiB owner.
 
 ## Latest durable verification
 
@@ -121,8 +116,8 @@ file records durable project state.
 - Architecture-specific Cargo job owners at `6438dd4a6181`: PASS. Native `aarch64` selects
   `CARGO_BUILD_JOBS=1`; native `x86_64` omits the variable. The full native Linux `aarch64` image
   profile passes with the fixed ARM policy: boundary profile in 288,027 ms, worker aggregate in
-  186,162 ms, and cleanup in 2,846 ms. Native `x86_64` execution remains pending on the 128 GiB
-  owner.
+  186,162 ms, and cleanup in 2,846 ms. The later required native `x86_64` 128 GiB CI owner passed
+  at the final PR #84 head.
 - Comprehensive `codex review --base origin/main` reviewed `fff8370c017a` against base tip and
   merge base `350ea497fbf1`. It found seven valid ordinary-isolation defects: staged input mounts
   and tool directories remained reachable or writable; the child could run before parent-verified
@@ -142,6 +137,9 @@ file records durable project state.
   3,173 ms, profile self-test in 14,771 ms, trust mutations in 13,740 ms, runtime replacements in
   22,496 ms, boundary profile in 275,309 ms, worker aggregate in 185,239 ms, and cleanup in
   3,410 ms.
+- Exact-head publication preflight at `031917b5518170f905793af65b9cb347b837d178`: PASS. The
+  installed boundary profile passed in 274,781 ms, worker aggregate in 179,603 ms, and cleanup in
+  3,855 ms. Required native Linux `aarch64` and `x86_64` GitHub jobs passed before PR #84 merged.
 - The first ARM baseline recorder invocation completed but produced two FAIL samples solely because
   its helper did not install `/usr/bin/bwrap`; schema inspection rejected it as canonical evidence.
 - `python3 scripts/test-development-preflight`: PASS in the native Linux `aarch64` capable helper;
@@ -154,13 +152,11 @@ file records durable project state.
 
 ## Next actions
 
-1. Run the exact-HEAD publication preflight, push the consumer-complete profile/adoption candidate,
-   and publish the reviewed-head envelope with all seven finding dispositions and repair commit
-   `d50373fc14af`.
-2. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
-   final capable `make ci` with the `25b1201b...` compiler and merge the candidate.
-3. Refresh `main` after merge and start the next eligible roadmap capability while Align Requests
-   7, 8, 10, 12, and 13 remain blocked.
+1. Publish and merge the reviewed Request 6 closure record with both consistency findings repaired.
+2. Inspect the sibling Align source of truth for Request 8, the shallowest remaining C6-LIFECYCLE
+   implementation prerequisite, and advance only an already accepted contract.
+3. After each consumer-complete capability, complete publication preflight, comprehensive review,
+   repair, merge, refresh `main`, and continue to the next eligible roadmap item.
 
 ## Recovery and preservation
 
@@ -168,6 +164,6 @@ file records durable project state.
   its commits in history and replace it through the required source -> oracle -> finalization chain;
   do not amend or rewrite it.
 - No generated compiler, image, cache, seed, or signing material belongs in Git.
-- Preserve the paused PR #69 branch and its GitHub record until the migrated candidate supersedes it.
+- PR #84 supersedes paused PR #69; retain GitHub history as provenance, not as active evidence.
 - Do not use destructive checkout/reset or broad cleanup. Keep code, documentation, commits, pull
   request metadata, review records, and diagnostics in English.

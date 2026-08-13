@@ -41,12 +41,12 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 The currently pinned Align commit is
 `25b1201b3a4181f6a90921227596bdcb76ab715e`. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
-capabilities are merged. The active Request 6 installed-profile capability extends that same trust
-boundary to two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not
-acceptance evidence. A request may change `.align-revision`, run verification against a new
-compiler, or advance to `ALIGN_LLM_VERIFIED` only after its required native row and feature-specific
-adoption gate pass at the exact head. A consumer outside those two Linux rows must still name and
-merge a reviewed platform profile and implementation.
+capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
+two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
+evidence. A later request may change `.align-revision`, run verification against a new compiler, or
+advance to `ALIGN_LLM_VERIFIED` only after its required native row and feature-specific adoption
+gate pass at the exact head. A consumer outside those two Linux rows must still name and merge a
+reviewed platform profile and implementation.
 
 A blocking request pauses only its dependent consumer capability. Record that pause and its resume
 condition in `HANDOFF.md`; continue independent work when it remains valid. Do not implement a
@@ -992,24 +992,23 @@ persisted proposal error label, and resumes only after this adoption gate.
 ## Request 6 — `core.json`: require recursively Copy `json.scan` rows
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: Request 6 align-llm adoption; Request 7 implementation remains blocked on this request's shipped surface plus its separately registered prerequisites
-Independent work that may continue: the authenticated focused-adoption transport design, the common fresh-compiler qualification, Request 7's independent registration work, its decoded-owner cleanup prerequisite, C6 design, and work that neither consumes json.scan nor changes .align-revision; focused-adoption implementation may be prepared only as a non-mergeable design artifact and may not consume this contract or claim adoption until the listed image and worker profiles merge
-Resume condition: after FRESH-IMAGE, FRESH-WORKER, and the separately verified FRESH-IMAGE-REQUEST6 profile extension merge and the focused-adoption transport is shipped, pin the release at the named Align commit, pass the ordinary and authenticated fresh Request 6 adoption vectors, then run one final fresh make ci before advancing to ALIGN_LLM_VERIFIED
+Blocked gate or slice: none; Request 7's other separately registered prerequisites remain independent blockers
+Independent work that may continue: N/A; this request is shipped, adopted, verified, and closed
+Resume condition: N/A; reopen only for a newly demonstrated regression in the shipped scanner-row ownership contract
 Align commit or pull request: Align PR #703 (design) merged at 0ab7a30d6e7bfda56d4c8145b4672306634b9fea; Align PR #704 (implementation) merged at e65448b744c04e3868d079eef8b45ce0d43ac8ee
-align-llm verification: ALIGN_MERGED recorded; real-client adoption pending
+align-llm verification: CLOSED by align-llm PR #84, merged as c0fc3046bff05d33ad0753f9c273da8bb48d2fa1 with Align pinned at 25b1201b3a4181f6a90921227596bdcb76ab715e
 ```
 
 The first scheduled dependent slice is Request 7 implementation: its strict-string grammar matrix
-uses only rows admitted by this recursively Copy boundary, so Request 6 is now blocking even though
-no align-llm product path directly consumes `json.scan`. The first align-llm real-client consumer
-remains the concrete adoption target specified below. It starts only after this request is
-`ALIGN_MERGED`, runs the positive Copy-row aggregate plus the exact fail-closed Move-row negatives,
-and pins the shipped compiler before closing the request. A consumer that actually needs a Move row
-belongs exclusively to a separate per-row ownership request and is not a consumer of this
-rejection capability.
+uses only rows admitted by this recursively Copy boundary. Request 6 no longer blocks that slice;
+Request 7's separately registered prerequisites still do. The first align-llm real-client consumer
+was the concrete adoption target specified below. It ran the positive Copy-row aggregate plus the
+exact fail-closed Move-row negatives against the pinned shipped compiler before this request closed.
+A consumer that actually needs a Move row belongs exclusively to a separate per-row ownership
+request and is not a consumer of this rejection capability.
 
 ### Motivation
 
@@ -2523,6 +2522,20 @@ persistent `make ci` target never infers current behavior from an observed compi
 The script removes the validated temporary directory on every exit. This focused target must pass
 before the consumer capability's one final `make ci`; together they may advance Request 6 to
 `ALIGN_LLM_VERIFIED`.
+
+### align-llm verification (2026-08-14 — CLOSED)
+
+align-llm PR #84 merged the ordinary and authenticated-fresh Request 6 consumer adoption at
+`c0fc3046bff05d33ad0753f9c273da8bb48d2fa1`, with `.align-revision` selecting
+`25b1201b3a4181f6a90921227596bdcb76ab715e`. The exact PR head
+`031917b5518170f905793af65b9cb347b837d178` passed the positive recursively Copy fixtures and the
+exact fail-closed Move-row matrix in both profiles, followed by the installed worker aggregate's
+fixed `make --no-print-directory ci` vector. The same head passed required native Linux
+`aarch64` and `x86_64` CI; the ARM compiler build used the qualified single-job Cargo policy while
+x86_64 retained Cargo's default parallelism. The merged implementation owns native platform
+admission, authenticated compiler handoff, source and tool isolation, bounded process teardown,
+phase-preserving failure classification, and cleanup. It does not admit Move scanner rows or
+provide per-row Drop; those remain outside this request's shipped surface.
 
 ### References
 
