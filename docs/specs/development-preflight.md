@@ -481,6 +481,18 @@ The pull-request run records the fresh-image build/export/load and complete inst
 durations on GitHub `ubuntu-24.04`. Smaller bytes are a named footprint improvement; no hosted
 wall-time improvement is claimed unless a same-cache-state comparison meets the existing targets.
 
+Implementation checkpoint `b9d6728` produced fixed-key image
+`sha256:381580c9aa6b211f440f665b1ffd306bd6065013312a8538e43013668c5b96ef` under the same local
+daemon and command inputs. It measured 2,234,647,037 Docker-reported bytes and 2,035,380,006
+hardlink-aware `/runtime` bytes: reductions of 980,827,046 bytes (30.5%) and 980,839,334 bytes
+(32.5%), respectively. The three representative LLVM paths shared device/inode `142:678794` with
+12 links after final-stage transfer. Installed qualification at checkpoint `2548a65` passed in
+230.509 seconds (`n=1`, same Docker daemon and exact full Align checkout): its warm image build took
+3.402 seconds, runtime-replacement checks 24.074 seconds, boundary profile 42.086 seconds, worker
+aggregate 120.024 seconds, and cleanup 1.352 seconds. These local results establish the footprint
+claim and unchanged consumer behavior; hosted wall time remains unclaimed until pull-request
+evidence exists.
+
 The hosted apt baseline is the same PR #75 run: the check job took 102 seconds and `Install LLVM
 and native libraries` took 43 seconds (`n=1`, GitHub `ubuntu-24.04`). The first pull request for the
 archive cache exercises a miss and must pass; its exact merge must seed the trusted `main` entry.

@@ -29,12 +29,17 @@ file records durable project state.
   passed in 484 seconds and exact-main run `31637540088` passed in 151 seconds. PR #80 merged the
   mutation-tolerant live quota polling repair at
   `60326e236f4a2304a4c071d6c388b341ed662469`; its PR checks passed in 29 seconds and 7m02s.
-- In progress: the plan of record now extends runtime materialization from one source/target pair to
-  a validated ordered vector that shares one source-inode table. A read-only builder probe reduced
-  the LLVM plus system-root physical footprint from 2,367,422,464 to 1,372,573,696 bytes while
-  retaining 11,439 distinct regular source identities.
-- Not started: implementation, owner regression, exact image measurement, installed qualification,
-  comprehensive review, publication, and hosted verification.
+- Complete locally through `2548a65`: runtime materialization accepts a validated ordered pair
+  vector, shares one source-inode table across its roots, and leaves equal-byte distinct identities
+  separate. The Dockerfile uses one invocation for LLVM and system roots and proves representative
+  aliases remain one inode after transfer. The owner regression, Dockerfile check, exact image
+  measurement, and complete installed profile pass.
+- Measured fixed-key image
+  `sha256:381580c9aa6b211f440f665b1ffd306bd6065013312a8538e43013668c5b96ef` at 2,234,647,037 bytes
+  versus the 3,215,474,083-byte baseline (30.5% reduction); `/runtime` is 2,035,380,006 bytes versus
+  3,016,219,340 (32.5% reduction). The three representative LLVM paths share one 12-link inode.
+- Not started: exact-head complete preflight, comprehensive review, publication, and hosted
+  verification.
 
 ## Measurement
 
@@ -104,9 +109,9 @@ file records durable project state.
 
 ## Next steps
 
-1. Implement multi-root runtime materialization and its owner regression, then build and measure the
-   exact candidate image against the recorded 3,215,474,083-byte baseline.
-2. Run exact-head complete preflight and one comprehensive review of the stable candidate.
+1. Commit the measurement checkpoint, run exact-head complete preflight, and obtain one
+   comprehensive review of the stable candidate.
+2. Apply and verify any valid findings in one consolidated repair.
 3. Publish and merge after the required GitHub checks pass. Keep PR #69 paused until the final Align
    revision is named.
 
