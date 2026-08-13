@@ -282,6 +282,11 @@ RUN env -i \
 FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467 AS runtime
 
 COPY --from=builder /runtime /runtime
+RUN llvm_identity="$(stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1)" && \
+    test "$llvm_identity" = \
+      "$(stat -c '%d:%i' /runtime/system/usr-lib-x86_64/libLLVM.so.22.1)" && \
+    test "$llvm_identity" = \
+      "$(stat -c '%d:%i' /runtime/system/lib-x86_64/libLLVM.so.22.1)"
 COPY --from=builder /opt/align-llm/tool-bin /opt/align-llm/tool-bin
 COPY --from=builder /var/cache/align-llm/cargo /var/cache/align-llm/cargo
 COPY --from=builder /image-control/usr/bin/ /usr/bin/

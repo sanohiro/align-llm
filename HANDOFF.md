@@ -29,17 +29,24 @@ file records durable project state.
   passed in 484 seconds and exact-main run `31637540088` passed in 151 seconds. PR #80 merged the
   mutation-tolerant live quota polling repair at
   `60326e236f4a2304a4c071d6c388b341ed662469`; its PR checks passed in 29 seconds and 7m02s.
-- Complete locally through `2548a65`: runtime materialization accepts a validated ordered pair
+- Complete locally through reviewed head `015a71d`: runtime materialization accepts a validated ordered pair
   vector, shares one source-inode table across its roots, and leaves equal-byte distinct identities
   separate. The Dockerfile uses one invocation for LLVM and system roots and proves representative
   aliases remain one inode after transfer. The owner regression, Dockerfile check, exact image
   measurement, and complete installed profile pass.
 - Measured fixed-key image
-  `sha256:381580c9aa6b211f440f665b1ffd306bd6065013312a8538e43013668c5b96ef` at 2,234,647,037 bytes
+  `sha256:1ad39927516cf238a885abe65c7275442565a6235be91a217f65f3f439fecc1c` at 2,234,647,037 bytes
   versus the 3,215,474,083-byte baseline (30.5% reduction); `/runtime` is 2,035,380,006 bytes versus
   3,016,219,340 (32.5% reduction). The three representative LLVM paths share one 12-link inode.
-- Not started: exact-head complete preflight, comprehensive review, publication, and hosted
-  verification.
+- Exact-head complete preflight passed `015a71d`: development owner 9.805s, pinned Align build
+  0.841s, hosted graph 3.779s, focused qualification 24.380s, and installed profile 227.011s. The
+  comprehensive review of that head requested three changes: assert hardlinks after the BuildKit
+  stage transfer, canonicalize and reject source/target topology intersections before construction,
+  and update this continuity record. All are accepted and implemented in the consolidated review
+  repair. The development owner, Buildx Dockerfile check, final fixed-key build, footprint, and
+  post-transfer inode checks pass without changing the measured bytes; final exact-head complete
+  preflight remains.
+- Not started: final exact-head preflight, publication, and hosted verification.
 
 ## Measurement
 
@@ -109,9 +116,9 @@ file records durable project state.
 
 ## Next steps
 
-1. Commit the measurement checkpoint, run exact-head complete preflight, and obtain one
-   comprehensive review of the stable candidate.
-2. Apply and verify any valid findings in one consolidated repair.
+1. Run exact-head complete preflight for the consolidated review repair.
+2. Inspect the repair delta for unrelated behavior; no second review is required for these narrow
+   recorded-finding fixes.
 3. Publish and merge after the required GitHub checks pass. Keep PR #69 paused until the final Align
    revision is named.
 

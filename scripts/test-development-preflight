@@ -281,6 +281,87 @@ def test_runtime_materialization() -> None:
             "overlapping target roots were accepted",
         )
 
+        descendant_target = multi_source_a / "generated"
+        descendant = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(descendant_target),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            descendant.returncode == 2
+            and "source and target roots must be non-overlapping" in descendant.stderr
+            and not descendant_target.exists(),
+            "source-descendant target was accepted",
+        )
+
+        later_source = root / "later-source"
+        later_source.mkdir()
+        (later_source / "file").write_bytes(b"later source")
+        earlier_target = later_source / "earlier-target"
+        later_target = root / "later-target"
+        source_intersection = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(earlier_target),
+                str(later_source),
+                str(later_target),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            source_intersection.returncode == 2
+            and "source and target roots must be non-overlapping" in source_intersection.stderr
+            and not earlier_target.exists()
+            and not later_target.exists(),
+            "earlier target inside a later source was accepted",
+        )
+
+        real_parent = root / "real-parent"
+        real_parent.mkdir()
+        alias_parent = root / "alias-parent"
+        alias_parent.symlink_to(real_parent, target_is_directory=True)
+        real_target = real_parent / "same-target"
+        alias_target = alias_parent / "same-target"
+        aliased_targets = subprocess.run(
+            (
+                sys.executable,
+                "scripts/materialize-fresh-tree",
+                str(multi_source_a),
+                str(real_target),
+                str(multi_source_b),
+                str(alias_target),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            aliased_targets.returncode == 2
+            and "target roots must be distinct and non-overlapping" in aliased_targets.stderr
+            and not real_target.exists()
+            and not alias_target.exists(),
+            "symlink-parent alias targets were accepted",
+        )
+
         independent = root / "independent-copies"
         shutil.copytree(target, independent, copy_function=shutil.copy2)
         require(
@@ -390,18 +471,24 @@ def test_runtime_materialization() -> None:
         "Dockerfile does not enforce Git hardlink materialization",
     )
     require(
-        dockerfile.count("stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1") == 2
-        and "stat -c '%d:%i' /runtime/system/usr-lib-x86_64/libLLVM.so.22.1" in dockerfile
-        and "stat -c '%d:%i' /runtime/system/lib-x86_64/libLLVM.so.22.1" in dockerfile,
-        "Dockerfile does not enforce cross-root LLVM hardlinks",
-    )
-    require(
         dockerfile.count("FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467") == 2
         and "AS builder" in dockerfile
         and "AS runtime" in dockerfile,
         "Dockerfile stage ownership changed",
     )
     runtime_stage = dockerfile.split(" AS runtime", maxsplit=1)[1]
+    require(
+        runtime_stage.count("stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1") == 1
+        and runtime_stage.count(
+            "stat -c '%d:%i' /runtime/system/usr-lib-x86_64/libLLVM.so.22.1"
+        )
+        == 1
+        and runtime_stage.count(
+            "stat -c '%d:%i' /runtime/system/lib-x86_64/libLLVM.so.22.1"
+        )
+        == 1,
+        "runtime stage does not enforce cross-root LLVM hardlinks after transfer",
+    )
     for forbidden in ("apt-get", "apt.llvm.org", "curl ", "wget ", "git clone", "cargo fetch"):
         require(forbidden not in runtime_stage, f"runtime stage retained builder operation: {forbidden}")
     for transfer in (

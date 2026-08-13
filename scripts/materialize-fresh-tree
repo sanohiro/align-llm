@@ -52,6 +52,14 @@ def copy_entry(
     raise RuntimeError(f"unsupported runtime entry: {source}")
 
 
+def canonical(path: Path) -> Path:
+    return Path(os.path.realpath(path))
+
+
+def overlaps(first: Path, second: Path) -> bool:
+    return first == second or first in second.parents or second in first.parents
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("paths", nargs="+", type=Path, metavar="SOURCE_OR_TARGET")
@@ -59,17 +67,18 @@ def main() -> int:
     if len(arguments.paths) % 2 != 0:
         parser.error("expected one or more SOURCE TARGET pairs")
     pairs = tuple(zip(arguments.paths[::2], arguments.paths[1::2], strict=True))
-    normalized_targets: list[Path] = []
+    canonical_sources = tuple(canonical(source) for source, _target in pairs)
+    canonical_targets: list[Path] = []
     for _source, target in pairs:
-        normalized = Path(os.path.abspath(target))
+        normalized = canonical(target)
         if any(
-            normalized == other
-            or normalized in other.parents
-            or other in normalized.parents
-            for other in normalized_targets
+            overlaps(normalized, other)
+            for other in canonical_targets
         ):
             parser.error("target roots must be distinct and non-overlapping")
-        normalized_targets.append(normalized)
+        if any(overlaps(normalized, source) for source in canonical_sources):
+            parser.error("source and target roots must be non-overlapping")
+        canonical_targets.append(normalized)
     for _source, target in pairs:
         if target.exists(follow_symlinks=False):
             raise SystemExit(f"target already exists: {target}")
