@@ -776,6 +776,7 @@ def _environment(
         result.update(
             {
                 "CARGO": "/private-rust/bin/cargo",
+                "CARGO_BUILD_JOBS": "1",
                 "RUSTC": "/private-rust/bin/rustc",
                 "CARGO_HOME": "/private-cargo-home",
                 "CARGO_TARGET_DIR": "/private-cargo-target",

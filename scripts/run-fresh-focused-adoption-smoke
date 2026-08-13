@@ -139,10 +139,12 @@ def check_rows() -> None:
     }
     require(set(rows[0][1]) == set(common_environment), "revision environment has an override")
     require(set(rows[1][1]) == set(common_environment) | {
-        "CARGO", "RUSTC", "CARGO_HOME", "CARGO_TARGET_DIR", "LLVM_CONFIG",
+        "CARGO", "CARGO_BUILD_JOBS", "RUSTC", "CARGO_HOME", "CARGO_TARGET_DIR", "LLVM_CONFIG",
         "LLVM_SYS_221_PREFIX", "CC", "CXX", "AR", "RANLIB", "LD",
         "LIBRARY_PATH", "LD_LIBRARY_PATH", "PKG_CONFIG_PATH",
     }, "build environment has an override")
+    require(rows[1][1]["CARGO_BUILD_JOBS"] == "1", "build job bound changed")
+    require(rows[2][1]["CARGO_BUILD_JOBS"] == "1", "focused build job bound changed")
     require(rows[2][1]["ALIGNC"] == "/private-tool-bin/adoption-alignc", "focused compiler path changed")
     require(rows[2][1]["ALIGNC_DESCRIPTOR"] == "/private-tool-bin/adoption-handoff", "focused descriptor path changed")
     require(rows[2][1]["ALIGNC_CACHE"] == "/private-compiler-cache", "focused cache path changed")

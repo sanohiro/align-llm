@@ -2177,7 +2177,7 @@ The row environment is also fixed. Every row receives exactly the common set
 `ALIGN_REPO=/private-align`, `CARGO_NET_OFFLINE=true`, `HOME=/nonexistent`, `LANG=C`, `LC_ALL=C`,
 `MAKEFLAGS=`, `GNUMAKEFLAGS=`, `MAKEOVERRIDES=`, `PATH=/private-native/bin:/private-rust/bin:/private-llvm/bin:/tools:/usr/bin:/bin`,
 `PYTHONDONTWRITEBYTECODE=1`, and `TMPDIR=/tmp`. Row 2 adds
-`CARGO=/private-rust/bin/cargo`, `RUSTC=/private-rust/bin/rustc`, `CARGO_HOME=/private-cargo-home`,
+`CARGO=/private-rust/bin/cargo`, `CARGO_BUILD_JOBS=1`, `RUSTC=/private-rust/bin/rustc`, `CARGO_HOME=/private-cargo-home`,
 `CARGO_TARGET_DIR=/private-cargo-target`, `LLVM_CONFIG=/private-llvm/bin/llvm-config`,
 `LLVM_SYS_221_PREFIX=/private-llvm`, `CC=/private-native/bin/cc`, `CXX=/private-native/bin/cxx`,
 `AR=/private-native/bin/ar`, `RANLIB=/private-native/bin/ranlib`, `LD=/private-llvm/bin/ld.lld`,
@@ -2299,7 +2299,7 @@ the interpreter and data argument separately and reject any project-script path 
 
 Each child receives `ALIGN_REPO=/private-align` and the same authenticated read-only toolchain,
 cache, and empty Make-control environment. The `align-build-only` child additionally receives
-`CARGO=/private-rust/bin/cargo`, `RUSTC=/private-rust/bin/rustc`,
+`CARGO=/private-rust/bin/cargo`, `CARGO_BUILD_JOBS=1`, `RUSTC=/private-rust/bin/rustc`,
 `CARGO_HOME=/private-cargo-home`, `CARGO_TARGET_DIR=/private-cargo-target`,
 `CARGO_NET_OFFLINE=true`, `LLVM_CONFIG=/private-llvm/bin/llvm-config`,
 `LLVM_SYS_221_PREFIX=/private-llvm`, `CC=/private-native/bin/cc`,

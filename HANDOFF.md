@@ -32,8 +32,13 @@ file records durable project state.
   boundary rejection matrix. Its worker aggregate reaches the canonical baseline gate.
 - Baseline commits `db2c88d24574` and `cceaf15fdf0c` intentionally remain historical failed
   measurement evidence: the first ARM helper lacked `/usr/bin/bwrap`, so both recorded tasks were
-  non-passing. Do not accept that chain; supersede it from a new clean source commit with native
-  bubblewrap present and require two passing samples before committing the replacement oracle.
+  non-passing and remain unacceptable as baseline evidence.
+- The failed chain was superseded by native ARM source `545910bdaeff`, passing oracle
+  `3bc51fde8d86`, and finalization `f71d951e8280`. A later full-profile run exposed a separate
+  resource bug: after roughly 8.5 GB of authenticated runtime copying, Cargo inherited all eight
+  Docker CPUs and `rustc align_sema` was killed with `SIGKILL` in the 8 GB VM. The active source
+  repair fixes `CARGO_BUILD_JOBS=1` in both fresh compiler build paths and must receive its own new
+  source -> oracle -> finalization chain before aggregate acceptance.
 
 ## Contract and decisions to preserve
 
@@ -74,6 +79,11 @@ file records durable project state.
   repaired the focused-row prefix slicing and bare-Git fixture setup bugs; the focused adoption
   owner passes after both repairs. Warm signed-image builds reuse the architecture/toolchain layers,
   reducing the observed image-build phase from 1,065,794 ms to roughly 20-31 seconds.
+- Native ARM diagnostics reproduced ordinary `align-build-only` as Cargo exit 101 and captured the
+  exact failing child: `rustc align_sema` exited on `SIGKILL` after the authenticated runtime copy.
+  The same pinned compiler builds natively in about 40 seconds when the runtime is bound without
+  the preceding copy pressure; compiler/archive type, mode, size, and Cargo hard-link identity are
+  valid. Fixed single-job Cargo contract and fresh-worker unit owners: PASS.
 - The first ARM baseline recorder invocation completed but produced two FAIL samples solely because
   its helper did not install `/usr/bin/bwrap`; schema inspection rejected it as canonical evidence.
 - `python3 scripts/test-development-preflight`: PASS in the native Linux `aarch64` capable helper;
@@ -86,13 +96,13 @@ file records durable project state.
 
 ## Next actions
 
-1. From the clean HANDOFF source commit, install native ARM bubblewrap in the capable helper,
-   record two passing deterministic-reference samples, and create a replacement oracle-only and
-   finalization-only baseline chain.
-2. Rerun the full native ARM installed profile and require `worker-aggregate` plus cleanup to pass.
-3. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
+1. Verify the fixed single-job ordinary adoption in the native ARM installed image.
+2. From the clean resource-fix source commit, record two passing deterministic-reference samples
+   with native ARM bubblewrap and create a new oracle-only and finalization-only baseline chain.
+3. Rerun the full native ARM installed profile and require `worker-aggregate` plus cleanup to pass.
+4. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
    final capable `make ci` with the `25b1201b...` compiler.
-4. Update Request 6 lifecycle evidence, perform one comprehensive
+5. Update Request 6 lifecycle evidence, perform one comprehensive
    review, and publish the consumer-complete profile/adoption candidate.
 
 ## Recovery and preservation
