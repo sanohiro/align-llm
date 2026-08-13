@@ -1368,12 +1368,12 @@ def main() -> int:
                     "-eu",
                     "-c",
                     "printf '0000000000000000000000000000000000000000\\n' > /work/project/.align-revision; "
-                    "git -C /work/project config user.name FRESH-IMAGE-REQUEST6; "
-                    "git -C /work/project config user.email request6@example.invalid; "
-                    "git -C /work/project add .align-revision; "
+                    "/runtime/git/bin/git -C /work/project config user.name FRESH-IMAGE-REQUEST6; "
+                    "/runtime/git/bin/git -C /work/project config user.email request6@example.invalid; "
+                    "/runtime/git/bin/git -C /work/project add .align-revision; "
                     "GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' "
                     "GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' "
-                    "git -C /work/project commit -m 'Use an invalid Align revision'",
+                    "/runtime/git/bin/git -C /work/project commit -m 'Use an invalid Align revision'",
                 ],
             )
             invalid_revision = ordinary_profile_run(

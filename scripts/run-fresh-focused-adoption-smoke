@@ -243,6 +243,13 @@ def check_source_contracts() -> None:
         REPOSITORY / "scripts/run-json-scan-row-ownership-adoption-smoke",
     ):
         require("communicate(" not in path.read_text(encoding="utf-8"), f"unbounded subprocess boundary in {path.name}")
+    installed_profile = (REPOSITORY / "scripts/run-fresh-image-profile-smoke").read_text(
+        encoding="utf-8"
+    )
+    require(
+        installed_profile.count("/runtime/git/bin/git -C /work/project") == 4,
+        "installed mutation does not use the image-owned Git runtime",
+    )
     dockerfile = (REPOSITORY / "image/fresh/Dockerfile").read_text(encoding="utf-8")
     require(
         "--runtime /usr/local/share/align-llm/run-verifier.pub=/usr/local/share/align-llm/run-verifier.pub"
