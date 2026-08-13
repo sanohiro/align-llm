@@ -83,7 +83,8 @@ file records durable project state.
   exact failing child: `rustc align_sema` exited on `SIGKILL` after the authenticated runtime copy.
   The same pinned compiler builds natively in about 40 seconds when the runtime is bound without
   the preceding copy pressure; compiler/archive type, mode, size, and Cargo hard-link identity are
-  valid. Fixed single-job Cargo contract and fresh-worker unit owners: PASS.
+  valid. Fixed single-job Cargo contract and fresh-worker unit owners: PASS. The repaired native
+  ARM ordinary adoption completed with canonical PASS in 225,474 ms, followed by cleanup PASS.
 - The first ARM baseline recorder invocation completed but produced two FAIL samples solely because
   its helper did not install `/usr/bin/bwrap`; schema inspection rejected it as canonical evidence.
 - `python3 scripts/test-development-preflight`: PASS in the native Linux `aarch64` capable helper;
@@ -96,13 +97,12 @@ file records durable project state.
 
 ## Next actions
 
-1. Verify the fixed single-job ordinary adoption in the native ARM installed image.
-2. From the clean resource-fix source commit, record two passing deterministic-reference samples
+1. From the clean resource-fix source commit, record two passing deterministic-reference samples
    with native ARM bubblewrap and create a new oracle-only and finalization-only baseline chain.
-3. Rerun the full native ARM installed profile and require `worker-aggregate` plus cleanup to pass.
-4. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
+2. Rerun the full native ARM installed profile and require `worker-aggregate` plus cleanup to pass.
+3. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
    final capable `make ci` with the `25b1201b...` compiler.
-5. Update Request 6 lifecycle evidence, perform one comprehensive
+4. Update Request 6 lifecycle evidence, perform one comprehensive
    review, and publish the consumer-complete profile/adoption candidate.
 
 ## Recovery and preservation
