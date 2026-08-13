@@ -21,8 +21,12 @@ file records durable project state.
   material, build/export, source setup, user-namespace mutation, qualification, and cleanup. Any
   missing or invalid evidence retains the normal classifier-selected path. The workflow owner,
   topology self-test, YAML parse, and diff check pass.
-- In progress: exact-head complete preflight and one comprehensive review. Not started: PR hosted
-  validation, exact-main timing acceptance, and merge.
+- Exact-head complete preflight passed reviewed head `d036b30`: development owner 11.226s, pinned
+  Align build 0.905s, hosted graph 3.626s, focused qualification 23.597s, and installed profile
+  241.080s. The comprehensive review requested exact YAML-condition ownership plus weakening
+  mutations and this continuity update; both are included in the consolidated repair. In progress:
+  affected verification and final exact-head preflight. Not started: PR hosted validation,
+  exact-main timing acceptance, and merge.
 
 ## Measurement
 
@@ -96,10 +100,9 @@ file records durable project state.
 
 ## Next steps
 
-1. Run exact-head complete preflight for the exact-merge image bypass.
-2. Obtain one fresh comprehensive review of the settled workflow/spec/owner diff and apply any
-   valid findings in one consolidated repair.
-3. Publish after affected verification passes. Require the PR's normal fresh-image qualification,
+1. Run affected owner/static verification and exact-head complete preflight for the consolidated
+   review repair.
+2. Publish after verification passes. Require the PR's normal fresh-image qualification,
    then merge and confirm the exact-main fresh job skips every named image owner and finishes in at
    most 30 seconds. Keep PR #69 paused until the final Align revision is named.
 
@@ -107,8 +110,8 @@ file records durable project state.
 
 - Exact-main PR #81 run `31665748310` passed but took 373 seconds end to end. Its fresh-image job
   took 361 seconds and cache-only image build/export took 341 seconds; no installed qualification
-  ran. Local implementation checkpoint `122cf40` passes `scripts/test-development-preflight`,
-  `check-gate-topology --self-test`, Ruby workflow YAML parsing, and `git diff --check`.
+  ran. Exact-head complete preflight passed reviewed head `d036b30`: owner 11.226s, pinned Align
+  0.905s, hosted graph 3.626s, focused qualification 23.597s, and installed profile 241.080s.
 - PR #76 final review passed at `fa56846af74af9208abdd01ecc72a6437f05d267` with no findings after
   one consolidated repair. Complete preflight passed: apt owner 4.421s, pinned Align build 0.647s,
   installed profile 206.879s, and worker aggregate 109.049s.
