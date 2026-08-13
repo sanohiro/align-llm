@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import platform
 import stat
 import subprocess
 import sys
@@ -184,6 +185,12 @@ def main() -> int:
     arguments.cache_manifest.write_bytes(cache_raw)
     arguments.cache_manifest.chmod(0o444)
 
+    architecture = platform.machine()
+    if architecture == "arm64":
+        architecture = "aarch64"
+    if architecture not in ("x86_64", "aarch64"):
+        raise SystemExit(f"unsupported native architecture: {architecture}")
+
     manifest = OrderedDict(
         [
             ("schema_version", 2),
@@ -206,7 +213,7 @@ def main() -> int:
                 OrderedDict(
                     [
                         ("os", "linux"),
-                        ("architecture", "x86_64"),
+                        ("architecture", architecture),
                         ("kernel_minimum", "6.8"),
                         ("python_minimum", "3.12"),
                         ("make_minimum", "4.3"),

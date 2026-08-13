@@ -44,6 +44,7 @@ FOCUSED_CHECKS = (
             "fresh-v2-pre-dispatch-source-smoke",
         ),
     ),
+    ("run-fresh-focused-adoption-smoke", ("fresh-v2-focused-adoption-request-smoke",)),
     (
         "run-fresh-worker-unit-smoke",
         (
@@ -240,8 +241,12 @@ def verify_contract_inventory() -> None:
     image = IMAGE_DOCKERFILE.read_text(encoding="utf-8")
     for token in (
         "libzstd-dev",
-        "/usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64",
-        "--runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu",
+        'DEB_MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"',
+        '"/usr/lib/$DEB_MULTIARCH" "/runtime/system/usr-lib-$PROFILE_ARCH"',
+        '"/usr/lib/gcc/$DEB_MULTIARCH" "/runtime/system/gcc-$PROFILE_ARCH"',
+        '--runtime "/runtime/system/gcc-$PROFILE_ARCH=/usr/lib/gcc/$DEB_MULTIARCH"',
+        "aarch64:aarch64-linux-gnu",
+        "LOADER_TARGET=/lib/ld-linux-aarch64.so.1",
         "--runtime /usr/bin/dash=/bin/sh",
         "--runtime /usr/bin/bash=/bin/bash",
         "--runtime /usr/bin/env=/usr/bin/env",

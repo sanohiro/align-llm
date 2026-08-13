@@ -17,6 +17,7 @@ import tempfile
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 from fresh_attestation import (
     IMAGE_KEY_ID,
@@ -733,6 +734,113 @@ def cleanup_success_case(module, temporary: Path) -> None:
     require(not admitted.exists(), "owned private root remained after cleanup")
 
 
+def ordinary_cgroup_cleanup_cases(module) -> None:
+    original_populated = module.cgroup_populated
+    original_kill = module.kill_cgroup
+    original_remove = module.remove_cgroup_leaf
+    original_timeout = module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS
+    calls: list[object] = []
+    try:
+        module.cgroup_populated = lambda _lease: True
+        module.kill_cgroup = lambda _lease: calls.append("kill")
+        module.remove_cgroup_leaf = lambda _lease: calls.append("remove")
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = 0.0
+        try:
+            module.cleanup_ordinary_cgroup(object())
+        except module.CleanupError as error:
+            require("remained populated" in str(error), "ordinary cgroup timeout error changed")
+        else:
+            raise AssertionError("populated ordinary cgroup was not bounded after kill")
+        require(calls == ["kill"], "ordinary cgroup cleanup retried an unsafe action")
+
+        state = iter((True, False))
+        calls.clear()
+        module.cgroup_populated = lambda _lease: next(state)
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = 5.0
+        module.cleanup_ordinary_cgroup(object())
+        require(calls == ["kill", "remove"], "ordinary cgroup cleanup order changed")
+    finally:
+        module.cgroup_populated = original_populated
+        module.kill_cgroup = original_kill
+        module.remove_cgroup_leaf = original_remove
+        module.ORDINARY_CGROUP_CLEANUP_TIMEOUT_SECONDS = original_timeout
+
+
+def ordinary_cleanup_precedence_cases(module) -> None:
+    original_cgroup_cleanup = module.cleanup_ordinary_cgroup
+    original_cleanup = module.cleanup
+    original_close_git_view = module.close_git_view
+
+    def closed(descriptor: int) -> bool:
+        try:
+            os.fstat(descriptor)
+        except OSError as error:
+            return error.errno == errno.EBADF
+        return False
+
+    def failing_cgroup_cleanup(_lease) -> None:
+        raise module.CleanupError("injected cgroup cleanup failure")
+
+    def cgroup_lease():
+        leaf_fd, parent_fd = os.pipe()
+        return SimpleNamespace(leaf_fd=leaf_fd, parent_fd=parent_fd)
+
+    try:
+        module.cleanup_ordinary_cgroup = failing_cgroup_cleanup
+        lease = cgroup_lease()
+        try:
+            module.ordinary_close_cgroup_lease(lease, None)
+        except module.OrdinaryFailure as error:
+            require(error.phase == "cleanup", "successful cgroup work did not report cleanup failure")
+        else:
+            raise AssertionError("successful cgroup work ignored cleanup failure")
+        require(closed(lease.leaf_fd) and closed(lease.parent_fd), "cgroup lease descriptors remained open")
+
+        lease = cgroup_lease()
+        module.ordinary_close_cgroup_lease(lease, module.OrdinaryFailure("build"))
+        require(closed(lease.leaf_fd) and closed(lease.parent_fd), "primary failure leaked cgroup lease descriptors")
+
+        calls: list[object] = []
+
+        def failing_cleanup(_admission) -> None:
+            calls.append("admission")
+            raise module.CleanupError("injected admission cleanup failure")
+
+        def failing_close_git_view(view) -> None:
+            calls.append(view)
+            raise module.CleanupError("injected Git view cleanup failure")
+
+        module.cleanup = failing_cleanup
+        module.close_git_view = failing_close_git_view
+        for active in (None, module.OrdinaryFailure("build")):
+            tool_fd, tool_peer = os.pipe()
+            try:
+                try:
+                    module.ordinary_cleanup_worker_inputs(
+                        object(),
+                        SimpleNamespace(view="align"),
+                        SimpleNamespace(view="project"),
+                        {"tool": tool_fd},
+                        set(),
+                        active,
+                    )
+                except module.OrdinaryFailure as error:
+                    require(active is None and error.phase == "cleanup", "cleanup replaced the primary phase")
+                else:
+                    require(active is not None, "successful worker work ignored cleanup failure")
+                require(closed(tool_fd), "worker tool descriptor remained open")
+            finally:
+                os.close(tool_peer)
+        require(
+            calls == ["admission", "align", "project"] * 2,
+            "worker cleanup stopped before all owned inputs were closed",
+        )
+    finally:
+        module.cleanup_ordinary_cgroup = original_cgroup_cleanup
+        module.cleanup = original_cleanup
+        module.close_git_view = original_close_git_view
+
+
 def overlay_work_cleanup_case(module, temporary: Path) -> None:
     roots = temporary / "overlay-roots"
     roots.mkdir(mode=0o700)
@@ -909,6 +1017,13 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
             and build_owner.index("enforce_private_quota(admission)")
             > build_owner.index("resource_check=lambda: enforce_private_quota(admission, live=True)"),
             "build lacks strict post-child quota validation",
+        )
+        require(
+            module.cargo_build_job_arguments("aarch64")
+            == ("--setenv", "CARGO_BUILD_JOBS", "1")
+            and module.cargo_build_job_arguments("x86_64") == ()
+            and "*cargo_build_job_arguments(NATIVE_ARCHITECTURE)" in build_owner,
+            "build lacks the architecture-specific Cargo resource policy",
         )
         require(
             "resource_check=lambda: enforce_aggregate_quota(admission, live=True)" in aggregate_owner
@@ -1273,6 +1388,120 @@ def run_owned_double_fork_forced_case(module, temporary: Path) -> None:
             entry.rmdir()
         os.close(parent_fd)
         cgroup_parent.rmdir()
+
+
+def native_runtime_contract_cases(module) -> None:
+    pairs = [
+        {"source": source, "target": target}
+        for source, target in (
+            (
+                f"/runtime/system/usr-lib-{module.NATIVE_ARCHITECTURE}",
+                f"/usr/lib/{module.NATIVE_MULTIARCH}",
+            ),
+            (
+                f"/runtime/system/lib-{module.NATIVE_ARCHITECTURE}",
+                f"/lib/{module.NATIVE_MULTIARCH}",
+            ),
+            (
+                f"/runtime/system/gcc-{module.NATIVE_ARCHITECTURE}",
+                f"/usr/lib/gcc/{module.NATIVE_MULTIARCH}",
+            ),
+            ("/runtime/system/dynamic-loader", module.NATIVE_LOADER_TARGET),
+        )
+    ]
+    module.require_native_runtime_contract(pairs)
+    pairs[-1]["target"] = "/foreign-loader"
+    try:
+        module.require_native_runtime_contract(pairs)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("foreign worker runtime tuple was accepted")
+
+    node: OrderedDict[str, object] = OrderedDict(
+        (
+            ("kind", "file"),
+            ("mode", "0755"),
+            ("staged_mode", "0755"),
+            ("size", 0),
+            ("sha256", module.sha256(b"")),
+            ("entries", []),
+        )
+    )
+    node_digest = module.sha256(module.canonical_json(node))
+    bindings = [
+        OrderedDict(
+            (
+                ("source", pair["source"]),
+                ("target", pair["target"]),
+                ("kind", "file"),
+                ("manifest", node),
+                ("manifest_sha256", node_digest),
+            )
+        )
+        for pair in [
+            {
+                "source": f"/runtime/system/usr-lib-{module.NATIVE_ARCHITECTURE}",
+                "target": f"/usr/lib/{module.NATIVE_MULTIARCH}",
+            },
+            {
+                "source": f"/runtime/system/lib-{module.NATIVE_ARCHITECTURE}",
+                "target": f"/lib/{module.NATIVE_MULTIARCH}",
+            },
+            {
+                "source": f"/runtime/system/gcc-{module.NATIVE_ARCHITECTURE}",
+                "target": f"/usr/lib/gcc/{module.NATIVE_MULTIARCH}",
+            },
+            {
+                "source": "/runtime/system/dynamic-loader",
+                "target": module.NATIVE_LOADER_TARGET,
+            },
+        ]
+    ]
+    manifest: OrderedDict[str, object] = OrderedDict(
+        (
+            ("schema_version", 2),
+            (
+                "controller",
+                OrderedDict((("path", module.CONTROLLER_PATH), ("api", 1))),
+            ),
+            ("bootstrap", OrderedDict()),
+            (
+                "platform",
+                OrderedDict(
+                    (
+                        ("os", "linux"),
+                        ("architecture", module.NATIVE_ARCHITECTURE),
+                        ("kernel_minimum", "6.8"),
+                        ("python_minimum", "3.12"),
+                        ("make_minimum", "4.3"),
+                    )
+                ),
+            ),
+            ("tools", [{"name": name} for name in module.TOOL_NAMES]),
+            ("runtime_bindings", bindings),
+            (
+                "cargo_cache",
+                OrderedDict(
+                    (
+                        ("root", "/cache"),
+                        ("manifest", "/cache-manifest"),
+                        ("manifest_sha256", "0" * 64),
+                        ("entry_count", 0),
+                    )
+                ),
+            ),
+        )
+    )
+    module.validate_manifest(module.canonical_json(manifest))
+    foreign = "x86_64" if module.NATIVE_ARCHITECTURE == "aarch64" else "aarch64"
+    manifest["platform"]["architecture"] = foreign
+    try:
+        module.validate_manifest(module.canonical_json(manifest))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("foreign worker manifest architecture was accepted")
 
 
 def runtime_tool_precedence_cases(module) -> None:
@@ -1745,6 +1974,7 @@ def main() -> int:
     canonical_wire_cases(module)
     run_attestation_cases(module)
     exited_process_drain_cases(module)
+    native_runtime_contract_cases(module)
     runtime_tool_precedence_cases(module)
     descendant_reap_cases(module)
     published_elf_cases(module)
@@ -1762,6 +1992,8 @@ def main() -> int:
         materialization_mutation_cases(module, temporary)
         private_mount_case(module, temporary)
         cleanup_success_case(module, temporary)
+        ordinary_cgroup_cleanup_cases(module)
+        ordinary_cleanup_precedence_cases(module)
         overlay_work_cleanup_case(module, temporary)
         aggregate_quota_case(module, temporary)
         live_quota_mutation_case(module, temporary)

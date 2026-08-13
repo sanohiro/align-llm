@@ -1,0 +1,9 @@
+import core.json
+
+OptionalItems { items: array<i64> }
+OwnedRow { nested: Option<OptionalItems> }
+
+fn main() -> Result<(), Error> {
+  rows: json.scanner<OwnedRow> := json.scan("[{\"nested\":{\"items\":[1,2]}}]")
+  return Ok(())
+}

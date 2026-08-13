@@ -340,8 +340,16 @@ jobs:
         run: echo "This successful step binds the job record to the pull request event identities."
 
   fresh-image-profile:
-    name: Installed Ubuntu 24.04 fresh-image profile
-    runs-on: ubuntu-24.04
+    name: Installed Ubuntu 24.04 fresh-image profile (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            runner: ubuntu-24.04
+          - architecture: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
 
     steps:
@@ -452,15 +460,15 @@ jobs:
           build-args: |
             IMAGE_PUBLIC_KEY_HEX=${{ steps.image_material.outputs.image_public_key_hex }}
             RUN_PUBLIC_KEY_HEX=${{ steps.image_material.outputs.run_public_key_hex }}
-          cache-from: type=gha,scope=align-llm-fresh-image-v1
-          cache-to: type=gha,scope=align-llm-fresh-image-v1,mode=max,ignore-error=true
+          cache-from: type=gha,scope=align-llm-fresh-image-v1-${{ matrix.architecture }}
+          cache-to: type=gha,scope=align-llm-fresh-image-v1-${{ matrix.architecture }},mode=max,ignore-error=true
 
       - name: Restore pinned Align source
         if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: align-source
-          key: align-full-source-${{ runner.os }}-${{ hashFiles('.align-revision') }}
+          key: align-full-source-${{ runner.os }}-${{ matrix.architecture }}-${{ hashFiles('.align-revision') }}
 
       - name: Materialize pinned Align source
         if: steps.reuse.outputs.reused != 'true' && steps.scope.outputs.fresh_installed == 'true'

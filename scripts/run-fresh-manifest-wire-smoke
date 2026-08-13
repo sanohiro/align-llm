@@ -228,6 +228,13 @@ def main() -> int:
     validate_manifest(control)
     assert parse_manifest_bytes(control_bytes)["schema_version"] == 2
     assert validate_manifest_bytes(control_bytes)["schema_version"] == 2
+    arm_control = deepcopy(control)
+    arm_control["platform"]["architecture"] = "aarch64"
+    validate_manifest(arm_control)
+    assert validate_manifest_bytes(canonical_json_bytes(arm_control))["platform"]["architecture"] == "aarch64"
+    unsupported_control = deepcopy(control)
+    unsupported_control["platform"]["architecture"] = "armv7l"
+    require_rejected("unsupported platform architecture", lambda: validate_manifest(unsupported_control))
     syntax_only = deepcopy(control)
     syntax_only["tools"] = []
     assert parse_canonical_json(canonical_json_bytes(syntax_only))["tools"] == []

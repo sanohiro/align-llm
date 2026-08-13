@@ -25,7 +25,8 @@ SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 REQUIRED_JOBS = (
     "Pinned Align compiler and supported checks",
-    "Installed Ubuntu 24.04 fresh-image profile",
+    "Installed Ubuntu 24.04 fresh-image profile (x86_64)",
+    "Installed Ubuntu 24.04 fresh-image profile (aarch64)",
 )
 MAX_API_BYTES = 1_048_576
 

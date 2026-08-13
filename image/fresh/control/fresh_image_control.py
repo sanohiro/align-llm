@@ -74,6 +74,20 @@ PR_SET_CHILD_SUBREAPER = 36
 PR_GET_CHILD_SUBREAPER = 37
 BOUNDARY_WORKER_PATH = "scripts/run-json-scan-row-ownership-adoption"
 BOUNDARY_TIMEOUT_SECONDS = 5.0
+NATIVE_ARCHITECTURE = "aarch64" if os.uname().machine == "arm64" else os.uname().machine
+NATIVE_MULTIARCH = {
+    "x86_64": "x86_64-linux-gnu",
+    "aarch64": "aarch64-linux-gnu",
+}.get(NATIVE_ARCHITECTURE, "unsupported")
+NATIVE_LOADER_TARGET = {
+    "x86_64": "/lib64/ld-linux-x86-64.so.2",
+    "aarch64": "/lib/ld-linux-aarch64.so.1",
+}.get(NATIVE_ARCHITECTURE, "/unsupported")
+RUNTIME_LIBRARY_PATH = (
+    f"/runtime/system/usr-lib-{NATIVE_ARCHITECTURE}:"
+    f"/runtime/system/lib-{NATIVE_ARCHITECTURE}:"
+    f"/runtime/system/gcc-{NATIVE_ARCHITECTURE}"
+)
 
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -1893,11 +1907,7 @@ def _run_retained_tool(
             "PATH": "/usr/bin:/bin",
             "LC_ALL": "C",
             "HOME": "/nonexistent",
-            "LD_LIBRARY_PATH": (
-                "/runtime/system/usr-lib-x86_64:"
-                "/runtime/system/lib-x86_64:"
-                "/runtime/system/gcc-x86_64"
-            ),
+            "LD_LIBRARY_PATH": RUNTIME_LIBRARY_PATH,
         },
         pass_fds=tuple(dict.fromkeys((descriptor, *pass_fds))),
         timeout=timeout,
@@ -2013,9 +2023,34 @@ def _namespace_self_test(bwrap_fd: int, bwrap_argv0: str) -> None:
             raise ControlError("TRUST", "bwrap", "bubblewrap namespace probe rejected")
 
 
+def _require_native_runtime_contract(bindings: Sequence[Mapping[str, Any]]) -> None:
+    required = {
+        (
+            f"/runtime/system/usr-lib-{NATIVE_ARCHITECTURE}",
+            f"/usr/lib/{NATIVE_MULTIARCH}",
+        ),
+        (
+            f"/runtime/system/lib-{NATIVE_ARCHITECTURE}",
+            f"/lib/{NATIVE_MULTIARCH}",
+        ),
+        (
+            f"/runtime/system/gcc-{NATIVE_ARCHITECTURE}",
+            f"/usr/lib/gcc/{NATIVE_MULTIARCH}",
+        ),
+        ("/runtime/system/dynamic-loader", NATIVE_LOADER_TARGET),
+    }
+    actual = {
+        (binding.get("source"), binding.get("target"))
+        for binding in bindings
+        if isinstance(binding, Mapping)
+    }
+    if not required <= actual:
+        raise ControlError("PLATFORM", "platform", "native runtime tuple is incomplete")
+
+
 def _platform_self_test(manifest_raw: bytes) -> None:
-    if os.uname().sysname != "Linux" or os.uname().machine != "x86_64":
-        raise ControlError("PLATFORM", "platform", "platform is not Linux x86_64")
+    if os.uname().sysname != "Linux" or NATIVE_ARCHITECTURE not in ("x86_64", "aarch64"):
+        raise ControlError("PLATFORM", "platform", "platform is not supported native Linux")
     if _version_tuple(os.uname().release.encode("ascii"), rb"^(\d+\.\d+)") < (6, 8):
         raise ControlError("PLATFORM", "platform", "kernel is older than 6.8")
     if sys.version_info[:2] < (3, 12):
@@ -2024,6 +2059,9 @@ def _platform_self_test(manifest_raw: bytes) -> None:
         manifest = validate_manifest_bytes(manifest_raw)
     except WireError as error:
         raise ControlError("TRUST", "manifest", "manifest is invalid") from error
+    if manifest["platform"]["architecture"] != NATIVE_ARCHITECTURE:
+        raise ControlError("PLATFORM", "platform", "manifest architecture is not native")
+    _require_native_runtime_contract(manifest["runtime_bindings"])
     for binding in manifest["runtime_bindings"]:
         tree = _runtime_tree(binding["source"])
         if tree != binding["manifest"] or serialized_digest(tree) != binding["manifest_sha256"]:
@@ -2090,6 +2128,7 @@ def _platform_self_test(manifest_raw: bytes) -> None:
                 b"--overlay",
                 b"--bind-fd",
                 b"--ro-bind-fd",
+                b"--ro-bind-data",
             )
         ):
             raise ControlError("TRUST", "bwrap", "bubblewrap mount support is missing")

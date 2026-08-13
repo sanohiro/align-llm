@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467 AS builder
+FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_COMMIT=f94b90ad6e49cc7f15c4171c5a434aa459e82d2d
@@ -38,7 +38,12 @@ RUN git clone --filter=blob:none https://github.com/containers/bubblewrap.git /t
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
       sh -s -- -y --profile minimal --default-toolchain 1.96.0 && \
-    cp -aL /root/.rustup/toolchains/1.96.0-x86_64-unknown-linux-gnu /runtime/rust && \
+    RUST_HOST="$(/root/.cargo/bin/rustc -vV | sed -n 's/^host: //p')" && \
+    case "$RUST_HOST" in \
+      x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;; \
+      *) echo "unsupported native Rust host: $RUST_HOST" >&2; exit 1 ;; \
+    esac && \
+    cp -aL "/root/.rustup/toolchains/1.96.0-$RUST_HOST" /runtime/rust && \
     /runtime/rust/bin/rustc --version | grep -F 'rustc 1.96.0 ' && \
     /runtime/rust/bin/cargo --version | grep -F 'cargo 1.96.0 '
 
@@ -54,21 +59,28 @@ RUN for tree in git rust bwrap; do \
     test "$(stat -c '%d:%i' /runtime/git/bin/git)" = \
       "$(stat -c '%d:%i' /runtime/git/bin/git-receive-pack)"
 
-RUN mkdir -p /runtime/system && \
+RUN PROFILE_ARCH="$(uname -m)" && \
+    DEB_MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" && \
+    case "$PROFILE_ARCH:$DEB_MULTIARCH" in \
+      x86_64:x86_64-linux-gnu) LOADER=/lib64/ld-linux-x86-64.so.2 ;; \
+      aarch64:aarch64-linux-gnu) LOADER=/lib/ld-linux-aarch64.so.1 ;; \
+      *) echo "unsupported native Debian architecture: $PROFILE_ARCH:$DEB_MULTIARCH" >&2; exit 1 ;; \
+    esac && \
+    mkdir -p /runtime/system && \
     python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
       /usr/lib/llvm-22 /runtime/cc-suite \
-      /usr/lib/x86_64-linux-gnu /runtime/system/usr-lib-x86_64 \
-      /usr/lib/x86_64-linux-gnu /runtime/system/lib-x86_64 \
-      /usr/lib/gcc/x86_64-linux-gnu /runtime/system/gcc-x86_64 \
+      "/usr/lib/$DEB_MULTIARCH" "/runtime/system/usr-lib-$PROFILE_ARCH" \
+      "/usr/lib/$DEB_MULTIARCH" "/runtime/system/lib-$PROFILE_ARCH" \
+      "/usr/lib/gcc/$DEB_MULTIARCH" "/runtime/system/gcc-$PROFILE_ARCH" \
       /usr/lib/python3.12 /runtime/system/python3.12 \
       /usr/include /runtime/system/include \
       /usr/share/git-core /runtime/system/git-core && \
     if [ -d /usr/share/perl5 ]; then cp -aL /usr/share/perl5 /runtime/system/perl5; else mkdir /runtime/system/perl5; fi && \
-    cp -L /lib64/ld-linux-x86-64.so.2 /runtime/system/ld-linux-x86-64.so.2 && \
+    cp -L "$LOADER" /runtime/system/dynamic-loader && \
     test "$(stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1)" = \
-      "$(stat -c '%d:%i' /runtime/system/usr-lib-x86_64/libLLVM.so.22.1)" && \
+      "$(stat -c '%d:%i' "/runtime/system/usr-lib-$PROFILE_ARCH/libLLVM.so.22.1")" && \
     test "$(stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1)" = \
-      "$(stat -c '%d:%i' /runtime/system/lib-x86_64/libLLVM.so.22.1)"
+      "$(stat -c '%d:%i' "/runtime/system/lib-$PROFILE_ARCH/libLLVM.so.22.1")"
 
 COPY .align-revision /build/align-llm/.align-revision
 
@@ -115,9 +127,15 @@ RUN mkdir -p /usr/local/libexec/align-llm /usr/local/share/align-llm \
     cmp /tmp/fresh-control-a/fresh-bootstrap /tmp/fresh-control-b/fresh-bootstrap && \
     cmp /tmp/fresh-control-a/request6-adoption-boundary-entrypoint \
       /tmp/fresh-control-b/request6-adoption-boundary-entrypoint && \
+    cmp /tmp/fresh-control-a/request6-adoption-entrypoint \
+      /tmp/fresh-control-b/request6-adoption-entrypoint && \
+    cmp /tmp/fresh-control-a/adoption-namespace \
+      /tmp/fresh-control-b/adoption-namespace && \
     install -m 0755 /tmp/fresh-control-a/fresh-supervise \
       /tmp/fresh-control-a/fresh-bootstrap \
       /tmp/fresh-control-a/request6-adoption-boundary-entrypoint \
+      /tmp/fresh-control-a/request6-adoption-entrypoint \
+      /tmp/fresh-control-a/adoption-namespace \
       /usr/local/libexec/align-llm/ && \
     rm -rf /tmp/fresh-control-a /tmp/fresh-control-b && \
     /usr/lib/llvm-22/bin/clang -std=c11 -O2 -Wall -Wextra -Werror -static-pie \
@@ -189,26 +207,55 @@ for path in root.iterdir():
     path.chmod(0o755)
 PY
 
-RUN python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
+ARG IMAGE_PUBLIC_KEY_HEX
+ARG RUN_PUBLIC_KEY_HEX
+RUN python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+image = os.environ.get("IMAGE_PUBLIC_KEY_HEX", "")
+run = os.environ.get("RUN_PUBLIC_KEY_HEX", "")
+for name, value in (("image-verifier.pub", image), ("run-verifier.pub", run)):
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise SystemExit(f"missing or invalid build key: {name}")
+    path = Path("/usr/local/share/align-llm") / name
+    path.write_bytes(bytes.fromhex(value))
+    path.chmod(0o444)
+PY
+
+RUN PROFILE_ARCH="$(uname -m)" && \
+    DEB_MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" && \
+    case "$PROFILE_ARCH:$DEB_MULTIARCH" in \
+      x86_64:x86_64-linux-gnu) LOADER_TARGET=/lib64/ld-linux-x86-64.so.2 ;; \
+      aarch64:aarch64-linux-gnu) LOADER_TARGET=/lib/ld-linux-aarch64.so.1 ;; \
+      *) echo "unsupported native Debian architecture: $PROFILE_ARCH:$DEB_MULTIARCH" >&2; exit 1 ;; \
+    esac && \
+    python3 /build/align-llm/scripts/generate-fresh-toolchain-manifest \
       --bootstrap /usr/local/libexec/align-llm/fresh-bootstrap \
       --tool-root /opt/align-llm/tool-bin \
       --runtime /runtime/git=/runtime/git \
       --runtime /runtime/rust=/runtime/rust \
       --runtime /runtime/cc-suite=/runtime/cc-suite \
       --runtime /runtime/bwrap=/runtime/bwrap \
+      --runtime /runtime/bwrap/bin/bwrap=/usr/bin/bwrap \
       --runtime /usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint=/usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint \
+      --runtime /usr/local/libexec/align-llm/request6-adoption-entrypoint=/usr/local/libexec/align-llm/request6-adoption-entrypoint \
+      --runtime /usr/local/libexec/align-llm/adoption-namespace=/usr/local/libexec/align-llm/adoption-namespace \
+      --runtime /usr/local/libexec/align-llm/adoption-namespace=/usr/bin/adoption-namespace \
+      --runtime /usr/local/share/align-llm/run-verifier.pub=/usr/local/share/align-llm/run-verifier.pub \
       --runtime /usr/bin/dash=/bin/sh \
       --runtime /usr/bin/bash=/bin/bash \
       --runtime /usr/bin/env=/usr/bin/env \
       --runtime /usr/bin/python3.12=/usr/bin/python3 \
-      --runtime /runtime/system/usr-lib-x86_64=/usr/lib/x86_64-linux-gnu \
-      --runtime /runtime/system/lib-x86_64=/lib/x86_64-linux-gnu \
-      --runtime /runtime/system/gcc-x86_64=/usr/lib/gcc/x86_64-linux-gnu \
+      --runtime "/runtime/system/usr-lib-$PROFILE_ARCH=/usr/lib/$DEB_MULTIARCH" \
+      --runtime "/runtime/system/lib-$PROFILE_ARCH=/lib/$DEB_MULTIARCH" \
+      --runtime "/runtime/system/gcc-$PROFILE_ARCH=/usr/lib/gcc/$DEB_MULTIARCH" \
       --runtime /runtime/system/python3.12=/usr/lib/python3.12 \
       --runtime /runtime/system/include=/usr/include \
       --runtime /runtime/system/git-core=/usr/share/git-core \
       --runtime /runtime/system/perl5=/usr/share/perl5 \
-      --runtime /runtime/system/ld-linux-x86-64.so.2=/lib64/ld-linux-x86-64.so.2 \
+      --runtime "/runtime/system/dynamic-loader=$LOADER_TARGET" \
       --cache-root /var/cache/align-llm/cargo \
       --cache-manifest /usr/local/share/align-llm/fresh-cargo-cache.json \
       --output /usr/local/share/align-llm/fresh-toolchain.json
@@ -225,20 +272,26 @@ RUN mkdir -p /usr/local/share/align-llm/self-test/project/scripts \
       git -C /usr/local/share/align-llm/self-test/project commit -m 'Install synthetic worker' && \
     rm -rf /build
 
-RUN mkdir -p /image-control/usr/bin /image-control/usr/lib/x86_64-linux-gnu && \
+RUN DEB_MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)" && \
+    mkdir -p /image-control/usr/bin "/image-control/usr/lib/$DEB_MULTIARCH" && \
     install -m 0755 /usr/bin/python3.12 /image-control/usr/bin/python3.12 && \
     ln /image-control/usr/bin/python3.12 /image-control/usr/bin/python3 && \
-    install -m 0644 "$(readlink -f /usr/lib/x86_64-linux-gnu/libexpat.so.1)" \
-      /image-control/usr/lib/x86_64-linux-gnu/libexpat.so.1 && \
+    install -m 0644 "$(readlink -f "/usr/lib/$DEB_MULTIARCH/libexpat.so.1")" \
+      "/image-control/usr/lib/$DEB_MULTIARCH/libexpat.so.1" && \
     python3 /usr/local/libexec/align-llm/materialize-fresh-tree \
       /usr/lib/python3.12 /image-control/usr/lib/python3.12
 
 RUN python3 - <<'PY'
 import os
+import platform
 import stat
 from pathlib import Path
 
 root = Path("/image-control")
+architecture = platform.machine()
+multiarch = {"x86_64": "x86_64-linux-gnu", "aarch64": "aarch64-linux-gnu"}.get(architecture)
+if multiarch is None:
+    raise SystemExit("unsupported outer Python architecture")
 expected = {
     "usr",
     "usr/bin",
@@ -246,8 +299,8 @@ expected = {
     "usr/bin/python3.12",
     "usr/lib",
     "usr/lib/python3.12",
-    "usr/lib/x86_64-linux-gnu",
-    "usr/lib/x86_64-linux-gnu/libexpat.so.1",
+    f"usr/lib/{multiarch}",
+    f"usr/lib/{multiarch}/libexpat.so.1",
 }
 actual = {str(path.relative_to(root)) for path in root.rglob("*")}
 if not expected <= actual:
@@ -264,9 +317,9 @@ if set(os.listdir(root)) != {"usr"} or set(os.listdir(root / "usr")) != {"bin", 
     raise SystemExit("unexpected outer Python control root")
 if set(os.listdir(root / "usr/bin")) != {"python3", "python3.12"}:
     raise SystemExit("unexpected outer Python executable")
-if set(os.listdir(root / "usr/lib")) != {"python3.12", "x86_64-linux-gnu"}:
+if set(os.listdir(root / "usr/lib")) != {"python3.12", multiarch}:
     raise SystemExit("unexpected outer Python library")
-library_root = root / "usr/lib/x86_64-linux-gnu"
+library_root = root / "usr/lib" / multiarch
 if set(os.listdir(library_root)) != {"libexpat.so.1"}:
     raise SystemExit("unexpected outer Python shared library")
 expat = library_root / "libexpat.so.1"
@@ -274,29 +327,30 @@ if expat.is_symlink() or not expat.is_file() or stat.S_IMODE(expat.stat().st_mod
     raise SystemExit("invalid outer Python shared library")
 PY
 
-RUN env -i \
-      LD_LIBRARY_PATH=/runtime/system/usr-lib-x86_64 \
+RUN PROFILE_ARCH="$(uname -m)" && env -i \
+      LD_LIBRARY_PATH="/runtime/system/usr-lib-$PROFILE_ARCH" \
       /image-control/usr/bin/python3 -I -B -c \
       'import base64, ctypes, dataclasses, fcntl, hashlib, json, pathlib, resource, selectors, struct, subprocess, tempfile'
 
-FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467 AS runtime
+FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea AS runtime
 
 COPY --from=builder /runtime /runtime
-RUN llvm_identity="$(stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1)" && \
+RUN PROFILE_ARCH="$(uname -m)" && \
+    llvm_identity="$(stat -c '%d:%i' /runtime/cc-suite/lib/libLLVM.so.22.1)" && \
     test "$llvm_identity" = \
-      "$(stat -c '%d:%i' /runtime/system/usr-lib-x86_64/libLLVM.so.22.1)" && \
+      "$(stat -c '%d:%i' "/runtime/system/usr-lib-$PROFILE_ARCH/libLLVM.so.22.1")" && \
     test "$llvm_identity" = \
-      "$(stat -c '%d:%i' /runtime/system/lib-x86_64/libLLVM.so.22.1)"
+      "$(stat -c '%d:%i' "/runtime/system/lib-$PROFILE_ARCH/libLLVM.so.22.1")"
 COPY --from=builder /opt/align-llm/tool-bin /opt/align-llm/tool-bin
 COPY --from=builder /var/cache/align-llm/cargo /var/cache/align-llm/cargo
 COPY --from=builder /image-control/usr/bin/ /usr/bin/
-COPY --from=builder /image-control/usr/lib/python3.12 /usr/lib/python3.12
-COPY --from=builder /image-control/usr/lib/x86_64-linux-gnu/libexpat.so.1 \
-     /usr/lib/x86_64-linux-gnu/libexpat.so.1
+COPY --from=builder /image-control/usr/lib/ /usr/lib/
 COPY --from=builder \
      /usr/local/libexec/align-llm/fresh-supervise \
      /usr/local/libexec/align-llm/fresh-bootstrap \
      /usr/local/libexec/align-llm/request6-adoption-boundary-entrypoint \
+     /usr/local/libexec/align-llm/request6-adoption-entrypoint \
+     /usr/local/libexec/align-llm/adoption-namespace \
      /usr/local/libexec/align-llm/fresh-profile \
      /usr/local/libexec/align-llm/
 COPY --from=builder /usr/local/share/align-llm /usr/local/share/align-llm
@@ -311,6 +365,7 @@ import hashlib
 import json
 import os
 import pathlib
+import platform
 import posixpath
 import re
 import resource
@@ -324,10 +379,12 @@ import typing
 from pathlib import Path
 
 expected_controls = {
+    "adoption-namespace",
     "fresh-bootstrap",
     "fresh-profile",
     "fresh-supervise",
     "request6-adoption-boundary-entrypoint",
+    "request6-adoption-entrypoint",
 }
 control_root = Path("/usr/local/libexec/align-llm")
 if set(os.listdir(control_root)) != expected_controls:
@@ -336,6 +393,10 @@ for path in control_root.iterdir():
     if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o755:
         raise SystemExit(f"invalid final control executable: {path.name}")
 python_root = Path("/usr/lib/python3.12")
+architecture = platform.machine()
+multiarch = {"x86_64": "x86_64-linux-gnu", "aarch64": "aarch64-linux-gnu"}.get(architecture)
+if multiarch is None:
+    raise SystemExit("unsupported final image architecture")
 if any(path.is_symlink() for path in python_root.rglob("*")):
     raise SystemExit("final outer Python control tree contains a symlink")
 for name in ("python3", "python3.12"):
@@ -367,7 +428,7 @@ for package_list in package_lists:
 transferred_system_paths = {
     Path("/usr/bin/python3"),
     Path("/usr/bin/python3.12"),
-    Path("/usr/lib/x86_64-linux-gnu/libexpat.so.1"),
+    Path("/usr/lib") / multiarch / "libexpat.so.1",
     python_root,
     *python_root.rglob("*"),
 }
@@ -394,6 +455,5 @@ for name, value in (("image-verifier.pub", image), ("run-verifier.pub", run)):
     path.write_bytes(bytes.fromhex(value))
     path.chmod(0o444)
 PY
-
 ENTRYPOINT ["/usr/local/libexec/align-llm/fresh-supervise"]
 CMD ["--mode", "self-test"]

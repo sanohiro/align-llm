@@ -191,5 +191,5 @@ argv = (ctypes.c_char_p * (len(arguments) + 1))(*arguments, None)
 environment = [os.fsencode(name + "=" + value) for name, value in os.environ.items()]
 envp = (ctypes.c_char_p * (len(environment) + 1))(*environment, None)
 libc = ctypes.CDLL(None, use_errno=True)
-result = libc.syscall(322, compiler_fd, ctypes.c_char_p(b""), argv, envp, 0x1000)
+result = libc.execveat(compiler_fd, ctypes.c_char_p(b""), argv, envp, 0x1000)
 raise SystemExit(ctypes.get_errno() if result < 0 else 1)
