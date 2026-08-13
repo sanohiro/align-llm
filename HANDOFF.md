@@ -5,75 +5,64 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-13)
 
-- Branch `agent/pinned-local-align-ready` is based directly on `origin/main`
-  `65cc212058909ce4497d6955425ef481b3a92a82` (PR #82).
-- The local Align selection capability is complete. Source checkpoint
-  `814c7160820c7b4fda0741e7a17b10ff0713d915`, oracle checkpoint
-  `1fb389319f5be3cee4b068bbf05022d576d61063`, and canonical baseline finalization
-  `031e7aa5ad7e14c0aad30d70bc2cc954ad0d5375` form the required direct-parent chain.
-- Ordinary commands no longer use `../align` or ambient `alignc`. They materialize `.align-revision`
-  under the Git-untracked developer cache and reuse it. Non-empty `ALIGNC` and `ALIGN_REPO` remain
-  explicit overrides; toolchain paths/commands containing whitespace are rejected.
-- The abandoned hardened-cache head `cce161a1c9c40579062e45a8715fe35452a2a838` must not merge. Its
-  final review found no-replace and producer-identity gaps. This replacement intentionally treats
-  the checkout as trusted mutable single-user state, not a security, provenance, artifact, or
-  hostile-concurrency boundary, and reduces the helper from about 700 to about 200 lines.
-- One fresh comprehensive review covered the re-scoped candidate at `2462428e...` and requested five
-  changes. Consolidated source checkpoint `814c716...` closes them: cleanup failure is observable;
-  cooperative overlap and failed build/output/probe cases are owner-tested; whitespace paths fail
-  at the boundary; docs-only preflight skips toolchain resolution; mutable-cache wording and this
-  checkpoint are current. These are recorded-finding repairs and do not trigger another review.
-- The compatible Align pin remains `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e`. Align main
-  `71e6b40754ac40d25301529bf59f66de5698e0b1` fails real align-llm HIR-to-MIR checks and remains
-  intentionally unadopted until Align supplies a compatible commit.
+- Branch `agent/c6-lifecycle-latest-align` is based directly on `origin/main`
+  `350ea497fbf14b4780ac3d0e1cf8b15c6d4f3663` (PR #83).
+- Align PR #786 merged the checked-HIR `string.clone()` compatibility repair as
+  `25b1201b3a4181f6a90921227596bdcb76ab715e`. `.align-revision` now selects that exact merged
+  commit, and its managed release compiler/runtime materialized successfully under `dev-v1`.
+- The managed compiler passes `./scripts/alignc check-per-unit src/main.align`: all 15 units pass
+  with the three existing lossy-conversion/large-copy warnings.
+- The active prerequisite is the full FRESH-IMAGE-REQUEST6 installed adoption profile. Its earlier
+  implementation remains on paused PR #69 at `2d8e10aa66b9d46bb1c9a9f76716827f87ea6687`, based on an
+  obsolete tree and compiler. Treat that branch only as migration input; none of its old hosted or
+  adoption results apply to this branch.
+- FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The compatible compiler
+  now satisfies the blocker that paused the full profile, so migrate its net behavior onto current
+  `main`, preserve the new pin, and rerun every owner from current source.
 
 ## Contract and decisions to preserve
 
-- `.align-revision` is the only implicit version selector. Checkouts live below
-  `${XDG_CACHE_HOME:-$HOME/.cache}/align-llm/align/dev-v1/<revision>` unless the absolute
-  whitespace-free `ALIGN_TOOLCHAIN_ROOT` replaces the base.
-- Warm reuse requires exact clean `HEAD`, both release outputs, and a runnable compiler. Invalid
-  existing state fails visibly and is not automatically deleted or repaired.
-- The first build intentionally inherits the developer's ordinary Cargo/Rust environment. Changing
-  it requires deleting the named revision directory before rebuilding. Non-cooperating cache
-  mutation is unsupported by design.
-- Executable preflight constructs its plan without mutation and runs its owner before managed
-  ensure. Documentation-only preflight never resolves Align. `--align-repo` is the explicit active
-  checkout override.
-- A later Align upgrade changes `.align-revision`, materializes it, runs all named request acceptance
-  targets, and passes one final `make ci` against that same pin.
+- `.align-revision` is the only implicit compiler selector. Ordinary commands use the managed exact
+  pin; `ALIGNC` and `ALIGN_REPO` remain explicit overrides.
+- ALIGN-ADOPTION is an ordered checkpoint inside the next consumer capability, not a pin-only pull
+  request. Request 6 cannot advance to `ALIGN_LLM_VERIFIED` until the full installed profile,
+  ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci` all pass.
+- C6-LIFECYCLE remains blocked from product implementation on Align Requests 7, 8, 10, 12, and 13,
+  which are still `PROPOSED`. Do not consume or imitate those APIs. The Request 6 profile is safe
+  independent prerequisite work while those consumer cells remain blocked.
+- Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
+  boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
+  migrated diff changes those contracts.
 
 ## Latest durable verification
 
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-align-toolchain`: PASS, including cooperative
-  one-build reuse, dirty/output/probe rejection, build/output/probe failure cleanup, whitespace
-  rejection, and explicit/default selection.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-development-preflight`: PASS.
-- Real `d9fb5d...` `dev-v1` bootstrap: PASS in 37.423 seconds; warm ensure: PASS in 0.134 seconds;
-  default managed `make check`: PASS.
-- Re-recorded coding baseline at source `814c716...`: 2/2 passing, 2 samples, minimum 3.790 seconds,
-  median 3.806 seconds, maximum 3.821 seconds.
-- Baseline-chain/verifier, topology self-test, diff-check, and exact-head development preflight must
-  be run once after this handoff commit. The exact-head stamp is transient and stays outside Git.
+- Align `cargo build --release --workspace` at #786 final source: PASS.
+- Align focused owner
+  `scripts/cargo.sh test -p align_driver --test m5 owned_string_clone_duplicates_locals_and_fields -- --exact`:
+  PASS.
+- Align #786 preflight: PASS (owner, lint ratchet, 16-binary bounded gate, Clippy); all required
+  hosted checks passed before merge.
+- `scripts/align-toolchain ensure compiler` for `25b1201b...`: PASS; managed compiler path is
+  `~/.cache/align-llm/align/dev-v1/25b1201b.../target/release/alignc`.
+- `./scripts/alignc check-per-unit src/main.align`: PASS, 15 units.
+- Local `/usr/bin/make` is GNU Make 3.81, below the supported Make 4.3 floor, and cannot parse the
+  repository's target-specific `override export` assignments. Use a capable profile for Make gates;
+  do not weaken the Makefile for this host.
 
-## Paused product checkpoint
+## Next actions
 
-- PR #69 remains paused at `2d8e10aa66b9d46bb1c9a9f76716827f87ea6687`. This branch contains
-  none of Request 6. Do not modify or use PR #69 as evidence until a compatible Align commit is
-  named.
-
-## Next steps
-
-1. Commit this checkpoint, run final static owners and exact-head development preflight.
-2. Publish a ready pull request with the complete review envelope and five finding dispositions,
-   wait for hosted/fresh-image checks, and merge when all required checks pass.
-3. After merge, refresh `main`; resume the paused product capability only when its Align dependency
-   is compatible.
+1. Commit the latest Align pin and this durable checkpoint as the first internal C6/adoption commit.
+2. Audit and migrate the paused PR #69 net profile onto current `main`; remove obsolete diagnostics
+   and retain only behavior required by the current Section 9 contract.
+3. Run the narrow profile/control/worker owners, then the ordinary and authenticated fresh Request 6
+   adoption vectors with the `25b1201b...` compiler.
+4. Update Request 6 lifecycle evidence, run one final capable `make ci`, perform one comprehensive
+   review, and publish the consumer-complete profile/adoption candidate.
 
 ## Recovery and preservation
 
-- Preserve `/home/hiro/prj/align-llm` with its modified `HANDOFF.md` and untracked `io_copy`.
-- Preserve `/home/hiro/prj/align` and its active uncommitted `pkg.db` work. This branch neither
-  modifies nor builds from it.
+- The intentional uncommitted files before the first checkpoint commit are `.align-revision` and
+  `HANDOFF.md`.
+- Preserve the paused PR #69 branch and its GitHub record until the migrated candidate supersedes it.
 - Do not use destructive checkout/reset or broad cleanup. Keep code, documentation, commits, pull
-  request metadata, and review records in English.
+  request metadata, review records, and diagnostics in English.
