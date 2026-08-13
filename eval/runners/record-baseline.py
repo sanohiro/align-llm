@@ -461,13 +461,19 @@ def main() -> int:
         output_path = resolve_inside(project_root, args.output, "output")
         if os.environ.get("ALIGN_LLM_FRESH_COMPILER") == "1":
             checked_run(["make", "ALIGNC=/tools/fresh-alignc", "build"], project_root)
-        else:
-            align_repo = Path(
-                os.environ.get("ALIGN_REPO", str(project_root.parent / "align"))
-            ).resolve()
+        elif os.environ.get("ALIGNC"):
+            checked_run(["make", f"ALIGNC={os.environ['ALIGNC']}", "build"], project_root)
+        elif os.environ.get("ALIGN_REPO"):
+            align_repo = Path(os.environ["ALIGN_REPO"]).resolve()
             pinned_compiler = align_repo / "target" / "release" / "alignc"
-            checked_run(["make", "align-build"], project_root)
+            checked_run(["make", f"ALIGN_REPO={align_repo}", "align-build"], project_root)
             checked_run(["make", f"ALIGNC={pinned_compiler}", "build"], project_root)
+        else:
+            managed_compiler = checked_output(
+                [str(project_root / "scripts" / "align-toolchain"), "ensure", "compiler"],
+                project_root,
+            )
+            checked_run(["make", f"ALIGNC={managed_compiler}", "build"], project_root)
         binary = (project_root / "main").resolve()
         for path, label in ((corpus_path, "corpus"), (binary, "align-llm binary")):
             if not path.is_file():

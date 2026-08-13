@@ -3,7 +3,6 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-align_repo="${ALIGN_REPO:-${project_root}/../align}"
 
 if [[ "${ALIGN_LLM_FRESH_COMPILER:-}" == "1" ]]; then
   if [[ "${ALIGNC:-}" != "/tools/fresh-alignc" ]]; then
@@ -13,16 +12,17 @@ if [[ "${ALIGN_LLM_FRESH_COMPILER:-}" == "1" ]]; then
   compiler="/tools/fresh-alignc"
 elif [[ -n "${ALIGNC:-}" ]]; then
   compiler="${ALIGNC}"
-elif [[ -x "${align_repo}/target/release/alignc" ]]; then
-  compiler="${align_repo}/target/release/alignc"
-elif [[ -x "${align_repo}/target/debug/alignc" ]]; then
-  compiler="${align_repo}/target/debug/alignc"
-elif command -v alignc >/dev/null 2>&1; then
-  compiler="$(command -v alignc)"
+elif [[ -n "${ALIGN_REPO:-}" ]]; then
+  if [[ -x "${ALIGN_REPO}/target/release/alignc" ]]; then
+    compiler="${ALIGN_REPO}/target/release/alignc"
+  elif [[ -x "${ALIGN_REPO}/target/debug/alignc" ]]; then
+    compiler="${ALIGN_REPO}/target/debug/alignc"
+  else
+    printf '%s\n' "alignc was not found in explicit ALIGN_REPO=${ALIGN_REPO}." >&2
+    exit 127
+  fi
 else
-  printf '%s\n' "alignc was not found." >&2
-  printf '%s\n' "Build ../align, install alignc on PATH, or set ALIGNC=/path/to/alignc." >&2
-  exit 127
+  compiler="$("${project_root}/scripts/align-toolchain" ensure compiler)"
 fi
 
 exec "${compiler}" "$@"

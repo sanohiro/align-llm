@@ -58,6 +58,7 @@ def build_plan(
     owner_label: str | None,
     owner_command: Sequence[str],
     align_repository: Path,
+    explicit_align_repository: bool,
 ) -> list[PlanStep]:
     if scope.docs_only:
         if owner_label is not None or owner_command:
@@ -69,17 +70,25 @@ def build_plan(
     if not owner_label or not owner_command:
         raise PreflightError("executable preflight requires --owner-test LABEL -- COMMAND ...")
     alignc = align_repository / "target" / "release" / "alignc"
+    align_build = (os.fspath(REPOSITORY / "scripts" / "align-toolchain"), "verify")
+    managed_ensure: PlanStep | None = PlanStep(
+        "managed-align-ensure",
+        (os.fspath(REPOSITORY / "scripts" / "align-toolchain"), "ensure", "source"),
+    )
+    if explicit_align_repository:
+        align_build = ("make", "align-build", f"ALIGN_REPO={align_repository}")
+        managed_ensure = None
     plan = [
         PlanStep(owner_label, tuple(owner_command)),
-        PlanStep(
-            "pinned-align-build",
-            ("make", "align-build", f"ALIGN_REPO={align_repository}"),
-        ),
-        PlanStep(
-            "hosted-checks",
-            ("make", "hosted-checks", f"ALIGNC={alignc}"),
-        ),
     ]
+    if managed_ensure is not None:
+        plan.append(managed_ensure)
+    plan.extend(
+        (
+            PlanStep("pinned-align-build", align_build),
+            PlanStep("hosted-checks", ("make", "hosted-checks", f"ALIGNC={alignc}")),
+        )
+    )
     if scope.fresh_installed:
         plan.extend(
             (
@@ -183,7 +192,7 @@ def write_stamp(path: Path, scope: Scope, owner_label: str) -> None:
 def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="origin/main")
-    parser.add_argument("--align-repo", default="../align")
+    parser.add_argument("--align-repo")
     parser.add_argument("--owner-test")
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -191,6 +200,32 @@ def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     if values.command and values.command[0] == "--":
         values.command = values.command[1:]
     return values
+
+
+def resolve_align_repository(value: str | None, *, ensure: bool) -> Path:
+    if value is not None:
+        selected = Path(value)
+        if not selected.is_absolute():
+            selected = REPOSITORY / selected
+        return selected.resolve(strict=False)
+    helper = REPOSITORY / "scripts" / "align-toolchain"
+    action = "ensure" if ensure else "path"
+    result = subprocess.run(
+        (os.fspath(helper), action, "source"),
+        cwd=REPOSITORY,
+        stdout=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise PreflightError(f"managed Align source resolution failed with status {result.returncode}")
+    output = result.stdout.strip()
+    if not output or "\n" in output:
+        raise PreflightError("managed Align source resolution returned an invalid path")
+    selected = Path(output)
+    if not selected.is_absolute():
+        raise PreflightError("managed Align source resolution returned a relative path")
+    return selected
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
@@ -202,15 +237,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if not clean_worktree(REPOSITORY):
             raise PreflightError("preflight requires a clean worktree")
         scope = classify_refs(values.base, "HEAD", REPOSITORY)
-        align_repository = Path(values.align_repo)
-        if not align_repository.is_absolute():
-            align_repository = REPOSITORY / align_repository
-        align_repository = align_repository.resolve(strict=False)
+        align_repository = (
+            REPOSITORY
+            if scope.docs_only
+            else resolve_align_repository(values.align_repo, ensure=False)
+        )
         plan = build_plan(
             scope,
             owner_label=values.owner_test,
             owner_command=values.command,
             align_repository=align_repository,
+            explicit_align_repository=values.align_repo is not None,
         )
         if values.plan:
             print(

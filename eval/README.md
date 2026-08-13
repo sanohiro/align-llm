@@ -20,10 +20,10 @@ resource-control mechanism is unavailable. Run the complete local gate with:
 make ci
 ```
 
-The gate pins and release-builds the sibling Align compiler through `.align-revision`, checks and
-builds all project units, runs the bounded core C1-C5 functional graph, executes the sandboxed
-coding corpus, and verifies the canonical baseline. Building the pinned compiler inside the gate
-prevents a stale local `target/release/alignc` from surviving an Align checkout update.
+The gate resolves the managed Align compiler through `.align-revision`, checks and builds all
+project units, runs the bounded core C1-C5 functional graph, executes the sandboxed coding corpus,
+and verifies the canonical baseline. The revision-keyed managed checkout validates its exact clean
+HEAD before reuse, so an ambient sibling compiler cannot survive a pin update.
 
 Use `make hosted-checks` when the host cannot provide the nested user namespace required by
 `coding-v1`. It runs the hosted-compatible core checks but deliberately excludes `eval-coding` and

@@ -1,4 +1,10 @@
 ALIGNC ?= ./scripts/alignc
+ifeq ($(strip $(ALIGNC)),)
+override ALIGNC := ./scripts/alignc
+endif
+ifneq ($(words $(ALIGNC)),1)
+$(error ALIGNC must be one command path without whitespace)
+endif
 ALIGN_REPO ?= ../align
 override SHELL := /bin/sh
 override .SHELLFLAGS := -eu -c

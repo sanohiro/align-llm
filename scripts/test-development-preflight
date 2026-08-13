@@ -639,9 +639,34 @@ def test_runtime_materialization() -> None:
 def test_plan() -> None:
     preflight = load_script("pre-pr", "align_llm_pre_pr_test")
     align = Path("/explicit/align")
+    with tempfile.TemporaryDirectory(prefix="align-llm-managed-plan-") as temporary:
+        root = Path(temporary) / "cache"
+        previous = os.environ.get("ALIGN_TOOLCHAIN_ROOT")
+        os.environ["ALIGN_TOOLCHAIN_ROOT"] = str(root)
+        try:
+            managed = preflight.resolve_align_repository(None, ensure=False)
+        finally:
+            if previous is None:
+                os.environ.pop("ALIGN_TOOLCHAIN_ROOT", None)
+            else:
+                os.environ["ALIGN_TOOLCHAIN_ROOT"] = previous
+        revision = (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()
+        require(
+            managed == root / "dev-v1" / revision,
+            "preflight plan did not select the managed pinned source",
+        )
+        require(not root.exists(), "preflight plan materialized the managed source")
+    require(
+        preflight.resolve_align_repository(str(align), ensure=False) == align,
+        "preflight explicit Align source override changed",
+    )
     docs = classify(("M", "docs/a.md"))
     doc_plan = preflight.build_plan(
-        docs, owner_label=None, owner_command=(), align_repository=align
+        docs,
+        owner_label=None,
+        owner_command=(),
+        align_repository=align,
+        explicit_align_repository=True,
     )
     require([step.label for step in doc_plan] == ["diff-check", "markdown-fences"], "docs plan changed")
     try:
@@ -650,6 +675,7 @@ def test_plan() -> None:
             owner_label=None,
             owner_command=(),
             align_repository=align,
+            explicit_align_repository=True,
         )
     except preflight.PreflightError:
         pass
@@ -660,6 +686,7 @@ def test_plan() -> None:
         owner_label="provider-owner",
         owner_command=("python3", "scripts/run-provider-smoke"),
         align_repository=align,
+        explicit_align_repository=True,
     )
     require(
         [step.label for step in hosted]
@@ -671,6 +698,7 @@ def test_plan() -> None:
         owner_label="workflow-owner",
         owner_command=("python3", "scripts/test-development-preflight"),
         align_repository=align,
+        explicit_align_repository=True,
     )
     require(
         [step.label for step in fresh]
@@ -689,6 +717,22 @@ def test_plan() -> None:
         installed.arguments[-4:]
         == ("--installed-profile-only", "--require-docker", "--align-repo", str(align)),
         "installed plan does not require the installed-only Docker path and explicit Align source",
+    )
+    managed = preflight.build_plan(
+        classify(("M", "scripts/run-provider-smoke")),
+        owner_label="provider-owner",
+        owner_command=("python3", "scripts/run-provider-smoke"),
+        align_repository=align,
+        explicit_align_repository=False,
+    )
+    require(
+        [step.label for step in managed]
+        == ["provider-owner", "managed-align-ensure", "pinned-align-build", "hosted-checks"]
+        and managed[1].arguments
+        == (str(REPOSITORY / "scripts" / "align-toolchain"), "ensure", "source")
+        and managed[2].arguments == (str(REPOSITORY / "scripts" / "align-toolchain"), "verify")
+        and managed[3].arguments == ("make", "hosted-checks", f"ALIGNC={align / 'target/release/alignc'}"),
+        "managed preflight order, admission, or verification changed",
     )
 
 
@@ -1854,6 +1898,20 @@ def test_workflow_topology() -> None:
 
 
 def test_cli() -> None:
+    toolchain = subprocess.run(
+        (sys.executable, "scripts/test-align-toolchain"),
+        cwd=REPOSITORY,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    require(
+        toolchain.returncode == 0
+        and toolchain.stdout.endswith("pin, warm reuse, validation, and overrides PASS\n")
+        and not toolchain.stderr,
+        f"managed Align toolchain owner failed: {toolchain!r}",
+    )
     result = subprocess.run(
         (sys.executable, "scripts/classify-verification", "--all", "--head", "HEAD"),
         cwd=REPOSITORY,
@@ -1921,7 +1979,7 @@ def main() -> int:
     test_cli()
     print(
         "development preflight: classifier, runtime materialization, apt archives, hosted bundle, "
-        "plans, qualification modes, and CI topology PASS"
+        "managed toolchain, plans, qualification modes, and CI topology PASS"
     )
     return 0
 

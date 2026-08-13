@@ -16,8 +16,10 @@ their native configuration.
 3. Before writing or reviewing Align code, read `../align/CLAUDE.md` and the relevant checked-in
    specification, guide, example, compiler test, or package plan in that repository.
 
-The checked-out sibling compiler and its tests define Align's implemented surface. Do not invent a
-manifest, resolver, test runner, standard-library API, or language feature that it does not ship.
+The named Align commit and its compiler tests define Align's implemented surface. The sibling
+checkout remains the source of truth when actively coordinating Align changes, but ordinary
+align-llm commands use the exact `.align-revision` toolchain. Do not invent a manifest, resolver,
+test runner, standard-library API, or language feature that Align does not ship.
 
 ## Product and delivery order
 
@@ -81,7 +83,7 @@ active, say so and identify the next roadmap item.
 
 ## Implementation discipline
 
-Use the repository wrapper so work follows the sibling Align checkout:
+Use the repository wrapper so work follows the exact `.align-revision` toolchain:
 
 ```text
 make check
@@ -90,9 +92,13 @@ make fmt
 make build
 ```
 
-The wrapper resolves `ALIGNC`, then sibling release and debug builds, then `alignc` on `PATH`. Run
-the narrow owning check after a coherent semantic batch and `make fmt` before committing Align
-source. Run aggregates at the gates defined below, not after every edit.
+The wrapper resolves the authenticated fresh compiler when required, then an explicit `ALIGNC`,
+then an explicit `ALIGN_REPO`, and otherwise materializes the managed pinned release toolchain
+outside Git through `scripts/align-toolchain`. It never selects `../align` or `alignc` on `PATH`
+implicitly. Use `scripts/align-toolchain ensure compiler` to prepare it explicitly. Set `ALIGNC` or
+`ALIGN_REPO` only when intentionally testing a different compiler or active Align checkout. Run the
+narrow owning check after a coherent semantic batch and `make fmt` before committing Align source.
+Run aggregates at the gates defined below, not after every edit.
 
 Keep modules explicit and data-oriented. One `.align` file is one module, imports define the build
 graph, public APIs use `pub`, fallible work returns `Result`, and allocation and ownership remain
@@ -159,8 +165,8 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 - Do not consume a hypothetical surface during `PROPOSED`, `ACCEPTED`, or `IMPLEMENTING`.
-- At `ALIGN_MERGED`, name the shipped Align commit, rebuild the sibling release compiler/runtime,
-  update `.align-revision`, and adopt the real surface.
+- At `ALIGN_MERGED`, name the shipped Align commit, update `.align-revision`, materialize its managed
+  release compiler/runtime, and adopt the real surface.
 - `ALIGN_LLM_VERIFIED` requires every originally named focused acceptance target and one final
   `make ci` against the same pin and final integration head.
 - `CLOSED` records the shipped surface, ownership, limits, links, and client evidence.

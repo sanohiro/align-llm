@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Prepare the developer-owned Align checkout pinned by .align-revision."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Sequence
+
+
+PROJECT = Path(__file__).resolve().parent.parent
+DEFAULT_REPOSITORY = "https://github.com/sanohiro/align.git"
+GENERATION = "dev-v1"
+REVISION = re.compile(rb"[0-9a-f]{40}\n")
+
+
+class ToolchainError(RuntimeError):
+    pass
+
+
+def read_revision() -> str:
+    try:
+        value = (PROJECT / ".align-revision").read_bytes()
+    except OSError as error:
+        raise ToolchainError(f"cannot read .align-revision: {error}") from error
+    if REVISION.fullmatch(value) is None:
+        raise ToolchainError(".align-revision must contain one lowercase 40-hex SHA followed by LF")
+    return value[:-1].decode("ascii")
+
+
+def safe_value(name: str, value: str) -> str:
+    if not value or any(character.isspace() or character == "\0" for character in value):
+        raise ToolchainError(f"{name} must be a non-empty value without whitespace")
+    return value
+
+
+def cache_root() -> Path:
+    explicit = os.environ.get("ALIGN_TOOLCHAIN_ROOT")
+    if explicit is not None:
+        base = Path(safe_value("ALIGN_TOOLCHAIN_ROOT", explicit))
+    elif os.environ.get("XDG_CACHE_HOME") is not None:
+        base = Path(safe_value("XDG_CACHE_HOME", os.environ["XDG_CACHE_HOME"])) / "align-llm" / "align"
+    else:
+        base = Path(safe_value("HOME", os.environ.get("HOME", ""))) / ".cache" / "align-llm" / "align"
+    if not base.is_absolute():
+        raise ToolchainError("managed toolchain root must be absolute")
+    return base / GENERATION
+
+
+def source_path(root: Path, revision: str) -> Path:
+    return root / revision
+
+
+def selected_path(source: Path, kind: str) -> Path:
+    if kind == "source":
+        return source
+    if kind == "compiler":
+        return source / "target" / "release" / "alignc"
+    raise ToolchainError(f"unsupported path kind: {kind}")
+
+
+def run(arguments: Sequence[str], *, cwd: Path | None = None, output: bool = False) -> str:
+    try:
+        result = subprocess.run(
+            arguments,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if output else sys.stderr,
+            stderr=subprocess.PIPE if output else sys.stderr,
+            check=False,
+            text=True,
+        )
+    except OSError as error:
+        raise ToolchainError(f"cannot execute {arguments[0]}: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() if output else ""
+        raise ToolchainError(detail or f"{arguments[0]} failed with status {result.returncode}")
+    return result.stdout.strip() if output else ""
+
+
+def git(source: Path, *arguments: str) -> str:
+    return run(("git", "-C", os.fspath(source), *arguments), output=True)
+
+
+def verify(source: Path, revision: str) -> None:
+    try:
+        metadata = source.lstat()
+    except OSError as error:
+        raise ToolchainError(f"managed Align checkout is unavailable: {error}") from error
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ToolchainError("managed Align checkout is not a directory")
+    if git(source, "rev-parse", "HEAD") != revision:
+        raise ToolchainError("managed Align checkout revision differs from .align-revision")
+    if git(source, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise ToolchainError("managed Align checkout is dirty")
+    for relative in (Path("target/release/alignc"), Path("target/release/libalign_runtime.a")):
+        path = source / relative
+        try:
+            output_metadata = path.stat()
+        except OSError as error:
+            raise ToolchainError(f"managed Align output is unavailable: {error}") from error
+        if not stat.S_ISREG(output_metadata.st_mode):
+            raise ToolchainError(f"managed Align output is not a file: {relative}")
+    run((os.fspath(source / "target/release/alignc"), "--version"), output=True)
+
+
+def prepare(root: Path, revision: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / f".{revision}.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    staging: Path | None = None
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        source = source_path(root, revision)
+        if source.exists() or source.is_symlink():
+            verify(source, revision)
+            return source
+        staging = Path(tempfile.mkdtemp(prefix=f".{revision}.tmp-", dir=root))
+        repository = safe_value(
+            "ALIGN_TOOLCHAIN_REPOSITORY",
+            os.environ.get("ALIGN_TOOLCHAIN_REPOSITORY", DEFAULT_REPOSITORY),
+        )
+        run(("git", "init", "--quiet", os.fspath(staging)))
+        run(("git", "-C", os.fspath(staging), "remote", "add", "origin", repository))
+        run(("git", "-C", os.fspath(staging), "fetch", "--no-tags", "origin", revision))
+        run(("git", "-C", os.fspath(staging), "checkout", "--detach", "--quiet", "FETCH_HEAD"))
+        if git(staging, "rev-parse", "HEAD") != revision:
+            raise ToolchainError("fetched Align revision differs from .align-revision")
+        cargo = safe_value("CARGO", os.environ.get("CARGO", "cargo"))
+        run(
+            (
+                cargo,
+                "build",
+                "--locked",
+                "--release",
+                "-p",
+                "align_runtime",
+                "-p",
+                "align_driver",
+            ),
+            cwd=staging,
+        )
+        verify(staging, revision)
+        if source.exists() or source.is_symlink():
+            raise ToolchainError("managed Align destination appeared during preparation")
+        os.rename(staging, source)
+        staging = None
+        verify(source, revision)
+        return source
+    finally:
+        if staging is not None:
+            try:
+                shutil.rmtree(staging)
+            except FileNotFoundError:
+                pass
+        os.close(descriptor)
+
+
+def parse(arguments: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("path", "ensure"):
+        child = subparsers.add_parser(command)
+        child.add_argument("kind", choices=("source", "compiler"))
+    subparsers.add_parser("verify")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    try:
+        values = parse(sys.argv[1:] if arguments is None else arguments)
+        revision = read_revision()
+        root = cache_root()
+        source = source_path(root, revision)
+        if values.command == "path":
+            print(selected_path(source, values.kind))
+        elif values.command == "ensure":
+            print(selected_path(prepare(root, revision), values.kind))
+        else:
+            verify(source, revision)
+            print(revision)
+        return 0
+    except (OSError, ToolchainError) as error:
+        print(f"align-toolchain: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
