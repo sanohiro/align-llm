@@ -12,10 +12,10 @@ file records durable project state.
   commit, and its managed release compiler/runtime materialized successfully under `dev-v1`.
 - The managed compiler passes `./scripts/alignc check-per-unit src/main.align`: all 15 units pass
   with the three existing lossy-conversion/large-copy warnings.
-- The active prerequisite is the full FRESH-IMAGE-REQUEST6 installed adoption profile. Its net
-  implementation from paused PR #69 at `2d8e10aa66b9d46bb1c9a9f76716827f87ea6687` is now migrated
-  onto current `main`; the old branch remains historical input, and none of its hosted or adoption
-  results apply to this branch.
+- The FRESH-IMAGE-REQUEST6 installed adoption profile is implemented and passes its complete local
+  native ARM profile. Its net implementation from paused PR #69 at
+  `2d8e10aa66b9d46bb1c9a9f76716827f87ea6687` is migrated onto current `main`; the old branch remains
+  historical input, and none of its hosted or adoption results apply to this branch.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -28,17 +28,17 @@ file records durable project state.
   `ad59e63e5cd0` (execute the focused payload after its variable-length handoff prefix), and
   `b5e485b87802` (use the image-owned Git for installed mutation fixtures).
 - The native ARM installed profile now passes image attestation, lifecycle, self-test, trust
-  mutations, runtime replacements, the valid ordinary Request 6 consumer, and the complete
-  boundary rejection matrix. Its worker aggregate reaches the canonical baseline gate.
+  mutations, runtime replacements, the valid ordinary Request 6 consumer, the complete boundary
+  rejection matrix, the worker aggregate, and cleanup.
 - Baseline commits `db2c88d24574` and `cceaf15fdf0c` intentionally remain historical failed
   measurement evidence: the first ARM helper lacked `/usr/bin/bwrap`, so both recorded tasks were
   non-passing and remain unacceptable as baseline evidence.
-- The failed chain was superseded by native ARM source `545910bdaeff`, passing oracle
-  `3bc51fde8d86`, and finalization `f71d951e8280`. A later full-profile run exposed a separate
-  resource bug: after roughly 8.5 GB of authenticated runtime copying, Cargo inherited all eight
-  Docker CPUs and `rustc align_sema` was killed with `SIGKILL` in the 8 GB VM. The active source
-  repair fixes `CARGO_BUILD_JOBS=1` in both fresh compiler build paths and must receive its own new
-  source -> oracle -> finalization chain before aggregate acceptance.
+- The failed chain and its first passing replacement were superseded after a later full-profile run
+  exposed a separate resource bug: after roughly 8.5 GB of authenticated runtime copying, Cargo
+  inherited all eight Docker CPUs and `rustc align_sema` was killed with `SIGKILL` in the 8 GB VM.
+  Source `cbcde22600e7` fixes `CARGO_BUILD_JOBS=1` in both fresh compiler build paths; native ARM
+  oracle `12cce0199762` records two passing samples, and finalization `be0131f85c3c` owns the matching
+  canonical baseline and digest. `scripts/check-baseline-chain` passes on that exact chain.
 
 ## Contract and decisions to preserve
 
@@ -85,6 +85,13 @@ file records durable project state.
   the preceding copy pressure; compiler/archive type, mode, size, and Cargo hard-link identity are
   valid. Fixed single-job Cargo contract and fresh-worker unit owners: PASS. The repaired native
   ARM ordinary adoption completed with canonical PASS in 225,474 ms, followed by cleanup PASS.
+- Native ARM baseline source `cbcde22600e7`, oracle `12cce0199762`, and finalization
+  `be0131f85c3c`: PASS. Both deterministic-reference samples pass under native `aarch64` bubblewrap;
+  time to passing patch is 135,683,334-174,716,542 ns with median 155,199,938 ns. The canonical
+  digest and baseline chain pass.
+- `python3 scripts/run-fresh-image-profile-smoke --require-docker --align-repo
+  <clean-pinned-Align-checkout>` at `be0131f85c3c`: PASS on native Linux `aarch64`. Boundary profile
+  passed in 282,213 ms, worker aggregate in 190,201 ms, and cleanup in 3,345 ms.
 - The first ARM baseline recorder invocation completed but produced two FAIL samples solely because
   its helper did not install `/usr/bin/bwrap`; schema inspection rejected it as canonical evidence.
 - `python3 scripts/test-development-preflight`: PASS in the native Linux `aarch64` capable helper;
@@ -97,12 +104,9 @@ file records durable project state.
 
 ## Next actions
 
-1. From the clean resource-fix source commit, record two passing deterministic-reference samples
-   with native ARM bubblewrap and create a new oracle-only and finalization-only baseline chain.
-2. Rerun the full native ARM installed profile and require `worker-aggregate` plus cleanup to pass.
-3. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
+1. Obtain the separate native `x86_64` CI owner alongside the native `aarch64` owner, then pass one
    final capable `make ci` with the `25b1201b...` compiler.
-4. Update Request 6 lifecycle evidence, perform one comprehensive
+2. Update Request 6 lifecycle evidence, perform one comprehensive
    review, and publish the consumer-complete profile/adoption candidate.
 
 ## Recovery and preservation
