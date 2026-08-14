@@ -66,7 +66,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-07): Requests 1 and 3 are CLOSED; Requests 2 and 6 are ALIGN_MERGED; Requests 4, 5, 7, 8, and 9 remain PROPOSED.**
+> **Status (2026-08-14): Requests 1, 3, and 6 are CLOSED; Request 2 is ALIGN_MERGED; Request 8 is ACCEPTED but unshipped; Requests 4, 5, 7, and 9–14 remain PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -3711,8 +3711,8 @@ Align checkout on 2026-08-14:
   shipped region form.
 
 This is a language/compiler/runtime ownership gap, not an align-llm application concern. The
-requested change must be designed and implemented in Align first; align-llm must not write code
-against a proposed constructor or element type.
+accepted change must be implemented in Align first; align-llm must not write code against an
+unshipped constructor or element type.
 
 ### Requested capability
 
@@ -3838,14 +3838,13 @@ heap-builder element before construction.
 
 ### Ownership closure matrix
 
-Align's own reviewed design must keep the canonical implementation closure matrix in its
-authoritative Align design (the current related owner is
-`../align/docs/impl/17-library-boundary-prerequisites.md` §7, or a directly linked successor chosen
-before implementation). This register is the align-llm acceptance summary: it records the required
-coverage, owner symbols, and regression names so adoption can verify the shipped capability, but it
-does not replace the sibling repository's plan or claim authority over Align implementation order.
-The Align implementation PR must copy/refine this coverage in that canonical design before coding;
-if a boundary changes, the Align design and this request entry must be updated together.
+Align's reviewed design keeps the canonical implementation closure matrix in
+`../align/docs/impl/17-library-boundary-prerequisites.md` §7.5. This register is the align-llm
+acceptance summary: it records the required coverage, owner symbols, and regression names so
+adoption can verify the shipped capability, but it does not replace the sibling repository's plan
+or claim authority over Align implementation order. The Align implementation must map its final
+diff and evidence to that canonical matrix; if a boundary changes, the Align design and this request
+entry must be updated together.
 
 | Case | Exact owner | Exact regression |
 | --- | --- | --- |
@@ -4004,8 +4003,8 @@ running after every checkpoint. Adoption does not silently inherit another consu
 - `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — the committed roadmap and architecture;
   a concrete consumer must refine its own record shapes and adoption gate before using this request.
 - `../align/docs/impl/17-library-boundary-prerequisites.md` §7 — the separate shipped
-  `RegionPlain` region-builder contract and its ownership/compaction model; §7.5 is the pending
-  heap-record extension.
+  `RegionPlain` region-builder contract and its ownership/compaction model; §7.5 is the accepted,
+  unshipped heap-record extension.
 - `../align/docs/impl/08-memory-model-v2.md` §8 — materializing-terminal bounds and allocation
   behavior; §11 — shipped and restricted dynamic struct-array shapes and whole-Copy-record limits.
 - `../align/docs/impl/core-design/json.md` §§3–4 — current declared-record JSON ownership and
