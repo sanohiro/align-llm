@@ -27,7 +27,17 @@ ready_path, observed_path = sys.argv[1:]
 
 
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def write_chunked(self, body):
+        split = max(1, len(body) // 2)
+        for chunk in (body[:split], body[split:]):
+            if not chunk:
+                continue
+            self.wfile.write(f"{len(chunk):x}\r\n".encode("ascii"))
+            self.wfile.write(chunk)
+            self.wfile.write(b"\r\n")
+        self.wfile.write(b"0\r\nX-Provider-Trailer: discarded\r\n\r\n")
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -46,13 +56,29 @@ class Handler(BaseHTTPRequestHandler):
                 + "\n"
             )
 
+        if self.path == "/malformed-chunk":
+            self.wfile.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\nZ\r\n"
+            )
+            return
+        if self.path == "/truncated-chunk":
+            self.wfile.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n5\r\nabc"
+            )
+            self.close_connection = True
+            return
+
         status = 200
+        chunked = False
         if self.path == "/tokenize":
             token_count = 8 if "\n\n" in payload.get("content", "") else 4
             body = json.dumps({"tokens": list(range(11, 11 + token_count))}).encode("utf-8")
             content_type = "application/json"
         elif self.path == "/v1/chat/completions":
             if payload.get("stream", False):
+                chunked = True
                 body = (
                     'data: {"choices":[{"delta":{"content":"OPENAI-"}}]}\n'
                     'data: {"choices":[{"delta":{"content":"STREAM"}}]}\n'
@@ -75,6 +101,7 @@ class Handler(BaseHTTPRequestHandler):
                 content_type = "application/json"
         elif self.path == "/completion":
             if payload.get("stream", False):
+                chunked = True
                 body = (
                     'data: {"content":"LLAMA-"}\n'
                     'data: {"content":"STREAM"}\n'
@@ -97,6 +124,13 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps({"error": {"message": "rate limited"}}).encode("utf-8")
             content_type = "application/json"
             status = 429
+        elif self.path == "/status413":
+            body = json.dumps({"error": {"message": "payload rejected"}}).encode("utf-8")
+            content_type = "application/json"
+            status = 413
+        elif self.path == "/oversized":
+            body = b""
+            content_type = "application/json"
         elif self.path == "/slow":
             time.sleep(0.25)
             body = json.dumps(
@@ -109,9 +143,20 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        if chunked:
+            self.send_header("Transfer-Encoding", "chunked")
+        elif self.path == "/oversized":
+            self.send_header("Content-Length", "262145")
+        else:
+            self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            if chunked:
+                self.write_chunked(body)
+            elif body:
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def log_message(self, *_args):
         return
@@ -170,6 +215,18 @@ fi
 if run_provider openai-local "http://127.0.0.1:$port/status" smoke-openai - "status error" "$temp_dir/status.json" generate; then
   exit 1
 fi
+if run_provider openai-local "http://127.0.0.1:$port/status413" smoke-openai - "status error" "$temp_dir/status413.json" generate; then
+  exit 1
+fi
+if run_provider openai-local "http://127.0.0.1:$port/oversized" smoke-openai - "oversized response" "$temp_dir/oversized.json" generate; then
+  exit 1
+fi
+if run_provider openai-local "http://127.0.0.1:$port/malformed-chunk" smoke-openai - "malformed chunk" "$temp_dir/malformed-chunk.json" stream; then
+  exit 1
+fi
+if run_provider llama "http://127.0.0.1:$port/truncated-chunk" smoke-llama - "truncated chunk" "$temp_dir/truncated-chunk.json" stream; then
+  exit 1
+fi
 if run_provider openai-local "http://127.0.0.1:$port/slow" smoke-openai - "timeout" "$temp_dir/timeout.json" generate - 100000000; then
   exit 1
 fi
@@ -209,7 +266,7 @@ assert any(
 ), observed
 assert sum(row["path"] == "/tokenize" for row in observed) == 2, observed
 assert any(row["path"] == "/tokenize" and "\n\n" in row["content"] for row in observed), observed
-assert sum(row["stream"] for row in observed) == 5, observed
+assert sum(row["stream"] for row in observed) == 7, observed
 
 cloud_http = json.loads((temp_dir / "cloud-http.json").read_text(encoding="utf-8"))
 assert cloud_http["status"] == "error", cloud_http
@@ -242,6 +299,24 @@ assert status["status"] == "error", status
 assert status["error"] == "provider-status", status
 assert status["error_code"] == 429, status
 
+status413 = json.loads((temp_dir / "status413.json").read_text(encoding="utf-8"))
+assert status413["status"] == "error", status413
+assert status413["error"] == "provider-status", status413
+assert status413["error_code"] == 413, status413
+
+oversized = json.loads((temp_dir / "oversized.json").read_text(encoding="utf-8"))
+assert oversized["status"] == "error", oversized
+assert oversized["error"] == "provider-status", oversized
+assert oversized["output"] == "", oversized
+assert oversized["error_code"] == -1, oversized
+
+for name in ("malformed-chunk.json", "truncated-chunk.json"):
+    framing = json.loads((temp_dir / name).read_text(encoding="utf-8"))
+    assert framing["status"] == "error", (name, framing)
+    assert framing["error"] == "invalid", (name, framing)
+    assert framing["output"] == "", (name, framing)
+    assert framing["error_code"] == -1, (name, framing)
+
 timeout = json.loads((temp_dir / "timeout.json").read_text(encoding="utf-8"))
 assert timeout["status"] == "error", timeout
 assert timeout["error"] == "timeout", timeout
@@ -252,5 +327,5 @@ assert llama["prompt_tokens"] == 8, llama
 assert llama["completion_tokens"] == 4, llama
 assert llama["total_tokens"] == 12, llama
 assert llama["token_count_exact"] is True, llama
-print("provider smoke: adapters, secure auth, SSE failures, status diagnostics, exact prompt count, and common result format PASS")
+print("provider smoke: adapters, chunked SSE, framing failures, bounded responses, status diagnostics, exact prompt count, and common result format PASS")
 PY

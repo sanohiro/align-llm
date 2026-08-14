@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Exercise the pinned std.http chunking and bounded-body surface through a real client."""
+
+from __future__ import annotations
+
+import pathlib
+import socket
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+REPOSITORY = pathlib.Path(__file__).resolve().parent.parent
+BODY_LIMIT = 262_144
+TRAILER_LIMIT = 256 * 1024
+
+
+class TrackingServer(HTTPServer):
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), Handler)
+        self._next_connection = 0
+        self.connection_ids: dict[int, int] = {}
+        self.observed: list[tuple[str, int]] = []
+        self.handler_errors: list[str] = []
+
+    def get_request(self) -> tuple[socket.socket, tuple[str, int]]:
+        connection, address = super().get_request()
+        connection.settimeout(5)
+        self.connection_ids[connection.fileno()] = self._next_connection
+        self._next_connection += 1
+        return connection, address
+
+    def handle_error(self, _request: socket.socket, _client_address: tuple[str, int]) -> None:
+        error = sys.exc_info()[1]
+        if isinstance(error, (BrokenPipeError, ConnectionResetError)):
+            return
+        self.handler_errors.append(repr(error))
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    @property
+    def connection_id(self) -> int:
+        return self.server.connection_ids[self.connection.fileno()]  # type: ignore[attr-defined]
+
+    def record(self) -> None:
+        self.server.observed.append((self.path, self.connection_id))  # type: ignore[attr-defined]
+
+    def send_length(self, status: int, body: bytes, *, declared: int | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body) if declared is None else declared))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_HEAD(self) -> None:
+        self.record()
+        if self.path == "/head-huge":
+            self.send_response(200)
+            self.send_header("Content-Length", "999999999999999999999999999999999999")
+            self.end_headers()
+            return
+        if self.path == "/head-chunked":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            return
+        if self.path not in {"/head-huge", "/head-chunked"}:
+            self.send_error(404)
+
+    def do_GET(self) -> None:
+        self.record()
+        try:
+            if self.path == "/fixed-exact":
+                self.send_length(200, b"x" * BODY_LIMIT)
+            elif self.path == "/fixed-over":
+                self.send_length(200, b"", declared=BODY_LIMIT + 1)
+            elif self.path in {
+                "/small-after-fixed-limit",
+                "/small-after-chunk-limit",
+                "/small-after-head",
+                "/small-after-304",
+                "/small-after-head-chunked",
+                "/small-after-204",
+                "/small-after-trailer-limit",
+            }:
+                self.send_length(200, b"ok")
+            elif self.path == "/chunked-exact":
+                self.send_response(206)
+                self.send_header("X-Final", "kept")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                chunk = b"x" * 16
+                self.wfile.write((b"10\r\n" + chunk + b"\r\n") * (BODY_LIMIT // 16))
+                self.wfile.write(b"0\r\nX-Trailer: discarded\r\n\r\n")
+            elif self.path == "/chunked-over":
+                self.send_response(200)
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.write(b"40001\r\n")
+            elif self.path == "/not-modified-huge":
+                self.send_response(304)
+                self.send_header("Content-Length", "999999999999999999999999999999999999")
+                self.end_headers()
+            elif self.path == "/no-content":
+                self.send_response(204)
+                self.end_headers()
+            elif self.path == "/interim-exact":
+                self.wfile.write(b"HTTP/1.1 103 Early Hints\r\nX-Interim: discarded\r\n\r\n")
+                self.wfile.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 262144\r\n\r\n"
+                    + b"i" * BODY_LIMIT
+                )
+            elif self.path == "/trailer-exact":
+                self.send_response(200)
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.write(b"1\r\nx\r\n0\r\nX:" + b"t" * (TRAILER_LIMIT - 6) + b"\r\n\r\n")
+            elif self.path == "/trailer-over":
+                self.send_response(200)
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.write(b"1\r\nx\r\n0\r\nX:" + b"t" * (TRAILER_LIMIT - 5) + b"\r\n\r\n")
+            else:
+                self.send_error(404)
+        except (BrokenPipeError, ConnectionResetError):
+            # Limit and malformed-framing failures deliberately close the connection early.
+            pass
+
+    def log_message(self, *_arguments: object) -> None:
+        return
+
+
+def assert_connection_contract(observed: list[tuple[str, int]]) -> None:
+    expected_paths = [
+        "/fixed-exact",
+        "/fixed-over",
+        "/small-after-fixed-limit",
+        "/chunked-exact",
+        "/chunked-over",
+        "/small-after-chunk-limit",
+        "/head-huge",
+        "/small-after-head",
+        "/not-modified-huge",
+        "/small-after-304",
+        "/head-chunked",
+        "/small-after-head-chunked",
+        "/no-content",
+        "/small-after-204",
+        "/interim-exact",
+        "/trailer-exact",
+        "/trailer-over",
+        "/small-after-trailer-limit",
+    ]
+    paths = [path for path, _connection in observed]
+    assert paths == expected_paths, observed
+    connections = {path: connection for path, connection in observed}
+
+    assert connections["/fixed-exact"] == connections["/fixed-over"], observed
+    assert connections["/small-after-fixed-limit"] != connections["/fixed-over"], observed
+    assert connections["/small-after-fixed-limit"] == connections["/chunked-exact"], observed
+    assert connections["/chunked-exact"] == connections["/chunked-over"], observed
+    assert connections["/small-after-chunk-limit"] != connections["/chunked-over"], observed
+    assert connections["/small-after-chunk-limit"] == connections["/head-huge"], observed
+    assert connections["/head-huge"] == connections["/small-after-head"], observed
+    assert connections["/small-after-head"] == connections["/not-modified-huge"], observed
+    assert connections["/not-modified-huge"] == connections["/small-after-304"], observed
+    assert connections["/small-after-304"] == connections["/head-chunked"], observed
+    assert connections["/head-chunked"] == connections["/small-after-head-chunked"], observed
+    assert connections["/small-after-head-chunked"] == connections["/no-content"], observed
+    assert connections["/no-content"] == connections["/small-after-204"], observed
+    assert connections["/small-after-204"] == connections["/interim-exact"], observed
+    assert connections["/interim-exact"] == connections["/trailer-exact"], observed
+    assert connections["/trailer-exact"] == connections["/trailer-over"], observed
+    assert connections["/small-after-trailer-limit"] != connections["/trailer-over"], observed
+
+
+def main() -> None:
+    server = TrackingServer()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = subprocess.run(
+            (
+                str(REPOSITORY / "scripts" / "alignc"),
+                "run",
+                "eval/fixtures/http-bounded-adoption.align",
+                f"http://127.0.0.1:{server.server_port}",
+            ),
+            cwd=REPOSITORY,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "http bounded adoption: PASS\n", result.stdout
+    assert result.stderr == "", result.stderr
+    assert server.handler_errors == [], server.handler_errors
+    assert_connection_contract(server.observed)
+    print(
+        "http bounded adoption: exact caps, tiny chunks, bodyless/interim framing, "
+        "trailer guards, and connection teardown PASS"
+    )
+
+
+if __name__ == "__main__":
+    main()

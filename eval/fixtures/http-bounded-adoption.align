@@ -1,0 +1,147 @@
+import std.http
+
+fn endpoint(base: str, path: str) -> string {
+  b := builder()
+  b.write(base)
+  b.write(path)
+  return b.to_string()
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 {
+    return Err(Error.Invalid)
+  }
+  base := args[1]
+  client := http.client()
+  client.max_response_body_bytes(262_144)
+
+  fixed_request := http.request("GET", endpoint(base, "/fixed-exact"))
+  fixed_response := client.request(fixed_request)?
+  if fixed_response.status() != 200 || fixed_response.body().len() != 262_144 {
+    return Err(Error.Invalid)
+  }
+
+  fixed_over_request := http.request("GET", endpoint(base, "/fixed-over"))
+  match client.request(fixed_over_request) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(e) => match e {
+      Code(code) => if code != -1 { return Err(Error.Invalid) },
+      _ => { return Err(Error.Invalid) },
+    },
+  }
+  fixed_recovery_request := http.request("GET", endpoint(base, "/small-after-fixed-limit"))
+  fixed_recovery := client.request(fixed_recovery_request)?
+  if fixed_recovery.body().as_str()? != "ok" {
+    return Err(Error.Invalid)
+  }
+
+  chunked_request := http.request("GET", endpoint(base, "/chunked-exact"))
+  chunked_response := client.request(chunked_request)?
+  if chunked_response.status() != 206 || chunked_response.body().len() != 262_144 {
+    return Err(Error.Invalid)
+  }
+  final_header_kept := match chunked_response.header("X-Final") {
+    Some(value) => value == "kept",
+    None => false,
+  }
+  if !final_header_kept {
+    return Err(Error.Invalid)
+  }
+  trailer_absent := match chunked_response.header("X-Trailer") {
+    Some(_) => false,
+    None => true,
+  }
+  if !trailer_absent {
+    return Err(Error.Invalid)
+  }
+
+  chunked_over_request := http.request("GET", endpoint(base, "/chunked-over"))
+  match client.request(chunked_over_request) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(e) => match e {
+      Code(code) => if code != -1 { return Err(Error.Invalid) },
+      _ => { return Err(Error.Invalid) },
+    },
+  }
+  chunked_recovery_request := http.request("GET", endpoint(base, "/small-after-chunk-limit"))
+  chunked_recovery := client.request(chunked_recovery_request)?
+  if chunked_recovery.body().as_str()? != "ok" {
+    return Err(Error.Invalid)
+  }
+
+  head_request := http.request("HEAD", endpoint(base, "/head-huge"))
+  head_response := client.request(head_request)?
+  if head_response.status() != 200 || head_response.body().len() != 0 {
+    return Err(Error.Invalid)
+  }
+  head_reuse_request := http.request("GET", endpoint(base, "/small-after-head"))
+  head_reuse := client.request(head_reuse_request)?
+  if head_reuse.body().as_str()? != "ok" {
+    return Err(Error.Invalid)
+  }
+
+  not_modified_request := http.request("GET", endpoint(base, "/not-modified-huge"))
+  not_modified := client.request(not_modified_request)?
+  if not_modified.status() != 304 || not_modified.body().len() != 0 {
+    return Err(Error.Invalid)
+  }
+  not_modified_reuse_request := http.request("GET", endpoint(base, "/small-after-304"))
+  not_modified_reuse := client.request(not_modified_reuse_request)?
+  if not_modified_reuse.body().as_str()? != "ok" {
+    return Err(Error.Invalid)
+  }
+
+  head_chunked_request := http.request("HEAD", endpoint(base, "/head-chunked"))
+  head_chunked := client.request(head_chunked_request)?
+  head_chunked_header := match head_chunked.header("Transfer-Encoding") {
+    Some(value) => value == "chunked",
+    None => false,
+  }
+  if head_chunked.status() != 200 || head_chunked.body().len() != 0 || !head_chunked_header {
+    return Err(Error.Invalid)
+  }
+  head_chunked_reuse_request := http.request("GET", endpoint(base, "/small-after-head-chunked"))
+  head_chunked_reuse := client.request(head_chunked_reuse_request)?
+  if head_chunked_reuse.body().as_str()? != "ok" {
+    return Err(Error.Invalid)
+  }
+
+  no_content_request := http.request("GET", endpoint(base, "/no-content"))
+  no_content := client.request(no_content_request)?
+  if no_content.status() != 204 || no_content.body().len() != 0 {
+    return Err(Error.Invalid)
+  }
+  no_content_reuse_request := http.request("GET", endpoint(base, "/small-after-204"))
+  no_content_reuse := client.request(no_content_reuse_request)?
+  if no_content_reuse.body().as_str()? != "ok" {
+    return Err(Error.Invalid)
+  }
+
+  interim_request := http.request("GET", endpoint(base, "/interim-exact"))
+  interim_response := client.request(interim_request)?
+  if interim_response.status() != 200 || interim_response.body().len() != 262_144 {
+    return Err(Error.Invalid)
+  }
+
+  trailer_request := http.request("GET", endpoint(base, "/trailer-exact"))
+  trailer_response := client.request(trailer_request)?
+  if trailer_response.body().as_str()? != "x" {
+    return Err(Error.Invalid)
+  }
+  trailer_over_request := http.request("GET", endpoint(base, "/trailer-over"))
+  match client.request(trailer_over_request) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(e) => match e {
+      Invalid => {},
+      _ => { return Err(Error.Invalid) },
+    },
+  }
+  trailer_recovery_request := http.request("GET", endpoint(base, "/small-after-trailer-limit"))
+  trailer_recovery := client.request(trailer_recovery_request)?
+  if trailer_recovery.body().as_str()? != "ok" {
+    return Err(Error.Invalid)
+  }
+
+  print("http bounded adoption: PASS")
+  return Ok(())
+}

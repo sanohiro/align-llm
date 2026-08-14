@@ -11,6 +11,9 @@ pub fn post_json(endpoint: str, api_key: str, body: str, timeout_ns: i64) -> Res
     client.timeout(timeout_ns)
   }
   request := http.request("POST", endpoint)
+  // Provider responses are whole-body values. Bound them at the transport before JSON/SSE
+  // decoding so a peer cannot allocate past C6's declared proposal-response allowance.
+  request.max_response_body_bytes(262_144)
   request.header("Content-Type", "application/json")
   if api_key.len() > 0 {
     auth := bearer(api_key)
