@@ -49,6 +49,10 @@ file records durable project state.
 
 ## Contract and decisions to preserve
 
+- `align-llm` is a continuing real-client testbed for Align. During every capability, record any
+  genuine Align language, compiler/runtime, or standard-library requirement in
+  `docs/align-requests.md`, even when non-blocking or temporarily avoidable in the application; do
+  not let an application workaround hide a language-owned gap.
 - `.align-revision` is the only implicit compiler selector. Ordinary commands use the managed exact
   pin; `ALIGNC` and `ALIGN_REPO` remain explicit overrides.
 - ALIGN-ADOPTION remains an ordered checkpoint inside a consuming capability, not a pin-only pull

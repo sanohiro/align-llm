@@ -5,14 +5,17 @@ discovered by building `align-llm` (a local LLM coding system) as a real client.
 register that `AGENTS.md` requires ("If this project needs missing Align functionality, document
 the dependency clearly").
 
-**How to use this document.** `align-llm` is a *driver*: its purpose is to surface genuine Align
-needs, not to force-build around them. Each request below is meant to be implemented **in the
-Align repository** (`../align`), under the current `../align/CLAUDE.md` delivery and test rules, and
-can be handed directly to Align's own tooling. Update the relevant design when the request changes a
-public contract, but do not infer a separate design pull request or one pull request per register
-row; Align may deliver mutually dependent prerequisites as one consumer-complete capability wave.
-`align-llm` does not work around these; it waits for the Align capability and then exercises it as a
-real client.
+**How to use this document.** `align-llm` is a continuing real-client testbed and driver: its purpose
+is to surface genuine Align needs, not to force-build around them. Record a language,
+compiler/runtime, or standard-library requirement whenever real implementation work exposes it,
+including a non-blocking requirement or one that an application workaround could temporarily hide.
+The existence of a workaround does not make a language-owned requirement an application concern.
+Each request below is meant to be implemented **in the Align repository** (`../align`), under the
+current `../align/CLAUDE.md` delivery and test rules, and can be handed directly to Align's own
+tooling. Update the relevant design when the request changes a public contract, but do not infer a
+separate design pull request or one pull request per register row; Align may deliver mutually
+dependent prerequisites as one consumer-complete capability wave. `align-llm` does not work around
+these; it waits for the Align capability and then exercises it as a real client.
 
 Verified against the `../align` compiler on 2026-07-24. File paths are stable references; line
 numbers are approximate and may drift — locate by function name.

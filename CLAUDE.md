@@ -142,10 +142,13 @@ not the primary contract-discovery loop.
 
 ## Align capability requests
 
-First classify a blocker as an application concern or a genuine Align language/standard-library
-gap. Do not build a compatibility layer or write against a proposed API. Record genuine gaps in
-`docs/align-requests.md` with current sibling evidence, an Align-consistent proposed surface,
-acceptance criteria, and these fields:
+Treat `align-llm` as a continuing real-client testbed for discovering what Align itself must ship.
+Classify every missing capability encountered—not only an active blocker—as an application concern
+or a genuine Align language, compiler/runtime, or standard-library gap. Record the genuine gap even
+when it is non-blocking or an application workaround appears possible; a workaround is not a reason
+to hide a language-owned requirement. Do not build a compatibility layer or write against a
+proposed API. Record genuine gaps in `docs/align-requests.md` with current sibling evidence, an
+Align-consistent proposed surface, acceptance criteria, and these fields:
 
 ```text
 Status:
