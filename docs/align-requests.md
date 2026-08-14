@@ -66,7 +66,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-14): Requests 1, 3, and 6 are CLOSED; Requests 2, 8, and 10 are ALIGN_MERGED; Requests 4, 5, 7, 9, and 11–14 remain PROPOSED.**
+> **Status (2026-08-15): Requests 1, 3, and 6 are CLOSED; Requests 2, 4, 8, and 10–12 are ALIGN_MERGED; Request 5 is ACCEPTED; Requests 7, 9, 13, and 14 remain PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -621,9 +621,9 @@ checkpoint names the joint delivery and records the combined verification.
 ### Current align-llm evidence
 
 `src/provider_openai.align` and `src/provider_llama.align` implement the adapter-level SSE parser and
-pass `make provider-smoke` with Content-Length-framed fixtures. The same fixture must be switched to
-chunked framing after Align ships this capability; until then, only the streaming acceptance slice
-is paused and the non-streaming provider work remains valid.
+pass `make provider-smoke` with Content-Length-framed fixtures. The provider-consumer prerequisite
+wave must pin the shipped capability and switch the same fixture to chunked framing before the
+streaming acceptance slice resumes; non-streaming provider work remains valid meanwhile.
 
 ---
 
@@ -705,7 +705,7 @@ Required semantics:
   to target `usize`; digit count or raw lexical order is not a magnitude comparison. Duplicate
   Content-Length fields are equal when their normalized numeric magnitudes are equal, even if their
   leading-zero spelling differs;
-- once Request 4's method/status-aware framing is available, compose it with the cap as follows:
+- compose the cap with Request 4's shipped method/status-aware framing as follows:
   - after a head's syntax and framing conflicts are validated, select body framing from the request
     method and response status. A final response to `HEAD`, and final `204` and `304` responses, have
     zero received payload; a syntactically valid `Content-Length` that is permitted as metadata
@@ -820,7 +820,7 @@ structural table must give it a named fixed count/byte cap in Align's HTTP desig
 the runtime-owner structural-metadata test; it is not permitted to hide response bytes in the
 structural exclusion.
 
-When Request 4 adds chunk de-framing, the formula remains a combined receive-buffer ceiling, not
+With Request 4's chunk de-framing shipped, the formula remains a combined receive-buffer ceiling, not
 one allowance per parser component. `selected body cap` covers only retained decoded payload;
 `HTTP_MAX_HEADER_BLOCK` is the single cumulative wire-byte allowance for every interim and final
 response head and the single byte-storage allowance shared with retained raw chunk metadata; one
@@ -834,7 +834,7 @@ header/framing storage. Discovery co-read and the one close-delimited probe byte
 the reused scratch buffer and do not enlarge retained payload.
 
 This request does not require a general async or client-streaming API. A bounded whole-body response
-is sufficient for the first real consumer and composes with Request 4's future chunk de-framing.
+is sufficient for the first real consumer and composes with Request 4's shipped chunk de-framing.
 
 ### Acceptance / gate
 
@@ -863,7 +863,7 @@ An Align client configured with a 262,144-byte cap:
    Arbitrary-precision cases add many leading zeroes to within-cap, cap-plus-one, and above-target
    magnitudes and prove normalization occurs before digit-count/magnitude comparison without
    changing malformed or overflow precedence;
-4. once Request 4's method/status-aware framing exists, accepts `HEAD` and `304` responses that
+4. using Request 4's method/status-aware framing, accepts `HEAD` and `304` responses that
    advertise a syntactically valid decimal `Content-Length` above target `usize` and
    `HTTP_MAX_BODY` but transfer no body, exposes an empty body, and neither returns the limit
    outcome, performs a magnitude-sized allocation, nor consumes bytes belonging to a following
@@ -879,7 +879,7 @@ An Align client configured with a 262,144-byte cap:
    body, and remains pool-eligible. A lowercase `connect` counter-fixture likewise reaches the
    server and uses ordinary response framing, while exact uppercase `CONNECT` remains pre-network
    `Error.Invalid`;
-5. once Request 4 exists, same-read and split-read fixtures send one or more non-`101`
+5. using Request 4, same-read and split-read fixtures send one or more non-`101`
    informational heads, including `100`, `102`, `103`, and `199`, followed by a final response. They
    prove only the final status/body is returned, no co-read final bytes are lost, an exact-cap final
    body succeeds, a cap-plus-one final body returns the limit outcome, aggregate live
@@ -932,7 +932,7 @@ An Align client configured with a 262,144-byte cap:
     pools the partial connection. Plaintext and verified-TLS sequential fixtures send an oversized
     response and then a valid small request through the same client, and prove the second request
     uses a new clean connection;
-13. after Request 4 ships, accepts an exact-cap de-framed chunked response, including its terminating
+13. accepts an exact-cap Request 4 de-framed chunked response, including its terminating
     chunk and trailers, and rejects a 262,145-byte decoded payload with the same limit-specific
     outcome immediately after its complete, within-guard valid size line, before another transport
     read or payload allocation. Any payload already co-read with that line remains only in scratch
