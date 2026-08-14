@@ -107,6 +107,15 @@ file records durable project state.
   `run-fresh-worker-unit-smoke`, and the complete `run-fresh-worker-qualification` all PASS. The
   ARM run exposed a same-size post-copy mutation whose filesystem timestamps did not change; the
   worker now re-digests the retained source after materialization and the existing regression passes.
+- The bounded-adoption publication preflight re-exercised the focused owners on a native Linux
+  `aarch64` capable helper. A faster tmpfs ordering exposed that the two post-enumeration source
+  mutation fixtures accepted only `OSError` as evidence even though the worker's retained-snapshot
+  rejection is the documented `ValueError("materialization source changed")`. Both fixtures now
+  require their mutation seam and accept either `OSError` or that exact `ValueError`, matching the
+  existing same-size post-write row without allowing unrelated validation failures. The same run
+  exposed a timing-dependent quota-disappearance fixture; its stat seam now injects exact `ENOENT`
+  results and proves one strict and one live mutation. Native ARM `run-fresh-worker-unit-smoke`
+  passes with the consolidated repair.
 - Native Linux `aarch64` installed profile through `boundary-profile`: PASS. This run exposed and
   repaired the focused-row prefix slicing and bare-Git fixture setup bugs; the focused adoption
   owner passes after both repairs. Warm signed-image builds reuse the architecture/toolchain layers,
@@ -175,10 +184,9 @@ file records durable project state.
 
 ## Next actions
 
-1. Perform the final comprehensive review required by the Docker launcher scope expansion and
-   consolidate any valid findings.
-2. Run the exact-head publication preflight, which repeats the native ARM installed profile, then
-   open, review, and merge the pull request.
+1. Review the focused-fixture repair and rerun the exact-head publication preflight, which repeats
+   the native ARM installed profile.
+2. Open, review, and merge the pull request.
 3. Refresh `main` and continue the next eligible consumer capability. Preserve ARM compiler builds
    at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
 

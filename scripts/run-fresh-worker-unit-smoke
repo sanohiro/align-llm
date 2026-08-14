@@ -389,11 +389,17 @@ def materialization_mutation_cases(module, temporary: Path) -> None:
             module.copy_tree_manifest(node, source, temporary / "materialization-race-copy")
         except OSError:
             pass
+        except ValueError as error:
+            require(
+                str(error) == "materialization source changed",
+                f"unexpected post-enumeration addition rejection: {error}",
+            )
         else:
             raise AssertionError("post-enumeration source addition was accepted")
     finally:
         module.open_manifest_source = original_open
         module.os.listdir = original_listdir
+    require(state.get("added") == 1, "post-enumeration addition seam did not run")
 
     replacement_source = temporary / "materialization-replace"
     replacement_source.mkdir(mode=0o755)
@@ -426,11 +432,17 @@ def materialization_mutation_cases(module, temporary: Path) -> None:
             )
         except OSError:
             pass
+        except ValueError as error:
+            require(
+                str(error) == "materialization source changed",
+                f"unexpected post-enumeration replacement rejection: {error}",
+            )
         else:
             raise AssertionError("post-enumeration source replacement was accepted")
     finally:
         module.open_manifest_source = original_open
         module.os.listdir = original_listdir
+    require(state.get("replaced") == 1, "post-enumeration replacement seam did not run")
 
     read_fifo = temporary / "materialization-read-fifo"
     os.mkfifo(read_fifo, 0o644)
@@ -937,10 +949,14 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
     try:
         vanished = root / "vanished"
         vanished.write_bytes(b"bytes")
+        disappearance_count = 0
 
         def disappearing_stat(path, *arguments, **keywords):
+            nonlocal disappearance_count
             if path == b"vanished" and keywords.get("dir_fd") == descriptor:
-                vanished.unlink()
+                disappearance_count += 1
+                vanished.unlink(missing_ok=True)
+                raise FileNotFoundError(errno.ENOENT, "injected disappearing file")
             return original_stat(path, *arguments, **keywords)
 
         module.os.stat = disappearing_stat
@@ -950,10 +966,12 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
             pass
         else:
             raise AssertionError("strict quota scan accepted a disappearing file")
+        require(disappearance_count == 1, "strict quota disappearance seam did not run once")
 
         vanished.write_bytes(b"bytes")
         count, total = module.scan_private_fd(descriptor, live=True)
         require((count, total) == (1, 0), "live quota scan miscounted a disappearing file")
+        require(disappearance_count == 2, "live quota disappearance seam did not run once")
 
         def failing_stat(path, *arguments, **keywords):
             if path == b"stable" and keywords.get("dir_fd") == descriptor:
