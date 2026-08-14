@@ -5,8 +5,8 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-14)
 
-- Branch `agent/close-request6-adoption` is based directly on `main` at
-  `c0fc3046bff05d33ad0753f9c273da8bb48d2fa1`, the merge commit for align-llm PR #84.
+- Branch `agent/request8-align-contract` is based directly on `main` at
+  `ce62fdb074e1ea16a03cd882a15e0e48c1ce6d1f`, the merge commit for align-llm PR #85.
 - Align PR #786 merged the checked-HIR `string.clone()` compatibility repair as
   `25b1201b3a4181f6a90921227596bdcb76ab715e`. `.align-revision` now selects that exact merged
   commit, and its managed release compiler/runtime materialized successfully under `dev-v1`.
@@ -14,6 +14,10 @@ file records durable project state.
   with the three existing lossy-conversion/large-copy warnings.
 - The FRESH-IMAGE-REQUEST6 installed adoption profile is merged and passes its complete native
   Linux `aarch64` and `x86_64` profiles. Request 6 is now `CLOSED`.
+- Request 8 register reconciliation is active after the first comprehensive Align design review.
+  The proposal now reuses the existing builder's by-value/`borrow mut` ownership contract and
+  nominal versioned interface graph instead of inventing record-only placement rules or a second
+  `RecordBuilderDescV1` identity.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -152,10 +156,13 @@ file records durable project state.
 
 ## Next actions
 
-1. Publish and merge the reviewed Request 6 closure record with both consistency findings repaired.
-2. Inspect the sibling Align source of truth for Request 8, the shallowest remaining C6-LIFECYCLE
-   implementation prerequisite, and advance only an already accepted contract.
-3. After each consumer-complete capability, complete publication preflight, comprehensive review,
+1. Review and merge the Request 8 register reconciliation without changing its `PROPOSED` lifecycle
+   state.
+2. Repair the five accepted findings in the sibling Align design, merge that design, and advance
+   Request 8 to `ACCEPTED` with the shipped design PR recorded.
+3. Implement and qualify the reviewed Request 8 contract in Align, then adopt its merged compiler
+   in the named C6c2 consumer checkpoint.
+4. After each consumer-complete capability, complete publication preflight, comprehensive review,
    repair, merge, refresh `main`, and continue to the next eligible roadmap item.
 
 ## Recovery and preservation

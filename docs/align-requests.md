@@ -3676,8 +3676,8 @@ compatibility workaround.
 
 ### Current-state evidence at the pinned Align revision
 
-The align-llm pin is `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` (#672), verified in the sibling
-Align checkout on 2026-08-01:
+The align-llm pin is `25b1201b3a4181f6a90921227596bdcb76ab715e` (#786), verified in the sibling
+Align checkout on 2026-08-14:
 
 - `core.array_builder` is represented as `Ty::ArrayBuilder(Scalar)`. The `resolve_type` branch for
   the `"array_builder"` type restricts its element to Copy primitive scalars or owned `string`;
@@ -3696,13 +3696,12 @@ Align checkout on 2026-08-01:
   current `DropPlan` therefore cannot form arbitrary owned text-array fields. A future consumer must
   register that JSON/type capability separately; Request 8 must not claim it is already available or
   silently replace it with a shallow array.
-- `../align/docs/impl/17-library-boundary-prerequisites.md` §7 specifies a future
-  `array_builder(out)` for recursively `RegionPlain` records. That planned region form is
-  not the current public surface at #672: the pinned compiler's builder constructor accepts no
-  argument. It also deliberately excludes dynamic owned arrays, which remain a separate future
-  prerequisite when a concrete consumer requires them. Request 8 therefore owns only the missing
-  heap-builder record capability for view-free records and must not claim that the planned region
-  form has shipped.
+- `array_builder(out)` and the recursive `RegionPlain` contract are shipped at the pinned revision.
+  That explicit-region form accepts view-bearing plain records, grows in caller-owned region chunks,
+  and compacts once at `build`; it deliberately excludes independently owned `string` fields and
+  dynamic owned arrays. Request 8 therefore owns only the missing individually owned heap-builder
+  capability for view-free records containing free-standing `string`, and does not revise the
+  shipped region form.
 
 This is a language/compiler/runtime ownership gap, not an align-llm application concern. The
 requested change must be designed and implemented in Align first; align-llm must not write code
@@ -3746,7 +3745,7 @@ case uses `OwnedRecord { id: i64, name: string }` and proves owned-string source
 reallocation, and recursive cleanup; it is not counted as a Copy-record case.
 
 The implementation may choose its internal storage representation, but the public ownership
-predicate and the canonical `RecordBuilderDescV1` identity described in item 8 are fixed:
+predicate and existing nominal builder/interface identity described in item 8 are fixed:
 
 1. The accepted heap element predicate is closed and recursive. Define `HeapRecord(S)` as true only
    when `S` is a non-empty, acyclic declared record and every field is one of the current Copy scalar
@@ -3789,69 +3788,30 @@ predicate and the canonical `RecordBuilderDescV1` identity described in item 8 a
    failed or abandoned operation must not return a partially initialized array as a successful
    value.
 7. `append` remains a bulk-copy operation only for Copy scalar elements. It must not silently
-   shallow-copy a Move record or a view-bearing element. The new record-element builder remains one
-   mutable local: it cannot be stored in an aggregate, transferred by-value across a user-function
-   boundary, returned, captured, or put in `Option`/`Result`; replacing it drops the old builder
-   and resets its builder-local ownership state before installing the new one. It follows Align's
-   existing builder contract for `borrow mut`: once Align L2e is available, a helper may borrow the
-   bound builder for non-consuming `push`/`append` use and return while the caller retains the same
-   owner; `build` remains a consuming operation. The pinned compiler lacks L2e, so direct local
-   record-builder use is independent of that upstream prerequisite, while the positive helper
-   regression is deferred until L2e ships. This restriction is scoped to the newly admitted
-   record/nested shapes and does not revise the upstream borrow contract.
-   Existing scalar and owned-`string` builders retain their current boxed return and user-function
-   forwarding behavior, including `escaping_array_builder_keeps_boxed_header` and
-   `array_builder_crossing_user_call_stays_boxed`.
-8. The complete substituted element definition graph participates in interface serialization,
-   monomorphization, structural compiler identity, and codegen cache keys through the self-versioned
-   `RecordBuilderDescV1` byte sequence:
-
-   ```text
-   descriptor := u8 schema_version (= 0x01)
-                u8 root_tag (= 0x20, declared record)
-                u32 root_size (little-endian, non-zero)
-                u32 root_align (little-endian)
-                u8 root_allocation_mode (= 0x01, free-standing)
-                u8 root_drop_plan_version (= 0x01)
-                record_body
-   record_body := u32 field_count (little-endian, non-zero), field[field_count]
-   field := u32 name_len (little-endian)
-            byte[name_len] name_utf8
-            u8 type_tag
-            type_payload
-            u32 layout_size (little-endian)
-            u32 layout_align (little-endian)
-            u8 allocation_mode
-            u8 drop_tag
-   type_payload for 0x01 Copy integer := u8 bit_width, u8 signedness (0 or 1)
-   type_payload for 0x02 Copy float   := u8 bit_width
-   type_payload for 0x03 Copy bool    := empty
-   type_payload for 0x04 Copy char    := empty
-   type_payload for 0x10 owned string := empty
-   type_payload for 0x20 nested record := record_body
-   ```
-
-   The only field tags are `0x01` through `0x04`, `0x10`, and `0x20`; integer widths are exactly
-   `8`, `16`, `32`, or `64`, float widths are exactly `32` or `64`, and `signedness` is exactly `0`
-   or `1`. Names are non-empty ASCII identifiers in source declaration order and are unique. A
-   field's `allocation_mode` is `0x00` for Copy scalar fields and `0x01` for `string` or nested
-   record fields; its `drop_tag` is `0x00` for Copy scalar fields, `0x01` for `string`, and `0x02`
-   for nested records. The root and every nested record must have natural alignment at most 8, no
-   explicit `align(N)` or `layout(C)` attribute, and at least one field. The parser rejects a wrong
-   schema/root tag, zero root size or field count, count or length overflow, invalid name, duplicate
-   or out-of-order field, unknown tag, invalid scalar payload, mismatched layout/allocation/drop tag,
-   truncated nested body, or trailing byte before interface or codegen use. Cycles are rejected
-   during source type formation; this finite inline descriptor has no graph-reference encoding and
-   therefore has no wire-level cycle case. No pointer, local struct ID, source position, or
-   declaration hash is part of the identity. A definition edit, field reorder, name/type/layout/
-   drop-plan change changes the descriptor; an edit/revert restores it. Whole-program and
-   imported/per-unit compilation must make the same decisions, and stale descriptors reject or
-   cache-miss before code generation. A golden-byte test covers the complete nested descriptor and
-   every malformed boundary, including zero-size/zero-field rejection. No runtime reflection or
-   type dictionary is added.
-9. The existing future region-builder design remains separate. Request 8 does not make heap
-   allocation implicit, does not add `array_builder(out)` prematurely, and does not broaden
-   `RegionPlain` or package generic syntax as an incidental implementation shortcut.
+   shallow-copy a Move record or a view-bearing element. A record-element builder uses the same
+   one-owner transfer rules as the existing scalar and owned-`string` builders: passing or returning
+   it by value moves the sole builder owner and its boxed header, while `borrow mut` permits only a
+   checked, non-consuming helper use and `build` consumes the owner. Replacing a builder drops the
+   old storage before installing the new owner. A builder still cannot be stored in an aggregate,
+   captured, sent to a task, or put in `Option`/`Result`, and an append of record elements remains
+   rejected. Request 8 adds no record-only placement state or exception to the existing builder
+   contract. The exact forwarding, return, mutable-borrow, and boxed-header behavior must be
+   consistent for scalar, owned-`string`, and record element types.
+8. The builder retains Align's existing nominal producer-item identity. A record specialization is
+   represented by the existing `array_builder<Struct>` type/interface graph and maps to the ordinary
+   owned `array<Struct>` result; Request 8 does not add a standalone record-builder descriptor,
+   second wire identity, runtime reflection table, or type dictionary. The complete reachable
+   substituted record definition graph, including declaration-order fields, layout, allocation
+   mode, and recursive `DropPlan` facts, must already participate in the versioned producer
+   interface, monomorphization identity, and codegen cache key. Local and imported/per-unit builds
+   must resolve the same nominal graph. An element-definition edit, field reorder, field name/type/
+   layout/drop-plan change invalidates the identity and codegen cache, while reverting the edit
+   restores it. Malformed, unresolved, cyclic, stale, or producer/consumer-incompatible interface
+   references reject through the existing interface validation before HIR or codegen. No
+   builder-specific byte schema is part of this request.
+9. The shipped explicit-region builder remains separate. Request 8 does not make heap allocation
+   implicit, revise `array_builder(out)`, or broaden `RegionPlain` or package generic syntax as an
+   incidental implementation shortcut.
 
 The exact acceptance diagnostics may follow Align's naming conventions, but validation order is
 deterministic and no builder allocation or push-side effect occurs before it completes:
@@ -3860,7 +3820,7 @@ deterministic and no builder allocation or push-side effect occurs before it com
 | --- | --- |
 | 1 | Existing parser/import/arity diagnostics and expected-type inference for `array_builder()` |
 | 2 | Canonical recursive type formation: unresolved/cyclic definitions, over-alignment, reachable views, unsupported resources/raw/functions/builders, and missing `DropPlan` |
-| 3 | Record-builder placement and receiver mode: standalone mutable local, non-capturing/non-aggregate/non-`Option`/non-`Result`; once Align L2e is available, an existing `borrow mut` helper may use the builder non-consumingly |
+| 3 | Existing builder ownership and receiver mode: by-value parameter/return moves the sole owner, `borrow mut` is non-consuming, and aggregate/`Option`/`Result`/capture/task placement remains rejected |
 | 4 | At `push`, source move state and exact element-type compatibility, followed by recursive allocation-mode validation; an arena, mixed, or path-dependent owned child is rejected before growth |
 | 5 | `build` transfer and ordinary array escape/cleanup validation; scalar/string compatibility paths retain their existing boxed-header behavior |
 
@@ -3895,11 +3855,11 @@ if a boundary changes, the Align design and this request entry must be updated t
 | Builder replacement/reassignment and builder-state reset | `../align/crates/align_sema/src/lib.rs` assignment/drop classification and `../align/crates/align_mir/src/lib.rs` `drop_old` | `m12_array_builder.rs::record_builder_reassignment_drops_old_storage` extends the existing `reassignment_frees_old_string_builder` guard and proves the replacement has fresh ownership/placement state; borrow roots are N/A because heap elements reject reachable views |
 | Enclosing record construction failure | `../align/crates/align_mir/src/lib.rs` aggregate/source cleanup | `owned_structs.rs::record_builder_enclosing_record_failure` checks a built nested array followed by a failing sibling and branch join |
 | `if`/`match`/`else`/`?`/`map_err` joins and loop back-edges | `../align/crates/align_sema/src/lib.rs` Move/Drop analysis and `../align/crates/align_mir/src/lib.rs` cleanup CFG | `region_flow.rs::record_builder_all_supported_join_shapes` and `m12_array_builder.rs::record_builder_join_cleanup_matrix` cover built and abandoned paths |
-| Record-builder storage, by-value boundary, capture, `Option`, `Result`, and `borrow mut` | `../align/crates/align_sema/src/lib.rs` placement/capture checks and the existing Align L2e borrow checker contract; `../align/crates/align_codegen_llvm/src/lib.rs` boxed-header boundary | `m12_array_builder.rs::record_builder_invalid_storage_and_capture` rejects aggregate/by-value forwarding/return/capture/`Option`/`Result` placement before allocation; `m12_array_builder.rs::record_builder_borrow_mut_helper_non_consuming` covers the existing non-consuming helper contract once L2e is available; scalar/string compatibility remains covered by `capture_into_spawn_rejected`, `capture_into_par_map_rejected`, `escaping_array_builder_keeps_boxed_header`, and `array_builder_crossing_user_call_stays_boxed` |
+| Record-builder transfer, capture exclusion, and `borrow mut` | `../align/crates/align_sema/src/lib.rs` move/placement/capture checks and the existing borrow checker contract; `../align/crates/align_codegen_llvm/src/lib.rs` boxed-header boundary | `m12_array_builder.rs::record_builder_by_value_parameter_return_and_borrow_mut` proves one-owner forwarding, return, and non-consuming mutable borrow; `record_builder_invalid_storage_and_capture` rejects aggregate/`Option`/`Result`/capture/task placement and consuming a borrowed builder; scalar/string compatibility remains covered by `capture_into_spawn_rejected`, `capture_into_par_map_rejected`, `escaping_array_builder_keeps_boxed_header`, and `array_builder_crossing_user_call_stays_boxed` |
 | Deterministic validation precedence | `../align/crates/align_sema/src/lib.rs` `resolve_type`, `check_array_builder_new`, `check_array_builder_push`, `MoveCheck::expr`, and `EscapeCheck::walk_array_builder` | `m12_array_builder.rs::record_builder_validation_precedence_local_and_imported`, `per_unit.rs::record_builder_validation_precedence_parity`, and `cache_codegen.rs::record_builder_validation_precedence_cache_replay` cover multi-invalid local/imported/per-unit/cache diagnostics and first-error parity |
 | Generic monomorphization and imported interface | `../align/crates/align_sema/src/lib.rs` type substitution, `../align/crates/align_mir/src/lib.rs` graph collection, and `../align/crates/align_driver/src/lib.rs` interface emission | `generics.rs::record_builder_generic_instantiation` plus `per_unit.rs::record_builder_imported_interface_graph` checks local/imported parity |
-| Structural identity and codegen cache | `../align/crates/align_driver/src/lib.rs` interface/cache identity plus canonical `RecordBuilderDescV1` serialization | `cache_codegen.rs::record_builder_descriptor_golden_and_definition_edit_revert_identity` checks exact versioned bytes, cold hit, definition edit miss, revert identity, and malformed/zero-field/trailing descriptor rejection |
-| Interface ABI and descriptor completeness | `../align/crates/align_driver/src/lib.rs` interface serialization and `../align/crates/align_codegen_llvm/src/lib.rs` ABI descriptor | `interface_param_modes.rs::record_builder_interface_drop_descriptor` rejects a producer/consumer cleanup-contract mismatch and layout/allocation/drop-tag disagreement |
+| Nominal identity and codegen cache | `../align/crates/align_driver/src/lib.rs` existing nominal interface graph and cache identity | `cache_codegen.rs::record_builder_nominal_identity_and_definition_edit_revert` proves two same-shape records with different declaration identities remain distinct, then checks the existing versioned interface identity, cold hit, definition edit miss, revert identity, and malformed/stale/unresolved graph-reference rejection without a builder-specific descriptor |
+| Interface ABI and recursive cleanup completeness | `../align/crates/align_driver/src/lib.rs` existing interface serialization and `../align/crates/align_codegen_llvm/src/lib.rs` nominal struct layout/DropPlan resolution | `interface_param_modes.rs::record_builder_interface_drop_plan` rejects a producer/consumer record-layout or recursive cleanup-contract mismatch before HIR/codegen |
 | Allocation and byte ownership | `../align/crates/align_runtime/src/lib.rs` allocation/growth/build plus codegen ownership flags | `m12_array_builder.rs::record_builder_allocation_transfer_instrumentation` checks allocation counts, sanitized execution, and no duplicate element buffer |
 | Builder concurrency and overlap exclusion | `../align/crates/align_sema/src/lib.rs` local placement/capture checks and `../align/crates/align_runtime/src/lib.rs` instance-local state | `m12_array_builder.rs::record_builder_same_instance_alias_rejected` proves a second operation on the same builder cannot be represented or start; `record_builder_two_instances` proves two distinct builders and aggregate-plus-aggregate/aggregate-plus-focused calls are independent; `cache_parallel.rs::record_builder_two_processes` covers independent processes |
 | Capacity overflow | `../align/crates/align_runtime/src/lib.rs` checked capacity arithmetic | `m12_array_builder.rs::record_builder_capacity_overflow_terminal_never_returns_partial_success` verifies the existing terminal overflow policy and no successful partial array |
@@ -3926,8 +3886,8 @@ Before Align marks Request 8 `ALIGN_MERGED`, its focused tests must prove all of
    `m12_array_builder.rs::record_builder_view_element_rejected_before_construction`, and
    `m12_array_builder.rs::record_builder_over_aligned_type_rejected_before_allocation`, together
    with `m12_array_builder.rs::record_builder_empty_or_c_layout_rejected_before_allocation`.
-2. The heap form does not admit `RegionPlain` view-bearing elements; the explicit-region
-   `array_builder(out)` design remains a separate Align §7 gate and is not claimed by Request 8.
+2. The heap form does not admit `RegionPlain` view-bearing elements; the shipped explicit-region
+   `array_builder(out)` contract remains a separate Align §7 surface and is not revised by Request 8.
    The exact compatibility gate is
    `align_attr.rs::an_aligned_struct_as_a_field_or_dynamic_array_element_is_rejected` together
    with the view-rejection test in item 1.
@@ -3957,15 +3917,13 @@ Before Align marks Request 8 `ALIGN_MERGED`, its focused tests must prove all of
    rejected. The exact gates are `m12_array_builder.rs::record_builder_build_transfer_and_array_drop`
    and `m12_array_builder.rs::record_builder_reassignment_drops_old_storage`.
 7. `append` of a Move record, bare `str`, dynamic array, resource, function, raw value, or builder is rejected
-   before side effects. A record-element builder cannot be stored in an aggregate, transferred
-   by-value across a user-function boundary, returned, captured, or put in `Option`/`Result`.
-   Once Align L2e is shipped, an existing `borrow mut` helper may use the builder non-consumingly;
-   the helper cannot create an alias that escapes the borrow, and `build` remains consuming. The
-   pinned compiler does not yet run that positive helper gate, but Request 8 does not contradict or
-   redefine it. Existing scalar/string builders retain their current boxed return and forwarding
-   behavior. The exact gates are
-   `m12_array_builder.rs::record_builder_invalid_storage_and_capture` and the existing
-   `m12_array_builder.rs::record_builder_borrow_mut_helper_non_consuming`,
+   before side effects. Passing or returning a record-element builder by value transfers the sole
+   boxed-header owner exactly as for scalar/string builders. An existing `borrow mut` helper uses it
+   non-consumingly, cannot create an escaping alias, and cannot consume it with `build`; the caller
+   may build after the borrow ends. Aggregate/`Option`/`Result` placement, capture, and task transfer
+   remain rejected. The exact gates are
+   `m12_array_builder.rs::record_builder_by_value_parameter_return_and_borrow_mut`,
+   `m12_array_builder.rs::record_builder_invalid_storage_and_capture`, and the existing
    `capture_into_spawn_rejected`, `capture_into_par_map_rejected`,
    `escaping_array_builder_keeps_boxed_header`, and
    `array_builder_crossing_user_call_stays_boxed` tests.
@@ -3977,19 +3935,21 @@ Before Align marks Request 8 `ALIGN_MERGED`, its focused tests must prove all of
    `per_unit.rs::record_builder_validation_precedence_parity`, and
    `cache_codegen.rs::record_builder_validation_precedence_cache_replay`.
 9. Local and imported records, including a concrete generic record instantiation admitted by the
-   pinned Align baseline, produce identical structural identities and decisions in whole-program
-   and per-unit compilation. The exact `RecordBuilderDescV1` golden bytes include the schema/root
-   tags, declaration-order names, scalar widths, nested bodies, layout values, allocation modes,
-   and drop tags; malformed, truncated, zero-field, and trailing-byte descriptors reject before use.
-   Source type formation rejects cycles before a finite descriptor is emitted. A record-definition edit invalidates the codegen cache, reverting it restores the original
-   identity, and an incompatible cleanup descriptor is rejected. The exact
+   pinned Align baseline, preserve their nominal declaration identities and produce identical
+   decisions in whole-program and per-unit compilation through the existing versioned nominal
+   interface graph. Two distinct declarations with identical fields and layout remain distinct
+   builder specializations and result-array types. That graph
+   carries the complete reachable declaration-order fields, layout, allocation mode, and recursive
+   `DropPlan` facts. Malformed, stale, unresolved, cyclic, or producer/consumer-incompatible graph
+   references reject before HIR/codegen. A record-definition edit invalidates the codegen cache,
+   reverting it restores the original identity, and no builder-specific descriptor is introduced. The exact
    gates are `generics.rs::record_builder_generic_instantiation`,
    `per_unit.rs::record_builder_imported_interface_graph`,
-   `cache_codegen.rs::record_builder_definition_edit_and_revert_identity`, and
-   `interface_param_modes.rs::record_builder_interface_drop_descriptor`.
-10. A second operation cannot concurrently alias one record builder: standalone mutable-local
-    placement rejects capture and by-value transfer, while an Align L2e `borrow mut` helper is a
-    checked non-consuming borrow with no escaping alias. Two distinct builders in one process, an
+   `cache_codegen.rs::record_builder_nominal_identity_and_definition_edit_revert`, and
+   `interface_param_modes.rs::record_builder_interface_drop_plan`.
+10. A second operation cannot concurrently alias one record builder: by-value transfer moves the
+    sole owner, while `borrow mut` is a checked non-consuming borrow with no escaping alias and
+    aggregate/capture/task placement remains rejected. Two distinct builders in one process, an
     aggregate plus a focused builder call, and two independent processes have no shared mutable
     state. Capacity overflow and test-injected allocator failure both terminate without a
     recoverable result or successful partial array. The exact gates are
@@ -4028,8 +3988,9 @@ running after every checkpoint. Adoption does not silently inherit another consu
 
 - `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — the committed roadmap and architecture;
   a concrete consumer must refine its own record shapes and adoption gate before using this request.
-- `../align/docs/impl/17-library-boundary-prerequisites.md` §7 — the separate planned
-  `RegionPlain` region-builder contract and its ownership/compaction model.
+- `../align/docs/impl/17-library-boundary-prerequisites.md` §7 — the separate shipped
+  `RegionPlain` region-builder contract and its ownership/compaction model; §7.5 is the pending
+  heap-record extension.
 - `../align/docs/impl/08-memory-model-v2.md` §8 — materializing-terminal bounds and allocation
   behavior; §11 — shipped and restricted dynamic struct-array shapes and whole-Copy-record limits.
 - `../align/docs/impl/core-design/json.md` §§3–4 — current declared-record JSON ownership and
@@ -4057,7 +4018,7 @@ running after every checkpoint. Adoption does not silently inherit another consu
 - `../align/crates/align_driver/tests/cache_codegen.rs`,
   `../align/crates/align_driver/tests/generics.rs`,
   `../align/crates/align_driver/tests/per_unit.rs`, and
-  `../align/crates/align_driver/tests/interface_param_modes.rs` — structural identity and
+  `../align/crates/align_driver/tests/interface_param_modes.rs` — nominal identity and
   interface/cache regressions.
 - `../align/crates/align_driver/tests/m5.rs` and `../align/crates/align_driver/tests/mmv2.rs` —
   declared JSON array and materializing-terminal compatibility regressions.
