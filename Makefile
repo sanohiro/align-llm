@@ -64,6 +64,7 @@ loop-smoke: build
 	./scripts/run-loop-smoke
 
 provider-smoke: build
+	./scripts/run-http-bounded-adoption-smoke
 	./scripts/run-provider-smoke
 
 index-smoke: build

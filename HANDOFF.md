@@ -5,23 +5,24 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-15)
 
-- Branch `agent/sync-merged-align-prerequisites` is based directly on `main` at
-  `115a4dfd11270d16d0f41137a6a8966c35058e31`, the merge commit for align-llm PR #88.
-- Align PR #786 merged the checked-HIR `string.clone()` compatibility repair as
-  `25b1201b3a4181f6a90921227596bdcb76ab715e`. `.align-revision` now selects that exact merged
-  commit, and its managed release compiler/runtime materialized successfully under `dev-v1`.
-- The managed compiler passes `./scripts/alignc check-per-unit src/main.align`: all 15 units pass
-  with the three existing lossy-conversion/large-copy warnings.
+- Branch `agent/http-bounded-adoption` is based directly on `main` at
+  `ff600629f961f5532525322519e524664ab2b1ca`, the merge commit for align-llm PR #89.
+- Align PR #812 merged the bounded `std.http` response implementation as
+  `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. This branch pins that exact merge and adopts the
+  shipped surface at the provider boundary together with Request 4's chunked-response support.
+- The managed release compiler/runtime for the new pin materialized under `dev-v1` as a native
+  Mach-O `arm64` compiler with `CARGO_BUILD_JOBS=1`. It passes
+  `./scripts/alignc check-per-unit src/main.align`: all 15 units pass with the three existing
+  lossy-conversion/large-copy warnings.
 - The FRESH-IMAGE-REQUEST6 installed adoption profile is merged and passes its complete native
   Linux `aarch64` and `x86_64` profiles. Request 6 is now `CLOSED`.
 - Align PR #801 shipped Request 8 as `029e27465d79e24cd36d374aae41dca0ec7e6979`, and Align PR #804
   shipped Request 10 as `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Align PR #800 shipped
   Request 4 as `f04672bce6f8689c9b219d0a20e770571e2d638b`, PR #808 shipped Request 11 as
   `82da9f580cc005fbb78f67af6847c7b4ce6626c4`, and PR #807 shipped Request 12 as
-  `c37d79a180612c345551e259091b0b5acf2cb9cd`. All five are now `ALIGN_MERGED`; their real-client
-  adoption remains an ordered checkpoint inside a consumer capability and must not become a
-  pin-only pull request. Request 5's design is `ACCEPTED` at Align PR #810 / `6c753de84012` while
-  its implementation remains pending.
+  `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are adopted together on the active
+  provider-consumer branch; Requests 8 and 10–12 remain `ALIGN_MERGED` for their named consumer
+  capabilities.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -51,15 +52,13 @@ file records durable project state.
 
 - `.align-revision` is the only implicit compiler selector. Ordinary commands use the managed exact
   pin; `ALIGNC` and `ALIGN_REPO` remain explicit overrides.
-- ALIGN-ADOPTION is an ordered checkpoint inside the next consumer capability, not a pin-only pull
-  request. Request 6 advanced through `ALIGN_LLM_VERIFIED` to `CLOSED` only after the full installed
-  profile, ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci`
-  passed.
+- ALIGN-ADOPTION remains an ordered checkpoint inside a consuming capability, not a pin-only pull
+  request. This branch is the bounded provider-response consumer: it applies the cap, switches real
+  provider fixtures to chunked framing, and owns the combined Requests 4/5 acceptance gate.
 - C6-LIFECYCLE remains blocked from product implementation on Align Requests 7 and 13 and on the
   consumer adoption of merged Requests 8, 10, and 12. Requests 7 and 13 remain `PROPOSED`; do not
-  consume or imitate those APIs. Request 6 is closed and no longer blocks eligible prerequisite
-  work. Request 11 is merged for the later C6-EVALUATION boundary, and Request 4 is merged for the
-  provider-consumer wave; neither authorizes an isolated pin update.
+  consume or imitate those APIs. Requests 4–6 are closed with real-client and native installed-profile
+  evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -87,9 +86,17 @@ file records durable project state.
   over stack-local and boxed headers. Exact-head docs preflight, native Linux ARM64, Linux x86_64,
   macOS Apple Silicon, PostgreSQL integration, pre-PR attestation, and post-open review all passed;
   merged as `60622c60a4fc21b8586e1f6a907c32c025aa1658`.
-- `scripts/align-toolchain ensure compiler` for `25b1201b...`: PASS; managed compiler path is
-  `~/.cache/align-llm/align/dev-v1/25b1201b.../target/release/alignc`.
-- `./scripts/alignc check-per-unit src/main.align`: PASS, 15 units.
+- `scripts/align-toolchain ensure compiler` for `5aa5b23a...`: PASS with native ARM and one Cargo
+  build job; managed compiler path is under `~/.cache/align-llm/align/dev-v1/5aa5b23a...`.
+- `./scripts/alignc check-per-unit src/main.align`: PASS, 15 units. The direct bounded HTTP adoption
+  fixture and provider smoke pass locally against the exact pin: exact/cap-plus-one fixed and
+  many-tiny-chunk bodies, bodyless/interim framing, exact/cap-plus-one trailers, connection reuse
+  and teardown, chunked OpenAI/llama SSE, malformed/truncated framing, limit code `-1`, and HTTP 413.
+- `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo /Users/hiro/Projects/align`:
+  PASS at `0f9e08eee427` on native Linux `aarch64`.
+  The installed profile, Request 6 boundary, fresh compiler, worker aggregate, canonical baseline,
+  complete `make ci`, resource owners, and cleanup pass; the worker aggregate took 172,039 ms and
+  the complete installed profile took 514,222 ms.
 - Latest pinned compiler Request 6 matrix: four owned-row fixtures reject with the exact Copy-row
   diagnostic; `copy-row.align`, `decode-owned.align`, and `decode-owned-option.align` run with the
   exact expected output.
@@ -100,6 +107,18 @@ file records durable project state.
   `run-fresh-worker-unit-smoke`, and the complete `run-fresh-worker-qualification` all PASS. The
   ARM run exposed a same-size post-copy mutation whose filesystem timestamps did not change; the
   worker now re-digests the retained source after materialization and the existing regression passes.
+- The bounded-adoption publication preflight re-exercised the focused owners on a native Linux
+  `aarch64` capable helper. A faster tmpfs ordering exposed that the two post-enumeration source
+  mutation fixtures accepted only `OSError` as evidence even though the worker's retained-snapshot
+  rejection is the documented `ValueError("materialization source changed")`. Both fixtures now
+  require their mutation seam and accept either `OSError` or that exact `ValueError`, matching the
+  existing same-size post-write row without allowing unrelated validation failures. The same run
+  exposed a timing-dependent quota-disappearance fixture; its stat seam now injects exact `ENOENT`
+  results and proves one strict and one live mutation. The tmpfs owner then exposed that scanning a
+  retained readable directory descriptor can retain an exhausted or pre-population stream offset;
+  every private-root quota pass now reopens the admitted directory through its retained descriptor,
+  so newly staged entries and repeated scans are visible. Native ARM `run-fresh-worker-unit-smoke`
+  passes with the consolidated repair on tmpfs.
 - Native Linux `aarch64` installed profile through `boundary-profile`: PASS. This run exposed and
   repaired the focused-row prefix slicing and bare-Git fixture setup bugs; the focused adoption
   owner passes after both repairs. Warm signed-image builds reuse the architecture/toolchain layers,
@@ -168,11 +187,11 @@ file records durable project state.
 
 ## Next actions
 
-1. Review and merge the Requests 4/5/11/12 lifecycle synchronization.
-2. Continue the next eligible C6 prerequisite without updating `.align-revision`; batch the final
-   merged prerequisite set into the C6-LIFECYCLE consumer capability.
-3. After each consumer-complete capability, complete publication preflight, comprehensive review,
-   repair, merge, refresh `main`, and continue to the next eligible roadmap item.
+1. Review the focused-fixture repair and rerun the exact-head publication preflight, which repeats
+   the native ARM installed profile.
+2. Open, review, and merge the pull request.
+3. Refresh `main` and continue the next eligible consumer capability. Preserve ARM compiler builds
+   at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
 
 ## Recovery and preservation
 

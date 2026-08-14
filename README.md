@@ -14,9 +14,9 @@ Development starts with `align-coder` using existing cloud or local OpenAI-compa
 The C0 evaluation and verification foundation is complete. C1 now has an explicit provider boundary
 with cloud OpenAI-compatible, local OpenAI-compatible, and llama.cpp adapters; generate/stream
 operations; transparent estimated versus exact token counts; and one versioned JSON result format.
-The provider smoke fixture exercises all three adapters without requiring a model server. Streaming
-currently requires a Content-Length-framed response because the shipped Align HTTP client still
-rejects chunked response bodies; that limitation is tracked in `docs/align-requests.md`.
+The provider smoke fixture exercises all three adapters without requiring a model server. Provider
+responses accept Content-Length and chunked framing, and the shared transport enforces the C6
+262,144-byte response-body bound before JSON or SSE decoding.
 C2 now has a repository-index slice for tracked files, Align declarations/imports, lexical
 references, semantic resolution status, and test-path candidates, persisted as one revision-bound
 JSON document. It also provides deterministic path-based related-test selection with ranked

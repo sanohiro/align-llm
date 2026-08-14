@@ -39,7 +39,7 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`25b1201b3a4181f6a90921227596bdcb76ab715e`. The reviewed
+`5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
@@ -66,7 +66,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-15): Requests 1, 3, and 6 are CLOSED; Requests 2, 4, 8, and 10–12 are ALIGN_MERGED; Request 5 is ACCEPTED; Requests 7, 9, 13, and 14 remain PROPOSED.**
+> **Status (2026-08-15): Requests 1, 3–6 are CLOSED; Requests 2, 8, and 10–12 are ALIGN_MERGED; Requests 7, 9, 13, and 14 remain PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -493,14 +493,14 @@ count as passing.
 ## Request 4 — `std.http`: client-side chunked response de-framing for provider SSE
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: high
-Blocking: yes
-Blocked gate or slice: C1 streaming provider acceptance
-Independent work that may continue: non-streaming provider calls, token counting, common result persistence, C2 preparation
-Resume condition: after ALIGN_MERGED, the next provider-consumer prerequisite wave pins the shipped compiler with any other ready prerequisites, decodes valid chunked SSE, rejects truncated or malformed framing, and passes align-llm's provider stream smoke; if Request 5 reached ALIGN_MERGED first or both ship together, that wave also passes the combined bodyless/chunk-cap/trailer-guard/aggregate-storage gate before either request reaches ALIGN_LLM_VERIFIED
+Blocking: no
+Blocked gate or slice: none; C1 streaming provider acceptance is enabled
+Independent work that may continue: all provider and C6 work may consume the shipped surface
+Resume condition: complete
 Align commit or pull request: Align design PR #798, merged as `004b7f02086570b200b238d752a1f7ba67da7d04`; implementation PR #800, merged as `f04672bce6f8689c9b219d0a20e770571e2d638b`
-align-llm verification: pending
+align-llm verification: `.align-revision` pins `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`; `make provider-smoke` passes chunked OpenAI-compatible and llama.cpp SSE, malformed and truncated framing, exact/cap-plus-one tiny-chunk bodies, bodyless and interim responses, exact/cap-plus-one trailer guards, retained final headers, discarded trailers, reuse after success, and teardown after failure; the native Linux aarch64 installed profile and its fresh `make ci` pass at implementation head `0f9e08eee427b9005d1294c4100f72385a8003b9`
 ```
 
 ### Motivation
@@ -630,14 +630,14 @@ streaming acceptance slice resumes; non-streaming provider work remains valid me
 ## Request 5 — `std.http`: bounded client response bodies
 
 ```text
-Status: ACCEPTED
+Status: CLOSED
 Priority: high
-Blocking: yes
-Blocked gate or slice: C6 provider-proposal slice and real-provider prompt-optimizer gate
-Independent work that may continue: C6 artifacts, renderer, pure scorer, activation lifecycle, and deterministic A/B evaluator
-Resume condition: after ALIGN_MERGED, the C6-MEASURED prerequisite wave pins the shipped Align release with any other merged prerequisites, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and one final make ci; if Request 4 reached ALIGN_MERGED first or both capabilities ship together, the same wave also owns and must pass the combined bodyless/chunk-cap/trailer-guard/aggregate-storage gate before Request 5 reaches ALIGN_LLM_VERIFIED, and for a joint delivery neither request may reach ALIGN_LLM_VERIFIED first; only then does the provider-proposal cell resume
-Align commit or pull request: Align design PR #810, merged as `6c753de84012e178a99e4de0edebf3b395c71dbd`; implementation pending
-align-llm verification: pending
+Blocking: no
+Blocked gate or slice: none; the C6 provider-proposal cell may consume the shipped bound
+Independent work that may continue: all provider and C6 work may consume the shipped surface
+Resume condition: complete
+Align commit or pull request: Align design PR #810, merged as `6c753de84012e178a99e4de0edebf3b395c71dbd`; implementation PR #812, merged as `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`
+align-llm verification: `.align-revision` pins `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`; `provider_http.post_json` applies the 262,144-byte transport cap; `make provider-smoke` distinguishes `Error.Code(-1)` with no body from HTTP 413, proves clean connection teardown and later client reuse, and passes the combined Request 4/5 focused gate named above; the native Linux aarch64 installed profile and its fresh `make ci` pass at implementation head `0f9e08eee427b9005d1294c4100f72385a8003b9`
 ```
 
 ### Motivation
