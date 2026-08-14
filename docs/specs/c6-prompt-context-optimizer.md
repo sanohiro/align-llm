@@ -66,11 +66,11 @@ hypothetical API part of C6:
    of declared records such as snapshot requests, task rows, aggregates, and regression reasons.
    C6c2 also needs the declared record-array and scalar-scratch construction path to adapt decoded
    evaluation rows to the C6c1 scorer; a fixed-size local array or duplicated scorer is not allowed.
-   Align must define a visible, ownership-safe construction path for the recursively Copy base
-   record shapes, including partial push/build/drop behavior. Request 8 was registered in
-   align-llm PR #32, and its reviewed Align design merged in Align PR #799, so it is `ACCEPTED` but
-   unshipped. This design does not consume the surface until a named implementation reaches
-   `ALIGN_MERGED`; real-client adoption remains the later `ALIGN_LLM_VERIFIED` gate.
+   Align provides a visible, ownership-safe construction path for the recursively Copy base record
+   shapes, including partial push/build/drop behavior. Request 8 was registered in align-llm PR #32,
+   its reviewed design merged in Align PR #799, and its implementation merged in Align PR #801 as
+   `029e27465d79e24cd36d374aae41dca0ec7e6979`. It is `ALIGN_MERGED`; real-client adoption remains
+   the later `ALIGN_LLM_VERIFIED` gate.
 5. **Request 13 — recursive owned C6 JSON artifact graphs.** C6 artifacts contain nested records,
    options, runtime-sized arrays, and persistent text. Request 9's intentionally flat owned-text
    route is not sufficient, and the current borrowed JSON route cannot encode a record containing
@@ -80,8 +80,9 @@ hypothetical API part of C6:
 6. **Request 10 — recursive evaluator record fields.** C6f2 also needs `Option<T>` and nested
    dynamic `array<T>` fields inside those records. Request 8 explicitly excludes them, so Request
    10 owns the separately reviewed recursive `DropPlan`, reallocation, and partial-construction
-   extension. C6f2 and the C6c2 decoded-record implementation are blocked on both Requests 8 and
-   10; neither dependent cell consumes a proposed surface.
+   extension. Its design merged in Align PR #802 and its implementation merged in PR #804 as
+   `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Both requests are `ALIGN_MERGED`; C6f2 and C6c2 still
+   wait for their named real-client adoption targets and other consumer prerequisites.
 7. **Request 11 — bounded child-process capture.** The current `std.process.run()` captures
    stdout/stderr without a receiver-selected limit. C6f1, C6f2, and C6g1 must wait for a shipped
    cap that kills/reaps over-limit children before claiming their helper and adapter bounds.
@@ -358,9 +359,9 @@ concurrency is supported only for disjoint resources.
 The schema and signature blocks in this design are non-normative contract notation until C6a1.
 They intentionally do not claim to compile against the pinned language. C6a1 must add a pinned
 Align syntax fixture with declarations separate from positional calls and run `alignc check` plus
-the common `make ci` target. No current C6 code may target the accepted-but-unshipped Request 8
-surface or the proposed Request 10, 11, or 12 surfaces. The ledger records this as an explicit
-deferred acceptance cell, not an omission.
+the common `make ci` target. No current C6 code may target the merged-but-unpinned Requests 8/10
+surfaces or the proposed Requests 11/12 surfaces. The ledger records this as an explicit deferred
+acceptance cell, not an omission.
 
 The C6a1/C6a2 fixtures enumerate the Cartesian product of `Option.None`/`Some`, empty/non-empty
 arrays, parent/candidate variant, every terminal status, gate-eligible/ineligible, verification

@@ -5,8 +5,8 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-14)
 
-- Branch `agent/accept-request8-design` is based directly on `main` at
-  `f4cffeede80c9f27dede0ce4cd8ce449b9ca13d2`, the merge commit for align-llm PR #86.
+- Branch `agent/merge-request8-request10-lifecycle` is based directly on `main` at
+  `9619786c4a49f92610eb401e4f4dbbd47e79fe21`, the merge commit for align-llm PR #87.
 - Align PR #786 merged the checked-HIR `string.clone()` compatibility repair as
   `25b1201b3a4181f6a90921227596bdcb76ab715e`. `.align-revision` now selects that exact merged
   commit, and its managed release compiler/runtime materialized successfully under `dev-v1`.
@@ -14,9 +14,10 @@ file records durable project state.
   with the three existing lossy-conversion/large-copy warnings.
 - The FRESH-IMAGE-REQUEST6 installed adoption profile is merged and passes its complete native
   Linux `aarch64` and `x86_64` profiles. Request 6 is now `CLOSED`.
-- Align PR #799 merged the reviewed Request 8 heap-record builder design as
-  `60622c60a4fc21b8586e1f6a907c32c025aa1658`. Request 8 is now `ACCEPTED`; implementation has not
-  shipped and align-llm must not consume it yet.
+- Align PR #801 shipped Request 8 as `029e27465d79e24cd36d374aae41dca0ec7e6979`, and Align PR #804
+  shipped Request 10 as `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Both are now
+  `ALIGN_MERGED`; their real-client adoption remains an ordered checkpoint inside C6-LIFECYCLE and
+  must not become a pin-only pull request.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -50,9 +51,9 @@ file records durable project state.
   request. Request 6 advanced through `ALIGN_LLM_VERIFIED` to `CLOSED` only after the full installed
   profile, ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci`
   passed.
-- C6-LIFECYCLE remains blocked from product implementation on Align Requests 7, 8, 10, 12, and 13.
-  Request 8 is `ACCEPTED` but not implemented; Requests 7, 10, 12, and 13 remain `PROPOSED`. Do not
-  consume or imitate those APIs. Request 6 is closed and no longer blocks eligible prerequisite
+- C6-LIFECYCLE remains blocked from product implementation on Align Requests 7, 12, and 13 and on
+  the consumer adoption of merged Requests 8 and 10. Requests 7, 12, and 13 remain `PROPOSED`; do
+  not consume or imitate those APIs. Request 6 is closed and no longer blocks eligible prerequisite
   work.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
@@ -162,10 +163,9 @@ file records durable project state.
 
 ## Next actions
 
-1. Review and merge the Request 8 `ACCEPTED` transition with Align design PR #799 and merge commit
-   `60622c60a4fc21b8586e1f6a907c32c025aa1658` recorded.
-2. Implement and qualify the reviewed Request 8 contract in Align, then adopt its merged compiler
-   in the named C6c2 consumer checkpoint.
+1. Review and merge the Requests 8/10 `ALIGN_MERGED` lifecycle synchronization.
+2. Continue the next eligible C6 prerequisite without updating `.align-revision`; batch the final
+   merged prerequisite set into the C6-LIFECYCLE consumer capability.
 3. After each consumer-complete capability, complete publication preflight, comprehensive review,
    repair, merge, refresh `main`, and continue to the next eligible roadmap item.
 
