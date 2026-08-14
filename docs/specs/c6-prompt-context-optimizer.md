@@ -67,9 +67,10 @@ hypothetical API part of C6:
    C6c2 also needs the declared record-array and scalar-scratch construction path to adapt decoded
    evaluation rows to the C6c1 scorer; a fixed-size local array or duplicated scorer is not allowed.
    Align must define a visible, ownership-safe construction path for the recursively Copy base
-   record shapes, including partial push/build/drop behavior. Request 8 is registered and merged
-   in align-llm PR #32, but remains `PROPOSED` until Align implements it and a real-client adoption
-   gate passes; its proposed surface is not used by this design.
+   record shapes, including partial push/build/drop behavior. Request 8 was registered in
+   align-llm PR #32, and its reviewed Align design merged in Align PR #799, so it is `ACCEPTED` but
+   unshipped. This design does not consume the surface until a named implementation reaches
+   `ALIGN_MERGED`; real-client adoption remains the later `ALIGN_LLM_VERIFIED` gate.
 5. **Request 13 — recursive owned C6 JSON artifact graphs.** C6 artifacts contain nested records,
    options, runtime-sized arrays, and persistent text. Request 9's intentionally flat owned-text
    route is not sufficient, and the current borrowed JSON route cannot encode a record containing
@@ -357,8 +358,9 @@ concurrency is supported only for disjoint resources.
 The schema and signature blocks in this design are non-normative contract notation until C6a1.
 They intentionally do not claim to compile against the pinned language. C6a1 must add a pinned
 Align syntax fixture with declarations separate from positional calls and run `alignc check` plus
-the common `make ci` target. No current C6 code may target the proposed Request 8, 10, 11, or 12
-surface. The ledger records this as an explicit deferred acceptance cell, not an omission.
+the common `make ci` target. No current C6 code may target the accepted-but-unshipped Request 8
+surface or the proposed Request 10, 11, or 12 surfaces. The ledger records this as an explicit
+deferred acceptance cell, not an omission.
 
 The C6a1/C6a2 fixtures enumerate the Cartesian product of `Option.None`/`Some`, empty/non-empty
 arrays, parent/candidate variant, every terminal status, gate-eligible/ineligible, verification

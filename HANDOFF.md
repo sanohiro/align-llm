@@ -5,8 +5,8 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-14)
 
-- Branch `agent/request8-align-contract` is based directly on `main` at
-  `ce62fdb074e1ea16a03cd882a15e0e48c1ce6d1f`, the merge commit for align-llm PR #85.
+- Branch `agent/accept-request8-design` is based directly on `main` at
+  `f4cffeede80c9f27dede0ce4cd8ce449b9ca13d2`, the merge commit for align-llm PR #86.
 - Align PR #786 merged the checked-HIR `string.clone()` compatibility repair as
   `25b1201b3a4181f6a90921227596bdcb76ab715e`. `.align-revision` now selects that exact merged
   commit, and its managed release compiler/runtime materialized successfully under `dev-v1`.
@@ -14,10 +14,9 @@ file records durable project state.
   with the three existing lossy-conversion/large-copy warnings.
 - The FRESH-IMAGE-REQUEST6 installed adoption profile is merged and passes its complete native
   Linux `aarch64` and `x86_64` profiles. Request 6 is now `CLOSED`.
-- Request 8 register reconciliation is active after the first comprehensive Align design review.
-  The proposal now reuses the existing builder's by-value/`borrow mut` ownership contract and
-  nominal versioned interface graph instead of inventing record-only placement rules or a second
-  `RecordBuilderDescV1` identity.
+- Align PR #799 merged the reviewed Request 8 heap-record builder design as
+  `60622c60a4fc21b8586e1f6a907c32c025aa1658`. Request 8 is now `ACCEPTED`; implementation has not
+  shipped and align-llm must not consume it yet.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -51,9 +50,10 @@ file records durable project state.
   request. Request 6 advanced through `ALIGN_LLM_VERIFIED` to `CLOSED` only after the full installed
   profile, ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci`
   passed.
-- C6-LIFECYCLE remains blocked from product implementation on Align Requests 7, 8, 10, 12, and 13,
-  which are still `PROPOSED`. Do not consume or imitate those APIs. Request 6 is closed and no
-  longer blocks their eligible prerequisite work.
+- C6-LIFECYCLE remains blocked from product implementation on Align Requests 7, 8, 10, 12, and 13.
+  Request 8 is `ACCEPTED` but not implemented; Requests 7, 10, 12, and 13 remain `PROPOSED`. Do not
+  consume or imitate those APIs. Request 6 is closed and no longer blocks eligible prerequisite
+  work.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -75,6 +75,12 @@ file records durable project state.
   PASS.
 - Align #786 preflight: PASS (owner, lint ratchet, 16-binary bounded gate, Clippy); all required
   hosted checks passed before merge.
+- Align Request 8 design PR #799: comprehensive review found five valid closure gaps and the
+  consolidated repair added checked-HIR rows, reconciled builder transfer and nominal identity,
+  added the same-shape nominal twin, completed the Move-source matrix, and parameterized cleanup
+  over stack-local and boxed headers. Exact-head docs preflight, native Linux ARM64, Linux x86_64,
+  macOS Apple Silicon, PostgreSQL integration, pre-PR attestation, and post-open review all passed;
+  merged as `60622c60a4fc21b8586e1f6a907c32c025aa1658`.
 - `scripts/align-toolchain ensure compiler` for `25b1201b...`: PASS; managed compiler path is
   `~/.cache/align-llm/align/dev-v1/25b1201b.../target/release/alignc`.
 - `./scripts/alignc check-per-unit src/main.align`: PASS, 15 units.
@@ -156,13 +162,11 @@ file records durable project state.
 
 ## Next actions
 
-1. Review and merge the Request 8 register reconciliation without changing its `PROPOSED` lifecycle
-   state.
-2. Repair the five accepted findings in the sibling Align design, merge that design, and advance
-   Request 8 to `ACCEPTED` with the shipped design PR recorded.
-3. Implement and qualify the reviewed Request 8 contract in Align, then adopt its merged compiler
+1. Review and merge the Request 8 `ACCEPTED` transition with Align design PR #799 and merge commit
+   `60622c60a4fc21b8586e1f6a907c32c025aa1658` recorded.
+2. Implement and qualify the reviewed Request 8 contract in Align, then adopt its merged compiler
    in the named C6c2 consumer checkpoint.
-4. After each consumer-complete capability, complete publication preflight, comprehensive review,
+3. After each consumer-complete capability, complete publication preflight, comprehensive review,
    repair, merge, refresh `main`, and continue to the next eligible roadmap item.
 
 ## Recovery and preservation
