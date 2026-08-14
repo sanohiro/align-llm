@@ -57,9 +57,8 @@ file records durable project state.
   provider fixtures to chunked framing, and owns the combined Requests 4/5 acceptance gate.
 - C6-LIFECYCLE remains blocked from product implementation on Align Requests 7 and 13 and on the
   consumer adoption of merged Requests 8, 10, and 12. Requests 7 and 13 remain `PROPOSED`; do not
-  consume or imitate those APIs. Requests 4 and 5 remain `ALIGN_MERGED` until this branch's final
-  exact-head native installed-profile `make ci` passes; Request 6 is closed. Request 11 remains
-  merged for the later C6-EVALUATION boundary.
+  consume or imitate those APIs. Requests 4–6 are closed with real-client and native installed-profile
+  evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -93,6 +92,11 @@ file records durable project state.
   fixture and provider smoke pass locally against the exact pin: exact/cap-plus-one fixed and
   many-tiny-chunk bodies, bodyless/interim framing, exact/cap-plus-one trailers, connection reuse
   and teardown, chunked OpenAI/llama SSE, malformed/truncated framing, limit code `-1`, and HTTP 413.
+- `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo /Users/hiro/Projects/align`:
+  PASS at `0f9e08eee427` on native Linux `aarch64`.
+  The installed profile, Request 6 boundary, fresh compiler, worker aggregate, canonical baseline,
+  complete `make ci`, resource owners, and cleanup pass; the worker aggregate took 172,039 ms and
+  the complete installed profile took 514,222 ms.
 - Latest pinned compiler Request 6 matrix: four owned-row fixtures reject with the exact Copy-row
   diagnostic; `copy-row.align`, `decode-owned.align`, and `decode-owned-option.align` run with the
   exact expected output.
@@ -171,10 +175,10 @@ file records durable project state.
 
 ## Next actions
 
-1. Repair the comprehensive review findings by recording the new pin's canonical baseline and
-   keeping Requests 4/5 pending until final integration evidence exists.
-2. Run the exact-head publication preflight and final native ARM installed profile (`make ci`), then
-   advance Requests 4/5 to `CLOSED`, open, review, and merge the pull request.
+1. Perform the final comprehensive review required by the Docker launcher scope expansion and
+   consolidate any valid findings.
+2. Run the exact-head publication preflight, which repeats the native ARM installed profile, then
+   open, review, and merge the pull request.
 3. Refresh `main` and continue the next eligible consumer capability. Preserve ARM compiler builds
    at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
 
