@@ -3635,7 +3635,7 @@ product slice starts only after every other separately registered JSON prerequis
 Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension, and C6c2 cannot adopt its runtime-sized declared-record result arrays until the capability is merged
+Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension, and C6c2 cannot consume its runtime-sized declared-record result arrays until the named real-client adoption and shared consumer pin wave pass
 Independent work that may continue: C6c2 design and other application designs, pure codecs, renderers, scorers, activation slices, Request 5, Request 6, Request 7, and any implementation that does not construct a runtime-sized declared-record array
 Resume condition: The next C6 consumer prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` once with Request 8, Request 10, and the other merged prerequisites needed by that consumer. C6-LIFECYCLE runs the Request 8 subset of `c6c2-request8-adoption` as an ordered checkpoint before the recursive Request 10 subset and verifier implementation on the same capability branch; C6-EVALUATION later runs `c6f2-array-builder-adoption`. Each focused target plus the capability wave's one final `make ci` supplies the applicable real-client evidence.
 Align commit or pull request: Align design PR #799, merged as `60622c60a4fc21b8586e1f6a907c32c025aa1658`; implementation PR #801, merged as `029e27465d79e24cd36d374aae41dca0ec7e6979`
@@ -3710,9 +3710,9 @@ Align checkout on 2026-08-14:
   capability for view-free records containing free-standing `string`, and does not revise the
   shipped region form.
 
-This is a language/compiler/runtime ownership gap, not an align-llm application concern. The
-accepted change must be implemented in Align first; align-llm must not write code against an
-unshipped constructor or element type.
+This was a language/compiler/runtime ownership gap, not an align-llm application concern. The
+capability is shipped in Align, but the current align-llm pin predates it; align-llm must not write
+consumer code against the constructor or element type before the named adoption checkpoint.
 
 ### Requested capability
 
@@ -4003,8 +4003,8 @@ running after every checkpoint. Adoption does not silently inherit another consu
 - `docs/specs/roadmap.md` and `docs/specs/align-llm.md` — the committed roadmap and architecture;
   a concrete consumer must refine its own record shapes and adoption gate before using this request.
 - `../align/docs/impl/17-library-boundary-prerequisites.md` §7 — the separate shipped
-  `RegionPlain` region-builder contract and its ownership/compaction model; §7.5 is the accepted,
-  unshipped heap-record extension.
+  `RegionPlain` region-builder contract and its ownership/compaction model; §7.5 is the shipped
+  heap-record extension awaiting align-llm adoption.
 - `../align/docs/impl/08-memory-model-v2.md` §8 — materializing-terminal bounds and allocation
   behavior; §11 — shipped and restricted dynamic struct-array shapes and whole-Copy-record limits.
 - `../align/docs/impl/core-design/json.md` §§3–4 — current declared-record JSON ownership and
@@ -4731,7 +4731,7 @@ adoption evidence before they become dependent on this request.
 Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by this evaluator extension, and C6c2 cannot adopt its recursive runtime-sized result arrays until both requests are merged
+Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Requests 8 and 10 supply the recursive runtime-sized result arrays, which C6c2 cannot consume until the named real-client adoption and shared consumer pin wave pass
 Independent work that may continue: C6c2 design, C6a1 codec work that does not materialize recursive runtime arrays, C6b, C6c, C6d, Request 5, Request 6, Request 7, Request 8, Request 9, and verification work that does not construct the blocked record graph
 Resume condition: The C6-LIFECYCLE prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` once with merged Requests 8 and 10 plus its other merged prerequisites. It runs the recursive subsets of `c6c2-request8-adoption` and `c6c2-request10-adoption` in order on the same capability branch, then implements the verifier only after both pass and closes with the original recursive-construction matrix and one final `make ci`. C6-EVALUATION later runs `c6f2-array-builder-adoption` for its own record graph without creating a pin-only pull request.
 Align commit or pull request: Align design PR #802, merged as `8fdb274eb98f8aba362d0bea6ba5729f4ed22479`; implementation PR #804, merged as `3ec710656c7ce7412da14a5c929529cb3e89caa3`

@@ -359,9 +359,9 @@ concurrency is supported only for disjoint resources.
 The schema and signature blocks in this design are non-normative contract notation until C6a1.
 They intentionally do not claim to compile against the pinned language. C6a1 must add a pinned
 Align syntax fixture with declarations separate from positional calls and run `alignc check` plus
-the common `make ci` target. No current C6 code may target the accepted-but-unshipped Request 8
-surface or the proposed Request 10, 11, or 12 surfaces. The ledger records this as an explicit
-deferred acceptance cell, not an omission.
+the common `make ci` target. No current C6 code may target the merged-but-unpinned Requests 8/10
+surfaces or the proposed Requests 11/12 surfaces. The ledger records this as an explicit deferred
+acceptance cell, not an omission.
 
 The C6a1/C6a2 fixtures enumerate the Cartesian product of `Option.None`/`Some`, empty/non-empty
 arrays, parent/candidate variant, every terminal status, gate-eligible/ineligible, verification
