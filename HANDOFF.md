@@ -114,8 +114,11 @@ file records durable project state.
   require their mutation seam and accept either `OSError` or that exact `ValueError`, matching the
   existing same-size post-write row without allowing unrelated validation failures. The same run
   exposed a timing-dependent quota-disappearance fixture; its stat seam now injects exact `ENOENT`
-  results and proves one strict and one live mutation. Native ARM `run-fresh-worker-unit-smoke`
-  passes with the consolidated repair.
+  results and proves one strict and one live mutation. The tmpfs owner then exposed that scanning a
+  retained readable directory descriptor can retain an exhausted or pre-population stream offset;
+  every private-root quota pass now reopens the admitted directory through its retained descriptor,
+  so newly staged entries and repeated scans are visible. Native ARM `run-fresh-worker-unit-smoke`
+  passes with the consolidated repair on tmpfs.
 - Native Linux `aarch64` installed profile through `boundary-profile`: PASS. This run exposed and
   repaired the focused-row prefix slicing and bare-Git fixture setup bugs; the focused adoption
   owner passes after both repairs. Warm signed-image builds reuse the architecture/toolchain layers,

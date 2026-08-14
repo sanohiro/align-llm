@@ -5193,7 +5193,15 @@ def scan_private_fd(
                 raise CleanupError("private tree exceeds cleanup bound")
         return count, total
 
-    return visit(root_fd, 0, 0, 0)
+    scan_fd = os.open(
+        b".",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=root_fd,
+    )
+    try:
+        return visit(scan_fd, 0, 0, 0)
+    finally:
+        os.close(scan_fd)
 
 
 def enforce_private_quota(admission: Admission, *, live: bool = False) -> None:

@@ -953,7 +953,7 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
 
         def disappearing_stat(path, *arguments, **keywords):
             nonlocal disappearance_count
-            if path == b"vanished" and keywords.get("dir_fd") == descriptor:
+            if path == b"vanished":
                 disappearance_count += 1
                 vanished.unlink(missing_ok=True)
                 raise FileNotFoundError(errno.ENOENT, "injected disappearing file")
@@ -974,7 +974,7 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
         require(disappearance_count == 2, "live quota disappearance seam did not run once")
 
         def failing_stat(path, *arguments, **keywords):
-            if path == b"stable" and keywords.get("dir_fd") == descriptor:
+            if path == b"stable":
                 raise OSError(errno.EIO, "injected live scan I/O failure")
             return original_stat(path, *arguments, **keywords)
 
@@ -994,7 +994,7 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
         changed.mkdir(mode=0o700)
 
         def changing_open(path, flags, *arguments, **keywords):
-            if path == b"changed" and keywords.get("dir_fd") == descriptor:
+            if path == b"changed":
                 changed.rmdir()
                 changed.symlink_to("missing")
             return original_open(path, flags, *arguments, **keywords)
