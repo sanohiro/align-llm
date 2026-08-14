@@ -57,8 +57,9 @@ file records durable project state.
   provider fixtures to chunked framing, and owns the combined Requests 4/5 acceptance gate.
 - C6-LIFECYCLE remains blocked from product implementation on Align Requests 7 and 13 and on the
   consumer adoption of merged Requests 8, 10, and 12. Requests 7 and 13 remain `PROPOSED`; do not
-  consume or imitate those APIs. Requests 4–6 are closed by real clients once this branch's final
-  fresh `make ci` passes. Request 11 remains merged for the later C6-EVALUATION boundary.
+  consume or imitate those APIs. Requests 4 and 5 remain `ALIGN_MERGED` until this branch's final
+  exact-head native installed-profile `make ci` passes; Request 6 is closed. Request 11 remains
+  merged for the later C6-EVALUATION boundary.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -170,10 +171,10 @@ file records durable project state.
 
 ## Next actions
 
-1. Commit the bounded provider-response candidate, perform one comprehensive review, and consolidate
-   any valid findings.
+1. Repair the comprehensive review findings by recording the new pin's canonical baseline and
+   keeping Requests 4/5 pending until final integration evidence exists.
 2. Run the exact-head publication preflight and final native ARM installed profile (`make ci`), then
-   open, review, and merge the pull request.
+   advance Requests 4/5 to `CLOSED`, open, review, and merge the pull request.
 3. Refresh `main` and continue the next eligible consumer capability. Preserve ARM compiler builds
    at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
 

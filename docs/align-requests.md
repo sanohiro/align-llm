@@ -66,7 +66,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-15): Requests 1, 3–6 are CLOSED; Requests 2, 8, and 10–12 are ALIGN_MERGED; Requests 7, 9, 13, and 14 remain PROPOSED.**
+> **Status (2026-08-15): Requests 1, 3, and 6 are CLOSED; Requests 2, 4, 5, 8, and 10–12 are ALIGN_MERGED; Requests 7, 9, 13, and 14 remain PROPOSED.**
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -493,14 +493,14 @@ count as passing.
 ## Request 4 — `std.http`: client-side chunked response de-framing for provider SSE
 
 ```text
-Status: CLOSED
+Status: ALIGN_MERGED
 Priority: high
-Blocking: no
-Blocked gate or slice: none; C1 streaming provider acceptance is enabled
-Independent work that may continue: all provider and C6 work may consume the shipped surface
-Resume condition: complete
+Blocking: yes
+Blocked gate or slice: C1 streaming provider acceptance pending final exact-head adoption integration
+Independent work that may continue: work that does not claim the combined Requests 4/5 adoption complete
+Resume condition: pass the final native installed-profile make ci at the exact adoption head, then advance through ALIGN_LLM_VERIFIED to CLOSED
 Align commit or pull request: Align design PR #798, merged as `004b7f02086570b200b238d752a1f7ba67da7d04`; implementation PR #800, merged as `f04672bce6f8689c9b219d0a20e770571e2d638b`
-align-llm verification: `.align-revision` pins `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`; `make provider-smoke` passes chunked OpenAI-compatible and llama.cpp SSE, malformed and truncated framing, exact/cap-plus-one tiny-chunk bodies, bodyless and interim responses, exact/cap-plus-one trailer guards, retained final headers, discarded trailers, reuse after success, and teardown after failure; final fresh `make ci` PASS
+align-llm verification: candidate `.align-revision` pins `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`; `make provider-smoke` passes chunked OpenAI-compatible and llama.cpp SSE, malformed and truncated framing, exact/cap-plus-one tiny-chunk bodies, bodyless and interim responses, exact/cap-plus-one trailer guards, retained final headers, discarded trailers, reuse after success, and teardown after failure; final exact-head native installed-profile `make ci` pending
 ```
 
 ### Motivation
@@ -630,14 +630,14 @@ streaming acceptance slice resumes; non-streaming provider work remains valid me
 ## Request 5 — `std.http`: bounded client response bodies
 
 ```text
-Status: CLOSED
+Status: ALIGN_MERGED
 Priority: high
-Blocking: no
-Blocked gate or slice: none; the C6 provider-proposal cell may consume the shipped bound
-Independent work that may continue: all provider and C6 work may consume the shipped surface
-Resume condition: complete
+Blocking: yes
+Blocked gate or slice: C6 provider-proposal cell pending final exact-head adoption integration
+Independent work that may continue: work that does not claim the combined Requests 4/5 adoption complete
+Resume condition: pass the final native installed-profile make ci at the exact adoption head, then advance through ALIGN_LLM_VERIFIED to CLOSED
 Align commit or pull request: Align design PR #810, merged as `6c753de84012e178a99e4de0edebf3b395c71dbd`; implementation PR #812, merged as `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`
-align-llm verification: `.align-revision` pins `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`; `provider_http.post_json` applies the 262,144-byte transport cap; `make provider-smoke` distinguishes `Error.Code(-1)` with no body from HTTP 413, proves clean connection teardown and later client reuse, and passes the combined Request 4/5 gate named above; final fresh `make ci` PASS
+align-llm verification: candidate `.align-revision` pins `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`; `provider_http.post_json` applies the 262,144-byte transport cap; `make provider-smoke` distinguishes `Error.Code(-1)` with no body from HTTP 413, proves clean connection teardown and later client reuse, and passes the combined Request 4/5 focused gate named above; final exact-head native installed-profile `make ci` pending
 ```
 
 ### Motivation
