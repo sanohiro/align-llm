@@ -3,10 +3,10 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-14)
+## Active checkpoint (2026-08-15)
 
-- Branch `agent/merge-request8-request10-lifecycle` is based directly on `main` at
-  `9619786c4a49f92610eb401e4f4dbbd47e79fe21`, the merge commit for align-llm PR #87.
+- Branch `agent/sync-merged-align-prerequisites` is based directly on `main` at
+  `115a4dfd11270d16d0f41137a6a8966c35058e31`, the merge commit for align-llm PR #88.
 - Align PR #786 merged the checked-HIR `string.clone()` compatibility repair as
   `25b1201b3a4181f6a90921227596bdcb76ab715e`. `.align-revision` now selects that exact merged
   commit, and its managed release compiler/runtime materialized successfully under `dev-v1`.
@@ -15,9 +15,13 @@ file records durable project state.
 - The FRESH-IMAGE-REQUEST6 installed adoption profile is merged and passes its complete native
   Linux `aarch64` and `x86_64` profiles. Request 6 is now `CLOSED`.
 - Align PR #801 shipped Request 8 as `029e27465d79e24cd36d374aae41dca0ec7e6979`, and Align PR #804
-  shipped Request 10 as `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Both are now
-  `ALIGN_MERGED`; their real-client adoption remains an ordered checkpoint inside C6-LIFECYCLE and
-  must not become a pin-only pull request.
+  shipped Request 10 as `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Align PR #800 shipped
+  Request 4 as `f04672bce6f8689c9b219d0a20e770571e2d638b`, PR #808 shipped Request 11 as
+  `82da9f580cc005fbb78f67af6847c7b4ce6626c4`, and PR #807 shipped Request 12 as
+  `c37d79a180612c345551e259091b0b5acf2cb9cd`. All five are now `ALIGN_MERGED`; their real-client
+  adoption remains an ordered checkpoint inside a consumer capability and must not become a
+  pin-only pull request. Request 5's design is `ACCEPTED` at Align PR #810 / `6c753de84012` while
+  its implementation remains pending.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -51,10 +55,11 @@ file records durable project state.
   request. Request 6 advanced through `ALIGN_LLM_VERIFIED` to `CLOSED` only after the full installed
   profile, ordinary and authenticated-fresh acceptance vectors, and one final fresh `make ci`
   passed.
-- C6-LIFECYCLE remains blocked from product implementation on Align Requests 7, 12, and 13 and on
-  the consumer adoption of merged Requests 8 and 10. Requests 7, 12, and 13 remain `PROPOSED`; do
-  not consume or imitate those APIs. Request 6 is closed and no longer blocks eligible prerequisite
-  work.
+- C6-LIFECYCLE remains blocked from product implementation on Align Requests 7 and 13 and on the
+  consumer adoption of merged Requests 8, 10, and 12. Requests 7 and 13 remain `PROPOSED`; do not
+  consume or imitate those APIs. Request 6 is closed and no longer blocks eligible prerequisite
+  work. Request 11 is merged for the later C6-EVALUATION boundary, and Request 4 is merged for the
+  provider-consumer wave; neither authorizes an isolated pin update.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -163,7 +168,7 @@ file records durable project state.
 
 ## Next actions
 
-1. Review and merge the Requests 8/10 `ALIGN_MERGED` lifecycle synchronization.
+1. Review and merge the Requests 4/5/11/12 lifecycle synchronization.
 2. Continue the next eligible C6 prerequisite without updating `.align-revision`; batch the final
    merged prerequisite set into the C6-LIFECYCLE consumer capability.
 3. After each consumer-complete capability, complete publication preflight, comprehensive review,
