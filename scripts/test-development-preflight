@@ -1150,6 +1150,54 @@ def test_qualification_modes() -> None:
     qualification = load_script(
         "run-fresh-worker-qualification", "align_llm_fresh_qualification_test"
     )
+    require(
+        qualification.qualification_path("run-fresh-attestation-wire-smoke")
+        == "/usr/bin:/bin",
+        "focused qualification inherited a platform tool path",
+    )
+    prior_path = os.environ.get("PATH")
+    try:
+        with tempfile.TemporaryDirectory(prefix="qualification-path-") as temporary_name:
+            temporary = Path(temporary_name)
+            selected = temporary / "selected"
+            canonical = temporary / "Docker.app" / "Contents" / "Resources" / "bin"
+            selected.mkdir()
+            canonical.mkdir(parents=True)
+            docker = canonical / "docker"
+            docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            docker.chmod(0o755)
+            (selected / "docker").symlink_to(docker)
+            os.environ["PATH"] = str(selected)
+            require(
+                qualification.qualification_path(qualification.INSTALLED_OWNER)
+                == f"/usr/bin:/bin:{canonical.resolve()}",
+                "installed qualification did not canonicalize the Docker CLI path",
+            )
+
+            docker.chmod(0o644)
+            require(
+                qualification.qualification_path(qualification.INSTALLED_OWNER)
+                == "/usr/bin:/bin",
+                "installed qualification accepted a non-executable Docker CLI",
+            )
+            (selected / "docker").unlink()
+            (selected / "docker").mkdir()
+            require(
+                qualification.qualification_path(qualification.INSTALLED_OWNER)
+                == "/usr/bin:/bin",
+                "installed qualification accepted a Docker directory",
+            )
+            os.environ["PATH"] = str(temporary / "missing")
+            require(
+                qualification.qualification_path(qualification.INSTALLED_OWNER)
+                == "/usr/bin:/bin",
+                "installed qualification changed the path without Docker",
+            )
+    finally:
+        if prior_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = prior_path
     qualification.verify_contract_inventory = lambda: None
     calls: list[tuple[str, tuple[str, ...]]] = []
     qualification.run = lambda owner, *arguments: calls.append((owner, arguments))

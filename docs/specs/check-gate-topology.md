@@ -4043,6 +4043,29 @@ consumer-complete Request 6 image-profile extension, and one dependent adoption 
    an amd64-emulated container is not a substitute. Because this capability changes the Makefile and compiler
    consumers, its branch also performs the Section 2.4 identity-bound baseline source, oracle,
    finalization, and merge-ancestry sequence.
+
+   The host qualification launcher has one platform-tool exception to its otherwise fixed child
+   `PATH=/usr/bin:/bin`. Before invoking the installed profile, it resolves `docker` from the
+   launcher's caller-provided `PATH`, canonicalizes the selected executable, verifies that it is an
+   executable regular file, and appends only that executable's canonical parent directory after the
+   fixed system directories. Focused owners retain the fixed path unchanged. The installed child
+   therefore selects `/usr/bin` tools first and can reach Docker Desktop's canonical macOS CLI
+   location without inheriting the rest of the caller's search order. The surface is internal to
+   `scripts/run-fresh-worker-qualification`; its input is the caller `PATH`, its default when Docker
+   is absent is the unchanged fixed path, its result is the child environment, and its owner is the
+   qualification launcher. It creates no persisted or cached identity, changes no schema, and adds
+   no prerequisite beyond the installed mode's existing Docker requirement. Errors from an absent
+   or unusable Docker CLI remain owned by `run-fresh-image-profile-smoke` and `--require-docker`.
+
+   The closure owner is `qualification_path` in
+   `scripts/run-fresh-worker-qualification`: construction and installed success append one
+   canonical Docker parent; focused success and a missing candidate preserve the fixed path;
+   symlink selection canonicalizes before use; a non-file or non-executable candidate is treated as
+   unavailable; child failure and early exit retain the existing timing/failure record; cleanup is
+   N/A because the resolver owns no resource. `test_qualification_modes` in
+   `scripts/test-development-preflight` covers the installed macOS-style path, focused isolation,
+   missing, symlink, non-file, and non-executable cells, while the installed-profile owner remains
+   the end-to-end success and Docker-unavailable acceptance.
 3. **FRESH-IMAGE-REQUEST6-BOUNDARY — installed pre-consumer dispatch boundary.** After FRESH-IMAGE
    and FRESH-WORKER merge, install the separate `--mode ordinary-adoption-boundary` selector and
    image-owned boundary dispatcher described in Section 9.10.1. It verifies only the fixed image
