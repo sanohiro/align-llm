@@ -493,13 +493,13 @@ count as passing.
 ## Request 4 — `std.http`: client-side chunked response de-framing for provider SSE
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C1 streaming provider acceptance
 Independent work that may continue: non-streaming provider calls, token counting, common result persistence, C2 preparation
 Resume condition: after ALIGN_MERGED, the next provider-consumer prerequisite wave pins the shipped compiler with any other ready prerequisites, decodes valid chunked SSE, rejects truncated or malformed framing, and passes align-llm's provider stream smoke; if Request 5 reached ALIGN_MERGED first or both ship together, that wave also passes the combined bodyless/chunk-cap/trailer-guard/aggregate-storage gate before either request reaches ALIGN_LLM_VERIFIED
-Align commit or pull request: pending
+Align commit or pull request: Align design PR #798, merged as `004b7f02086570b200b238d752a1f7ba67da7d04`; implementation PR #800, merged as `f04672bce6f8689c9b219d0a20e770571e2d638b`
 align-llm verification: pending
 ```
 
@@ -630,13 +630,13 @@ is paused and the non-streaming provider work remains valid.
 ## Request 5 — `std.http`: bounded client response bodies
 
 ```text
-Status: PROPOSED
+Status: ACCEPTED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6 provider-proposal slice and real-provider prompt-optimizer gate
 Independent work that may continue: C6 artifacts, renderer, pure scorer, activation lifecycle, and deterministic A/B evaluator
 Resume condition: after ALIGN_MERGED, the C6-MEASURED prerequisite wave pins the shipped Align release with any other merged prerequisites, integrates the cap at provider_http, and proves the exact shipped limit discriminant, no returned body, clean connection teardown, and one final make ci; if Request 4 reached ALIGN_MERGED first or both capabilities ship together, the same wave also owns and must pass the combined bodyless/chunk-cap/trailer-guard/aggregate-storage gate before Request 5 reaches ALIGN_LLM_VERIFIED, and for a joint delivery neither request may reach ALIGN_LLM_VERIFIED first; only then does the provider-proposal cell resume
-Align commit or pull request: pending
+Align commit or pull request: Align design PR #810, merged as `6c753de84012e178a99e4de0edebf3b395c71dbd`; implementation pending
 align-llm verification: pending
 ```
 
@@ -4819,13 +4819,13 @@ evidence.
 ## Request 11 — `std.process`: bounded child output capture
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6f1 trusted snapshot/workspace boundary, C6f2 paired evaluator, and C6g1 real-consumer process boundaries
 Independent work that may continue: C6a1 through C6d2 pure codecs, rendering, scoring, activation, and any work without an external child process
-Resume condition: Align merges a cap-aware process capture surface at a named commit; the C6-EVALUATION prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then C6's focused helper/adapter over-cap, timeout, environment, kill/reap, and cleanup qualification passes before the wave's one final `make ci`
-Align commit or pull request: pending
+Resume condition: after ALIGN_MERGED, the C6-EVALUATION prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then C6's focused helper/adapter over-cap, timeout, environment, kill/reap, and cleanup qualification passes before the wave's one final `make ci`
+Align commit or pull request: Align design PR #806, merged as `30ff5830ce556e949edf31500a154ca7de4b1b7c`; implementation PR #808, merged as `82da9f580cc005fbb78f67af6847c7b4ce6626c4`
 align-llm verification: pending
 ```
 
@@ -4870,13 +4870,13 @@ claim a bound using `run()` followed by a length check.
 ## Request 12 — `core.json`: bounded canonical encoding
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6a1/C6a2 canonical artifact persistence and every C6 slice that writes a result with a declared raw-byte cap
 Independent work that may continue: pure prompt rendering, scoring, and design work that does not encode a capped persisted artifact
-Resume condition: Align merges a bounded canonical encoder at a named commit; the next C6 consumer prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then C6's focused exact-cap, overflow, malformed-record, and cleanup adoption target passes before the wave's one final `make ci`
-Align commit or pull request: pending
+Resume condition: after ALIGN_MERGED, the next C6 consumer prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then C6's focused exact-cap, overflow, malformed-record, and cleanup adoption target passes before the wave's one final `make ci`
+Align commit or pull request: Align design PR #805, merged as `95c559ed29c2451c4c09b289f37eefd421194cfb`; implementation PR #807, merged as `c37d79a180612c345551e259091b0b5acf2cb9cd`
 align-llm verification: pending
 ```
 
