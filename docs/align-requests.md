@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-15): Requests 1, 3–6 are CLOSED; Requests 2, 8, and 10–12 are ALIGN_MERGED; Requests 7, 9, 13, and 14 remain PROPOSED.**
+> **Status (2026-08-15): Requests 1, 3–6 are CLOSED; Requests 2, 8, and 10–12 are ALIGN_MERGED; Requests 7, 9, and 13–15 remain PROPOSED.** Request 7's evidence-boundary design is merged, but that design explicitly does not accept the JSON language change; its language-design acceptance conditions below remain open.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -1084,7 +1084,7 @@ malformed later elements or trailing garbage, unlike the nested field-array path
 cleanup.
 Top-level single-record trailing-garbage rejection separately leaves required or currently
 admitted optional decoded owners live. These are known examples, not an exhaustive cleanup
-inventory, and are outside this scanner-only request. Their follow-up design must audit every
+inventory, and are outside this scanner-only request. Request 15 must audit every
 transition after any decoded owner
 becomes live: construction, speculative write, replacement/source nulling, fallback success and
 failure, staging, return, and cleanup. It must either own every affected public path or assign each
@@ -1276,8 +1276,8 @@ Align compiler/runtime tests must:
    `Row { inner: Option<Inner>, score: i64 }`; decoding
    `{"inner":{"items":[1,2]},"score":3}` and immediately encoding the owner must produce those
    exact bytes before the value leaves scope successfully. The distinct decoded-owner transition
-   gaps described above remain deferred.
-   Their follow-up must audit every transition after an owner becomes live and include
+   gaps described above remain deferred to Request 15.
+   Request 15 must audit every transition after an owner becomes live and include
    allocation-count regressions for successful and failed top-level AoS fallback after a
    speculative owner write, plus malformed-later-element and trailing-garbage cleanup for top-level
    `array<MoveStruct>`. SoA is N/A for these owner regressions because sema excludes owned columns;
@@ -1337,7 +1337,7 @@ Items 2, 8, and 9 record the optional-schema outcome of the Request 6 implementa
 shipped Align commit `e65448b744c04e3868d079eef8b45ce0d43ac8ee`. That commit admits
 `Option<Move-struct>` for ordinary declared-record decode and rejects a reachable Move row for
 `json.scan`; the adoption oracle is therefore fixed, not inferred from whichever compiler happens
-to run. If a later decoded-owner cleanup changes that outcome, its Align change must update all
+to run. If Request 15's decoded-owner cleanup changes that outcome, its Align change must update all
 three checked-in Request 6 regressions in the same pull request before the cleanup merges: scanner
 checking must then expect the cleanup request's canonical schema diagnostic, the no-MIR assertion
 must bind to that earlier rejection, and ordinary optional decode must change from success to the
@@ -2561,17 +2561,20 @@ provide per-row Drop; those remain outside this request's shipped surface.
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: Request 7 acceptance, implementation, and align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
-Independent work that may continue: the separate benchmark-evidence design and implementation, C6 design review, Request 5 bounded-response work, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
-Resume condition: Request 7 may enter ACCEPTED only after the separate Align benchmark-evidence design is reviewed and merged; it may enter IMPLEMENTING only after Request 6, decoded-owner cleanup, the benchmark-input work, and that design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, FRESH-WORKER and FRESH-IMAGE have merged, and the required immutable Git 2.45.0 compatibility image/job passes, the C6-LIFECYCLE prerequisite wave pins the shipped Align release with its other merged prerequisites, runs the focused `c6-json-escape-adoption` target outside routine aggregates, and then runs one final `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform profiles before they can claim adoption; this closes only the escape prerequisite
-Align commit or pull request: pending
+Blocked gate or slice: Request 7 language-design acceptance, implementation, and align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
+Independent work that may continue: the merged benchmark-evidence design's enabling implementation, C6 design review, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
+Resume condition: Request 7 may enter ACCEPTED only after an authoritative Align JSON language design checks in the canonical fixture and hash, fixes the exact arena-passing ABI, and incorporates the already merged benchmark-evidence boundary; it may enter IMPLEMENTING only after Request 6, decoded-owner Request 15, the benchmark-input work, and the evidence design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, FRESH-WORKER and FRESH-IMAGE have merged, and the required immutable Git 2.45.0 compatibility image/job passes, the C6-LIFECYCLE prerequisite wave pins the shipped Align release with its other merged prerequisites, runs the focused `c6-json-escape-adoption` target outside routine aggregates, and then runs one final `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform profiles before they can claim adoption; this closes only the escape prerequisite
+Align commit or pull request: benchmark-evidence design PR #813 merged as `734ae3ab20164c02cee56101bb3eeb2b452269ed`; Request 7 language design and implementation pending
 align-llm verification: pending
 ```
 
-Request 7 may be registered and reviewed independently, but it remains `PROPOSED` until the
-benchmark-evidence design below merges and must not advance to `IMPLEMENTING` until both Request 6
-and a separately registered decoded-owner transition cleanup request reach `ALIGN_MERGED` at
-distinct named Align commits and the other acceptance-infrastructure conditions below are met.
+Request 7 may be registered and reviewed independently. Benchmark-evidence design PR #813 is
+merged, but its own status says that it defines the evidence boundary only and does not accept the
+JSON language change. Request 7 therefore remains `PROPOSED` until the language contract satisfies
+the canonical-fixture/hash and exact-ABI acceptance conditions below, and must not advance to
+`IMPLEMENTING` until both Request 6 and decoded-owner Request 15 reach `ALIGN_MERGED` at distinct
+named Align commits and the other
+acceptance-infrastructure conditions below are met.
 Request 6 supplies the recursively
 Copy scanner-row boundary on which this request's scanner grammar matrix depends. Strict rejection
 of a malformed ignored string and outside-arena rejection of an escaped retained view both add
@@ -2676,8 +2679,8 @@ values and is unchanged.
 Required semantics:
 
 - outside an arena, the current zero-copy clean-string path remains valid; a declared returned
-  `str` value that needs retained unescaping returns `Error.Code(1)`. The decoded-owner cleanup
-  prerequisite must already guarantee that any owner made live by an earlier field is released and
+  `str` value that needs retained unescaping returns `Error.Code(1)`. Decoded-owner Request 15 must
+  already guarantee that any owner made live by an earlier field is released and
   no partially initialized value is returned;
 - on the materializing record/AoS/SoA paths inside an arena, clean strings remain zero-copy input
   views and escaped strings materialize only their decoded UTF-8 bytes in the arena. The matrix's
@@ -2696,7 +2699,7 @@ Required semantics:
   undeclared keys cannot be accepted merely because a field is ignored or a speculative path does
   not project it. Apply the same string grammar to `json.doc` so the two public parsers do not
   disagree. This requirement creates no unsound owner-live failure edge because Request 7 cannot
-  enter implementation until its decoded-owner cleanup prerequisite is shipped;
+  enter implementation until decoded-owner Request 15 is shipped;
 - typed key lookup compares semantic unescaped bytes: a valid escaped spelling of a declared key
   matches that field, a valid escaped unknown key remains ignored, and two raw spellings that
   decode to the same declared key are a duplicate-key error. `json.doc.key(i)` returns the same
@@ -2818,13 +2821,13 @@ The implementation closure ledger for the future Align design is:
 | Transition | Required owner module / entrypoint | Exact regression owned by the Align design |
 | --- | --- | --- |
 | Type inference, arena availability, region meet, and construction | `align_sema::check_json_decode`, region/storage-root analysis, and the corresponding `align_mir` JSON decode lowering | `m5::json_escape_typed_region_matrix` |
-| Record and nested-record success, outside-arena failure, later sibling failure, return, and cleanup | `align_rt_json_decode`, `parse_object`, shared value writing, and the shipped decoded-owner cleanup prerequisite | `json_escape_record_lifecycle` and `json_escape_record_owner_transition_integration` |
-| Top-level and field AoS success plus slow/speculative/fallback string equivalence | `align_rt_json_decode_struct_array`, `json_speculate`, `json_fallback`, `write_field_indexed`, and the shipped decoded-owner cleanup prerequisite | `json_escape_aos_path_equivalence` and `json_escape_aos_owner_transition_integration` |
+| Record and nested-record success, outside-arena failure, later sibling failure, return, and cleanup | `align_rt_json_decode`, `parse_object`, shared value writing, and shipped decoded-owner Request 15 | `json_escape_record_lifecycle` and `json_escape_record_owner_transition_integration` |
+| Top-level and field AoS success plus slow/speculative/fallback string equivalence | `align_rt_json_decode_struct_array`, `json_speculate`, `json_fallback`, `write_field_indexed`, and shipped decoded-owner Request 15 | `json_escape_aos_path_equivalence` and `json_escape_aos_owner_transition_integration` |
 | SoA count, allocation, fill success/failure, and arena cleanup | `align_rt_json_decode_soa` and the shared indexed writers | `json_escape_soa_path_equivalence` |
 | Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
-| Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | DEFERRED to a separately reviewed and merged Align benchmark-evidence design plus its dependent enabling implementation; Request 7 cannot advance to `ACCEPTED` while that contract is undesigned or to `IMPLEMENTING` while its controller and evidence path are uninstalled | that prerequisite plan must name exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12 and its implementation must pass them before baseline selection or Request 7 implementation |
+| Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | Evidence-boundary design PR #813 is merged; its dependent enabling implementation remains separate, and Request 7 cannot advance to `IMPLEMENTING` while its controller and evidence path are uninstalled | the merged prerequisite plan names exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12, and its implementation must pass them before baseline selection or Request 7 implementation |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
 | Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | The reviewed Section 9 contract in `docs/specs/check-gate-topology.md` and its wire/source-identity foundations are merged. FRESH-IMAGE owns installation and attestation of the image trust root; FRESH-WORKER owns the repository worker, Make integration, identity-bound baseline refresh, and cleanup. Request 6 additionally requires the separately reviewed FRESH-IMAGE-REQUEST6 installed-profile extension before its ordinary or fresh adoption. Every other pin-changing adoption remains blocked until its applicable image and worker capabilities merge. | Run every Section 9 named owner qualification, the installed-image end-to-end unchanged-pin aggregate, the Request 6 profile-extension smoke where applicable, baseline ancestry checks, and cleanup evidence before worker merge or later adoption. Aarch64 Linux/macOS consumers additionally require their named platform profiles. |
@@ -3037,10 +3040,12 @@ Align compiler/runtime tests must:
     access, registry update, lockfile write, or build output. Tool selection and invocation belong
     to the benchmark-evidence design rather than this slice.
 
-    Request 7 must remain `PROPOSED` until a separate Align design slice at
-    `docs/impl/core-design/json-escape-benchmark-evidence.md` defines and merges the
-    benchmark-evidence boundary. It must remain below `IMPLEMENTING` until that design's own reviewed
-    enabling implementation also merges. The prerequisite owns the controller source and delivery,
+    Align PR #813 merged the separate evidence-boundary design at
+    `docs/impl/core-design/json-escape-benchmark-evidence.md`. That document explicitly does not
+    accept the JSON language change, so Request 7 remains `PROPOSED` until its separate language
+    design satisfies the fixture/hash and exact-ABI conditions above. It must remain below
+    `IMPLEMENTING` until the evidence design's own reviewed enabling implementation also merges.
+    The prerequisite owns the controller source and delivery,
     exact public invocation, immutable pre-work baseline selection, candidate binding, trust roots,
     executable and source identities, raw-object and checkout isolation, environment and descriptor mapping,
     credential handling if any provider API is used, concurrency boundary, report schema, exact-SHA
@@ -3390,7 +3395,7 @@ may execute or link an artifact from it. The reviewed Section 9 update to
 that changes `.align-revision`, FRESH-WORKER must make canonical `make ci` consume that path and
 refresh its identity-bound baseline, while FRESH-IMAGE must install and attest the host profile.
 This is a repository-wide pin-transition prerequisite, not a Request 7-only helper: Request 6,
-decoded-owner cleanup, Request 7, and any other request that would advance the x86_64 pin or claim
+decoded-owner Request 15, Request 7, and any other request that would advance the x86_64 pin or claim
 `ALIGN_LLM_VERIFIED` against a new compiler must wait for both capabilities; Request 6 must also
 wait for FRESH-IMAGE-REQUEST6 before its focused adoption. A request with an aarch64 or macOS
 acceptance environment must additionally wait for its named platform profile.
@@ -4089,9 +4094,10 @@ Verified against `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` on 2026-08-01:
 - The existing builder can push individual owned `string` values, but no shipped declared-record
   codec or recursive field `DropPlan` constructs and cleans an owned text array inside a record.
 - The current runtime's decoded-owner failure path does not yet recursively clean every optional
-  descriptor after a `Some` value becomes live. Request 9 explicitly owns that transition audit and
-  its success, failure, replacement, move-out, and branch-join tests; it does not claim the pinned
-  cleanup path already passes.
+  descriptor after a `Some` value becomes live. Request 15 owns repair of that shipped borrowed
+  declared-record route. Request 9 owns only the additional direct-owned route's success, failure,
+  replacement, move-out, and branch-join tests; it does not claim the pinned cleanup path already
+  passes.
 - The pinned memory model allocates owned `array`/`string` values inside `arena {}` in the arena and
   forbids moving them out. Request 9 therefore requires a reviewed update to
   `../align/draft.md`, `../align/docs/language-spec.md`,
@@ -5081,6 +5087,107 @@ The Align design and implementation must prove:
 
 ---
 
+## Request 15 — `core.json`: complete decoded-owner transitions
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: Request 7 implementation and immutable pre-work baseline selection; any later JSON change that adds a recoverable failure edge after a declared-record owner becomes live
+Independent work that may continue: Request 7 benchmark-evidence implementation and language design, other Align requests, and align-llm work that does not consume a changed decoded-owner surface
+Resume condition: Align reviews and merges the decoded-owner contract and implementation at a named commit; every focused transition owner below passes before Request 7 selects its immutable baseline or enters IMPLEMENTING, and the later C6-LIFECYCLE pin wave runs `c6-json-decoded-owner-adoption` before `c6-json-escape-adoption` and its final `make ci`
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation and current-state evidence
+
+Verified against the sibling Align tree merged by PR #821 at
+`9aef62a8a6c0e26517a042738c74b0689583c1fc`. The shipped declared-record decoder can make heap
+owners live before a later recoverable parse or schema failure, but its cleanup is incomplete on
+four transition classes:
+
+- semantic checking and runtime currently admit `Option<MoveRecord>` even though the authoritative
+  JSON design and a stale negative regression still say that optional owned payload is rejected;
+  ordinary generated `Drop` handles a successful `Some`, while `drop_decoded_owned` skips every
+  optional descriptor after a later enclosing-object failure;
+- indexed top-level AoS speculation can write an owner and then fall back into the same destination,
+  overwriting the first owner on fallback success or leaking it again on fallback failure;
+- top-level `array<MoveRecord>` staging does not deep-clean the current and completed rows when a
+  later row, closing delimiter, or trailing-input check fails; and
+- top-level single-record trailing-input rejection occurs after required or optional owners have
+  been written, without releasing them before returning `Error.Code(1)`.
+
+Nested field-array partial cleanup already has an explicit deep-free path and is compatibility
+evidence, not a reason to leave the top-level paths inconsistent. Well-typed SoA admits only
+non-owning columns, so decoded-owner cleanup there is N/A. This is a compiler/runtime ownership gap,
+not an align-llm parsing concern or an application workaround.
+
+### Requested capability and authoritative contract
+
+Preserve the existing public `json.decode` source form, declared-record wire behavior, and
+`Error.Code(1)` failure result while making every admitted decoded owner transition exact-once. The
+Align design should reconcile the already-shipped positive surface by admitting
+`Option<MoveRecord>` when the nested record is otherwise JSON-decode eligible. Missing and `null`
+remain `None`; a valid object becomes `Some`; general `Option<enum>`, top-level option targets, and
+otherwise unsupported JSON graphs remain rejected before MIR or allocation.
+
+The runtime must recursively clean a live optional payload after any later object failure and null
+its tag/payload so outer cleanup is idempotent. Indexed AoS speculation must either stage writes
+transactionally or recursively clean and null every speculative owner before fallback writes the
+same destination. Top-level AoS must track exactly which rows and fields are initialized and
+deep-clean the current row and all completed rows on malformed later input, missing/duplicate/type
+failure, delimiter failure, or trailing non-whitespace. Top-level single-record post-parse rejection
+must clean every live required and optional owner before returning. Successful values retain their
+existing generated `Drop`, transfer, replacement, and input-region behavior.
+
+Validation and observable error precedence remain unchanged: capability/import, target inference,
+schema eligibility, and recursive ownership formation happen before runtime; runtime preserves
+whole-input UTF-8, token grammar, duplicate, type/range, missing-field, delimiter, and trailing-input
+order. Cleanup cannot replace the first error, allocate a replacement value, expose a partial
+result, or make an allocator failure recoverable. No CLI, environment variable, persisted schema,
+cache key, wire tag, descriptor layout, or public runtime ABI is added; if implementation proves a
+descriptor change unavoidable, Align must revise this proposed contract before coding.
+
+### Ownership closure matrix and acceptance
+
+| Transition | Exact owner | Required regression |
+| --- | --- | --- |
+| Optional-owner formation and validation order | `align_sema::check_json_decode`, recursive JSON schema eligibility, canonical `DropPlan`, and the reconciled JSON/option design | `m5_decoded_owner.rs::option_move_record_surface_and_validation_order` admits missing/null/valid `Some(MoveRecord)`, rejects general `Option<enum>` and unsupported graphs before MIR/allocation, and removes the contradictory stale negative |
+| Optional construction, later sibling failure, and top-level trailing input | `align_rt_json_decode`, `parse_object`, optional descriptor handling, and `drop_decoded_owned` | `align_runtime::tests::json_decoded_optional_owner_failure_matrix` covers missing, type/range, duplicate, malformed later value, required-field omission, and trailing bytes after a live `Some`; tag, payload, array spine, nested owners, allocation/free counts, and exact first error agree |
+| Slow top-level AoS rows | `align_rt_json_decode_struct_array`, fallback writer, row initialization ledger, and recursive cleanup | `align_runtime::tests::json_decoded_owner_aos_slow_failure_matrix` covers zero, one, and many completed Move rows plus one partial row across malformed element, delimiter, EOF, and trailing-input failure |
+| Speculation success to fallback success or failure | `json_speculate`, `json_fallback`, `write_field_indexed`, and the AoS destination owner | `align_runtime::tests::json_decoded_owner_speculation_transition_matrix` forces an owner write before structural drift, then proves exact-once cleanup/nulling before both successful and failing fallback without double materialization |
+| Nested record, field-array, union, and scalar-array compatibility | `parse_object`, `decode_struct_array_value`, `drop_decoded_union`, and the existing kind-4/5/6/7 descriptor paths | `align_runtime::tests::json_decoded_owner_nested_compatibility` retains successful Drop and existing mid-field-array cleanup while combining nested records, Move unions, record arrays, and scalar-array spines |
+| Result construction, move, replacement, return, and all exits | `align_mir` JSON failure CFG, `align_codegen_llvm` recursive `DropPlan`, source nulling, and ordinary generated Drop | `m5_decoded_owner.rs::decoded_owner_success_and_failure_control_flow` covers direct `?`, `match`, `else`, `map_err`, reassignment, replacement, branch/loop joins, early return, and ordinary scope exit with no leak or double free |
+| Whole/per-unit, imported/generic definitions, cache, and ABI preservation | semantic substitution, interface serialization, MIR fingerprints, compiler build identity, and unchanged runtime declarations | `per_unit.rs::decoded_owner_imported_generic_parity`, `cache_codegen.rs::decoded_owner_definition_edit_revert`, and `interface_param_modes.rs::decoded_owner_descriptor_abi_unchanged` |
+| Same-process and independent-process calls | per-call parser, destination, staging, and cleanup state; immutable descriptors may be shared, with no new process-global mutable state | `m5_decoded_owner.rs::decoded_owner_same_process_pair_matrix` and `cache_parallel.rs::decoded_owner_two_processes` prove supported concurrent entrypoint pairs have independent owners and deterministic results |
+| Allocation/failure observation | existing test-only Align allocation counters and the caller-owned transition probe, if one is required; production entrypoints pass no ambient probe | Every allocation-counter regression acquires `ALLOC_COUNT_LOCK` before fixture setup and holds it through cleanup and final assertions; zero/one/many/reallocation cases require successful-allocation and free counter deltas to agree after each recoverable failure |
+| SoA, scanner, CLI/configuration, persistence, and performance | N/A: well-typed SoA and Request 6 scanner rows contain no decoded owners; this repair adds no CLI/configuration/persisted format and makes no optimization claim | Existing SoA/scanner owners remain green; no benchmark threshold or routine aggregate is added |
+
+Before implementation, Align must update the English JSON and option/ownership sources of truth,
+then synchronize their Japanese translations where present. The design must map every matrix cell
+to the final diff and focused passing evidence. The implementation gate runs the named semantic,
+runtime allocation-count, whole/per-unit, cache/interface, and concurrency owners plus the existing
+nested field-array and Move-union regressions. This request reaches `ALIGN_MERGED` only at that exact
+reviewed head; align-llm later reaches `ALIGN_LLM_VERIFIED` through
+`c6-json-decoded-owner-adoption` and one final pin-wave `make ci`.
+
+### References
+
+- `../align/docs/impl/core-design/json.md` — shipped declared-record schemas, Move ownership, and
+  currently contradictory optional-payload prose.
+- `../align/docs/impl/core-design/option-result.md` and
+  `../align/docs/impl/08-memory-model-v2.md` — recursive optional ownership and Drop.
+- `../align/crates/align_sema/src/lib.rs` — JSON schema eligibility and ownership formation.
+- `../align/crates/align_mir/src/lib.rs` and `../align/crates/align_codegen_llvm/src/lib.rs` — JSON
+  failure CFG, transfer/source nulling, and recursive generated Drop.
+- `../align/crates/align_runtime/src/lib.rs` — `drop_decoded_owned`, `parse_object`, indexed
+  speculation/fallback, and top-level record/AoS decode.
+- Requests 6, 7, and 9 — scanner boundary, first blocked escape-grammar consumer, and the later
+  direct-owned JSON route that reuses rather than owns this shipped-route repair.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design
@@ -5093,12 +5200,12 @@ or are already implemented:
   verified against `examples/json_nested.align`, which decodes an OpenAI chat-completions shape.
   `Option<enum>` remains an existing decode rejection. `Option<Move record>` is admitted by the
   pinned sema/runtime despite a contrary design statement and stale negative test; the cleanup
-  prerequisite must decide and repair that surface. Known cleanup gaps include currently admitted
+  Request 15 must reconcile and repair that surface. Known cleanup gaps include currently admitted
   optional owners on later object failure, owners overwritten across indexed top-level AoS
   speculation-to-fallback transitions even when fallback succeeds, staged top-level
   `array<MoveStruct>` rows on later failure, and required or currently admitted optional owners on
-  trailing-garbage rejection. A follow-up design must audit and assign every transition after a
-  decoded owner becomes live. `align-llm` should declare provider response structs, not ask Align
+  trailing-garbage rejection. Request 15 audits and assigns every transition after a decoded owner
+  becomes live. `align-llm` should declare provider response structs, not ask Align
   for a dynamic value
   type. (Caveat handled app-side: decoded
   `str` fields are zero-copy views into the input; use `.clone()` to persist them past the input's

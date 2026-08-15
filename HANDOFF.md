@@ -11,8 +11,10 @@ file records durable project state.
   benchmark-input isolation in #815, installed-source manifest verification in #816, canonical JSON
   primitives in #817, the typed report schema in #818, and post-merge input hardening in #821 at
   `9aef62a8a6c0e26517a042738c74b0689583c1fc`. SSHSIG framing is under review in PR #820. The
-  controller/verifier/monitor, pinned profile/image, host qualification, decoded-owner language
-  prerequisite, and Request 7 implementation remain unshipped.
+  controller/verifier/monitor, pinned profile/image, host qualification, decoded-owner Request 15,
+  and Request 7 language design and implementation remain unshipped. PR #813 defines only the
+  evidence boundary and explicitly does not accept the JSON language change, so Request 7 remains
+  `PROPOSED`.
 - Align PR #812 merged the bounded `std.http` response implementation as
   `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. PR #90 pins that exact merge, adopts the shipped
   bounded/chunked provider surface, and closes Requests 4 and 5.
@@ -66,8 +68,10 @@ file records durable project state.
   fixtures to chunked framing, and owns the combined Requests 4/5 acceptance gate.
 - C6-LIFECYCLE remains blocked from product implementation on Align Requests 7 and 13 and on the
   consumer adoption of merged Requests 8, 10, and 12. Requests 7 and 13 remain `PROPOSED`; do not
-  consume or imitate those APIs. Requests 4–6 are closed with real-client and native installed-profile
-  evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
+  consume or imitate those APIs. Request 7's merged evidence design is a prerequisite only; its
+  checked-in canonical fixture/hash and exact arena-passing ABI still require an authoritative
+  Align language design before acceptance. Requests 4–6 are closed with real-client and native
+  installed-profile evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -203,8 +207,8 @@ file records durable project state.
 1. Finish and merge sibling Align PR #820's SSHSIG framing, then continue the next unowned
    evidence-controller capability from the settled Request 7 ledger: controller/verifier/monitor,
    pinned profile/image, adversarial owners, and host qualification remain.
-2. Ship Request 7's separate decoded-owner language prerequisite before selecting the immutable
-   pre-work baseline or starting the Request 7 language implementation.
+2. Design and ship decoded-owner Request 15, then complete Request 7's language-design acceptance
+   before selecting the immutable pre-work baseline or starting its language implementation.
 3. Resume C6-LIFECYCLE only after Requests 7 and 13 reach `ALIGN_MERGED`; batch the already merged
    Requests 8, 10, and 12 into its named real-client adoption checkpoints. Preserve ARM compiler
    builds at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
