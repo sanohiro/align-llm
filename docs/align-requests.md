@@ -2558,11 +2558,48 @@ Status: PROPOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: Request 7 language-design acceptance, implementation, and align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
-Independent work that may continue: the merged benchmark-evidence design's enabling implementation, C6 design review, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
+Independent work that may continue: the remaining benchmark-evidence implementation, C6 design review, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
 Resume condition: Request 7 may enter ACCEPTED only after an authoritative Align JSON language design checks in the canonical fixture and hash, fixes the exact arena-passing ABI, and incorporates the already merged benchmark-evidence boundary; it may enter IMPLEMENTING only after Request 6, decoded-owner Request 15, the benchmark-input work, and the evidence design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, FRESH-WORKER and FRESH-IMAGE have merged, and the required immutable Git 2.45.0 compatibility image/job passes, the C6-LIFECYCLE prerequisite wave pins the shipped Align release with its other merged prerequisites, runs the focused `c6-json-escape-adoption` target outside routine aggregates, and then runs one final `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform profiles before they can claim adoption; this closes only the escape prerequisite
-Align commit or pull request: benchmark-evidence design PR #813 merged as `734ae3ab20164c02cee56101bb3eeb2b452269ed`; Request 7 language design and implementation pending
-align-llm verification: pending
+Align commit or pull request: benchmark-evidence design PR #813 merged as `734ae3ab20164c02cee56101bb3eeb2b452269ed`; benchmark-input prerequisite PR #815 merged as `58dbb21818edb6d1bb0e2c039e6bee066f877456`; evidence manifest foundation PR #816 merged as `7db1af8cb4ae69fb88506e74b4893f92ed609fd8`; canonical JSON primitive codec PR #817 merged as `4ec35dfe9fca5ba7577ceb7c8c36ae73dc6c1929`; typed Report/Body schema PR #818 merged as `41ce4f930a4105584672153f44cbb646d4fcbb49`; SSHSIG framing PR #820 merged as `19fbc786e92bf1e5ed5f4e4cd52a93d54fd56456`; benchmark-input hardening PR #821 merged as `9aef62a8a6c0e26517a042738c74b0689583c1fc`; strict CLI boundary PR #822 merged as `0d85f50ff14a3383355c14e2d654e5bbedbe56b5`; manifest/profile binding PR #823 merged as `5c5f0187ee99a152b07cfd72e201f5e2528172b2`; raw Git object codec PR #825 merged as `3c6cc8404ad9cf56dd648523936491c11ba9cca1`; prepared benchmark boundary PR #827 merged as `6ba1036fef680e2416c342077b6eff4adaf01e57`; Git batch codec PR #828 merged as `6adfa13db29283f5d289f633a93af16589737258`; pinned Git process boundary PR #830 merged as `5a6ae64b1c9d651b749691b6a8877c07a575ecbe`; revision/tree binding PR #831 merged as `956d943d23d569cd2f799b8871e72b4576c36162`; verified source materialization PR #832 merged as `1c9e2e9a3506573bee466eb940c47c5ec03a5360`; host-profile validation PR #833 merged as `f684b245707997bc114d7cc96f9ce8fe56392ebf`; container launch boundary PR #834 merged as `8ce95870bcf5f808f603e28eaf945003b7269dcc`; image/toolchain qualification PR #835 merged as `95c142f32429cde7dfa5dc7f30c23f4bf64319ca`; native host/daemon qualification PR #836 merged as `3eaa2176cbac2f8890d6335bc27495a9a7599bc1`; monitor lifecycle core PR #837 merged as `0e39c8b933929e8af30ac142f16212712f5d0e40`; prepared execution owners PR #838 merged as `62acdd892c5d3c40dbe316cf8597fb40c14cbba9`; controller/verifier execution, accepted native qualification, performance measurement, merge verification, Request 7 language design, and Request 7 implementation pending
+align-llm verification: benchmark-input, evidence-manifest, canonical-JSON, typed-report, SSHSIG-framing, strict-CLI, manifest/profile-binding, raw-object-identity, prepared-benchmark, Git-batch-framing, Git-revision/tree-binding, verified-source-materialization, profile-validation, container-launch, image/toolchain-validation, host/daemon-observation-validation, monitor-lifecycle, and prepared-execution prerequisites ALIGN_MERGED; Request 7 remains PROPOSED and adoption pending
 ```
+
+### Align benchmark-evidence implementation progress (2026-08-16)
+
+The merged implementation prerequisites through PR #838 establish the following bounded pieces of
+the benchmark-evidence design without accepting or implementing Request 7's JSON language change:
+
+- PRs #815–#818 isolate benchmark inputs under caller-supplied private roots, verify installed-source
+  manifests without following links, provide canonical JSON primitives, and validate the complete
+  typed `Report`/`Body` schema and its domain-separated body digest. PR #821 hardens the input owner
+  with detached-lock freshness, final-symlink alias rejection, and process-group cleanup including
+  TERM-ignoring descendants.
+- PRs #820, #822, and #823 provide strict SSHSIG v1 framing and signing-preimage bytes, the exact
+  producer/verifier/merge-verifier CLI boundary, and profile-bound installed-source verification
+  with directory-race closure. They do not provision or consume a host signing key or execute the
+  controller/verifier.
+- PRs #825, #828, #830, and #831 provide canonical raw Git object identity, exact
+  `git cat-file --batch` response parsing, the pinned Git process/configuration boundary, and
+  bounded revision/tree traversal. Protocol failures terminate the owned reader so a rejected
+  response cannot desynchronize a later read.
+- PR #832 materializes a verified raw tree into a newly created private root, preserves tracked
+  modes and reviewed in-tree symlinks, and re-verifies bytes, modes, link targets, inode uniqueness,
+  and root identity through retained descriptors with fail-closed cleanup.
+- PRs #833–#836 validate the canonical x86_64 host profile, fixed container launch vector,
+  image/toolchain inspection record, and native host/daemon observation record. These are pure
+  validation and construction boundaries over supplied observations; they do not inspect the host,
+  invoke Docker, build an image, provision a key, or run the benchmark.
+- PRs #827, #837, and #838 establish two-phase prepared benchmarks with sealed digest-bound
+  artifacts, the pure monitor lifecycle ledger, and deterministic prepared-tree/execution boundary
+  owners. They do not yet implement the trusted controller/verifier, Docker execution, performance
+  measurement, accepted host qualification, merge verification, or align-llm adoption.
+
+The remaining evidence work is the adversarial schedule/process/cleanup/race owner set followed by
+controller/verifier execution, accepted native qualification, performance measurement, and merge
+verification. Request 7 stays `PROPOSED`; it may not enter
+`ACCEPTED` until its separate authoritative language design satisfies the canonical fixture/hash and
+arena-ABI conditions, and it may not enter `IMPLEMENTING` until Request 15 and every other named
+prerequisite reach their required merged state and the immutable pre-work baseline is selected.
 
 Request 7 may be registered and reviewed independently. Benchmark-evidence design PR #813 is
 merged, but its own status says that it defines the evidence boundary only and does not accept the

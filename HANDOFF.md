@@ -3,18 +3,23 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-15)
+## Active checkpoint (2026-08-16)
 
-- Branch `agent/request7-benchmark-evidence` is based directly on `main` at
-  `bb86e9f8a1b9e2ab07500152b81e173a13400a06`, the merge commit for align-llm PR #90.
-- In the sibling Align repository, Request 7's benchmark-evidence design merged in PR #813,
-  benchmark-input isolation in #815, installed-source manifest verification in #816, canonical JSON
-  primitives in #817, the typed report schema in #818, and post-merge input hardening in #821 at
-  `9aef62a8a6c0e26517a042738c74b0689583c1fc`. SSHSIG framing is under review in PR #820. The
-  controller/verifier/monitor, pinned profile/image, host qualification, decoded-owner Request 15,
-  and Request 7 language design and implementation remain unshipped. PR #813 defines only the
-  evidence boundary and explicitly does not accept the JSON language change, so Request 7 remains
-  `PROPOSED`.
+- Branch `agent/refresh-request7-prerequisites` is based directly on `main` at
+  `8c14494e9dbfdd4e1e587818b0e49543931e5867`, the merge commit for align-llm PR #91. This docs-only
+  checkpoint reconciles the locally recorded Request 7 evidence progress with the current request
+  register; it does not change source, fixtures, automation, or `.align-revision`.
+- In the sibling Align repository, Request 7's benchmark-evidence design and implementation
+  prerequisites through PR #838 are merged at `62acdd892c5d3c40dbe316cf8597fb40c14cbba9`.
+  Benchmark-input isolation, manifest and canonical JSON primitives, the typed report and SSHSIG
+  formats, CLI and Git boundaries, source materialization, profile/container/image/host validation,
+  prepared benchmarks, monitor lifecycle, and prepared execution owners are shipped. The remaining
+  implementation work is the adversarial schedule/process/cleanup/race owner set followed by the
+  controller/verifier/merge-verifier execution boundary. Before selecting `BASE`, the trusted host
+  still requires private-key provisioning, independent image/cache/toolchain/profile verification,
+  and native x86_64 self-qualification; performance measurement and merge verification follow at
+  their named gates. Decoded-owner Request 15 and Request 7's language design and implementation
+  remain unshipped; PR #813 defines only the evidence boundary, so Request 7 remains `PROPOSED`.
 - Align PR #812 merged the bounded `std.http` response implementation as
   `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. PR #90 pins that exact merge, adopts the shipped
   bounded/chunked provider surface, and closes Requests 4 and 5.
@@ -204,12 +209,14 @@ file records durable project state.
 
 ## Next actions
 
-1. Finish and merge sibling Align PR #820's SSHSIG framing, then continue the next unowned
-   evidence-controller capability from the settled Request 7 ledger: controller/verifier/monitor,
-   pinned profile/image, adversarial owners, and host qualification remain.
-2. Design and ship decoded-owner Request 15, then complete Request 7's language-design acceptance
+1. Continue the sibling Align `agent/request7-adversarial-owners` capability from merged PR #838,
+   then complete the installed controller/verifier/merge-verifier execution boundary from the
+   settled Request 7 benchmark-evidence ledger.
+2. Provision the trusted host private key, independently verify the image, cache, toolchain, and
+   profile, and pass native x86_64 host self-qualification before selecting `BASE`.
+3. Design and ship decoded-owner Request 15, then complete Request 7's language-design acceptance
    before selecting the immutable pre-work baseline or starting its language implementation.
-3. Resume C6-LIFECYCLE only after Requests 7 and 13 reach `ALIGN_MERGED`; batch the already merged
+4. Resume C6-LIFECYCLE only after Requests 7 and 13 reach `ALIGN_MERGED`; batch the already merged
    Requests 8, 10, and 12 into its named real-client adoption checkpoints. Preserve ARM compiler
    builds at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
 
@@ -220,5 +227,9 @@ file records durable project state.
   do not amend or rewrite it.
 - No generated compiler, image, cache, seed, or signing material belongs in Git.
 - PR #84 supersedes paused PR #69; retain GitHub history as provenance, not as active evidence.
+- Preserve the untracked primary-worktree `io_copy`; it is outside this docs-only checkpoint.
+- The named stash `codex-preserve-local-doc-fixes-before-pull-2026-08-16` is a temporary safety copy
+  of the pre-refresh local documents. Drop it only after this checkpoint is merged and its final
+  diff is confirmed.
 - Do not use destructive checkout/reset or broad cleanup. Keep code, documentation, commits, pull
   request metadata, review records, and diagnostics in English.
