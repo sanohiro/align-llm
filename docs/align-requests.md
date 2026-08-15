@@ -1070,9 +1070,8 @@ reachable through any union variant. The separately demonstrated general
 `Option<enum>` remains rejected by the existing JSON Decode schema predicate before this ownership
 gate and is outside this request. The pinned implementation currently admits
 `Option<Move record>`: direct decode/encode succeeds, and ordinary scope `Drop` checks the option
-tag and frees the nested owner. That behavior contradicts the authoritative JSON design and its
-stale rejection regression, so the decoded-owner prerequisite must either restore rejection before
-construction or specify and repair the admitted surface. On the currently admitted path, after
+tag and frees the nested owner. The current authoritative JSON design and
+`m5.rs::json_option_move_struct_payload_remains_admitted` preserve that positive surface. After
 decoding a `Some(MoveStruct)`, any subsequent enclosing-object decode failure leaves the optional
 payload unfreed because the separate error-cleanup helper `drop_decoded_owned` skips optional
 descriptors. Missing or type-invalid siblings, duplicate declared keys, and malformed later object
@@ -1094,9 +1093,9 @@ owned column before runtime. Defensive behavior for a raw runtime call with an i
 descriptor would require a separate invalid-descriptor ABI contract. While the current recursive
 scanner schema walk admits the optional shape, the scanner-specific ownership gate must still
 reject its reachable owner: each successful scan row would otherwise be overwritten without Drop.
-If the cleanup prerequisite instead restores general Decode rejection, that earlier schema error
-wins and this gate is not reached. The exact diagnostic template substitutes a public source-level
-spelling for
+Request 15 preserves ordinary Decode admission, so this scanner-specific Copy error remains the
+first ownership rejection for that otherwise valid schema. The exact diagnostic template
+substitutes a public source-level spelling for
 `<row-type-source-spelling>`:
 
 ```text
@@ -1337,13 +1336,10 @@ Items 2, 8, and 9 record the optional-schema outcome of the Request 6 implementa
 shipped Align commit `e65448b744c04e3868d079eef8b45ce0d43ac8ee`. That commit admits
 `Option<Move-struct>` for ordinary declared-record decode and rejects a reachable Move row for
 `json.scan`; the adoption oracle is therefore fixed, not inferred from whichever compiler happens
-to run. If Request 15's decoded-owner cleanup changes that outcome, its Align change must update all
-three checked-in Request 6 regressions in the same pull request before the cleanup merges: scanner
-checking must then expect the cleanup request's canonical schema diagnostic, the no-MIR assertion
-must bind to that earlier rejection, and ordinary optional decode must change from success to the
-same rejection. If cleanup instead preserves and repairs the admitted schema, those Request 6
-expectations remain unchanged. This is test-oracle maintenance for the active compiler, not a
-second owner for scanner eligibility.
+to run. Request 15 must preserve all three checked-in Request 6 regressions: scanner checking keeps
+the Copy-row diagnostic and no-MIR assertion, while ordinary optional decode keeps its positive
+admission test. Request 15 adds cleanup evidence without becoming a second owner for scanner
+eligibility.
 
 ### align-llm adoption gate
 
@@ -2619,16 +2615,13 @@ Verified at the pinned Align commit `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` o
   parameter; and `json.scan` reuses typed row parsing through an input view with no retained
   storage. Request 6 exclusively owns the scanner row-eligibility defect and proposes a recursively
   Copy boundary. Request 7 neither widens nor duplicates that ownership contract.
-- The pinned surface is internally inconsistent for `Option<Move record>`. Sema recursively admits
-  the shape, a direct decode/encode fixture successfully produces
+- The pinned surface admits `Option<Move record>`. Sema recursively admits the shape, the
+  authoritative JSON design records it, and
+  `m5.rs::json_option_move_struct_payload_remains_admitted` successfully produces
   `{"id":1,"meta":{"xs":[2,3]}}`, and ordinary MIR/LLVM `Drop` checks the option tag and frees the
-  nested array owner. In contrast, decode-error cleanup in `drop_decoded_owned` skips optional
-  descriptors, while `docs/impl/core-design/json.md` and
-  `json_option_move_struct_payload_still_rejected` say the shape is rejected; running that exact
-  test fails because `check_errs(...)` is false. The decoded-owner prerequisite must reconcile this
-  surface before Request 7 implementation: either reject it before construction or specify and
-  repair success, failure, replacement, and cleanup ownership. Request 7 does not choose between
-  those outcomes.
+  nested array owner. Decode-error cleanup in `drop_decoded_owned` still skips optional
+  descriptors. Request 15 must repair failure, replacement, and cleanup ownership while preserving
+  the admitted success surface before Request 7 implementation.
 - Request 3 deliberately excluded escapes because its argv/tag consumer did not need them. C6 is
   the first fixed consumer that does.
 
@@ -2744,14 +2737,14 @@ Required semantics:
   `array<MoveStruct>` staging, and trailing-garbage gaps before Request 7 is implemented;
 - JSON number-grammar strictness is N/A to this request because it does not share string
   materialization or storage ownership; C6 records any required numeric strictness separately;
-- the feature does not add a dynamic JSON value type. Request 7 neither resolves the contradictory
+- the feature does not add a dynamic JSON value type. Request 7 neither changes the admitted
   `Option<Move record>` surface nor closes the separately demonstrated decoded-owner transition
-  gaps: an optional owner followed by a later enclosing-object failure on the currently admitted
+  gaps: an optional owner followed by a later enclosing-object failure on that shipped
   implementation path; an owner overwritten across indexed top-level AoS speculation and
   successful or failed fallback; current or completed top-level `array<MoveStruct>` staging
   followed by later failure or trailing garbage; and required or currently admitted optional
-  owners live when a top-level record rejects trailing garbage. The cleanup prerequisite must first
-  decide whether `Option<Move record>` is rejected or supported. It must then audit every admitted
+  owners live when a top-level record rejects trailing garbage. Request 15 must preserve
+  `Option<Move record>` support and audit every admitted
   construction, speculative write, replacement and source nulling, fallback, staging, return, and
   cleanup transition and assign it to an explicit owner module and allocation-count regression.
   That follow-up is an implementation prerequisite, not merely an excluded future improvement.
@@ -4118,13 +4111,11 @@ Verified against `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` on 2026-08-01:
   implementation PR must reconcile both documents at a named commit before Request 9 can reach
   `ALIGN_MERGED`; Request 9 adopts the compiler/test-proven carrier and does not invent a new result
   mechanism.
-- The pinned negative regression
-  `../align/crates/align_driver/tests/m5.rs::json_option_move_struct_payload_still_rejected` currently
-  fails because a record with only `Option<MoveStruct>` is admitted by the existing JSON route. That
-  is a pre-existing route inconsistency, not evidence that the new owned descriptor is available:
-  Request 9 rejects unsupported optional owners only after its direct owned-text selector has been
-  chosen, while preserving the existing route for records with no owned text leaf. Align may decide
-  and repair the existing-route behavior separately if it wants to change it.
+- The positive regression
+  `../align/crates/align_driver/tests/m5.rs::json_option_move_struct_payload_remains_admitted`
+  preserves the existing borrowed route for a record with `Option<MoveStruct>`. Request 15 owns its
+  recoverable-failure cleanup. Request 9 rejects unsupported optional owners only after its direct
+  owned-text selector has been chosen and must not narrow or reinterpret that existing route.
 
 This is a genuine Align type/standard-library boundary, not an align-llm compatibility concern.
 Request 9 must be designed and implemented in Align before any consumer targets it.
@@ -5107,8 +5098,8 @@ Verified against the sibling Align tree merged by PR #821 at
 owners live before a later recoverable parse or schema failure, but its cleanup is incomplete on
 four transition classes:
 
-- semantic checking and runtime currently admit `Option<MoveRecord>` even though the authoritative
-  JSON design and a stale negative regression still say that optional owned payload is rejected;
+- semantic checking, the authoritative JSON design, and
+  `m5.rs::json_option_move_struct_payload_remains_admitted` all preserve `Option<MoveRecord>`;
   ordinary generated `Drop` handles a successful `Some`, while `drop_decoded_owned` skips every
   optional descriptor after a later enclosing-object failure;
 - indexed top-level AoS speculation can write an owner and then fall back into the same destination,
@@ -5127,10 +5118,10 @@ not an align-llm parsing concern or an application workaround.
 
 Preserve the existing public `json.decode` source form, declared-record wire behavior, and
 `Error.Code(1)` failure result while making every admitted decoded owner transition exact-once. The
-Align design should reconcile the already-shipped positive surface by admitting
-`Option<MoveRecord>` when the nested record is otherwise JSON-decode eligible. Missing and `null`
-remain `None`; a valid object becomes `Some`; general `Option<enum>`, top-level option targets, and
-otherwise unsupported JSON graphs remain rejected before MIR or allocation.
+already-shipped `Option<MoveRecord>` surface remains admitted when the nested record is otherwise
+JSON-decode eligible. Missing and `null` remain `None`; a valid object becomes `Some`; general
+`Option<enum>`, top-level option targets, and otherwise unsupported JSON graphs remain rejected
+before MIR or allocation.
 
 The runtime must recursively clean a live optional payload after any later object failure and null
 its tag/payload so outer cleanup is idempotent. Indexed AoS speculation must either stage writes
@@ -5153,7 +5144,7 @@ descriptor change unavoidable, Align must revise this proposed contract before c
 
 | Transition | Exact owner | Required regression |
 | --- | --- | --- |
-| Optional-owner formation and validation order | `align_sema::check_json_decode`, recursive JSON schema eligibility, canonical `DropPlan`, and the reconciled JSON/option design | `m5_decoded_owner.rs::option_move_record_surface_and_validation_order` admits missing/null/valid `Some(MoveRecord)`, rejects general `Option<enum>` and unsupported graphs before MIR/allocation, and removes the contradictory stale negative |
+| Optional-owner formation and validation order | `align_sema::check_json_decode`, recursive JSON schema eligibility, canonical `DropPlan`, and the shipped JSON/option design | Existing `m5.rs::json_option_move_struct_payload_remains_admitted` remains green; `m5_decoded_owner.rs::option_move_record_surface_and_validation_order` covers missing/null/valid `Some(MoveRecord)` and rejects general `Option<enum>` and unsupported graphs before MIR/allocation |
 | Optional construction, later sibling failure, and top-level trailing input | `align_rt_json_decode`, `parse_object`, optional descriptor handling, and `drop_decoded_owned` | `align_runtime::tests::json_decoded_optional_owner_failure_matrix` covers missing, type/range, duplicate, malformed later value, required-field omission, and trailing bytes after a live `Some`; tag, payload, array spine, nested owners, allocation/free counts, and exact first error agree |
 | Slow top-level AoS rows | `align_rt_json_decode_struct_array`, fallback writer, row initialization ledger, and recursive cleanup | `align_runtime::tests::json_decoded_owner_aos_slow_failure_matrix` covers zero, one, and many completed Move rows plus one partial row across malformed element, delimiter, EOF, and trailing-input failure |
 | Speculation success to fallback success or failure | `json_speculate`, `json_fallback`, `write_field_indexed`, and the AoS destination owner | `align_runtime::tests::json_decoded_owner_speculation_transition_matrix` forces an owner write before structural drift, then proves exact-once cleanup/nulling before both successful and failing fallback without double materialization |
@@ -5164,8 +5155,9 @@ descriptor change unavoidable, Align must revise this proposed contract before c
 | Allocation/failure observation | existing test-only Align allocation counters and the caller-owned transition probe, if one is required; production entrypoints pass no ambient probe | Every allocation-counter regression acquires `ALLOC_COUNT_LOCK` before fixture setup and holds it through cleanup and final assertions; zero/one/many/reallocation cases require successful-allocation and free counter deltas to agree after each recoverable failure |
 | SoA, scanner, CLI/configuration, persistence, and performance | N/A: well-typed SoA and Request 6 scanner rows contain no decoded owners; this repair adds no CLI/configuration/persisted format and makes no optimization claim | Existing SoA/scanner owners remain green; no benchmark threshold or routine aggregate is added |
 
-Before implementation, Align must update the English JSON and option/ownership sources of truth,
-then synchronize their Japanese translations where present. The design must map every matrix cell
+Before implementation, Align must extend the English JSON ownership source of truth with the exact
+cleanup contract while preserving its admitted optional surface, then synchronize its Japanese
+translation. The design must map every matrix cell
 to the final diff and focused passing evidence. The implementation gate runs the named semantic,
 runtime allocation-count, whole/per-unit, cache/interface, and concurrency owners plus the existing
 nested field-array and Move-union regressions. This request reaches `ALIGN_MERGED` only at that exact
@@ -5174,8 +5166,8 @@ reviewed head; align-llm later reaches `ALIGN_LLM_VERIFIED` through
 
 ### References
 
-- `../align/docs/impl/core-design/json.md` — shipped declared-record schemas, Move ownership, and
-  currently contradictory optional-payload prose.
+- `../align/docs/impl/core-design/json.md` — shipped declared-record schemas, admitted optional Move
+  ownership, and the currently deferred cleanup defect.
 - `../align/docs/impl/core-design/option-result.md` and
   `../align/docs/impl/08-memory-model-v2.md` — recursive optional ownership and Drop.
 - `../align/crates/align_sema/src/lib.rs` — JSON schema eligibility and ownership formation.
@@ -5199,8 +5191,8 @@ or are already implemented:
   (missing key / `null` → `None`), enums (shape-directed unions), and ignores unknown fields —
   verified against `examples/json_nested.align`, which decodes an OpenAI chat-completions shape.
   `Option<enum>` remains an existing decode rejection. `Option<Move record>` is admitted by the
-  pinned sema/runtime despite a contrary design statement and stale negative test; the cleanup
-  Request 15 must reconcile and repair that surface. Known cleanup gaps include currently admitted
+  pinned sema/runtime, authoritative JSON design, and positive regression; Request 15 must preserve
+  that surface and repair its cleanup. Known cleanup gaps include currently admitted
   optional owners on later object failure, owners overwritten across indexed top-level AoS
   speculation-to-fallback transitions even when fallback succeeds, staged top-level
   `array<MoveStruct>` rows on later failure, and required or currently admitted optional owners on
