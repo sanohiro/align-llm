@@ -6,7 +6,7 @@ file records durable project state.
 ## Active checkpoint (2026-08-16)
 
 - Branch `agent/refresh-request7-prerequisites` is based directly on `main` at
-  `8c144947799b6be22a62bf83e56d003953b09b9a`, the merge commit for align-llm PR #91. This docs-only
+  `8c14494e9dbfdd4e1e587818b0e49543931e5867`, the merge commit for align-llm PR #91. This docs-only
   checkpoint reconciles the locally recorded Request 7 evidence progress with the current request
   register; it does not change source, fixtures, automation, or `.align-revision`.
 - In the sibling Align repository, Request 7's benchmark-evidence design and implementation
@@ -14,10 +14,12 @@ file records durable project state.
   Benchmark-input isolation, manifest and canonical JSON primitives, the typed report and SSHSIG
   formats, CLI and Git boundaries, source materialization, profile/container/image/host validation,
   prepared benchmarks, monitor lifecycle, and prepared execution owners are shipped. The remaining
-  evidence work is the adversarial schedule/process/cleanup/race owner set followed by
-  controller/verifier execution and merge verification. Decoded-owner Request 15 and Request 7's
-  language design and implementation remain unshipped; PR #813 defines only the evidence boundary,
-  so Request 7 remains `PROPOSED`.
+  implementation work is the adversarial schedule/process/cleanup/race owner set followed by the
+  controller/verifier/merge-verifier execution boundary. Before selecting `BASE`, the trusted host
+  still requires private-key provisioning, independent image/cache/toolchain/profile verification,
+  and native x86_64 self-qualification; performance measurement and merge verification follow at
+  their named gates. Decoded-owner Request 15 and Request 7's language design and implementation
+  remain unshipped; PR #813 defines only the evidence boundary, so Request 7 remains `PROPOSED`.
 - Align PR #812 merged the bounded `std.http` response implementation as
   `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. PR #90 pins that exact merge, adopts the shipped
   bounded/chunked provider surface, and closes Requests 4 and 5.
@@ -208,11 +210,13 @@ file records durable project state.
 ## Next actions
 
 1. Continue the sibling Align `agent/request7-adversarial-owners` capability from merged PR #838,
-   then implement the controller/verifier execution and merge-verification boundaries from the
+   then complete the installed controller/verifier/merge-verifier execution boundary from the
    settled Request 7 benchmark-evidence ledger.
-2. Design and ship decoded-owner Request 15, then complete Request 7's language-design acceptance
+2. Provision the trusted host private key, independently verify the image, cache, toolchain, and
+   profile, and pass native x86_64 host self-qualification before selecting `BASE`.
+3. Design and ship decoded-owner Request 15, then complete Request 7's language-design acceptance
    before selecting the immutable pre-work baseline or starting its language implementation.
-3. Resume C6-LIFECYCLE only after Requests 7 and 13 reach `ALIGN_MERGED`; batch the already merged
+4. Resume C6-LIFECYCLE only after Requests 7 and 13 reach `ALIGN_MERGED`; batch the already merged
    Requests 8, 10, and 12 into its named real-client adoption checkpoints. Preserve ARM compiler
    builds at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
 
