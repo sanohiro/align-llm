@@ -5,11 +5,19 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-15)
 
-- Branch `agent/http-bounded-adoption` is based directly on `main` at
-  `ff600629f961f5532525322519e524664ab2b1ca`, the merge commit for align-llm PR #89.
+- Branch `agent/request7-benchmark-evidence` is based directly on `main` at
+  `bb86e9f8a1b9e2ab07500152b81e173a13400a06`, the merge commit for align-llm PR #90.
+- In the sibling Align repository, Request 7's benchmark-evidence design merged in PR #813,
+  benchmark-input isolation in #815, installed-source manifest verification in #816, canonical JSON
+  primitives in #817, the typed report schema in #818, and post-merge input hardening in #821 at
+  `9aef62a8a6c0e26517a042738c74b0689583c1fc`. SSHSIG framing is under review in PR #820. The
+  controller/verifier/monitor, pinned profile/image, host qualification, decoded-owner Request 15,
+  and Request 7 language design and implementation remain unshipped. PR #813 defines only the
+  evidence boundary and explicitly does not accept the JSON language change, so Request 7 remains
+  `PROPOSED`.
 - Align PR #812 merged the bounded `std.http` response implementation as
-  `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. This branch pins that exact merge and adopts the
-  shipped surface at the provider boundary together with Request 4's chunked-response support.
+  `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. PR #90 pins that exact merge, adopts the shipped
+  bounded/chunked provider surface, and closes Requests 4 and 5.
 - The managed release compiler/runtime for the new pin materialized under `dev-v1` as a native
   Mach-O `arm64` compiler with `CARGO_BUILD_JOBS=1`. It passes
   `./scripts/alignc check-per-unit src/main.align`: all 15 units pass with the three existing
@@ -20,9 +28,8 @@ file records durable project state.
   shipped Request 10 as `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Align PR #800 shipped
   Request 4 as `f04672bce6f8689c9b219d0a20e770571e2d638b`, PR #808 shipped Request 11 as
   `82da9f580cc005fbb78f67af6847c7b4ce6626c4`, and PR #807 shipped Request 12 as
-  `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are adopted together on the active
-  provider-consumer branch; Requests 8 and 10–12 remain `ALIGN_MERGED` for their named consumer
-  capabilities.
+  `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are `CLOSED`; Requests 8 and 10–12
+  remain `ALIGN_MERGED` for their named consumer capabilities.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -50,15 +57,21 @@ file records durable project state.
 
 ## Contract and decisions to preserve
 
+- `align-llm` is a continuing real-client testbed for Align. During every capability, record any
+  genuine Align language, compiler/runtime, or standard-library requirement in
+  `docs/align-requests.md`, even when non-blocking or temporarily avoidable in the application; do
+  not let an application workaround hide a language-owned gap.
 - `.align-revision` is the only implicit compiler selector. Ordinary commands use the managed exact
   pin; `ALIGNC` and `ALIGN_REPO` remain explicit overrides.
 - ALIGN-ADOPTION remains an ordered checkpoint inside a consuming capability, not a pin-only pull
-  request. This branch is the bounded provider-response consumer: it applies the cap, switches real
-  provider fixtures to chunked framing, and owns the combined Requests 4/5 acceptance gate.
+  request. The merged bounded provider-response consumer applies the cap, switches real provider
+  fixtures to chunked framing, and owns the combined Requests 4/5 acceptance gate.
 - C6-LIFECYCLE remains blocked from product implementation on Align Requests 7 and 13 and on the
   consumer adoption of merged Requests 8, 10, and 12. Requests 7 and 13 remain `PROPOSED`; do not
-  consume or imitate those APIs. Requests 4–6 are closed with real-client and native installed-profile
-  evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
+  consume or imitate those APIs. Request 7's merged evidence design is a prerequisite only; its
+  checked-in canonical fixture/hash and exact arena-passing ABI still require an authoritative
+  Align language design before acceptance. Requests 4–6 are closed with real-client and native
+  installed-profile evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -92,6 +105,10 @@ file records durable project state.
   fixture and provider smoke pass locally against the exact pin: exact/cap-plus-one fixed and
   many-tiny-chunk bodies, bodyless/interim framing, exact/cap-plus-one trailers, connection reuse
   and teardown, chunked OpenAI/llama SSE, malformed/truncated framing, limit code `-1`, and HTTP 413.
+- align-llm PR #90 merged as `bb86e9f8a1b9e2ab07500152b81e173a13400a06`. Exact-head preflight
+  at `0987a2271034881fd1ac27101aa695e94c7729e5` passed the `fresh-image` lane, including the native
+  Linux `aarch64` installed profile in 533,103 ms and worker aggregate in 179,830 ms. GitHub's
+  pinned checks passed in 2m06s, native `x86_64` in 17m16s, and native `aarch64` in 18m16s.
 - `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo /Users/hiro/Projects/align`:
   PASS at `0f9e08eee427` on native Linux `aarch64`.
   The installed profile, Request 6 boundary, fresh compiler, worker aggregate, canonical baseline,
@@ -187,11 +204,14 @@ file records durable project state.
 
 ## Next actions
 
-1. Review the focused-fixture repair and rerun the exact-head publication preflight, which repeats
-   the native ARM installed profile.
-2. Open, review, and merge the pull request.
-3. Refresh `main` and continue the next eligible consumer capability. Preserve ARM compiler builds
-   at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
+1. Finish and merge sibling Align PR #820's SSHSIG framing, then continue the next unowned
+   evidence-controller capability from the settled Request 7 ledger: controller/verifier/monitor,
+   pinned profile/image, adversarial owners, and host qualification remain.
+2. Design and ship decoded-owner Request 15, then complete Request 7's language-design acceptance
+   before selecting the immutable pre-work baseline or starting its language implementation.
+3. Resume C6-LIFECYCLE only after Requests 7 and 13 reach `ALIGN_MERGED`; batch the already merged
+   Requests 8, 10, and 12 into its named real-client adoption checkpoints. Preserve ARM compiler
+   builds at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
 
 ## Recovery and preservation
 
