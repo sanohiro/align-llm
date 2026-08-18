@@ -5,9 +5,30 @@ import prompt_model
 
 SmokeOutput { case_name: str, status: str, text: str, sha256: str }
 
+MemoryFixtureEvent {
+  schema_version: i64,
+  root: str,
+  task_id: str,
+  attempted_patch: str,
+  final_status: str,
+  failure_stage: str,
+  failed_test: str,
+  failure_status: str,
+  root_cause: str,
+  repair_result: str,
+  successful_strategy: str,
+  unsuccessful_strategy: str,
+  iteration_count: i64,
+  repair_count: i64,
+  risk_score: i64,
+  recommended_tests: str,
+  risky_symbols: str,
+}
+
 fn status_label(status: prompt_model.PromptRenderStatus) -> str = match status {
   Valid => "VALID",
   InvalidInput => "INVALID_INPUT",
+  InvalidFailureMemory => "INVALID_FAILURE_MEMORY",
 }
 
 fn emit(case_name: str, render: prompt_model.PromptRender) {
@@ -33,11 +54,59 @@ fn repeated(value: str, count: i64) -> string {
   return output.to_string()
 }
 
+fn memory_line(task_id: str, marker: str, schema_version: i64) -> string {
+  event := MemoryFixtureEvent {
+    schema_version: schema_version,
+    root: marker,
+    task_id: task_id,
+    attempted_patch: marker,
+    final_status: marker,
+    failure_stage: marker,
+    failed_test: marker,
+    failure_status: marker,
+    root_cause: marker,
+    repair_result: marker,
+    successful_strategy: marker,
+    unsuccessful_strategy: marker,
+    iteration_count: 1,
+    repair_count: 1,
+    risk_score: 1,
+    recommended_tests: marker,
+    risky_symbols: marker,
+  }
+  return json.encode(event).clone()
+}
+
+fn memory_document() -> string {
+  output := builder()
+  output.write(memory_line("task-memory", "old", 1))
+  output.write("\n")
+  output.write(memory_line("other-task", "ignored", 1))
+  output.write("\n")
+  output.write(memory_line("task-memory", "middle", 1))
+  output.write("\n")
+  output.write(memory_line("task-memory", "new", 1))
+  return output.to_string()
+}
+
+fn memory_budget_document() -> string {
+  output := builder()
+  output.write(memory_line("task-memory", "old", 1))
+  output.write("\n")
+  output.write(memory_line("other-task", "ignored", 1))
+  output.write("\n")
+  output.write(memory_line("task-memory", "newest-too-long", 1))
+  return output.to_string()
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   baseline_policy := prompt_model.ContextPolicy {
     include_patch_evaluation: false,
+    include_failure_memory: false,
     include_diagnostics: false,
     max_patch_evaluation_bytes: 0,
+    max_failure_events: 0,
+    max_failure_context_bytes: 0,
     max_diagnostic_bytes_per_stream: 0,
   }
   emit(
@@ -46,6 +115,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       "BASE",
       "REPO",
       "TASK",
+      "",
+      "task-baseline",
       "",
       baseline_policy,
       "ignored",
@@ -56,8 +127,11 @@ pub fn main(args: array<str>) -> Result<(), Error> {
 
   bounded_policy := prompt_model.ContextPolicy {
     include_patch_evaluation: true,
+    include_failure_memory: false,
     include_diagnostics: true,
     max_patch_evaluation_bytes: 24,
+    max_failure_events: 0,
+    max_failure_context_bytes: 0,
     max_diagnostic_bytes_per_stream: 23,
   }
   emit(
@@ -67,6 +141,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       "REPO",
       "TASK",
       "learned",
+      "task-bounded",
+      "",
       bounded_policy,
       "é🙂abcdefghijklmnopqrstuvwxyz",
       "é🙂stdout",
@@ -74,10 +150,64 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     ),
   )
 
-  invalid_policy := prompt_model.ContextPolicy {
-    include_patch_evaluation: true,
+  memory_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
     include_diagnostics: false,
     max_patch_evaluation_bytes: 0,
+    max_failure_events: 2,
+    max_failure_context_bytes: 65536,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "memory-selected",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "",
+      "task-memory",
+      memory_document(),
+      memory_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+
+  budget_line := memory_line("task-memory", "old", 1)
+  budget_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 3,
+    max_failure_context_bytes: budget_line.len(),
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "memory-budget",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "",
+      "task-memory",
+      memory_budget_document(),
+      budget_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+
+  invalid_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: true,
+    include_failure_memory: false,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 0,
+    max_failure_context_bytes: 0,
     max_diagnostic_bytes_per_stream: 0,
   }
   emit(
@@ -87,8 +217,153 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       "REPO",
       "TASK",
       "learned",
+      "task-invalid",
+      "",
       invalid_policy,
       "patch",
+      "",
+      "",
+    ),
+  )
+
+  invalid_memory_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 0,
+    max_failure_context_bytes: 32,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "invalid-memory-policy",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      "task-memory",
+      memory_document(),
+      invalid_memory_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+  invalid_memory_cap_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 1,
+    max_failure_context_bytes: 65537,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "invalid-memory-cap",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      "task-memory",
+      memory_document(),
+      invalid_memory_cap_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+  invalid_memory_event_cap_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 65,
+    max_failure_context_bytes: 65536,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "invalid-memory-event-cap",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      "task-memory",
+      memory_document(),
+      invalid_memory_event_cap_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+  invalid_memory_disabled_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: false,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 1,
+    max_failure_context_bytes: 0,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "invalid-memory-disabled-policy",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      "task-memory",
+      memory_document(),
+      invalid_memory_disabled_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+
+  emit(
+    "invalid-memory",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      "task-memory",
+      "not-json",
+      memory_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+  emit(
+    "unknown-memory-schema",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      "task-memory",
+      memory_line("task-memory", "unknown-schema", 2),
+      baseline_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+  emit(
+    "disabled-invalid-memory",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      "task-memory",
+      "not-json",
+      baseline_policy,
+      "",
       "",
       "",
     ),
@@ -101,6 +376,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       "BASE",
       "REPO",
       "TASK",
+      "",
+      "task-source",
       "",
       oversized_source_policy,
       repeated("x", 65537),
@@ -115,6 +392,23 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       "REPO",
       "TASK",
       repeated("x", 8193),
+      "task-learned",
+      "",
+      oversized_source_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+  emit(
+    "oversized-memory",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "",
+      "task-memory",
+      repeated("x", 1048577),
       oversized_source_policy,
       "",
       "",

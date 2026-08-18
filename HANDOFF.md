@@ -5,14 +5,18 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-18)
 
-- Active branch: `agent/c6-register-adoption-verified`, based on merged `origin/main` at
-  `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`; this checkpoint carries the post-merge lifecycle
-  register and HANDOFF reconciliation.
+- Active branch: `agent/c6b-memory-renderer`, based on `origin/main` at
+  `71482a36eb6c08beaebe5b8ef8a82a30afe8dec3`; this checkpoint carries the C6b-memory renderer
+  consumer and its contract closure.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
 - The register records Request 7, 8, 10, 12, 13, and 15 as `ALIGN_LLM_VERIFIED` after the
   ordered adoption wave and final capable evidence. Request 9 remains independent and Request 11
   remains pending for the later C6-EVALUATION boundary.
+- The active C6b-memory consumer validates the complete C5 failure-memory JSONL source, selects
+  matching events by task and bounded reverse scan, renders them chronologically, and reports
+  `INVALID_FAILURE_MEMORY` without changing the valid prompt digest contract. Request 14 remains
+  proposed and is not consumed.
 - The managed exact-pin compiler materializes successfully. PR #94's owner wave, hosted checks,
   fresh-focused qualification, and both installed native profiles passed at head
   `954258e24d93300dcdb78f8280de8868cf1ced56`; main push CI run `32111007638` reused that exact
@@ -89,6 +93,10 @@ file records durable project state.
 
 ## Latest durable verification
 
+- C6b-memory candidate owner evidence: `make prompt-model-smoke`, `make failure-memory-smoke`,
+  `make check`, `make format-check`, and `git diff --check`: PASS against the exact pinned
+  compiler; the owner covers chronological bounded selection, source/schema invalidation, policy
+  caps, UTF-8 rendering, and SHA-256 preservation.
 - Align Request 13 implementation PR #854 merged as
   `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`; its required
   `cargo build --release --workspace` passed. Align-llm PR #94 then passed the exact C6a1/C6a2
@@ -211,16 +219,13 @@ file records durable project state.
 
 ## Next actions
 
-1. Refresh `origin/main` after this status checkpoint and start the next eligible C6 consumer-complete
-   capability. It may consume the shipped C6a1/C6a2 graph and codec; keep Request 14 proposed and
-   defer evaluator, activation, Request 11, Request 2, and Request 9 claims to their named owners.
-2. For that capability, run its ordered owner checks, exact-head preflight, one comprehensive review,
-   and the required fresh capable CI before publishing; repair any valid review findings in one
-   coherent commit.
-3. Publish the reviewed capability, wait for CI, merge it, and advance only adoption requests whose
-   original acceptance targets and final capability gate pass.
-4. Keep Request 14 proposed. Preserve ARM compiler builds at one job; native x86_64 keeps Cargo's
-   default parallelism on the qualified 128 GiB owner.
+1. Finish the C6b-memory candidate with its owner smoke, exact-head preflight, one comprehensive
+   review, and the required fresh capable CI; repair valid findings in one coherent commit.
+2. Publish the reviewed capability, wait for CI, and merge it. Reconcile durable status and the
+   request register after the merge, then start the next eligible C6 consumer-complete boundary.
+3. Keep Request 14 proposed and defer evaluator, activation, Request 11, Request 2, and Request 9
+   claims to their named owners. Preserve ARM compiler builds at one job; native x86_64 keeps
+   Cargo's default parallelism on the qualified 128 GiB owner.
 
 ## Recovery and preservation
 

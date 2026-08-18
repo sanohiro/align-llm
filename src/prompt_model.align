@@ -2,15 +2,19 @@ module prompt_model
 
 import std.crypto
 import std.encoding
+import failure_memory
 
 pub ContextPolicy {
   include_patch_evaluation: bool,
+  include_failure_memory: bool,
   include_diagnostics: bool,
   max_patch_evaluation_bytes: i64,
+  max_failure_events: i64,
+  max_failure_context_bytes: i64,
   max_diagnostic_bytes_per_stream: i64,
 }
 
-pub PromptRenderStatus { Valid, InvalidInput }
+pub PromptRenderStatus { Valid, InvalidInput, InvalidFailureMemory }
 
 pub PromptRender {
   status: PromptRenderStatus,
@@ -79,6 +83,14 @@ fn invalid_input() -> PromptRender {
   }
 }
 
+fn invalid_failure_memory() -> PromptRender {
+  return PromptRender {
+    status: PromptRenderStatus.InvalidFailureMemory,
+    text: "".clone(),
+    sha256: "".clone(),
+  }
+}
+
 fn valid_section_limit(enabled: bool, limit: i64, maximum: i64) -> bool {
   if limit < 0 || limit > maximum {
     return false
@@ -93,6 +105,18 @@ fn valid_policy(policy: ContextPolicy) -> bool {
   if !valid_section_limit(policy.include_patch_evaluation, policy.max_patch_evaluation_bytes, 65536) {
     return false
   }
+  if !valid_section_limit(policy.include_failure_memory, policy.max_failure_context_bytes, 65536) {
+    return false
+  }
+  if policy.max_failure_events < 0 || policy.max_failure_events > 64 {
+    return false
+  }
+  if policy.include_failure_memory && policy.max_failure_events <= 0 {
+    return false
+  }
+  if !policy.include_failure_memory && policy.max_failure_events != 0 {
+    return false
+  }
   if !valid_section_limit(policy.include_diagnostics, policy.max_diagnostic_bytes_per_stream, 65536) {
     return false
   }
@@ -104,6 +128,7 @@ fn valid_sources(
   repo_prompt: str,
   task_prompt: str,
   learned_prompt_append: str,
+  failure_memory_jsonl: str,
   patch_evaluation: str,
   diagnostic_stdout: str,
   diagnostic_stderr: str,
@@ -117,6 +142,9 @@ fn valid_sources(
   if patch_evaluation.len() > 65536 || diagnostic_stdout.len() > 65536 || diagnostic_stderr.len() > 65536 {
     return false
   }
+  if failure_memory_jsonl.len() > 1_048_576 {
+    return false
+  }
   return true
 }
 
@@ -125,6 +153,8 @@ pub fn render(
   repo_prompt: str,
   task_prompt: str,
   learned_prompt_append: str,
+  task_id: str,
+  failure_memory_jsonl: str,
   policy: ContextPolicy,
   patch_evaluation: str,
   diagnostic_stdout: str,
@@ -135,11 +165,22 @@ pub fn render(
     repo_prompt,
     task_prompt,
     learned_prompt_append,
+    failure_memory_jsonl,
     patch_evaluation,
     diagnostic_stdout,
     diagnostic_stderr,
   ) {
     return invalid_input()
+  }
+
+  memory := failure_memory.select_context(
+    failure_memory_jsonl,
+    task_id,
+    policy.max_failure_events,
+    policy.max_failure_context_bytes,
+  )
+  if !memory.valid {
+    return invalid_failure_memory()
   }
 
   output := builder()
@@ -164,7 +205,11 @@ pub fn render(
   }
 
   output.write("\n\n--- failure memory context ---\n")
-  output.write("(omitted)")
+  if policy.include_failure_memory {
+    output.write(memory.text)
+  } else {
+    output.write("(omitted)")
+  }
 
   output.write("\n\n--- current failure diagnostics ---\n")
   if policy.include_diagnostics {

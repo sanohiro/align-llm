@@ -1,7 +1,8 @@
 # C6 Prompt and Context Optimizer
 
-Status: design plan of record; the C6b renderer core, C6c1 row validation/aggregation kernel, and
-C6c1p prefix validator are merged foundations. The remaining contract is delivered through the consumer-complete capability
+Status: design plan of record; the C6b renderer core, the C6b-memory failure-memory selector,
+C6c1 row validation/aggregation kernel, and C6c1p prefix validator are the current foundations.
+The remaining contract is delivered through the consumer-complete capability
 waves in Section 11. Historical C6a-C6g labels identify acceptance and ownership cells, not required
 branch or pull request boundaries. JSON/document binding remains dependent on its named Align
 prerequisites; no code may target a proposed surface.
@@ -55,9 +56,9 @@ hypothetical API part of C6:
 3. **Request 7 — escaped strings in declared-record JSON.** Typed `json.decode` must decode every
    JSON escape accepted by `json.encode` into declared `str` fields and `array<str>` elements,
    including nested records and options. This was a prerequisite for C6a and remains required by
-   JSON-dependent C6 product cells. The merged C6b renderer core deliberately does not decode
-   failure-memory JSONL, so it remains a valid foundation while that deferred consumer is a later
-   C6b cell. Escape-free fixtures, `json.doc`, and an application-specific base64 wire format are
+   JSON-dependent C6 product cells. The merged C6b renderer core deliberately did not decode
+   failure-memory JSONL; the C6b-memory consumer now adopts the declared-record decoder for that
+   boundary. Escape-free fixtures, `json.doc`, and an application-specific base64 wire format are
    not substitutes for the declared-record round trip. Request 7 is `ALIGN_LLM_VERIFIED` at Align
    PR #850 (`18301b43d6256349f984e4aaf62e975bf4f42aa0`), with `c6-json-escape-adoption` and the
    final capable gate passing in Align-llm PR #94. C6c2 does not bypass this request: its pure
@@ -424,11 +425,10 @@ substitute them. Empty learned text is allowed only when the candidate changes a
 policy field.
 
 The full C6 target includes all optional context sections shown below. The merged C6b renderer core
-implements the fixed hierarchy, learned append, bounded patch-evaluation context,
-and bounded diagnostics. It emits the failure-memory heading as `(omitted)` but does not accept,
-decode, or select failure-memory JSONL. Failure-memory adoption is a C6b-memory checkpoint within
-C6-LIFECYCLE and may start only after Request 7 reaches `ALIGN_MERGED` and its align-llm acceptance
-gate passes.
+implements the fixed hierarchy, learned append, bounded patch-evaluation context, and bounded
+diagnostics. The C6b-memory consumer extends that renderer with complete failure-memory JSONL
+validation and bounded selection. It starts only after Request 7 reaches `ALIGN_MERGED` and its
+align-llm acceptance gate passes.
 
 The exact rendering order and delimiters are stable:
 
@@ -604,13 +604,13 @@ RenderedPromptArtifact:
   content_sha256
 
 PromptRender:
-  status: VALID | INVALID_INPUT
+  status: VALID | INVALID_INPUT | INVALID_FAILURE_MEMORY
   text: string
   sha256: string
 ```
 
-The deferred C6b-memory extension adds `INVALID_FAILURE_MEMORY` after Request 7 adoption; it does
-not change the valid rendered-text or digest fields.
+The C6b-memory extension adds `INVALID_FAILURE_MEMORY` without changing the valid rendered-text or
+digest fields.
 
 The learned fields are empty in the baseline variant. The checked-in baseline uses
 `variant_id: baseline-v1` and `candidate_id: BASELINE`. A proposed candidate uses
@@ -707,24 +707,7 @@ require an exact scope match.
 
 ### 4.3 Context policy
 
-The current C6b renderer-core public policy is:
-
-```text
-ContextPolicy:
-  include_patch_evaluation: bool
-  include_diagnostics: bool
-  max_patch_evaluation_bytes: i64
-  max_diagnostic_bytes_per_stream: i64
-```
-
-The current core validates these fields, a maximum 8,192-byte learned append, and the base/repo/task
-and context-source limits before composing any text. The failure-memory fields and selection
-contract below are deferred to C6b-memory; they are not implemented by the current
-`prompt_model.render` surface.
-
-#### Deferred C6b-memory policy
-
-The initial declared policy is:
+The C6b-memory renderer policy is:
 
 ```text
 ContextPolicy:
@@ -747,8 +730,10 @@ Concretely, disabled patch evaluation requires `max_patch_evaluation_bytes == 0`
 memory requires both failure limits to be zero; disabled diagnostics requires its stream limit to
 be zero. The converse positive-limit rule applies to each enabled section.
 
-The context source is an immutable snapshot taken before the first A/B invocation and reused by
-both variants in the pair. Its digest is part of the evaluation-input identity.
+The renderer validates these fields, a maximum 8,192-byte learned append, and the base/repo/task
+and context-source limits before composing any text. The context source is an immutable snapshot
+taken before the first A/B invocation and reused by both variants in the pair. Its digest is part of
+the evaluation-input identity.
 
 Context rendering is exact:
 
@@ -778,9 +763,10 @@ real-consumer slice changes that contract.
 
 Policy flag/limit mismatches, policy limits above their declared caps, and oversized source
 snapshots return `PromptRender` status `INVALID_INPUT` with empty text and digest before prompt
-composition. The deferred C6b-memory extension additionally validates memory JSONL and returns
-`INVALID_FAILURE_MEMORY` for an invalid source; that status is not part of the current
-renderer-core surface.
+composition. The renderer validates the complete memory JSONL through
+`failure_memory.select_context`; a malformed line or unknown schema version returns
+`INVALID_FAILURE_MEMORY` with empty text and digest. The selector itself returns `valid: false` for
+an invalid bound, while the renderer rejects that bound as an invalid policy before delegation.
 
 `failure_memory.align` continues to own its private `MemoryEvent` schema and exposes:
 
@@ -796,10 +782,10 @@ pub fn select_context(
 ```
 
 The bare Move result preserves the current Align ownership boundary. It validates every line and
-implements the exact selection/order/budget policy above; invalid input returns
-`valid: false` and empty text. `prompt_model.render` delegates selection to this API instead of
-copying the private schema. It returns `INVALID_FAILURE_MEMORY` with empty text/digest when
-selection is invalid; command-level validation maps that to `INVALID_INPUT` before external work.
+implements the exact selection/order/budget policy above; invalid input returns `valid: false` and
+empty text. `prompt_model.render` delegates selection to this API instead of copying the private
+schema. It returns `INVALID_FAILURE_MEMORY` with empty text/digest when selection is invalid;
+command-level validation maps that to `INVALID_INPUT` before external work.
 
 ### 4.4 Initial activation
 
@@ -2489,11 +2475,11 @@ Terminal statuses are:
 
 ## 6. Persistence, ownership, and failure behavior
 
-`src/prompt_model.align` owns the current renderer-core policy, digest validation, bounds, prompt
-rendering, source validation, and UTF-8-safe context truncation. `src/failure_memory.align` remains
-the C5 owner of its existing failure-memory behavior. The deferred C6b-memory slice will own the
-Request 7-dependent JSONL decoding and bounded event selection through the public Move-result API
-in section 4.3.
+`src/prompt_model.align` owns the C6b-memory renderer policy, digest validation, bounds, prompt
+rendering, source validation, UTF-8-safe context truncation, and integration of the invalid-memory
+status. `src/failure_memory.align` remains the C5 owner of its existing failure-memory behavior and
+also owns the Request 7-dependent JSONL decoding and bounded event selection through the public
+Move-result API in section 4.3.
 
 `src/prompt_experiment.align` owns proposal prompt construction, provider dispatch, response
 decoding, and bounded provider diagnostics. It never owns acceptance.
@@ -2519,15 +2505,13 @@ prompt_model.render(
   repo_prompt: str,
   task_prompt: str,
   learned_prompt_append: str,
+  task_id: str,
+  failure_memory_jsonl: str,
   policy: ContextPolicy,
   patch_evaluation: str,
   diagnostic_stdout: str,
   diagnostic_stderr: str,
 ) -> PromptRender
-
-Deferred C6b-memory extension after Request 7 adoption: the signature adds `task_id` and
-`failure_memory_jsonl`, and `ContextPolicy` adds `include_failure_memory`, `max_failure_events`,
-and `max_failure_context_bytes`.
 
 prompt_experiment.run_file(request_path: str, result_path: str)
   -> Result<PromptCommandStatus, Error>
@@ -2966,7 +2950,7 @@ explicitly reviewed deferral.
 | Declared records, bounds, canonical digest | `src/prompt_model.align` | round-trip, tamper, unknown-version, and oversize fixtures |
 | Persisted string-label mapping | `src/prompt_model.align` | every allowed and unknown kind/status/operation/stage label plus canonical golden vectors |
 | Fixed hierarchy and rendering order | `src/prompt_model.align` | golden rendered prompt and immutable base/repo/task tests |
-| Initial context-policy semantics | `src/prompt_model.align` | disabled sections, source bounds, UTF-8-safe patch/diagnostic truncation; failure-memory selection is explicitly deferred to C6b-memory after Request 7 |
+| Initial context-policy semantics | `src/prompt_model.align` | disabled sections, source bounds, UTF-8-safe patch/diagnostic truncation, and C6b-memory failure-memory selection |
 | Content-bound A/B inputs | `src/prompt_evaluate.align`, task manifests | expected digest, workspace preflight, deduplicated snapshot/input-snapshot records, per-invocation pre/post drift, mode, tree, dirty-source, seed, generation, environment, and FILE_SET-manifest regressions |
 | Explicit verifier source inputs | `src/prompt_evaluate.align`, C6f1 source verifier | absolute root/manifest/tool path validation, policy/helper/Git digest and runtime validation, `FILE_SET` option pairing, canonical raw-byte manifest membership/mode/digest, exact clean checkout observations, fixed argv/env/cap/timeout, observed identity copied into evidence, `VERIFIED` equality, and `UNVERIFIED` preservation before any adapter or snapshot call |
 | Explicit adapter request and environment isolation | `src/prompt_evaluate.align`, task adapter | adapter-request identity/path/digest fixtures; env-clear rejection and exact allowlisted-value survival in both directions |
@@ -3011,22 +2995,38 @@ location.
 | Path | Model/codec | Renderer/memory | Scorer/state | Evaluator/provider | Exact planned regression |
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
-| Success | encode/decode semantic and byte golden vectors | fixed hierarchy and bounded patch/diagnostic contexts; memory adoption deferred | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
+| Success | encode/decode semantic and byte golden vectors | fixed hierarchy, bounded patch/diagnostic contexts, and chronological bounded failure-memory selection | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-model-smoke`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
 | Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator performs the raw `.git`/`gitdir`/`commondir` and local-config walk before any Git child, allows only inert ordinary-clone remote/branch metadata, resolves and checks each Git common directory, rejects replacement/graft/alternate mechanisms across loose and packed/ref-backend storage, validates policy/helper/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry as separate proofs, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-gate-merge-head-ancestry-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
 | Source-verifier process boundary | policy/helper/Git identity and request/result codecs | N/A | raw `.git`/`gitdir`/`commondir` metadata and local/worktree config are scanned before any Git child; fixed argv including no-pager/no-replace/no-graft/command overrides, cleared environment, cwd, common-directory checks, complete replacement namespace enumeration, byte caps, timeout, raw-byte FILE_SET traversal, mode-specific result-status/observed-identity shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-mode-identity-smoke`, `prompt-source-verifier-git-replacement-graft-smoke`, `prompt-source-verifier-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke`, `prompt-source-verifier-replacement-namespace-smoke`, `prompt-source-verifier-observed-identity-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke` |
 | Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation and accepts a retained non-`ERROR` row after `CLEANUP_FAILED` | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke`, `prompt-verifier-cleanup-retention-smoke` |
-| Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy and source-bound results; invalid memory deferred to C6b-memory | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
+| Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy/source returns `INVALID_INPUT`; malformed or unknown-schema memory returns `INVALID_FAILURE_MEMORY` before composition | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
 | Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, cleanup, pair-finalization, collision ownership, and result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-smoke`, `prompt-evidence-pair-finalization-smoke`, `prompt-evidence-pair-collision-ownership-smoke`, `prompt-adapter-failed-attestation-smoke`, `prompt-trace-overflow-smoke` |
 | Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first source-helper, snapshot, adapter, precheck drift, postcheck, postcheck drift, or result-size failure stops later invocations and retains only the valid prefix or explicit compact envelope | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke`, `prompt-adapter-failed-terminal-smoke`, `prompt-drift-attestation-smoke`, `prompt-trace-overflow-terminal-smoke` |
 | Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode; borrowed verifier inputs are not retained | process outputs cloned while owner lives; helper/tool owners, evaluator-owned result/evidence temp/final owners, and files/checkouts removed; collision destinations are never removed; failed pair finalization performs reverse cleanup or emits its explicit recovery error; empty raw workspace restored; overflow trace stream released | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke`, `prompt-verifier-borrow-lifetime-smoke`, `prompt-source-helper-cleanup-smoke`, `prompt-evidence-pair-cleanup-smoke`, `prompt-evidence-pair-collision-ownership-smoke`, `prompt-trace-overflow-drop-smoke` |
 | Replacement/move-out | source fields are reconstructed or moved once; no aliasing rewrite | `PromptRender` moves to caller as one bare value | accepted/rollback variant embedded unchanged; source not reused; verifier returns only Copy status | rows, snapshots, and independent evidence move into the final result/pair; builder source is consumed once | `prompt-move-compile-smoke`, `prompt-variant-identity-smoke`, `prompt-evidence-move-smoke` |
 | Concurrent/overlap attempt | N/A: pure validation has no shared mutable state | N/A: pure rendering has no shared mutable state | immutable DAG branches are independent; shared output/activation mutation is rejected before side effects | complete experiment/evaluate/accept/rollback 4x4 matrix; no overlapping adapter calls; disjoint independent processes are supported | `prompt-operation-overlap-smoke`, `prompt-no-overlap-smoke`, `prompt-existing-output-smoke`, `prompt-evidence-result-alias-smoke` |
 
+### 10.1d C6b-memory renderer closure
+
+This capability makes the deferred failure-memory section a usable renderer consumer. It does not
+change the C5 event schema, add a second memory format, or consume Request 14/evaluator/activation
+surfaces. The final matrix-to-diff pass must map every row below to the implementation and the
+owner smoke before review.
+
+| Axis | Actual implementation | Passing owner evidence |
+| --- | --- | --- |
+| Public policy and call formation | `prompt_artifacts.ContextPolicy` and `prompt_model.ContextPolicy` contain the same three failure-memory fields; `prompt_model.render` receives `task_id` and `failure_memory_jsonl` before the policy and returns the extended `PromptRenderStatus` | `src/prompt_artifacts.align`, `src/prompt_model.align`, `src/prompt_model_smoke.align`, and `make c6b-memory-adoption` |
+| Policy and source validation order | policy flag/limit mismatches and oversized snapshots return `INVALID_INPUT`; both policy owners bound memory to 64 events and 65,536 bytes, and the renderer source cap is 1,048,576 bytes before JSONL decoding | `make c6b-memory-adoption` invalid-policy, oversized-source, oversized-memory, and limit cases |
+| Complete JSONL validation | `failure_memory.select_context` validates every non-empty line as the private `MemoryEvent` with schema version 1; malformed and unknown-schema lines invalidate the complete source, including when the section is disabled | `prompt-model-smoke` malformed-memory, unknown-schema, and disabled-invalid-memory cases |
+| Backward bounded selection | the selector scans newest-to-oldest by source offsets, matches only `task_id`, skips non-fitting matching lines, counts inter-line separators, stops at the event cap, and emits selected lines chronologically | `prompt-model-smoke` selected-memory, event-cap, and byte-budget cases |
+| Renderer integration and status | `prompt_model.render` delegates selection after ordinary policy/source validation, emits the fixed failure-memory heading, preserves `(omitted)` when disabled, and returns empty text/digest for invalid memory | `prompt-model-smoke` exact rendered text/SHA, disabled-memory, and `INVALID_FAILURE_MEMORY` cases |
+| Ownership and cleanup | the selector owns only bounded offset records and its output builder; the bare `MemoryContext` and `PromptRender` move to the caller with no retained source view or private event value | pinned per-unit/whole-program owner compile and the successful renderer smoke |
+
 ### 10.1c C6a1/C6a2 adoption closure
 
 This capability implements only the declared artifact graph, its canonical codec, and the bounded
-file consumer. The later renderer-memory, verifier, evaluator, and activation cells remain deferred
-to their named C6 owners; this table records the actual closure for the current diff.
+file consumer. The renderer-memory cells are consumed by the C6b-memory closure above; verifier,
+evaluator, and activation cells remain deferred to their named C6 owners.
 
 The candidate is intentionally larger than a small checkpoint because the 50-record graph, its 100
 root codec entry points, and the adoption consumers must land as one synchronized boundary. Splitting
