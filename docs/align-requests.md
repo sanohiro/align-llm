@@ -5472,7 +5472,8 @@ other Copy-payload matches remain green and are not reclassified as owned.
 | Existing surface parity | current `Option<str>`/Copy match and owning Move matches | all existing match/else/try/borrow suites plus the current negative test changed into positive read-only coverage with explicit consuming negatives |
 
 The implementation must add the capability to the appropriate language/ownership source of truth
-and its Japanese mirror before coding, then map every applicable matrix row to focused owner tests.
+and any required language mirror before coding, then map every applicable matrix row to focused owner
+tests.
 The align-llm adoption target must compile and run the smallest fixture above plus a representative
 C6 `PromptEvaluationResult`/`PromptVerifierTrust` read-only verifier fixture, prove the source
 records remain usable after verification, and pass the final C6-LIFECYCLE gate. No application-side
