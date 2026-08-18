@@ -5,9 +5,9 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-18)
 
-- Active branch: `agent/c6b-memory-renderer`, based on `origin/main` at
-  `71482a36eb6c08beaebe5b8ef8a82a30afe8dec3`; this checkpoint carries the C6b-memory renderer
-  consumer and its contract closure.
+- Active branch: `agent/c6-lifecycle`, based on merged `origin/main` at
+  `df8b872d1ed766b5bbca643729bb2dfdb08bde3`; PR #96 carries the C6b-memory renderer consumer
+  and its contract closure.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
 - The register records Request 7, 8, 10, 12, 13, and 15 as `ALIGN_LLM_VERIFIED` after the
@@ -17,6 +17,11 @@ file records durable project state.
   matching events by task and bounded reverse scan, renders them chronologically, and reports
   `INVALID_FAILURE_MEMORY` without changing the valid prompt digest contract. Request 14 remains
   proposed and is not consumed.
+- Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. Its exact-head owner,
+  bounded preflight, inspection-only review, hosted checks, and native x86_64/aarch64 installed
+  profiles passed. The next eligible boundary is the consumer-complete C6-LIFECYCLE wave: decoded
+  evaluation verification plus offline activation and CLI, while evaluator/provider work remains
+  in the named later waves.
 - The managed exact-pin compiler materializes successfully. PR #94's owner wave, hosted checks,
   fresh-focused qualification, and both installed native profiles passed at head
   `954258e24d93300dcdb78f8280de8868cf1ced56`; main push CI run `32111007638` reused that exact
@@ -76,7 +81,10 @@ file records durable project state.
 - C6-LIFECYCLE has completed the Request 7/8/10/12/13/15 adoption wave in PR #94. The next
   consumer-complete capability may consume the C6a1/C6a2 declared artifact graph and canonical
   codec and owns the existing C6b/C6c foundations; it must not use Request 14, which remains
-  proposed. Requests 4–6 are closed with real-client and native installed-profile evidence.
+  proposed. Request 16 is now a proposed, blocking prerequisite for the decoded verifier: the
+  managed compiler must gain borrow-safe inspection of owned sum payloads before that verifier can
+  be implemented without an application workaround or alternate public signature. Requests 4–6
+  are closed with real-client and native installed-profile evidence.
   Request 11 remains merged for the later C6-EVALUATION boundary.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
@@ -219,13 +227,14 @@ file records durable project state.
 
 ## Next actions
 
-1. Finish the C6b-memory candidate with its owner smoke, exact-head preflight, one comprehensive
-   review, and the required fresh capable CI; repair valid findings in one coherent commit.
-2. Publish the reviewed capability, wait for CI, and merge it. Reconcile durable status and the
-   request register after the merge, then start the next eligible C6 consumer-complete boundary.
-3. Keep Request 14 proposed and defer evaluator, activation, Request 11, Request 2, and Request 9
-   claims to their named owners. Preserve ARM compiler builds at one job; native x86_64 keeps
-   Cargo's default parallelism on the qualified 128 GiB owner.
+1. Complete Request 16 in Align, update `.align-revision` to the reviewed Align merge, and pass
+   `c6-borrowed-option-adoption` before implementing the decoded C6-LIFECYCLE verifier.
+2. Implement the C6-LIFECYCLE consumer-complete wave: decoded result/evidence verification, offline
+   accept/rollback activation, and the explicit CLI path. Keep evaluator/provider execution in the
+   named later waves.
+3. Run the focused verifier/state/lifecycle owners, the bounded gate, exact-head review, preflight,
+   capable CI, and merge one coherent capability. Keep Request 14 proposed and defer Request 11,
+   Request 2, and Request 9 claims to their named owners.
 
 ## Recovery and preservation
 

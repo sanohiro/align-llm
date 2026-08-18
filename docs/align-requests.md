@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-18): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, and 15 are ALIGN_LLM_VERIFIED; Requests 2, 9, and 11 remain ALIGN_MERGED; Request 14 remains PROPOSED.** Request 2's timeout adoption, Request 9's C7 adoption, and Request 11's C6-EVALUATION adoption remain pending.
+> **Status (2026-08-18): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, and 15 are ALIGN_LLM_VERIFIED; Requests 2, 9, and 11 remain ALIGN_MERGED; Requests 14 and 16 remain PROPOSED.** Request 2's timeout adoption, Request 9's C7 adoption, and Request 11's C6-EVALUATION adoption remain pending. Request 16 blocks the decoded C6-LIFECYCLE verifier until the Align language can inspect owned optional payloads through a borrow without consuming them.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -5379,6 +5379,120 @@ reviewed head; align-llm later reaches `ALIGN_LLM_VERIFIED` through
   speculation/fallback, and top-level record/AoS decode.
 - Requests 6, 7, and 9 — scanner boundary, first blocked escape-grammar consumer, and the later
   direct-owned JSON route that reuses rather than owns this shipped-route repair.
+
+---
+
+## Request 16 — language: borrow-safe inspection of owned sum payloads
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6-LIFECYCLE decoded `prompt_score.verify_result` and any pure consumer that validates a borrowed recursive owned artifact graph
+Independent work that may continue: C6b rendering, C6c1/C6c1p scoring, design work, and consumers that do not inspect `Option<string>`, `Option<MoveStruct>`, `Result<Move>`, or Move-sum payloads through a shared borrow
+Resume condition: Align merges the reviewed borrow-safe sum-payload capability; align-llm rebuilds the managed compiler/runtime at that exact commit, passes `c6-borrowed-option-adoption`, and reruns the C6-LIFECYCLE owner gate
+Align commit or pull request: pending
+align-llm verification: pending
+```
+
+### Motivation and current-state evidence
+
+C6-LIFECYCLE's pure verifier receives caller-owned decoded records through
+
+```align
+pub fn verify_result(
+  borrow result: PromptEvaluationResult,
+  borrow evidence: PromptEvaluationEvidence,
+) -> Result<PromptScoreStatus, Error>
+```
+
+The declared artifact graph deliberately uses owned `string` fields and owned optional payloads so
+records can outlive their JSON input. The verifier must inspect those values without moving them,
+allocating copies, mutating the records, or retaining a view. Its first ordinary operation is
+therefore a read-only match over fields such as `result.evaluation_id`, followed by matches over
+`Option<PromptScope>`, `Option<WorkspacePreflightRequest>`, and `Option<EvaluationProviderControl>`.
+
+The current compiler rejects the smallest real-client form:
+
+```align
+Item { note: Option<string>, n: i64 }
+
+fn inspect(borrow item: Item) -> i64 {
+  return match item.note {
+    None => 0,
+    Some(value) => value.len(),
+  }
+}
+```
+
+The diagnostic is `cannot move a field out of borrowed parameter 'item'`. The same rejection is
+already pinned by Align's `match_cannot_extract_a_move_payload_from_a_borrowed_parameter` owner for
+direct `Option<string>`, `Result<string, string>`, and a struct field carrying `Option<string>`.
+The failure is not a JSON or application issue: a borrowed `Option<str>` view is supported, but the
+recursive owned graph required for persistence has `Option<string>` and `Option<MoveStruct>`.
+
+### Requested capability and authoritative contract
+
+Extend ordinary pattern matching so that a match whose scrutinee is reachable only through a
+shared or exclusive borrow performs a non-consuming read-only projection of the active payload.
+Preserve the existing syntax and the existing by-value match behavior:
+
+- a borrowed `Option<T>`, `Result<T, E>`, or user sum reads its tag in place and binds each active
+  payload as a caller-owned borrow projection;
+- a nested struct payload remains a borrow projection recursively, so its Copy fields are readable
+  and its owned `string` fields can be passed to `str` consumers without a hidden clone;
+- the projection has the exact source owner/generation region, cannot be returned, stored in a
+  longer-lived value, sent to a task, or retained after the borrowed source ends, and does not
+  receive an independent `Drop` or cleanup bit;
+- attempting to consume the borrowed binding or move the matched payload produces the ordinary
+  borrowed-parameter/borrowed-field diagnostic; an explicit `.clone()` remains the visible way to
+  copy a borrowed text leaf into an owned `string`;
+- matching a free-standing or otherwise owning scrutinee keeps its current move-out, source
+  nulling, conditional Drop, branch/loop join, `else`, and `?` behavior; and
+- no new runtime representation, heap allocation, ABI field, JSON tag, or special application API is
+  added. The compiler may use explicit HIR/MIR projection metadata and a backend pointer/load path,
+  but must not shallow-copy a Move aggregate merely to inspect it.
+
+The capability applies through a borrowed root and its checked struct-field path. It must preserve
+the current no-alias and generation rules for `borrow`/`borrow mut`, imported/per-unit interfaces,
+generic monomorphization, cache identity, and malformed checked-HIR rejection. `Option<str>` and
+other Copy-payload matches remain green and are not reclassified as owned.
+
+### Closure matrix and acceptance
+
+| Axis | Owner | Required evidence |
+| --- | --- | --- |
+| Formation and distinction | `align_sema::check_match`, parameter/field borrow classification, HIR metadata | direct `Option<string>`, `Result<string, string>`, `Option<MoveStruct>`, user-sum Move payload, borrowed root, depth-1 field, and nested field positives; owning/by-value twins retain move semantics |
+| Payload projection | `align_mir` match lowering and projection operands | tag branch reads the original aggregate, active payload binds as a borrowed place, no shallow aggregate copy, no source nulling, and no binding Drop/cleanup bit |
+| Backend lowering | `align_codegen_llvm` borrowed-place/path lowering | exact pointer/load shape for direct and nested struct payloads, with no new runtime helper or ABI field; malformed projection metadata fails closed |
+| Ownership and escape | MoveCheck/EscapeCheck/return-borrow summaries | repeated reads preserve the source, explicit leaf `.clone()` is allowed, whole payload move/return/store/task capture is rejected, source reassignment/drop invalidates views, and branch/loop joins do not retain stale payload generations |
+| Control flow | `match`, `else`, `?`, `if`, loop, early return, and replacement owners | `None`/`Some`, `Ok`/`Err`, wildcard/or-pattern, divergent arms, nested match, loop back-edge, borrowed field replacement, and early-exit cleanup matrix |
+| Aggregate and nested ownership | recursive DropPlan and field/path classifiers | nested `Option<MoveStruct>`, user sums with multiple Move payloads, mixed Copy/Move fields, optional strings, and no double-free/leak at caller exit |
+| Interfaces and cache | interface serialization, checked-HIR replay, MIR fingerprint, per-unit and cache owners | imported direct/generic consumer parity, definition edit/revert invalidation, exact function/match identity, and corrupted projection metadata rejection |
+| Existing surface parity | current `Option<str>`/Copy match and owning Move matches | all existing match/else/try/borrow suites plus the current negative test changed into positive read-only coverage with explicit consuming negatives |
+
+The implementation must add the capability to the appropriate language/ownership source of truth
+and any required language mirror before coding, then map every applicable matrix row to focused owner
+tests.
+The align-llm adoption target must compile and run the smallest fixture above plus a representative
+C6 `PromptEvaluationResult`/`PromptVerifierTrust` read-only verifier fixture, prove the source
+records remain usable after verification, and pass the final C6-LIFECYCLE gate. No application-side
+sentinel, wrapper record, hidden clone, or alternate verifier signature is an acceptable substitute.
+
+### References
+
+- `../align/draft.md` and `../align/docs/language-spec.md` — ownership, `borrow`, `Option`,
+  `Result`, and match semantics.
+- `../align/docs/impl/08-memory-model-v2.md` — borrowed fields, regions, recursive Move cleanup,
+  and source nulling.
+- `../align/docs/impl/17-library-boundary-prerequisites.md` — `Option`/`Result` payload plans,
+  borrow provenance, interface identity, and checked-HIR closure rules.
+- `../align/crates/align_sema/src/lib.rs` — `check_match`, MoveCheck, EscapeCheck, and the existing
+  `match_cannot_extract_a_move_payload_from_a_borrowed_parameter` owner.
+- `../align/crates/align_mir/src/lib.rs` and `../align/crates/align_codegen_llvm/src/lib.rs` —
+  current match payload lowering and borrowed-place ABI.
+- `docs/specs/c6-prompt-context-optimizer.md` §§6, 10, and 11.2 — the C6c2 verifier signature,
+  borrow contract, and acceptance matrix.
 
 ---
 
