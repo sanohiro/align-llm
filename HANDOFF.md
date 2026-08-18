@@ -5,16 +5,15 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-18)
 
-- Active branch: `agent/c6-lifecycle-request13-adoption`, based on `origin/main` at
-  `1ca2ab9`; the current candidate is the C6a1/C6a2 graph-and-codec capability.
-- The register records the Align-side Request 7, Request 9, Request 13, and Request 15 merge
-  responses in `docs/align-requests.md`. Align Request 13 implementation PR #854 merged as
-  `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`; the C6 candidate now pins the later Align #855
-  merge `a440970ac81118ed2169f600b2b3c06fcb9cde7` in `.align-revision`.
-- Align's Request 7 language/runtime implementation (#850), direct owned JSON implementation (#852),
-  recursive owned JSON implementation (#854), and decoded-owner prerequisite (#849) are merged.
-  The managed exact-pin compiler materializes successfully, and the ordered Request 15/7/8/10/12/13
-  adoption wave passes; final capable integration and request status advancement remain pending.
+- Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
+  graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
+- The register records Request 7, 8, 10, 12, 13, and 15 as `ALIGN_LLM_VERIFIED` after the
+  ordered adoption wave and final capable evidence. Request 9 remains independent and Request 11
+  remains pending for the later C6-EVALUATION boundary.
+- The managed exact-pin compiler materializes successfully. PR #94's owner wave, hosted checks,
+  fresh-focused qualification, and both installed native profiles passed at head
+  `954258e24d93300dcdb78f8280de8868cf1ced56`; main push CI run `32111007638` reused that exact
+  evidence on merge commit `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`.
 - Align PR #812 merged the bounded `std.http` response implementation as
   `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. PR #90 pins that exact merge, adopts the shipped
   bounded/chunked provider surface, and closes Requests 4 and 5.
@@ -28,8 +27,9 @@ file records durable project state.
   shipped Request 10 as `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Align PR #800 shipped
   Request 4 as `f04672bce6f8689c9b219d0a20e770571e2d638b`, PR #808 shipped Request 11 as
   `82da9f580cc005fbb78f67af6847c7b4ce6626c4`, and PR #807 shipped Request 12 as
-  `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are `CLOSED`; Requests 8 and 10–12
-  remain `ALIGN_MERGED` for their named consumer capabilities.
+  `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are `CLOSED`; Requests 8, 10, and
+  12 are `ALIGN_LLM_VERIFIED` for the C6 consumer capability, while Request 11 remains
+  `ALIGN_MERGED` for the later C6-EVALUATION boundary.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -66,11 +66,11 @@ file records durable project state.
 - ALIGN-ADOPTION remains an ordered checkpoint inside a consuming capability, not a pin-only pull
   request. The merged bounded provider-response consumer applies the cap, switches real provider
   fixtures to chunked framing, and owns the combined Requests 4/5 acceptance gate.
-- C6-LIFECYCLE is now eligible to adopt Align Requests 7, 8, 9, 10, 12, 13, and 15 in one pin
-  wave. The next consumer-complete capability owns the C6a1/C6a2 declared artifact graph and
-  canonical codec, the existing C6b/C6c foundations, and the named Request 7/13 adoption owners;
-  it must not use Request 14, which remains proposed. Requests 4–6 are closed with real-client and
-  native installed-profile evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
+- C6-LIFECYCLE has completed the Request 7/8/10/12/13/15 adoption wave in PR #94. The next
+  consumer-complete capability may consume the C6a1/C6a2 declared artifact graph and canonical
+  codec and owns the existing C6b/C6c foundations; it must not use Request 14, which remains
+  proposed. Requests 4–6 are closed with real-client and native installed-profile evidence.
+  Request 11 remains merged for the later C6-EVALUATION boundary.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -88,8 +88,9 @@ file records durable project state.
 
 - Align Request 13 implementation PR #854 merged as
   `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`; its required
-  `cargo build --release --workspace` passed. The exact C6a1/C6a2 adoption target and final
-  C6-LIFECYCLE `make ci` remain pending on the new pin.
+  `cargo build --release --workspace` passed. Align-llm PR #94 then passed the exact C6a1/C6a2
+  adoption target and final C6-LIFECYCLE `make ci` at `954258e24d93300dcdb78f8280de8868cf1ced56`,
+  and merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`.
 - Align `cargo build --release --workspace` at #786 final source: PASS.
 - Align focused owner
   `scripts/cargo.sh test -p align_driver --test m5 owned_string_clone_duplicates_locals_and_fields -- --exact`:
