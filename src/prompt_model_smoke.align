@@ -255,8 +255,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     include_failure_memory: true,
     include_diagnostics: false,
     max_patch_evaluation_bytes: 0,
-    max_failure_events: 65,
-    max_failure_context_bytes: 65536,
+    max_failure_events: 1,
+    max_failure_context_bytes: 65537,
     max_diagnostic_bytes_per_stream: 0,
   }
   emit(
@@ -269,6 +269,30 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       "task-memory",
       memory_document(),
       invalid_memory_cap_policy,
+      "",
+      "",
+      "",
+    ),
+  )
+  invalid_memory_event_cap_policy := prompt_model.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: true,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 65,
+    max_failure_context_bytes: 65536,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+  emit(
+    "invalid-memory-event-cap",
+    prompt_model.render(
+      "BASE",
+      "REPO",
+      "TASK",
+      "learned",
+      "task-memory",
+      memory_document(),
+      invalid_memory_event_cap_policy,
       "",
       "",
       "",

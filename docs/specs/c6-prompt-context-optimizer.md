@@ -761,11 +761,12 @@ This intentionally replaces C5's fixed "most recent three" selection only when a
 supplied. Legacy verification tasks without an activation retain their current behavior until the
 real-consumer slice changes that contract.
 
-Policy flag/limit mismatches, policy limits above their declared caps, and oversized non-memory
-source snapshots return `PromptRender` status `INVALID_INPUT` with empty text and digest before
-prompt composition. The renderer validates the complete memory JSONL through
-`failure_memory.select_context`; a malformed line, unknown schema version, or invalid memory
-selection bound returns `INVALID_FAILURE_MEMORY` with empty text and digest.
+Policy flag/limit mismatches, policy limits above their declared caps, and oversized source
+snapshots return `PromptRender` status `INVALID_INPUT` with empty text and digest before prompt
+composition. The renderer validates the complete memory JSONL through
+`failure_memory.select_context`; a malformed line or unknown schema version returns
+`INVALID_FAILURE_MEMORY` with empty text and digest. The selector itself returns `valid: false` for
+an invalid bound, while the renderer rejects that bound as an invalid policy before delegation.
 
 `failure_memory.align` continues to own its private `MemoryEvent` schema and exposes:
 
@@ -3014,8 +3015,8 @@ owner smoke before review.
 
 | Axis | Actual implementation | Passing owner evidence |
 | --- | --- | --- |
-| Public policy and call formation | `prompt_model.ContextPolicy` contains the three failure-memory fields; `prompt_model.render` receives `task_id` and `failure_memory_jsonl` before the policy and returns the extended `PromptRenderStatus` | `src/prompt_model.align`, `src/prompt_model_smoke.align`, pinned owner compile through `scripts/run-prompt-model-smoke` |
-| Policy and source validation order | policy flag/limit mismatches and oversized snapshots return `INVALID_INPUT`; memory limits are bounded to 64 events and 65,536 bytes, and the source cap is 1,048,576 bytes before JSONL decoding | `prompt-model-smoke` invalid-policy, oversized-source, oversized-memory, and limit cases |
+| Public policy and call formation | `prompt_artifacts.ContextPolicy` and `prompt_model.ContextPolicy` contain the same three failure-memory fields; `prompt_model.render` receives `task_id` and `failure_memory_jsonl` before the policy and returns the extended `PromptRenderStatus` | `src/prompt_artifacts.align`, `src/prompt_model.align`, `src/prompt_model_smoke.align`, and `make c6b-memory-adoption` |
+| Policy and source validation order | policy flag/limit mismatches and oversized snapshots return `INVALID_INPUT`; both policy owners bound memory to 64 events and 65,536 bytes, and the renderer source cap is 1,048,576 bytes before JSONL decoding | `make c6b-memory-adoption` invalid-policy, oversized-source, oversized-memory, and limit cases |
 | Complete JSONL validation | `failure_memory.select_context` validates every non-empty line as the private `MemoryEvent` with schema version 1; malformed and unknown-schema lines invalidate the complete source, including when the section is disabled | `prompt-model-smoke` malformed-memory, unknown-schema, and disabled-invalid-memory cases |
 | Backward bounded selection | the selector scans newest-to-oldest by source offsets, matches only `task_id`, skips non-fitting matching lines, counts inter-line separators, stops at the event cap, and emits selected lines chronologically | `prompt-model-smoke` selected-memory, event-cap, and byte-budget cases |
 | Renderer integration and status | `prompt_model.render` delegates selection after ordinary policy/source validation, emits the fixed failure-memory heading, preserves `(omitted)` when disabled, and returns empty text/digest for invalid memory | `prompt-model-smoke` exact rendered text/SHA, disabled-memory, and `INVALID_FAILURE_MEMORY` cases |

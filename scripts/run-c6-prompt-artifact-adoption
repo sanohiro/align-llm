@@ -98,7 +98,11 @@ cmp "${variant_output}" "${variant_fixture}"
 unknown_variant="${temporary_dir}/unknown-variant.json"
 invalid_variant="${temporary_dir}/invalid-variant.json"
 oversized_variant="${temporary_dir}/oversized-variant.json"
-python3 - "${variant_fixture}" "${unknown_variant}" "${invalid_variant}" "${oversized_variant}" <<'PY'
+invalid_memory_policy_variant="${temporary_dir}/invalid-memory-policy-variant.json"
+oversized_memory_context_variant="${temporary_dir}/oversized-memory-context-variant.json"
+python3 - "${variant_fixture}" "${unknown_variant}" "${invalid_variant}" "${oversized_variant}" \
+  "${invalid_memory_policy_variant}" "${oversized_memory_context_variant}" <<'PY'
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -111,10 +115,29 @@ oversized = {
     "artifact_kind": "PROMPT_VARIANT",
     "unknown_field": "x" * 2097152,
 }
+def with_context_policy(context_policy):
+    candidate = dict(value)
+    candidate["context_policy"] = context_policy
+    candidate["content_sha256"] = ""
+    canonical = json.dumps(candidate, separators=(",", ":"), ensure_ascii=False)
+    candidate["content_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return candidate
+
+invalid_memory_policy = dict(value["context_policy"])
+invalid_memory_policy["include_failure_memory"] = True
+invalid_memory_policy["max_failure_events"] = 0
+invalid_memory_policy["max_failure_context_bytes"] = 32
+oversized_memory_context = dict(value["context_policy"])
+oversized_memory_context["include_failure_memory"] = True
+oversized_memory_context["max_failure_events"] = 1
+oversized_memory_context["max_failure_context_bytes"] = 65537
+
 for path, payload in (
     (sys.argv[2], unknown),
     (sys.argv[3], {**value, "content_sha256": "0" * 64}),
     (sys.argv[4], oversized),
+    (sys.argv[5], with_context_policy(invalid_memory_policy)),
+    (sys.argv[6], with_context_policy(oversized_memory_context)),
 ):
     Path(path).write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
@@ -130,6 +153,16 @@ fi
 if "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${oversized_variant}" \
   >"${temporary_dir}/oversized-output" 2>"${temporary_dir}/oversized-error"; then
   echo "oversized artifact was accepted" >&2
+  exit 1
+fi
+if "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${invalid_memory_policy_variant}" \
+  >"${temporary_dir}/invalid-memory-policy-output" 2>"${temporary_dir}/invalid-memory-policy-error"; then
+  echo "invalid failure-memory policy was accepted" >&2
+  exit 1
+fi
+if "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${oversized_memory_context_variant}" \
+  >"${temporary_dir}/oversized-memory-context-output" 2>"${temporary_dir}/oversized-memory-context-error"; then
+  echo "oversized failure-memory context policy was accepted" >&2
   exit 1
 fi
 

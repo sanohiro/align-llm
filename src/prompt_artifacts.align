@@ -785,10 +785,13 @@ fn valid_context_policy(value: ContextPolicy) -> bool {
   if !valid_section_limit(value.include_patch_evaluation, value.max_patch_evaluation_bytes, 65536) {
     return false
   }
-  if !valid_section_limit(value.include_failure_memory, value.max_failure_context_bytes, 1048576) {
+  if !valid_section_limit(value.include_failure_memory, value.max_failure_context_bytes, 65536) {
     return false
   }
   if value.max_failure_events < 0 || value.max_failure_events > 64 {
+    return false
+  }
+  if value.include_failure_memory && value.max_failure_events <= 0 {
     return false
   }
   if !value.include_failure_memory && value.max_failure_events != 0 {

@@ -25,6 +25,7 @@ expected_names = [
     "invalid-policy",
     "invalid-memory-policy",
     "invalid-memory-cap",
+    "invalid-memory-event-cap",
     "invalid-memory-disabled-policy",
     "invalid-memory",
     "unknown-memory-schema",
@@ -244,6 +245,7 @@ expected = [
     {"case_name": "invalid-policy", "status": "INVALID_INPUT", "text": "", "sha256": ""},
     {"case_name": "invalid-memory-policy", "status": "INVALID_INPUT", "text": "", "sha256": ""},
     {"case_name": "invalid-memory-cap", "status": "INVALID_INPUT", "text": "", "sha256": ""},
+    {"case_name": "invalid-memory-event-cap", "status": "INVALID_INPUT", "text": "", "sha256": ""},
     {
         "case_name": "invalid-memory-disabled-policy",
         "status": "INVALID_INPUT",
