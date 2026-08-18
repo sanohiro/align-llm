@@ -1,0 +1,24 @@
+module prompt_artifacts_smoke
+
+import prompt_artifacts
+
+fn sample() -> string {
+  source := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_VARIANT\",\"variant_id\":\"candidate\",\"base_prompt\":{\"schema_version\":1,\"artifact_kind\":\"BASE_PROMPT\",\"artifact_id\":\"base\",\"text\":\"line\\nquote\\\"\",\"content_sha256\":\"83c4b62b0684e4ba8309917dd67188d099eb89bd6f90e6fe995e5edefb646168\"},\"repo_prompt\":{\"schema_version\":1,\"artifact_kind\":\"REPO_PROMPT\",\"artifact_id\":\"repo\",\"text\":\"repo\",\"content_sha256\":\"78891f5e8651efee2676d77c1a469cebbdef2ac36eb967fef88dd95d5e280738\"},\"learned_prompt_append\":\"learned\",\"context_policy\":{\"include_patch_evaluation\":true,\"include_failure_memory\":false,\"include_diagnostics\":true,\"max_patch_evaluation_bytes\":32,\"max_failure_events\":0,\"max_failure_context_bytes\":0,\"max_diagnostic_bytes_per_stream\":64},\"candidate_id\":\"candidate\",\"content_sha256\":\"e5b5e565fddfc18c9da1256d0909cd5257854f7fa0b0d2fdfba057e8708b4eef\"}"
+  view: str := source
+  decoded := prompt_artifacts.decode_prompt_variant(view) else {
+    return "decode-error".clone()
+  }
+  if !prompt_artifacts.verify_prompt_variant_content(decoded) {
+    return "verify-error".clone()
+  }
+  return prompt_artifacts.encode_prompt_variant(decoded)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+  output := sample()
+  print(output)
+  return Ok(())
+}

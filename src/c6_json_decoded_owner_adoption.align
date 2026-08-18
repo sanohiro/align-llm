@@ -1,0 +1,34 @@
+module c6_json_decoded_owner_adoption
+
+import core.json
+
+OwnerText { text: string }
+OwnerEnvelope { inner: Option<OwnerText>, required: i64, tail: string }
+
+fn decode(value: str) -> Result<OwnerEnvelope, Error> {
+  decoded: OwnerEnvelope := json.decode(value)?
+  return Ok(decoded)
+}
+
+fn observe(value: str) -> string {
+  decoded := decode(value) else {
+    return "ERROR".clone()
+  }
+  match decoded.inner {
+    Some(inner) => { return inner.text },
+    None => { return "NONE".clone() },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+  print(observe("{\"inner\":null,\"required\":1,\"tail\":\"none\"}"))
+  print(observe("{\"required\":1,\"tail\":\"missing\"}"))
+  print(observe("{\"inner\":{\"text\":\"live\\nquote\\\"\"},\"required\":1,\"tail\":\"ok\"}"))
+  print(observe("{\"inner\":{\"text\":\"live\"},\"required\":\"bad\",\"tail\":\"later\"}"))
+  print(observe("{\"inner\":{\"text\":\"live\"},\"required\":1,\"tail\":\"ok\"}trailing"))
+  print(observe("{\"inner\":{\"text\":\"live\"},\"required\":1,\"required\":2,\"tail\":\"duplicate\"}"))
+  return Ok(())
+}

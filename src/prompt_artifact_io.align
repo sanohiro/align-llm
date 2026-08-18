@@ -1,0 +1,45 @@
+module prompt_artifact_io
+
+import prompt_artifacts
+import std.fs
+
+ARTIFACT_MAX_BYTES := 2097152
+
+fn read_bounded(path: str, maximum: i64) -> Result<string, Error> {
+  if maximum <= 0 {
+    return Err(Error.Invalid)
+  }
+  reader := fs.open(path)?
+  // One extra byte is the probe: a full buffer is not itself an overflow until the probe byte is
+  // observed. The decoder never sees input above the declared artifact cap.
+  mut bytes := buffer(maximum + 1)
+  count := reader.read(bytes)?
+  if count > maximum {
+    return Err(Error.Invalid)
+  }
+  if count == maximum {
+    mut probe := buffer(1)
+    probe_count := reader.read(probe)?
+    if probe_count > 0 {
+      return Err(Error.Invalid)
+    }
+  }
+  return Ok(bytes.bytes().as_str()?.clone())
+}
+
+pub fn load_prompt_variant(path: str) -> Result<prompt_artifacts.PromptVariant, Error> {
+  source := read_bounded(path, ARTIFACT_MAX_BYTES)?
+  view: str := source
+  decoded := prompt_artifacts.decode_prompt_variant(view)?
+  if !prompt_artifacts.verify_prompt_variant_content(decoded) {
+    return Err(Error.Invalid)
+  }
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_variant(value: prompt_artifacts.PromptVariant) -> Result<string, Error> {
+  if !prompt_artifacts.verify_prompt_variant_content(value) {
+    return Err(Error.Invalid)
+  }
+  return Ok(prompt_artifacts.encode_prompt_variant_bounded(value, ARTIFACT_MAX_BYTES)?)
+}

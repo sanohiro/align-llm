@@ -1,0 +1,18 @@
+module c6c2_request8_adoption
+
+BuilderRecord { ordinal: i64, label: string }
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+  mut records: array_builder<BuilderRecord> := array_builder()
+  records.push(BuilderRecord { ordinal: 1, label: "first".clone() })
+  records.push(BuilderRecord { ordinal: 2, label: "second".clone() })
+  records.push(BuilderRecord { ordinal: 3, label: "third".clone() })
+  built := records.build()
+  print(built.len())
+  print(built[0].ordinal)
+  print(built[2].label)
+  return Ok(())
+}

@@ -1,0 +1,36 @@
+module c6c2_request10_adoption
+
+RecursiveInner { note: string }
+RecursiveRecord { ordinal: i64, inner: Option<RecursiveInner>, values: array<i64>, value_count: i64 }
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+  mut records: array_builder<RecursiveRecord> := array_builder()
+  empty_values := [0][0..0].to_array()
+  records.push(RecursiveRecord {
+      ordinal: 1,
+      inner: Some(RecursiveInner { note: "nested".clone() }),
+      values: [10, 20].to_array(),
+      value_count: 2,
+    })
+  records.push(RecursiveRecord {
+      ordinal: 2,
+      inner: None,
+      values: empty_values,
+      value_count: 0,
+    })
+  records.push(RecursiveRecord {
+      ordinal: 3,
+      inner: Some(RecursiveInner { note: "reallocated".clone() }),
+      values: [30, 40, 50].to_array(),
+      value_count: 3,
+    })
+  built := records.build()
+  print(built.len())
+  print(built[0].value_count)
+  print(built[1].value_count)
+  print(built[2].value_count)
+  return Ok(())
+}

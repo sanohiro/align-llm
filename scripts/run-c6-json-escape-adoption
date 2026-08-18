@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+fixture="${project_root}/eval/fixtures/c6-prompt-artifacts/prompt-variant.json"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+"${compiler}" run "${project_root}/src/c6_json_escape_adoption.align" "${fixture}" >"${output_file}"
+cmp "${output_file}" "${fixture}"
+echo "c6 json escaped owned artifact adoption: PASS"

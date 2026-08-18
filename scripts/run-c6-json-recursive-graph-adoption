@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+"${compiler}" run "${project_root}/src/c6_json_recursive_graph_adoption.align" >"${output_file}"
+
+python3 - "${output_file}" <<'PY'
+import sys
+from pathlib import Path
+
+actual = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+expected = ["0", "0", "1", "2", "1", "1"]
+if actual != expected:
+    raise SystemExit(f"recursive graph adoption mismatch: {actual!r}")
+print("c6 json nested Option and record-array adoption: PASS")
+PY
