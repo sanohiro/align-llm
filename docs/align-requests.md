@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-18): Requests 1, 3–6 are CLOSED; Requests 2, 7–13, and 15 are ALIGN_MERGED; Request 14 remains PROPOSED.** Requests 7, 9, and 13 have shipped their Align language/runtime implementations; their align-llm adoption gates remain pending.
+> **Status (2026-08-18): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, and 15 are ALIGN_LLM_VERIFIED; Requests 2, 9, and 11 remain ALIGN_MERGED; Request 14 remains PROPOSED.** Request 2's timeout adoption, Request 9's C7 adoption, and Request 11's C6-EVALUATION adoption remain pending.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -2579,9 +2579,8 @@ or a second persisted format. The canonical fixture and closure matrix are owned
 `bench/json_escape/fixtures/canonical.json` and `docs/impl/core-design/json.md`.
 
 The Align-side release build completed on merged `main` with exactly
-`cargo build --release --workspace`. Request 7 remains pending only for the sibling repository's
-exact pin/adoption target and final `make ci`; those steps own advancement to
-`ALIGN_LLM_VERIFIED` and `CLOSED`.
+`cargo build --release --workspace`. Align-llm PR #94 then passed Request 7's exact pin/adoption
+target and final capable `make ci`; the register now records Request 7 as `ALIGN_LLM_VERIFIED`.
 
 ### Align benchmark-evidence implementation progress (2026-08-16)
 

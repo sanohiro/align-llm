@@ -5,6 +5,9 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-18)
 
+- Active branch: `agent/c6-register-adoption-verified`, based on merged `origin/main` at
+  `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`; this checkpoint carries the post-merge lifecycle
+  register and HANDOFF reconciliation.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
 - The register records Request 7, 8, 10, 12, 13, and 15 as `ALIGN_LLM_VERIFIED` after the
@@ -208,12 +211,14 @@ file records durable project state.
 
 ## Next actions
 
-1. Finish the current candidate's formatter, hosted checks, closure-matrix pass, and exact-head
-   preflight; then perform one comprehensive review and repair any valid findings in one commit.
-2. Publish the reviewed candidate, wait for CI, and merge it before starting the next C6 consumer
-   capability. The graph/codec PR does not claim evaluator, activation, or Request 14 behavior.
-3. After the merge, run the final capable `make ci` against the same pin and integration head, then
-   advance only the adoption requests whose original acceptance targets and final C6 gate pass.
+1. Refresh `origin/main` after this status checkpoint and start the next eligible C6 consumer-complete
+   capability. It may consume the shipped C6a1/C6a2 graph and codec; keep Request 14 proposed and
+   defer evaluator, activation, Request 11, Request 2, and Request 9 claims to their named owners.
+2. For that capability, run its ordered owner checks, exact-head preflight, one comprehensive review,
+   and the required fresh capable CI before publishing; repair any valid review findings in one
+   coherent commit.
+3. Publish the reviewed capability, wait for CI, merge it, and advance only adoption requests whose
+   original acceptance targets and final capability gate pass.
 4. Keep Request 14 proposed. Preserve ARM compiler builds at one job; native x86_64 keeps Cargo's
    default parallelism on the qualified 128 GiB owner.
 
