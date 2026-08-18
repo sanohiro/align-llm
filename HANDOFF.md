@@ -3,23 +3,18 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-16)
+## Active checkpoint (2026-08-18)
 
-- Branch `agent/refresh-request7-prerequisites` is based directly on `main` at
-  `8c14494e9dbfdd4e1e587818b0e49543931e5867`, the merge commit for align-llm PR #91. This docs-only
-  checkpoint reconciles the locally recorded Request 7 evidence progress with the current request
-  register; it does not change source, fixtures, automation, or `.align-revision`.
-- In the sibling Align repository, Request 7's benchmark-evidence design and implementation
-  prerequisites through PR #838 are merged at `62acdd892c5d3c40dbe316cf8597fb40c14cbba9`.
-  Benchmark-input isolation, manifest and canonical JSON primitives, the typed report and SSHSIG
-  formats, CLI and Git boundaries, source materialization, profile/container/image/host validation,
-  prepared benchmarks, monitor lifecycle, and prepared execution owners are shipped. The remaining
-  implementation work is the adversarial schedule/process/cleanup/race owner set followed by the
-  controller/verifier/merge-verifier execution boundary. Before selecting `BASE`, the trusted host
-  still requires private-key provisioning, independent image/cache/toolchain/profile verification,
-  and native x86_64 self-qualification; performance measurement and merge verification follow at
-  their named gates. Decoded-owner Request 15 and Request 7's language design and implementation
-  remain unshipped; PR #813 defines only the evidence boundary, so Request 7 remains `PROPOSED`.
+- Active branch: `agent/record-align-request13-merge`; the reviewed register/HANDOFF checkpoint is
+  commit `19bde3e3cc538e499dd3138a3ef6e181d4812464`.
+- This branch records the Align-side Request 7, Request 9, Request 13, and Request 15 merge
+  responses in `docs/align-requests.md`. Align Request 13 implementation PR #854 merged as
+  `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`; the working `.align-revision` remains
+  `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad` until the C6-LIFECYCLE pin wave.
+- Align's Request 7 language/runtime implementation (#850), direct owned JSON implementation (#852),
+  recursive owned JSON implementation (#854), and decoded-owner prerequisite (#849) are merged.
+  The Request 7 and Request 13 focused adoption gates remain pending; no C6 product code may use
+  the new surface before the pin wave and named owners pass.
 - Align PR #812 merged the bounded `std.http` response implementation as
   `5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. PR #90 pins that exact merge, adopts the shipped
   bounded/chunked provider surface, and closes Requests 4 and 5.
@@ -71,12 +66,11 @@ file records durable project state.
 - ALIGN-ADOPTION remains an ordered checkpoint inside a consuming capability, not a pin-only pull
   request. The merged bounded provider-response consumer applies the cap, switches real provider
   fixtures to chunked framing, and owns the combined Requests 4/5 acceptance gate.
-- C6-LIFECYCLE remains blocked from product implementation on Align Requests 7 and 13 and on the
-  consumer adoption of merged Requests 8, 10, and 12. Requests 7 and 13 remain `PROPOSED`; do not
-  consume or imitate those APIs. Request 7's merged evidence design is a prerequisite only; its
-  checked-in canonical fixture/hash and exact arena-passing ABI still require an authoritative
-  Align language design before acceptance. Requests 4–6 are closed with real-client and native
-  installed-profile evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
+- C6-LIFECYCLE is now eligible to adopt Align Requests 7, 8, 9, 10, 12, 13, and 15 in one pin
+  wave. The next consumer-complete capability owns the C6a1/C6a2 declared artifact graph and
+  canonical codec, the existing C6b/C6c foundations, and the named Request 7/13 adoption owners;
+  it must not use Request 14, which remains proposed. Requests 4–6 are closed with real-client and
+  native installed-profile evidence. Request 11 remains merged for the later C6-EVALUATION boundary.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -92,6 +86,10 @@ file records durable project state.
 
 ## Latest durable verification
 
+- Align Request 13 implementation PR #854 merged as
+  `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`; its required
+  `cargo build --release --workspace` passed. The exact C6a1/C6a2 adoption target and final
+  C6-LIFECYCLE `make ci` remain pending on the new pin.
 - Align `cargo build --release --workspace` at #786 final source: PASS.
 - Align focused owner
   `scripts/cargo.sh test -p align_driver --test m5 owned_string_clone_duplicates_locals_and_fields -- --exact`:
@@ -209,16 +207,18 @@ file records durable project state.
 
 ## Next actions
 
-1. Continue the sibling Align `agent/request7-adversarial-owners` capability from merged PR #838,
-   then complete the installed controller/verifier/merge-verifier execution boundary from the
-   settled Request 7 benchmark-evidence ledger.
-2. Provision the trusted host private key, independently verify the image, cache, toolchain, and
-   profile, and pass native x86_64 host self-qualification before selecting `BASE`.
-3. Design and ship decoded-owner Request 15, then complete Request 7's language-design acceptance
-   before selecting the immutable pre-work baseline or starting its language implementation.
-4. Resume C6-LIFECYCLE only after Requests 7 and 13 reach `ALIGN_MERGED`; batch the already merged
-   Requests 8, 10, and 12 into its named real-client adoption checkpoints. Preserve ARM compiler
-   builds at one job; native x86_64 keeps Cargo's default parallelism on the qualified 128 GiB owner.
+1. Merge this register/HANDOFF reconciliation without staging the preserved `io_copy`.
+2. On the next capability branch, update `.align-revision` to
+   `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`, materialize the managed release compiler, and
+   implement the settled C6a1/C6a2 declared artifact graph and canonical codec.
+3. On that same branch, run the ordered adoption owners before consuming the surface: Request 15's
+   `c6-json-decoded-owner-adoption`; Request 7's `c6-json-escape-adoption`; Request 8's and
+   Request 10's `c6c2-request8-adoption` and `c6c2-request10-adoption`; Request 12's exact-cap,
+   overflow, malformed-record, and cleanup adoption target; and Request 13's focused C6a1/C6a2
+   owned-graph target. Only after those pass, run one final `make ci` on the exact pin before
+   advancing any request to `ALIGN_LLM_VERIFIED`.
+4. Keep Request 14 proposed. Preserve ARM compiler builds at one job; native x86_64 keeps Cargo's
+   default parallelism on the qualified 128 GiB owner.
 
 ## Recovery and preservation
 

@@ -114,12 +114,10 @@ The first consumer depends on these exact conditions:
 | Align memory-model update required by Request 9 | Merged with Request 9 or an explicitly named prerequisite commit | The decoder may materialize a free-standing owned record inside the helper scope and return it after the input owner expires. |
 | `.align-revision` and fresh compiler topology | Updated only after the common topology design/implementation prerequisites, then verified through `make ci` | No C7 implementation or adoption evidence may use an unpinned newer sibling checkout. |
 
-Request 9 remains `PROPOSED` and is already `Blocking: yes` in its register entry. The lifecycle
-transition from `Blocking: no` to `Blocking: yes` was recorded with this design and the synchronized
-Request 9 metadata; it names C7-PersistedResult implementation/adoption as the blocked consumer
-while leaving independent platform work available. Request 9 is therefore a current blocker for
-the product capability, not for maintaining this design. No compatibility layer or hypothetical
-API is permitted.
+Request 9 is `ALIGN_MERGED` at Align PR #852 (`2bb93a93a2f30da1daabd5b65d83863dab617560`), and
+its managed pin and C7 adoption fixture remain pending. It is the current blocking prerequisite for
+C7-PersistedResult implementation/adoption while independent platform work remains available. No
+compatibility layer or hypothetical API is permitted.
 
 ### 2.3 Source-of-truth ledger
 

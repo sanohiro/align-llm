@@ -272,10 +272,10 @@ The first planned C7 consumer is the `C7-PersistedResult` slice: retain a declar
 result after its input document and borrowed views have expired, then verify the persisted value
 through the algorithm-testing gate. This is a named roadmap slice, not an implementation contract;
 its own design must define the persisted artifact schema, validation boundary, and adoption test
-before implementation starts. It may depend on Align Request 9 only after that request reaches
-`ALIGN_MERGED` at a named Align commit and the consumer design explicitly names the accepted owned
-record shapes. Until that design gate is complete, Request 9 remains a non-blocking prerequisite and
-C6 work remains independent.
+before implementation starts. Align Request 9 is now `ALIGN_MERGED` at named commit
+`2bb93a93a2f30da1daabd5b65d83863dab617560`, and the consumer design explicitly names the accepted
+owned record shapes. Its managed pin and C7 adoption target remain a blocking prerequisite for the
+consumer; C6 work remains independent.
 
 ### Gate
 

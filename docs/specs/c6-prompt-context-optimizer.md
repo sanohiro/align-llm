@@ -57,10 +57,11 @@ hypothetical API part of C6:
    including nested records and options. This blocks C6a and the JSON-dependent C6 product cells.
    The merged C6b renderer core deliberately does not decode failure-memory JSONL, so it remains a
    valid foundation while the consumer is blocked. Escape-free fixtures, `json.doc`, and an application-specific base64
-   wire format are not substitutes for the declared-record round trip. Request 7 is already
-   registered and remains `PROPOSED` until its recorded benchmark and decoded-owner prerequisites
-   are satisfied. C6c2 does not bypass this request: its pure verifier consumes only records that
-   C6a1/C6a2 have already decoded and content-validated, and its implementation has no JSON reader.
+   wire format are not substitutes for the declared-record round trip. Request 7 is `ALIGN_MERGED`
+   at Align PR #850 (`18301b43d6256349f984e4aaf62e975bf4f42aa0`); its recorded
+   `c6-json-escape-adoption` target remains pending in the C6-LIFECYCLE pin wave. C6c2 does not
+   bypass this request: its pure verifier consumes only records that C6a1/C6a2 have already decoded
+   and content-validated, and its implementation has no JSON reader.
 4. **Request 8 — runtime construction of evaluator record arrays.** The pinned `array_builder<T>`
    accepts only scalar elements and owned `string`, while C6f2 must construct runtime-sized arrays
    of declared records such as snapshot requests, task rows, aggregates, and regression reasons.
@@ -3081,7 +3082,7 @@ review rather than helper-only pull requests.
    consumer in one pin wave, then complete C6a1/C6a2 artifact declarations and codecs, C6b artifact
    binding and failure-memory selection, C6c2 verification using the merged C6c1/C6c1p surface,
    and C6d1/C6d2 activation and CLI.
-   Requests 7, 8, 10, 12, and 13 retain their individual lifecycle and acceptance evidence. The
+   Requests 7, 8, 10, 12, 13, and 15 retain their individual lifecycle and acceptance evidence. The
    capability is not complete until a deterministic caller can load a candidate from declared
    inputs, render and score it, validate its result, persist it, accept it, and roll it back. The
    already merged C6b renderer, C6c1 scorer, and C6c1p prefix validator are foundations consumed
