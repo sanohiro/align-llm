@@ -5,6 +5,8 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-18)
 
+- Active branch: `agent/record-align-request13-merge`; the reviewed register/HANDOFF checkpoint is
+  commit `19bde3e3cc538e499dd3138a3ef6e181d4812464`.
 - This branch records the Align-side Request 7, Request 9, Request 13, and Request 15 merge
   responses in `docs/align-requests.md`. Align Request 13 implementation PR #854 merged as
   `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`; the working `.align-revision` remains
@@ -209,8 +211,12 @@ file records durable project state.
 2. On the next capability branch, update `.align-revision` to
    `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`, materialize the managed release compiler, and
    implement the settled C6a1/C6a2 declared artifact graph and canonical codec.
-3. Add the named Request 7 and Request 13 adoption owners, then run the focused owners and one
-   final `make ci` on the exact pin before advancing any request to `ALIGN_LLM_VERIFIED`.
+3. On that same branch, run the ordered adoption owners before consuming the surface: Request 15's
+   `c6-json-decoded-owner-adoption`; Request 7's `c6-json-escape-adoption`; Request 8's and
+   Request 10's `c6c2-request8-adoption` and `c6c2-request10-adoption`; Request 12's exact-cap,
+   overflow, malformed-record, and cleanup adoption target; and Request 13's focused C6a1/C6a2
+   owned-graph target. Only after those pass, run one final `make ci` on the exact pin before
+   advancing any request to `ALIGN_LLM_VERIFIED`.
 4. Keep Request 14 proposed. Preserve ARM compiler builds at one job; native x86_64 keeps Cargo's
    default parallelism on the qualified 128 GiB owner.
 

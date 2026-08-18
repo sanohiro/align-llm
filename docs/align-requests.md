@@ -2692,10 +2692,12 @@ Verified at the pinned Align commit `d9fb5da2b73f6ea649bf17ed9237069ca4baf06e` o
 - The same authoritative JSON design records a shared strictness gap: typed decode and `json.doc`
   currently accept unescaped C0 bytes, and strict RFC 8259 string parsing must change both paths
   together. Typed unknown-value skipping can also bypass semantic string decoding.
-- `json.decode` to SoA already receives an explicit arena; top-level/field union decode has no arena
-  parameter; and `json.scan` reuses typed row parsing through an input view with no retained
-  storage. Request 6 exclusively owns the scanner row-eligibility defect and proposes a recursively
-  Copy boundary. Request 7 neither widens nor duplicates that ownership contract.
+- `json.decode` to SoA already receives an explicit arena; before PR #850, top-level/field union
+  decode had no arena parameter. The merged implementation adds the nullable arena operand to the
+  record, AoS, and union entrypoints; `json.scan` still reuses typed row parsing through an input
+  view with no retained storage. Request 6 exclusively owns the scanner row-eligibility defect and
+  proposes a recursively Copy boundary. Request 7 neither widens nor duplicates that ownership
+  contract.
 - The pinned surface admits `Option<Move record>`. Sema recursively admits the shape, the
   authoritative JSON design records it, and
   `m5.rs::json_option_move_struct_payload_remains_admitted` successfully produces
@@ -2742,7 +2744,7 @@ Public-path closure is explicit:
 | `json.decode` to a record or top-level/field `array<Struct>` | Inside an arena, materialize declared `str`, nested, option, scalar-string-array, and record-array values as specified below; outside, a returned value needing unescape is the existing JSON parse error `Error.Code(1)` | Strict for every key/value, including ignored values, on slow and speculative paths |
 | `json.decode` to `soa<Struct>` | Supported because SoA already requires an arena; clean column elements borrow the input and escaped elements materialize once in that arena | Same strict grammar and errors as record decode |
 | `json.doc` | Existing behavior retained: clean views borrow input; an escaped `as_str()` or `key(i)` result materializes once in the doc arena | Same strict grammar as typed decode |
-| Top-level or field shape-directed union with a direct or transitively reachable `str` payload | N/A for materialization: no C6 consumer requires it and the current no-arena union ABI remains; a selected escaped view returns `Error.Code(1)`, including through object/array payload records or a union nested in an arena-backed record | Strict grammar still applies to the complete union input and ignored object members |
+| Top-level or field shape-directed union with a direct or transitively reachable `str` payload | Inside an enclosing arena, clean selected views borrow the input and escaped selected fields materialize once in that arena; outside an arena, a selected escaped view returns `Error.Code(1)`. The same rule applies through object/array payload records and a union nested in an arena-backed record | Strict grammar still applies to the complete union input and ignored object members |
 | `json.scan` | Row ownership and eligibility are N/A to Request 7 and remain exclusively owned by Request 6. For a row admitted by Request 6's recursively Copy boundary, materialization is also N/A: the scanner owns no arena or stable scratch beyond one row. Any escaped declared view makes the fused terminal return `Error.Code(1)`, including an unprojected, nested, optional, or union-reachable non-owning field | Request 7 applies strict grammar to every key/value in each admitted Copy row under both top-level-array and NDJSON framing |
 | Top-level `str` or `array<str>` decode | N/A: both targets remain rejected by the current semantic surface and this request does not add them | No runtime path exists until a separate consumer requests those target types |
 
@@ -2756,10 +2758,11 @@ Required semantics:
   `str` value that needs retained unescaping returns `Error.Code(1)`. Decoded-owner Request 15 must
   already guarantee that any owner made live by an earlier field is released and
   no partially initialized value is returned;
-- on the materializing record/AoS/SoA paths inside an arena, clean strings remain zero-copy input
-  views and escaped strings materialize only their decoded UTF-8 bytes in the arena. The matrix's
-  union and scanner paths remain `Error.Code(1)` for a recursively reachable escaped declared view
-  even when a union is nested in an arena-backed outer record;
+- on the materializing record/AoS/SoA/union paths inside an arena, clean strings remain zero-copy
+  input views and escaped strings materialize only their decoded UTF-8 bytes in the arena. The
+  scanner path remains `Error.Code(1)` for a recursively reachable escaped declared view; a
+  union path follows the same arena-versus-no-arena rule even when nested in an arena-backed outer
+  record;
 - a materialized decoded field's region is the meet of every storage region it may view, so the
   enclosing record, nested record, option, array spine, and `array<str>` elements cannot escape
   either the input owner or arena;
@@ -2901,7 +2904,7 @@ The implementation closure ledger for the future Align design is:
 | Union and scanner non-materialization, including ignored and malformed string tokens inside valid scanner frames | `align_rt_json_decode_union` and `align_rt_json_scan_next`; Request 6 separately owns scanner row eligibility and scanner framing is unchanged | `json_escape_nonmaterializing_paths` |
 | `json.doc` parse, lookup, `as_str`, `key`, malformed input, and arena cleanup | `align_rt_json_doc_parse`, `json_unescape_into`, `align_rt_json_doc_as_str`, and `align_rt_json_doc_key` | `json_doc_strict_string_matrix` |
 | Cold/cache-hit whole-program and per-unit compilation plus any internal ABI update | semantic and MIR fingerprints, codegen descriptors, compiler build identity, and every changed JSON runtime declaration | `m5::json_escape_cache_and_abi` |
-| Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | Evidence-boundary design PR #813 is merged; its dependent enabling implementation remains separate, and Request 7 cannot advance to `IMPLEMENTING` while its controller and evidence path are uninstalled | the merged prerequisite plan names exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12, and its implementation must pass them before baseline selection or Request 7 implementation |
+| Root plus detached benchmark dependency resolution, controller trust, immutable baseline and candidate identity, raw worktree materialization, Git object/config isolation, every Cargo configuration search directory, protected inputs, warm-up, paired samples, parsing, threshold failure, evidence, and integration | Evidence-boundary design PR #813 and its dependent enabling implementation are merged; the C6-LIFECYCLE pin/adoption wave owns the remaining exact compiler, source, and real-client qualification | the merged prerequisite plan names exact unit, fault-injection, workload, report, review, and integration regressions for every closure class in item 12, and the merged implementation plus its adoption owners must pass them before the C6 wave's final `make ci` |
 | Minimum Git behavior, not only version parsing | topology-ledger-owned immutable Git 2.45.0 image plus required `git-2.45-compat` job | the complete production adoption gate and all repository/Git negatives under actual `/usr/bin/git` 2.45.0 |
 | Canonical revision-file bytes and exact filter-independent tracked/untracked filesystem state before lookup or release build | binary-safe shared revision reader, raw tree/index/worktree enumerator and comparator, `scripts/check-align-revision`, `align-build` prerequisite order, and topology-ledger self-test | exact valid record plus embedded-NUL and other encoding, Git-marker, attribute/filter-hidden modification, assume-unchanged, skip-worktree, ignored and case-fold-hidden build inputs, target-output allowlist, dirty/untracked, and unchanged-index/build-output negatives |
 | Fresh compiler construction, input trust and identity, process ownership, use, and cleanup | The reviewed Section 9 contract in `docs/specs/check-gate-topology.md` and its wire/source-identity foundations are merged. FRESH-IMAGE owns installation and attestation of the image trust root; FRESH-WORKER owns the repository worker, Make integration, identity-bound baseline refresh, and cleanup. Request 6 additionally requires the separately reviewed FRESH-IMAGE-REQUEST6 installed-profile extension before its ordinary or fresh adoption. Every other pin-changing adoption remains blocked until its applicable image and worker capabilities merge. | Run every Section 9 named owner qualification, the installed-image end-to-end unchanged-pin aggregate, the Request 6 profile-extension smoke where applicable, baseline ancestry checks, and cleanup evidence before worker merge or later adoption. Aarch64 Linux/macOS consumers additionally require their named platform profiles. |
@@ -2981,8 +2984,9 @@ Align compiler/runtime tests must:
    first-match lookup policy. Retain typed missing-field rejection and field-order independence;
 9. cover the public-path matrix directly: a top-level `array<Struct>` distinct from a field array;
    `soa<Struct>` with clean and escaped column elements; direct and nested/object/array union
-   payloads plus a union field in an arena-backed record, all of which accept clean text but reject
-   any selected transitively reachable escaped view as `Error.Code(1)`; top-level-array and NDJSON
+   payloads plus a union field in an arena-backed record, where clean text borrows the input and
+   escaped selected text materializes in the enclosing arena, while the corresponding no-arena
+   cases return `Error.Code(1)`; top-level-array and NDJSON
    `json.scan` rows admitted by the merged Request 6 recursively Copy boundary, always inside
    well-formed outer frames, that accept all-clean text but reject an escaped declared view even
    when it is unprojected, nested, optional, or union-reachable; malformed ignored text rejection
@@ -5283,9 +5287,9 @@ The Align design and implementation must prove:
 Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
-Blocked gate or slice: Request 7 implementation and immutable pre-work baseline selection; any later JSON change that adds a recoverable failure edge after a declared-record owner becomes live
-Independent work that may continue: Request 7 benchmark-evidence implementation and language design, other Align requests, and align-llm work that does not consume a changed decoded-owner surface
-Resume condition: Align reviews and merges the decoded-owner contract and implementation at a named commit; every focused transition owner below passes before Request 7 selects its immutable baseline or enters IMPLEMENTING, and the later C6-LIFECYCLE pin wave runs `c6-json-decoded-owner-adoption` before `c6-json-escape-adoption` and its final `make ci`
+Blocked gate or slice: C6-LIFECYCLE's `c6-json-decoded-owner-adoption`, plus any later JSON change that adds a recoverable failure edge after a declared-record owner becomes live
+Independent work that may continue: C6 work that does not consume an unadopted decoded-owner surface, other Align requests, and align-llm work that does not consume a changed decoded-owner surface
+Resume condition: after the C6-LIFECYCLE pin wave materializes the merged compiler/runtime, every focused transition owner below passes in `c6-json-decoded-owner-adoption` before `c6-json-escape-adoption` and the wave's final `make ci`; this request then advances only with that real-client evidence
 Align commit or pull request: decoded-owner cleanup PR #849 merged as `69017961` (merge commit)
 align-llm verification: pending
 ```
