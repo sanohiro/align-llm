@@ -33,7 +33,7 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6-json-adoption-wave ci
 
 check:
 	$(ALIGNC) check-per-unit $(ENTRY)
@@ -131,6 +131,34 @@ align-build-only:
 
 json-scan-row-ownership-adoption:
 	@/tools/python3 /private-project/scripts/run-json-scan-row-ownership-adoption-smoke
+
+c6-json-decoded-owner-adoption:
+	./scripts/run-c6-json-decoded-owner-adoption
+
+c6-json-escape-adoption:
+	./scripts/run-c6-json-escape-adoption
+
+c6-json-recursive-graph-adoption:
+	./scripts/run-c6-json-recursive-graph-adoption
+
+c6c2-request8-adoption:
+	./scripts/run-c6c2-request8-adoption
+
+c6c2-request10-adoption:
+	./scripts/run-c6c2-request10-adoption
+
+c6-json-bounded-encoding-adoption:
+	./scripts/run-c6-json-bounded-encoding-adoption
+
+c6-prompt-artifact-adoption:
+	./scripts/run-c6-prompt-artifact-adoption
+
+c6-json-adoption-wave:
+	+MAKEFLAGS= GNUMAKEFLAGS= $(MAKE) --no-print-directory -j1 \
+	  c6-json-decoded-owner-adoption c6-json-escape-adoption \
+	  c6-json-recursive-graph-adoption \
+	  c6c2-request8-adoption c6c2-request10-adoption \
+	  c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption
 
 ci:
 	@exit 1

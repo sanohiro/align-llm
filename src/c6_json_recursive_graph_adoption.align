@@ -1,0 +1,40 @@
+module c6_json_recursive_graph_adoption
+
+import core.json
+import prompt_artifacts
+
+fn decode_sample() -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  source := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATION_RESULT\",\"status\":\"INVALID_INPUT\",\"error_code\":\"INVALID\",\"error\":\"nested\",\"tasks\":[],\"snapshot_requests\":[],\"snapshot_results\":[],\"input_snapshots\":[],\"snapshot_attestations\":[],\"sample_count\":1,\"gate_eligible\":false,\"rows\":[],\"task_aggregates\":[],\"corpus_aggregate\":{\"task_count\":1,\"sample_count\":1,\"parent_pass_count\":1,\"candidate_pass_count\":1,\"parent_repair_loop_count\":0,\"candidate_repair_loop_count\":0,\"paired_pass_count\":1,\"completion_gain_count\":1,\"repair_loop_regression_count\":0},\"serious_regression_reasons\":[{\"task_id\":\"task\",\"sample_index\":2,\"code\":\"REGRESSION\",\"parent_value\":\"1\",\"candidate_value\":\"0\",\"limit\":\"0\"}],\"content_sha256\":\"\"}"
+  view: str := source
+  decoded: prompt_artifacts.PromptEvaluationResult := json.decode(view)?
+  return Ok(decoded)
+}
+
+fn task_count(borrow value: prompt_artifacts.PromptEvaluationResult) -> i64 = value.tasks.len()
+
+fn snapshot_request_count(borrow value: prompt_artifacts.PromptEvaluationResult) -> i64 = value.snapshot_requests.len()
+
+fn reason_count(borrow value: prompt_artifacts.PromptEvaluationResult) -> i64 = value.serious_regression_reasons.len()
+
+fn reason_sample_index(borrow value: prompt_artifacts.PromptEvaluationResult) -> i64 =
+value.serious_regression_reasons[0].sample_index
+
+fn corpus_task_count(borrow value: prompt_artifacts.PromptEvaluationResult) -> i64 = match value.corpus_aggregate {
+  Some(corpus) => corpus.task_count,
+  None => 0,
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+  value := decode_sample()?
+  print(task_count(value))
+  print(snapshot_request_count(value))
+  print(reason_count(value))
+  print(reason_sample_index(value))
+  print(corpus_task_count(value))
+  encoded := prompt_artifacts.encode_prompt_evaluation_result(value)
+  print(if encoded.len() > 0 { 1 } else { 0 })
+  return Ok(())
+}

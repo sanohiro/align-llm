@@ -1,0 +1,13 @@
+module prompt_artifact_io_smoke
+
+import prompt_artifact_io
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 {
+    return Err(Error.Invalid)
+  }
+  value := prompt_artifact_io.load_prompt_variant(args[1])?
+  encoded := prompt_artifact_io.encode_prompt_variant(value)?
+  print(encoded)
+  return Ok(())
+}

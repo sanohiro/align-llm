@@ -1,0 +1,1526 @@
+module prompt_artifacts
+
+import core.json
+import std.crypto
+import std.encoding
+
+// C6a1/C6a2 owns the persisted declared-record graph. Every text field in this module is an
+// explicitly owned `string`; borrowed `str` values are accepted only at the codec boundary.
+
+pub PromptTextArtifact {
+  schema_version: i64,
+  artifact_kind: string,
+  artifact_id: string,
+  text: string,
+  content_sha256: string,
+}
+
+pub ArtifactReference {
+  artifact_kind: string,
+  path: string,
+  artifact_id: string,
+  content_sha256: string,
+}
+
+pub PromptVariant {
+  schema_version: i64,
+  artifact_kind: string,
+  variant_id: string,
+  base_prompt: PromptTextArtifact,
+  repo_prompt: PromptTextArtifact,
+  learned_prompt_append: string,
+  context_policy: ContextPolicy,
+  candidate_id: string,
+  content_sha256: string,
+}
+
+pub ContextSources {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  patch_evaluation: PromptTextArtifact,
+  failure_memory_jsonl: PromptTextArtifact,
+  diagnostic_stdout: PromptTextArtifact,
+  diagnostic_stderr: PromptTextArtifact,
+  content_sha256: string,
+}
+
+pub RenderedPromptArtifact {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  variant_id: string,
+  variant_sha256: string,
+  task_prompt_sha256: string,
+  context_sources_sha256: string,
+  text: string,
+  content_sha256: string,
+}
+
+pub PromptScope {
+  schema_version: i64,
+  artifact_kind: string,
+  repo_id: string,
+  repo_profile_revision: string,
+  align_revision: string,
+  corpus_id: string,
+  corpus_revision: CorpusRevision,
+  evaluation_provider_kind: string,
+  evaluation_provider_model: string,
+  generation_policy_sha256: string,
+  acceptance_policy_sha256: string,
+  base_prompt_sha256: string,
+  repo_prompt_sha256: string,
+  content_sha256: string,
+}
+
+pub CorpusRevision {
+  schema_version: i64,
+  artifact_kind: string,
+  source_kind: string,
+  source_repository_id: string,
+  source_sha256: string,
+  content_sha256: string,
+}
+
+pub ContextPolicy {
+  include_patch_evaluation: bool,
+  include_failure_memory: bool,
+  include_diagnostics: bool,
+  max_patch_evaluation_bytes: i64,
+  max_failure_events: i64,
+  max_failure_context_bytes: i64,
+  max_diagnostic_bytes_per_stream: i64,
+}
+
+pub ArtifactDigest {
+  path: string,
+  mode: string,
+  byte_count: i64,
+  sha256: string,
+}
+
+pub ArtifactExpectation {
+  path: string,
+  kind: string,
+  expected_sha256: string,
+}
+
+pub SnapshotRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  project_root: string,
+  repo_path: string,
+  repo_revision: string,
+  require_clean_repo: bool,
+  static_expectations: array<ArtifactExpectation>,
+  additional_files: array<string>,
+  workspace_path: string,
+  allowed_workspace_entries: array<string>,
+  content_sha256: string,
+}
+
+pub WorkspacePreflightRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  evaluation_id: string,
+  project_root: string,
+  workspace_path: string,
+  content_sha256: string,
+}
+
+pub WorkspacePreflightResult {
+  schema_version: i64,
+  artifact_kind: string,
+  evaluation_id: string,
+  status: string,
+  error_code: string,
+  error: string,
+  physical_project_root: string,
+  physical_workspace_path: string,
+  environment_probe: Option<EnvironmentProbe>,
+  content_sha256: string,
+}
+
+pub SnapshotResult {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  status: string,
+  error_code: string,
+  error: string,
+  environment_probe: Option<EnvironmentProbe>,
+  artifact_digests: array<ArtifactDigest>,
+  content_sha256: string,
+}
+
+pub TaskInputSnapshot {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  task_manifest_sha256: string,
+  artifact_digests: array<ArtifactDigest>,
+  environment_sha256: string,
+  content_sha256: string,
+}
+
+pub RunSnapshotAttestation {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  sample_index: i64,
+  variant: string,
+  status: string,
+  error_code: string,
+  error: string,
+  snapshot_request_sha256: string,
+  before_snapshot_result_sha256: string,
+  after_snapshot_result_sha256: Option<string>,
+  before_input_snapshot_sha256: Option<string>,
+  after_input_snapshot_sha256: Option<string>,
+  content_sha256: string,
+}
+
+pub GenerationPolicy {
+  schema_version: i64,
+  artifact_kind: string,
+  generation_policy_id: string,
+  evaluation_provider_kind: string,
+  evaluation_provider_endpoint_id: string,
+  evaluation_provider_model: string,
+  provider_control_sha256: string,
+  provider_service_revision: string,
+  max_prompt_bytes: i64,
+  max_tokens: i64,
+  temperature_micros: i64,
+  seed_mode: string,
+  seed_base: i64,
+  content_sha256: string,
+}
+
+pub EvaluationProviderControl {
+  schema_version: i64,
+  artifact_kind: string,
+  provider_control_id: string,
+  provider_kind: string,
+  endpoint: string,
+  endpoint_id: string,
+  model: string,
+  api_key_env: Option<string>,
+  tokenize_endpoint: Option<string>,
+  timeout_ns: i64,
+  max_response_bytes: i64,
+  content_sha256: string,
+}
+
+pub EnvironmentPolicy {
+  schema_version: i64,
+  artifact_kind: string,
+  policy_id: string,
+  allowed_variables: array<EnvironmentVariable>,
+  executable_paths: array<string>,
+  locale: string,
+  content_sha256: string,
+}
+
+pub EnvironmentVariable {
+  name: string,
+  non_secret_value: string,
+  source: string,
+  precedence: i64,
+}
+
+pub PromptSourceVerifierPolicy {
+  schema_version: i64,
+  artifact_kind: string,
+  policy_id: string,
+  helper_path: string,
+  helper_sha256: string,
+  helper_runtime: string,
+  git_executable_sha256: string,
+  content_sha256: string,
+}
+
+pub TaskAdapterRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  evaluation_id: string,
+  task_id: string,
+  sample_index: i64,
+  variant: string,
+  variant_path: string,
+  variant_sha256: string,
+  rendered_prompt_path: string,
+  rendered_prompt_sha256: string,
+  generation_policy_path: string,
+  generation_policy_sha256: string,
+  provider_control_path: string,
+  provider_control_sha256: string,
+  workspace_path: string,
+  result_path: string,
+  paired_seed: i64,
+  credential_env_name: Option<string>,
+  environment_policy_sha256: string,
+  content_sha256: string,
+}
+
+pub EnvironmentProbe {
+  schema_version: i64,
+  artifact_kind: string,
+  producer: string,
+  os: string,
+  os_release: string,
+  architecture: string,
+  cpu: string,
+  logical_cpu_count: Option<i64>,
+  gpu: string,
+  runtime_identity: string,
+  content_sha256: string,
+}
+
+pub EnvironmentIdentityCore {
+  schema_version: i64,
+  artifact_kind: string,
+  os: string,
+  os_release: string,
+  architecture: string,
+  cpu: string,
+  logical_cpu_count: Option<i64>,
+  gpu: string,
+  align_llm_commit: string,
+  align_revision: string,
+  measurement_adapter_runtime: string,
+  snapshot_helper_runtime: string,
+  source_verifier_runtime: string,
+  source_verifier_policy_sha256: string,
+  environment_policy_sha256: string,
+}
+
+pub EnvironmentIdentity {
+  schema_version: i64,
+  artifact_kind: string,
+  core: EnvironmentIdentityCore,
+  environment_id: string,
+  content_sha256: string,
+}
+
+pub EvaluationInputIdentity {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  task_input_snapshot_sha256: string,
+  parent_variant_sha256: string,
+  candidate_variant_sha256: string,
+  task_prompt_sha256: string,
+  context_sources_sha256: string,
+  generation_policy_sha256: string,
+  generation_request_sha256: string,
+  adapter_request_sha256: string,
+  environment_policy_sha256: string,
+  environment_sha256: string,
+  sample_index: i64,
+  paired_seed: i64,
+  content_sha256: string,
+}
+
+pub GenerationRequestIdentity {
+  schema_version: i64,
+  artifact_kind: string,
+  rendered_prompt_sha256: string,
+  system_text_sha256: string,
+  user_text_sha256: string,
+  generation_policy_sha256: string,
+  provider_control_sha256: string,
+  environment_policy_sha256: string,
+  max_tokens: i64,
+  temperature_micros: i64,
+  paired_seed: i64,
+  provider_request_sha256: string,
+  seed_attestation_sha256: string,
+  content_sha256: string,
+}
+
+pub SeedCapabilityAttestation {
+  schema_version: i64,
+  artifact_kind: string,
+  provider_kind: string,
+  provider_model: string,
+  requested_seed: i64,
+  result: string,
+  applied_seed: Option<i64>,
+  provider_request_sha256: string,
+  content_sha256: string,
+}
+
+pub CandidateProposal {
+  schema_version: i64,
+  summary: string,
+  learned_prompt_append: string,
+  context_policy: ContextPolicy,
+}
+
+pub PromptExperimentResult {
+  schema_version: i64,
+  artifact_kind: string,
+  experiment_id: Option<string>,
+  status: string,
+  error_code: string,
+  error: string,
+  parent_activation: Option<ArtifactReference>,
+  scope: Option<PromptScope>,
+  opportunity: Option<ArtifactReference>,
+  proposal_provider_kind: Option<string>,
+  proposal_provider_endpoint_id: Option<string>,
+  proposal_provider_model: Option<string>,
+  proposal_elapsed_ns: i64,
+  proposal_status_code: Option<i64>,
+  proposal_summary: string,
+  candidate_variant: Option<PromptVariant>,
+  bounded_provider_output: string,
+  content_sha256: string,
+}
+
+pub PromptSourceVerifierRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  mode: string,
+  align_llm_repository_path: string,
+  expected_align_llm_commit: string,
+  tested_align_llm_head: Option<string>,
+  align_repository_path: string,
+  expected_align_revision: string,
+  corpus_source_path: string,
+  corpus_source_kind: string,
+  corpus_file_set_manifest_path: Option<string>,
+  expected_corpus_source_repository_id: string,
+  expected_corpus_source_sha256: string,
+  git_executable_path: string,
+  git_executable_sha256: string,
+  content_sha256: string,
+}
+
+pub PromptSourceVerifierResult {
+  schema_version: i64,
+  artifact_kind: string,
+  status: string,
+  error_code: string,
+  error: string,
+  align_llm_reachability: string,
+  align_llm_observed_head: Option<string>,
+  align_reachability: string,
+  align_observed_revision: Option<string>,
+  corpus_reachability: string,
+  corpus_observed_source_sha256: Option<string>,
+  content_sha256: string,
+}
+
+pub PromptEvaluationCorpus {
+  schema_version: i64,
+  artifact_kind: string,
+  corpus_id: string,
+  corpus_revision: CorpusRevision,
+  task_files: array<string>,
+  content_sha256: string,
+}
+
+pub PromptEvaluationTask {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  repo_id: string,
+  repo_revision: string,
+  repo_path: string,
+  require_clean_repo: bool,
+  cmd: string,
+  argv: array<string>,
+  snapshot_cmd: string,
+  snapshot_argv: array<string>,
+  measurement_adapter_runtime: string,
+  snapshot_helper_runtime: string,
+  cwd: string,
+  timeout_ns: i64,
+  task_prompt_path: string,
+  context_sources_path: string,
+  generation_policy_path: string,
+  provider_control_path: string,
+  environment_policy_path: string,
+  artifacts: array<ArtifactExpectation>,
+  regression_limits: RegressionLimits,
+  content_sha256: string,
+}
+
+pub RegressionLimits {
+  maximum_unrelated_diff_count: i64,
+  maximum_patch_size_bytes: i64,
+  maximum_public_api_change_count: i64,
+  maximum_repair_loops: i64,
+  maximum_benchmark_regression_ppm: Option<i64>,
+}
+
+pub TaskMeasurement {
+  schema_version: i64,
+  artifact_kind: string,
+  status: string,
+  failure_kind: string,
+  build_status: string,
+  test_status: string,
+  repair_loop_count: i64,
+  unrelated_diff_count: i64,
+  patch_size_bytes: i64,
+  public_api_change_count: i64,
+  policy_violation_count: i64,
+  cleanup_passed: bool,
+  containment_passed: bool,
+  benchmark_regression_ppm: Option<i64>,
+  generation_to_passing_patch_ns: Option<i64>,
+  rendered_prompt_sha256: string,
+  generation_request: GenerationRequestIdentity,
+  environment_probe: EnvironmentProbe,
+  seed_attestation: SeedCapabilityAttestation,
+  diagnostic_summary: string,
+  diagnostic_stdout: string,
+  diagnostic_stderr: string,
+  content_sha256: string,
+}
+
+pub PromptTaskRow {
+  schema_version: i64,
+  artifact_kind: string,
+  evaluation_id: string,
+  task_id: string,
+  sample_index: i64,
+  variant: string,
+  variant_id: string,
+  variant_sha256: string,
+  prompt_preparation_ns: i64,
+  time_to_passing_patch_ns: Option<i64>,
+  evaluation_input: EvaluationInputIdentity,
+  measurement: TaskMeasurement,
+  content_sha256: string,
+}
+
+pub PromptTraceOverflow {
+  schema_version: i64,
+  artifact_kind: string,
+  attempted_invocation_count: i64,
+  trace_record_count: i64,
+  trace_digest_sha256: string,
+  content_sha256: string,
+}
+
+pub PromptEvaluationResult {
+  schema_version: i64,
+  artifact_kind: string,
+  evaluation_id: Option<string>,
+  status: string,
+  error_code: string,
+  error: string,
+  experiment: Option<ArtifactReference>,
+  experiment_artifact: Option<PromptExperimentResult>,
+  parent_activation: Option<ArtifactReference>,
+  parent_activation_artifact: Option<PromptActivationResult>,
+  scope: Option<PromptScope>,
+  parent_variant: Option<PromptVariant>,
+  candidate_variant: Option<PromptVariant>,
+  corpus_source: Option<ArtifactReference>,
+  corpus: Option<PromptEvaluationCorpus>,
+  tasks: array<PromptEvaluationTask>,
+  acceptance_policy_source: Option<ArtifactReference>,
+  acceptance_policy: Option<PromptAcceptancePolicy>,
+  generation_policy_source: Option<ArtifactReference>,
+  generation_policy: Option<GenerationPolicy>,
+  provider_control_source: Option<ArtifactReference>,
+  provider_control: Option<EvaluationProviderControl>,
+  workspace_preflight_source: Option<ArtifactReference>,
+  workspace_preflight_request: Option<WorkspacePreflightRequest>,
+  workspace_preflight: Option<WorkspacePreflightResult>,
+  environment: Option<EnvironmentIdentity>,
+  snapshot_requests: array<SnapshotRequest>,
+  snapshot_results: array<SnapshotResult>,
+  input_snapshots: array<TaskInputSnapshot>,
+  snapshot_attestations: array<RunSnapshotAttestation>,
+  trace_failure: Option<PromptTraceOverflow>,
+  sample_count: i64,
+  gate_eligible: bool,
+  rows: array<PromptTaskRow>,
+  task_aggregates: array<TaskAggregate>,
+  corpus_aggregate: Option<CorpusAggregate>,
+  serious_regression_reasons: array<RegressionReason>,
+  content_sha256: string,
+}
+
+pub PromptVerifierTrust {
+  schema_version: i64,
+  artifact_kind: string,
+  expected_align_llm_commit: string,
+  expected_align_revision: string,
+  expected_corpus_source_kind: string,
+  expected_corpus_source_repository_id: string,
+  expected_corpus_source_sha256: string,
+  align_llm_reachability: string,
+  align_llm_observed_head: Option<string>,
+  align_reachability: string,
+  align_observed_revision: Option<string>,
+  corpus_reachability: string,
+  corpus_observed_source_sha256: Option<string>,
+  content_sha256: string,
+}
+
+pub PromptExpectedInputDigest {
+  schema_version: i64,
+  artifact_kind: string,
+  task_id: string,
+  sample_index: i64,
+  variant: string,
+  rendered_prompt_sha256: string,
+  context_sources_sha256: string,
+  generation_request_sha256: string,
+  adapter_request_sha256: string,
+  provider_request_sha256: string,
+  content_sha256: string,
+}
+
+pub PromptEvaluationEvidence {
+  schema_version: i64,
+  artifact_kind: string,
+  evaluation_id: string,
+  evaluation_result_sha256: string,
+  trust: PromptVerifierTrust,
+  expected_inputs: array<PromptExpectedInputDigest>,
+  content_sha256: string,
+}
+
+pub PromptActivation {
+  schema_version: i64,
+  artifact_kind: string,
+  activation_id: string,
+  operation: string,
+  scope: PromptScope,
+  parent_activation_id: string,
+  parent_activation_sha256: string,
+  effective_variant: PromptVariant,
+  accepted_evaluation_id: string,
+  accepted_evaluation_sha256: string,
+  rollback_target_activation_id: string,
+  rollback_target_activation_sha256: string,
+  decision_reason: string,
+  content_sha256: string,
+}
+
+pub PromptActivationResult {
+  schema_version: i64,
+  artifact_kind: string,
+  decision_id: Option<string>,
+  status: string,
+  error_code: string,
+  error: string,
+  activation: Option<PromptActivation>,
+  content_sha256: string,
+}
+
+pub PromptAcceptancePolicy {
+  schema_version: i64,
+  artifact_kind: string,
+  policy_id: string,
+  minimum_task_count: i64,
+  minimum_samples_per_variant: i64,
+  minimum_completion_gain_count: i64,
+  minimum_time_improvement_ppm: i64,
+  maximum_time_regression_ppm: i64,
+  maximum_repair_loop_regression_count: i64,
+  content_sha256: string,
+}
+
+pub TaskAggregate {
+  task_id: string,
+  parent_pass_count: i64,
+  candidate_pass_count: i64,
+  parent_repair_loop_count: i64,
+  candidate_repair_loop_count: i64,
+  paired_pass_count: i64,
+  parent_paired_median_time_ns: Option<i64>,
+  candidate_paired_median_time_ns: Option<i64>,
+  time_improvement_ppm: Option<i64>,
+  time_regression_ppm: Option<i64>,
+}
+
+pub CorpusAggregate {
+  task_count: i64,
+  sample_count: i64,
+  parent_pass_count: i64,
+  candidate_pass_count: i64,
+  parent_repair_loop_count: i64,
+  candidate_repair_loop_count: i64,
+  paired_pass_count: i64,
+  parent_paired_median_time_ns: Option<i64>,
+  candidate_paired_median_time_ns: Option<i64>,
+  completion_gain_count: i64,
+  time_improvement_ppm: Option<i64>,
+  time_regression_ppm: Option<i64>,
+  repair_loop_regression_count: i64,
+}
+
+pub RegressionReason {
+  task_id: string,
+  sample_index: i64,
+  code: string,
+  parent_value: string,
+  candidate_value: string,
+  limit: string,
+}
+
+pub PromptGateManifest {
+  schema_version: i64,
+  artifact_kind: string,
+  gate_id: string,
+  source_locator: PromptGateSourceLocator,
+  baseline_activation: ArtifactReference,
+  improved_evaluation: ArtifactReference,
+  improved_evaluation_evidence: ArtifactReference,
+  accepted_activation: ArtifactReference,
+  rollback_activation: ArtifactReference,
+  content_sha256: string,
+}
+
+pub PromptGateSourceLocator {
+  schema_version: i64,
+  artifact_kind: string,
+  source_bundle_id: string,
+  align_llm_source_relative_path: string,
+  align_source_relative_path: string,
+  corpus_source_relative_path: string,
+  corpus_file_set_manifest_relative_path: Option<string>,
+  source_verifier_policy_relative_path: string,
+  source_verifier_policy_sha256: string,
+  source_verifier_relative_path: string,
+  source_verifier_sha256: string,
+  source_verifier_runtime: string,
+  git_executable_sha256: string,
+  content_sha256: string,
+}
+
+fn digest_text(value: str) -> string {
+  digest := crypto.sha256(value)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn valid_nonempty_text(value: str, maximum: i64) -> bool {
+  if value.len() <= 0 || value.len() > maximum {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] == 0 {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_ascii_identifier(value: str, maximum: i64) -> bool {
+  if !valid_nonempty_text(value, maximum) {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] > 0x7f {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_content_digest(value: str) -> bool {
+  if value.len() != 64 {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    b := bytes[index]
+    if !((b >= 0x30 && b <= 0x39) || (b >= 0x61 && b <= 0x66)) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_prompt_text_kind(value: str) -> bool {
+  return value == "BASE_PROMPT" ||
+  value == "REPO_PROMPT" ||
+  value == "TASK_PROMPT" ||
+  value == "OPPORTUNITY" ||
+  value == "PATCH_EVALUATION" ||
+  value == "FAILURE_MEMORY_JSONL" ||
+  value == "DIAGNOSTIC_STDOUT" ||
+  value == "DIAGNOSTIC_STDERR"
+}
+
+fn valid_section_limit(enabled: bool, limit: i64, maximum: i64) -> bool {
+  if limit < 0 || limit > maximum {
+    return false
+  }
+  if enabled {
+    return limit > 0
+  }
+  return limit == 0
+}
+
+fn valid_context_policy(value: ContextPolicy) -> bool {
+  if !valid_section_limit(value.include_patch_evaluation, value.max_patch_evaluation_bytes, 65536) {
+    return false
+  }
+  if !valid_section_limit(value.include_failure_memory, value.max_failure_context_bytes, 1048576) {
+    return false
+  }
+  if value.max_failure_events < 0 || value.max_failure_events > 64 {
+    return false
+  }
+  if !value.include_failure_memory && value.max_failure_events != 0 {
+    return false
+  }
+  if !valid_section_limit(value.include_diagnostics, value.max_diagnostic_bytes_per_stream, 65536) {
+    return false
+  }
+  return true
+}
+
+fn clone_prompt_text(borrow value: PromptTextArtifact) -> PromptTextArtifact {
+  return PromptTextArtifact {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    artifact_id: value.artifact_id.clone(),
+    text: value.text.clone(),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn clone_prompt_variant_without_digest(borrow value: PromptVariant) -> PromptVariant {
+  return PromptVariant {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    variant_id: value.variant_id.clone(),
+    base_prompt: clone_prompt_text(value.base_prompt),
+    repo_prompt: clone_prompt_text(value.repo_prompt),
+    learned_prompt_append: value.learned_prompt_append.clone(),
+    context_policy: value.context_policy,
+    candidate_id: value.candidate_id.clone(),
+    content_sha256: "".clone(),
+  }
+}
+
+pub fn prompt_text_content_digest(borrow value: PromptTextArtifact) -> Result<string, Error> {
+  mut normalized := clone_prompt_text(value)
+  normalized.content_sha256 = "".clone()
+  canonical := json.encode_bounded(normalized, 2097152)?
+  return Ok(digest_text(canonical))
+}
+
+pub fn verify_prompt_text_content(borrow value: PromptTextArtifact) -> bool {
+  if value.schema_version != 1 ||
+  !valid_prompt_text_kind(value.artifact_kind) ||
+  !valid_ascii_identifier(value.artifact_id, 128) ||
+  !valid_content_digest(value.content_sha256) {
+    return false
+  }
+  expected := prompt_text_content_digest(value) else {
+    return false
+  }
+  return expected == value.content_sha256
+}
+
+pub fn prompt_variant_content_digest(borrow value: PromptVariant) -> Result<string, Error> {
+  normalized := clone_prompt_variant_without_digest(value)
+  canonical := json.encode_bounded(normalized, 2097152)?
+  return Ok(digest_text(canonical))
+}
+
+pub fn verify_prompt_variant_content(borrow value: PromptVariant) -> bool {
+  if value.schema_version != 1 ||
+  value.artifact_kind != "PROMPT_VARIANT" ||
+  !valid_ascii_identifier(value.variant_id, 128) ||
+  !valid_ascii_identifier(value.candidate_id, 128) ||
+  !valid_context_policy(value.context_policy) ||
+  !valid_content_digest(value.content_sha256) ||
+  value.base_prompt.artifact_kind != "BASE_PROMPT" ||
+  value.repo_prompt.artifact_kind != "REPO_PROMPT" ||
+  value.base_prompt.text.len() > 65536 ||
+  value.repo_prompt.text.len() > 65536 ||
+  value.learned_prompt_append.len() > 8192 ||
+  !verify_prompt_text_content(value.base_prompt) ||
+  !verify_prompt_text_content(value.repo_prompt) {
+    return false
+  }
+  expected := prompt_variant_content_digest(value) else {
+    return false
+  }
+  return expected == value.content_sha256
+}
+
+pub fn decode_prompt_variant(value: str) -> Result<PromptVariant, Error> {
+  decoded: PromptVariant := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_variant(value: PromptVariant) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_variant_bounded(value: PromptVariant, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+// The public root codecs are deliberately explicit: every persisted record uses the same
+// inferred graph selector, canonical encoder, and bounded encoder.
+
+pub fn decode_artifact_reference(value: str) -> Result<ArtifactReference, Error> {
+  decoded: ArtifactReference := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_artifact_reference(value: ArtifactReference) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_artifact_reference_bounded(value: ArtifactReference, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_context_sources(value: str) -> Result<ContextSources, Error> {
+  decoded: ContextSources := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_context_sources(value: ContextSources) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_context_sources_bounded(value: ContextSources, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_rendered_prompt_artifact(value: str) -> Result<RenderedPromptArtifact, Error> {
+  decoded: RenderedPromptArtifact := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_rendered_prompt_artifact(value: RenderedPromptArtifact) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_rendered_prompt_artifact_bounded(value: RenderedPromptArtifact, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_scope(value: str) -> Result<PromptScope, Error> {
+  decoded: PromptScope := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_scope(value: PromptScope) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_scope_bounded(value: PromptScope, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_corpus_revision(value: str) -> Result<CorpusRevision, Error> {
+  decoded: CorpusRevision := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_corpus_revision(value: CorpusRevision) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_corpus_revision_bounded(value: CorpusRevision, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_context_policy(value: str) -> Result<ContextPolicy, Error> {
+  decoded: ContextPolicy := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_context_policy(value: ContextPolicy) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_context_policy_bounded(value: ContextPolicy, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_artifact_digest(value: str) -> Result<ArtifactDigest, Error> {
+  decoded: ArtifactDigest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_artifact_digest(value: ArtifactDigest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_artifact_digest_bounded(value: ArtifactDigest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_artifact_expectation(value: str) -> Result<ArtifactExpectation, Error> {
+  decoded: ArtifactExpectation := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_artifact_expectation(value: ArtifactExpectation) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_artifact_expectation_bounded(value: ArtifactExpectation, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_snapshot_request(value: str) -> Result<SnapshotRequest, Error> {
+  decoded: SnapshotRequest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_snapshot_request(value: SnapshotRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_snapshot_request_bounded(value: SnapshotRequest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_workspace_preflight_request(value: str) -> Result<WorkspacePreflightRequest, Error> {
+  decoded: WorkspacePreflightRequest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_workspace_preflight_request(value: WorkspacePreflightRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_workspace_preflight_request_bounded(value: WorkspacePreflightRequest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_workspace_preflight_result(value: str) -> Result<WorkspacePreflightResult, Error> {
+  decoded: WorkspacePreflightResult := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_workspace_preflight_result(value: WorkspacePreflightResult) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_workspace_preflight_result_bounded(value: WorkspacePreflightResult, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_snapshot_result(value: str) -> Result<SnapshotResult, Error> {
+  decoded: SnapshotResult := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_snapshot_result(value: SnapshotResult) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_snapshot_result_bounded(value: SnapshotResult, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_task_input_snapshot(value: str) -> Result<TaskInputSnapshot, Error> {
+  decoded: TaskInputSnapshot := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_task_input_snapshot(value: TaskInputSnapshot) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_task_input_snapshot_bounded(value: TaskInputSnapshot, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_run_snapshot_attestation(value: str) -> Result<RunSnapshotAttestation, Error> {
+  decoded: RunSnapshotAttestation := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_run_snapshot_attestation(value: RunSnapshotAttestation) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_run_snapshot_attestation_bounded(value: RunSnapshotAttestation, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_generation_policy(value: str) -> Result<GenerationPolicy, Error> {
+  decoded: GenerationPolicy := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_generation_policy(value: GenerationPolicy) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_generation_policy_bounded(value: GenerationPolicy, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_evaluation_provider_control(value: str) -> Result<EvaluationProviderControl, Error> {
+  decoded: EvaluationProviderControl := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_evaluation_provider_control(value: EvaluationProviderControl) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_evaluation_provider_control_bounded(value: EvaluationProviderControl, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_environment_policy(value: str) -> Result<EnvironmentPolicy, Error> {
+  decoded: EnvironmentPolicy := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_environment_policy(value: EnvironmentPolicy) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_environment_policy_bounded(value: EnvironmentPolicy, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_environment_variable(value: str) -> Result<EnvironmentVariable, Error> {
+  decoded: EnvironmentVariable := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_environment_variable(value: EnvironmentVariable) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_environment_variable_bounded(value: EnvironmentVariable, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_source_verifier_policy(value: str) -> Result<PromptSourceVerifierPolicy, Error> {
+  decoded: PromptSourceVerifierPolicy := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_source_verifier_policy(value: PromptSourceVerifierPolicy) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_source_verifier_policy_bounded(value: PromptSourceVerifierPolicy, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_task_adapter_request(value: str) -> Result<TaskAdapterRequest, Error> {
+  decoded: TaskAdapterRequest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_task_adapter_request(value: TaskAdapterRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_task_adapter_request_bounded(value: TaskAdapterRequest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_environment_probe(value: str) -> Result<EnvironmentProbe, Error> {
+  decoded: EnvironmentProbe := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_environment_probe(value: EnvironmentProbe) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_environment_probe_bounded(value: EnvironmentProbe, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_environment_identity_core(value: str) -> Result<EnvironmentIdentityCore, Error> {
+  decoded: EnvironmentIdentityCore := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_environment_identity_core(value: EnvironmentIdentityCore) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_environment_identity_core_bounded(value: EnvironmentIdentityCore, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_environment_identity(value: str) -> Result<EnvironmentIdentity, Error> {
+  decoded: EnvironmentIdentity := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_environment_identity(value: EnvironmentIdentity) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_environment_identity_bounded(value: EnvironmentIdentity, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_evaluation_input_identity(value: str) -> Result<EvaluationInputIdentity, Error> {
+  decoded: EvaluationInputIdentity := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_evaluation_input_identity(value: EvaluationInputIdentity) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_evaluation_input_identity_bounded(value: EvaluationInputIdentity, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_generation_request_identity(value: str) -> Result<GenerationRequestIdentity, Error> {
+  decoded: GenerationRequestIdentity := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_generation_request_identity(value: GenerationRequestIdentity) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_generation_request_identity_bounded(value: GenerationRequestIdentity, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_seed_capability_attestation(value: str) -> Result<SeedCapabilityAttestation, Error> {
+  decoded: SeedCapabilityAttestation := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_seed_capability_attestation(value: SeedCapabilityAttestation) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_seed_capability_attestation_bounded(value: SeedCapabilityAttestation, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_candidate_proposal(value: str) -> Result<CandidateProposal, Error> {
+  decoded: CandidateProposal := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_candidate_proposal(value: CandidateProposal) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_candidate_proposal_bounded(value: CandidateProposal, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_experiment_result(value: str) -> Result<PromptExperimentResult, Error> {
+  decoded: PromptExperimentResult := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_experiment_result(value: PromptExperimentResult) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_experiment_result_bounded(value: PromptExperimentResult, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_source_verifier_request(value: str) -> Result<PromptSourceVerifierRequest, Error> {
+  decoded: PromptSourceVerifierRequest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_source_verifier_request(value: PromptSourceVerifierRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_source_verifier_request_bounded(value: PromptSourceVerifierRequest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_source_verifier_result(value: str) -> Result<PromptSourceVerifierResult, Error> {
+  decoded: PromptSourceVerifierResult := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_source_verifier_result(value: PromptSourceVerifierResult) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_source_verifier_result_bounded(value: PromptSourceVerifierResult, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_evaluation_corpus(value: str) -> Result<PromptEvaluationCorpus, Error> {
+  decoded: PromptEvaluationCorpus := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_evaluation_corpus(value: PromptEvaluationCorpus) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_evaluation_corpus_bounded(value: PromptEvaluationCorpus, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_evaluation_task(value: str) -> Result<PromptEvaluationTask, Error> {
+  decoded: PromptEvaluationTask := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_evaluation_task(value: PromptEvaluationTask) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_evaluation_task_bounded(value: PromptEvaluationTask, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_regression_limits(value: str) -> Result<RegressionLimits, Error> {
+  decoded: RegressionLimits := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_regression_limits(value: RegressionLimits) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_regression_limits_bounded(value: RegressionLimits, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_task_measurement(value: str) -> Result<TaskMeasurement, Error> {
+  decoded: TaskMeasurement := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_task_measurement(value: TaskMeasurement) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_task_measurement_bounded(value: TaskMeasurement, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_task_row(value: str) -> Result<PromptTaskRow, Error> {
+  decoded: PromptTaskRow := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_task_row(value: PromptTaskRow) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_task_row_bounded(value: PromptTaskRow, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_trace_overflow(value: str) -> Result<PromptTraceOverflow, Error> {
+  decoded: PromptTraceOverflow := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_trace_overflow(value: PromptTraceOverflow) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_trace_overflow_bounded(value: PromptTraceOverflow, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_evaluation_result(value: str) -> Result<PromptEvaluationResult, Error> {
+  decoded: PromptEvaluationResult := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_evaluation_result(value: PromptEvaluationResult) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_evaluation_result_bounded(value: PromptEvaluationResult, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_verifier_trust(value: str) -> Result<PromptVerifierTrust, Error> {
+  decoded: PromptVerifierTrust := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_verifier_trust(value: PromptVerifierTrust) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_verifier_trust_bounded(value: PromptVerifierTrust, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_expected_input_digest(value: str) -> Result<PromptExpectedInputDigest, Error> {
+  decoded: PromptExpectedInputDigest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_expected_input_digest(value: PromptExpectedInputDigest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_expected_input_digest_bounded(value: PromptExpectedInputDigest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_evaluation_evidence(value: str) -> Result<PromptEvaluationEvidence, Error> {
+  decoded: PromptEvaluationEvidence := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_evaluation_evidence(value: PromptEvaluationEvidence) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_evaluation_evidence_bounded(value: PromptEvaluationEvidence, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_activation(value: str) -> Result<PromptActivation, Error> {
+  decoded: PromptActivation := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_activation(value: PromptActivation) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_activation_bounded(value: PromptActivation, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_activation_result(value: str) -> Result<PromptActivationResult, Error> {
+  decoded: PromptActivationResult := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_activation_result(value: PromptActivationResult) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_activation_result_bounded(value: PromptActivationResult, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_acceptance_policy(value: str) -> Result<PromptAcceptancePolicy, Error> {
+  decoded: PromptAcceptancePolicy := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_acceptance_policy(value: PromptAcceptancePolicy) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_acceptance_policy_bounded(value: PromptAcceptancePolicy, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_task_aggregate(value: str) -> Result<TaskAggregate, Error> {
+  decoded: TaskAggregate := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_task_aggregate(value: TaskAggregate) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_task_aggregate_bounded(value: TaskAggregate, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_corpus_aggregate(value: str) -> Result<CorpusAggregate, Error> {
+  decoded: CorpusAggregate := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_corpus_aggregate(value: CorpusAggregate) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_corpus_aggregate_bounded(value: CorpusAggregate, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_regression_reason(value: str) -> Result<RegressionReason, Error> {
+  decoded: RegressionReason := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_regression_reason(value: RegressionReason) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_regression_reason_bounded(value: RegressionReason, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_gate_manifest(value: str) -> Result<PromptGateManifest, Error> {
+  decoded: PromptGateManifest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_gate_manifest(value: PromptGateManifest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_gate_manifest_bounded(value: PromptGateManifest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_gate_source_locator(value: str) -> Result<PromptGateSourceLocator, Error> {
+  decoded: PromptGateSourceLocator := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_gate_source_locator(value: PromptGateSourceLocator) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_gate_source_locator_bounded(value: PromptGateSourceLocator, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_text_artifact(value: str) -> Result<PromptTextArtifact, Error> {
+  decoded: PromptTextArtifact := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_text_artifact(value: PromptTextArtifact) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_text_artifact_bounded(value: PromptTextArtifact, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}

@@ -3016,6 +3016,28 @@ location.
 | Replacement/move-out | source fields are reconstructed or moved once; no aliasing rewrite | `PromptRender` moves to caller as one bare value | accepted/rollback variant embedded unchanged; source not reused; verifier returns only Copy status | rows, snapshots, and independent evidence move into the final result/pair; builder source is consumed once | `prompt-move-compile-smoke`, `prompt-variant-identity-smoke`, `prompt-evidence-move-smoke` |
 | Concurrent/overlap attempt | N/A: pure validation has no shared mutable state | N/A: pure rendering has no shared mutable state | immutable DAG branches are independent; shared output/activation mutation is rejected before side effects | complete experiment/evaluate/accept/rollback 4x4 matrix; no overlapping adapter calls; disjoint independent processes are supported | `prompt-operation-overlap-smoke`, `prompt-no-overlap-smoke`, `prompt-existing-output-smoke`, `prompt-evidence-result-alias-smoke` |
 
+### 10.1c C6a1/C6a2 adoption closure
+
+This capability implements only the declared artifact graph, its canonical codec, and the bounded
+file consumer. The later renderer-memory, verifier, evaluator, and activation cells remain deferred
+to their named C6 owners; this table records the actual closure for the current diff.
+
+The candidate is intentionally larger than a small checkpoint because the 50-record graph, its 100
+root codec entry points, and the adoption consumers must land as one synchronized boundary. Splitting
+the declarations from the first real loader would leave no stable consumer and would duplicate the
+graph-shape, ownership, and canonical-byte proof across pull requests.
+
+| Axis | Actual implementation | Passing owner evidence |
+| --- | --- | --- |
+| Declared graph shape and codec coverage | `src/prompt_artifacts.align` contains the complete 50-record/543-field graph and one decode plus bounded encode wrapper per record | `scripts/run-c6-prompt-artifact-adoption`; pinned `check-per-unit` compiles the graph consumer |
+| Owned wire lifetime | `src/prompt_artifact_io.align` reads one bounded wire buffer, decodes into the shipped owned graph, and returns only after the buffer scope ends | `scripts/run-c6-json-escape-adoption`, `scripts/run-c6-prompt-artifact-adoption`; escaped nested text round-trips byte-for-byte |
+| Optional and malformed JSON ownership | Request 15's missing/`null` option, nested escaped text, later type error, trailing input, and duplicate field cases use the decoded owner | `scripts/run-c6-json-decoded-owner-adoption` |
+| Recursive JSON graph decode | `PromptEvaluationResult` decodes after its input string's scope and retains a nested `Option<CorpusAggregate>` plus an array of `RegressionReason` records before canonical encode | `scripts/run-c6-json-recursive-graph-adoption` |
+| Recursive record and array construction | Request 8/10 adoption owners construct runtime-sized arrays with owned records, nested `Option`, nested arrays, reallocation, and partial empty values | `scripts/run-c6c2-request8-adoption`, `scripts/run-c6c2-request10-adoption` |
+| Canonical bounded persistence | Request 12 adoption exercises exact-cap success, cap-minus-one overflow, cap-plus-one success, malformed decode, and the bounded artifact reader's input cap | `scripts/run-c6-json-bounded-encoding-adoption`, `scripts/run-c6-prompt-artifact-adoption` |
+| Semantic validation and unknown fields | Prompt-variant nested digests are recomputed before use; unknown fields are ignored on decode and omitted by canonical re-encode; tampered digests are rejected | `scripts/run-c6-prompt-artifact-adoption` |
+| Full evaluator cleanup/publication | Not applicable to this capability; result/evidence pair publication, process cleanup, and activation cleanup remain deferred to C6f2/C6d owners and are not claimed here | Explicit deferral in Sections 1.2, 10, and 11 |
+
 ### 10.1a Final-review redesign closure
 
 The terminal review reopened these cells rather than authorizing another local repair loop. The

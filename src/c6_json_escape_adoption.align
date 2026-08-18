@@ -1,0 +1,15 @@
+module c6_json_escape_adoption
+
+import prompt_artifact_io
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 {
+    return Err(Error.Invalid)
+  }
+  // load_prompt_variant returns a free-standing owned graph. The bounded source buffer and its
+  // reader are both gone before this value is encoded, so nested escaped text cannot be a view.
+  variant := prompt_artifact_io.load_prompt_variant(args[1])?
+  encoded := prompt_artifact_io.encode_prompt_variant(variant)?
+  print(encoded)
+  return Ok(())
+}

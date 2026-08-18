@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+variant_fixture="${project_root}/eval/fixtures/c6-prompt-artifacts/prompt-variant.json"
+temporary_dir="$(mktemp -d)"
+trap 'rm -rf "${temporary_dir}"' EXIT
+
+check_output="${temporary_dir}/check.txt"
+"${compiler}" check-per-unit "${project_root}/src/prompt_artifact_io_smoke.align" >"${check_output}"
+
+python3 - "${project_root}/src/prompt_artifacts.align" "${check_output}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+records = re.findall(r"^pub ([A-Z][A-Za-z0-9_]*) \{$", source, re.MULTILINE)
+expected_records = [
+    "PromptTextArtifact",
+    "ArtifactReference",
+    "PromptVariant",
+    "ContextSources",
+    "RenderedPromptArtifact",
+    "PromptScope",
+    "CorpusRevision",
+    "ContextPolicy",
+    "ArtifactDigest",
+    "ArtifactExpectation",
+    "SnapshotRequest",
+    "WorkspacePreflightRequest",
+    "WorkspacePreflightResult",
+    "SnapshotResult",
+    "TaskInputSnapshot",
+    "RunSnapshotAttestation",
+    "GenerationPolicy",
+    "EvaluationProviderControl",
+    "EnvironmentPolicy",
+    "EnvironmentVariable",
+    "PromptSourceVerifierPolicy",
+    "TaskAdapterRequest",
+    "EnvironmentProbe",
+    "EnvironmentIdentityCore",
+    "EnvironmentIdentity",
+    "EvaluationInputIdentity",
+    "GenerationRequestIdentity",
+    "SeedCapabilityAttestation",
+    "CandidateProposal",
+    "PromptExperimentResult",
+    "PromptSourceVerifierRequest",
+    "PromptSourceVerifierResult",
+    "PromptEvaluationCorpus",
+    "PromptEvaluationTask",
+    "RegressionLimits",
+    "TaskMeasurement",
+    "PromptTaskRow",
+    "PromptTraceOverflow",
+    "PromptEvaluationResult",
+    "PromptVerifierTrust",
+    "PromptExpectedInputDigest",
+    "PromptEvaluationEvidence",
+    "PromptActivation",
+    "PromptActivationResult",
+    "PromptAcceptancePolicy",
+    "TaskAggregate",
+    "CorpusAggregate",
+    "RegressionReason",
+    "PromptGateManifest",
+    "PromptGateSourceLocator",
+]
+decode_functions = re.findall(r"^pub fn decode_[a-z0-9_]+\(", source, re.MULTILINE)
+bounded_encode_functions = re.findall(r"^pub fn encode_[a-z0-9_]+_bounded\(", source, re.MULTILINE)
+fields = 0
+for match in re.finditer(r"^pub ([A-Z][A-Za-z0-9_]*) \{\n(.*?)^\}", source, re.MULTILINE | re.DOTALL):
+    fields += sum(
+        1
+        for line in match.group(2).splitlines()
+        if re.match(r"^  [A-Za-z_][A-Za-z0-9_]*:", line)
+    )
+if records != expected_records:
+    raise SystemExit(f"artifact graph declaration order mismatch: {records!r}")
+if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (50, 543, 50, 50):
+    raise SystemExit(
+        "artifact graph shape mismatch: "
+        f"records={len(records)} fields={fields} "
+        f"decode={len(decode_functions)} bounded_encode={len(bounded_encode_functions)}"
+    )
+if "ok: checked 3 unit(s) per-unit" not in Path(sys.argv[2]).read_text(encoding="utf-8"):
+    raise SystemExit("artifact graph owner did not compile the graph consumer")
+PY
+
+variant_output="${temporary_dir}/variant.json"
+"${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${variant_fixture}" >"${variant_output}"
+cmp "${variant_output}" "${variant_fixture}"
+
+unknown_variant="${temporary_dir}/unknown-variant.json"
+invalid_variant="${temporary_dir}/invalid-variant.json"
+oversized_variant="${temporary_dir}/oversized-variant.json"
+python3 - "${variant_fixture}" "${unknown_variant}" "${invalid_variant}" "${oversized_variant}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+unknown = dict(value)
+unknown["unknown_field"] = {"ignored": True}
+oversized = {
+    "schema_version": 1,
+    "artifact_kind": "PROMPT_VARIANT",
+    "unknown_field": "x" * 2097152,
+}
+for path, payload in (
+    (sys.argv[2], unknown),
+    (sys.argv[3], {**value, "content_sha256": "0" * 64}),
+    (sys.argv[4], oversized),
+):
+    Path(path).write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+
+unknown_output="${temporary_dir}/unknown-output.json"
+"${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${unknown_variant}" >"${unknown_output}"
+cmp "${unknown_output}" "${variant_fixture}"
+if "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${invalid_variant}" \
+  >"${temporary_dir}/invalid-output" 2>"${temporary_dir}/invalid-error"; then
+  echo "invalid digest was accepted" >&2
+  exit 1
+fi
+if "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${oversized_variant}" \
+  >"${temporary_dir}/oversized-output" 2>"${temporary_dir}/oversized-error"; then
+  echo "oversized artifact was accepted" >&2
+  exit 1
+fi
+
+echo "c6 prompt artifact graph, canonical round-trip, unknown-field, digest, and input-cap adoption: PASS"

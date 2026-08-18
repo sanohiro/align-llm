@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+"${compiler}" run "${project_root}/src/c6_json_decoded_owner_adoption.align" >"${output_file}"
+
+python3 - "${output_file}" <<'PY'
+import sys
+from pathlib import Path
+
+actual = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+expected = ["NONE", "NONE", "live", 'quote"', "ERROR", "ERROR", "ERROR"]
+if actual != expected:
+    raise SystemExit(f"decoded owner adoption mismatch: {actual!r}")
+print("c6 json decoded owner adoption: PASS")
+PY

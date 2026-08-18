@@ -1,0 +1,35 @@
+module c6_json_bounded_encoding_adoption
+
+import prompt_artifact_io
+import prompt_artifacts
+
+fn status(value: Result<string, Error>) -> str = match value {
+  Ok(_) => "OK",
+  Err(_) => "ERROR",
+}
+
+fn decode_status(value: Result<prompt_artifacts.PromptVariant, Error>) -> str = match value {
+  Ok(_) => "OK",
+  Err(_) => "ERROR",
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 {
+    return Err(Error.Invalid)
+  }
+  canonical_value := prompt_artifact_io.load_prompt_variant(args[1])?
+  canonical := prompt_artifact_io.encode_prompt_variant(canonical_value)?
+  exact_value := prompt_artifact_io.load_prompt_variant(args[1])?
+  under_value := prompt_artifact_io.load_prompt_variant(args[1])?
+  above_value := prompt_artifact_io.load_prompt_variant(args[1])?
+  exact := prompt_artifacts.encode_prompt_variant_bounded(exact_value, canonical.len())
+  under := prompt_artifacts.encode_prompt_variant_bounded(under_value, canonical.len() - 1)
+  above := prompt_artifacts.encode_prompt_variant_bounded(above_value, canonical.len() + 1)
+  malformed := prompt_artifacts.decode_prompt_variant("{\"schema_version\":1,\"artifact_kind\":\"PROMPT_VARIANT\"}")
+  print(status(exact))
+  print(status(under))
+  print(status(above))
+  print(decode_status(malformed))
+  print(canonical.len())
+  return Ok(())
+}
