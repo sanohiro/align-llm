@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-15): Requests 1, 3–6 are CLOSED; Requests 2, 8, and 10–12 are ALIGN_MERGED; Requests 7, 9, and 13–15 remain PROPOSED.** Request 7's evidence-boundary design is merged, but that design explicitly does not accept the JSON language change; its language-design acceptance conditions below remain open.
+> **Status (2026-08-18): Requests 1, 3–6 are CLOSED; Requests 2, 7–13, and 15 are ALIGN_MERGED; Request 14 remains PROPOSED.** Requests 7, 9, and 13 have shipped their Align language/runtime implementations; their align-llm adoption gates remain pending.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -2554,19 +2554,38 @@ provide per-row Drop; those remain outside this request's shipped surface.
 ## Request 7 — `core.json`: escaped strings in declared-record decoding
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
-Blocked gate or slice: Request 7 language-design acceptance, implementation, and align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
-Independent work that may continue: the remaining benchmark-evidence implementation, C6 design review, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
-Resume condition: Request 7 may enter ACCEPTED only after an authoritative Align JSON language design checks in the canonical fixture and hash, fixes the exact arena-passing ABI, and incorporates the already merged benchmark-evidence boundary; it may enter IMPLEMENTING only after Request 6, decoded-owner Request 15, the benchmark-input work, and the evidence design's dependent enabling implementation reach their named merged states below and a reviewed immutable pre-work baseline is selected under that evidence design; after Request 7 reaches ALIGN_MERGED, FRESH-WORKER and FRESH-IMAGE have merged, and the required immutable Git 2.45.0 compatibility image/job passes, the C6-LIFECYCLE prerequisite wave pins the shipped Align release with its other merged prerequisites, runs the focused `c6-json-escape-adoption` target outside routine aggregates, and then runs one final `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform profiles before they can claim adoption; this closes only the escape prerequisite
-Align commit or pull request: benchmark-evidence design PR #813 merged as `734ae3ab20164c02cee56101bb3eeb2b452269ed`; benchmark-input prerequisite PR #815 merged as `58dbb21818edb6d1bb0e2c039e6bee066f877456`; evidence manifest foundation PR #816 merged as `7db1af8cb4ae69fb88506e74b4893f92ed609fd8`; canonical JSON primitive codec PR #817 merged as `4ec35dfe9fca5ba7577ceb7c8c36ae73dc6c1929`; typed Report/Body schema PR #818 merged as `41ce4f930a4105584672153f44cbb646d4fcbb49`; SSHSIG framing PR #820 merged as `19fbc786e92bf1e5ed5f4e4cd52a93d54fd56456`; benchmark-input hardening PR #821 merged as `9aef62a8a6c0e26517a042738c74b0689583c1fc`; strict CLI boundary PR #822 merged as `0d85f50ff14a3383355c14e2d654e5bbedbe56b5`; manifest/profile binding PR #823 merged as `5c5f0187ee99a152b07cfd72e201f5e2528172b2`; raw Git object codec PR #825 merged as `3c6cc8404ad9cf56dd648523936491c11ba9cca1`; prepared benchmark boundary PR #827 merged as `6ba1036fef680e2416c342077b6eff4adaf01e57`; Git batch codec PR #828 merged as `6adfa13db29283f5d289f633a93af16589737258`; pinned Git process boundary PR #830 merged as `5a6ae64b1c9d651b749691b6a8877c07a575ecbe`; revision/tree binding PR #831 merged as `956d943d23d569cd2f799b8871e72b4576c36162`; verified source materialization PR #832 merged as `1c9e2e9a3506573bee466eb940c47c5ec03a5360`; host-profile validation PR #833 merged as `f684b245707997bc114d7cc96f9ce8fe56392ebf`; container launch boundary PR #834 merged as `8ce95870bcf5f808f603e28eaf945003b7269dcc`; image/toolchain qualification PR #835 merged as `95c142f32429cde7dfa5dc7f30c23f4bf64319ca`; native host/daemon qualification PR #836 merged as `3eaa2176cbac2f8890d6335bc27495a9a7599bc1`; monitor lifecycle core PR #837 merged as `0e39c8b933929e8af30ac142f16212712f5d0e40`; prepared execution owners PR #838 merged as `62acdd892c5d3c40dbe316cf8597fb40c14cbba9`; controller/verifier execution, accepted native qualification, performance measurement, merge verification, Request 7 language design, and Request 7 implementation pending
-align-llm verification: benchmark-input, evidence-manifest, canonical-JSON, typed-report, SSHSIG-framing, strict-CLI, manifest/profile-binding, raw-object-identity, prepared-benchmark, Git-batch-framing, Git-revision/tree-binding, verified-source-materialization, profile-validation, container-launch, image/toolchain-validation, host/daemon-observation-validation, monitor-lifecycle, and prepared-execution prerequisites ALIGN_MERGED; Request 7 remains PROPOSED and adoption pending
+Blocked gate or slice: align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
+Independent work that may continue: C6 design and implementation that does not consume the unpinned surface, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
+Resume condition: after FRESH-WORKER and FRESH-IMAGE have merged and the required immutable Git 2.45.0 compatibility image/job passes, the C6-LIFECYCLE prerequisite wave pins the shipped Align release with its other merged prerequisites, runs the focused `c6-json-escape-adoption` target outside routine aggregates, and then runs one final `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform profiles before they can claim adoption; this closes only the escape prerequisite
+Align commit or pull request: benchmark-evidence design PR #813 merged as `734ae3ab20164c02cee56101bb3eeb2b452269ed`; benchmark-input prerequisite PR #815 merged as `58dbb21818edb6d1bb0e2c039e6bee066f877456`; evidence manifest foundation PR #816 merged as `7db1af8cb4ae69fb88506e74b4893f92ed609fd8`; canonical JSON primitive codec PR #817 merged as `4ec35dfe9fca5ba7577ceb7c8c36ae73dc6c1929`; typed Report/Body schema PR #818 merged as `41ce4f930a4105584672153f44cbb646d4fcbb49`; SSHSIG framing PR #820 merged as `19fbc786e92bf1e5ed5f4e4cd52a93d54fd56456`; benchmark-input hardening PR #821 merged as `9aef62a8a6c0e26517a042738c74b0689583c1fc`; strict CLI boundary PR #822 merged as `0d85f50ff14a3383355c14e2d654e5bbedbe56b5`; manifest/profile binding PR #823 merged as `5c5f0187ee99a152b07cfd72e201f5e2528172b2`; raw Git object codec PR #825 merged as `3c6cc8404ad9cf56dd648523936491c11ba9cca1`; prepared benchmark boundary PR #827 merged as `6ba1036fef680e2416c342077b6eff4adaf01e57`; Git batch codec PR #828 merged as `6adfa13db29283f5d289f633a93af16589737258`; pinned Git process boundary PR #830 merged as `5a6ae64b1c9d651b749691b6a8877c07a575ecbe`; revision/tree binding PR #831 merged as `956d943d23d569cd2f799b8871e72b4576c36162`; verified source materialization PR #832 merged as `1c9e2e9a3506573bee466eb940c47c5ec03a5360`; host-profile validation PR #833 merged as `f684b245707997bc114d7cc96f9ce8fe56392ebf`; container launch boundary PR #834 merged as `8ce95870bcf5f808f603e28eaf945003b7269dcc`; image/toolchain qualification PR #835 merged as `95c142f32429cde7dfa5dc7f30c23f4bf64319ca`; native host/daemon validation PR #836 merged as `3eaa2176cbac2f8890d6335bc27495a9a7599bc1`; monitor lifecycle core PR #837 merged as `0e39c8b933929e8af30ac142f16212712f5d0e40`; prepared execution owners PR #838 merged as `62acdd892c5d3c40dbe316cf8597fb40c14cbba9`; adversarial process/schedule/cleanup/exclusive-run owners PR #839 merged as `a9999aee0c3b5e8f57d99c074ba0d0768d7fe01a`; merge-race owners PR #840 merged as `04750821b417f426993de2f152dc59d35618e6e5`; controller/verifier execution PR #842 merged as `6812ced53015e50864fa910e9ca6e4b2afc4664b`; native host/daemon qualification PR #843 merged as `15e1fa9d7bfe94ec085630ec51283ff23683e02a`; native image self-inspection PR #844 merged as `88853de1fd96ac8e35c3542d69971f8370992ce2`; cryptographic key-process integration PR #845 merged as `dff1efdd49b8fdc6ea553661fb8a48ff357b242d`; native performance measurement PR #846 merged as `31ad135a0516bc110658391e5a87745661908d0f`; controller/report handoff PR #847 merged as `293f0afadcf5e89b9df56ef30c53874c154defe3`; merge verification PR #848 merged as `a9ba850e4ba40a583c838879868be67922aa4197`; decoded-owner prerequisite PR #849 merged as `69017961c65bec15ca39ef522813683f963fd896`; Request 7 language design and implementation PR #850 merged as `18301b43d6256349f984e4aaf62e975bf4f42aa0`
+align-llm verification: every Align prerequisite and the Request 7 language/runtime implementation are ALIGN_MERGED; the focused `c6-json-escape-adoption` target and final `make ci` remain pending in the C6-LIFECYCLE pin wave
 ```
+
+### Align language implementation (2026-08-17 — merged #850)
+
+PR #850 accepts the authoritative Request 7 language design and ships the implementation. Typed
+record, nested-record, scalar-string-array, AoS, SoA, and arena-backed union decoding share strict
+RFC 8259 string-token validation. Clean selected strings remain zero-copy input views; selected
+escaped strings materialize exactly once in the caller's enclosing arena and are region-bound to
+both input and arena. Record, AoS, and union runtime entrypoints carry the nullable arena as their
+final ABI argument; SoA retains its existing arena argument. `json.scan` has no arena and rejects an
+escaped declared string, while `json.doc` materializes escaped accessors in its existing arena.
+Ignored escaped keys and values validate without proportional scratch allocation. The shipped
+surface does not add top-level `str`/`array<str>` decode, a hidden heap owner, a dynamic JSON tree,
+or a second persisted format. The canonical fixture and closure matrix are owned by
+`bench/json_escape/fixtures/canonical.json` and `docs/impl/core-design/json.md`.
+
+The Align-side release build completed on merged `main` with exactly
+`cargo build --release --workspace`. Request 7 remains pending only for the sibling repository's
+exact pin/adoption target and final `make ci`; those steps own advancement to
+`ALIGN_LLM_VERIFIED` and `CLOSED`.
 
 ### Align benchmark-evidence implementation progress (2026-08-16)
 
-The merged implementation prerequisites through PR #838 establish the following bounded pieces of
+The merged implementation prerequisites through PR #846 establish the following bounded pieces of
 the benchmark-evidence design without accepting or implementing Request 7's JSON language change:
 
 - PRs #815–#818 isolate benchmark inputs under caller-supplied private roots, verify installed-source
@@ -2591,23 +2610,48 @@ the benchmark-evidence design without accepting or implementing Request 7's JSON
   invoke Docker, build an image, provision a key, or run the benchmark.
 - PRs #827, #837, and #838 establish two-phase prepared benchmarks with sealed digest-bound
   artifacts, the pure monitor lifecycle ledger, and deterministic prepared-tree/execution boundary
-  owners. They do not yet implement the trusted controller/verifier, Docker execution, performance
-  measurement, accepted host qualification, merge verification, or align-llm adoption.
+  owners. PR #839 adds the fixed process, exact schedule, ordered cleanup/publication, and
+  exclusive-run owner set, including its consolidated review repairs. PR #840 adds the disposable
+  merge-race, response-binding, signed-artifact, and final-refetch owner. PR #842 adds the
+  fixture-owned trusted controller/verifier phase ordering, report-only producer handoff,
+  lock-held durable staging, and fail-closed restart boundary. It does not inspect a real host,
+  invoke Docker, run the performance workload, manage keys, query GitHub, or advance lifecycle.
+- PR #843 adds the privileged native host/daemon acquisition boundary: fixed Linux source reads,
+  trusted Docker executable/configuration validation, bounded process-group cleanup, phase snapshots,
+  profile-bound cgroup driver/parent propagation, and selected-CPU identity validation. It does not
+  execute the image, run the workload, manage keys, measure performance, verify a merge, or advance
+  Request 7's language lifecycle.
+- PR #844 adds the native image self-inspection boundary: profile-pinned host image identity,
+  immutable local-image selection, a fixed `--entrypoint` self-inspector with no network or host
+  mounts, strict toolchain/cache/config parsing, and fail-closed Docker process/container cleanup.
+  It does not manage keys, run the performance workload, verify a merge, or advance Request 7's
+  language lifecycle.
+- PR #845 adds the first real host-side cryptographic operation: profile-pinned `/usr/bin/ssh-keygen`
+  sign/verify processes, no-follow descriptor-only private-key access, complete-message handoff, and
+  fail-closed temporary-file and process cleanup. It does not provision the administrator secret,
+  run the performance workload, measure performance, verify a provider merge, or advance Request 7's
+  language lifecycle.
+- PR #846 adds the first executable performance-measurement rail: one pinned Docker client launch
+  per fixed prepared child, bounded stdout/stderr capture, prepare-time artifact binding, and exact
+  native-output parsing into checked integer microseconds. It does not select `BASE`, assemble or
+  sign the report, verify a provider merge, or advance Request 7's language lifecycle.
+- PR #847 adds the immutable native session, exact fixed-schedule execution transcript, and report
+  assembler that consumes child facts into fixed benchmark/report fragments with manifest,
+  sample-order, integer-arithmetic, and threshold checks. It does not sign or publish the report,
+  verify a provider merge, or advance Request 7's language lifecycle.
+- PR #848 adds the signed merge-verification core. It reconstructs and rehashes the raw merge
+  object, verifies first-parent reachability and exact baseline/candidate/tree bindings, and binds
+  the result to the already verified report/signature. It does not implement JSON language semantics
+  or advance Request 7's language lifecycle.
 
-The remaining evidence work is the adversarial schedule/process/cleanup/race owner set followed by
-controller/verifier execution, accepted native qualification, performance measurement, and merge
-verification. Request 7 stays `PROPOSED`; it may not enter
-`ACCEPTED` until its separate authoritative language design satisfies the canonical fixture/hash and
-arena-ABI conditions, and it may not enter `IMPLEMENTING` until Request 15 and every other named
-prerequisite reach their required merged state and the immutable pre-work baseline is selected.
+The evidence implementation boundary, Request 6, decoded-owner Request 15, and the authoritative
+Request 7 language contract and implementation are now merged at distinct named commits. PR #850
+was based on those prerequisites and closes the canonical-fixture/hash, exact arena ABI, and owner
+matrix conditions below. Only align-llm pinning and adoption remain.
 
-Request 7 may be registered and reviewed independently. Benchmark-evidence design PR #813 is
-merged, but its own status says that it defines the evidence boundary only and does not accept the
-JSON language change. Request 7 therefore remains `PROPOSED` until the language contract satisfies
-the canonical-fixture/hash and exact-ABI acceptance conditions below, and must not advance to
-`IMPLEMENTING` until both Request 6 and decoded-owner Request 15 reach `ALIGN_MERGED` at distinct
-named Align commits and the other
-acceptance-infrastructure conditions below are met.
+Benchmark-evidence design PR #813 defined the evidence boundary only and did not by itself accept
+the JSON language change. The separate language acceptance and implementation subsequently merged
+in PR #850 after every named acceptance-infrastructure prerequisite was present.
 Request 6 supplies the recursively
 Copy scanner-row boundary on which this request's scanner grammar matrix depends. Strict rejection
 of a malformed ignored string and outside-arena rejection of an escaped retained view both add
@@ -2889,13 +2933,12 @@ snapshots, and assertions. Such a regression must not acquire the lock recursive
 only its caller-owned probe needs no lock; if it also reads a heap counter, the whole-body lock
 rule applies.
 
-An exact internal arena-passing ABI is N/A while this request is `PROPOSED`: align-llm must not code
-against a hypothetical lowering. Before the request can become `ACCEPTED`, Align's authoritative
-design must name every changed MIR operand and runtime signature for record, AoS, and SoA
-materialization, or explicitly prove why an entrypoint needs no change. A hidden ambient arena is
-forbidden. CLI inputs, environment variables, process-global state, connection-global state, and
-overlap exclusion are N/A because this parser capability adds none; concurrent invocations retain
-only distinct fixed-size per-call parser state and follow the existing caller-owned arena rules.
+The shipped internal arena-passing ABI names every changed MIR operand and runtime signature:
+record, AoS, and union decode carry a nullable final arena argument, while SoA keeps its existing
+arena argument and `json.scan` carries none. No hidden ambient arena exists. CLI inputs,
+environment variables, process-global state, connection-global state, and overlap exclusion are
+N/A because this parser capability adds none; concurrent invocations retain only distinct
+fixed-size per-call parser state and follow the existing caller-owned arena rules.
 Persisted scalar widths, field order, schema version, and tags are unchanged; the existing encoder
 and the exact adoption vector below remain the semantic-to-byte and byte-to-semantic sources of
 truth.
@@ -3071,10 +3114,10 @@ Align compiler/runtime tests must:
     to the benchmark-evidence design rather than this slice.
 
     Align PR #813 merged the separate evidence-boundary design at
-    `docs/impl/core-design/json-escape-benchmark-evidence.md`. That document explicitly does not
-    accept the JSON language change, so Request 7 remains `PROPOSED` until its separate language
-    design satisfies the fixture/hash and exact-ABI conditions above. It must remain below
-    `IMPLEMENTING` until the evidence design's own reviewed enabling implementation also merges.
+    `docs/impl/core-design/json-escape-benchmark-evidence.md`. That document explicitly did not
+    accept the JSON language change; the separate language design and implementation later
+    satisfied the fixture/hash and exact-ABI conditions in PR #850 after the evidence
+    implementation had merged.
     The prerequisite owns the controller source and delivery,
     exact public invocation, immutable pre-work baseline selection, candidate binding, trust roots,
     executable and source identities, raw-object and checkout isolation, environment and descriptor mapping,
@@ -4082,15 +4125,40 @@ running after every checkpoint. Adoption does not silently inherit another consu
 ## Request 9 — `core.json`: owned text fields and runtime-sized text arrays
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C7's named `C7-PERSISTED-RESULT` consumer capability; the reviewed consumer design is `docs/specs/c7-persisted-result.md`; the first Align implementation of this request remains gated on Request 7's named `ALIGN_MERGED` escape-grammar commit and a reviewed Align memory-model/spec update that defines explicit free-standing JSON materialization inside an arena; C6 remains independent
-Independent work that may continue: Request 5, Request 6, Request 7, application designs, and any consumer that does not require this direct owned JSON shape
-Resume condition: Request 9's Align implementation may start only after Request 7 reaches `ALIGN_MERGED` at a named Align commit that supplies the authoritative escape grammar/vector and the reviewed Align memory-model/spec update authorizes this JSON terminal's explicit free-standing allocation inside an arena; Request 9 reuses that grammar but owns its separate free-standing materialization contract. After Request 9 reaches `ALIGN_MERGED` and the applicable FRESH-WORKER/FRESH-IMAGE/platform profiles have merged, the C7-PERSISTED-RESULT branch rebuilds the sibling release compiler/runtime and pins it with any other merged prerequisites, runs the named C7 adoption fixture before product code consumes the surface, implements the consumer on the same branch, and closes with the original C7 lifetime/artifact qualification plus one final `make ci`.
-Align commit or pull request: pending
+Blocked gate or slice: C7's named `C7-PERSISTED-RESULT` consumer capability remains blocked only on the sibling pin/adoption wave; the reviewed consumer design is `docs/specs/c7-persisted-result.md`; C6 remains independent
+Independent work that may continue: application designs, C6 work, other Align requests, and any consumer that does not require the unpinned direct-owned JSON shape
+Resume condition: after the applicable FRESH-WORKER/FRESH-IMAGE/platform profiles have merged, the C7-PERSISTED-RESULT branch rebuilds the sibling release compiler/runtime and pins it with any other merged prerequisites, runs the named C7 adoption fixture before product code consumes the surface, implements the consumer on the same branch, and closes with the original C7 lifetime/artifact qualification plus one final `make ci`.
+Align commit or pull request: accepted Align plan `../align/docs/impl/24-owned-json-plan.md`; design PR #851 merged as `7f435ae9b228fc9a4ce047e9d64d5b99feeea60c`; implementation PR #852 merged as `2bb93a93a2f30da1daabd5b65d83863dab617560`
 align-llm verification: pending
 ```
+
+### Align implementation (2026-08-17 — merged #852)
+
+PR #852 ships direct declared-record decode, canonical encode, and bounded canonical encode for
+the closed owned graph accepted by PR #851: signed and unsigned integer fields of widths 8, 16,
+32, and 64, `bool`, `string`, `Option<string>`, and `array<string>`, with at least one owned-text
+leaf selecting the route. Decode returns a free-standing `Static` record whose strings and array
+spines neither borrow the input nor become arena-owned, including when called inside `arena {}`.
+Move, replacement, return, branch joins, `?`, `match`, `else`, `map_err`, recoverable parse failure,
+and Drop use the ordinary recursive Move carrier and clean each live owner exactly once.
+
+The shipped descriptor is a target-bound structural `OwnedJsonDescV1` carried through checked HIR,
+MIR, interface serialization, per-unit cache identity, LLVM layout verification, and runtime
+allocation/cleanup. Encoding preserves declaration order, integer width and signedness, embedded
+NUL and Request 7 escape semantics; bounded encoding produces identical bytes on success and keeps
+Request 12's inclusive limit errors. The existing borrowed record, scalar-array, AoS, SoA, union,
+scanner, and fixed-array routes remain separate. Nested records, record arrays, enums, floats,
+`str`, `array<str>`, nested option/array graphs, and `layout(C)`/`align(N)` records remain outside
+this owned route; Request 13 owns any later recursive C6 graph widening.
+
+The Align-side release build completed on merged `main` with exactly
+`cargo build --release --workspace`. Request 9 remains pending only
+for the sibling repository's exact compiler/runtime pin, `C7-PERSISTED-RESULT` adoption fixture,
+consumer lifetime/artifact qualification, and final `make ci`; those steps own advancement to
+`ALIGN_LLM_VERIFIED` and `CLOSED`.
 
 ### Motivation
 
@@ -4164,6 +4232,7 @@ Keep the existing context-inferred declared-record operations and expand their a
 ```text
 json.decode(input: str) -> Result<T, Error>   // T is inferred from the annotated declared-record binding
 json.encode(value: T) -> str                  // returns the existing canonical output view
+json.encode_bounded(value: T, max_bytes: i64) -> Result<string, Error>
 ```
 
 The exact source idiom remains the current declared-record form; no expression-position type
@@ -4200,12 +4269,15 @@ introduced:
 | --- | --- | --- |
 | Direct `json.decode` with `Result<Struct, Error>` | Select the new owned direct-record predicate when the record has an owned text leaf; otherwise retain the existing all-borrowed predicate | `m5_owned_json.rs::owned_json_direct_record_target_selects_owned_path` |
 | `json.encode` with a direct `Struct` source | Use the owned descriptor only for the same accepted flat direct-record grammar; existing encode targets retain their existing routes | `m5_owned_json.rs::owned_json_direct_record_encode_route` |
+| `json.encode_bounded` with a direct `Struct` source | Use the same owned graph and exact ordered plan as unbounded encode; the inclusive `i64` limit and owned `Result<string, Error>` retain Request 12 semantics | `m5_owned_json.rs::owned_json_direct_record_bounded_encode_route` and `owned_json_bounded_parity` |
 | `json.decode` with `Result<array<scalar>, Error>` | Retain the existing top-level scalar-array decoder for `array<i64>`, `array<f64>`, `array<bool>`, and the corresponding supported scalar primitive forms; it copies elements into its existing owned dynamic-array representation and never selects `OwnedJsonDescV1` | Existing `m5.rs::json_decode_scalar_array` and `m5.rs::json_decode_float_array`; the Align implementation PR adds the currently missing `m5.rs::json_decode_bool_array` regression for the already-supported top-level bool path |
 | `json.decode` with `Result<array<Struct>, Error>` | Retain the existing AoS predicate and descriptor, including already-shipped Move element graphs such as a union carrying `array<Part>`. The new direct owned-text selector is never entered; an element containing `string`, `Option<string>`, or `array<string>` is rejected before `OwnedJsonDescV1` construction and allocation | `m5_owned_json.rs::owned_json_record_array_preserves_shipped_move_aos` and `m5_owned_json.rs::owned_json_record_array_owned_text_rejected_before_owned_descriptor` |
 | `json.scan` with `json.scanner<Struct>` | Retain Request 6's recursively Copy scanner-row predicate. An owned record is rejected before scanner construction, descriptor construction, or row-slot allocation | `m5_owned_json.rs::owned_json_scanner_target_rejected_before_allocation` |
 | `json.decode` with `Result<soa<Struct>, Error>`, a union, or a scalar | Unchanged existing target-specific validation; none can select the owned direct-record path | `m5_owned_json.rs::owned_json_non_record_targets_unchanged` |
 | `json.encode` with a fixed `StructArray` source | Retain the existing fixed-array template/unrolled route; `OwnedJsonDescV1` is never selected, and existing borrowed or shipped Move element behavior is unchanged | `m5_owned_json.rs::owned_json_fixed_struct_array_encode_route_unchanged` |
+| `json.encode_bounded` with a fixed `StructArray` source | Retain the existing bounded fixed-array route; the owned direct-record selector is never entered | `m5_owned_json.rs::owned_json_fixed_struct_array_bounded_route_unchanged` |
 | `json.encode` with a direct union/`Enum` source | Retain the existing shape-directed union route; `OwnedJsonDescV1` is never selected, including for shipped Move union payloads | `m5_owned_json.rs::owned_json_union_encode_route_unchanged` |
+| `json.encode_bounded` with a direct union/`Enum` source | Retain the existing bounded union route and limit semantics; `OwnedJsonDescV1` is never selected | `m5_owned_json.rs::owned_json_union_bounded_route_unchanged` |
 
 The implementation must keep the existing all-borrowed `json_struct_fields_ok_rec`, the existing AoS
 descriptor route, the existing top-level scalar-array decoder, and the Request 6 scanner ownership
@@ -4345,8 +4417,13 @@ The public contract is:
    must explicitly call `canonical.clone()` to obtain a free-standing `string` before crossing an
    arena boundary or persisting the bytes. Field declaration order, scalar formatting, string
    escaping, embedded NUL, and text-array order use the owned-path grammar defined below.
-6. JSON field/type validation is compile-time and the encode operation is non-fallible after a valid
-   descriptor is compiled; it does not perform consumer artifact validation or file commit. A future
+   `json.encode_bounded` accepts the identical graph and ordered plan, then an exact `i64`
+   inclusive byte limit. A negative limit or first byte beyond it returns `Error.Invalid` with no
+   partial value; success owns one free-standing `string` whose bytes are identical to unbounded
+   encode. It borrows and never mutates or consumes the source.
+6. JSON field/type validation is compile-time and unbounded encode is non-fallible after a valid
+   descriptor is compiled; bounded encode has only the Request 12 limit errors above. Neither
+   operation performs consumer artifact validation or file commit. A future
    consumer owns its separate validation, output clone, and persisted-artifact boundary. Runtime
    decode returns the existing `Error` for malformed input and follows the deterministic cleanup
    order below.
@@ -4422,6 +4499,20 @@ The public contract is:
    natural-layout mode and algorithm, field order, signed and unsigned integer payload mappings,
    payload widths, physical payload/tag offsets, layout values, allocation tags, drop tags, and
    rejection of each malformed, mismatched, or trailing boundary.
+   The target-local descriptor is never serialized naked. Interface format 7 adds the sorted
+   accepted non-generic exported-record descriptor list after structs and before enums and carries
+   each descriptor in `OwnedJsonInterfaceEnvelopeV1`. That envelope binds the canonical LLVM target
+   triple, object format, 64-bit little-endian pointer/string/array/`Option<string>` ABI cells, their
+   existing `Hash128`, and the exact descriptor length before any offset is trusted. Format 6 rejects
+   as `UnknownVersion(6)` before list parsing. Concrete consumer monomorphs and private/current-unit
+   records construct the same target envelope into structural MIR/implementation identity instead
+   of the public interface hash. The independent x86_64 golden is a 36-byte ABI prefix, 16-byte hash,
+   4-byte descriptor length, and the 214-byte inner descriptor: 270 envelope bytes total.
+   Full-range unsigned encode adds exactly one keyed runtime record,
+   `BuilderWriteUint -> align_rt_builder_write_uint(*mut Builder, u64)`, reusing LLVM ABI A66
+   `void @SYM(ptr, i64)` with unsigned Rust interpretation. The implementation changes the native
+   inventory from 293 to 294 keyed records, 306 to 307 base records, and 314 to 315 maximum probe
+   exports; registry, declaration, Rust export, selection, and parity owners land atomically.
 8. Allocation remains explicit at the decode/encode boundary: no hidden global arena, JSON value
    object, private application encoder, automatic conversion between `array<string>` and `array<str>`,
    new Request 9 top-level owned-text record-array decoder, or nested owned aggregate codec is added.
@@ -4436,24 +4527,31 @@ The public contract is:
    | --- | --- |
    | `OD` | direct owned-record `json.decode` |
    | `OE` | direct owned-record `json.encode` |
+   | `OEB` | direct owned-record `json.encode_bounded` |
    | `BD` | existing direct borrowed-record `json.decode` |
    | `SD` | existing bare scalar `json.decode` (`int`, `float`, or `bool`) |
    | `AD` | existing top-level scalar-array `json.decode` (`array<i64>`, `array<f64>`, or `array<bool>`) |
    | `BE` | existing borrowed direct-record `json.encode` |
+   | `BEB` | existing borrowed direct-record `json.encode_bounded` |
    | `FE` | existing fixed `StructArray` `json.encode` |
+   | `FEB` | existing fixed `StructArray` `json.encode_bounded` |
    | `UD` | existing direct union/`Enum` `json.decode` |
    | `UE` | existing direct union/`Enum` `json.encode` |
+   | `UEB` | existing direct union/`Enum` `json.encode_bounded` |
    | `DOC` | existing `json.doc` |
    | `SCAN` | existing `json.scan` |
    | `AOS` | existing `array<Struct>` `json.decode` |
    | `SOA` | existing `soa<Struct>` `json.decode` |
 
-   Let `J = {OD, OE, BD, SD, AD, BE, FE, UD, UE, DOC, SCAN, AOS, SOA}`. The required policy is
-   the full unordered Cartesian product `J × J`, including the diagonal: all 91 class pairs are
+   Let `J = {OD, OE, OEB, BD, SD, AD, BE, BEB, FE, FEB, UD, UE, UEB, DOC, SCAN, AOS, SOA}`.
+   The required policy is the full unordered Cartesian product `J × J`, including the diagonal:
+   all 153 operation-variant pairs are
    supported concurrently, neither serialized nor rejected before side effects. Each class's
    listed target variants is exercised, so the matrix explicitly includes existing-only pairs such
    as `BD + AD`, `DOC + SCAN`, and `FE + UE`, as well as aggregate-plus-aggregate and
-   aggregate-plus-focused pairs. Direct owned decode and direct owned encode keep parser,
+   aggregate-plus-focused pairs. Every encode target includes unbounded/unbounded,
+   unbounded/bounded, and bounded/bounded overlap. Direct owned decode and both owned encode
+   variants keep parser,
    destination, temporary-owner, and output-builder state in caller-local storage; immutable
    descriptor tables may be shared, but no mutable codec or allocator state is process-global. Every
    pair retains its own input/output ownership and result semantics; existing entrypoints keep
@@ -4566,12 +4664,13 @@ Deterministic validation and failure order is:
 
 | Order | Validation |
 | --- | --- |
-| 1 | Compile-time parser/import/arity and expected-record inference |
-| 2 | Compile-time direct declared field grammar, ownership classification, `DropPlan`, allocation mode, and interface identity; mixed or unsupported aggregate graphs reject before allocation |
-| 3 | Recoverable runtime decode syntax/duplicate/schema/range validation in the existing parser order; on recoverable failure, direct-field cleanup of already-live owners; capacity overflow and allocator failure take the separate terminal-abort policy |
-| 4 | Successful decode result construction and Move transfer; raw `Result<OwnedRecord, Error>` bind, parameter, return, reassignment, branch-join, and `map_err` paths use the pinned recursive Move carrier and are checked as ordinary ownership transfers |
-| 5 | Compile-time encode descriptor validation, then non-fallible canonical field-order emission into the existing output region |
-| 6 | Consumer-only output clone, artifact validation, and file commit after `json.encode`; these are not Request 9 runtime errors |
+| 1 | Compile-time parser/import/capability/arity and expected-record inference |
+| 2 | Select the owned route only from a direct owned-text leaf; once selected, reject `layout(C)`, then `align(N)` |
+| 3 | Validate fields in source order; within one field resolve the type, outer constructor, then exact integer width/sign or `string` payload. The first field failure is the sole graph diagnostic |
+| 4 | Validate natural layout, recursive `DropPlan`, free-standing allocation mode, target-bound interface identity, and decode input type in that order |
+| 5 | Recoverable runtime decode UTF-8/string grammar, then object syntax/duplicate/shape/range/array-element failures in input order, missing fields, trailing bytes, cleanup, and successful Move publication |
+| 6 | Encode validates source place/target, then the same selector/attribute/source-field/layout/Drop/allocation/interface sequence, then canonical parts; bounded encode checks/evaluates its exact-`i64` limit only afterward |
+| 7 | Consumer-only output clone, artifact validation, and file commit after encode; these are not Request 9 runtime errors |
 
 ### Ownership closure matrix
 
@@ -4594,7 +4693,7 @@ implementation.
 | Case | Exact owner | Exact regression |
 | --- | --- | --- |
 | Owned-path selection and field formation | `../align/crates/align_sema/src/lib.rs` owned-path selector beside `json_struct_fields_ok_rec`/`is_field_ok`, plus direct JSON descriptor validation | `m5_owned_json.rs::owned_text_field_formation_and_inference` covers the unchanged all-borrowed route, one-owned-leaf selection, Copy `int`/`bool`, `string`, direct `Option<string>`, direct `array<string>`, owned-path `float` rejection, missing expected type, mixed `str`/`array<str>`, nested-record, enum, and unsupported-option rejection before allocation; `m5_owned_json.rs::owned_json_copy_scalar_width_sign_range_and_bool` covers every accepted integer width/sign with `0 = signed` and `1 = unsigned`, including the full `u64` range and `u64::MAX` encode vector, range rejection, and boolean decode/encode; the same formation test rejects owned-path `layout(C)` and `align(N)` before allocation |
-| Operation-specific target routing | `../align/crates/align_sema/src/lib.rs` direct-record selector plus unchanged `check_json_decode`, `check_json_scan`, fixed-`StructArray` encode, and union target gates | `m5_owned_json.rs::owned_json_direct_record_target_selects_owned_path`, `owned_json_direct_record_encode_route`, `owned_json_record_array_preserves_shipped_move_aos`, `owned_json_record_array_owned_text_rejected_before_owned_descriptor`, `owned_json_scanner_target_rejected_before_allocation`, `owned_json_non_record_targets_unchanged`, `owned_json_fixed_struct_array_encode_route_unchanged`, and `owned_json_union_encode_route_unchanged` prove the new direct owned-text graph cannot widen scanner, new AoS, SoA, union, scalar, fixed-array, or existing Move-union routes |
+| Operation-specific target routing | `../align/crates/align_sema/src/lib.rs` direct-record selector plus unchanged `check_json_decode`, `check_json_scan`, fixed-`StructArray` encode, union, and all bounded target gates | `m5_owned_json.rs::owned_json_direct_record_target_selects_owned_path`, `owned_json_direct_record_encode_route`, `owned_json_direct_record_bounded_encode_route`, `owned_json_bounded_parity`, `owned_json_record_array_preserves_shipped_move_aos`, `owned_json_record_array_owned_text_rejected_before_owned_descriptor`, `owned_json_scanner_target_rejected_before_allocation`, `owned_json_non_record_targets_unchanged`, fixed-array unbounded/bounded route owners, and union unbounded/bounded route owners prove the new direct owned-text graph cannot widen scanner, new AoS, SoA, union, scalar, fixed-array, or existing Move-union routes |
 | Top-level scalar-array target routing | `../align/crates/align_sema/src/lib.rs` `check_json_decode` `Ty::DynArray` branch and its existing `JsonDecodeArray` lowering; no `OwnedJsonDescV1` construction | Existing `m5.rs::json_decode_scalar_array` and `m5.rs::json_decode_float_array`, plus the new Align implementation regression `m5.rs::json_decode_bool_array` required because the pinned suite has only field-level bool-array coverage, cover the existing `array<i64>`, `array<f64>`, and `array<bool>` targets; `m5_owned_json.rs::owned_json_same_process_entrypoint_matrix` includes scalar-array decode as an independent concurrent entrypoint column |
 | Direct `array<string>` type and `DropPlan` | `../align/crates/align_sema/src/lib.rs` pass 0b-2, `struct_is_move`/`drop_plan`; `../align/crates/align_codegen_llvm/src/lib.rs` field/drop lowering | `m5_owned_json.rs::owned_text_array_field_drop_plan` proves the direct array spine/owned-string element descriptor and rejects `Option<array<string>>`, nested arrays, and unsupported elements |
 | Owned scalar text decode and free-standing allocation | `../align/crates/align_mir/src/lib.rs` JSON decode lowering, `../align/crates/align_runtime/src/lib.rs` owned string allocation, `../align/crates/align_sema/src/lib.rs` region/move checks, and the required allocation-mode update in `../align/docs/impl/08-memory-model-v2.md` / `../align/docs/impl/core-design/json.md` | `m5_owned_json.rs::decode_owned_string_field_detaches_from_input` drops the input before reading the result and returns/moves the free-standing owner; `m5_owned_json.rs::owned_decode_inside_arena_free_standing_result`, `owned_decode_inside_arena_source_drop_and_move_out`, and `owned_decode_inside_arena_failure_cleanup` are the required ownership tests for the newly authorized free-standing JSON terminal inside an arena; `m5_owned_json.rs::owned_encode_output_region_and_clone_boundary` separately rejects an arena-backed encoded view escaping |
@@ -4606,20 +4705,20 @@ implementation.
 | Deterministic owned-value cleanup order | `../align/crates/align_codegen_llvm/src/lib.rs` canonical `DropPlan`/record cleanup and `../align/crates/align_runtime/src/lib.rs` direct decoded-owner cleanup | `m5_owned_json.rs::owned_json_cleanup_order_is_declaration_and_element_order` uses permuted JSON key order and injected failure/ordinary `Drop` paths to assert source declaration-order field cleanup, ascending initialized `array<string>` element-index cleanup, optional payload cleanup within its field, and array-spine release after its elements; all initialized owners are released exactly once |
 | Move-in, move-out, return, and source nulling | `../align/crates/align_sema/src/lib.rs` MoveCheck and `../align/crates/align_mir/src/lib.rs` transfer/null cleanup | `m5_owned_json.rs::owned_json_move_source_null_and_return_cleanup` covers direct `?`, same-scope `match`, raw `Result<OwnedRecord, Error>` bind/parameter/return/reassignment, `map_err`, and exactly-once source nulling/cleanup |
 | Reassignment, replacement, and all control-flow joins | `../align/crates/align_sema/src/lib.rs` `MoveCheck`/`BorrowState` assignment state and `../align/crates/align_mir/src/lib.rs` `drop_old`, branch/loop cleanup CFG | `m5_owned_json.rs::owned_option_replacement_drop` and `m5_owned_json.rs::owned_json_all_control_flow_cleanup` cover `if`, `match`, `else`, `?`, `map_err` mapper early exit, value-carrying `break`, loop back-edges, early return, malformed input, and source/owner reset; `continue` is N/A because Align has no such construct |
-| Owned encode field order and escapes | `../align/crates/align_runtime/src/lib.rs` declared encoder descriptor and string writer | `m5_owned_json.rs::encode_owned_json_canonical_bytes` proves declaration order, the inline owned-path grammar vectors, escapes, embedded NUL, empty arrays, text-array order, and no source mutation |
+| Owned encode field order, signedness, limits, and escapes | typed MIR `IntHole`; `BuilderWriteInt` plus new keyed A66 `BuilderWriteUint`; declared encoder descriptor and string/array writers | `template_unsigned_decimal_boundaries`, `m5_owned_json.rs::encode_owned_json_canonical_bytes`, and `owned_json_bounded_parity` prove every integer width/sign including `u64::MAX`, unbounded/bounded byte parity and exact/rejected limits, declaration order, escapes, embedded NUL, empty arrays, text-array order, and no source mutation |
 | Encode output region and explicit persistence clone | `../align/crates/align_sema/src/lib.rs` region escape checks and `../align/crates/align_runtime/src/lib.rs` output builder | `m5_owned_json.rs::owned_encode_output_region_and_clone_boundary` proves arena result expiry, outside hidden-owner lifetime, explicit clone before persistence, and rejection of a dangling return |
 | Encode/decode semantic and byte round-trip | `../align/crates/align_mir/src/lib.rs` JSON nodes plus runtime codec | `m5_owned_json.rs::owned_json_encode_decode_encode_identity` proves semantic equality and byte identity while source, decoded, and cloned-output owners remain live |
 | Input/source lifetime boundary and mixed records | `../align/crates/align_sema/src/lib.rs` region/drop checks | `m5_owned_json.rs::owned_decode_has_no_input_region_dependency` drops input before using every owned field and rejects treating a mixed borrowed `str` record as `Owned*` |
-| Generic and imported graph parity | `../align/crates/align_sema/src/lib.rs` substitution; `../align/crates/align_driver/src/lib.rs` interface emission | `generics.rs::owned_json_direct_grammar_substitution` and `per_unit.rs::owned_json_imported_direct_graph_parity` cover only accepted direct shapes and equivalent rejection |
+| Generic and imported graph parity | `../align/crates/align_sema/src/lib.rs` substitution; `../align/crates/align_driver/src/lib.rs` format-7 interface emission and target envelope | `generics.rs::owned_json_direct_grammar_substitution` and `per_unit.rs::owned_json_imported_direct_graph_parity` cover only accepted direct shapes, consumer-created concrete monomorph envelopes, non-generic exported descriptor-list entries, and equivalent rejection |
 | Structural identity, natural layout, and cache | `../align/crates/align_driver/src/lib.rs` existing structural/interface cache identity plus the new natural-layout-only `OwnedJsonDescV1` descriptor; `../align/crates/align_sema/src/lib.rs` layout validation; `../align/crates/align_codegen_llvm/src/lib.rs` `logical_to_physical`, `field_byte_offset`, and target `Option` payload/tag offsets | `cache_codegen.rs::owned_json_descriptor_golden_and_definition_edit_revert_identity` proves the natural-layout header and algorithm, fixed tags/widths, explicit `0 = signed`/`1 = unsigned` payload mapping, signed/unsigned golden fields including `u64::MAX`, record-base-relative physical payload/tag offsets for a nonzero-position optional field, target-local sizes/alignments, cold hit, definition edit miss, revert identity, explicit `layout(C)`/`align(N)` rejection, and stale descriptor rejection; `interface_param_modes.rs::owned_json_descriptor_physical_layout_mismatch_rejected` rejects an algorithm, payload offset, optional tag offset, or layout mismatch before field access, cleanup, or codegen |
-| ABI descriptor and allocation parity | `../align/crates/align_driver/src/lib.rs` interface serialization, `../align/crates/align_codegen_llvm/src/lib.rs` ABI/drop descriptors, and `../align/crates/align_runtime/src/lib.rs` ownership flags | `interface_param_modes.rs::owned_json_direct_drop_descriptor_abi`, `m5_owned_json.rs::owned_json_whole_program_per_unit_allocation_parity`, and `m5_owned_json.rs::owned_json_allocation_transfer` |
+| ABI descriptor, interface version, runtime writer, and allocation parity | format-7 interface codec and `OwnedJsonInterfaceEnvelopeV1`; codegen ABI/drop descriptors; new `BuilderWriteUint` key/export; runtime ownership flags | independent 270-byte envelope/hash and 214-byte descriptor goldens, v6 `UnknownVersion(6)` before list parse, every list/envelope/descriptor mutation, key↔symbol and registry-count parity, `interface_param_modes.rs::owned_json_direct_drop_descriptor_abi`, `m5_owned_json.rs::owned_json_whole_program_per_unit_allocation_parity`, and `owned_json_allocation_transfer` |
 | Capacity overflow | `../align/crates/align_runtime/src/lib.rs` checked element-count/byte-count arithmetic for owned array decode and checked builder length/growth arithmetic for owned encode | `m5_owned_json.rs::owned_json_decode_capacity_overflow_terminal_child` and `m5_owned_json.rs::owned_json_encode_capacity_overflow_terminal_child` cover decode growth and encode growth independently; each proves terminal non-zero exit and no successful partial record/string |
 | Allocator failure | `../align/crates/align_runtime/src/lib.rs` allocator/cleanup and the Align test-only child-process failpoint | `m5_owned_json.rs::owned_json_allocation_transfer` covers recoverable parse/type failures; `m5_owned_json.rs::owned_json_allocator_failure_terminal_child` records the distinct terminal allocator-abort policy for direct fields, text-array growth, and output-builder growth and explicitly makes no cleanup-after-abort claim |
-| Same-process and process concurrency policy | per-call parser, destination, temporary-owner, and output-builder state in `../align/crates/align_runtime/src/lib.rs`; immutable descriptor tables may be shared; no process-global mutable codec state or codec-instance API is added | `m5_owned_json.rs::owned_json_same_process_entrypoint_matrix` runs the full 91-pair unordered `J × J` matrix, including diagonal and existing-only pairs (`BD + AD`, `DOC + SCAN`, `FE + UE`) and every target variant named in item 9; every pair is supported concurrently, not serialized or pre-rejected; `cache_parallel.rs::owned_json_two_processes` confirms independent processes have the same no-shared-state policy |
+| Same-process and process concurrency policy | per-call parser, destination, temporary-owner, and output-builder state in `../align/crates/align_runtime/src/lib.rs`; immutable descriptor tables may be shared; no process-global mutable codec state or codec-instance API is added | `m5_owned_json.rs::owned_json_same_process_entrypoint_matrix` runs the full 153-pair unordered `J × J` operation-variant matrix, including diagonals, existing-only pairs (`BD + AD`, `DOC + SCAN`, `FE + UE`), and every unbounded/unbounded, unbounded/bounded, bounded/bounded, and cross-target pair named in item 9; every pair is supported concurrently, not serialized or pre-rejected; `cache_parallel.rs::owned_json_two_processes` confirms independent processes have the same no-shared-state policy |
 | Existing borrowed and shipped Move JSON compatibility | `../align/crates/align_sema/src/lib.rs` target-specific predicates plus existing runtime template/descriptor/union paths | `m5.rs::json_decode_struct_array_len`, `json_decode_struct_array_malformed_errors`, existing `owned_tagged_payloads.rs::retained_result_with_recursive_move_payload_is_supported`, `m5_owned_json.rs::owned_json_record_array_preserves_shipped_move_aos`, `owned_json_fixed_struct_array_encode_route_unchanged`, `owned_json_union_encode_route_unchanged`, and Request 7's escaped-view tests remain green; no new `OwnedJsonDescV1` route is used |
 | Metric / benchmark decision | Request 9 public contract item 11; allocation instrumentation in `../align/crates/align_runtime/src/lib.rs` and whole-program/per-unit test harness | `m5_owned_json.rs::owned_json_whole_program_per_unit_allocation_parity` is the required correctness measurement; no performance benchmark or threshold is claimed because this is a correctness prerequisite, and a later optimization must register its own workload and baseline |
 | First expected consumer and lifecycle | `docs/specs/roadmap.md` named `C7-PersistedResult` slice, `docs/specs/c7-persisted-result.md`, and Request 9 lifecycle metadata | The C7 design names direct `string` and direct `Option<string>` records and reclassifies Request 9 as blocking for C7 implementation/adoption; Request 9 remains independently implementable only in Align, while C7 waits for its named Align commit and real-client gate |
-| Target ABI baseline and target-local descriptor exchange | `../align/crates/align_driver/src/lib.rs` target-triple/interface identity, `../align/crates/align_codegen_llvm/src/lib.rs` natural layout, and `../align/docs/impl/11-release-distribution.md` supported release environments | `interface_param_modes.rs::owned_json_target_abi_descriptor_matches_target` runs the required `x86_64-unknown-linux-gnu` baseline and the `aarch64-unknown-linux-gnu`/`aarch64-apple-darwin` release-target acceptance environments; `interface_param_modes.rs::owned_json_target_abi_mismatch_rejected` rejects a target/ABI mismatch before code generation |
+| Target ABI baseline and target-local descriptor exchange | `../align/crates/align_driver/src/lib.rs` target-triple/interface identity and exact envelope, `../align/crates/align_codegen_llvm/src/lib.rs` natural layout, and `../align/docs/impl/11-release-distribution.md` supported release environments | `interface_param_modes.rs::owned_json_target_abi_descriptor_matches_target` runs the required `x86_64-unknown-linux-gnu` baseline and the `aarch64-unknown-linux-gnu`/`aarch64-apple-darwin` release-target acceptance environments; independent envelope golden and `owned_json_target_abi_mismatch_rejected` reject triple/object-format/ABI/hash mismatches before descriptor length or code generation |
 | Normative syntax and baseline declaration | `../align/crates/align_fmt` parser/formatter for the proposed source fixture; no product path consumes it | `docs/examples/request9-owned-json-syntax.align` passes the pinned `alignc fmt` parser-only check; declarations and positional calls are shown as separate blocks in this register. The required platform baseline and release-target environments are the target-ABI tests above; parser formatting remains a separate syntax check |
 | CLI/build and option/environment boundaries | N/A: Request 9 adds no CLI flag, build setting, profile, artifact-selection input, option state, environment variable, or persistent boundary; only source declarations and explicit function arguments are inputs, and no ambient configuration may affect the route | N/A by design; there is no new accepted/rejected state to isolate or preserve across a configuration boundary, while the pinned compiler/runtime revision remains a development prerequisite rather than a runtime option |
 
@@ -4679,13 +4778,16 @@ Before Align marks Request 9 `ALIGN_MERGED`, focused tests must prove:
    embedded NUL, the full `u64::MAX` decimal boundary, empty text arrays, multibyte text, and all
    three optional-note states without consuming or mutating the source. A width-64 unsigned field
    must use a full-range unsigned writer and never pass through a signed `i64` intermediate.
+   `json.encode_bounded` accepts the same graph, produces byte-identical success at exact fit, and
+   returns `Error.Invalid` for a negative or first-byte-over-limit ceiling without a partial value.
 6. `decode -> encode -> decode` preserves semantic owned values and `encode` bytes while the source
    and output owners are independently live; the output does not borrow source text.
 7. Generic, imported/per-unit, cache-cold/edit/revert, `OwnedJsonDescV1` ABI descriptor including
    the pinned natural-layout algorithm, every logical field's physical payload offset and optional
    tag offset, explicit signed/unsigned descriptor tags, raw-`Result` bind/parameter/return/reassignment and typed
    `map_err` transfer, the complete same-process entrypoint
-   matrix including all 91 unordered pairs and every target variant in item 9, existing scalar-array
+   matrix including all 153 unordered operation-variant pairs and every unbounded/bounded target
+   variant in item 9, existing scalar-array
    target regressions (`m5.rs::json_decode_scalar_array`, `json_decode_float_array`, and the new
    Align implementation regression `json_decode_bool_array`), existing Move AoS/fixed-array/union
    target compatibility, reconciliation of the stale `option-result.md`/`json.md` Move-result
@@ -4720,7 +4822,7 @@ Before Align marks Request 9 `ALIGN_MERGED`, focused tests must prove:
     target acceptance environments in item 12 are exercised by the named interface regressions.
 
 12. Request 9 introduces no CLI/build input and no option/environment isolation boundary. Its
-    source declarations and explicit `json.decode`/`json.encode` arguments are the complete input
+   source declarations and explicit `json.decode`/`json.encode`/`json.encode_bounded` arguments are the complete input
     surface; no ambient configuration may change route selection, descriptor identity, allocation,
     parsing, encoding, or cleanup. The closure matrix records both dimensions as N/A with these
     reasons, and the pinned compiler/runtime revision is not treated as a runtime option.
@@ -4956,15 +5058,60 @@ encode unboundedly and then discard an oversized string.
 ## Request 13 — `core.json`: recursive owned C6 artifact graphs
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6a1/C6a2 canonical artifact declarations and every C6 command that persists a nested result
 Independent work that may continue: C6b/C6c pure rendering and scoring, C6d fixture-only state work, Request 5, Request 7, Request 9, Request 11, Request 12, and any work that does not persist the recursive C6 graph
-Resume condition: Align reviews and merges the exact recursive owned graph below at a named commit; the C6-LIFECYCLE prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then the focused C6a1/C6a2 owned-graph adoption target passes before the wave's one final `make ci`
-Align commit or pull request: pending
+Resume condition: after ALIGN_MERGED, the C6-LIFECYCLE prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then the focused C6a1/C6a2 owned-graph adoption target passes before the wave's one final `make ci`
+Align commit or pull request: design PR #853, merged as `6160d0540174577edf927b34630df9d309ce4395`; implementation PR #854, merged as `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`
 align-llm verification: pending
 ```
+
+### Align implementation (2026-08-18 — merged #854)
+
+PR #854 ships the accepted recursive owned JSON graph for the existing inferred
+`json.decode`, `json.encode`, and `json.encode_bounded` surface. It supports the
+target-bound C6 graph of signed and unsigned 8/16/32/64-bit integers, `bool`,
+owned `string`, records, one `Option` layer, and dynamic arrays of scalar,
+string, or record elements. The checked-in fixture covers the exact 50-record,
+543-field C6 declaration graph; unsupported borrowed views, nested options,
+composite array elements, nested dynamic arrays, fixed arrays, floats, enums,
+explicit layouts, and other constructors remain rejected before descriptor
+construction or allocation.
+
+Decode materializes a free-standing `Static` result independent of the input
+and of `arena {}`. Reachable strings, owning option payloads, array spines, and
+owning elements are recursively transferred and cleaned exactly once across
+success, failure, moves, replacement, returns, joins, and early exits. The
+implementation replaces V1 with target-bound `OwnedJsonGraphDescV2` and
+`OwnedJsonInterfaceEnvelopeV2`, advances interface format 7 to 8, uses
+structural complete-graph identity for interface/per-unit/cache validation, and
+leaves the runtime ABI export counts unchanged. Constructor depth is bounded at
+128 (root depth one, with every record, option, and dynamic-array edge counted),
+including deeper paths through shared DAG nodes.
+
+The accepted Align design is `../align/docs/impl/25-recursive-owned-json-plan.md` at
+`6160d0540174577edf927b34630df9d309ce4395`. It keeps the existing inferred
+`json.decode`, `json.encode`, and `json.encode_bounded` surface and selects one
+free-standing route for a nonempty natural-layout record whose complete acyclic
+graph contains an owned `string`. The closed graph admits signed/unsigned
+8/16/32/64-bit integers, `bool`, owned `string`, records, one `Option` layer, and
+dynamic arrays of scalar/string/record elements; it rejects borrowed views,
+nested options, composite array elements, floats, enums, explicit layouts, and
+every other constructor before allocation. Constructor depth is bounded at 128.
+
+The design pins the clean C6 source provenance and an Align-owned exact
+50-record/543-field declaration manifest, selecting the seven-field C6b-memory
+`ContextPolicy`; sibling source is never a compiler-test input. It atomically
+replaces flat `OwnedJsonDescV1` with target-bound `OwnedJsonGraphDescV2` and
+`OwnedJsonInterfaceEnvelopeV2`, advances interface format 7 to 8 without a
+compatibility decoder, and keeps the runtime ABI at 294 keyed / 307 base / 315
+maximum exports. A103 decode and A80 encode remain the runtime calls. The
+implementation must land the descriptor, interface/cache, HIR/MIR, allocation,
+recursive cleanup, canonical-byte, C6 graph, and concurrency matrix as one
+consumer-complete capability; until then Request 9's flat route is the shipped
+behavior.
 
 ### Motivation and current-state evidence
 
@@ -4980,13 +5127,26 @@ workaround.
 ### Requested capability
 
 Extend the declared-record JSON route with one explicitly owned C6 graph selector. The accepted
-graph is finite, acyclic, and consists only of Copy scalar leaves, owned `string`, declared records,
-`Option<T>` of an accepted graph, and `array<T>` of an accepted graph. It must cover the exact C6
-records named in `docs/specs/c6-prompt-context-optimizer.md` §4.5, including prompt variants,
-scope/policy records, snapshots, task rows, aggregates, reasons, environment identity, and the
-canonical gate envelope. `str`, slices, resources, region-bound values, functions, raw values,
-builders, enums, and unsupported floating or composite forms are rejected before allocation unless
-the C6 ledger explicitly names them as a Copy scalar.
+graph is finite, acyclic, and exactly:
+
+```text
+Record  := nonempty natural-layout declared record with Field+ and no cycle
+Field   := Value
+Value   := Int | Bool | string | Record | Option<Payload> | array<Element>
+Payload := Int | Bool | string | Record | array<Element>
+Element := Int | Bool | string | Record
+Int     := i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64
+```
+
+Nested `Option`, arrays whose elements are options or arrays, nested dynamic arrays, and fixed
+arrays remain outside the element representation. The accepted Align manifest pins all 50 C6
+nominal records and 543 ordered fields, including prompt variants, scope/policy records,
+snapshots, evaluation tasks and limits, task rows, aggregates, reasons, environment identity,
+evidence, activation, and the canonical gate envelope. `str`, `array<str>`, floats, char, enums,
+`Result`, slices, tuples, boxes, resources, raw values, functions, builders, SoA,
+`layout(C)`, `align(N)`, and every other constructor reject before descriptor construction or
+allocation. The root is at depth one; every record, Option, and dynamic-array edge increments
+depth, 128 is accepted, and 129 rejects at compile time.
 
 The public source keeps expected-type inference and existing `json.decode`/`json.encode` names;
 there is no type argument syntax, dynamic JSON value, implicit clone, or second wire format. A
@@ -5022,6 +5182,8 @@ The Align design and implementation must prove:
 
 ### References
 
+- `../align/docs/impl/25-recursive-owned-json-plan.md` — accepted exact grammar, C6 manifest,
+  descriptor/envelope bytes, and implementation closure matrix.
 - `../align/docs/impl/core-design/json.md` — current borrowed JSON ownership and descriptor route.
 - `../align/docs/impl/08-memory-model-v2.md` — recursive Move cleanup and region boundaries.
 - `../align/crates/align_sema/src/lib.rs`, `align_mir`, `align_codegen_llvm`, and
@@ -5118,13 +5280,13 @@ The Align design and implementation must prove:
 ## Request 15 — `core.json`: complete decoded-owner transitions
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: Request 7 implementation and immutable pre-work baseline selection; any later JSON change that adds a recoverable failure edge after a declared-record owner becomes live
 Independent work that may continue: Request 7 benchmark-evidence implementation and language design, other Align requests, and align-llm work that does not consume a changed decoded-owner surface
 Resume condition: Align reviews and merges the decoded-owner contract and implementation at a named commit; every focused transition owner below passes before Request 7 selects its immutable baseline or enters IMPLEMENTING, and the later C6-LIFECYCLE pin wave runs `c6-json-decoded-owner-adoption` before `c6-json-escape-adoption` and its final `make ci`
-Align commit or pull request: pending
+Align commit or pull request: decoded-owner cleanup PR #849 merged as `69017961` (merge commit)
 align-llm verification: pending
 ```
 
