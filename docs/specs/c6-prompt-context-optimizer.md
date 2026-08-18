@@ -54,14 +54,15 @@ hypothetical API part of C6:
    rows; this request is an independent prerequisite for the later JSON escape acceptance matrix.
 3. **Request 7 — escaped strings in declared-record JSON.** Typed `json.decode` must decode every
    JSON escape accepted by `json.encode` into declared `str` fields and `array<str>` elements,
-   including nested records and options. This blocks C6a and the JSON-dependent C6 product cells.
-   The merged C6b renderer core deliberately does not decode failure-memory JSONL, so it remains a
-   valid foundation while the consumer is blocked. Escape-free fixtures, `json.doc`, and an application-specific base64
-   wire format are not substitutes for the declared-record round trip. Request 7 is `ALIGN_MERGED`
-   at Align PR #850 (`18301b43d6256349f984e4aaf62e975bf4f42aa0`); its recorded
-   `c6-json-escape-adoption` target remains pending in the C6-LIFECYCLE pin wave. C6c2 does not
-   bypass this request: its pure verifier consumes only records that C6a1/C6a2 have already decoded
-   and content-validated, and its implementation has no JSON reader.
+   including nested records and options. This was a prerequisite for C6a and remains required by
+   JSON-dependent C6 product cells. The merged C6b renderer core deliberately does not decode
+   failure-memory JSONL, so it remains a valid foundation while that deferred consumer is a later
+   C6b cell. Escape-free fixtures, `json.doc`, and an application-specific base64 wire format are
+   not substitutes for the declared-record round trip. Request 7 is `ALIGN_LLM_VERIFIED` at Align
+   PR #850 (`18301b43d6256349f984e4aaf62e975bf4f42aa0`), with `c6-json-escape-adoption` and the
+   final capable gate passing in Align-llm PR #94. C6c2 does not bypass this request: its pure
+   verifier consumes only records that C6a1/C6a2 have already decoded and content-validated, and
+   its implementation has no JSON reader.
 4. **Request 8 — runtime construction of evaluator record arrays.** The pinned `array_builder<T>`
    accepts only scalar elements and owned `string`, while C6f2 must construct runtime-sized arrays
    of declared records such as snapshot requests, task rows, aggregates, and regression reasons.
@@ -70,26 +71,31 @@ hypothetical API part of C6:
    Align provides a visible, ownership-safe construction path for the recursively Copy base record
    shapes, including partial push/build/drop behavior. Request 8 was registered in align-llm PR #32,
    its reviewed design merged in Align PR #799, and its implementation merged in Align PR #801 as
-   `029e27465d79e24cd36d374aae41dca0ec7e6979`. It is `ALIGN_MERGED`; real-client adoption remains
-   the later `ALIGN_LLM_VERIFIED` gate.
+   `029e27465d79e24cd36d374aae41dca0ec7e6979`. Request 8 is `ALIGN_LLM_VERIFIED` after the
+   `c6c2-request8-adoption` owner and final capable gate passed in Align-llm PR #94; the later
+   `c6f2-array-builder-adoption` remains the paired-evaluator consumer's separate evidence.
 5. **Request 13 — recursive owned C6 JSON artifact graphs.** C6 artifacts contain nested records,
    options, runtime-sized arrays, and persistent text. Request 9's intentionally flat owned-text
    route is not sufficient, and the current borrowed JSON route cannot encode a record containing
    owned text fields after its input buffer expires. C6 therefore requires the exact Request 13
    graph and its shipped direct-owned route before C6a1/C6a2; a temporary borrowed wire view is
-   materialized with explicit `.clone()` before its input buffer is dropped.
+   materialized with explicit `.clone()` before its input buffer is dropped. Request 13 is now
+   `ALIGN_LLM_VERIFIED` through the C6a1/C6a2 adoption wave in Align-llm PR #94.
 6. **Request 10 — recursive evaluator record fields.** C6f2 also needs `Option<T>` and nested
    dynamic `array<T>` fields inside those records. Request 8 explicitly excludes them, so Request
    10 owns the separately reviewed recursive `DropPlan`, reallocation, and partial-construction
    extension. Its design merged in Align PR #802 and its implementation merged in PR #804 as
-   `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Both requests are `ALIGN_MERGED`; C6f2 and C6c2 still
-   wait for their named real-client adoption targets and other consumer prerequisites.
+   `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Requests 8 and 10 are `ALIGN_LLM_VERIFIED`
+   through their ordered real-client adoption owners in Align-llm PR #94; C6f2 and C6c2 still
+   require their own consumer qualification and the remaining process/publication prerequisites.
 7. **Request 11 — bounded child-process capture.** The current `std.process.run()` captures
    stdout/stderr without a receiver-selected limit. C6f1, C6f2, and C6g1 must wait for a shipped
    cap that kills/reaps over-limit children before claiming their helper and adapter bounds.
 8. **Request 12 — bounded canonical JSON encoding.** The current `core.json.encode` returns a
    complete owned string and cannot prove the C6 268,435,456-byte result cap before allocation.
-   C6a1 and C6a2 must wait for a shipped bounded canonical encoder.
+   Request 12 is `ALIGN_LLM_VERIFIED` through the C6-LIFECYCLE adoption wave in Align-llm PR #94;
+   C6a1 and C6a2 use that shipped bounded canonical encoder, while later result/evidence writers
+   retain it as a prerequisite.
 9. **Request 14 — exclusive creation and no-replace publication.** C6f2's result/evidence pair
    contract needs an Align-owned exclusive file create and atomic no-replace rename; the current
    `std.fs` surface has create/truncate, write, and remove but no safe publication primitive. C6f2

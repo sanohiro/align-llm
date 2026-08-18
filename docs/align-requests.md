@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-18): Requests 1, 3–6 are CLOSED; Requests 2, 7–13, and 15 are ALIGN_MERGED; Request 14 remains PROPOSED.** Requests 7, 9, and 13 have shipped their Align language/runtime implementations; their align-llm adoption gates remain pending.
+> **Status (2026-08-18): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, and 15 are ALIGN_LLM_VERIFIED; Requests 2, 9, and 11 remain ALIGN_MERGED; Request 14 remains PROPOSED.** Request 2's timeout adoption, Request 9's C7 adoption, and Request 11's C6-EVALUATION adoption remain pending.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -2554,14 +2554,14 @@ provide per-row Drop; those remain outside this request's shipped surface.
 ## Request 7 — `core.json`: escaped strings in declared-record decoding
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
 Independent work that may continue: C6 design and implementation that does not consume the unpinned surface, other independently demonstrated Align prerequisite requests, and C7 design that does not pre-commit C6 artifacts
-Resume condition: after FRESH-WORKER and FRESH-IMAGE have merged and the required immutable Git 2.45.0 compatibility image/job passes, the C6-LIFECYCLE prerequisite wave pins the shipped Align release with its other merged prerequisites, runs the focused `c6-json-escape-adoption` target outside routine aggregates, and then runs one final `make ci`; C7's required aarch64 Linux and aarch64 macOS environments additionally require their named platform profiles before they can claim adoption; this closes only the escape prerequisite
+Resume condition: satisfied by the C6-LIFECYCLE pin wave and Align-llm PR #94; the named escape adoption and final capable gate passed, while C7's separately named aarch64 Linux and aarch64 macOS environments remain independent
 Align commit or pull request: benchmark-evidence design PR #813 merged as `734ae3ab20164c02cee56101bb3eeb2b452269ed`; benchmark-input prerequisite PR #815 merged as `58dbb21818edb6d1bb0e2c039e6bee066f877456`; evidence manifest foundation PR #816 merged as `7db1af8cb4ae69fb88506e74b4893f92ed609fd8`; canonical JSON primitive codec PR #817 merged as `4ec35dfe9fca5ba7577ceb7c8c36ae73dc6c1929`; typed Report/Body schema PR #818 merged as `41ce4f930a4105584672153f44cbb646d4fcbb49`; SSHSIG framing PR #820 merged as `19fbc786e92bf1e5ed5f4e4cd52a93d54fd56456`; benchmark-input hardening PR #821 merged as `9aef62a8a6c0e26517a042738c74b0689583c1fc`; strict CLI boundary PR #822 merged as `0d85f50ff14a3383355c14e2d654e5bbedbe56b5`; manifest/profile binding PR #823 merged as `5c5f0187ee99a152b07cfd72e201f5e2528172b2`; raw Git object codec PR #825 merged as `3c6cc8404ad9cf56dd648523936491c11ba9cca1`; prepared benchmark boundary PR #827 merged as `6ba1036fef680e2416c342077b6eff4adaf01e57`; Git batch codec PR #828 merged as `6adfa13db29283f5d289f633a93af16589737258`; pinned Git process boundary PR #830 merged as `5a6ae64b1c9d651b749691b6a8877c07a575ecbe`; revision/tree binding PR #831 merged as `956d943d23d569cd2f799b8871e72b4576c36162`; verified source materialization PR #832 merged as `1c9e2e9a3506573bee466eb940c47c5ec03a5360`; host-profile validation PR #833 merged as `f684b245707997bc114d7cc96f9ce8fe56392ebf`; container launch boundary PR #834 merged as `8ce95870bcf5f808f603e28eaf945003b7269dcc`; image/toolchain qualification PR #835 merged as `95c142f32429cde7dfa5dc7f30c23f4bf64319ca`; native host/daemon validation PR #836 merged as `3eaa2176cbac2f8890d6335bc27495a9a7599bc1`; monitor lifecycle core PR #837 merged as `0e39c8b933929e8af30ac142f16212712f5d0e40`; prepared execution owners PR #838 merged as `62acdd892c5d3c40dbe316cf8597fb40c14cbba9`; adversarial process/schedule/cleanup/exclusive-run owners PR #839 merged as `a9999aee0c3b5e8f57d99c074ba0d0768d7fe01a`; merge-race owners PR #840 merged as `04750821b417f426993de2f152dc59d35618e6e5`; controller/verifier execution PR #842 merged as `6812ced53015e50864fa910e9ca6e4b2afc4664b`; native host/daemon qualification PR #843 merged as `15e1fa9d7bfe94ec085630ec51283ff23683e02a`; native image self-inspection PR #844 merged as `88853de1fd96ac8e35c3542d69971f8370992ce2`; cryptographic key-process integration PR #845 merged as `dff1efdd49b8fdc6ea553661fb8a48ff357b242d`; native performance measurement PR #846 merged as `31ad135a0516bc110658391e5a87745661908d0f`; controller/report handoff PR #847 merged as `293f0afadcf5e89b9df56ef30c53874c154defe3`; merge verification PR #848 merged as `a9ba850e4ba40a583c838879868be67922aa4197`; decoded-owner prerequisite PR #849 merged as `69017961c65bec15ca39ef522813683f963fd896`; Request 7 language design and implementation PR #850 merged as `18301b43d6256349f984e4aaf62e975bf4f42aa0`
-align-llm verification: every Align prerequisite and the Request 7 language/runtime implementation are ALIGN_MERGED; the focused `c6-json-escape-adoption` target and final `make ci` remain pending in the C6-LIFECYCLE pin wave
+align-llm verification: PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`; `.align-revision` pins `a440970ac81118ed2169f600b2b3c06fcb9cde7`; ordered `c6-json-escape-adoption` passed, and the final capable `make ci` passed in CI run `32109434515` at head `954258e24d93300dcdb78f8280de8868cf1ced56`; main run `32111007638` reused the exact merge-bound evidence
 ```
 
 ### Align language implementation (2026-08-17 — merged #850)
@@ -2579,9 +2579,8 @@ or a second persisted format. The canonical fixture and closure matrix are owned
 `bench/json_escape/fixtures/canonical.json` and `docs/impl/core-design/json.md`.
 
 The Align-side release build completed on merged `main` with exactly
-`cargo build --release --workspace`. Request 7 remains pending only for the sibling repository's
-exact pin/adoption target and final `make ci`; those steps own advancement to
-`ALIGN_LLM_VERIFIED` and `CLOSED`.
+`cargo build --release --workspace`. Align-llm PR #94 then passed Request 7's exact pin/adoption
+target and final capable `make ci`; the register now records Request 7 as `ALIGN_LLM_VERIFIED`.
 
 ### Align benchmark-evidence implementation progress (2026-08-16)
 
@@ -3717,14 +3716,14 @@ product slice starts only after every other separately registered JSON prerequis
 ## Request 8 — `core.array_builder`: runtime construction of declared-record arrays
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension, and C6c2 cannot consume its runtime-sized declared-record result arrays until the named real-client adoption and shared consumer pin wave pass
 Independent work that may continue: C6c2 design and other application designs, pure codecs, renderers, scorers, activation slices, Request 5, Request 6, Request 7, and any implementation that does not construct a runtime-sized declared-record array
-Resume condition: The next C6 consumer prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` once with Request 8, Request 10, and the other merged prerequisites needed by that consumer. C6-LIFECYCLE runs the Request 8 subset of `c6c2-request8-adoption` as an ordered checkpoint before the recursive Request 10 subset and verifier implementation on the same capability branch; C6-EVALUATION later runs `c6f2-array-builder-adoption`. Each focused target plus the capability wave's one final `make ci` supplies the applicable real-client evidence.
+Resume condition: satisfied by the C6-LIFECYCLE pin wave and Align-llm PR #94; the later C6c2 verifier still owns its separate `c6f2-array-builder-adoption` consumer evidence
 Align commit or pull request: Align design PR #799, merged as `60622c60a4fc21b8586e1f6a907c32c025aa1658`; implementation PR #801, merged as `029e27465d79e24cd36d374aae41dca0ec7e6979`
-align-llm verification: pending
+align-llm verification: PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`; ordered `c6c2-request8-adoption` passed against `.align-revision` `a440970ac81118ed2169f600b2b3c06fcb9cde7`, and final capable `make ci` passed in CI run `32109434515` at head `954258e24d93300dcdb78f8280de8868cf1ced56`; merge run `32111007638` reused the exact evidence
 ```
 
 The shipped contract is the individually owned heap-record builder design in Align
@@ -4871,14 +4870,14 @@ adoption evidence before they become dependent on this request.
 ## Request 10 — `core.array_builder`: recursive evaluator record fields
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Requests 8 and 10 supply the recursive runtime-sized result arrays, which C6c2 cannot consume until the named real-client adoption and shared consumer pin wave pass
 Independent work that may continue: C6c2 design, C6a1 codec work that does not materialize recursive runtime arrays, C6b, C6c, C6d, Request 5, Request 6, Request 7, Request 8, Request 9, and verification work that does not construct the blocked record graph
-Resume condition: The C6-LIFECYCLE prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` once with merged Requests 8 and 10 plus its other merged prerequisites. It runs the recursive subsets of `c6c2-request8-adoption` and `c6c2-request10-adoption` in order on the same capability branch, then implements the verifier only after both pass and closes with the original recursive-construction matrix and one final `make ci`. C6-EVALUATION later runs `c6f2-array-builder-adoption` for its own record graph without creating a pin-only pull request.
+Resume condition: satisfied by the C6-LIFECYCLE pin wave and Align-llm PR #94; the later C6c2 verifier still owns its separate recursive evaluator record graph
 Align commit or pull request: Align design PR #802, merged as `8fdb274eb98f8aba362d0bea6ba5729f4ed22479`; implementation PR #804, merged as `3ec710656c7ce7412da14a5c929529cb3e89caa3`
-align-llm verification: pending
+align-llm verification: PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`; ordered `c6c2-request10-adoption` passed after Request 8, against `.align-revision` `a440970ac81118ed2169f600b2b3c06fcb9cde7`, and final capable `make ci` passed in CI run `32109434515` at head `954258e24d93300dcdb78f8280de8868cf1ced56`; merge run `32111007638` reused the exact evidence
 ```
 
 ### Motivation
@@ -5013,14 +5012,14 @@ claim a bound using `run()` followed by a length check.
 ## Request 12 — `core.json`: bounded canonical encoding
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6a1/C6a2 canonical artifact persistence and every C6 slice that writes a result with a declared raw-byte cap
 Independent work that may continue: pure prompt rendering, scoring, and design work that does not encode a capped persisted artifact
-Resume condition: after ALIGN_MERGED, the next C6 consumer prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then C6's focused exact-cap, overflow, malformed-record, and cleanup adoption target passes before the wave's one final `make ci`
+Resume condition: satisfied by the C6-LIFECYCLE pin wave and Align-llm PR #94; later result/evidence publication remains owned by C6f2 and Request 14
 Align commit or pull request: Align design PR #805, merged as `95c559ed29c2451c4c09b289f37eefd421194cfb`; implementation PR #807, merged as `c37d79a180612c345551e259091b0b5acf2cb9cd`
-align-llm verification: pending
+align-llm verification: PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`; ordered `c6-json-bounded-encoding-adoption` passed exact-cap, overflow, malformed-input, and cleanup cases against `.align-revision` `a440970ac81118ed2169f600b2b3c06fcb9cde7`, and final capable `make ci` passed in CI run `32109434515` at head `954258e24d93300dcdb78f8280de8868cf1ced56`; merge run `32111007638` reused the exact evidence
 ```
 
 ### Motivation and current-state evidence
@@ -5062,14 +5061,14 @@ encode unboundedly and then discard an oversized string.
 ## Request 13 — `core.json`: recursive owned C6 artifact graphs
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6a1/C6a2 canonical artifact declarations and every C6 command that persists a nested result
 Independent work that may continue: C6b/C6c pure rendering and scoring, C6d fixture-only state work, Request 5, Request 7, Request 9, Request 11, Request 12, and any work that does not persist the recursive C6 graph
-Resume condition: after ALIGN_MERGED, the C6-LIFECYCLE prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then the focused C6a1/C6a2 owned-graph adoption target passes before the wave's one final `make ci`
+Resume condition: satisfied by Align-llm PR #94; C6a1/C6a2 is now the shipped consumer-complete graph/codec boundary, with later renderer, verifier, evaluator, and activation cells deferred to their named owners
 Align commit or pull request: design PR #853, merged as `6160d0540174577edf927b34630df9d309ce4395`; implementation PR #854, merged as `340a3304724fefb56c2b1aa642e6b2b2c169e6d7`
-align-llm verification: pending
+align-llm verification: PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`; the ordered C6a1/C6a2 owners (`c6-json-decoded-owner-adoption`, `c6-json-escape-adoption`, recursive graph, Request 8/10, bounded encoding, and prompt artifact adoption) passed against `.align-revision` `a440970ac81118ed2169f600b2b3c06fcb9cde7`, and final capable `make ci` passed in CI run `32109434515` at head `954258e24d93300dcdb78f8280de8868cf1ced56`; merge run `32111007638` reused the exact evidence
 ```
 
 ### Align implementation (2026-08-18 — merged #854)
@@ -5284,14 +5283,14 @@ The Align design and implementation must prove:
 ## Request 15 — `core.json`: complete decoded-owner transitions
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6-LIFECYCLE's `c6-json-decoded-owner-adoption`, plus any later JSON change that adds a recoverable failure edge after a declared-record owner becomes live
 Independent work that may continue: C6 work that does not consume an unadopted decoded-owner surface, other Align requests, and align-llm work that does not consume a changed decoded-owner surface
-Resume condition: after the C6-LIFECYCLE pin wave materializes the merged compiler/runtime, every focused transition owner below passes in `c6-json-decoded-owner-adoption` before `c6-json-escape-adoption` and the wave's final `make ci`; this request then advances only with that real-client evidence
+Resume condition: satisfied by Align-llm PR #94; future JSON changes that add a recoverable failure edge still require the same transition-owner audit
 Align commit or pull request: decoded-owner cleanup PR #849 merged as `69017961` (merge commit)
-align-llm verification: pending
+align-llm verification: PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`; `c6-json-decoded-owner-adoption` passed before `c6-json-escape-adoption` in the ordered wave against `.align-revision` `a440970ac81118ed2169f600b2b3c06fcb9cde7`, and final capable `make ci` passed in CI run `32109434515` at head `954258e24d93300dcdb78f8280de8868cf1ced56`; merge run `32111007638` reused the exact evidence
 ```
 
 ### Motivation and current-state evidence
