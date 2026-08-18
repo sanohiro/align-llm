@@ -20,9 +20,18 @@ names = [row["case_name"] for row in actual]
 expected_names = [
     "baseline",
     "bounded",
+    "memory-selected",
+    "memory-budget",
     "invalid-policy",
+    "invalid-memory-policy",
+    "invalid-memory-cap",
+    "invalid-memory-disabled-policy",
+    "invalid-memory",
+    "unknown-memory-schema",
+    "disabled-invalid-memory",
     "oversized-source",
     "oversized-learned",
+    "oversized-memory",
 ]
 if names != expected_names:
     raise SystemExit(f"unexpected smoke cases: {names!r}")
@@ -38,24 +47,96 @@ def bounded(value: str, limit: int, marker: str) -> str:
     return raw[: limit - len(suffix)].decode("utf-8", errors="ignore") + marker
 
 
+def memory_line(task_id: str, marker: str, schema_version: int = 1) -> str:
+    event = {
+        "schema_version": schema_version,
+        "root": marker,
+        "task_id": task_id,
+        "attempted_patch": marker,
+        "final_status": marker,
+        "failure_stage": marker,
+        "failed_test": marker,
+        "failure_status": marker,
+        "root_cause": marker,
+        "repair_result": marker,
+        "successful_strategy": marker,
+        "unsuccessful_strategy": marker,
+        "iteration_count": 1,
+        "repair_count": 1,
+        "risk_score": 1,
+        "recommended_tests": marker,
+        "risky_symbols": marker,
+    }
+    return json.dumps(event, separators=(",", ":"), ensure_ascii=False)
+
+
+def memory_document() -> str:
+    return "\n".join(
+        [
+            memory_line("task-memory", "old"),
+            memory_line("other-task", "ignored"),
+            memory_line("task-memory", "middle"),
+            memory_line("task-memory", "new"),
+        ]
+    )
+
+
+def memory_budget_document() -> str:
+    return "\n".join(
+        [
+            memory_line("task-memory", "old"),
+            memory_line("other-task", "ignored"),
+            memory_line("task-memory", "newest-too-long"),
+        ]
+    )
+
+
+def select_memory(document: str, task_id: str, max_events: int, max_bytes: int) -> str:
+    for line in document.split("\n"):
+        if line:
+            event = json.loads(line)
+            if event["schema_version"] != 1:
+                raise ValueError("unknown memory schema")
+
+    if max_events == 0 or max_bytes == 0 or not task_id:
+        return ""
+
+    selected: list[str] = []
+    remaining = max_bytes
+    for line in reversed(document.split("\n")):
+        if line:
+            event = json.loads(line)
+            if event["schema_version"] == 1 and event["task_id"] == task_id:
+                cost = len(line.encode()) + (1 if selected else 0)
+                if cost <= remaining:
+                    selected.append(line)
+                    remaining -= cost
+                    if len(selected) >= max_events:
+                        break
+    return "\n".join(reversed(selected))
+
+
 def render(
     base: str,
     repo: str,
     task: str,
     learned: str,
+    memory: str,
     patch: str,
     stdout: str,
     stderr: str,
     include_patch: bool,
+    include_memory: bool,
     include_diagnostics: bool,
     patch_limit: int,
+    memory_limit: int,
     diagnostic_limit: int,
 ) -> str:
     parts = [base, "\n\n--- repo prompt ---\n", repo, "\n\n--- task prompt ---\n", task]
     parts += ["\n\n--- learned prompt append ---\n", learned or "(none)"]
     parts += ["\n\n--- patch evaluation context ---\n"]
     parts += [bounded(patch, patch_limit, "\n[context truncated]") if include_patch else "(omitted)"]
-    parts += ["\n\n--- failure memory context ---\n", "(omitted)"]
+    parts += ["\n\n--- failure memory context ---\n", memory if include_memory else "(omitted)"]
     parts += ["\n\n--- current failure diagnostics ---\n"]
     if include_diagnostics:
         parts += ["stdout:\n", bounded(stdout, diagnostic_limit, "\n[output truncated]")]
@@ -78,7 +159,22 @@ expected = [
     row(
         "baseline",
         "VALID",
-        render("BASE", "REPO", "TASK", "", "ignored", "stdout", "stderr", False, False, 0, 0),
+        render(
+            "BASE",
+            "REPO",
+            "TASK",
+            "",
+            "",
+            "ignored",
+            "stdout",
+            "stderr",
+            False,
+            False,
+            False,
+            0,
+            0,
+            0,
+        ),
     ),
     row(
         "bounded",
@@ -88,21 +184,91 @@ expected = [
             "REPO",
             "TASK",
             "learned",
+            "",
             "é🙂abcdefghijklmnopqrstuvwxyz",
             "é🙂stdout",
             "stderr-output-0123456789",
             True,
+            False,
             True,
             24,
+            0,
             23,
         ),
     ),
+    row(
+        "memory-selected",
+        "VALID",
+        render(
+            "BASE",
+            "REPO",
+            "TASK",
+            "",
+            select_memory(memory_document(), "task-memory", 2, 65536),
+            "",
+            "",
+            "",
+            False,
+            True,
+            False,
+            0,
+            65536,
+            0,
+        ),
+    ),
+    row(
+        "memory-budget",
+        "VALID",
+        render(
+            "BASE",
+            "REPO",
+            "TASK",
+            "",
+            select_memory(
+                memory_budget_document(),
+                "task-memory",
+                3,
+                len(memory_line("task-memory", "old").encode()),
+            ),
+            "",
+            "",
+            "",
+            False,
+            True,
+            False,
+            0,
+            len(memory_line("task-memory", "old").encode()),
+            0,
+        ),
+    ),
     {"case_name": "invalid-policy", "status": "INVALID_INPUT", "text": "", "sha256": ""},
+    {"case_name": "invalid-memory-policy", "status": "INVALID_INPUT", "text": "", "sha256": ""},
+    {"case_name": "invalid-memory-cap", "status": "INVALID_INPUT", "text": "", "sha256": ""},
+    {
+        "case_name": "invalid-memory-disabled-policy",
+        "status": "INVALID_INPUT",
+        "text": "",
+        "sha256": "",
+    },
+    {"case_name": "invalid-memory", "status": "INVALID_FAILURE_MEMORY", "text": "", "sha256": ""},
+    {
+        "case_name": "unknown-memory-schema",
+        "status": "INVALID_FAILURE_MEMORY",
+        "text": "",
+        "sha256": "",
+    },
+    {
+        "case_name": "disabled-invalid-memory",
+        "status": "INVALID_FAILURE_MEMORY",
+        "text": "",
+        "sha256": "",
+    },
     {"case_name": "oversized-source", "status": "INVALID_INPUT", "text": "", "sha256": ""},
     {"case_name": "oversized-learned", "status": "INVALID_INPUT", "text": "", "sha256": ""},
+    {"case_name": "oversized-memory", "status": "INVALID_INPUT", "text": "", "sha256": ""},
 ]
 
 if actual != expected:
     raise SystemExit(f"prompt model smoke mismatch:\nexpected={expected!r}\nactual={actual!r}")
-print("prompt model smoke: hierarchy, UTF-8 bounds, source validation, and SHA-256 PASS")
+print("prompt model smoke: hierarchy, UTF-8 bounds, failure-memory JSONL selection, source validation, and SHA-256 PASS")
 PY

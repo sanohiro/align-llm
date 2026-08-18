@@ -52,6 +52,127 @@ MemoryFailure {
   summary: string,
 }
 
+pub MemoryContext {
+  valid: bool,
+  text: string,
+}
+
+MemoryOffset { start: i64, end: i64 }
+
+fn decode_memory_event(line: str) -> Result<MemoryEvent, Error> {
+  event: MemoryEvent := json.decode(line)?
+  return Ok(event)
+}
+
+fn valid_memory_jsonl(document: str) -> bool {
+  if document.len() > 1_048_576 {
+    return false
+  }
+  mut cursor := 0
+  loop {
+    if cursor >= document.len() {
+      break
+    }
+    tail := document[cursor..document.len()]
+    line_length := tail.find("\n") else tail.len()
+    line := tail[0..line_length]
+    if line.len() > 0 {
+      event := decode_memory_event(line) else {
+        return false
+      }
+      if event.schema_version != 1 {
+        return false
+      }
+    }
+    if line_length >= tail.len() {
+      break
+    }
+    cursor = cursor + line_length + 1
+  }
+  return true
+}
+
+fn memory_line_matches(line: str, task_id: str) -> bool {
+  event := decode_memory_event(line) else {
+    return false
+  }
+  return event.schema_version == 1 && event.task_id == task_id
+}
+
+fn invalid_memory_context() -> MemoryContext {
+  return MemoryContext {
+    valid: false,
+    text: "".clone(),
+  }
+}
+
+// Validate the complete C5 JSONL profile, then select the newest matching events that fit the
+// count/byte budget. Selection is recorded by source offsets so skipped lines are not retained and
+// the final result can be emitted in chronological file order.
+pub fn select_context(
+  failure_memory_jsonl: str,
+  task_id: str,
+  max_events: i64,
+  max_bytes: i64,
+) -> MemoryContext {
+  if max_events < 0 || max_events > 64 || max_bytes < 0 || max_bytes > 65_536 {
+    return invalid_memory_context()
+  }
+  if !valid_memory_jsonl(failure_memory_jsonl) {
+    return invalid_memory_context()
+  }
+  if max_events == 0 || max_bytes == 0 || task_id.len() == 0 {
+    return MemoryContext {
+      valid: true,
+      text: "".clone(),
+    }
+  }
+
+  mut selected_offsets: array_builder<MemoryOffset> := array_builder()
+  mut cursor := failure_memory_jsonl.len()
+  mut remaining := max_bytes
+  mut selected_count := 0
+  loop {
+    if cursor <= 0 || selected_count >= max_events {
+      break
+    }
+    line_break := failure_memory_jsonl[0..cursor].rfind("\n") else -1
+    line_start := if line_break < 0 { 0 } else { line_break + 1 }
+    line := failure_memory_jsonl[line_start..cursor]
+    if line.len() > 0 && memory_line_matches(line, task_id) {
+      separator_bytes := if selected_count > 0 { 1 } else { 0 }
+      cost := line.len() + separator_bytes
+      if cost <= remaining {
+        selected_offsets.push(MemoryOffset { start: line_start, end: cursor })
+        remaining = remaining - cost
+        selected_count = selected_count + 1
+      }
+    }
+    cursor = if line_break < 0 { 0 } else { line_break }
+  }
+
+  selected := selected_offsets.build()
+  output := builder()
+  mut index := selected.len()
+  mut wrote := false
+  loop {
+    if index <= 0 {
+      break
+    }
+    index = index - 1
+    if wrote {
+      output.write("\n")
+    }
+    offset := selected[index]
+    output.write(failure_memory_jsonl[offset.start..offset.end])
+    wrote = true
+  }
+  return MemoryContext {
+    valid: true,
+    text: output.to_string(),
+  }
+}
+
 fn parse_integer(value: str) -> Result<i64, Error> {
   number: i64 := json.decode(value)?
   return Ok(number)
