@@ -1,0 +1,602 @@
+module prompt_state
+
+import prompt_artifact_io
+import prompt_artifacts
+import prompt_score
+import std.fs
+import std.path
+
+pub PromptCommandStatus {
+  Accepted,
+  Ineligible,
+  ParentMismatch,
+  RolledBack,
+  ScopeMismatch,
+  UnknownTarget,
+  NoChange,
+  InvalidInput,
+}
+
+pub fn command_status_label(value: PromptCommandStatus) -> str {
+  return match value {
+    Accepted => "ACCEPTED",
+    Ineligible => "INELIGIBLE",
+    ParentMismatch => "PARENT_MISMATCH",
+    RolledBack => "ROLLED_BACK",
+    ScopeMismatch => "SCOPE_MISMATCH",
+    UnknownTarget => "UNKNOWN_TARGET",
+    NoChange => "NO_CHANGE",
+    InvalidInput => "INVALID_INPUT",
+  }
+}
+
+pub fn command_status_success(value: PromptCommandStatus) -> bool {
+  return match value {
+    Accepted => true,
+    RolledBack => true,
+    _ => false,
+  }
+}
+
+fn valid_nonempty_text(value: str, maximum: i64) -> bool {
+  if value.len() <= 0 || value.len() > maximum {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    if bytes[index] == 0 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_ascii_identifier(value: str, maximum: i64) -> bool {
+  if !valid_nonempty_text(value, maximum) {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    if bytes[index] > 0x7f { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_path_component(value: str) -> bool {
+  return value.len() > 0 && value.len() <= 255 && value != "." && value != ".."
+}
+
+fn valid_relative_path(value: str) -> bool {
+  if !valid_nonempty_text(value, 4096) || value.bytes()[0] == 0x2f {
+    return false
+  }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index >= value.len() {
+      return valid_path_component(value[start..index])
+    }
+    if value.bytes()[index] == 0x2f {
+      if !valid_path_component(value[start..index]) {
+        return false
+      }
+      start = index + 1
+    }
+    index = index + 1
+  }
+}
+
+fn valid_owned_relative_path(borrow value: string) -> bool {
+  return valid_relative_path(value)
+}
+
+fn owned_text_length(borrow value: string) -> i64 {
+  return value.len()
+}
+
+fn valid_absolute_path(value: str) -> bool {
+  if !valid_nonempty_text(value, 4096) || value.bytes()[0] != 0x2f {
+    return false
+  }
+  if value.len() == 1 {
+    return true
+  }
+  mut start := 1
+  mut index := 1
+  loop {
+    if index >= value.len() {
+      return valid_path_component(value[start..index])
+    }
+    if value.bytes()[index] == 0x2f {
+      if !valid_path_component(value[start..index]) {
+        return false
+      }
+      start = index + 1
+    }
+    index = index + 1
+  }
+}
+
+fn valid_output_path(value: str) -> bool {
+  if value.len() <= 0 {
+    return false
+  }
+  valid := if value.bytes()[0] == 0x2f { valid_absolute_path(value) } else { valid_relative_path(value) }
+  return valid && valid_path_component(path.base(value))
+}
+
+fn file_root(value: str) -> str {
+  root := path.dir(value)
+  return if root.len() == 0 { "." } else { root }
+}
+
+fn file_leaf(value: str) -> str {
+  return path.base(value)
+}
+
+fn activation_id(decision_id: str) -> string {
+  output := builder()
+  output.write(decision_id)
+  output.write("/activation")
+  return output.to_string()
+}
+
+fn optional_decision_id(value: str) -> Option<string> {
+  if valid_ascii_identifier(value, 96) {
+    return Some(value.clone())
+  }
+  return None
+}
+
+fn make_result(
+  decision_id: Option<string>,
+  status: str,
+  error_code: str,
+  error: str,
+  activation_value: Option<prompt_artifacts.PromptActivation>,
+) -> Result<prompt_artifacts.PromptActivationResult, Error> {
+  mut value := prompt_artifacts.PromptActivationResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_ACTIVATION_RESULT".clone(),
+    decision_id: decision_id,
+    status: status.clone(),
+    error_code: error_code.clone(),
+    error: error.clone(),
+    activation: activation_value,
+    content_sha256: "0000000000000000000000000000000000000000000000000000000000000000".clone(),
+  }
+  value.content_sha256 = prompt_artifacts.prompt_activation_result_content_digest(value)?
+  return Ok(value)
+}
+
+fn status_from_label(value: str) -> PromptCommandStatus {
+  if value == "ACCEPTED" { return PromptCommandStatus.Accepted }
+  if value == "INELIGIBLE" { return PromptCommandStatus.Ineligible }
+  if value == "PARENT_MISMATCH" { return PromptCommandStatus.ParentMismatch }
+  if value == "ROLLED_BACK" { return PromptCommandStatus.RolledBack }
+  if value == "SCOPE_MISMATCH" { return PromptCommandStatus.ScopeMismatch }
+  if value == "UNKNOWN_TARGET" { return PromptCommandStatus.UnknownTarget }
+  if value == "NO_CHANGE" { return PromptCommandStatus.NoChange }
+  return PromptCommandStatus.InvalidInput
+}
+
+fn write_failure(
+  output: writer,
+  decision_id: Option<string>,
+  status: str,
+  error_code: str,
+  error: str,
+) -> Result<PromptCommandStatus, Error> {
+  output_result := make_result(decision_id, status, error_code, error, None)?
+  prompt_artifact_io.write_prompt_activation_result(output, output_result)?
+  return Ok(status_from_label(status))
+}
+
+fn write_input_failure(
+  output: writer,
+  decision_id: Option<string>,
+  failure: Error,
+  message: str,
+) -> Result<PromptCommandStatus, Error> {
+  code := match failure {
+    NotFound => "INPUT_NOT_FOUND",
+    Invalid => "INPUT_TYPE",
+    _ => "INPUT_READ",
+  }
+  return write_failure(output, decision_id, "INVALID_INPUT", code, message)
+}
+
+fn valid_accept_request(borrow value: prompt_artifacts.PromptAcceptRequest) -> bool {
+  return value.schema_version == 1 &&
+  value.artifact_kind == "PROMPT_ACCEPT_REQUEST" &&
+  valid_ascii_identifier(value.decision_id, 96) &&
+  activation_id(value.decision_id).len() <= 128 &&
+  valid_absolute_path(value.project_root) &&
+  valid_relative_path(value.evaluation_path) &&
+  valid_relative_path(value.parent_activation_path) &&
+  valid_relative_path(value.evaluation_evidence_path)
+}
+
+fn valid_rollback_request(borrow value: prompt_artifacts.PromptRollbackRequest) -> bool {
+  if value.schema_version != 1 || value.artifact_kind != "PROMPT_ROLLBACK_REQUEST" ||
+  !valid_ascii_identifier(value.decision_id, 96) || activation_id(value.decision_id).len() > 128 ||
+  !valid_absolute_path(value.project_root) ||
+  !valid_relative_path(value.current_activation_path) ||
+  !valid_relative_path(value.target_activation_path) ||
+  value.ancestor_activation_paths.len() > 256 {
+    return false
+  }
+  mut total := 0
+  mut index := 0
+  loop {
+    if index >= value.ancestor_activation_paths.len() { break }
+    if !valid_owned_relative_path(value.ancestor_activation_paths[index]) {
+      return false
+    }
+    total = total + owned_text_length(value.ancestor_activation_paths[index])
+    if total > 1048576 {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn selectable_activation(borrow value: prompt_artifacts.PromptActivationResult) -> bool {
+  return prompt_artifacts.verify_prompt_activation_result_content(value) &&
+  (value.status == "BASELINED" || value.status == "ACCEPTED" || value.status == "ROLLED_BACK") &&
+  value.error_code == "NONE" && value.error.len() == 0 &&
+  match value.activation { None => false, Some(_) => true }
+}
+
+fn same_decision_id(
+  borrow left: prompt_artifacts.PromptActivationResult,
+  borrow right: prompt_artifacts.PromptActivationResult,
+) -> bool {
+  return match left.decision_id {
+    None => false,
+    Some(left_id) => match right.decision_id {
+      None => false,
+      Some(right_id) => left_id == right_id,
+    },
+  }
+}
+
+fn parent_matches_evaluation(
+  borrow evaluation: prompt_artifacts.PromptEvaluationResult,
+  borrow parent: prompt_artifacts.PromptActivationResult,
+  parent_path: str,
+) -> bool {
+  if !selectable_activation(parent) {
+    return false
+  }
+  reference_matches := match evaluation.parent_activation {
+    None => false,
+    Some(reference) => reference.artifact_kind == "PROMPT_ACTIVATION_RESULT" &&
+    reference.path == parent_path && reference.content_sha256 == parent.content_sha256 &&
+    match parent.decision_id {
+      None => false,
+      Some(id) => reference.artifact_id == id,
+    },
+  }
+  embedded_matches := match evaluation.parent_activation_artifact {
+    None => false,
+    Some(embedded) => embedded.content_sha256 == parent.content_sha256 &&
+    embedded.status == parent.status &&
+    same_decision_id(embedded, parent),
+  }
+  return reference_matches && embedded_matches
+}
+
+fn clone_evaluation_scope(
+  borrow evaluation: prompt_artifacts.PromptEvaluationResult,
+) -> Result<prompt_artifacts.PromptScope, Error> {
+  return match evaluation.scope {
+    None => Err(Error.Invalid),
+    Some(value) => Ok(prompt_artifacts.clone_prompt_scope(value)),
+  }
+}
+
+fn clone_evaluation_candidate(
+  borrow evaluation: prompt_artifacts.PromptEvaluationResult,
+) -> Result<prompt_artifacts.PromptVariant, Error> {
+  return match evaluation.candidate_variant {
+    None => Err(Error.Invalid),
+    Some(value) => Ok(prompt_artifacts.clone_prompt_variant(value)),
+  }
+}
+
+fn clone_evaluation_id(
+  borrow evaluation: prompt_artifacts.PromptEvaluationResult,
+) -> Result<string, Error> {
+  return match evaluation.evaluation_id {
+    None => Err(Error.Invalid),
+    Some(value) => Ok(value.clone()),
+  }
+}
+
+fn clone_parent_activation(
+  borrow parent: prompt_artifacts.PromptActivationResult,
+) -> Result<prompt_artifacts.PromptActivation, Error> {
+  return match parent.activation {
+    None => Err(Error.Invalid),
+    Some(value) => Ok(prompt_artifacts.clone_prompt_activation(value)),
+  }
+}
+
+fn build_accept_activation(
+  decision_id: str,
+  borrow evaluation: prompt_artifacts.PromptEvaluationResult,
+  borrow parent: prompt_artifacts.PromptActivationResult,
+) -> Result<prompt_artifacts.PromptActivation, Error> {
+  scope := clone_evaluation_scope(evaluation)?
+  candidate := clone_evaluation_candidate(evaluation)?
+  evaluation_id := clone_evaluation_id(evaluation)?
+  parent_value := clone_parent_activation(parent)?
+  mut built_activation := prompt_artifacts.PromptActivation {
+    schema_version: 1,
+    artifact_kind: "PROMPT_ACTIVATION".clone(),
+    activation_id: activation_id(decision_id),
+    operation: "ACCEPT".clone(),
+    scope: scope,
+    parent_activation_id: parent_value.activation_id.clone(),
+    parent_activation_sha256: parent_value.content_sha256.clone(),
+    effective_variant: candidate,
+    accepted_evaluation_id: evaluation_id,
+    accepted_evaluation_sha256: evaluation.content_sha256.clone(),
+    rollback_target_activation_id: "".clone(),
+    rollback_target_activation_sha256: "".clone(),
+    decision_reason: "".clone(),
+    content_sha256: "0000000000000000000000000000000000000000000000000000000000000000".clone(),
+  }
+  built_activation.content_sha256 = prompt_artifacts.prompt_activation_content_digest(built_activation)?
+  return Ok(built_activation)
+}
+
+pub fn accept_file(request_path: str, result_path: str) -> Result<PromptCommandStatus, Error> {
+  if !valid_output_path(request_path) {
+    return Err(Error.Invalid)
+  }
+  request := prompt_artifact_io.load_prompt_accept_request(file_root(request_path), file_leaf(request_path))?
+  if !valid_output_path(result_path) {
+    return Err(Error.Invalid)
+  }
+  output := fs.create_exclusive_beneath(file_root(result_path), file_leaf(result_path))?
+  if !valid_accept_request(request) {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_BOUNDS", "invalid accept request")
+  }
+  evaluation := match prompt_artifact_io.load_prompt_evaluation_result(
+    request.project_root,
+    request.evaluation_path,
+  ) {
+    Ok(value) => value,
+    Err(failure) => {
+      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid evaluation artifact")
+    },
+  }
+  evidence := match prompt_artifact_io.load_prompt_evaluation_evidence(
+    request.project_root,
+    request.evaluation_evidence_path,
+  ) {
+    Ok(value) => value,
+    Err(failure) => {
+      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid evaluation evidence")
+    },
+  }
+  parent := match prompt_artifact_io.load_prompt_activation_result(
+    request.project_root,
+    request.parent_activation_path,
+  ) {
+    Ok(value) => value,
+    Err(failure) => {
+      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid parent activation")
+    },
+  }
+  verdict := prompt_score.verify_result(evaluation, evidence) else {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "evaluation verification failed")
+  }
+  eligible := match verdict {
+    ImprovedEligible => true,
+    _ => false,
+  }
+  if !eligible {
+    return write_failure(output, optional_decision_id(request.decision_id), "INELIGIBLE", "INELIGIBLE", "evaluation is not eligible")
+  }
+  if !parent_matches_evaluation(evaluation, parent, request.parent_activation_path) {
+    return write_failure(output, optional_decision_id(request.decision_id), "PARENT_MISMATCH", "PARENT_MISMATCH", "parent activation does not match evaluation")
+  }
+  accepted_activation := build_accept_activation(request.decision_id, evaluation, parent)?
+  accepted_result := make_result(
+    Some(request.decision_id.clone()),
+    "ACCEPTED",
+    "NONE",
+    "",
+    Some(accepted_activation),
+  )?
+  prompt_artifact_io.write_prompt_activation_result(output, accepted_result)?
+  return Ok(PromptCommandStatus.Accepted)
+}
+
+fn activation_identity(
+  borrow value: prompt_artifacts.PromptActivationResult,
+) -> Result<prompt_artifacts.PromptActivation, Error> {
+  if !selectable_activation(value) {
+    return Err(Error.Invalid)
+  }
+  return match value.activation {
+    None => Err(Error.Invalid),
+    Some(value_activation) => Ok(prompt_artifacts.clone_prompt_activation(value_activation)),
+  }
+}
+
+fn same_owned_text(borrow left: string, borrow right: string) -> bool {
+  return left == right
+}
+
+fn clone_owned_text(borrow value: string) -> string {
+  return value.clone()
+}
+
+fn identities_unique(borrow ids: array<string>, borrow digests: array<string>) -> bool {
+  mut outer := 0
+  loop {
+    if outer >= ids.len() { break }
+    mut inner := outer + 1
+    loop {
+      if inner >= ids.len() { break }
+      if same_owned_text(ids[outer], ids[inner]) || same_owned_text(digests[outer], digests[inner]) {
+        return false
+      }
+      inner = inner + 1
+    }
+    outer = outer + 1
+  }
+  return true
+}
+
+fn build_rollback_activation(
+  decision_id: str,
+  reason: str,
+  borrow current: prompt_artifacts.PromptActivation,
+  borrow target: prompt_artifacts.PromptActivation,
+) -> Result<prompt_artifacts.PromptActivation, Error> {
+  mut rollback_activation := prompt_artifacts.PromptActivation {
+    schema_version: 1,
+    artifact_kind: "PROMPT_ACTIVATION".clone(),
+    activation_id: activation_id(decision_id),
+    operation: "ROLLBACK".clone(),
+    scope: prompt_artifacts.clone_prompt_scope(current.scope),
+    parent_activation_id: current.activation_id.clone(),
+    parent_activation_sha256: current.content_sha256.clone(),
+    effective_variant: prompt_artifacts.clone_prompt_variant(target.effective_variant),
+    accepted_evaluation_id: target.accepted_evaluation_id.clone(),
+    accepted_evaluation_sha256: target.accepted_evaluation_sha256.clone(),
+    rollback_target_activation_id: target.activation_id.clone(),
+    rollback_target_activation_sha256: target.content_sha256.clone(),
+    decision_reason: reason.clone(),
+    content_sha256: "0000000000000000000000000000000000000000000000000000000000000000".clone(),
+  }
+  rollback_activation.content_sha256 = prompt_artifacts.prompt_activation_content_digest(rollback_activation)?
+  return Ok(rollback_activation)
+}
+
+pub fn rollback_file(request_path: str, result_path: str) -> Result<PromptCommandStatus, Error> {
+  if !valid_output_path(request_path) {
+    return Err(Error.Invalid)
+  }
+  request := prompt_artifact_io.load_prompt_rollback_request(file_root(request_path), file_leaf(request_path))?
+  if !valid_output_path(result_path) {
+    return Err(Error.Invalid)
+  }
+  output := fs.create_exclusive_beneath(file_root(result_path), file_leaf(result_path))?
+  if !valid_rollback_request(request) {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_BOUNDS", "invalid rollback request")
+  }
+  current_result := match prompt_artifact_io.load_prompt_activation_result(
+    request.project_root,
+    request.current_activation_path,
+  ) {
+    Ok(value) => value,
+    Err(failure) => {
+      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid current activation")
+    },
+  }
+  current := activation_identity(current_result) else {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid current activation")
+  }
+  target_result := match prompt_artifact_io.load_prompt_activation_result(
+    request.project_root,
+    request.target_activation_path,
+  ) {
+    Ok(value) => value,
+    Err(failure) => {
+      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid target activation")
+    },
+  }
+  target := activation_identity(target_result) else {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid target activation")
+  }
+
+  mut ids: array_builder<string> := array_builder()
+  mut digests: array_builder<string> := array_builder()
+  mut ancestor_parent_ids: array_builder<string> := array_builder()
+  mut ancestor_parent_digests: array_builder<string> := array_builder()
+  mut ancestor_scope_digests: array_builder<string> := array_builder()
+  ids.push(current.activation_id.clone())
+  digests.push(current.content_sha256.clone())
+  mut collect := 0
+  loop {
+    if collect >= request.ancestor_activation_paths.len() { break }
+    ancestor_result := match prompt_artifact_io.load_prompt_activation_result_owned(
+      request.project_root,
+      request.ancestor_activation_paths[collect],
+    ) {
+      Ok(value) => value,
+      Err(failure) => {
+        return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid ancestor activation")
+      },
+    }
+    ancestor := activation_identity(ancestor_result) else {
+      return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid ancestor activation")
+    }
+    ids.push(ancestor.activation_id.clone())
+    digests.push(ancestor.content_sha256.clone())
+    ancestor_parent_ids.push(ancestor.parent_activation_id.clone())
+    ancestor_parent_digests.push(ancestor.parent_activation_sha256.clone())
+    ancestor_scope_digests.push(ancestor.scope.content_sha256.clone())
+    collect = collect + 1
+  }
+  ids.push(target.activation_id.clone())
+  digests.push(target.content_sha256.clone())
+  collected_ids := ids.build()
+  collected_digests := digests.build()
+  collected_parent_ids := ancestor_parent_ids.build()
+  collected_parent_digests := ancestor_parent_digests.build()
+  collected_scope_digests := ancestor_scope_digests.build()
+  if !identities_unique(collected_ids, collected_digests) {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "activation lineage contains a duplicate")
+  }
+
+  mut expected_id := current.parent_activation_id.clone()
+  mut expected_digest := current.parent_activation_sha256.clone()
+  mut index := 0
+  loop {
+    if index >= collected_parent_ids.len() { break }
+    if !same_owned_text(collected_ids[index + 1], expected_id) ||
+    !same_owned_text(collected_digests[index + 1], expected_digest) {
+      return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "activation lineage link is invalid")
+    }
+    if !same_owned_text(collected_scope_digests[index], current.scope.content_sha256) {
+      return write_failure(output, optional_decision_id(request.decision_id), "SCOPE_MISMATCH", "SCOPE_MISMATCH", "ancestor scope does not match current scope")
+    }
+    expected_id = clone_owned_text(collected_parent_ids[index])
+    expected_digest = clone_owned_text(collected_parent_digests[index])
+    index = index + 1
+  }
+  if target.activation_id != expected_id || target.content_sha256 != expected_digest {
+    return write_failure(output, optional_decision_id(request.decision_id), "UNKNOWN_TARGET", "UNKNOWN_TARGET", "target is not the proven ancestor")
+  }
+  if target.scope.content_sha256 != current.scope.content_sha256 {
+    return write_failure(output, optional_decision_id(request.decision_id), "SCOPE_MISMATCH", "SCOPE_MISMATCH", "target scope does not match current scope")
+  }
+  if target.effective_variant.content_sha256 == current.effective_variant.content_sha256 {
+    return write_failure(output, optional_decision_id(request.decision_id), "NO_CHANGE", "NO_CHANGE", "target selects the current effective variant")
+  }
+  if !valid_nonempty_text(request.reason, 4096) {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_BOUNDS", "invalid rollback reason")
+  }
+  rolled_back_activation := build_rollback_activation(request.decision_id, request.reason, current, target)?
+  rollback_result := make_result(
+    Some(request.decision_id.clone()),
+    "ROLLED_BACK",
+    "NONE",
+    "",
+    Some(rolled_back_activation),
+  )?
+  prompt_artifact_io.write_prompt_activation_result(output, rollback_result)?
+  return Ok(PromptCommandStatus.RolledBack)
+}

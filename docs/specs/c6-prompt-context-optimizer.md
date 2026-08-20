@@ -109,7 +109,12 @@ hypothetical API part of C6:
    string and record arrays, and C6c2 must pass indexed Move records to shared helpers without
    copying their owners. Align PR #865 shipped the admitted array and indexed-call projection;
    `c6-borrowed-array-adoption` and `prompt-verifier-smoke` pass at the exact pinned merge.
-12. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
+12. **Request 18 — retained-root regular-file access.** C6d opens every request and referenced
+   artifact with `fs.open_beneath` and creates each activation result with
+   `fs.create_exclusive_beneath`. Align PR #867 shipped the retained-root reader/writer surface as
+   `19c3db144c462bf7d6784f88d64cc124229b7ec2`; `c6d-request18-adoption` owns the real-client
+   symlink, special-file, bound, error-mapping, occupied-output, and competing-creator matrix.
+13. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
    adoption gate remains pending. C6e and C6g1 cannot claim the provider timeout gate until that
    original acceptance target passes, whether it is completed in the C6 prerequisite wave or an
    earlier consumer adoption capability.
@@ -301,7 +306,7 @@ completion by adding only the prose or only a fixture that does not exercise the
 
 #### Paths, ancestry, compatibility, and integration
 
-Lexical normalization is not physical containment. Before any side effect, the trusted path
+Lexical normalization is not physical containment. Before any artifact or command side effect, the trusted path
 boundary rejects a symlink or dangling-link component, a symlink output, a special or non-regular
 input, a physical path outside the physical project root, and any workspace component that escapes
 through a link. It checks the project root, workspace, every artifact/input, every output parent,
@@ -309,6 +314,15 @@ and every adapter-owned path; the same rule applies to relative and absolute spe
 does not promise race-free protection against an out-of-band mutator; the documented single-writer
 precondition and preflight failure are part of the contract. Regression tests cover root,
 component, output, dangling-link, physical-escape, non-regular, cleanup, and early-exit cases.
+
+C6d is the first ordinary command owner to consume Request 18. It opens the request beneath its
+lexically validated parent, opens each referenced artifact beneath the absolute `project_root`, and
+creates the result beneath its lexically validated parent. Every traversal retains directory
+descriptors and never restarts from a public ancestor spelling; ancestor replacement therefore
+cannot redirect the operation after retention. An out-of-band writer may still mutate an already
+opened regular input, so the immutable-input precondition remains. The result uses one native
+exclusive create: an occupied regular file, directory, symlink, FIFO, socket, or device is unchanged,
+and concurrent creators have exactly one winner.
 
 The explicit verifier source roots are a read-only exception to the project-root-descendant rule:
 `verifier_align_llm_repository_path`, `verifier_align_repository_path`, and
@@ -467,14 +481,14 @@ does not interpret learned text as code and does not treat it as a security boun
 ## 4. Immutable artifacts and identity
 
 Existing C6 artifact writers use caller-named, immutable-after-success JSON artifacts under the
-complete operation-overlap policy in §1.2. A command refuses an output path that already exists
-before work starts. Because every input artifact already exists, this also prevents selecting an
-input as the output path. The pinned filesystem has no exclusive-create operation for those existing
-writers: a caller that races a new path into existence between validation and the final write
-violates the command precondition, and those writers make no cross-process write-once claim for that
-race. C6f2's result/evidence pair is a later blocked exception with the stronger exclusive-create
-and no-replace publication contract in §5.2; it cannot start until Request 14 is adopted. There is
-no hidden active pointer and no in-place registry rewrite.
+complete operation-overlap policy in §1.2. Earlier writers refuse an output path that already exists
+before work starts; a caller that races a new path into existence between validation and their final
+whole-file write violates the command precondition. C6d activation results are the first ordinary
+exception: `fs.create_exclusive_beneath` atomically reserves the absent final entry beneath retained
+parents before request-field validation, so no competing creator can be overwritten. C6f2's
+result/evidence pair remains a separate blocked exception with the exclusive-create and no-replace
+pair-publication contract in §5.2; it cannot start until Request 14 is adopted. There is no hidden
+active pointer and no in-place registry rewrite.
 
 This shape is intentional:
 
@@ -1290,9 +1304,9 @@ path(s), and is never rewritten as a successful result. A destination created by
 publisher is not evaluator-owned, is never reported as a removable orphan, and is never removed by
 the evaluator or by a retry instruction.
 
-No command calls `fs.read_file` on an unbounded JSON input. A shared bounded reader uses
-`fs.open`, a reusable buffer, and one probe byte, accumulating at most the applicable cap before
-`json.decode`:
+No command calls `fs.read_file` on an unbounded JSON input. A shared bounded reader uses a reusable
+buffer and one probe byte, accumulating at most the applicable cap before `json.decode`. Earlier
+owners obtain its reader with `fs.open`; C6d obtains it with `fs.open_beneath`:
 
 | Input class | Maximum raw JSON bytes |
 | --- | ---: |
@@ -1312,9 +1326,10 @@ Validation and side-effect precedence is the same for every command:
 1. Validate CLI arity and decode the declared request. Failure here produces no result artifact
    because there is no trusted result envelope.
 2. Validate the CLI result output path for bounded syntax, nonexistence, physical safety, and
-   writability before validating request fields. A result-output-path failure returns
-   `Error.Invalid` or the underlying filesystem error and produces no result artifact. Then validate
-   request fields, including the decoded `evaluate` evidence output path, directly readable artifact
+   writability before validating request fields. C6d performs this preflight by exclusively creating
+   and retaining the absent result writer beneath its parent; earlier owners retain their documented
+   single-writer precondition. A result-output-path failure returns `Error.Invalid` or the underlying
+   filesystem error and produces no result artifact. Then validate request fields, including the decoded `evaluate` evidence output path, directly readable artifact
    schemas/digests, scope, bounds, and cross-record identities. A decoded invalid request writes
    `INVALID_INPUT` and performs no provider, measurement-adapter, or snapshot-helper call; for
    `evaluate`, it writes no evidence sidecar unless evaluation has established its identity and
@@ -1324,8 +1339,8 @@ Validation and side-effect precedence is the same for every command:
    `rollback` perform no external process or network work.
 4. Validate every external result; for `evaluate`, require equal valid pre/post snapshots.
 5. Construct and validate the complete result in memory.
-6. Write the new output path once, or for `evaluate` finalize the two validated temporary files in
-   the exact pair order above. A temporary/finalization failure returns `OUTPUT_WRITE` after cleanup;
+6. Write the new output bytes once—through C6d's retained writer where applicable—or for `evaluate`
+   finalize the two validated temporary files in the exact pair order above. A temporary/finalization failure returns `OUTPUT_WRITE` after cleanup;
    an unsuccessful cleanup returns `OUTPUT_PAIR_CLEANUP_FAILED` with only the evaluator-owned
    recovery path(s); collision destinations are never included or removed. A partial
    output is invalid and is never reported as a successful artifact.
@@ -1349,7 +1364,7 @@ generic artifact validator.
 
 Within step 2, operation-specific precedence is:
 
-| Operation | Validation order before side effects |
+| Operation | Semantic validation order after result-output preflight |
 | --- | --- |
 | experiment | request bounds; parent activation envelope; scope and embedded prompt variant; opportunity artifact; proposal-provider kind/config; environment-key presence |
 | evaluate | result output-path preflight; request bounds and decoded evidence output path, including physical distinctness; explicit verifier source paths and expected identities; experiment and parent; scope; corpus then task manifests in declared order; acceptance, generation, and provider-control policies; credential-name/value presence; empty workspace |
@@ -2350,6 +2365,17 @@ evaluation_evidence_path
 `evaluation_evidence_path` is required and is an explicit input to acceptance; a result-only path is
 never sufficient.
 
+The CLI first validates and opens the request as a regular file beneath its lexical parent, with a
+65,536-byte cap. A malformed, oversized, missing, symlinked, or special request returns a command
+`Result` error and creates no result. After decode it validates the result path and exclusively
+creates the result beneath its retained parent before validating request fields. Unsafe request
+fields therefore produce a canonical `INVALID_INPUT` result when the result path is safe and absent;
+an unsafe, missing, denied, or occupied result parent/final produces no result and no artifact read.
+Referenced paths are relative to the absolute `project_root` and are opened beneath it in evaluation,
+evidence, then parent order. Missing input maps to `INPUT_NOT_FOUND`, no-follow/type rejection to
+`INPUT_TYPE`, and permission or other read failure to `INPUT_READ`; lexical request-field rejection
+maps to `INVALID_BOUNDS` before any referenced input is opened.
+
 Acceptance validates:
 
 - evaluation status is `IMPROVED`;
@@ -2444,13 +2470,16 @@ reason
 
 The ancestor array contains at most 256 paths.
 
-The validator loads the current activation, then each `ancestor_activation_paths` entry in order,
-then the target. The first loaded ancestor must be the current parent, each subsequent artifact must
+The validator loads the current activation, then the target, then each
+`ancestor_activation_paths` entry in order. The first loaded ancestor must be the current parent, each subsequent artifact must
 be the preceding parent, and the last link must name the target; a direct-parent target therefore
 uses an empty ancestor array. Current, intermediate, and target IDs and digests must be unique, and
 every link and scope must validate. The target may have operation `BASELINE`, `ACCEPT`, or
 `ROLLBACK`. The reason is required and bounded. The target cannot equal the current activation and
 must select a different effective candidate/context variant.
+All request/result preflight and retained-root rules from `prompt accept` apply. Referenced activation
+reads occur in current, target, then declared ancestor order. A missing, unsafe-type, denied, or other
+read failure uses the same `INPUT_NOT_FOUND`/`INPUT_TYPE`/`INPUT_READ` mapping.
 
 The successful `PromptActivationResult` has:
 
@@ -2572,10 +2601,11 @@ result/evidence pair. No acceptance path trusts a persisted status, aggregate, r
 The internal Copy verdict labels are `IMPROVED_ELIGIBLE`, `COMPLETE_INELIGIBLE`, and
 `NONCOMPLETE_ERROR`; malformed or contradictory decoded records return `Err(Error.Invalid)`.
 
-Output artifacts outside the blocked C6f2 pair are written only after their complete in-memory
-record validates; those existing writers have no cross-process lock or exclusive-create primitive.
-The C6f2 result/evidence pair is governed by the Request 14 publication contract in §5.2 and is not
-implemented through this weaker path. The operation-overlap matrix in §1.2 classifies every
+Output artifacts outside C6d and the blocked C6f2 pair are written only after their complete in-memory
+record validates; those earlier writers have no cross-process lock or exclusive-create primitive.
+C6d owns one pre-acquired `writer`, emits one bounded canonical activation result, explicitly flushes
+it, and then drops it; an occupied final entry is never opened or changed. The C6f2 result/evidence
+pair is governed by the separate Request 14 publication contract in §5.2. The operation-overlap matrix in §1.2 classifies every
 aggregate-plus-focused and focused-plus-focused pair: disjoint resources are supported,
 shared outputs/workspaces are rejected before side effects or explicitly unsupported under the
 single-writer precondition, and no concurrent writer is last-writer-wins. After a successful write,
@@ -2962,7 +2992,7 @@ explicitly reviewed deferral.
 | Explicit verifier source inputs | `src/prompt_evaluate.align`, C6f1 source verifier | absolute root/manifest/tool path validation, policy/helper/Git digest and runtime validation, `FILE_SET` option pairing, canonical raw-byte manifest membership/mode/digest, exact clean checkout observations, fixed argv/env/cap/timeout, observed identity copied into evidence, `VERIFIED` equality, and `UNVERIFIED` preservation before any adapter or snapshot call |
 | Explicit adapter request and environment isolation | `src/prompt_evaluate.align`, task adapter | adapter-request identity/path/digest fixtures; env-clear rejection and exact allowlisted-value survival in both directions |
 | Producer-owned environment identity | trusted probe carriers, evaluator verifier | non-circular core preimage, carrier equality, OS/CPU/GPU/compiler/runtime unavailable-value, `Option` CPU-count, source-policy/helper/Git identity, and digest fixtures |
-| Physical path trust boundary | snapshot helper, all command owners, and explicit verifier source boundary | project-root containment for ordinary inputs plus read-only external verifier-root exception; symlink component, dangling link, output link, special file, physical escape, Git common-directory replacement/graft/alternate entries, relative/absolute, cleanup, and early-exit regressions |
+| Physical path trust boundary | snapshot helper, all command owners, explicit verifier source boundary, and Align Request 18 adoption | project-root containment for ordinary inputs plus read-only external verifier-root exception; retained-root request/artifact/result traversal; symlink component, dangling link, output link, special file, physical escape, Git common-directory replacement/graft/alternate entries, relative/absolute, cleanup, and early-exit regressions |
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, no-partial-write vectors, temporary/final output order, second-finalization failure, and pair cleanup-failure recovery |
@@ -2987,7 +3017,8 @@ explicitly reviewed deferral.
 | Accept only eligible improvement | `src/prompt_state.align` | improved/no-improvement/regression/error/parent-mismatch cases |
 | Activation operation invariants | `src/prompt_state.align` | baseline/accept/rollback cross-field table plus every forbidden combination |
 | Immutable rollback lineage | `src/prompt_state.align` | valid ancestor, broken chain, duplicate, foreign-scope, retained provenance, reason, and no-overwrite cases |
-| Single-writer immutable persistence | all command owners | existing-output, result/evidence physical-alias, documented no-race precondition, no-replace collision ownership, and corrupt-partial-artifact regressions |
+| C6d retained-root activation I/O | `src/prompt_state.align`, `src/prompt_artifact_io.align`, Align Request 18 adoption | exact/cap-plus-one request and short-read artifact bounds; request/root/intermediate/final symlink and dangling-link rejection; directory/FIFO/socket/device and denied/missing inputs; deterministic error mapping/order; unsafe/missing/denied/occupied result paths with no replacement; exact one-winner create race; explicit write/flush/Drop |
+| Single-writer immutable persistence | all command owners | existing-output, result/evidence physical-alias, documented immutable-input precondition, C6d exclusive-create collision ownership, later C6f2 no-replace collision ownership, and corrupt-partial-artifact regressions |
 | Physical workspace containment and raw entry closure | trusted snapshot helper, `src/prompt_evaluate.align` | symlink root/component, physical escape, non-UTF-8 extra entry, mutation, and cleanup regressions |
 | Fixed-corpus provider quality gate | evaluation adapter and `eval/tasks/prompt-v1/` | at least 2 tasks x 2 samples; improvement and zero serious regressions |
 | Canonical acceptance and rollback chain | gate manifest and validator | source-bundle locator/policy/helper/tool, derived tested-head ancestry, explicit root/FILE_SET-manifest revalidation plus real improved evaluation + matching evidence -> accepted activation -> rollback, with every wrong/missing digest or evidence reference rejected |
@@ -2998,6 +3029,13 @@ explicitly reviewed deferral.
 Each named regression is introduced by the capability that first owns the cell. Before review of
 that capability, the matrix-to-diff pass replaces the planned owner with the actual file/test
 location.
+
+C6d remains one mergeable capability even though its request records/codecs, retained-root I/O,
+accept/rollback state owner, CLI dispatch, and adversarial smoke together exceed roughly 1,000
+hand-written lines. These pieces are one strict producer-to-consumer chain: no prefix is useful
+without the next piece, and splitting it would duplicate the canonical lifecycle fixture and path
+proof while exposing dormant public records or I/O helpers. One boundary therefore carries less
+integration risk and one complete verifier/path/publication proof.
 
 | Path | Model/codec | Renderer/memory | Scorer/state | Evaluator/provider | Exact planned regression |
 | --- | --- | --- | --- | --- | --- |

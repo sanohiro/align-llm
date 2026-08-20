@@ -61,6 +61,8 @@ expected_records = [
     "PromptVerifierTrust",
     "PromptExpectedInputDigest",
     "PromptEvaluationEvidence",
+    "PromptAcceptRequest",
+    "PromptRollbackRequest",
     "PromptActivation",
     "PromptActivationResult",
     "PromptAcceptancePolicy",
@@ -81,7 +83,7 @@ for match in re.finditer(r"^pub ([A-Z][A-Za-z0-9_]*) \{\n(.*?)^\}", source, re.M
     )
 if records != expected_records:
     raise SystemExit(f"artifact graph declaration order mismatch: {records!r}")
-if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (50, 543, 50, 50):
+if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (52, 558, 52, 52):
     raise SystemExit(
         "artifact graph shape mismatch: "
         f"records={len(records)} fields={fields} "

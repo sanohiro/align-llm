@@ -591,6 +591,27 @@ pub PromptEvaluationEvidence {
   content_sha256: string,
 }
 
+pub PromptAcceptRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  decision_id: string,
+  project_root: string,
+  evaluation_path: string,
+  parent_activation_path: string,
+  evaluation_evidence_path: string,
+}
+
+pub PromptRollbackRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  decision_id: string,
+  project_root: string,
+  current_activation_path: string,
+  target_activation_path: string,
+  ancestor_activation_paths: array<string>,
+  reason: string,
+}
+
 pub PromptActivation {
   schema_version: i64,
   artifact_kind: string,
@@ -827,6 +848,170 @@ fn clone_prompt_variant_without_digest(borrow value: PromptVariant) -> PromptVar
   }
 }
 
+fn clone_corpus_revision_without_digest(borrow value: CorpusRevision) -> CorpusRevision {
+  return CorpusRevision {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    source_kind: value.source_kind.clone(),
+    source_repository_id: value.source_repository_id.clone(),
+    source_sha256: value.source_sha256.clone(),
+    content_sha256: "".clone(),
+  }
+}
+
+fn clone_corpus_revision(borrow value: CorpusRevision) -> CorpusRevision {
+  mut cloned := clone_corpus_revision_without_digest(value)
+  cloned.content_sha256 = value.content_sha256.clone()
+  return cloned
+}
+
+fn clone_prompt_scope_without_digest(borrow value: PromptScope) -> PromptScope {
+  return PromptScope {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    repo_id: value.repo_id.clone(),
+    repo_profile_revision: value.repo_profile_revision.clone(),
+    align_revision: value.align_revision.clone(),
+    corpus_id: value.corpus_id.clone(),
+    corpus_revision: clone_corpus_revision(value.corpus_revision),
+    evaluation_provider_kind: value.evaluation_provider_kind.clone(),
+    evaluation_provider_model: value.evaluation_provider_model.clone(),
+    generation_policy_sha256: value.generation_policy_sha256.clone(),
+    acceptance_policy_sha256: value.acceptance_policy_sha256.clone(),
+    base_prompt_sha256: value.base_prompt_sha256.clone(),
+    repo_prompt_sha256: value.repo_prompt_sha256.clone(),
+    content_sha256: "".clone(),
+  }
+}
+
+pub fn clone_prompt_scope(borrow value: PromptScope) -> PromptScope {
+  mut cloned := clone_prompt_scope_without_digest(value)
+  cloned.content_sha256 = value.content_sha256.clone()
+  return cloned
+}
+
+pub fn clone_prompt_variant(borrow value: PromptVariant) -> PromptVariant {
+  mut cloned := clone_prompt_variant_without_digest(value)
+  cloned.content_sha256 = value.content_sha256.clone()
+  return cloned
+}
+
+fn clone_prompt_activation_without_digest(borrow value: PromptActivation) -> PromptActivation {
+  return PromptActivation {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    activation_id: value.activation_id.clone(),
+    operation: value.operation.clone(),
+    scope: clone_prompt_scope(value.scope),
+    parent_activation_id: value.parent_activation_id.clone(),
+    parent_activation_sha256: value.parent_activation_sha256.clone(),
+    effective_variant: clone_prompt_variant(value.effective_variant),
+    accepted_evaluation_id: value.accepted_evaluation_id.clone(),
+    accepted_evaluation_sha256: value.accepted_evaluation_sha256.clone(),
+    rollback_target_activation_id: value.rollback_target_activation_id.clone(),
+    rollback_target_activation_sha256: value.rollback_target_activation_sha256.clone(),
+    decision_reason: value.decision_reason.clone(),
+    content_sha256: "".clone(),
+  }
+}
+
+pub fn clone_prompt_activation(borrow value: PromptActivation) -> PromptActivation {
+  mut cloned := clone_prompt_activation_without_digest(value)
+  cloned.content_sha256 = value.content_sha256.clone()
+  return cloned
+}
+
+fn clone_prompt_activation_option(borrow value: Option<PromptActivation>) -> Option<PromptActivation> {
+  return match value {
+    None => None,
+    Some(activation) => Some(clone_prompt_activation(activation)),
+  }
+}
+
+fn derived_activation_id(value: str) -> string {
+  output := builder()
+  output.write(value)
+  output.write("/activation")
+  return output.to_string()
+}
+
+fn valid_scope_shape(borrow value: PromptScope) -> bool {
+  return value.schema_version == 1 &&
+  value.artifact_kind == "PROMPT_SCOPE" &&
+  valid_ascii_identifier(value.repo_id, 128) &&
+  valid_nonempty_text(value.repo_profile_revision, 256) &&
+  valid_content_digest(value.align_revision) &&
+  valid_ascii_identifier(value.corpus_id, 128) &&
+  value.corpus_revision.schema_version == 1 &&
+  value.corpus_revision.artifact_kind == "CORPUS_REVISION" &&
+  (value.corpus_revision.source_kind == "GIT_COMMIT" || value.corpus_revision.source_kind == "FILE_SET") &&
+  valid_ascii_identifier(value.corpus_revision.source_repository_id, 128) &&
+  valid_content_digest(value.corpus_revision.source_sha256) &&
+  valid_content_digest(value.corpus_revision.content_sha256) &&
+  (value.evaluation_provider_kind == "FIXTURE" ||
+    value.evaluation_provider_kind == "CLOUD_OPENAI" ||
+    value.evaluation_provider_kind == "LOCAL_OPENAI" ||
+    value.evaluation_provider_kind == "LLAMA_CPP") &&
+  valid_nonempty_text(value.evaluation_provider_model, 256) &&
+  valid_content_digest(value.generation_policy_sha256) &&
+  valid_content_digest(value.acceptance_policy_sha256) &&
+  valid_content_digest(value.base_prompt_sha256) &&
+  valid_content_digest(value.repo_prompt_sha256) &&
+  valid_content_digest(value.content_sha256)
+}
+
+fn valid_variant_shape(borrow value: PromptVariant) -> bool {
+  return value.schema_version == 1 &&
+  value.artifact_kind == "PROMPT_VARIANT" &&
+  valid_ascii_identifier(value.variant_id, 128) &&
+  value.base_prompt.schema_version == 1 &&
+  value.base_prompt.artifact_kind == "BASE_PROMPT" &&
+  valid_ascii_identifier(value.base_prompt.artifact_id, 128) &&
+  value.base_prompt.text.len() <= 65536 &&
+  valid_content_digest(value.base_prompt.content_sha256) &&
+  value.repo_prompt.schema_version == 1 &&
+  value.repo_prompt.artifact_kind == "REPO_PROMPT" &&
+  valid_ascii_identifier(value.repo_prompt.artifact_id, 128) &&
+  value.repo_prompt.text.len() <= 65536 &&
+  valid_content_digest(value.repo_prompt.content_sha256) &&
+  value.learned_prompt_append.len() <= 8192 &&
+  valid_context_policy(value.context_policy) &&
+  valid_ascii_identifier(value.candidate_id, 128) &&
+  valid_content_digest(value.content_sha256)
+}
+
+fn valid_activation_shape(borrow value: PromptActivation) -> bool {
+  if value.schema_version != 1 || value.artifact_kind != "PROMPT_ACTIVATION" ||
+  !valid_ascii_identifier(value.activation_id, 128) ||
+  !valid_scope_shape(value.scope) || !valid_variant_shape(value.effective_variant) ||
+  value.effective_variant.base_prompt.content_sha256 != value.scope.base_prompt_sha256 ||
+  value.effective_variant.repo_prompt.content_sha256 != value.scope.repo_prompt_sha256 ||
+  !valid_content_digest(value.content_sha256) {
+    return false
+  }
+  parent_empty := value.parent_activation_id.len() == 0 && value.parent_activation_sha256.len() == 0
+  parent_present := valid_ascii_identifier(value.parent_activation_id, 128) &&
+  valid_content_digest(value.parent_activation_sha256)
+  accepted_empty := value.accepted_evaluation_id.len() == 0 && value.accepted_evaluation_sha256.len() == 0
+  accepted_present := valid_ascii_identifier(value.accepted_evaluation_id, 128) &&
+  valid_content_digest(value.accepted_evaluation_sha256)
+  rollback_empty := value.rollback_target_activation_id.len() == 0 &&
+  value.rollback_target_activation_sha256.len() == 0
+  rollback_present := valid_ascii_identifier(value.rollback_target_activation_id, 128) &&
+  valid_content_digest(value.rollback_target_activation_sha256)
+  if value.operation == "BASELINE" {
+    return parent_empty && accepted_empty && rollback_empty && value.decision_reason.len() == 0
+  }
+  if value.operation == "ACCEPT" {
+    return parent_present && accepted_present && rollback_empty && value.decision_reason.len() == 0
+  }
+  if value.operation == "ROLLBACK" {
+    return parent_present && (accepted_empty || accepted_present) && rollback_present &&
+    valid_nonempty_text(value.decision_reason, 4096)
+  }
+  return false
+}
+
 pub fn prompt_text_content_digest(borrow value: PromptTextArtifact) -> Result<string, Error> {
   mut normalized := clone_prompt_text(value)
   normalized.content_sha256 = "".clone()
@@ -870,6 +1055,136 @@ pub fn verify_prompt_variant_content(borrow value: PromptVariant) -> bool {
     return false
   }
   expected := prompt_variant_content_digest(value) else {
+    return false
+  }
+  return expected == value.content_sha256
+}
+
+fn corpus_revision_content_digest(borrow value: CorpusRevision) -> Result<string, Error> {
+  normalized := clone_corpus_revision_without_digest(value)
+  canonical := json.encode_bounded(normalized, 2097152)?
+  return Ok(digest_text(canonical))
+}
+
+fn verify_corpus_revision_content(borrow value: CorpusRevision) -> bool {
+  if value.schema_version != 1 || value.artifact_kind != "CORPUS_REVISION" ||
+  (value.source_kind != "GIT_COMMIT" && value.source_kind != "FILE_SET") ||
+  !valid_ascii_identifier(value.source_repository_id, 128) ||
+  !valid_content_digest(value.source_sha256) || !valid_content_digest(value.content_sha256) {
+    return false
+  }
+  expected := corpus_revision_content_digest(value) else {
+    return false
+  }
+  return expected == value.content_sha256
+}
+
+fn prompt_scope_content_digest(borrow value: PromptScope) -> Result<string, Error> {
+  normalized := clone_prompt_scope_without_digest(value)
+  canonical := json.encode_bounded(normalized, 2097152)?
+  return Ok(digest_text(canonical))
+}
+
+fn verify_prompt_scope_content(borrow value: PromptScope) -> bool {
+  if !valid_scope_shape(value) || !verify_corpus_revision_content(value.corpus_revision) {
+    return false
+  }
+  expected := prompt_scope_content_digest(value) else {
+    return false
+  }
+  return expected == value.content_sha256
+}
+
+pub fn prompt_activation_content_digest(borrow value: PromptActivation) -> Result<string, Error> {
+  normalized := clone_prompt_activation_without_digest(value)
+  canonical := json.encode_bounded(normalized, 2097152)?
+  return Ok(digest_text(canonical))
+}
+
+pub fn verify_prompt_activation_content(borrow value: PromptActivation) -> bool {
+  if !valid_activation_shape(value) || !verify_prompt_scope_content(value.scope) ||
+  !verify_prompt_variant_content(value.effective_variant) {
+    return false
+  }
+  expected := prompt_activation_content_digest(value) else {
+    return false
+  }
+  return expected == value.content_sha256
+}
+
+pub fn prompt_activation_result_content_digest(borrow value: PromptActivationResult) -> Result<string, Error> {
+  normalized := PromptActivationResult {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    decision_id: match value.decision_id {
+      None => None,
+      Some(id) => Some(id.clone()),
+    },
+    status: value.status.clone(),
+    error_code: value.error_code.clone(),
+    error: value.error.clone(),
+    activation: clone_prompt_activation_option(value.activation),
+    content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(normalized, 2097152)?
+  return Ok(digest_text(canonical))
+}
+
+fn valid_activation_failure_code(status: str, code: str) -> bool {
+  if status == "INELIGIBLE" || status == "PARENT_MISMATCH" || status == "SCOPE_MISMATCH" ||
+  status == "UNKNOWN_TARGET" || status == "NO_CHANGE" {
+    return code == status
+  }
+  if status != "INVALID_INPUT" {
+    return false
+  }
+  return code == "INPUT_NOT_FOUND" || code == "INPUT_TYPE" || code == "INPUT_READ" ||
+  code == "INVALID_ID" || code == "INVALID_PATH" || code == "INVALID_SCHEMA" ||
+  code == "INVALID_KIND" || code == "INVALID_LABEL" || code == "INVALID_BOUNDS" ||
+  code == "INVALID_DIGEST" || code == "INVALID_REFERENCE" || code == "SCOPE_MISMATCH" ||
+  code == "MISSING_CREDENTIAL" || code == "WORKSPACE_NOT_EMPTY"
+}
+
+pub fn verify_prompt_activation_result_content(borrow value: PromptActivationResult) -> bool {
+  if value.schema_version != 1 || value.artifact_kind != "PROMPT_ACTIVATION_RESULT" ||
+  !valid_content_digest(value.content_sha256) {
+    return false
+  }
+  successful := value.status == "BASELINED" || value.status == "ACCEPTED" || value.status == "ROLLED_BACK"
+  id_valid := match value.decision_id {
+    None => !successful,
+    Some(id) => valid_ascii_identifier(id, 96),
+  }
+  if !id_valid {
+    return false
+  }
+  shape_valid := if successful {
+    value.error_code == "NONE" && value.error.len() == 0 && match value.activation {
+      None => false,
+      Some(activation) => {
+        expected_operation := if value.status == "BASELINED" {
+          "BASELINE"
+        } else if value.status == "ACCEPTED" {
+          "ACCEPT"
+        } else {
+          "ROLLBACK"
+        }
+        id_matches := match value.decision_id {
+          None => false,
+          Some(id) => activation.activation_id == derived_activation_id(id),
+        }
+        activation.operation == expected_operation && id_matches && verify_prompt_activation_content(activation)
+      },
+    }
+  } else {
+    valid_activation_failure_code(value.status, value.error_code) &&
+    valid_nonempty_text(value.error, 4096) &&
+    match value.activation { None => true, Some(_) => false }
+  }
+  if !shape_valid {
+    return false
+  }
+  expected := prompt_activation_result_content_digest(value) else {
     return false
   }
   return expected == value.content_sha256
@@ -1408,6 +1723,32 @@ pub fn encode_prompt_evaluation_evidence(value: PromptEvaluationEvidence) -> str
 }
 
 pub fn encode_prompt_evaluation_evidence_bounded(value: PromptEvaluationEvidence, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_accept_request(value: str) -> Result<PromptAcceptRequest, Error> {
+  decoded: PromptAcceptRequest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_accept_request(value: PromptAcceptRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_accept_request_bounded(value: PromptAcceptRequest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_rollback_request(value: str) -> Result<PromptRollbackRequest, Error> {
+  decoded: PromptRollbackRequest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_rollback_request(value: PromptRollbackRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_rollback_request_bounded(value: PromptRollbackRequest, max_bytes: i64) -> Result<string, Error> {
   return json.encode_bounded(value, max_bytes)
 }
 

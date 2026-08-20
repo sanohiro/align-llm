@@ -42,7 +42,7 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. The reviewed
+`19c3db144c462bf7d6784f88d64cc124229b7ec2`. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-20): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, 15, 16, and 17 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, 14, and 18 remain ALIGN_MERGED.** Request 2's timeout adoption, Request 9's C7 adoption, Request 11's C6-EVALUATION adoption, Request 14's C6f2 publication adoption, and Request 18's C6d retained-root adoption remain pending. Requests 16 and 17 are adopted by the decoded C6c2 verifier at the exact Align merge recorded below.
+> **Status (2026-08-20): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, 15–18 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, and 14 remain ALIGN_MERGED.** Request 2's timeout adoption, Request 9's C7 adoption, Request 11's C6-EVALUATION adoption, and Request 14's C6f2 publication adoption remain pending. Request 18 is adopted by the C6d offline lifecycle owner at the exact Align merge recorded below.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -5596,14 +5596,14 @@ remain live after verification.
 ## Request 18 — `std.fs`: retained-root regular-file access
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6d offline accept/rollback CLI and any later C6 owner that consumes an ordinary artifact through the common physical-path trust boundary
 Independent work that may continue: C6 pure rendering/scoring/verifier work, C6f1 source-helper design, C6f2 publication design, provider work, and every Align capability unrelated to trusted filesystem traversal
-Resume condition: align-llm pins the implementation merge and `c6d-request18-adoption` proves the complete input/output path matrix before C6d review
+Resume condition: met by the exact pin, `c6d-request18-adoption`, and the final capable C6d integration gate
 Align commit or pull request: design PR #866, merged as `0b9d25e4d2ac34877ec79f28516f5f31c70ea9e0`; implementation PR #867, merged as `19c3db144c462bf7d6784f88d64cc124229b7ec2`
-align-llm verification: pending
+align-llm verification: `.align-revision` pins `19c3db144c462bf7d6784f88d64cc124229b7ec2`; `make c6d-request18-adoption` passes the retained-root input/output matrix; the final native Linux x86_64 capable `make ci` passes on the same C6d integration head
 ```
 
 ### Motivation and pinned-state evidence
@@ -5725,6 +5725,23 @@ Clippy, and one fresh full-diff review.
   errno mapping, and native filesystem operations.
 - `../align/crates/align_sema/src/hir.rs`, `../align/crates/align_mir/src/lib.rs`, and
   `../align/crates/align_codegen_llvm/src/lib.rs` — filesystem expression and lowering closure.
+
+### Align response and real-client adoption
+
+Align PR #867 shipped `fs.open_beneath` and `fs.create_exclusive_beneath` through the standard
+filesystem HIR/MIR/runtime boundary on Linux and macOS. The returned values are the existing owned
+`reader` and `writer`; inputs remain borrowed, traversal state is per call, input success requires a
+regular file, output success performs one exclusive final create, and no process-global cwd, retry,
+cleanup thread, or application-private FFI is involved.
+
+C6d consumes the surface in `src/prompt_artifact_io.align` and `src/prompt_state.align`. Request and
+artifact reads stay bounded and beneath retained roots; accept invokes the shared decoded verifier
+before constructing an activation; rollback validates immutable lineage; one pre-acquired writer
+publishes a bounded canonical result and explicitly flushes it. The focused owner covers exact-cap
+and multi-read JSON, deterministic multi-invalid order and error mapping, root/intermediate/final
+and dangling symlinks, missing/denied/special inputs, unsafe/occupied output paths, destination
+preservation, and exactly one winner between concurrent creators. The routine `prompt-state-smoke`
+retains verifier-first acceptance, immutable rollback, tamper, lineage, and CLI coverage.
 
 ---
 
