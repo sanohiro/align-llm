@@ -10,6 +10,13 @@ REQUEST_MAX_BYTES := 65536
 EVALUATION_MAX_BYTES := 268435456
 EVIDENCE_MAX_BYTES := 8388608
 
+pub InputSourceStatus { Loaded, NotFound, InputType, InputRead }
+
+pub InputSource {
+  status: InputSourceStatus,
+  source: string,
+}
+
 fn digest_text(value: str) -> string {
   digest := crypto.sha256(value)
   return encoding.hex_encode(digest[0..digest.len()]).clone()
@@ -61,6 +68,28 @@ fn read_bounded_beneath(root: str, relative: str, maximum: i64) -> Result<string
   return read_bounded_reader(reader, maximum)
 }
 
+fn failed_source(status: InputSourceStatus) -> InputSource {
+  return InputSource { status: status, source: "".clone() }
+}
+
+fn read_beneath_source(root: str, relative: str, maximum: i64) -> InputSource {
+  reader := match fs.open_beneath(root, relative) {
+    Ok(value) => value,
+    Err(failure) => {
+      status := match failure {
+        NotFound => InputSourceStatus.NotFound,
+        Invalid => InputSourceStatus.InputType,
+        _ => InputSourceStatus.InputRead,
+      }
+      return failed_source(status)
+    },
+  }
+  source := read_bounded_reader(reader, maximum) else {
+    return failed_source(InputSourceStatus.InputRead)
+  }
+  return InputSource { status: InputSourceStatus.Loaded, source: source }
+}
+
 pub fn load_prompt_variant(path: str) -> Result<prompt_artifacts.PromptVariant, Error> {
   source := read_bounded(path, ARTIFACT_MAX_BYTES)?
   view: str := source
@@ -90,11 +119,13 @@ pub fn load_prompt_rollback_request(root: str, relative: str) -> Result<prompt_a
   return prompt_artifacts.decode_prompt_rollback_request(view)
 }
 
-pub fn load_prompt_evaluation_result(root: str, relative: str) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
-  source := read_bounded_beneath(root, relative, EVALUATION_MAX_BYTES)?
-  view: str := source
-  decoded := prompt_artifacts.decode_prompt_evaluation_result(view)?
-  mut normalized := prompt_artifacts.decode_prompt_evaluation_result(view)?
+pub fn read_prompt_evaluation_result_source(root: str, relative: str) -> InputSource {
+  return read_beneath_source(root, relative, EVALUATION_MAX_BYTES)
+}
+
+pub fn decode_prompt_evaluation_result_source(value: str) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  decoded := prompt_artifacts.decode_prompt_evaluation_result(value)?
+  mut normalized := prompt_artifacts.decode_prompt_evaluation_result(value)?
   claimed := normalized.content_sha256.clone()
   normalized.content_sha256 = "".clone()
   canonical := prompt_artifacts.encode_prompt_evaluation_result_bounded(normalized, EVALUATION_MAX_BYTES)?
@@ -104,11 +135,13 @@ pub fn load_prompt_evaluation_result(root: str, relative: str) -> Result<prompt_
   return Ok(decoded)
 }
 
-pub fn load_prompt_evaluation_evidence(root: str, relative: str) -> Result<prompt_artifacts.PromptEvaluationEvidence, Error> {
-  source := read_bounded_beneath(root, relative, EVIDENCE_MAX_BYTES)?
-  view: str := source
-  decoded := prompt_artifacts.decode_prompt_evaluation_evidence(view)?
-  mut normalized := prompt_artifacts.decode_prompt_evaluation_evidence(view)?
+pub fn read_prompt_evaluation_evidence_source(root: str, relative: str) -> InputSource {
+  return read_beneath_source(root, relative, EVIDENCE_MAX_BYTES)
+}
+
+pub fn decode_prompt_evaluation_evidence_source(value: str) -> Result<prompt_artifacts.PromptEvaluationEvidence, Error> {
+  decoded := prompt_artifacts.decode_prompt_evaluation_evidence(value)?
+  mut normalized := prompt_artifacts.decode_prompt_evaluation_evidence(value)?
   claimed := normalized.content_sha256.clone()
   normalized.content_sha256 = "".clone()
   canonical := prompt_artifacts.encode_prompt_evaluation_evidence_bounded(normalized, EVIDENCE_MAX_BYTES)?
@@ -118,21 +151,20 @@ pub fn load_prompt_evaluation_evidence(root: str, relative: str) -> Result<promp
   return Ok(decoded)
 }
 
-pub fn load_prompt_activation_result(root: str, relative: str) -> Result<prompt_artifacts.PromptActivationResult, Error> {
-  source := read_bounded_beneath(root, relative, ARTIFACT_MAX_BYTES)?
-  view: str := source
-  decoded := prompt_artifacts.decode_prompt_activation_result(view)?
+pub fn read_prompt_activation_result_source(root: str, relative: str) -> InputSource {
+  return read_beneath_source(root, relative, ARTIFACT_MAX_BYTES)
+}
+
+pub fn read_prompt_activation_result_source_owned(root: str, borrow relative: string) -> InputSource {
+  return read_prompt_activation_result_source(root, relative)
+}
+
+pub fn decode_prompt_activation_result_source(value: str) -> Result<prompt_artifacts.PromptActivationResult, Error> {
+  decoded := prompt_artifacts.decode_prompt_activation_result(value)?
   if !prompt_artifacts.verify_prompt_activation_result_content(decoded) {
     return Err(Error.Invalid)
   }
   return Ok(decoded)
-}
-
-pub fn load_prompt_activation_result_owned(
-  root: str,
-  borrow relative: string,
-) -> Result<prompt_artifacts.PromptActivationResult, Error> {
-  return load_prompt_activation_result(root, relative)
 }
 
 pub fn write_prompt_activation_result(

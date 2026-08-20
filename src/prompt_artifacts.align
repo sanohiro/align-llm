@@ -935,6 +935,16 @@ fn derived_activation_id(value: str) -> string {
   return output.to_string()
 }
 
+fn valid_corpus_source_identity(borrow value: CorpusRevision) -> bool {
+  if value.source_kind == "GIT_COMMIT" {
+    return valid_ascii_identifier(value.source_repository_id, 128)
+  }
+  if value.source_kind == "FILE_SET" {
+    return value.source_repository_id.len() == 0
+  }
+  return false
+}
+
 fn valid_scope_shape(borrow value: PromptScope) -> bool {
   return value.schema_version == 1 &&
   value.artifact_kind == "PROMPT_SCOPE" &&
@@ -944,8 +954,7 @@ fn valid_scope_shape(borrow value: PromptScope) -> bool {
   valid_ascii_identifier(value.corpus_id, 128) &&
   value.corpus_revision.schema_version == 1 &&
   value.corpus_revision.artifact_kind == "CORPUS_REVISION" &&
-  (value.corpus_revision.source_kind == "GIT_COMMIT" || value.corpus_revision.source_kind == "FILE_SET") &&
-  valid_ascii_identifier(value.corpus_revision.source_repository_id, 128) &&
+  valid_corpus_source_identity(value.corpus_revision) &&
   valid_content_digest(value.corpus_revision.source_sha256) &&
   valid_content_digest(value.corpus_revision.content_sha256) &&
   (value.evaluation_provider_kind == "FIXTURE" ||
@@ -1068,8 +1077,7 @@ fn corpus_revision_content_digest(borrow value: CorpusRevision) -> Result<string
 
 fn verify_corpus_revision_content(borrow value: CorpusRevision) -> bool {
   if value.schema_version != 1 || value.artifact_kind != "CORPUS_REVISION" ||
-  (value.source_kind != "GIT_COMMIT" && value.source_kind != "FILE_SET") ||
-  !valid_ascii_identifier(value.source_repository_id, 128) ||
+  !valid_corpus_source_identity(value) ||
   !valid_content_digest(value.source_sha256) || !valid_content_digest(value.content_sha256) {
     return false
   }
@@ -1152,7 +1160,7 @@ pub fn verify_prompt_activation_result_content(borrow value: PromptActivationRes
   }
   successful := value.status == "BASELINED" || value.status == "ACCEPTED" || value.status == "ROLLED_BACK"
   id_valid := match value.decision_id {
-    None => !successful,
+    None => value.status == "INVALID_INPUT",
     Some(id) => valid_ascii_identifier(id, 96),
   }
   if !id_valid {

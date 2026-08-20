@@ -196,18 +196,22 @@ fn write_failure(
   return Ok(status_from_label(status))
 }
 
-fn write_input_failure(
+fn write_source_failure(
   output: writer,
   decision_id: Option<string>,
-  failure: Error,
+  status: prompt_artifact_io.InputSourceStatus,
   message: str,
 ) -> Result<PromptCommandStatus, Error> {
-  code := match failure {
+  code := match status {
     NotFound => "INPUT_NOT_FOUND",
-    Invalid => "INPUT_TYPE",
+    InputType => "INPUT_TYPE",
     _ => "INPUT_READ",
   }
   return write_failure(output, decision_id, "INVALID_INPUT", code, message)
+}
+
+fn source_loaded(status: prompt_artifact_io.InputSourceStatus) -> bool {
+  return match status { Loaded => true, _ => false }
 }
 
 fn valid_accept_request(borrow value: prompt_artifacts.PromptAcceptRequest) -> bool {
@@ -369,42 +373,47 @@ pub fn accept_file(request_path: str, result_path: str) -> Result<PromptCommandS
   if !valid_accept_request(request) {
     return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_BOUNDS", "invalid accept request")
   }
-  evaluation := match prompt_artifact_io.load_prompt_evaluation_result(
+  evaluation_source := prompt_artifact_io.read_prompt_evaluation_result_source(
     request.project_root,
     request.evaluation_path,
-  ) {
-    Ok(value) => value,
-    Err(failure) => {
-      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid evaluation artifact")
-    },
+  )
+  if !source_loaded(evaluation_source.status) {
+    return write_source_failure(output, optional_decision_id(request.decision_id), evaluation_source.status, "cannot read evaluation artifact")
   }
-  evidence := match prompt_artifact_io.load_prompt_evaluation_evidence(
+  evaluation := prompt_artifact_io.decode_prompt_evaluation_result_source(evaluation_source.source) else {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid evaluation artifact")
+  }
+  evidence_source := prompt_artifact_io.read_prompt_evaluation_evidence_source(
     request.project_root,
     request.evaluation_evidence_path,
-  ) {
-    Ok(value) => value,
-    Err(failure) => {
-      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid evaluation evidence")
-    },
+  )
+  if !source_loaded(evidence_source.status) {
+    return write_source_failure(output, optional_decision_id(request.decision_id), evidence_source.status, "cannot read evaluation evidence")
   }
-  parent := match prompt_artifact_io.load_prompt_activation_result(
+  evidence := prompt_artifact_io.decode_prompt_evaluation_evidence_source(evidence_source.source) else {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid evaluation evidence")
+  }
+  parent_source := prompt_artifact_io.read_prompt_activation_result_source(
     request.project_root,
     request.parent_activation_path,
-  ) {
-    Ok(value) => value,
-    Err(failure) => {
-      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid parent activation")
-    },
+  )
+  if !source_loaded(parent_source.status) {
+    return write_source_failure(output, optional_decision_id(request.decision_id), parent_source.status, "cannot read parent activation")
+  }
+  parent := prompt_artifact_io.decode_prompt_activation_result_source(parent_source.source) else {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid parent activation")
   }
   verdict := prompt_score.verify_result(evaluation, evidence) else {
     return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "evaluation verification failed")
   }
-  eligible := match verdict {
-    ImprovedEligible => true,
-    _ => false,
-  }
-  if !eligible {
-    return write_failure(output, optional_decision_id(request.decision_id), "INELIGIBLE", "INELIGIBLE", "evaluation is not eligible")
+  match verdict {
+    ImprovedEligible => {},
+    CompleteIneligible => {
+      return write_failure(output, optional_decision_id(request.decision_id), "INELIGIBLE", "INELIGIBLE", "evaluation is not eligible")
+    },
+    NoncompleteError => {
+      return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "evaluation is not complete")
+    },
   }
   if !parent_matches_evaluation(evaluation, parent, request.parent_activation_path) {
     return write_failure(output, optional_decision_id(request.decision_id), "PARENT_MISMATCH", "PARENT_MISMATCH", "parent activation does not match evaluation")
@@ -496,26 +505,28 @@ pub fn rollback_file(request_path: str, result_path: str) -> Result<PromptComman
   if !valid_rollback_request(request) {
     return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_BOUNDS", "invalid rollback request")
   }
-  current_result := match prompt_artifact_io.load_prompt_activation_result(
+  current_source := prompt_artifact_io.read_prompt_activation_result_source(
     request.project_root,
     request.current_activation_path,
-  ) {
-    Ok(value) => value,
-    Err(failure) => {
-      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid current activation")
-    },
+  )
+  if !source_loaded(current_source.status) {
+    return write_source_failure(output, optional_decision_id(request.decision_id), current_source.status, "cannot read current activation")
+  }
+  current_result := prompt_artifact_io.decode_prompt_activation_result_source(current_source.source) else {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid current activation")
   }
   current := activation_identity(current_result) else {
     return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid current activation")
   }
-  target_result := match prompt_artifact_io.load_prompt_activation_result(
+  target_source := prompt_artifact_io.read_prompt_activation_result_source(
     request.project_root,
     request.target_activation_path,
-  ) {
-    Ok(value) => value,
-    Err(failure) => {
-      return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid target activation")
-    },
+  )
+  if !source_loaded(target_source.status) {
+    return write_source_failure(output, optional_decision_id(request.decision_id), target_source.status, "cannot read target activation")
+  }
+  target_result := prompt_artifact_io.decode_prompt_activation_result_source(target_source.source) else {
+    return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid target activation")
   }
   target := activation_identity(target_result) else {
     return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid target activation")
@@ -531,14 +542,15 @@ pub fn rollback_file(request_path: str, result_path: str) -> Result<PromptComman
   mut collect := 0
   loop {
     if collect >= request.ancestor_activation_paths.len() { break }
-    ancestor_result := match prompt_artifact_io.load_prompt_activation_result_owned(
+    ancestor_source := prompt_artifact_io.read_prompt_activation_result_source_owned(
       request.project_root,
       request.ancestor_activation_paths[collect],
-    ) {
-      Ok(value) => value,
-      Err(failure) => {
-        return write_input_failure(output, optional_decision_id(request.decision_id), failure, "invalid ancestor activation")
-      },
+    )
+    if !source_loaded(ancestor_source.status) {
+      return write_source_failure(output, optional_decision_id(request.decision_id), ancestor_source.status, "cannot read ancestor activation")
+    }
+    ancestor_result := prompt_artifact_io.decode_prompt_activation_result_source(ancestor_source.source) else {
+      return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid ancestor activation")
     }
     ancestor := activation_identity(ancestor_result) else {
       return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "invalid ancestor activation")
@@ -570,12 +582,17 @@ pub fn rollback_file(request_path: str, result_path: str) -> Result<PromptComman
     !same_owned_text(collected_digests[index + 1], expected_digest) {
       return write_failure(output, optional_decision_id(request.decision_id), "INVALID_INPUT", "INVALID_REFERENCE", "activation lineage link is invalid")
     }
-    if !same_owned_text(collected_scope_digests[index], current.scope.content_sha256) {
-      return write_failure(output, optional_decision_id(request.decision_id), "SCOPE_MISMATCH", "SCOPE_MISMATCH", "ancestor scope does not match current scope")
-    }
     expected_id = clone_owned_text(collected_parent_ids[index])
     expected_digest = clone_owned_text(collected_parent_digests[index])
     index = index + 1
+  }
+  mut scope_index := 0
+  loop {
+    if scope_index >= collected_scope_digests.len() { break }
+    if !same_owned_text(collected_scope_digests[scope_index], current.scope.content_sha256) {
+      return write_failure(output, optional_decision_id(request.decision_id), "SCOPE_MISMATCH", "SCOPE_MISMATCH", "ancestor scope does not match current scope")
+    }
+    scope_index = scope_index + 1
   }
   if target.activation_id != expected_id || target.content_sha256 != expected_digest {
     return write_failure(output, optional_decision_id(request.decision_id), "UNKNOWN_TARGET", "UNKNOWN_TARGET", "target is not the proven ancestor")

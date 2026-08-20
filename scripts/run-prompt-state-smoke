@@ -107,6 +107,27 @@ tampered["gate_eligible"] = False
 bind_digest(tampered)
 tampered_evidence = evidence_for(tampered)
 
+noncomplete = copy.deepcopy(eligible)
+noncomplete["status"] = "INVALID_INPUT"
+noncomplete["error_code"] = "INVALID_BOUNDS"
+noncomplete["error"] = "invalid evaluation request"
+noncomplete["gate_eligible"] = False
+noncomplete.pop("workspace_preflight_source", None)
+noncomplete.pop("workspace_preflight", None)
+noncomplete.pop("environment", None)
+noncomplete["snapshot_requests"] = []
+noncomplete["snapshot_results"] = []
+noncomplete["input_snapshots"] = []
+noncomplete["snapshot_attestations"] = []
+noncomplete["rows"] = []
+noncomplete["task_aggregates"] = []
+noncomplete.pop("corpus_aggregate", None)
+noncomplete["serious_regression_reasons"] = []
+bind_digest(noncomplete)
+noncomplete_evidence = evidence_for(noncomplete)
+noncomplete_evidence["expected_inputs"] = []
+bind_digest(noncomplete_evidence)
+
 other_parent = copy.deepcopy(baseline)
 other_parent["decision_id"] = "other"
 other_parent["activation"]["activation_id"] = "other/activation"
@@ -122,6 +143,8 @@ for name, value in (
     ("ineligible-evidence.json", ineligible_evidence),
     ("tampered.json", tampered),
     ("tampered-evidence.json", tampered_evidence),
+    ("noncomplete.json", noncomplete),
+    ("noncomplete-evidence.json", noncomplete_evidence),
 ):
     (root / name).write_bytes(canonical_bytes(value))
 
@@ -148,6 +171,9 @@ requests = {
     ),
     "parent-mismatch-request.json": accept_request(
         "accept-mismatch", "eligible.json", "other-parent.json", "eligible-evidence.json"
+    ),
+    "noncomplete-request.json": accept_request(
+        "accept-noncomplete", "noncomplete.json", "baseline.json", "noncomplete-evidence.json"
     ),
 }
 for name, value in requests.items():
@@ -193,6 +219,15 @@ cmp -s "${temporary_dir}/baseline.before.json" "${temporary_dir}/baseline.json"
 run_failure accept "${temporary_dir}/ineligible-request.json" "${temporary_dir}/ineligible-result.json" INELIGIBLE
 run_failure accept "${temporary_dir}/tampered-request.json" "${temporary_dir}/tampered-result.json" INVALID_INPUT
 run_failure accept "${temporary_dir}/parent-mismatch-request.json" "${temporary_dir}/mismatch-result.json" PARENT_MISMATCH
+run_failure accept "${temporary_dir}/noncomplete-request.json" "${temporary_dir}/noncomplete-result.json" INVALID_INPUT
+python3 - "${temporary_dir}/noncomplete-result.json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if value.get("error") != "evaluation is not complete":
+    raise SystemExit(f"noncomplete evaluation reached the wrong acceptance classification: {value!r}")
+PY
 
 printf '%s\n' sentinel >"${temporary_dir}/existing.json"
 if "${binary}" prompt accept "${temporary_dir}/accept.json" "${temporary_dir}/existing.json" \
@@ -318,6 +353,59 @@ scope_mismatch["current_activation_path"] = "foreign-current.json"
 scope_mismatch["target_activation_path"] = "foreign-target.json"
 write("rollback-scope.json", scope_mismatch)
 
+file_set_target = copy.deepcopy(baseline)
+file_set_target["decision_id"] = "file-set-target"
+file_set_target["activation"]["activation_id"] = "file-set-target/activation"
+file_set_revision = file_set_target["activation"]["scope"]["corpus_revision"]
+file_set_revision["source_kind"] = "FILE_SET"
+file_set_revision["source_repository_id"] = ""
+bind_digest(file_set_revision)
+bind_digest(file_set_target["activation"]["scope"])
+bind_digest(file_set_target["activation"])
+bind_digest(file_set_target)
+write("file-set-target.json", file_set_target)
+
+file_set_current = copy.deepcopy(accepted)
+file_set_current["decision_id"] = "file-set-current"
+file_set_current["activation"]["activation_id"] = "file-set-current/activation"
+file_set_current["activation"]["scope"] = copy.deepcopy(file_set_target["activation"]["scope"])
+file_set_current["activation"]["parent_activation_id"] = file_set_target["activation"]["activation_id"]
+file_set_current["activation"]["parent_activation_sha256"] = file_set_target["activation"]["content_sha256"]
+bind_digest(file_set_current["activation"])
+bind_digest(file_set_current)
+write("file-set-current.json", file_set_current)
+file_set_rollback = copy.deepcopy(rollback)
+file_set_rollback["decision_id"] = "rollback-file-set"
+file_set_rollback["current_activation_path"] = "file-set-current.json"
+file_set_rollback["target_activation_path"] = "file-set-target.json"
+write("rollback-file-set.json", file_set_rollback)
+
+broken_ancestor = copy.deepcopy(second)
+broken_ancestor["decision_id"] = "broken-ancestor"
+broken_ancestor["activation"]["activation_id"] = "broken-ancestor/activation"
+broken_ancestor["activation"]["scope"]["repo_id"] = "foreign-repository"
+bind_digest(broken_ancestor["activation"]["scope"])
+broken_ancestor["activation"]["parent_activation_id"] = "wrong-parent/activation"
+broken_ancestor["activation"]["parent_activation_sha256"] = "f" * 64
+bind_digest(broken_ancestor["activation"])
+bind_digest(broken_ancestor)
+write("broken-ancestor.json", broken_ancestor)
+
+precedence_current = copy.deepcopy(accepted)
+precedence_current["decision_id"] = "precedence-current"
+precedence_current["activation"]["activation_id"] = "precedence-current/activation"
+precedence_current["activation"]["parent_activation_id"] = broken_ancestor["activation"]["activation_id"]
+precedence_current["activation"]["parent_activation_sha256"] = broken_ancestor["activation"]["content_sha256"]
+bind_digest(precedence_current["activation"])
+bind_digest(precedence_current)
+write("precedence-current.json", precedence_current)
+precedence_request = copy.deepcopy(rollback)
+precedence_request["decision_id"] = "rollback-precedence"
+precedence_request["current_activation_path"] = "precedence-current.json"
+precedence_request["target_activation_path"] = "baseline.json"
+precedence_request["ancestor_activation_paths"] = ["broken-ancestor.json", "accepted.json"]
+write("rollback-precedence.json", precedence_request)
+
 nested_tamper = copy.deepcopy(accepted)
 nested_tamper["decision_id"] = "nested-tamper"
 nested_tamper["activation"]["activation_id"] = "nested-tamper/activation"
@@ -335,6 +423,7 @@ PY
 cp "${temporary_dir}/accepted.json" "${temporary_dir}/accepted.before.json"
 run_success rollback "${temporary_dir}/rollback.json" "${temporary_dir}/rolled-back.json" ROLLED_BACK
 run_success rollback "${temporary_dir}/rollback-multi.json" "${temporary_dir}/rolled-back-multi.json" ROLLED_BACK
+run_success rollback "${temporary_dir}/rollback-file-set.json" "${temporary_dir}/rolled-back-file-set.json" ROLLED_BACK
 cmp -s "${temporary_dir}/accepted.before.json" "${temporary_dir}/accepted.json"
 cmp -s "${temporary_dir}/baseline.before.json" "${temporary_dir}/baseline.json"
 
@@ -466,6 +555,10 @@ write_request("directory-request.json", evaluation_path="directory-input")
 write_request("fifo-request.json", evaluation_path="fifo-input")
 write_request("socket-request.json", evaluation_path="socket-input")
 write_request("denied-request.json", evaluation_path="denied-input.json")
+(root / "invalid-utf8-input").write_bytes(b"\xff")
+write_request("invalid-utf8-request.json", evaluation_path="invalid-utf8-input")
+(root / "malformed-evaluation.json").write_text("{", encoding="ascii")
+write_request("malformed-evaluation-request.json", evaluation_path="malformed-evaluation.json")
 write_request("parent-relative-request.json", evaluation_path="../eligible.json")
 write_request("absolute-input-request.json", evaluation_path=str(root / "eligible.json"))
 write_request("dot-input-request.json", evaluation_path="./eligible.json")
@@ -596,6 +689,8 @@ PY
   if [[ "$(id -u)" != 0 ]]; then
     expect_result_code "${temporary_dir}/denied-request.json" "${temporary_dir}/denied-result.json" INPUT_READ
   fi
+  expect_result_code "${temporary_dir}/invalid-utf8-request.json" "${temporary_dir}/invalid-utf8-result.json" INPUT_READ
+  expect_result_code "${temporary_dir}/malformed-evaluation-request.json" "${temporary_dir}/malformed-evaluation-result.json" INVALID_REFERENCE
 
   expect_result_code "${temporary_dir}/parent-relative-request.json" "${temporary_dir}/parent-relative-result.json" INVALID_BOUNDS
   expect_result_code "${temporary_dir}/absolute-input-request.json" "${temporary_dir}/absolute-input-result.json" INVALID_BOUNDS
@@ -608,6 +703,7 @@ PY
   expect_rollback_result_code "${temporary_dir}/rollback-current-order-request.json" "${temporary_dir}/rollback-current-order-result.json" INPUT_NOT_FOUND
   expect_rollback_result_code "${temporary_dir}/rollback-ancestor-order-request.json" "${temporary_dir}/rollback-ancestor-order-result.json" INPUT_TYPE
   expect_rollback_result_code "${temporary_dir}/rollback-target-order-request.json" "${temporary_dir}/rollback-target-order-result.json" INPUT_NOT_FOUND
+  expect_rollback_result_code "${temporary_dir}/rollback-precedence.json" "${temporary_dir}/rollback-precedence-result.json" INVALID_REFERENCE
   expect_rollback_result_code "${temporary_dir}/rollback-invalid-reason-request.json" "${temporary_dir}/rollback-invalid-reason-result.json" INVALID_BOUNDS
   expect_rollback_result_code "${temporary_dir}/rollback-current-before-reason-request.json" "${temporary_dir}/rollback-current-before-reason-result.json" INPUT_NOT_FOUND
 
