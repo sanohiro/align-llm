@@ -3031,11 +3031,11 @@ fn verifier_snapshot_artifact_closure(
     snapshot.artifact_digests[digest_index].path != request.static_expectations[expectation_index].path {
       return false
     }
+    if snapshot.artifact_digests[digest_index].sha256 !=
+    request.static_expectations[expectation_index].expected_sha256 {
+      return false
+    }
     if request.static_expectations[expectation_index].kind == "FILE" {
-      if snapshot.artifact_digests[digest_index].sha256 !=
-      request.static_expectations[expectation_index].expected_sha256 {
-        return false
-      }
       digest_index = digest_index + 1
     } else {
       root := request.static_expectations[expectation_index].path
@@ -3731,7 +3731,8 @@ fn verifier_workspace_result_trace_valid(
     helper_code_valid && paths_valid &&
     preflight.error == result.error &&
     verifier_valid_text(preflight.error, 4_096) &&
-    match preflight.environment_probe { None => true, Some(_) => false }
+    match preflight.environment_probe { None => true, Some(_) => false } &&
+    match result.environment { None => true, Some(_) => false }
   }
   return false
 }
@@ -4223,6 +4224,10 @@ fn verifier_last_row_is_error(borrow result: prompt_artifacts.PromptEvaluationRe
   return verifier_row_measurement_is_error(result.rows[result.rows.len() - 1])
 }
 
+fn verifier_terminal_row_matches_error(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return result.error_code == "ADAPTER_RESULT" && verifier_last_row_is_error(result)
+}
+
 fn verifier_row_measurement_is_error(borrow row: prompt_artifacts.PromptTaskRow) -> bool {
   return row.measurement.status == "ERROR"
 }
@@ -4278,8 +4283,10 @@ fn verifier_rows_and_attestations_valid(borrow result: prompt_artifacts.PromptEv
       !verifier_failed_attestation_valid(result.snapshot_attestations[result.rows.len()], result) {
         return false
       }
-    } else if !(result.error_code == "CLEANUP_FAILED" || verifier_last_row_is_error(result)) {
-      return false
+    } else {
+      cleanup_after_prefix := result.error_code == "CLEANUP_FAILED" &&
+      !verifier_last_row_is_error(result)
+      if !cleanup_after_prefix && !verifier_terminal_row_matches_error(result) { return false }
     }
   }
   return true

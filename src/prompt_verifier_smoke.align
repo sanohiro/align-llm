@@ -21,7 +21,7 @@ fn expectations() -> array<prompt_artifacts.ArtifactExpectation> {
     })
   values.push(prompt_artifacts.ArtifactExpectation {
       path: "snapshot".clone(),
-      kind: "FILE".clone(),
+      kind: "TREE".clone(),
       expected_sha256: digest_b(),
     })
   return values.build()
@@ -45,6 +45,23 @@ fn digests() -> array<prompt_artifacts.ArtifactDigest> {
       mode: "100755".clone(),
       byte_count: 1,
       sha256: digest_b(),
+    })
+  return values.build()
+}
+
+fn wrong_tree_digests() -> array<prompt_artifacts.ArtifactDigest> {
+  mut values: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  values.push(prompt_artifacts.ArtifactDigest {
+      path: "adapter".clone(),
+      mode: "100755".clone(),
+      byte_count: 1,
+      sha256: digest_a(),
+    })
+  values.push(prompt_artifacts.ArtifactDigest {
+      path: "snapshot".clone(),
+      mode: "040755".clone(),
+      byte_count: 0,
+      sha256: digest_c(),
     })
   return values.build()
 }
@@ -298,9 +315,9 @@ fn probe(producer: str, runtime: str) -> prompt_artifacts.EnvironmentProbe {
   }
 }
 
-fn environment() -> prompt_artifacts.EnvironmentIdentity {
+fn environment_with_schema(schema_version: i64) -> prompt_artifacts.EnvironmentIdentity {
   return prompt_artifacts.EnvironmentIdentity {
-    schema_version: 1,
+    schema_version: schema_version,
     artifact_kind: "ENVIRONMENT_IDENTITY".clone(),
     core: prompt_artifacts.EnvironmentIdentityCore {
       schema_version: 1,
@@ -323,6 +340,10 @@ fn environment() -> prompt_artifacts.EnvironmentIdentity {
     content_sha256: digest_a(),
   }
 }
+
+fn environment() -> prompt_artifacts.EnvironmentIdentity = environment_with_schema(1)
+
+fn malformed_environment() -> prompt_artifacts.EnvironmentIdentity = environment_with_schema(2)
 
 fn workspace_request() -> prompt_artifacts.WorkspacePreflightRequest {
   return prompt_artifacts.WorkspacePreflightRequest {
@@ -774,7 +795,7 @@ fn snapshot_results_array() -> array<prompt_artifacts.SnapshotResult> {
   return values.build()
 }
 
-fn snapshot_results_without_artifact_closure() -> array<prompt_artifacts.SnapshotResult> {
+fn snapshot_results_with_wrong_tree_digest() -> array<prompt_artifacts.SnapshotResult> {
   mut values: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
   values.push(prompt_artifacts.SnapshotResult {
       schema_version: 1,
@@ -784,7 +805,7 @@ fn snapshot_results_without_artifact_closure() -> array<prompt_artifacts.Snapsho
       error_code: "NONE".clone(),
       error: "".clone(),
       environment_probe: Some(probe("SNAPSHOT_HELPER", "snapshot-runtime")),
-      artifact_digests: empty_digests(),
+      artifact_digests: wrong_tree_digests(),
       content_sha256: digest_a(),
     })
   return values.build()
@@ -931,7 +952,7 @@ fn complete_result(
   tamper_reference: bool,
   tamper_trace: bool,
   tamper_row_identity: bool,
-  tamper_artifact_closure: bool,
+  tamper_tree_digest: bool,
 ) -> prompt_artifacts.PromptEvaluationResult {
   return prompt_artifacts.PromptEvaluationResult {
     schema_version: 1,
@@ -965,8 +986,8 @@ fn complete_result(
     workspace_preflight: Some(workspace_result()),
     environment: Some(environment()),
     snapshot_requests: snapshot_requests_array(),
-    snapshot_results: if tamper_artifact_closure {
-      snapshot_results_without_artifact_closure()
+    snapshot_results: if tamper_tree_digest {
+      snapshot_results_with_wrong_tree_digest()
     } else {
       snapshot_results_array()
     },
@@ -1041,7 +1062,7 @@ fn invalid_result() -> prompt_artifacts.PromptEvaluationResult {
 fn error_result(state: i64) -> prompt_artifacts.PromptEvaluationResult {
   error_code := if state == 1 {
     "ADAPTER_RESULT".clone()
-  } else if state == 3 {
+  } else if state == 3 || state == 5 {
     "WORKSPACE_UNSAFE".clone()
   } else if state == 4 {
     "SNAPSHOT_ERROR".clone()
@@ -1050,7 +1071,7 @@ fn error_result(state: i64) -> prompt_artifacts.PromptEvaluationResult {
   }
   error_text := if state == 1 {
     "adapter result".clone()
-  } else if state == 3 {
+  } else if state == 3 || state == 5 {
     "workspace unsafe".clone()
   } else if state == 4 {
     "snapshot helper error".clone()
@@ -1082,14 +1103,20 @@ fn error_result(state: i64) -> prompt_artifacts.PromptEvaluationResult {
     provider_control: Some(provider_control("LOCAL_OPENAI")),
     workspace_preflight_source: Some(reference("WORKSPACE_PREFLIGHT_RESULT", "evaluation", digest_a())),
     workspace_preflight_request: Some(workspace_request()),
-    workspace_preflight: if state == 3 {
+    workspace_preflight: if state == 3 || state == 5 {
       Some(workspace_failure_result(true))
     } else if state == 4 {
       Some(workspace_failure_result(false))
     } else {
       Some(workspace_result())
     },
-    environment: if state == 2 { Some(environment()) } else { None },
+    environment: if state == 2 {
+      Some(environment())
+    } else if state == 5 {
+      Some(malformed_environment())
+    } else {
+      None
+    },
     snapshot_requests: if state >= 3 { empty_snapshot_requests_array() } else { snapshot_requests_array() },
     snapshot_results: error_snapshot_results(state),
     input_snapshots: error_input_snapshots(state),
@@ -1255,9 +1282,22 @@ fn retained_evidence(verified: bool) -> prompt_artifacts.PromptEvaluationEvidenc
   }
 }
 
-fn retained_error_result(terminal: bool) -> prompt_artifacts.PromptEvaluationResult {
-  error_code := if terminal { "ADAPTER_RESULT".clone() } else { "CLEANUP_FAILED".clone() }
-  error_text := if terminal { "adapter result".clone() } else { "cleanup failed".clone() }
+fn retained_error_result(mode: i64) -> prompt_artifacts.PromptEvaluationResult {
+  terminal := mode != 0
+  error_code := if mode == 2 {
+    "ARITHMETIC".clone()
+  } else if terminal {
+    "ADAPTER_RESULT".clone()
+  } else {
+    "CLEANUP_FAILED".clone()
+  }
+  error_text := if mode == 2 {
+    "arithmetic".clone()
+  } else if terminal {
+    "adapter result".clone()
+  } else {
+    "cleanup failed".clone()
+  }
   return prompt_artifacts.PromptEvaluationResult {
     schema_version: 1,
     artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
@@ -1432,6 +1472,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   workspace_error_evidence := noncomplete_evidence(false)
   expect_noncomplete(workspace_error_value, workspace_error_evidence)?
 
+  malformed_preflight_environment := error_result(5)
+  malformed_preflight_environment_evidence := noncomplete_evidence(false)
+  expect_invalid(malformed_preflight_environment, malformed_preflight_environment_evidence)?
+
   precheck_drift_value := drift_error_result(false)
   precheck_drift_evidence := retained_evidence(false)
   expect_noncomplete(precheck_drift_value, precheck_drift_evidence)?
@@ -1440,11 +1484,15 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   postcheck_drift_evidence := retained_evidence(false)
   expect_noncomplete(postcheck_drift_value, postcheck_drift_evidence)?
 
-  terminal_error_value := retained_error_result(true)
+  terminal_error_value := retained_error_result(1)
   terminal_error_evidence := retained_evidence(false)
   expect_noncomplete(terminal_error_value, terminal_error_evidence)?
 
-  cleanup_error_value := retained_error_result(false)
+  terminal_error_mismatch := retained_error_result(2)
+  terminal_error_mismatch_evidence := retained_evidence(false)
+  expect_invalid(terminal_error_mismatch, terminal_error_mismatch_evidence)?
+
+  cleanup_error_value := retained_error_result(0)
   cleanup_error_evidence := retained_evidence(false)
   expect_noncomplete(cleanup_error_value, cleanup_error_evidence)?
 
@@ -1478,9 +1526,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
 
   gate_tamper := complete_result(0, "FIXTURE", "IMPROVED", true, false, false, false, false, false, false)
 
-  artifact_closure_tamper := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, true)
-  artifact_closure_evidence := evidence(true)
-  expect_invalid(artifact_closure_tamper, artifact_closure_evidence)?
+  tree_digest_tamper := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, true)
+  tree_digest_evidence := evidence(true)
+  expect_invalid(tree_digest_tamper, tree_digest_evidence)?
   gate_evidence := evidence(true)
   expect_invalid(gate_tamper, gate_evidence)?
 
