@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-18): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, and 15 are ALIGN_LLM_VERIFIED; Requests 2, 9, and 11 remain ALIGN_MERGED; Requests 14 and 16 remain PROPOSED.** Request 2's timeout adoption, Request 9's C7 adoption, and Request 11's C6-EVALUATION adoption remain pending. Request 16 blocks the decoded C6-LIFECYCLE verifier until the Align language can inspect owned optional payloads through a borrow without consuming them.
+> **Status (2026-08-20): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, 15, 16, and 17 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, and 14 remain ALIGN_MERGED.** Request 2's timeout adoption, Request 9's C7 adoption, Request 11's C6-EVALUATION adoption, and Request 14's C6f2 publication adoption remain pending. Requests 16 and 17 are adopted by the decoded C6c2 verifier at the exact Align merge recorded below.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -5201,24 +5201,38 @@ The Align design and implementation must prove:
 ## Request 14 — `std.fs`: exclusive creation and no-replace publication
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator result/evidence publication and any later C6 command that promises no-replace artifact finalization
 Independent work that may continue: C6c1p and C6c2 pure verification, prompt rendering, scoring, design work, and any implementation that does not publish a pair with exclusive creation and no-replace rename
-Resume condition: Align accepts and merges the reviewed exclusive-create and no-replace-publication design at a named commit; the C6-EVALUATION prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then focused `c6f2-request14-adoption` passes the exact publication race/cleanup matrix before the wave's one final `make ci`
-Align commit or pull request: pending
-align-llm verification: pending
+Resume condition: the C6-EVALUATION prerequisite wave runs focused `c6f2-request14-adoption` against the pinned compiler and passes the exact publication race/cleanup matrix before that wave's one final `make ci`
+Align commit or pull request: design PR #859, merged as `a21eb8416f2088df68026f10c63a38cd0bd65538`; implementation PR #861, merged as `3c2edd2f399c9e2c9551b4227c61b36d6a041e20`
+align-llm verification: pending `c6f2-request14-adoption`; the current pin contains the surface but C6c2 does not consume it
 ```
+
+### Align response (2026-08-19 — shipped; adoption pending)
+
+Align ships `fs.create_exclusive(path: str) -> Result<writer, Error>` and
+`fs.rename_no_replace(source: str, destination: str) -> Result<(), Error>`. The implementation
+preserves the existing `Error.Code(native errno)` mapping and writer Move/Drop contract, uses
+ephemeral bounded NUL-terminated path copies, and selects native exclusive operations without a
+check-then-create, replacing rename, delete-before-rename, or filesystem-class emulation path.
+
+The accepted floor is controlled local ext4/tmpfs on Linux and local APFS on macOS. C6f2 still
+owns trusted paths, the single-writer precondition, result-then-evidence ordering, reverse cleanup,
+and `OUTPUT_WRITE` / `OUTPUT_PAIR_CLEANUP_FAILED` precedence. No durability guarantee,
+cross-device fallback, Windows implementation, or remote-filesystem promise was added.
 
 ### Motivation and current-state evidence
 
-C6f2 writes a result and an independently content-bound evidence sidecar. Its contract requires
+Before the shipped Align implementation, C6f2 had to write a result and an independently
+content-bound evidence sidecar. Its contract requires
 two sibling temporary files, exclusive creation, fixed result-then-evidence publication, and a
 no-replace finalization failure if another process creates either target between validation and
 publication. The pinned Align `std.fs` surface provides whole-file `write_file` and `remove`, plus
 the `fs.create` writer; `fs.create` opens with create/truncate semantics and can replace an existing
-path. It does not expose an exclusive-create operation or an atomic no-replace rename operation.
+path. It did not expose an exclusive-create operation or an atomic no-replace rename operation.
 The compiler/runtime's Rust cache publisher uses private `std::fs::rename`, but that is not an Align
 program API and cannot be used by an align-llm client. A check-then-write or delete-and-rename
 workaround would violate the stated race and no-replace contract.
@@ -5385,15 +5399,30 @@ reviewed head; align-llm later reaches `ALIGN_LLM_VERIFIED` through
 ## Request 16 — language: borrow-safe inspection of owned sum payloads
 
 ```text
-Status: PROPOSED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
-Blocked gate or slice: C6-LIFECYCLE decoded `prompt_score.verify_result` and any pure consumer that validates a borrowed recursive owned artifact graph
-Independent work that may continue: C6b rendering, C6c1/C6c1p scoring, design work, and consumers that do not inspect `Option<string>`, `Option<MoveStruct>`, `Result<Move>`, or Move-sum payloads through a shared borrow
-Resume condition: Align merges the reviewed borrow-safe sum-payload capability; align-llm rebuilds the managed compiler/runtime at that exact commit, passes `c6-borrowed-option-adoption`, and reruns the C6-LIFECYCLE owner gate
-Align commit or pull request: pending
-align-llm verification: pending
+Blocking: no
+Blocked gate or slice: none; the C6c2 decoded verifier now consumes the shipped surface
+Independent work that may continue: all work; Request 17 separately closes the dynamic-array extension used by the same verifier
+Resume condition: complete
+Align commit or pull request: design PR #856; implementation PR #857, merged as `8557c1525aefd9a4afef02d1ec5c2f88e16db4e`
+align-llm verification: `.align-revision` pins `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`; `c6-borrowed-option-adoption`, `c6-borrowed-array-adoption`, and `prompt-verifier-smoke` PASS
 ```
+
+### Align response and adoption (2026-08-20 — verified)
+
+Align projects admitted `Option<T>`, `Result<T, E>`, and user-defined sum payloads in place when
+the complete scrutinee is a stable shared or exclusive borrowed place. The existing syntax and
+runtime layouts are unchanged: the tag and payload are read through the original storage, no
+projection-only owner or allocation is created, and the caller retains ownership. Returning,
+storing, capturing, sending, or otherwise consuming an admitted non-Copy payload remains a
+diagnostic.
+
+The compiler carries the projection and owner through checked HIR, move and escape analysis, MIR,
+LLVM lowering, generic rechecking, interfaces, and cache identity. Request 16 deliberately keeps
+dynamic arrays and other collection Move shapes outside this finite payload grammar; Request 17
+owns that extension. The shared adoption fixture exercises the direct `Option<string>` case and
+the real decoded C6 record graph twice, proving that the caller-owned inputs remain usable.
 
 ### Motivation and current-state evidence
 
@@ -5412,7 +5441,7 @@ allocating copies, mutating the records, or retaining a view. Its first ordinary
 therefore a read-only match over fields such as `result.evaluation_id`, followed by matches over
 `Option<PromptScope>`, `Option<WorkspacePreflightRequest>`, and `Option<EvaluationProviderControl>`.
 
-The current compiler rejects the smallest real-client form:
+The compiler pinned when this request was proposed rejected the smallest real-client form:
 
 ```align
 Item { note: Option<string>, n: i64 }
@@ -5425,8 +5454,8 @@ fn inspect(borrow item: Item) -> i64 {
 }
 ```
 
-The diagnostic is `cannot move a field out of borrowed parameter 'item'`. The same rejection is
-already pinned by Align's `match_cannot_extract_a_move_payload_from_a_borrowed_parameter` owner for
+The diagnostic was `cannot move a field out of borrowed parameter 'item'`. The same rejection was
+pinned by Align's `match_cannot_extract_a_move_payload_from_a_borrowed_parameter` owner for
 direct `Option<string>`, `Result<string, string>`, and a struct field carrying `Option<string>`.
 The failure is not a JSON or application issue: a borrowed `Option<str>` view is supported, but the
 recursive owned graph required for persistence has `Option<string>` and `Option<MoveStruct>`.
@@ -5493,6 +5522,74 @@ sentinel, wrapper record, hidden clone, or alternate verifier signature is an ac
   current match payload lowering and borrowed-place ABI.
 - `docs/specs/c6-prompt-context-optimizer.md` §§6, 10, and 11.2 — the C6c2 verifier signature,
   borrow contract, and acceptance matrix.
+
+---
+
+## Request 17 — language: borrow-safe dynamic aggregate projection
+
+```text
+Status: ALIGN_LLM_VERIFIED
+Priority: high
+Blocking: no
+Blocked gate or slice: none; the C6c2 decoded evaluation verifier now consumes the shipped surface
+Independent work that may continue: all work
+Resume condition: complete
+Align commit or pull request: design PR #864, merged as `0d4b8824`; implementation PR #865, merged as `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`
+align-llm verification: `.align-revision` pins `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`; `c6-borrowed-array-adoption` and the complete `prompt-verifier-smoke` owner PASS
+```
+
+### Align response and adoption (2026-08-20 — verified)
+
+Align permits borrowed `Option`, `Result`, and user-sum payload graphs to contain admitted ordinary
+dynamic scalar, string, and AoS declared-record arrays. An immediate shared call may inspect an
+indexed Move record element without copying its owner. Checked HIR and MIR preserve the exact
+projection, generation, and contained-region roots; LLVM forms the element pointer only at the
+guarded call action. No projection storage, cleanup bit, allocation, hidden clone, or application
+compatibility path is introduced.
+
+The shipped surface rejects stale roots, overlapping ownership termination, malformed descriptors,
+mutable element borrows, nested dynamic arrays, SoA, fixed and specialized arrays, buffers,
+builders, boxes, resources, and other excluded collection shapes before pointer construction.
+Direct, imported, and function-value calls share the same parameter mode and guarded bounds
+semantics. Returned views and views retained through an existing `borrow mut` destination remain
+rooted in the source array generation and contained regions.
+
+### Motivation and adopted contract
+
+Request 16's finite payload grammar excluded dynamic arrays. C6c2 nevertheless borrows decoded
+`PromptEvaluationResult` and `PromptEvaluationEvidence` records containing `array<string>` and
+`array<DeclaredRecord>` fields. It must match optional records such as
+`PromptEvaluationResult.corpus`, inspect `corpus.task_files`, and pass indexed Move elements from
+tasks, rows, snapshots, attestations, aggregates, reasons, and expected inputs to shared helpers.
+Without both the payload-array and indexed-element projections, the settled borrowed verifier
+signature could not be implemented without hidden copies or a parallel API.
+
+The adopted contract is read-only and caller-owned. Tag, length, Copy/view element reads,
+declared-record field reads, and immediate shared-borrow calls are allowed. Moving, replacing,
+mutating, or independently dropping the array, an owning element, or its enclosing payload is
+rejected. An indexed borrow reserves the complete source root through later argument evaluation
+and the call, evaluates the index once, uses MIR-owned bounds behavior, and forms no pointer when
+the index or a later argument terminates. Unrelated-root mutation remains allowed.
+
+Admitted arrays are ordinary `array<T>` scalar and AoS declared-record forms. Indexed element
+borrowing is shared-only. Fixed arrays, arrays of slices, opaque response arrays, SoA, buffers,
+builders, boxes, resources, and other specialized collection or handle shapes remain outside the
+request. Reachable record graphs use the same finite, cycle-safe classifier and fail closed for an
+unsupported owner.
+
+### Acceptance evidence
+
+Align's owners cover direct, field, nested-field, `borrow mut`, user-sum, and `Result` payloads;
+repeated tag/length/element reads; direct, imported, and function-value indexed calls; once-only
+index evaluation; same-root move/drop/replacement/transfer/mutable-borrow rejection; terminating
+index and later-argument paths; view return and retention provenance; malformed checked-HIR/MIR;
+generic whole/per-unit parity; cache invalidation; and guarded LLVM pointer formation without
+aggregate extraction.
+
+The align-llm adoption fixture decodes and repeatedly inspects the real result/evidence/trust graph,
+including corpus, task, trace, aggregate, reason, and expected-input arrays. The C6c2 owner then
+uses that surface throughout the complete decoded verifier and proves both caller-owned inputs
+remain live after verification.
 
 ---
 

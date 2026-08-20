@@ -14,7 +14,7 @@ ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
 CODING_CORPUS := eval/tasks/coding-v1.json
 
-override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke
+override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke
 override CAPABLE_ONLY_CHECK_TARGETS := eval-coding baseline-check
 override SERIAL_CHECK_AGGREGATES := hosted-checks capable-checks ci
 override REQUESTED_SERIAL_CHECK_AGGREGATES := \
@@ -33,7 +33,7 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption ci
 
 check:
 	$(ALIGNC) check-per-unit $(ENTRY)
@@ -89,6 +89,9 @@ prompt-score-smoke:
 
 prompt-score-prefix-smoke:
 	./scripts/run-prompt-score-prefix-smoke
+
+prompt-verifier-smoke:
+	./scripts/run-prompt-verifier-smoke
 
 baseline-check:
 	python3 ./eval/runners/verify-baseline.py
@@ -163,6 +166,11 @@ c6-json-adoption-wave:
 	  c6-json-recursive-graph-adoption \
 	  c6c2-request8-adoption c6c2-request10-adoption \
 	  c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption
+
+c6-borrowed-option-adoption: c6-borrowed-array-adoption
+
+c6-borrowed-array-adoption:
+	./scripts/run-c6-borrowed-array-adoption
 
 ci:
 	@exit 1

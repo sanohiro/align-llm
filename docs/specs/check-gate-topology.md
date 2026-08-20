@@ -18,12 +18,9 @@ refresh `eval/baselines/coding-v1-reference.json`,
 change the evaluation contract, or make an unsupported check optional inside a gate that claims to
 run it.
 
-The later Git 2.45 locked-input enabling slice extends this authoritative graph with exactly one
-hosted-compatible focused target, `git245-locked-inputs-unit`, immediately after
-`gate-topology-check`. That extension is offline, starts CPython through a fixed `/usr/bin/env -i`
-boundary, and does not consume the Align compiler. Its implementation therefore refreshes the
-Makefile-bound baseline through the same section 2.4 source -> oracle -> finalization sequence and
-changes no serialized aggregate or capable-only membership.
+The later C6c2 verifier slice extends this authoritative graph with
+`prompt-verifier-smoke` immediately after `prompt-score-prefix-smoke`. It consumes the pinned Align
+compiler and changes no capable-only membership.
 
 The original topology design was authored against align-llm merge commit
 `c20e919f4cbaa493e57ef79a9b638086d181cae0`. Its baseline-identity correction was audited against
@@ -46,12 +43,12 @@ may not satisfy this prerequisite by retaining the current direct
 | Surface | Exact contract |
 | --- | --- |
 | `make gate-topology-check` | Export the three Make-owned lists into `ALIGN_LLM_HOSTED_CHECK_TARGETS`, `ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS`, and `ALIGN_LLM_SERIAL_CHECK_AGGREGATES` for this target, then invoke `python3 scripts/check-gate-topology` without interpolating list text into the recipe shell. The script constructs a canonical byte report from those values and compares it with an expected byte string embedded in that script. Fail before claiming an aggregate result if any list drifts without an intentional oracle update. |
-| `make hosted-checks` | Run `gate-topology-check`, then clear `MAKEFLAGS` and `GNUMAKEFLAGS`, launch one recursive GNU Make with an explicit `-j1`, and run `git245-locked-inputs-unit`, `format-check`, `check`, `build`, `eval-smoke`, `loop-smoke`, `provider-smoke`, `index-smoke`, `test-selection-smoke`, `patch-eval-smoke`, `verify-loop-smoke`, `failure-memory-smoke`, `prompt-model-smoke`, `prompt-score-smoke`, and `prompt-score-prefix-smoke` as that child Make's ordered goals. All targets after the locked-input unit consume the compiler selected by `ALIGNC` where applicable. It does not build Align and does not run `eval-coding` or `baseline-check`. |
+| `make hosted-checks` | Run `gate-topology-check`, then clear `MAKEFLAGS` and `GNUMAKEFLAGS`, launch one recursive GNU Make with an explicit `-j1`, and run `format-check`, `check`, `build`, `eval-smoke`, `loop-smoke`, `provider-smoke`, `index-smoke`, `test-selection-smoke`, `patch-eval-smoke`, `verify-loop-smoke`, `failure-memory-smoke`, `prompt-model-smoke`, `prompt-score-smoke`, `prompt-score-prefix-smoke`, and `prompt-verifier-smoke` as that child Make's ordered goals. The compiler-facing targets consume the compiler selected by `ALIGNC`. It does not build Align and does not run `eval-coding` or `baseline-check`. |
 | `make capable-checks` | Run `gate-topology-check`, then clear `MAKEFLAGS` and `GNUMAKEFLAGS`, launch one recursive GNU Make with an explicit `-j1`, consume the compiler selected by `ALIGNC`, and run the complete hosted focused-target list followed by `eval-coding` and `baseline-check` as that child Make's ordered goals. It does not invoke `hosted-checks` as a nested aggregate and does not build Align. |
 | `make ci` | Verify `.align-revision`, release-build the pinned sibling Align compiler, require that compiler to be executable, and invoke `capable-checks` with `ALIGNC` set to that exact release compiler. This remains the canonical complete local or capable-runner gate. |
 | Aggregate coexistence | `hosted-checks`, `capable-checks`, and `ci` are the complete serialized-aggregate set. If a top-level GNU Make invocation requests one of them, that aggregate must be the invocation's sole goal. An aggregate plus any other goal, or a repeated aggregate, fails during Makefile parsing before a prerequisite or recipe runs, with `verification aggregates must be requested alone`. Separate concurrent Make processes are unsupported caller behavior and are not valid verification evidence; this slice adds no cross-process repository lock. The recursive `ci` child is a separate invocation containing only `capable-checks` and remains valid. |
 | GitHub Actions pull-request gate | Resolve the event comparison through `scripts/classify-verification`, the shared local/hosted classifier specified in `docs/specs/development-preflight.md`. Documentation-only changes run static checks. An executable scope checks out `.align-revision`, runs `make align-build`, requires the resulting release compiler, runs `python3 scripts/check-gate-topology --self-test`, and invokes `make -j8 hosted-checks` with `ALIGNC` set to it. A fresh-image scope separately runs focused qualification once and installed-profile-only qualification once. Preserve the aggregate recipe in the job log so review can verify the option-cleared child command, explicit `-j1`, and ordered focused-goal list. |
-| Focused targets and qualifications | Existing public target commands remain stable, but their declared coverage is explicit. `eval-coding` runs the coding corpus, bounded invalid-input/containment smoke, Git-configuration isolation, and timeout/process cleanup; it intentionally does not run the deep resource/race/failure-injection qualification at `python3 scripts/run-coding-task-resource-scan-smoke`. `git245-locked-inputs-unit` retains the offline contract in `docs/specs/git-245-compat-image.md`, and `prompt-score-prefix-smoke` remains the final hosted target for the C6c1p prefix-validator gate. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. |
+| Focused targets and qualifications | Existing public target commands remain stable, but their declared coverage is explicit. `eval-coding` runs the coding corpus, bounded invalid-input/containment smoke, Git-configuration isolation, and timeout/process cleanup; it intentionally does not run the deep resource/race/failure-injection qualification at `python3 scripts/run-coding-task-resource-scan-smoke`. `prompt-score-prefix-smoke` owns the C6c1p prefix-validator gate, and `prompt-verifier-smoke` follows it as the decoded C6c2 verifier owner. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. |
 | Canonical C0 baseline | Record two deterministic-reference samples from a clean implementation source commit containing the final `Makefile`; commit the derived immutable oracle; finalize the canonical baseline with that full oracle commit; require the finalized record's source and oracle identities to equal those named commits; and keep the source, oracle, and finalization commits as ancestors of the final reviewed head and merge result. |
 
 ### 2.1 Inputs and defaults
@@ -117,14 +114,6 @@ may not satisfy this prerequisite by retaining the current direct
   crosses into the child.
 - No unnamed configuration input is added. Existing tool and operating-system requirements remain
   explicit in their owning scripts and documentation.
-- The later `git245-locked-inputs-unit` recipe uses target-specific `override` assignments for
-  `SHELL=/bin/sh` and `.SHELLFLAGS=-eu -c`. Its only direct acceptance invocation is the exact
-  option-free `make git245-locked-inputs-unit`; other caller Make control-plane states remain
-  unsupported diagnostics because GNU Make parses them before a recipe can establish isolation.
-  The canonical aggregate child remains admitted because this topology clears inherited option
-  variables and supplies only its owned `-j1` plus the exact goal list. The locked-input design owns
-  the complete distinction between Make control state and the Python process's fixed empty-derived
-  environment.
 
 ### 2.2 Result, error, ownership, and allocation
 
@@ -137,10 +126,8 @@ may not satisfy this prerequisite by retaining the current direct
   `-j`. This preserves stable first-failure reporting and prevents aggregate-level overlap between
   checks that share the built executable or repository state. A recursive Make failure propagates
   directly through the aggregate recipe.
-- Process ownership, cleanup, files, and allocation remain with their focused targets; the new
-  locked-input target's sole executable and owned temporary state are defined in
-  `docs/specs/git-245-compat-image.md`.
-  The aggregate targets introduce no long-lived process, file, cache, or allocation.
+- Process ownership, cleanup, files, and allocation remain with their focused targets. The
+  aggregate targets introduce no long-lived process, file, cache, or allocation.
 
 ### 2.3 Identity, versioning, and sources of truth
 
@@ -616,8 +603,8 @@ The hosted gate excludes only:
   to a capable runner rather than ordinary hosted feature checks. This implementation performs the
   exceptional refresh only because it changes the identity-bound `Makefile`.
 
-The capable gate adds exactly those two targets. It also includes the Git 2.45 locked-input unit and
-every C1-C5 core focused target through the hosted graph. A new check must be classified deliberately
+The capable gate adds exactly those two targets. It also includes every hosted focused target
+through the hosted graph. A new check must be classified deliberately
 as a routine functional regression or a focused qualification. Routine regressions may be assigned
 to the hosted graph, the capable-only set, or both through dependency after their runtime and
 maintenance cost are measured. Security, resource-limit, race, fuzz, stress, platform, mutation,
@@ -633,8 +620,8 @@ The aggregate graph performs no new semantic validation. Its deterministic depen
 are:
 
 1. `gate-topology-check` succeeds before the hosted focused checks;
-2. `hosted-checks` launches one `-j1` child Make and runs `git245-locked-inputs-unit` first, then the
-   existing focused targets in the ledger order;
+2. `hosted-checks` launches one `-j1` child Make and runs the hosted focused targets in the ledger
+   order;
 3. `capable-checks` launches one `-j1` child Make and runs the complete hosted focused-target list,
    then `eval-coding`, then `baseline-check`;
 4. `ci` completes `align-revision` before `align-build`;
@@ -656,7 +643,7 @@ must encode as ASCII. The script constructs exactly these three lines in memory,
 one LF after every line including the last:
 
 ```text
-hosted=gate-topology-check git245-locked-inputs-unit format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke
+hosted=gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke
 capable-only=eval-coding baseline-check
 serialized=hosted-checks capable-checks ci
 ```
@@ -773,15 +760,15 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Worker tool/Git child ownership | `scripts/fresh-align-compiler` | route `run_tool` and `git` through the same descriptor-bound owned-child runner as build and aggregate; no direct `Popen` remains in probe or source identity paths | Unit smoke starts a probe and a Git child that create a session-breaking descendant, exceed each stream cap, and time out; the runner records start/group identity, terminates the group and cgroup, reaps descendants, closes pipes, and leaves no owned member. Static inspection rejects a direct probe/source `Popen` call outside the runner. |
 | Cgroup profile and leaf ownership | `image/fresh/fresh-profile`, `scripts/fresh-align-compiler`, and `image/fresh/control/fresh_image_control.py` | Profile setup owns clean hierarchy creation and `pids` delegation; profile cleanup refuses any residual leaf. Worker and controller retain parent/leaf descriptors and snapshots, use their distinct fixed leaf prefixes, prove empty and sole-child membership, and use the cgroup-v2 unique-leaf/rmdir cleanup primitive under the protected profile writer boundary. The worker requires a successful `pids.max` write and parent-side membership proof; only the controller additionally reads the configured value back. Controller launch and early-setup failures enter the same post-lease finalizer, but controller failures retain the owning public child phase while worker pre-command lease failure is `PLATFORM platform`. Mount-table reinventory, unrelated-leaf reclamation, child-side rlimit readback, and per-descendant procfs-fd sampling are explicitly N/A at the controller/worker boundary described here. | The installed profile smoke covers duplicate setup, exact delegation use, runtime-root refusal, residual-child-cgroup refusal, and empty cleanup. The worker lifecycle smoke exercises leaf replacement before cleanup, nonempty/malformed membership, PID reuse, successful descriptor-relative rmdir, and failed removal. The image-control smoke exercises controller admission, exact `align-llm-control-` grammar, identity, rmdir, cleanup failure, and injected child-launch failure, verifies no leaf remains on each catchable successful path, and checks phase-owned error propagation. |
 | Private-root entry cleanup ownership | `scripts/fresh-align-compiler` | retain opened child/root descriptors through final identity validation and descriptor-relative removal; never close the identity witness before removal | Unit smoke injects replacement before and during child/root removal, verifies the replacement marker and moved original remain unchanged, and requires cleanup failure with all retained descriptors closed. |
-| Direct hosted success | `Makefile` | one explicit `-j1` child Make over the ordered hosted goals | Run with the pinned compiler; the offline Git 2.45 locked-input unit and all existing hosted-compatible focused smokes pass. |
+| Direct hosted success | `Makefile` | one explicit `-j1` child Make over the ordered hosted goals | Run with the pinned compiler; all hosted-compatible focused smokes pass. |
 | Direct hosted failure | owning focused target | Make propagates nonzero | Invoke the aggregate with an invalid `ALIGNC`; the graph fails nonzero without fallback. |
-| Direct capable success | `Makefile` | one explicit `-j1` child Make over hosted then capable-only goals | Run `make ci` on a capable Linux host; the locked-input unit, coding and baseline gates, and C1-C5 focused gates pass. |
+| Direct capable success | `Makefile` | one explicit `-j1` child Make over hosted then capable-only goals | Run `make ci` on a capable Linux host; the hosted focused targets plus the coding and baseline gates pass. |
 | Direct capable failure | owning focused target | Make propagates nonzero | Existing focused negative-path regressions remain required; no aggregate suppression exists. |
 | Aggregate coexistence | `Makefile` parse-time guard over `MAKECMDGOALS` and `SERIAL_CHECK_AGGREGATES` | when an aggregate is requested, require it to be the invocation's sole goal; the recursive `ci` child contains only `capable-checks` | Under `-j8`, self-test rejects every ordered pair of distinct aggregates, every repeated name, and each aggregate plus a focused marker goal in both positions with the exact diagnostic and no marker side effect. A focused-only parse plus the required hosted run and capable `make -j8 ci` are the non-rejection controls. Source review confirms the list is exactly `hosted-checks capable-checks ci`. Independent concurrent Make processes are explicitly unsupported and do not count as gate evidence. |
 | Pin mismatch | `scripts/check-align-revision` | unchanged `align-build` prerequisite | DEFERRED: this slice does not change the owner script or prerequisite edge. The implementation review must confirm both are unchanged; automated mismatched-checkout fault injection belongs to a separate pin-hardening slice. |
 | Compiler build failure | Align Cargo workspace | unchanged `align-build` recipe | DEFERRED: this slice does not change the Cargo recipe or its shell failure propagation. The implementation review must confirm both are unchanged; fake-toolchain fault injection belongs to a separate pin-hardening slice. |
 | Missing built compiler | `ci` recipe | retain executable guard before recursive Make | DEFERRED: the implementation review must confirm the guard remains before `capable-checks`; a clean temporary pinned checkout plus successful fake Cargo build is the future fault-injection fixture, outside this topology slice. |
-| Hosted workflow success | `.github/workflows/ci.yml` | on Ubuntu 24.04 with GNU Make 4.3 and CPython 3.12, build the pin, run the topology self-test, then call `make -j8 hosted-checks` | The required Actions check passes, including `git245-locked-inputs-unit` before existing focused checks. The self-test proves ordered, non-overlapping execution, option isolation, and exact supported-input propagation through the prescribed child boundary on GNU Make 4.3. The job log also preserves the real expanded aggregate recipe and shows one option-cleared child command with explicit `-j1` and the exact ordered hosted focused-goal list. |
+| Hosted workflow success | `.github/workflows/ci.yml` | on Ubuntu 24.04 with GNU Make 4.3 and CPython 3.12, build the pin, run the topology self-test, then call `make -j8 hosted-checks` | The required Actions check passes. The self-test proves ordered, non-overlapping execution, option isolation, and exact supported-input propagation through the prescribed child boundary on GNU Make 4.3. The job log also preserves the real expanded aggregate recipe and shows one option-cleared child command with explicit `-j1` and the exact ordered hosted focused-goal list. |
 | Hosted unsupported checks | workflow plus this plan | absent from `hosted-checks` | `make gate-topology-check` proves `eval-coding` and `baseline-check` appear only in the capable-only list. |
 | Complete graph membership | `Makefile` | named child-Make goal lists | `make gate-topology-check` proves the exact hosted list, capable-only additions, and serialized aggregates. |
 | Existing focused cleanup | focused scripts | unchanged | Existing ordinary, timeout, and abnormal cleanup regressions continue to own these paths. |
