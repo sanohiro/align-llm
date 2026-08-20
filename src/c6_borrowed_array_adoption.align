@@ -1,0 +1,151 @@
+module c6_borrowed_array_adoption
+
+import core.json
+import prompt_artifacts
+
+Item { note: Option<string>, n: i64 }
+
+fn inspect_item(borrow item: Item) -> i64 {
+  return match item.note {
+    None => item.n,
+    Some(note) => item.n + note.len(),
+  }
+}
+
+fn inspect_owned_text(borrow value: string) -> i64 {
+  return value.len()
+}
+
+fn inspect_task(borrow task: prompt_artifacts.PromptEvaluationTask) -> i64 {
+  benchmark_limit := match task.regression_limits.maximum_benchmark_regression_ppm {
+    None => 0,
+    Some(limit) => limit,
+  }
+  return inspect_owned_text(task.argv[0]) + task.artifacts[0].path.len() + benchmark_limit
+}
+
+fn inspect_attestation(borrow attestation: prompt_artifacts.RunSnapshotAttestation) -> i64 {
+  after_len := match attestation.after_snapshot_result_sha256 {
+    None => 0,
+    Some(digest) => digest.len(),
+  }
+  before_len := match attestation.before_input_snapshot_sha256 {
+    None => 0,
+    Some(digest) => digest.len(),
+  }
+  return after_len + before_len
+}
+
+fn inspect_task_aggregate(borrow aggregate: prompt_artifacts.TaskAggregate) -> i64 {
+  return match aggregate.parent_paired_median_time_ns {
+    None => 0,
+    Some(value) => value,
+  }
+}
+
+fn inspect_reason(borrow reason: prompt_artifacts.RegressionReason) -> i64 {
+  return reason.code.len()
+}
+
+fn inspect_expected_input(borrow expected: prompt_artifacts.PromptExpectedInputDigest) -> i64 {
+  return expected.task_id.len()
+}
+
+fn inspect_result(borrow value: prompt_artifacts.PromptEvaluationResult) -> i64 {
+  evaluation_id_len := match value.evaluation_id {
+    None => 0,
+    Some(evaluation_id) => evaluation_id.len(),
+  }
+  scope_repo_len := match value.scope {
+    None => 0,
+    Some(scope) => scope.repo_id.len(),
+  }
+  corpus_task_count := match value.corpus_aggregate {
+    None => 0,
+    Some(corpus) => corpus.task_count,
+  }
+  corpus_file_len := match value.corpus {
+    None => 0,
+    Some(corpus) => inspect_owned_text(corpus.task_files[0]),
+  }
+  trace_count := match value.trace_failure {
+    None => 0,
+    Some(trace) => trace.trace_record_count,
+  }
+  return evaluation_id_len +
+  scope_repo_len +
+  corpus_task_count +
+  value.tasks.len() +
+  corpus_file_len +
+  inspect_task(value.tasks[0]) +
+  inspect_attestation(value.snapshot_attestations[0]) +
+  trace_count +
+  inspect_task_aggregate(value.task_aggregates[0]) +
+  inspect_reason(value.serious_regression_reasons[0])
+}
+
+fn inspect_trust(borrow value: prompt_artifacts.PromptVerifierTrust) -> i64 {
+  observed_head_len := match value.align_llm_observed_head {
+    None => 0,
+    Some(head) => head.len(),
+  }
+  observed_revision_len := match value.align_observed_revision {
+    None => 0,
+    Some(revision) => revision.len(),
+  }
+  observed_corpus_len := match value.corpus_observed_source_sha256 {
+    None => 0,
+    Some(digest) => digest.len(),
+  }
+  return observed_head_len + observed_revision_len + observed_corpus_len
+}
+
+fn decode_result() -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  source := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATION_RESULT\",\"status\":\"INVALID_INPUT\",\"error_code\":\"INVALID\",\"error\":\"nested\",\"corpus\":{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATION_CORPUS\",\"corpus_id\":\"corpus\",\"corpus_revision\":{\"schema_version\":1,\"artifact_kind\":\"CORPUS_REVISION\",\"source_kind\":\"FILE_SET\",\"source_repository_id\":\"\",\"source_sha256\":\"digest\",\"content_sha256\":\"revision\"},\"task_files\":[\"one.align\",\"two.align\"],\"content_sha256\":\"corpus-digest\"},\"tasks\":[{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATION_TASK\",\"task_id\":\"task\",\"repo_id\":\"repo\",\"repo_revision\":\"revision\",\"repo_path\":\"repo\",\"require_clean_repo\":true,\"cmd\":\"make\",\"argv\":[\"test\"],\"snapshot_cmd\":\"snapshot\",\"snapshot_argv\":[],\"measurement_adapter_runtime\":\"adapter\",\"snapshot_helper_runtime\":\"snapshot\",\"cwd\":\".\",\"timeout_ns\":1,\"task_prompt_path\":\"task.json\",\"context_sources_path\":\"context.json\",\"generation_policy_path\":\"generation.json\",\"provider_control_path\":\"provider.json\",\"environment_policy_path\":\"environment.json\",\"artifacts\":[{\"path\":\"Cargo.toml\",\"kind\":\"FILE\",\"expected_sha256\":\"artifact\"}],\"regression_limits\":{\"maximum_unrelated_diff_count\":1,\"maximum_patch_size_bytes\":2,\"maximum_public_api_change_count\":3,\"maximum_repair_loops\":4,\"maximum_benchmark_regression_ppm\":7},\"content_sha256\":\"task-digest\"}],\"snapshot_requests\":[],\"snapshot_results\":[],\"input_snapshots\":[],\"snapshot_attestations\":[{\"schema_version\":1,\"artifact_kind\":\"RUN_SNAPSHOT_ATTESTATION\",\"task_id\":\"task\",\"sample_index\":1,\"variant\":\"PARENT\",\"status\":\"COMPLETE\",\"error_code\":\"NONE\",\"error\":\"\",\"snapshot_request_sha256\":\"request\",\"before_snapshot_result_sha256\":\"before-result\",\"after_snapshot_result_sha256\":\"after\",\"before_input_snapshot_sha256\":\"before\",\"after_input_snapshot_sha256\":\"after-input\",\"content_sha256\":\"attestation\"}],\"trace_failure\":{\"schema_version\":1,\"artifact_kind\":\"PROMPT_TRACE_OVERFLOW\",\"attempted_invocation_count\":2,\"trace_record_count\":4,\"trace_digest_sha256\":\"trace\",\"content_sha256\":\"overflow\"},\"sample_count\":1,\"gate_eligible\":false,\"rows\":[],\"task_aggregates\":[{\"task_id\":\"task\",\"parent_pass_count\":1,\"candidate_pass_count\":1,\"parent_repair_loop_count\":0,\"candidate_repair_loop_count\":0,\"paired_pass_count\":1,\"parent_paired_median_time_ns\":10}],\"corpus_aggregate\":{\"task_count\":3,\"sample_count\":1,\"parent_pass_count\":1,\"candidate_pass_count\":1,\"parent_repair_loop_count\":0,\"candidate_repair_loop_count\":0,\"paired_pass_count\":1,\"completion_gain_count\":1,\"repair_loop_regression_count\":0},\"serious_regression_reasons\":[{\"task_id\":\"task\",\"sample_index\":2,\"code\":\"TIME\",\"parent_value\":\"1\",\"candidate_value\":\"0\",\"limit\":\"0\"}],\"content_sha256\":\"\"}"
+  view: str := source
+  decoded: prompt_artifacts.PromptEvaluationResult := json.decode(view)?
+  return Ok(decoded)
+}
+
+fn decode_evidence() -> Result<prompt_artifacts.PromptEvaluationEvidence, Error> {
+  source := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATION_EVIDENCE\",\"evaluation_id\":\"eval\",\"evaluation_result_sha256\":\"result\",\"trust\":{\"schema_version\":1,\"artifact_kind\":\"PROMPT_VERIFIER_TRUST\",\"expected_align_llm_commit\":\"commit\",\"expected_align_revision\":\"revision\",\"expected_corpus_source_kind\":\"git\",\"expected_corpus_source_repository_id\":\"corpus\",\"expected_corpus_source_sha256\":\"digest\",\"align_llm_reachability\":\"VERIFIED\",\"align_llm_observed_head\":\"head\",\"align_reachability\":\"VERIFIED\",\"align_observed_revision\":\"revision\",\"corpus_reachability\":\"VERIFIED\",\"corpus_observed_source_sha256\":\"digest\",\"content_sha256\":\"trust\"},\"expected_inputs\":[{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPECTED_INPUT_DIGEST\",\"task_id\":\"task\",\"sample_index\":1,\"variant\":\"PARENT\",\"rendered_prompt_sha256\":\"rendered\",\"context_sources_sha256\":\"context\",\"generation_request_sha256\":\"generation\",\"adapter_request_sha256\":\"adapter\",\"provider_request_sha256\":\"provider\",\"content_sha256\":\"input\"}],\"content_sha256\":\"evidence\"}"
+  view: str := source
+  decoded: prompt_artifacts.PromptEvaluationEvidence := json.decode(view)?
+  return Ok(decoded)
+}
+
+fn inspect_evidence(borrow evidence: prompt_artifacts.PromptEvaluationEvidence) -> i64 {
+  return evidence.evaluation_id.len() +
+  inspect_expected_input(evidence.expected_inputs[0]) +
+  inspect_trust(evidence.trust)
+}
+
+fn decode_trust() -> Result<prompt_artifacts.PromptVerifierTrust, Error> {
+  source := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_VERIFIER_TRUST\",\"expected_align_llm_commit\":\"commit\",\"expected_align_revision\":\"revision\",\"expected_corpus_source_kind\":\"git\",\"expected_corpus_source_repository_id\":\"corpus\",\"expected_corpus_source_sha256\":\"digest\",\"align_llm_reachability\":\"VERIFIED\",\"align_llm_observed_head\":\"head\",\"align_reachability\":\"VERIFIED\",\"align_observed_revision\":\"revision\",\"corpus_reachability\":\"VERIFIED\",\"corpus_observed_source_sha256\":\"digest\",\"content_sha256\":\"\"}"
+  view: str := source
+  decoded: prompt_artifacts.PromptVerifierTrust := json.decode(view)?
+  return Ok(decoded)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+
+  item := Item { note: Some("borrowed".clone()), n: 4 }
+  print(inspect_item(item))
+  print(inspect_item(item))
+
+  result := decode_result()?
+  print(inspect_result(result))
+  print(inspect_result(result))
+
+  trust := decode_trust()?
+  print(inspect_trust(trust))
+  print(inspect_trust(trust))
+
+  evidence := decode_evidence()?
+  print(inspect_evidence(evidence))
+  print(inspect_evidence(evidence))
+  return Ok(())
+}

@@ -27,7 +27,7 @@ EXPECTED = (
     b"hosted=gate-topology-check format-check check build eval-smoke loop-smoke "
     b"provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
     b"verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke "
-    b"prompt-score-prefix-smoke\n"
+    b"prompt-score-prefix-smoke prompt-verifier-smoke\n"
     b"capable-only=eval-coding baseline-check\n"
     b"serialized=hosted-checks capable-checks ci\n"
 )
@@ -84,7 +84,7 @@ def exact_environment() -> dict[str, str]:
             "gate-topology-check format-check check build eval-smoke loop-smoke "
             "provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
             "verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke "
-            "prompt-score-prefix-smoke"
+            "prompt-score-prefix-smoke prompt-verifier-smoke"
         ),
         "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": "eval-coding baseline-check",
         "ALIGN_LLM_SERIAL_CHECK_AGGREGATES": "hosted-checks capable-checks ci",

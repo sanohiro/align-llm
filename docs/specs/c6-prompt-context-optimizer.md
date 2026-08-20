@@ -98,11 +98,18 @@ hypothetical API part of C6:
    C6a1 and C6a2 use that shipped bounded canonical encoder, while later result/evidence writers
    retain it as a prerequisite.
 9. **Request 14 — exclusive creation and no-replace publication.** C6f2's result/evidence pair
-   contract needs an Align-owned exclusive file create and atomic no-replace rename; the current
-   `std.fs` surface has create/truncate, write, and remove but no safe publication primitive. C6f2
-   must wait for the named `c6f2-request14-adoption` gate and must not use a check-then-create,
-   delete-before-rename, or undeclared native workaround.
-10. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
+   contract uses Align's shipped `fs.create_exclusive` and `fs.rename_no_replace` surface. The
+   current pin contains it, but C6f2 must still pass the named `c6f2-request14-adoption` gate and
+   must not use a check-then-create, delete-before-rename, or undeclared native workaround.
+10. **Request 16 — borrowed sum-payload projection.** C6c2's settled borrowed signature must inspect
+   optional owned records without consuming or cloning them. Align PR #857 shipped the finite
+   borrowed sum projection, and `c6-borrowed-option-adoption` now passes through the shared real C6
+   graph fixture.
+11. **Request 17 — borrowed dynamic aggregate projection.** The decoded graph contains dynamic
+   string and record arrays, and C6c2 must pass indexed Move records to shared helpers without
+   copying their owners. Align PR #865 shipped the admitted array and indexed-call projection;
+   `c6-borrowed-array-adoption` and `prompt-verifier-smoke` pass at the exact pinned merge.
+12. **Request 2 — I/O timeout adoption.** Request 2 is `ALIGN_MERGED`, but its align-llm plaintext/TLS
    adoption gate remains pending. C6e and C6g1 cannot claim the provider timeout gate until that
    original acceptance target passes, whether it is completed in the C6 prerequisite wave or an
    earlier consumer adoption capability.
@@ -3443,12 +3450,12 @@ whether the surrounding persisted result is complete, incomplete, or malformed.
 ### 11.2 C6c2 public-contract ledger
 
 C6c2 is the pure decoded evaluation verifier. It is not a JSON reader or a file-backed document
-validator. C6a1/C6a2 must first provide the declared records and validate their canonical content
-digests at the shipped Align revision, and C6c1p must first provide the merged public prefix validator.
-The C6c2 implementation is therefore blocked on C6c1p, those codec cells, Requests 7, 8, 10, 12,
-and 13, and the named C6c2 enabling adoption targets `c6c2-request8-adoption` and
-`c6c2-request10-adoption`. No C6c2 fixture may be an
-escape-free JSON document; fixtures construct the declared values directly after the codec gate.
+validator. C6a1/C6a2 provide the declared records and canonical-content validation, and C6c1p
+provides the public prefix validator. Requests 7, 8, 10, 12, 13, 16, and 17 are shipped and adopted
+at the pinned Align revision. Their named owners are `c6c2-request8-adoption`,
+`c6c2-request10-adoption`, `c6-borrowed-option-adoption`, and
+`c6-borrowed-array-adoption`. No C6c2 fixture is an escape-free JSON workaround; the verifier
+fixture constructs declared values directly after the codec gate.
 
 The exact public surface is:
 
@@ -3464,9 +3471,8 @@ pub fn verify_result(
 The caller owns both decoded records and keeps every borrowed string and nested array live for the
 call. `verify_result` borrows, does not move, replace, null, mutate, or retain either input. It
 returns one Copy status or `Err(Error.Invalid)` and performs no filesystem, JSON, canonical-encoding,
-process, network, global-state, or repository-reachability operation. After Requests 8 and 10 reach
-`ALIGN_MERGED` and the named `c6c2-request8-adoption` and `c6c2-request10-adoption` targets pass,
-it may construct one bounded temporary `array<ScoreRow>` and verifier-owned temporary
+process, network, global-state, or repository-reachability operation. It constructs one bounded
+temporary `array<ScoreRow>` and verifier-owned temporary
 primitive output columns passed to C6c1's `aggregate` call. For an incomplete result it passes the
 same borrowed scratch rows to C6c1p's `validate_prefix` and does not allocate aggregate/reason
 columns. The row scratch is bounded by the declared maximum of 2,048 retained task/sample/variant
@@ -3567,17 +3573,22 @@ The C6c2 closure matrix is:
 
 | Applicable path | Owner | Exact acceptance evidence |
 | --- | --- | --- |
-| borrowed input formation and lifetime | `src/prompt_score.align`, Align compiler | declaration/positional-call fixture, per-unit and whole-program compile, caller-owned sentinel records, and no retained view after return |
+| borrowed input formation and lifetime | `src/prompt_score.align`, Align compiler | `c6-borrowed-option-adoption`, `c6-borrowed-array-adoption`, `prompt-verifier-smoke`, per-unit and whole-program compile, repeated caller-owned record use, and no retained view after return |
 | successful decoded verification | `src/prompt_score.align` | `prompt-verifier-smoke` for eligible improvement, non-gate improvement, no improvement, serious regression, and valid incomplete statuses |
-| embedded identity/reference pairs | `src/prompt_score.align`, C6a1/C6a2 codec | wrong kind/ID/digest/path, missing embedded experiment/parent, and stale parent/candidate fixtures |
-| incomplete-prefix delegation | C6c1p and C6c2 owners in `src/prompt_score.align` | empty/strict/terminal-error/complete prefixes; `validate_prefix` status agrees with trace and no aggregate/reason output is manufactured |
-| persisted execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | workspace-preflight identity, snapshot/input-snapshot deduplication and order, complete before/after equality, `ADAPTER_FAILED`/precheck/postcheck/drift terminal shapes, exact error prefix, no post-failure rows, bounded `PromptTraceOverflow`, and `RESULT_TOO_LARGE` empty-result fixtures |
-| independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | missing, wrong, duplicate, out-of-order, extra, and mismatched expected-input rows; result digest mismatch; explicit accept evidence path; expected/observed source-identity equality; matching gate-manifest evidence reference; `prompt-source-verifier-observed-identity-smoke` |
-| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | explicit align-llm/Align/corpus paths and expected identities; policy/helper/Git identity, mode-specific EVALUATION/GATE observed-head semantics, separate derived gate-head ancestry, fixed argv/env/cap/timeout, bounded local-config isolation, complete replacement namespace rejection across loose/packed/ref-backend storage, common-directory replacement/graft/alternate rejection, raw-byte FILE_SET traversal, expected/observed-identity/environment binding; unavailable or mismatching roots as `UNVERIFIED`; each source `VERIFIED`/`UNVERIFIED` including preserved pre-error observations; `FIXTURE`, unavailable CPU, and seed ineligibility |
-| row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | every C6c1 boundary plus status-only, aggregate-only, reason-only, gate-only, and mixed tamper fixtures |
-| malformed input and error precedence | `src/prompt_score.align` | status-specific error families including `ADAPTER_FAILED`, drift states, and `RESULT_TOO_LARGE`, invalid option/discriminator combinations, first failing validation, compact counter/digest/empty-shape checks, and no side effects |
+| embedded identity/reference pairs | `src/prompt_score.align`, C6a1/C6a2 codec | `prompt-verifier-smoke` covers mismatched references and stale row variants; codec owners cover wrong kind/ID/digest/path and missing embedded records |
+| incomplete-prefix delegation | C6c1p and C6c2 owners in `src/prompt_score.align` | `prompt-score-prefix-smoke` plus `prompt-verifier-smoke` cover empty, terminal-error, cleanup-retained, and complete prefixes; `validate_prefix` agrees with the trace and no aggregate/reason output is manufactured |
+| persisted execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | `prompt-verifier-smoke` directly constructs complete, precheck, adapter, postcheck, pre/post drift, retained terminal-row, cleanup-retained, bounded overflow, and malformed-order shapes |
+| independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | `prompt-verifier-smoke` covers missing, duplicate, out-of-order, mismatched-input, and result-digest evidence; later acceptance/gate owners cover explicit paths, source identity, and manifest pairing |
+| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | `prompt-verifier-smoke` covers verified, unverified, missing-observation, `FIXTURE`, and gate eligibility; C6f1/evaluator owners cover source paths, helper/Git execution, and unavailable-state production |
+| row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | `prompt-score-smoke`, `prompt-score-prefix-smoke`, and `prompt-verifier-smoke` cover every C6c1 boundary plus status-only, aggregate-only, reason-only, row-identity, and gate-only tampering |
+| malformed input and error precedence | `src/prompt_score.align` | `prompt-verifier-smoke` covers status-specific precheck/adapter/postcheck/drift/cleanup/terminal families, invalid option/discriminator combinations, compact counter and empty-shape checks, and pure rejection without side effects |
 | allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; checked arithmetic overflow returns invalid before scorer call, while runtime allocator failure follows the declared Request 8/10 terminal child-process policy; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, normal-path drop checks, and terminal allocator-failure fixture |
 | JSON/document binding | C6a1/C6a2, deferred | N/A for C6c2; escaped-string round trips, canonical bytes, and content-digest recomputation require Request 7/12/13 acceptance before this verifier is called |
+
+The implementation checkpoint is `src/prompt_score.align::verify_result`, with
+`prompt-verifier-smoke` as the direct C6c2 owner. The verifier and fixture remain one capability:
+splitting the public verifier from the only consumer of every borrowed record-array path would
+leave an unexercised dormant boundary and duplicate the identity/trace proof.
 
 The C6c2 metric is verifier correctness: every declared state, identity, evidence combination, and
 tamper class reaches the specified status or error with zero false acceptance. Runtime performance

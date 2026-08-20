@@ -1,0 +1,1517 @@
+module prompt_verifier_smoke
+
+import prompt_artifacts
+import prompt_score
+
+fn digest_a() -> string = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".clone()
+fn digest_b() -> string = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".clone()
+fn digest_c() -> string = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".clone()
+
+fn empty_strings() -> array<string> {
+  values: array_builder<string> := array_builder()
+  return values.build()
+}
+
+fn expectations() -> array<prompt_artifacts.ArtifactExpectation> {
+  mut values: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  values.push(prompt_artifacts.ArtifactExpectation {
+      path: "adapter".clone(),
+      kind: "FILE".clone(),
+      expected_sha256: digest_a(),
+    })
+  values.push(prompt_artifacts.ArtifactExpectation {
+      path: "snapshot".clone(),
+      kind: "FILE".clone(),
+      expected_sha256: digest_b(),
+    })
+  return values.build()
+}
+
+fn empty_digests() -> array<prompt_artifacts.ArtifactDigest> {
+  values: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  return values.build()
+}
+
+fn digests() -> array<prompt_artifacts.ArtifactDigest> {
+  mut values: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  values.push(prompt_artifacts.ArtifactDigest {
+      path: "adapter".clone(),
+      mode: "100755".clone(),
+      byte_count: 1,
+      sha256: digest_a(),
+    })
+  values.push(prompt_artifacts.ArtifactDigest {
+      path: "snapshot".clone(),
+      mode: "100755".clone(),
+      byte_count: 1,
+      sha256: digest_b(),
+    })
+  return values.build()
+}
+
+fn one_string(text: str) -> array<string> {
+  mut values: array_builder<string> := array_builder()
+  values.push(text.clone())
+  return values.build()
+}
+
+fn text_artifact(kind: str, id: str) -> prompt_artifacts.PromptTextArtifact {
+  return prompt_artifacts.PromptTextArtifact {
+    schema_version: 1,
+    artifact_kind: kind.clone(),
+    artifact_id: id.clone(),
+    text: "text".clone(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn context_policy() -> prompt_artifacts.ContextPolicy {
+  return prompt_artifacts.ContextPolicy {
+    include_patch_evaluation: false,
+    include_failure_memory: false,
+    include_diagnostics: false,
+    max_patch_evaluation_bytes: 0,
+    max_failure_events: 0,
+    max_failure_context_bytes: 0,
+    max_diagnostic_bytes_per_stream: 0,
+  }
+}
+
+fn variant(parent: bool) -> prompt_artifacts.PromptVariant {
+  return prompt_artifacts.PromptVariant {
+    schema_version: 1,
+    artifact_kind: "PROMPT_VARIANT".clone(),
+    variant_id: if parent { "parent".clone() } else { "candidate".clone() },
+    base_prompt: text_artifact("BASE_PROMPT", "base"),
+    repo_prompt: text_artifact("REPO_PROMPT", "repo"),
+    learned_prompt_append: "".clone(),
+    context_policy: context_policy(),
+    candidate_id: if parent { "baseline".clone() } else { "proposal".clone() },
+    content_sha256: if parent { digest_b() } else { digest_c() },
+  }
+}
+
+fn corpus_revision() -> prompt_artifacts.CorpusRevision {
+  return prompt_artifacts.CorpusRevision {
+    schema_version: 1,
+    artifact_kind: "CORPUS_REVISION".clone(),
+    source_kind: "GIT_COMMIT".clone(),
+    source_repository_id: "corpus-repository".clone(),
+    source_sha256: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn scope(provider_kind: str) -> prompt_artifacts.PromptScope {
+  return prompt_artifacts.PromptScope {
+    schema_version: 1,
+    artifact_kind: "PROMPT_SCOPE".clone(),
+    repo_id: "repo".clone(),
+    repo_profile_revision: "profile-v1".clone(),
+    align_revision: digest_a(),
+    corpus_id: "corpus".clone(),
+    corpus_revision: corpus_revision(),
+    evaluation_provider_kind: provider_kind.clone(),
+    evaluation_provider_model: "model".clone(),
+    generation_policy_sha256: digest_a(),
+    acceptance_policy_sha256: digest_a(),
+    base_prompt_sha256: digest_a(),
+    repo_prompt_sha256: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn reference(kind: str, id: str, digest: str) -> prompt_artifacts.ArtifactReference {
+  return prompt_artifacts.ArtifactReference {
+    artifact_kind: kind.clone(),
+    path: "artifact.json".clone(),
+    artifact_id: id.clone(),
+    content_sha256: digest.clone(),
+  }
+}
+
+fn experiment(provider_kind: str) -> prompt_artifacts.PromptExperimentResult {
+  proposal_kind := if provider_kind == "FIXTURE" { "LOCAL_OPENAI".clone() } else { provider_kind.clone() }
+  return prompt_artifacts.PromptExperimentResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EXPERIMENT_RESULT".clone(),
+    experiment_id: Some("experiment".clone()),
+    status: "PROPOSED".clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
+    scope: Some(scope(provider_kind)),
+    opportunity: Some(reference("OPPORTUNITY", "opportunity", digest_a())),
+    proposal_provider_kind: Some(proposal_kind),
+    proposal_provider_endpoint_id: Some("endpoint".clone()),
+    proposal_provider_model: Some("model".clone()),
+    proposal_elapsed_ns: 0,
+    proposal_status_code: None,
+    proposal_summary: "proposal".clone(),
+    candidate_variant: Some(variant(false)),
+    bounded_provider_output: "".clone(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn activation(provider_kind: str) -> prompt_artifacts.PromptActivation {
+  return prompt_artifacts.PromptActivation {
+    schema_version: 1,
+    artifact_kind: "PROMPT_ACTIVATION".clone(),
+    activation_id: "activation".clone(),
+    operation: "BASELINE".clone(),
+    scope: scope(provider_kind),
+    parent_activation_id: "".clone(),
+    parent_activation_sha256: "".clone(),
+    effective_variant: variant(true),
+    accepted_evaluation_id: "".clone(),
+    accepted_evaluation_sha256: "".clone(),
+    rollback_target_activation_id: "".clone(),
+    rollback_target_activation_sha256: "".clone(),
+    decision_reason: "".clone(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn activation_result(provider_kind: str) -> prompt_artifacts.PromptActivationResult {
+  return prompt_artifacts.PromptActivationResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_ACTIVATION_RESULT".clone(),
+    decision_id: Some("decision".clone()),
+    status: "BASELINED".clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    activation: Some(activation(provider_kind)),
+    content_sha256: digest_a(),
+  }
+}
+
+fn corpus() -> prompt_artifacts.PromptEvaluationCorpus {
+  return prompt_artifacts.PromptEvaluationCorpus {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_CORPUS".clone(),
+    corpus_id: "corpus".clone(),
+    corpus_revision: corpus_revision(),
+    task_files: one_string("task.json"),
+    content_sha256: digest_a(),
+  }
+}
+
+fn task() -> prompt_artifacts.PromptEvaluationTask {
+  return prompt_artifacts.PromptEvaluationTask {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_TASK".clone(),
+    task_id: "task".clone(),
+    repo_id: "repo".clone(),
+    repo_revision: digest_a(),
+    repo_path: "repository".clone(),
+    require_clean_repo: true,
+    cmd: "adapter".clone(),
+    argv: one_string("adapter"),
+    snapshot_cmd: "snapshot".clone(),
+    snapshot_argv: one_string("snapshot"),
+    measurement_adapter_runtime: "runtime".clone(),
+    snapshot_helper_runtime: "snapshot-runtime".clone(),
+    cwd: "repository".clone(),
+    timeout_ns: 1_000_000,
+    task_prompt_path: "task-prompt.json".clone(),
+    context_sources_path: "context.json".clone(),
+    generation_policy_path: "generation.json".clone(),
+    provider_control_path: "provider.json".clone(),
+    environment_policy_path: "environment.json".clone(),
+    artifacts: expectations(),
+    regression_limits: prompt_artifacts.RegressionLimits {
+      maximum_unrelated_diff_count: 10,
+      maximum_patch_size_bytes: 1_000,
+      maximum_public_api_change_count: 10,
+      maximum_repair_loops: 10,
+      maximum_benchmark_regression_ppm: None,
+    },
+    content_sha256: digest_a(),
+  }
+}
+
+fn acceptance_policy() -> prompt_artifacts.PromptAcceptancePolicy {
+  return prompt_artifacts.PromptAcceptancePolicy {
+    schema_version: 1,
+    artifact_kind: "PROMPT_ACCEPTANCE_POLICY".clone(),
+    policy_id: "policy".clone(),
+    minimum_task_count: 1,
+    minimum_samples_per_variant: 2,
+    minimum_completion_gain_count: 1,
+    minimum_time_improvement_ppm: 50_000,
+    maximum_time_regression_ppm: 100_000,
+    maximum_repair_loop_regression_count: 0,
+    content_sha256: digest_a(),
+  }
+}
+
+fn generation_policy(provider_kind: str) -> prompt_artifacts.GenerationPolicy {
+  return prompt_artifacts.GenerationPolicy {
+    schema_version: 1,
+    artifact_kind: "GENERATION_POLICY".clone(),
+    generation_policy_id: "generation".clone(),
+    evaluation_provider_kind: provider_kind.clone(),
+    evaluation_provider_endpoint_id: "endpoint".clone(),
+    evaluation_provider_model: "model".clone(),
+    provider_control_sha256: digest_a(),
+    provider_service_revision: "service-v1".clone(),
+    max_prompt_bytes: 65_536,
+    max_tokens: 1_024,
+    temperature_micros: 0,
+    seed_mode: "PAIRED_FIXED".clone(),
+    seed_base: 7,
+    content_sha256: digest_a(),
+  }
+}
+
+fn provider_control(provider_kind: str) -> prompt_artifacts.EvaluationProviderControl {
+  return prompt_artifacts.EvaluationProviderControl {
+    schema_version: 1,
+    artifact_kind: "EVALUATION_PROVIDER_CONTROL".clone(),
+    provider_control_id: "provider".clone(),
+    provider_kind: provider_kind.clone(),
+    endpoint: "https://provider.invalid".clone(),
+    endpoint_id: "endpoint".clone(),
+    model: "model".clone(),
+    api_key_env: None,
+    tokenize_endpoint: None,
+    timeout_ns: 1_000_000,
+    max_response_bytes: 65_536,
+    content_sha256: digest_a(),
+  }
+}
+
+fn probe(producer: str, runtime: str) -> prompt_artifacts.EnvironmentProbe {
+  return prompt_artifacts.EnvironmentProbe {
+    schema_version: 1,
+    artifact_kind: "ENVIRONMENT_PROBE".clone(),
+    producer: producer.clone(),
+    os: "linux".clone(),
+    os_release: "test".clone(),
+    architecture: "x86_64".clone(),
+    cpu: "cpu".clone(),
+    logical_cpu_count: Some(4),
+    gpu: "none".clone(),
+    runtime_identity: runtime.clone(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn environment() -> prompt_artifacts.EnvironmentIdentity {
+  return prompt_artifacts.EnvironmentIdentity {
+    schema_version: 1,
+    artifact_kind: "ENVIRONMENT_IDENTITY".clone(),
+    core: prompt_artifacts.EnvironmentIdentityCore {
+      schema_version: 1,
+      artifact_kind: "ENVIRONMENT_IDENTITY_CORE".clone(),
+      os: "linux".clone(),
+      os_release: "test".clone(),
+      architecture: "x86_64".clone(),
+      cpu: "cpu".clone(),
+      logical_cpu_count: Some(4),
+      gpu: "none".clone(),
+      align_llm_commit: digest_a(),
+      align_revision: digest_a(),
+      measurement_adapter_runtime: "runtime".clone(),
+      snapshot_helper_runtime: "snapshot-runtime".clone(),
+      source_verifier_runtime: "verifier-runtime".clone(),
+      source_verifier_policy_sha256: digest_a(),
+      environment_policy_sha256: digest_a(),
+    },
+    environment_id: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn workspace_request() -> prompt_artifacts.WorkspacePreflightRequest {
+  return prompt_artifacts.WorkspacePreflightRequest {
+    schema_version: 1,
+    artifact_kind: "WORKSPACE_PREFLIGHT_REQUEST".clone(),
+    evaluation_id: "evaluation".clone(),
+    project_root: "project".clone(),
+    workspace_path: "project/workspace".clone(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn workspace_result() -> prompt_artifacts.WorkspacePreflightResult {
+  return prompt_artifacts.WorkspacePreflightResult {
+    schema_version: 1,
+    artifact_kind: "WORKSPACE_PREFLIGHT_RESULT".clone(),
+    evaluation_id: "evaluation".clone(),
+    status: "SAFE".clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    physical_project_root: "/project".clone(),
+    physical_workspace_path: "/project/workspace".clone(),
+    environment_probe: Some(probe("SNAPSHOT_HELPER", "snapshot-runtime")),
+    content_sha256: digest_a(),
+  }
+}
+
+fn workspace_failure_result(unsafe_workspace: bool) -> prompt_artifacts.WorkspacePreflightResult {
+  return prompt_artifacts.WorkspacePreflightResult {
+    schema_version: 1,
+    artifact_kind: "WORKSPACE_PREFLIGHT_RESULT".clone(),
+    evaluation_id: "evaluation".clone(),
+    status: if unsafe_workspace { "UNSAFE".clone() } else { "ERROR".clone() },
+    error_code: if unsafe_workspace { "NOT_EMPTY".clone() } else { "INTERNAL".clone() },
+    error: if unsafe_workspace { "workspace unsafe".clone() } else { "snapshot helper error".clone() },
+    physical_project_root: "/project".clone(),
+    physical_workspace_path: "".clone(),
+    environment_probe: None,
+    content_sha256: digest_a(),
+  }
+}
+
+fn snapshot_request() -> prompt_artifacts.SnapshotRequest {
+  return prompt_artifacts.SnapshotRequest {
+    schema_version: 1,
+    artifact_kind: "SNAPSHOT_REQUEST".clone(),
+    task_id: "task".clone(),
+    project_root: "project".clone(),
+    repo_path: "repository".clone(),
+    repo_revision: digest_a(),
+    require_clean_repo: true,
+    static_expectations: expectations(),
+    additional_files: empty_strings(),
+    workspace_path: "project/workspace".clone(),
+    allowed_workspace_entries: empty_strings(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn snapshot_result() -> prompt_artifacts.SnapshotResult {
+  return prompt_artifacts.SnapshotResult {
+    schema_version: 1,
+    artifact_kind: "SNAPSHOT_RESULT".clone(),
+    task_id: "task".clone(),
+    status: "MATCH".clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    environment_probe: Some(probe("SNAPSHOT_HELPER", "snapshot-runtime")),
+    artifact_digests: digests(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn input_snapshot() -> prompt_artifacts.TaskInputSnapshot {
+  return prompt_artifacts.TaskInputSnapshot {
+    schema_version: 1,
+    artifact_kind: "TASK_INPUT_SNAPSHOT".clone(),
+    task_id: "task".clone(),
+    task_manifest_sha256: digest_a(),
+    artifact_digests: digests(),
+    environment_sha256: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn drift_input_snapshot() -> prompt_artifacts.TaskInputSnapshot {
+  return prompt_artifacts.TaskInputSnapshot {
+    schema_version: 1,
+    artifact_kind: "TASK_INPUT_SNAPSHOT".clone(),
+    task_id: "task".clone(),
+    task_manifest_sha256: digest_a(),
+    artifact_digests: digests(),
+    environment_sha256: digest_b(),
+    content_sha256: digest_b(),
+  }
+}
+
+fn generation_request(seed: i64) -> prompt_artifacts.GenerationRequestIdentity {
+  return prompt_artifacts.GenerationRequestIdentity {
+    schema_version: 1,
+    artifact_kind: "GENERATION_REQUEST_IDENTITY".clone(),
+    rendered_prompt_sha256: digest_a(),
+    system_text_sha256: digest_a(),
+    user_text_sha256: digest_a(),
+    generation_policy_sha256: digest_a(),
+    provider_control_sha256: digest_a(),
+    environment_policy_sha256: digest_a(),
+    max_tokens: 1_024,
+    temperature_micros: 0,
+    paired_seed: seed,
+    provider_request_sha256: digest_a(),
+    seed_attestation_sha256: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn seed_attestation(provider_kind: str, seed: i64) -> prompt_artifacts.SeedCapabilityAttestation {
+  return prompt_artifacts.SeedCapabilityAttestation {
+    schema_version: 1,
+    artifact_kind: "SEED_CAPABILITY_ATTESTATION".clone(),
+    provider_kind: provider_kind.clone(),
+    provider_model: "model".clone(),
+    requested_seed: seed,
+    result: "APPLIED".clone(),
+    applied_seed: Some(seed),
+    provider_request_sha256: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn evaluation_input(sample: i64, seed: i64) -> prompt_artifacts.EvaluationInputIdentity {
+  return prompt_artifacts.EvaluationInputIdentity {
+    schema_version: 1,
+    artifact_kind: "EVALUATION_INPUT_IDENTITY".clone(),
+    task_id: "task".clone(),
+    task_input_snapshot_sha256: digest_a(),
+    parent_variant_sha256: digest_b(),
+    candidate_variant_sha256: digest_c(),
+    task_prompt_sha256: digest_a(),
+    context_sources_sha256: digest_a(),
+    generation_policy_sha256: digest_a(),
+    generation_request_sha256: digest_a(),
+    adapter_request_sha256: digest_a(),
+    environment_policy_sha256: digest_a(),
+    environment_sha256: digest_a(),
+    sample_index: sample,
+    paired_seed: seed,
+    content_sha256: digest_a(),
+  }
+}
+
+fn measurement(passing: bool, provider_kind: str, seed: i64) -> prompt_artifacts.TaskMeasurement {
+  return prompt_artifacts.TaskMeasurement {
+    schema_version: 1,
+    artifact_kind: "TASK_MEASUREMENT".clone(),
+    status: if passing { "PASS".clone() } else { "FAIL".clone() },
+    failure_kind: if passing { "NONE".clone() } else { "PATCH".clone() },
+    build_status: if passing { "PASS".clone() } else { "NOT_RUN".clone() },
+    test_status: if passing { "PASS".clone() } else { "NOT_RUN".clone() },
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 10,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    benchmark_regression_ppm: None,
+    generation_to_passing_patch_ns: if passing { Some(90) } else { None },
+    rendered_prompt_sha256: digest_a(),
+    generation_request: generation_request(seed),
+    environment_probe: probe("MEASUREMENT_ADAPTER", "runtime"),
+    seed_attestation: seed_attestation(provider_kind, seed),
+    diagnostic_summary: "".clone(),
+    diagnostic_stdout: "".clone(),
+    diagnostic_stderr: "".clone(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn row(
+  sample: i64,
+  parent: bool,
+  passing: bool,
+  provider_kind: str,
+  stale_variant: bool,
+) -> prompt_artifacts.PromptTaskRow {
+  seed := 6 + sample
+  return prompt_artifacts.PromptTaskRow {
+    schema_version: 1,
+    artifact_kind: "PROMPT_TASK_ROW".clone(),
+    evaluation_id: "evaluation".clone(),
+    task_id: "task".clone(),
+    sample_index: sample,
+    variant: if parent { "PARENT".clone() } else { "CANDIDATE".clone() },
+    variant_id: if stale_variant { "stale".clone() } else if parent { "parent".clone() } else { "candidate".clone() },
+    variant_sha256: if parent { digest_b() } else { digest_c() },
+    prompt_preparation_ns: 10,
+    time_to_passing_patch_ns: if passing { Some(100) } else { None },
+    evaluation_input: evaluation_input(sample, seed),
+    measurement: measurement(passing, provider_kind, seed),
+    content_sha256: digest_a(),
+  }
+}
+
+fn attestation(sample: i64, parent: bool) -> prompt_artifacts.RunSnapshotAttestation {
+  return prompt_artifacts.RunSnapshotAttestation {
+    schema_version: 1,
+    artifact_kind: "RUN_SNAPSHOT_ATTESTATION".clone(),
+    task_id: "task".clone(),
+    sample_index: sample,
+    variant: if parent { "PARENT".clone() } else { "CANDIDATE".clone() },
+    status: "COMPLETE".clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    snapshot_request_sha256: digest_a(),
+    before_snapshot_result_sha256: digest_a(),
+    after_snapshot_result_sha256: Some(digest_a()),
+    before_input_snapshot_sha256: Some(digest_a()),
+    after_input_snapshot_sha256: Some(digest_a()),
+    content_sha256: digest_a(),
+  }
+}
+
+fn rows(mode: i64, provider_kind: str, stale_variant: bool) -> array<prompt_artifacts.PromptTaskRow> {
+  parent_one := mode != 0
+  candidate_one := mode != 2
+  mut values: array_builder<prompt_artifacts.PromptTaskRow> := array_builder()
+  values.push(row(1, true, parent_one, provider_kind, stale_variant))
+  values.push(row(1, false, candidate_one, provider_kind, false))
+  values.push(row(2, false, true, provider_kind, false))
+  values.push(row(2, true, true, provider_kind, false))
+  return values.build()
+}
+
+fn attestations(stale_schedule: bool) -> array<prompt_artifacts.RunSnapshotAttestation> {
+  mut values: array_builder<prompt_artifacts.RunSnapshotAttestation> := array_builder()
+  values.push(attestation(if stale_schedule { 2 } else { 1 }, true))
+  values.push(attestation(1, false))
+  values.push(attestation(2, false))
+  values.push(attestation(2, true))
+  return values.build()
+}
+
+fn task_aggregate(mode: i64, tamper: bool) -> prompt_artifacts.TaskAggregate {
+  parent_pass := if mode == 0 { 1 } else { 2 }
+  candidate_base := if mode == 2 { 1 } else { 2 }
+  candidate_pass := if tamper { candidate_base + 1 } else { candidate_base }
+  paired := if mode == 1 { 2 } else { 1 }
+  return prompt_artifacts.TaskAggregate {
+    task_id: "task".clone(),
+    parent_pass_count: parent_pass,
+    candidate_pass_count: candidate_pass,
+    parent_repair_loop_count: 0,
+    candidate_repair_loop_count: 0,
+    paired_pass_count: paired,
+    parent_paired_median_time_ns: Some(100),
+    candidate_paired_median_time_ns: Some(100),
+    time_improvement_ppm: Some(0),
+    time_regression_ppm: Some(0),
+  }
+}
+
+fn corpus_aggregate(mode: i64, tamper: bool) -> prompt_artifacts.CorpusAggregate {
+  aggregate_value := task_aggregate(mode, tamper)
+  return prompt_artifacts.CorpusAggregate {
+    task_count: 1,
+    sample_count: 2,
+    parent_pass_count: aggregate_value.parent_pass_count,
+    candidate_pass_count: aggregate_value.candidate_pass_count,
+    parent_repair_loop_count: 0,
+    candidate_repair_loop_count: 0,
+    paired_pass_count: aggregate_value.paired_pass_count,
+    parent_paired_median_time_ns: Some(100),
+    candidate_paired_median_time_ns: Some(100),
+    completion_gain_count: aggregate_value.candidate_pass_count - aggregate_value.parent_pass_count,
+    time_improvement_ppm: Some(0),
+    time_regression_ppm: Some(0),
+    repair_loop_regression_count: 0,
+  }
+}
+
+fn empty_reasons() -> array<prompt_artifacts.RegressionReason> {
+  values: array_builder<prompt_artifacts.RegressionReason> := array_builder()
+  return values.build()
+}
+
+fn reasons(mode: i64, tamper: bool) -> array<prompt_artifacts.RegressionReason> {
+  if mode != 2 { return empty_reasons() }
+  mut values: array_builder<prompt_artifacts.RegressionReason> := array_builder()
+  values.push(prompt_artifacts.RegressionReason {
+      task_id: "task".clone(),
+      sample_index: 1,
+      code: if tamper { "TIME".clone() } else { "PASS_TO_FAIL".clone() },
+      parent_value: "PASS".clone(),
+      candidate_value: "FAIL".clone(),
+      limit: "NONE".clone(),
+    })
+  values.push(prompt_artifacts.RegressionReason {
+      task_id: "task".clone(),
+      sample_index: 1,
+      code: "BUILD".clone(),
+      parent_value: "PASS".clone(),
+      candidate_value: "FAIL".clone(),
+      limit: "NONE".clone(),
+    })
+  values.push(prompt_artifacts.RegressionReason {
+      task_id: "task".clone(),
+      sample_index: 1,
+      code: "TEST".clone(),
+      parent_value: "PASS".clone(),
+      candidate_value: "FAIL".clone(),
+      limit: "NONE".clone(),
+    })
+  return values.build()
+}
+
+fn expected_input(sample: i64, parent: bool, tamper: bool) -> prompt_artifacts.PromptExpectedInputDigest {
+  return prompt_artifacts.PromptExpectedInputDigest {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EXPECTED_INPUT_DIGEST".clone(),
+    task_id: "task".clone(),
+    sample_index: sample,
+    variant: if parent { "PARENT".clone() } else { "CANDIDATE".clone() },
+    rendered_prompt_sha256: if tamper { digest_b() } else { digest_a() },
+    context_sources_sha256: digest_a(),
+    generation_request_sha256: digest_a(),
+    adapter_request_sha256: digest_a(),
+    provider_request_sha256: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn expected_inputs() -> array<prompt_artifacts.PromptExpectedInputDigest> {
+  mut values: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+  values.push(expected_input(1, true, false))
+  values.push(expected_input(1, false, false))
+  values.push(expected_input(2, false, false))
+  values.push(expected_input(2, true, false))
+  return values.build()
+}
+
+fn tampered_expected_inputs(mode: i64) -> array<prompt_artifacts.PromptExpectedInputDigest> {
+  mut values: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+  if mode == 0 {
+    values.push(expected_input(1, false, false))
+    values.push(expected_input(1, true, false))
+  } else if mode == 1 {
+    values.push(expected_input(1, true, false))
+    values.push(expected_input(1, true, false))
+  } else {
+    values.push(expected_input(1, true, true))
+    values.push(expected_input(1, false, false))
+  }
+  values.push(expected_input(2, false, false))
+  values.push(expected_input(2, true, false))
+  return values.build()
+}
+
+fn trust(verified: bool) -> prompt_artifacts.PromptVerifierTrust {
+  reachability := if verified { "VERIFIED".clone() } else { "UNVERIFIED".clone() }
+  return prompt_artifacts.PromptVerifierTrust {
+    schema_version: 1,
+    artifact_kind: "PROMPT_VERIFIER_TRUST".clone(),
+    expected_align_llm_commit: digest_a(),
+    expected_align_revision: digest_a(),
+    expected_corpus_source_kind: "GIT_COMMIT".clone(),
+    expected_corpus_source_repository_id: "corpus-repository".clone(),
+    expected_corpus_source_sha256: digest_a(),
+    align_llm_reachability: reachability.clone(),
+    align_llm_observed_head: if verified { Some(digest_a()) } else { None },
+    align_reachability: reachability.clone(),
+    align_observed_revision: if verified { Some(digest_a()) } else { None },
+    corpus_reachability: reachability,
+    corpus_observed_source_sha256: if verified { Some(digest_a()) } else { None },
+    content_sha256: digest_a(),
+  }
+}
+
+fn evidence(verified: bool) -> prompt_artifacts.PromptEvaluationEvidence {
+  return prompt_artifacts.PromptEvaluationEvidence {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(),
+    evaluation_id: "evaluation".clone(),
+    evaluation_result_sha256: digest_a(),
+    trust: trust(verified),
+    expected_inputs: expected_inputs(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn tampered_evidence(mode: i64) -> prompt_artifacts.PromptEvaluationEvidence {
+  return prompt_artifacts.PromptEvaluationEvidence {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(),
+    evaluation_id: "evaluation".clone(),
+    evaluation_result_sha256: if mode == 3 { digest_b() } else { digest_a() },
+    trust: trust(true),
+    expected_inputs: if mode == 3 { expected_inputs() } else { tampered_expected_inputs(mode) },
+    content_sha256: digest_a(),
+  }
+}
+
+fn malformed_trust() -> prompt_artifacts.PromptVerifierTrust {
+  return prompt_artifacts.PromptVerifierTrust {
+    schema_version: 1,
+    artifact_kind: "PROMPT_VERIFIER_TRUST".clone(),
+    expected_align_llm_commit: digest_a(),
+    expected_align_revision: digest_a(),
+    expected_corpus_source_kind: "GIT_COMMIT".clone(),
+    expected_corpus_source_repository_id: "corpus-repository".clone(),
+    expected_corpus_source_sha256: digest_a(),
+    align_llm_reachability: "VERIFIED".clone(),
+    align_llm_observed_head: None,
+    align_reachability: "VERIFIED".clone(),
+    align_observed_revision: Some(digest_a()),
+    corpus_reachability: "VERIFIED".clone(),
+    corpus_observed_source_sha256: Some(digest_a()),
+    content_sha256: digest_a(),
+  }
+}
+
+fn malformed_evidence() -> prompt_artifacts.PromptEvaluationEvidence {
+  return prompt_artifacts.PromptEvaluationEvidence {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(),
+    evaluation_id: "evaluation".clone(),
+    evaluation_result_sha256: digest_a(),
+    trust: malformed_trust(),
+    expected_inputs: expected_inputs(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn tasks_array() -> array<prompt_artifacts.PromptEvaluationTask> {
+  mut values: array_builder<prompt_artifacts.PromptEvaluationTask> := array_builder()
+  values.push(task())
+  return values.build()
+}
+
+fn snapshot_requests_array() -> array<prompt_artifacts.SnapshotRequest> {
+  mut values: array_builder<prompt_artifacts.SnapshotRequest> := array_builder()
+  values.push(snapshot_request())
+  return values.build()
+}
+
+fn snapshot_results_array() -> array<prompt_artifacts.SnapshotResult> {
+  mut values: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
+  values.push(snapshot_result())
+  return values.build()
+}
+
+fn snapshot_results_without_artifact_closure() -> array<prompt_artifacts.SnapshotResult> {
+  mut values: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
+  values.push(prompt_artifacts.SnapshotResult {
+      schema_version: 1,
+      artifact_kind: "SNAPSHOT_RESULT".clone(),
+      task_id: "task".clone(),
+      status: "MATCH".clone(),
+      error_code: "NONE".clone(),
+      error: "".clone(),
+      environment_probe: Some(probe("SNAPSHOT_HELPER", "snapshot-runtime")),
+      artifact_digests: empty_digests(),
+      content_sha256: digest_a(),
+    })
+  return values.build()
+}
+
+fn input_snapshots_array() -> array<prompt_artifacts.TaskInputSnapshot> {
+  mut values: array_builder<prompt_artifacts.TaskInputSnapshot> := array_builder()
+  values.push(input_snapshot())
+  return values.build()
+}
+
+fn task_aggregates_array(mode: i64, tamper: bool) -> array<prompt_artifacts.TaskAggregate> {
+  mut values: array_builder<prompt_artifacts.TaskAggregate> := array_builder()
+  values.push(task_aggregate(mode, tamper))
+  return values.build()
+}
+
+fn empty_tasks_array() -> array<prompt_artifacts.PromptEvaluationTask> {
+  values: array_builder<prompt_artifacts.PromptEvaluationTask> := array_builder()
+  return values.build()
+}
+
+fn empty_snapshot_requests_array() -> array<prompt_artifacts.SnapshotRequest> {
+  values: array_builder<prompt_artifacts.SnapshotRequest> := array_builder()
+  return values.build()
+}
+
+fn empty_snapshot_results_array() -> array<prompt_artifacts.SnapshotResult> {
+  values: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
+  return values.build()
+}
+
+fn empty_input_snapshots_array() -> array<prompt_artifacts.TaskInputSnapshot> {
+  values: array_builder<prompt_artifacts.TaskInputSnapshot> := array_builder()
+  return values.build()
+}
+
+fn empty_attestations_array() -> array<prompt_artifacts.RunSnapshotAttestation> {
+  values: array_builder<prompt_artifacts.RunSnapshotAttestation> := array_builder()
+  return values.build()
+}
+
+fn empty_rows_array() -> array<prompt_artifacts.PromptTaskRow> {
+  values: array_builder<prompt_artifacts.PromptTaskRow> := array_builder()
+  return values.build()
+}
+
+fn empty_task_aggregates_array() -> array<prompt_artifacts.TaskAggregate> {
+  values: array_builder<prompt_artifacts.TaskAggregate> := array_builder()
+  return values.build()
+}
+
+fn empty_expected_inputs_array() -> array<prompt_artifacts.PromptExpectedInputDigest> {
+  values: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+  return values.build()
+}
+
+fn mismatch_snapshot_result(content_sha256: str) -> prompt_artifacts.SnapshotResult {
+  return prompt_artifacts.SnapshotResult {
+    schema_version: 1,
+    artifact_kind: "SNAPSHOT_RESULT".clone(),
+    task_id: "task".clone(),
+    status: "MISMATCH".clone(),
+    error_code: "CONTENT".clone(),
+    error: "snapshot mismatch".clone(),
+    environment_probe: Some(probe("SNAPSHOT_HELPER", "snapshot-runtime")),
+    artifact_digests: empty_digests(),
+    content_sha256: content_sha256.clone(),
+  }
+}
+
+fn error_snapshot_results(state: i64) -> array<prompt_artifacts.SnapshotResult> {
+  mut values: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
+  if state >= 3 {
+    return values.build()
+  }
+  if state == 0 {
+    values.push(mismatch_snapshot_result(digest_a()))
+  } else {
+    values.push(snapshot_result())
+    if state == 2 { values.push(mismatch_snapshot_result(digest_b())) }
+  }
+  return values.build()
+}
+
+fn error_input_snapshots(state: i64) -> array<prompt_artifacts.TaskInputSnapshot> {
+  mut values: array_builder<prompt_artifacts.TaskInputSnapshot> := array_builder()
+  if state != 0 && state < 3 { values.push(input_snapshot()) }
+  return values.build()
+}
+
+fn failed_attestation(state: i64) -> prompt_artifacts.RunSnapshotAttestation {
+  status := if state == 0 {
+    "PRECHECK_FAILED".clone()
+  } else if state == 1 {
+    "ADAPTER_FAILED".clone()
+  } else {
+    "POSTCHECK_FAILED".clone()
+  }
+  error_code := if state == 1 { "ADAPTER_RESULT".clone() } else { "SNAPSHOT_MISMATCH".clone() }
+  error_text := if state == 1 { "adapter result".clone() } else { "snapshot mismatch".clone() }
+  return prompt_artifacts.RunSnapshotAttestation {
+    schema_version: 1,
+    artifact_kind: "RUN_SNAPSHOT_ATTESTATION".clone(),
+    task_id: "task".clone(),
+    sample_index: 1,
+    variant: "PARENT".clone(),
+    status: status,
+    error_code: error_code,
+    error: error_text,
+    snapshot_request_sha256: digest_a(),
+    before_snapshot_result_sha256: digest_a(),
+    after_snapshot_result_sha256: if state == 2 { Some(digest_b()) } else { None },
+    before_input_snapshot_sha256: if state == 0 { None } else { Some(digest_a()) },
+    after_input_snapshot_sha256: None,
+    content_sha256: digest_a(),
+  }
+}
+
+fn failed_attestations_array(state: i64) -> array<prompt_artifacts.RunSnapshotAttestation> {
+  mut values: array_builder<prompt_artifacts.RunSnapshotAttestation> := array_builder()
+  if state < 3 { values.push(failed_attestation(state)) }
+  return values.build()
+}
+
+fn trace_overflow(oversized: bool) -> prompt_artifacts.PromptTraceOverflow {
+  return prompt_artifacts.PromptTraceOverflow {
+    schema_version: 1,
+    artifact_kind: "PROMPT_TRACE_OVERFLOW".clone(),
+    attempted_invocation_count: if oversized { 2_049 } else { 2_048 },
+    trace_record_count: 16_384,
+    trace_digest_sha256: digest_a(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn complete_result(
+  mode: i64,
+  provider_kind: str,
+  status: str,
+  gate_eligible: bool,
+  tamper_aggregate: bool,
+  tamper_reason: bool,
+  tamper_reference: bool,
+  tamper_trace: bool,
+  tamper_row_identity: bool,
+  tamper_artifact_closure: bool,
+) -> prompt_artifacts.PromptEvaluationResult {
+  return prompt_artifacts.PromptEvaluationResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
+    evaluation_id: Some("evaluation".clone()),
+    status: status.clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    experiment: Some(reference(
+        "PROMPT_EXPERIMENT_RESULT",
+        "experiment",
+        if tamper_reference { digest_b() } else { digest_a() },
+      )),
+    experiment_artifact: Some(experiment(provider_kind)),
+    parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
+    parent_activation_artifact: Some(activation_result(provider_kind)),
+    scope: Some(scope(provider_kind)),
+    parent_variant: Some(variant(true)),
+    candidate_variant: Some(variant(false)),
+    corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", "corpus", digest_a())),
+    corpus: Some(corpus()),
+    tasks: tasks_array(),
+    acceptance_policy_source: Some(reference("PROMPT_ACCEPTANCE_POLICY", "policy", digest_a())),
+    acceptance_policy: Some(acceptance_policy()),
+    generation_policy_source: Some(reference("GENERATION_POLICY", "generation", digest_a())),
+    generation_policy: Some(generation_policy(provider_kind)),
+    provider_control_source: Some(reference("EVALUATION_PROVIDER_CONTROL", "provider", digest_a())),
+    provider_control: Some(provider_control(provider_kind)),
+    workspace_preflight_source: Some(reference("WORKSPACE_PREFLIGHT_RESULT", "evaluation", digest_a())),
+    workspace_preflight_request: Some(workspace_request()),
+    workspace_preflight: Some(workspace_result()),
+    environment: Some(environment()),
+    snapshot_requests: snapshot_requests_array(),
+    snapshot_results: if tamper_artifact_closure {
+      snapshot_results_without_artifact_closure()
+    } else {
+      snapshot_results_array()
+    },
+    input_snapshots: input_snapshots_array(),
+    snapshot_attestations: attestations(tamper_trace),
+    trace_failure: None,
+    sample_count: 2,
+    gate_eligible: gate_eligible,
+    rows: rows(mode, provider_kind, tamper_row_identity),
+    task_aggregates: task_aggregates_array(mode, tamper_aggregate),
+    corpus_aggregate: Some(corpus_aggregate(mode, tamper_aggregate)),
+    serious_regression_reasons: reasons(mode, tamper_reason),
+    content_sha256: digest_a(),
+  }
+}
+
+fn noncomplete_evidence(verified: bool) -> prompt_artifacts.PromptEvaluationEvidence {
+  return prompt_artifacts.PromptEvaluationEvidence {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(),
+    evaluation_id: "evaluation".clone(),
+    evaluation_result_sha256: digest_a(),
+    trust: trust(verified),
+    expected_inputs: empty_expected_inputs_array(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn invalid_result() -> prompt_artifacts.PromptEvaluationResult {
+  return prompt_artifacts.PromptEvaluationResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
+    evaluation_id: Some("evaluation".clone()),
+    status: "INVALID_INPUT".clone(),
+    error_code: "INVALID_SCHEMA".clone(),
+    error: "invalid request".clone(),
+    experiment: Some(reference("PROMPT_EXPERIMENT_RESULT", "experiment", digest_a())),
+    experiment_artifact: Some(experiment("LOCAL_OPENAI")),
+    parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
+    parent_activation_artifact: Some(activation_result("LOCAL_OPENAI")),
+    scope: Some(scope("LOCAL_OPENAI")),
+    parent_variant: Some(variant(true)),
+    candidate_variant: Some(variant(false)),
+    corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", "corpus", digest_a())),
+    corpus: Some(corpus()),
+    tasks: tasks_array(),
+    acceptance_policy_source: Some(reference("PROMPT_ACCEPTANCE_POLICY", "policy", digest_a())),
+    acceptance_policy: Some(acceptance_policy()),
+    generation_policy_source: Some(reference("GENERATION_POLICY", "generation", digest_a())),
+    generation_policy: Some(generation_policy("LOCAL_OPENAI")),
+    provider_control_source: Some(reference("EVALUATION_PROVIDER_CONTROL", "provider", digest_a())),
+    provider_control: Some(provider_control("LOCAL_OPENAI")),
+    workspace_preflight_source: None,
+    workspace_preflight_request: None,
+    workspace_preflight: None,
+    environment: None,
+    snapshot_requests: empty_snapshot_requests_array(),
+    snapshot_results: empty_snapshot_results_array(),
+    input_snapshots: empty_input_snapshots_array(),
+    snapshot_attestations: empty_attestations_array(),
+    trace_failure: None,
+    sample_count: 2,
+    gate_eligible: false,
+    rows: empty_rows_array(),
+    task_aggregates: empty_task_aggregates_array(),
+    corpus_aggregate: None,
+    serious_regression_reasons: empty_reasons(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn error_result(state: i64) -> prompt_artifacts.PromptEvaluationResult {
+  error_code := if state == 1 {
+    "ADAPTER_RESULT".clone()
+  } else if state == 3 {
+    "WORKSPACE_UNSAFE".clone()
+  } else if state == 4 {
+    "SNAPSHOT_ERROR".clone()
+  } else {
+    "SNAPSHOT_MISMATCH".clone()
+  }
+  error_text := if state == 1 {
+    "adapter result".clone()
+  } else if state == 3 {
+    "workspace unsafe".clone()
+  } else if state == 4 {
+    "snapshot helper error".clone()
+  } else {
+    "snapshot mismatch".clone()
+  }
+  return prompt_artifacts.PromptEvaluationResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
+    evaluation_id: Some("evaluation".clone()),
+    status: "ERROR".clone(),
+    error_code: error_code,
+    error: error_text,
+    experiment: Some(reference("PROMPT_EXPERIMENT_RESULT", "experiment", digest_a())),
+    experiment_artifact: Some(experiment("LOCAL_OPENAI")),
+    parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
+    parent_activation_artifact: Some(activation_result("LOCAL_OPENAI")),
+    scope: Some(scope("LOCAL_OPENAI")),
+    parent_variant: Some(variant(true)),
+    candidate_variant: Some(variant(false)),
+    corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", "corpus", digest_a())),
+    corpus: Some(corpus()),
+    tasks: tasks_array(),
+    acceptance_policy_source: Some(reference("PROMPT_ACCEPTANCE_POLICY", "policy", digest_a())),
+    acceptance_policy: Some(acceptance_policy()),
+    generation_policy_source: Some(reference("GENERATION_POLICY", "generation", digest_a())),
+    generation_policy: Some(generation_policy("LOCAL_OPENAI")),
+    provider_control_source: Some(reference("EVALUATION_PROVIDER_CONTROL", "provider", digest_a())),
+    provider_control: Some(provider_control("LOCAL_OPENAI")),
+    workspace_preflight_source: Some(reference("WORKSPACE_PREFLIGHT_RESULT", "evaluation", digest_a())),
+    workspace_preflight_request: Some(workspace_request()),
+    workspace_preflight: if state == 3 {
+      Some(workspace_failure_result(true))
+    } else if state == 4 {
+      Some(workspace_failure_result(false))
+    } else {
+      Some(workspace_result())
+    },
+    environment: if state == 2 { Some(environment()) } else { None },
+    snapshot_requests: if state >= 3 { empty_snapshot_requests_array() } else { snapshot_requests_array() },
+    snapshot_results: error_snapshot_results(state),
+    input_snapshots: error_input_snapshots(state),
+    snapshot_attestations: failed_attestations_array(state),
+    trace_failure: None,
+    sample_count: 2,
+    gate_eligible: false,
+    rows: empty_rows_array(),
+    task_aggregates: empty_task_aggregates_array(),
+    corpus_aggregate: None,
+    serious_regression_reasons: empty_reasons(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn compact_result(oversized: bool) -> prompt_artifacts.PromptEvaluationResult {
+  return prompt_artifacts.PromptEvaluationResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
+    evaluation_id: Some("evaluation".clone()),
+    status: "ERROR".clone(),
+    error_code: "RESULT_TOO_LARGE".clone(),
+    error: "result too large".clone(),
+    experiment: None,
+    experiment_artifact: None,
+    parent_activation: None,
+    parent_activation_artifact: None,
+    scope: Some(scope("LOCAL_OPENAI")),
+    parent_variant: None,
+    candidate_variant: None,
+    corpus_source: None,
+    corpus: None,
+    tasks: empty_tasks_array(),
+    acceptance_policy_source: None,
+    acceptance_policy: None,
+    generation_policy_source: None,
+    generation_policy: None,
+    provider_control_source: None,
+    provider_control: None,
+    workspace_preflight_source: None,
+    workspace_preflight_request: None,
+    workspace_preflight: None,
+    environment: None,
+    snapshot_requests: empty_snapshot_requests_array(),
+    snapshot_results: empty_snapshot_results_array(),
+    input_snapshots: empty_input_snapshots_array(),
+    snapshot_attestations: empty_attestations_array(),
+    trace_failure: Some(trace_overflow(oversized)),
+    sample_count: 2,
+    gate_eligible: false,
+    rows: empty_rows_array(),
+    task_aggregates: empty_task_aggregates_array(),
+    corpus_aggregate: None,
+    serious_regression_reasons: empty_reasons(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn terminal_measurement() -> prompt_artifacts.TaskMeasurement {
+  seed := 7
+  return prompt_artifacts.TaskMeasurement {
+    schema_version: 1,
+    artifact_kind: "TASK_MEASUREMENT".clone(),
+    status: "ERROR".clone(),
+    failure_kind: "ADAPTER".clone(),
+    build_status: "NOT_RUN".clone(),
+    test_status: "NOT_RUN".clone(),
+    repair_loop_count: 0,
+    unrelated_diff_count: 0,
+    patch_size_bytes: 0,
+    public_api_change_count: 0,
+    policy_violation_count: 0,
+    cleanup_passed: true,
+    containment_passed: true,
+    benchmark_regression_ppm: None,
+    generation_to_passing_patch_ns: None,
+    rendered_prompt_sha256: digest_a(),
+    generation_request: generation_request(seed),
+    environment_probe: probe("MEASUREMENT_ADAPTER", "runtime"),
+    seed_attestation: seed_attestation("LOCAL_OPENAI", seed),
+    diagnostic_summary: "adapter error".clone(),
+    diagnostic_stdout: "".clone(),
+    diagnostic_stderr: "".clone(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn retained_row(terminal: bool) -> prompt_artifacts.PromptTaskRow {
+  if !terminal { return row(1, true, true, "LOCAL_OPENAI", false) }
+  return prompt_artifacts.PromptTaskRow {
+    schema_version: 1,
+    artifact_kind: "PROMPT_TASK_ROW".clone(),
+    evaluation_id: "evaluation".clone(),
+    task_id: "task".clone(),
+    sample_index: 1,
+    variant: "PARENT".clone(),
+    variant_id: "parent".clone(),
+    variant_sha256: digest_b(),
+    prompt_preparation_ns: 10,
+    time_to_passing_patch_ns: None,
+    evaluation_input: evaluation_input(1, 7),
+    measurement: terminal_measurement(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn retained_rows(terminal: bool) -> array<prompt_artifacts.PromptTaskRow> {
+  mut values: array_builder<prompt_artifacts.PromptTaskRow> := array_builder()
+  values.push(retained_row(terminal))
+  return values.build()
+}
+
+fn retained_attestations() -> array<prompt_artifacts.RunSnapshotAttestation> {
+  mut values: array_builder<prompt_artifacts.RunSnapshotAttestation> := array_builder()
+  values.push(attestation(1, true))
+  return values.build()
+}
+
+fn drift_input_snapshots() -> array<prompt_artifacts.TaskInputSnapshot> {
+  mut values: array_builder<prompt_artifacts.TaskInputSnapshot> := array_builder()
+  values.push(input_snapshot())
+  values.push(drift_input_snapshot())
+  return values.build()
+}
+
+fn drift_failed_attestation(postcheck: bool) -> prompt_artifacts.RunSnapshotAttestation {
+  return prompt_artifacts.RunSnapshotAttestation {
+    schema_version: 1,
+    artifact_kind: "RUN_SNAPSHOT_ATTESTATION".clone(),
+    task_id: "task".clone(),
+    sample_index: 1,
+    variant: "CANDIDATE".clone(),
+    status: if postcheck { "POSTCHECK_DRIFT".clone() } else { "PRECHECK_DRIFT".clone() },
+    error_code: "INPUT_DRIFT".clone(),
+    error: "input drift".clone(),
+    snapshot_request_sha256: digest_a(),
+    before_snapshot_result_sha256: digest_a(),
+    after_snapshot_result_sha256: if postcheck { Some(digest_a()) } else { None },
+    before_input_snapshot_sha256: if postcheck { Some(digest_a()) } else { Some(digest_b()) },
+    after_input_snapshot_sha256: if postcheck { Some(digest_b()) } else { None },
+    content_sha256: digest_b(),
+  }
+}
+
+fn drift_attestations(postcheck: bool) -> array<prompt_artifacts.RunSnapshotAttestation> {
+  mut values: array_builder<prompt_artifacts.RunSnapshotAttestation> := array_builder()
+  values.push(attestation(1, true))
+  values.push(drift_failed_attestation(postcheck))
+  return values.build()
+}
+
+fn retained_evidence(verified: bool) -> prompt_artifacts.PromptEvaluationEvidence {
+  mut inputs: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+  inputs.push(expected_input(1, true, false))
+  return prompt_artifacts.PromptEvaluationEvidence {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(),
+    evaluation_id: "evaluation".clone(),
+    evaluation_result_sha256: digest_a(),
+    trust: trust(verified),
+    expected_inputs: inputs.build(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn retained_error_result(terminal: bool) -> prompt_artifacts.PromptEvaluationResult {
+  error_code := if terminal { "ADAPTER_RESULT".clone() } else { "CLEANUP_FAILED".clone() }
+  error_text := if terminal { "adapter result".clone() } else { "cleanup failed".clone() }
+  return prompt_artifacts.PromptEvaluationResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
+    evaluation_id: Some("evaluation".clone()),
+    status: "ERROR".clone(),
+    error_code: error_code,
+    error: error_text,
+    experiment: Some(reference("PROMPT_EXPERIMENT_RESULT", "experiment", digest_a())),
+    experiment_artifact: Some(experiment("LOCAL_OPENAI")),
+    parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
+    parent_activation_artifact: Some(activation_result("LOCAL_OPENAI")),
+    scope: Some(scope("LOCAL_OPENAI")),
+    parent_variant: Some(variant(true)),
+    candidate_variant: Some(variant(false)),
+    corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", "corpus", digest_a())),
+    corpus: Some(corpus()),
+    tasks: tasks_array(),
+    acceptance_policy_source: Some(reference("PROMPT_ACCEPTANCE_POLICY", "policy", digest_a())),
+    acceptance_policy: Some(acceptance_policy()),
+    generation_policy_source: Some(reference("GENERATION_POLICY", "generation", digest_a())),
+    generation_policy: Some(generation_policy("LOCAL_OPENAI")),
+    provider_control_source: Some(reference("EVALUATION_PROVIDER_CONTROL", "provider", digest_a())),
+    provider_control: Some(provider_control("LOCAL_OPENAI")),
+    workspace_preflight_source: Some(reference("WORKSPACE_PREFLIGHT_RESULT", "evaluation", digest_a())),
+    workspace_preflight_request: Some(workspace_request()),
+    workspace_preflight: Some(workspace_result()),
+    environment: Some(environment()),
+    snapshot_requests: snapshot_requests_array(),
+    snapshot_results: snapshot_results_array(),
+    input_snapshots: input_snapshots_array(),
+    snapshot_attestations: retained_attestations(),
+    trace_failure: None,
+    sample_count: 2,
+    gate_eligible: false,
+    rows: retained_rows(terminal),
+    task_aggregates: empty_task_aggregates_array(),
+    corpus_aggregate: None,
+    serious_regression_reasons: empty_reasons(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn drift_error_result(postcheck: bool) -> prompt_artifacts.PromptEvaluationResult {
+  return prompt_artifacts.PromptEvaluationResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATION_RESULT".clone(),
+    evaluation_id: Some("evaluation".clone()),
+    status: "ERROR".clone(),
+    error_code: "INPUT_DRIFT".clone(),
+    error: "input drift".clone(),
+    experiment: Some(reference("PROMPT_EXPERIMENT_RESULT", "experiment", digest_a())),
+    experiment_artifact: Some(experiment("LOCAL_OPENAI")),
+    parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
+    parent_activation_artifact: Some(activation_result("LOCAL_OPENAI")),
+    scope: Some(scope("LOCAL_OPENAI")),
+    parent_variant: Some(variant(true)),
+    candidate_variant: Some(variant(false)),
+    corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", "corpus", digest_a())),
+    corpus: Some(corpus()),
+    tasks: tasks_array(),
+    acceptance_policy_source: Some(reference("PROMPT_ACCEPTANCE_POLICY", "policy", digest_a())),
+    acceptance_policy: Some(acceptance_policy()),
+    generation_policy_source: Some(reference("GENERATION_POLICY", "generation", digest_a())),
+    generation_policy: Some(generation_policy("LOCAL_OPENAI")),
+    provider_control_source: Some(reference("EVALUATION_PROVIDER_CONTROL", "provider", digest_a())),
+    provider_control: Some(provider_control("LOCAL_OPENAI")),
+    workspace_preflight_source: Some(reference("WORKSPACE_PREFLIGHT_RESULT", "evaluation", digest_a())),
+    workspace_preflight_request: Some(workspace_request()),
+    workspace_preflight: Some(workspace_result()),
+    environment: Some(environment()),
+    snapshot_requests: snapshot_requests_array(),
+    snapshot_results: snapshot_results_array(),
+    input_snapshots: drift_input_snapshots(),
+    snapshot_attestations: drift_attestations(postcheck),
+    trace_failure: None,
+    sample_count: 2,
+    gate_eligible: false,
+    rows: retained_rows(false),
+    task_aggregates: empty_task_aggregates_array(),
+    corpus_aggregate: None,
+    serious_regression_reasons: empty_reasons(),
+    content_sha256: digest_a(),
+  }
+}
+
+fn verdict_code(value: prompt_score.PromptScoreStatus) -> i64 {
+  return match value {
+    ImprovedEligible => 1,
+    CompleteIneligible => 2,
+    NoncompleteError => 3,
+  }
+}
+
+fn expect_ok(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence_value: prompt_artifacts.PromptEvaluationEvidence,
+  expected: i64,
+) -> Result<(), Error> {
+  verdict := prompt_score.verify_result(result, evidence_value)?
+  if verdict_code(verdict) != expected || result.rows.len() != 4 || evidence_value.expected_inputs.len() != 4 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn expect_invalid(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence_value: prompt_artifacts.PromptEvaluationEvidence,
+) -> Result<(), Error> {
+  return match prompt_score.verify_result(result, evidence_value) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn expect_noncomplete(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence_value: prompt_artifacts.PromptEvaluationEvidence,
+) -> Result<(), Error> {
+  verdict := prompt_score.verify_result(result, evidence_value)?
+  if verdict_code(verdict) != 3 ||
+  match result.evaluation_id { None => true, Some(value) => value != evidence_value.evaluation_id } {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 { return Err(Error.Invalid) }
+
+  eligible_result := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, false)
+  eligible_evidence := evidence(true)
+  expect_ok(eligible_result, eligible_evidence, 1)?
+
+  fixture_result := complete_result(0, "FIXTURE", "IMPROVED", false, false, false, false, false, false, false)
+  fixture_evidence := evidence(true)
+  expect_ok(fixture_result, fixture_evidence, 2)?
+
+  unchanged_result := complete_result(1, "LOCAL_OPENAI", "NO_IMPROVEMENT", false, false, false, false, false, false, false)
+  unchanged_evidence := evidence(true)
+  expect_ok(unchanged_result, unchanged_evidence, 2)?
+
+  regression_result := complete_result(2, "LOCAL_OPENAI", "SERIOUS_REGRESSION", false, false, false, false, false, false, false)
+  regression_evidence := evidence(true)
+  expect_ok(regression_result, regression_evidence, 2)?
+
+  unverified_result := complete_result(0, "LOCAL_OPENAI", "IMPROVED", false, false, false, false, false, false, false)
+  unverified_evidence := evidence(false)
+  expect_ok(unverified_result, unverified_evidence, 2)?
+
+  invalid_value := invalid_result()
+  invalid_evidence := noncomplete_evidence(false)
+  expect_noncomplete(invalid_value, invalid_evidence)?
+
+  error_value := error_result(0)
+  error_evidence := noncomplete_evidence(false)
+  expect_noncomplete(error_value, error_evidence)?
+
+  adapter_error_value := error_result(1)
+  adapter_error_evidence := noncomplete_evidence(false)
+  expect_noncomplete(adapter_error_value, adapter_error_evidence)?
+
+  postcheck_error_value := error_result(2)
+  postcheck_error_evidence := noncomplete_evidence(false)
+  expect_noncomplete(postcheck_error_value, postcheck_error_evidence)?
+
+  workspace_unsafe_value := error_result(3)
+  workspace_unsafe_evidence := noncomplete_evidence(false)
+  expect_noncomplete(workspace_unsafe_value, workspace_unsafe_evidence)?
+
+  workspace_error_value := error_result(4)
+  workspace_error_evidence := noncomplete_evidence(false)
+  expect_noncomplete(workspace_error_value, workspace_error_evidence)?
+
+  precheck_drift_value := drift_error_result(false)
+  precheck_drift_evidence := retained_evidence(false)
+  expect_noncomplete(precheck_drift_value, precheck_drift_evidence)?
+
+  postcheck_drift_value := drift_error_result(true)
+  postcheck_drift_evidence := retained_evidence(false)
+  expect_noncomplete(postcheck_drift_value, postcheck_drift_evidence)?
+
+  terminal_error_value := retained_error_result(true)
+  terminal_error_evidence := retained_evidence(false)
+  expect_noncomplete(terminal_error_value, terminal_error_evidence)?
+
+  cleanup_error_value := retained_error_result(false)
+  cleanup_error_evidence := retained_evidence(false)
+  expect_noncomplete(cleanup_error_value, cleanup_error_evidence)?
+
+  compact_value := compact_result(false)
+  compact_evidence := noncomplete_evidence(false)
+  expect_noncomplete(compact_value, compact_evidence)?
+
+  status_tamper := complete_result(0, "LOCAL_OPENAI", "NO_IMPROVEMENT", false, false, false, false, false, false, false)
+  status_evidence := evidence(true)
+  expect_invalid(status_tamper, status_evidence)?
+
+  aggregate_tamper := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, true, false, false, false, false, false)
+  aggregate_evidence := evidence(true)
+  expect_invalid(aggregate_tamper, aggregate_evidence)?
+
+  reason_tamper := complete_result(2, "LOCAL_OPENAI", "SERIOUS_REGRESSION", false, false, true, false, false, false, false)
+  reason_evidence := evidence(true)
+  expect_invalid(reason_tamper, reason_evidence)?
+
+  reference_tamper := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, true, false, false, false)
+  reference_evidence := evidence(true)
+  expect_invalid(reference_tamper, reference_evidence)?
+
+  trace_tamper := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, true, false, false)
+  trace_evidence := evidence(true)
+  expect_invalid(trace_tamper, trace_evidence)?
+
+  row_tamper := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, true, false)
+  row_evidence := evidence(true)
+  expect_invalid(row_tamper, row_evidence)?
+
+  gate_tamper := complete_result(0, "FIXTURE", "IMPROVED", true, false, false, false, false, false, false)
+
+  artifact_closure_tamper := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, true)
+  artifact_closure_evidence := evidence(true)
+  expect_invalid(artifact_closure_tamper, artifact_closure_evidence)?
+  gate_evidence := evidence(true)
+  expect_invalid(gate_tamper, gate_evidence)?
+
+  missing_evidence_result := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, false)
+  missing_evidence := noncomplete_evidence(true)
+  expect_invalid(missing_evidence_result, missing_evidence)?
+
+  evidence_order_result := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, false)
+  evidence_order := tampered_evidence(0)
+  expect_invalid(evidence_order_result, evidence_order)?
+
+  evidence_duplicate_result := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, false)
+  evidence_duplicate := tampered_evidence(1)
+  expect_invalid(evidence_duplicate_result, evidence_duplicate)?
+
+  evidence_digest_result := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, false)
+  evidence_digest := tampered_evidence(2)
+  expect_invalid(evidence_digest_result, evidence_digest)?
+
+  result_digest_result := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, false)
+  result_digest_evidence := tampered_evidence(3)
+  expect_invalid(result_digest_result, result_digest_evidence)?
+
+  malformed_trust_result := complete_result(0, "LOCAL_OPENAI", "IMPROVED", true, false, false, false, false, false, false)
+  malformed_trust_evidence := malformed_evidence()
+  expect_invalid(malformed_trust_result, malformed_trust_evidence)?
+
+  compact_tamper := compact_result(true)
+  compact_tamper_evidence := noncomplete_evidence(false)
+  expect_invalid(compact_tamper, compact_tamper_evidence)?
+
+  print("prompt verifier smoke: complete, incomplete, compact, and tamper cases PASS")
+  return Ok(())
+}

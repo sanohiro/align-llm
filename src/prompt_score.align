@@ -1,5 +1,7 @@
 module prompt_score
 
+import prompt_artifacts
+
 // C6c1 is a provider-independent, allocation-free scoring kernel. The public input rows are
 // borrowed Copy records. Output records are exposed as caller-owned scalar columns because the
 // pinned Align compiler does not yet support stores through out slice<Struct>.
@@ -99,6 +101,8 @@ pub ScoreResult {
 }
 
 pub ScorePrefixStatus { ValidPrefix, TerminalError, InvalidInput }
+
+pub PromptScoreStatus { ImprovedEligible, CompleteIneligible, NoncompleteError }
 
 pub ScorePrefixResult {
   status: ScorePrefixStatus,
@@ -1632,4 +1636,3305 @@ pub fn validate_prefix(
     row_count,
     expected_row_count,
   )
+}
+
+fn verifier_valid_digest(value: str) -> bool {
+  if value.len() != 64 {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    byte := bytes[index]
+    if !((byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_valid_text(value: str, maximum: i64) -> bool {
+  if value.len() <= 0 || value.len() > maximum {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] == 0 {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_valid_bounded_text(value: str, maximum: i64) -> bool {
+  if value.len() > maximum {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] == 0 {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_valid_ascii_identifier(value: str, maximum: i64) -> bool {
+  if !verifier_valid_text(value, maximum) { return false }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    if bytes[index] > 0x7f { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_valid_environment_name(value: str) -> bool {
+  if !verifier_valid_ascii_identifier(value, 256) { return false }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    byte := bytes[index]
+    letter := (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a)
+    if index == 0 {
+      if !letter && byte != 0x5f { return false }
+    } else {
+      digit := byte >= 0x30 && byte <= 0x39
+      if !letter && !digit && byte != 0x5f { return false }
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_section_limit_valid(enabled: bool, limit: i64, maximum: i64) -> bool {
+  if limit < 0 || limit > maximum { return false }
+  return if enabled { limit > 0 } else { limit == 0 }
+}
+
+fn verifier_valid_invalid_code(value: str) -> bool {
+  return value == "INPUT_NOT_FOUND" ||
+  value == "INPUT_TYPE" ||
+  value == "INPUT_READ" ||
+  value == "INVALID_ID" ||
+  value == "INVALID_PATH" ||
+  value == "INVALID_SCHEMA" ||
+  value == "INVALID_KIND" ||
+  value == "INVALID_LABEL" ||
+  value == "INVALID_BOUNDS" ||
+  value == "INVALID_DIGEST" ||
+  value == "INVALID_REFERENCE" ||
+  value == "SCOPE_MISMATCH" ||
+  value == "MISSING_CREDENTIAL" ||
+  value == "WORKSPACE_NOT_EMPTY"
+}
+
+fn verifier_valid_error_code(value: str) -> bool {
+  return value == "WORKSPACE_UNSAFE" ||
+  value == "SNAPSHOT_MISMATCH" ||
+  value == "SNAPSHOT_ERROR" ||
+  value == "ADAPTER_TIMEOUT" ||
+  value == "ADAPTER_PROCESS_OUTPUT" ||
+  value == "ADAPTER_RESULT" ||
+  value == "INPUT_DRIFT" ||
+  value == "ENVIRONMENT_DRIFT" ||
+  value == "ARITHMETIC" ||
+  value == "RESULT_TOO_LARGE" ||
+  value == "CLEANUP_FAILED"
+}
+
+fn verifier_valid_reachability(value: str) -> bool {
+  return value == "VERIFIED" || value == "UNVERIFIED"
+}
+
+fn verifier_trust_observations_valid(borrow trust: prompt_artifacts.PromptVerifierTrust) -> bool {
+  if !verifier_valid_reachability(trust.align_llm_reachability) ||
+  !verifier_valid_reachability(trust.align_reachability) ||
+  !verifier_valid_reachability(trust.corpus_reachability) {
+    return false
+  }
+
+  align_llm_valid := match trust.align_llm_observed_head {
+    None => trust.align_llm_reachability == "UNVERIFIED",
+    Some(observed) => {
+      if !verifier_valid_digest(observed) {
+        false
+      } else if trust.align_llm_reachability == "VERIFIED" {
+        observed == trust.expected_align_llm_commit
+      } else {
+        true
+      }
+    },
+  }
+  if !align_llm_valid {
+    return false
+  }
+
+  align_valid := match trust.align_observed_revision {
+    None => trust.align_reachability == "UNVERIFIED",
+    Some(observed) => {
+      if !verifier_valid_digest(observed) {
+        false
+      } else if trust.align_reachability == "VERIFIED" {
+        observed == trust.expected_align_revision
+      } else {
+        true
+      }
+    },
+  }
+  if !align_valid {
+    return false
+  }
+
+  corpus_valid := match trust.corpus_observed_source_sha256 {
+    None => trust.corpus_reachability == "UNVERIFIED",
+    Some(observed) => {
+      if !verifier_valid_digest(observed) {
+        false
+      } else if trust.corpus_reachability == "VERIFIED" {
+        observed == trust.expected_corpus_source_sha256
+      } else {
+        true
+      }
+    },
+  }
+  return corpus_valid
+}
+
+fn verifier_trust_valid(borrow trust: prompt_artifacts.PromptVerifierTrust) -> bool {
+  corpus_repository_valid := if trust.expected_corpus_source_kind == "GIT_COMMIT" {
+    verifier_valid_ascii_identifier(trust.expected_corpus_source_repository_id, 128)
+  } else {
+    trust.expected_corpus_source_kind == "FILE_SET" && trust.expected_corpus_source_repository_id.len() == 0
+  }
+  if trust.schema_version != 1 ||
+  trust.artifact_kind != "PROMPT_VERIFIER_TRUST" ||
+  !verifier_valid_digest(trust.expected_align_llm_commit) ||
+  !verifier_valid_digest(trust.expected_align_revision) ||
+  !(trust.expected_corpus_source_kind == "GIT_COMMIT" || trust.expected_corpus_source_kind == "FILE_SET") ||
+  !corpus_repository_valid ||
+  !verifier_valid_digest(trust.expected_corpus_source_sha256) ||
+  !verifier_valid_digest(trust.content_sha256) {
+    return false
+  }
+  return verifier_trust_observations_valid(trust)
+}
+
+fn verifier_pair_identity_valid(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> bool {
+  if evidence.schema_version != 1 ||
+  evidence.artifact_kind != "PROMPT_EVALUATION_EVIDENCE" ||
+  !verifier_valid_ascii_identifier(evidence.evaluation_id, 128) ||
+  !verifier_valid_digest(evidence.evaluation_result_sha256) ||
+  !verifier_valid_digest(evidence.content_sha256) ||
+  evidence.expected_inputs.len() > 2_048 ||
+  evidence.evaluation_result_sha256 != result.content_sha256 ||
+  !verifier_trust_valid(evidence.trust) {
+    return false
+  }
+  return match result.evaluation_id {
+    None => false,
+    Some(evaluation_id) => evaluation_id == evidence.evaluation_id,
+  }
+}
+
+fn verifier_scope_trust_valid(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> bool {
+  return match result.scope {
+    None => false,
+    Some(scope) => {
+      if scope.align_revision != evidence.trust.expected_align_revision ||
+      scope.corpus_revision.source_kind != evidence.trust.expected_corpus_source_kind ||
+      scope.corpus_revision.source_repository_id != evidence.trust.expected_corpus_source_repository_id ||
+      scope.corpus_revision.source_sha256 != evidence.trust.expected_corpus_source_sha256 {
+        false
+      } else {
+        match result.environment {
+          None => true,
+          Some(environment) => {
+            environment.core.align_llm_commit == evidence.trust.expected_align_llm_commit &&
+            environment.core.align_revision == evidence.trust.expected_align_revision
+          },
+        }
+      }
+    },
+  }
+}
+
+fn verifier_compact_result_valid(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> bool {
+  if result.status != "ERROR" ||
+  result.error_code != "RESULT_TOO_LARGE" ||
+  !verifier_valid_text(result.error, 4_096) ||
+  result.gate_eligible ||
+  result.sample_count < 2 || result.sample_count > 16 ||
+  result.tasks.len() != 0 ||
+  result.snapshot_requests.len() != 0 ||
+  result.snapshot_results.len() != 0 ||
+  result.input_snapshots.len() != 0 ||
+  result.snapshot_attestations.len() != 0 ||
+  result.rows.len() != 0 ||
+  result.task_aggregates.len() != 0 ||
+  result.serious_regression_reasons.len() != 0 ||
+  evidence.expected_inputs.len() != 0 {
+    return false
+  }
+
+  if match result.experiment { None => false, Some(_) => true } ||
+  match result.experiment_artifact { None => false, Some(_) => true } ||
+  match result.parent_activation { None => false, Some(_) => true } ||
+  match result.parent_activation_artifact { None => false, Some(_) => true } ||
+  match result.parent_variant { None => false, Some(_) => true } ||
+  match result.candidate_variant { None => false, Some(_) => true } ||
+  match result.corpus_source { None => false, Some(_) => true } ||
+  match result.corpus { None => false, Some(_) => true } ||
+  match result.acceptance_policy_source { None => false, Some(_) => true } ||
+  match result.acceptance_policy { None => false, Some(_) => true } ||
+  match result.generation_policy_source { None => false, Some(_) => true } ||
+  match result.generation_policy { None => false, Some(_) => true } ||
+  match result.provider_control_source { None => false, Some(_) => true } ||
+  match result.provider_control { None => false, Some(_) => true } ||
+  match result.workspace_preflight_source { None => false, Some(_) => true } ||
+  match result.workspace_preflight_request { None => false, Some(_) => true } ||
+  match result.workspace_preflight { None => false, Some(_) => true } ||
+  match result.environment { None => false, Some(_) => true } ||
+  match result.corpus_aggregate { None => false, Some(_) => true } {
+    return false
+  }
+
+  trace_valid := match result.trace_failure {
+    None => false,
+    Some(trace) => {
+      trace.schema_version == 1 &&
+      trace.artifact_kind == "PROMPT_TRACE_OVERFLOW" &&
+      trace.attempted_invocation_count >= 0 &&
+      trace.attempted_invocation_count <= 2_048 &&
+      trace.trace_record_count >= 0 &&
+      trace.trace_record_count <= 16_384 &&
+      verifier_valid_digest(trace.trace_digest_sha256) &&
+      verifier_valid_digest(trace.content_sha256)
+    },
+  }
+  return trace_valid && verifier_scope_trust_valid(result, evidence)
+}
+
+fn verifier_base_result_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  if result.schema_version != 1 ||
+  result.artifact_kind != "PROMPT_EVALUATION_RESULT" ||
+  !verifier_valid_digest(result.content_sha256) {
+    return false
+  }
+  if !(result.status == "IMPROVED" ||
+    result.status == "NO_IMPROVEMENT" ||
+    result.status == "SERIOUS_REGRESSION" ||
+    result.status == "INVALID_INPUT" ||
+    result.status == "ERROR") {
+    return false
+  }
+  if result.status == "IMPROVED" || result.status == "NO_IMPROVEMENT" || result.status == "SERIOUS_REGRESSION" {
+    return result.error_code == "NONE" && result.error.len() == 0
+  }
+  if result.status == "INVALID_INPUT" {
+    return verifier_valid_invalid_code(result.error_code) && verifier_valid_text(result.error, 4_096)
+  }
+  return verifier_valid_error_code(result.error_code) && verifier_valid_text(result.error, 4_096)
+}
+
+fn verifier_optional_i64_equal(a: Option<i64>, b: Option<i64>) -> bool {
+  return match a {
+    None => match b { None => true, Some(_) => false },
+    Some(left) => match b { None => false, Some(right) => left == right },
+  }
+}
+
+fn verifier_output_optional_equal(present: bool, number: i64, expected: Option<i64>) -> bool {
+  return match expected {
+    None => !present && number == 0,
+    Some(value) => present && number == value,
+  }
+}
+
+fn verifier_corpus_revision_valid(borrow revision: prompt_artifacts.CorpusRevision) -> bool {
+  repository_valid := if revision.source_kind == "GIT_COMMIT" {
+    verifier_valid_ascii_identifier(revision.source_repository_id, 128)
+  } else {
+    revision.source_kind == "FILE_SET" && revision.source_repository_id.len() == 0
+  }
+  return revision.schema_version == 1 &&
+  revision.artifact_kind == "CORPUS_REVISION" &&
+  repository_valid &&
+  verifier_valid_digest(revision.source_sha256) &&
+  verifier_valid_digest(revision.content_sha256)
+}
+
+fn verifier_scope_valid(borrow scope: prompt_artifacts.PromptScope) -> bool {
+  provider_kind_valid := scope.evaluation_provider_kind == "CLOUD_OPENAI" ||
+  scope.evaluation_provider_kind == "LOCAL_OPENAI" ||
+  scope.evaluation_provider_kind == "LLAMA_CPP" ||
+  scope.evaluation_provider_kind == "FIXTURE"
+  return scope.schema_version == 1 &&
+  scope.artifact_kind == "PROMPT_SCOPE" &&
+  verifier_valid_ascii_identifier(scope.repo_id, 128) &&
+  verifier_valid_text(scope.repo_profile_revision, 256) &&
+  verifier_valid_digest(scope.align_revision) &&
+  verifier_valid_ascii_identifier(scope.corpus_id, 128) &&
+  verifier_corpus_revision_valid(scope.corpus_revision) &&
+  provider_kind_valid &&
+  verifier_valid_text(scope.evaluation_provider_model, 256) &&
+  verifier_valid_digest(scope.generation_policy_sha256) &&
+  verifier_valid_digest(scope.acceptance_policy_sha256) &&
+  verifier_valid_digest(scope.base_prompt_sha256) &&
+  verifier_valid_digest(scope.repo_prompt_sha256) &&
+  verifier_valid_digest(scope.content_sha256)
+}
+
+fn verifier_variant_valid(borrow variant: prompt_artifacts.PromptVariant) -> bool {
+  return variant.schema_version == 1 &&
+  variant.artifact_kind == "PROMPT_VARIANT" &&
+  verifier_valid_ascii_identifier(variant.variant_id, 128) &&
+  verifier_prompt_text_artifact_valid(variant.base_prompt, "BASE_PROMPT") &&
+  verifier_prompt_text_artifact_valid(variant.repo_prompt, "REPO_PROMPT") &&
+  verifier_valid_bounded_text(variant.learned_prompt_append, 8_192) &&
+  verifier_context_policy_valid(variant.context_policy) &&
+  verifier_valid_ascii_identifier(variant.candidate_id, 128) &&
+  verifier_valid_digest(variant.content_sha256)
+}
+
+fn verifier_prompt_text_artifact_valid(
+  borrow artifact: prompt_artifacts.PromptTextArtifact,
+  expected_kind: str,
+) -> bool {
+  return artifact.schema_version == 1 &&
+  artifact.artifact_kind == expected_kind &&
+  verifier_valid_ascii_identifier(artifact.artifact_id, 128) &&
+  verifier_valid_bounded_text(artifact.text, 65_536) &&
+  verifier_valid_digest(artifact.content_sha256)
+}
+
+fn verifier_context_policy_valid(policy: prompt_artifacts.ContextPolicy) -> bool {
+  return verifier_section_limit_valid(
+    policy.include_patch_evaluation,
+    policy.max_patch_evaluation_bytes,
+    65_536,
+  ) &&
+  verifier_section_limit_valid(
+    policy.include_failure_memory,
+    policy.max_failure_context_bytes,
+    65_536,
+  ) &&
+  policy.max_failure_events >= 0 && policy.max_failure_events <= 64 &&
+  if policy.include_failure_memory { policy.max_failure_events > 0 } else { policy.max_failure_events == 0 } &&
+  verifier_section_limit_valid(
+    policy.include_diagnostics,
+    policy.max_diagnostic_bytes_per_stream,
+    65_536,
+  )
+}
+
+fn verifier_variant_scope_valid(
+  borrow variant: prompt_artifacts.PromptVariant,
+  borrow scope: prompt_artifacts.PromptScope,
+) -> bool {
+  return verifier_variant_valid(variant) &&
+  variant.base_prompt.content_sha256 == scope.base_prompt_sha256 &&
+  variant.repo_prompt.content_sha256 == scope.repo_prompt_sha256
+}
+
+fn verifier_variant_matches(
+  borrow left: prompt_artifacts.PromptVariant,
+  borrow right: prompt_artifacts.PromptVariant,
+) -> bool {
+  return verifier_variant_valid(left) &&
+  verifier_variant_valid(right) &&
+  left.variant_id == right.variant_id &&
+  left.content_sha256 == right.content_sha256
+}
+
+fn verifier_reference_valid(
+  borrow reference: prompt_artifacts.ArtifactReference,
+  expected_kind: str,
+  expected_id: str,
+  expected_digest: str,
+) -> bool {
+  return reference.artifact_kind == expected_kind &&
+  verifier_valid_text(reference.path, 4_096) &&
+  reference.artifact_id == expected_id &&
+  reference.content_sha256 == expected_digest &&
+  verifier_valid_digest(reference.content_sha256)
+}
+
+fn verifier_result_scope_matches(
+  borrow scope: prompt_artifacts.PromptScope,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  return match result.scope {
+    None => false,
+    Some(result_scope) => verifier_scope_valid(scope) &&
+    verifier_scope_valid(result_scope) &&
+    scope.content_sha256 == result_scope.content_sha256,
+  }
+}
+
+fn verifier_result_candidate_matches(
+  borrow candidate: prompt_artifacts.PromptVariant,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  return match result.candidate_variant {
+    None => false,
+    Some(result_candidate) => verifier_variant_matches(candidate, result_candidate),
+  }
+}
+
+fn verifier_result_parent_matches(
+  borrow parent: prompt_artifacts.PromptVariant,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  return match result.parent_variant {
+    None => false,
+    Some(result_parent) => verifier_variant_matches(parent, result_parent),
+  }
+}
+
+fn verifier_experiment_artifact_valid(
+  borrow artifact: prompt_artifacts.PromptExperimentResult,
+  borrow reference: prompt_artifacts.ArtifactReference,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if artifact.schema_version != 1 ||
+  artifact.artifact_kind != "PROMPT_EXPERIMENT_RESULT" ||
+  artifact.status != "PROPOSED" ||
+  artifact.error_code != "NONE" || artifact.error.len() != 0 ||
+  artifact.proposal_elapsed_ns < 0 || artifact.proposal_elapsed_ns > 7_200_000_000_000 ||
+  !verifier_valid_text(artifact.proposal_summary, 4_096) ||
+  artifact.bounded_provider_output.len() != 0 ||
+  !verifier_valid_digest(artifact.content_sha256) {
+    return false
+  }
+  id_valid := match artifact.experiment_id {
+    None => false,
+    Some(id) => verifier_valid_ascii_identifier(id, 96) &&
+    verifier_reference_valid(reference, "PROMPT_EXPERIMENT_RESULT", id, artifact.content_sha256),
+  }
+  if !id_valid {
+    return false
+  }
+  scope_valid := match artifact.scope {
+    None => false,
+    Some(scope) => verifier_result_scope_matches(scope, result),
+  }
+  if !scope_valid {
+    return false
+  }
+  parent_valid := match artifact.parent_activation {
+    None => false,
+    Some(parent_reference) => match result.parent_activation {
+      None => false,
+      Some(result_reference) => verifier_reference_identity_equal(parent_reference, result_reference),
+    },
+  }
+  if !parent_valid { return false }
+  opportunity_valid := match artifact.opportunity {
+    None => false,
+    Some(opportunity) => opportunity.artifact_kind == "OPPORTUNITY" &&
+    verifier_valid_text(opportunity.path, 4_096) &&
+    verifier_valid_text(opportunity.artifact_id, 256) &&
+    verifier_valid_digest(opportunity.content_sha256),
+  }
+  provider_valid := match artifact.proposal_provider_kind {
+    None => false,
+    Some(kind) => (kind == "CLOUD_OPENAI" || kind == "LOCAL_OPENAI" || kind == "LLAMA_CPP") &&
+    match artifact.proposal_provider_endpoint_id {
+      None => false,
+      Some(endpoint_id) => verifier_valid_text(endpoint_id, 256),
+    } &&
+    match artifact.proposal_provider_model {
+      None => false,
+      Some(model) => verifier_valid_text(model, 256),
+    },
+  }
+  status_code_absent := match artifact.proposal_status_code { None => true, Some(_) => false }
+  if !opportunity_valid || !provider_valid || !status_code_absent { return false }
+  return match artifact.candidate_variant {
+    None => false,
+    Some(candidate) => verifier_result_candidate_matches(candidate, result) &&
+    match result.parent_variant {
+      None => false,
+      Some(parent) => candidate.content_sha256 != parent.content_sha256,
+    },
+  }
+}
+
+fn verifier_reference_identity_equal(
+  borrow left: prompt_artifacts.ArtifactReference,
+  borrow right: prompt_artifacts.ArtifactReference,
+) -> bool {
+  return left.artifact_kind == right.artifact_kind &&
+  left.artifact_id == right.artifact_id &&
+  left.content_sha256 == right.content_sha256
+}
+
+fn verifier_experiment_pair_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.experiment {
+    None => match result.experiment_artifact { None => true, Some(_) => false },
+    Some(reference) => match result.experiment_artifact {
+      None => false,
+      Some(artifact) => verifier_experiment_artifact_valid(artifact, reference, result),
+    },
+  }
+}
+
+fn verifier_activation_valid(
+  borrow activation: prompt_artifacts.PromptActivation,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if activation.schema_version != 1 || activation.artifact_kind != "PROMPT_ACTIVATION" {
+    return false
+  }
+  if !verifier_valid_ascii_identifier(activation.activation_id, 128) ||
+  !verifier_valid_digest(activation.content_sha256) ||
+  !verifier_result_scope_matches(activation.scope, result) ||
+  !verifier_result_parent_matches(activation.effective_variant, result) {
+    return false
+  }
+  parent_empty := activation.parent_activation_id.len() == 0 && activation.parent_activation_sha256.len() == 0
+  parent_present := verifier_valid_ascii_identifier(activation.parent_activation_id, 128) &&
+  verifier_valid_digest(activation.parent_activation_sha256)
+  accepted_empty := activation.accepted_evaluation_id.len() == 0 && activation.accepted_evaluation_sha256.len() == 0
+  accepted_present := verifier_valid_ascii_identifier(activation.accepted_evaluation_id, 128) &&
+  verifier_valid_digest(activation.accepted_evaluation_sha256)
+  rollback_empty := activation.rollback_target_activation_id.len() == 0 &&
+  activation.rollback_target_activation_sha256.len() == 0
+  rollback_present := verifier_valid_ascii_identifier(activation.rollback_target_activation_id, 128) &&
+  verifier_valid_digest(activation.rollback_target_activation_sha256)
+  if activation.operation == "BASELINE" {
+    return parent_empty && accepted_empty && rollback_empty && activation.decision_reason.len() == 0
+  }
+  if activation.operation == "ACCEPT" {
+    return parent_present && accepted_present && rollback_empty && activation.decision_reason.len() == 0
+  }
+  if activation.operation == "ROLLBACK" {
+    return parent_present && (accepted_empty || accepted_present) && rollback_present &&
+    verifier_valid_text(activation.decision_reason, 4_096)
+  }
+  return false
+}
+
+fn verifier_activation_artifact_valid(
+  borrow artifact: prompt_artifacts.PromptActivationResult,
+  borrow reference: prompt_artifacts.ArtifactReference,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if artifact.schema_version != 1 ||
+  artifact.artifact_kind != "PROMPT_ACTIVATION_RESULT" ||
+  !verifier_valid_digest(artifact.content_sha256) ||
+  !(artifact.status == "BASELINED" || artifact.status == "ACCEPTED" || artifact.status == "ROLLED_BACK") ||
+  artifact.error_code != "NONE" ||
+  artifact.error.len() != 0 {
+    return false
+  }
+  id_valid := match artifact.decision_id {
+    None => false,
+    Some(id) => verifier_valid_ascii_identifier(id, 96) &&
+    verifier_reference_valid(reference, "PROMPT_ACTIVATION_RESULT", id, artifact.content_sha256),
+  }
+  if !id_valid {
+    return false
+  }
+  return match artifact.activation {
+    None => false,
+    Some(activation) => {
+      operation_valid := if artifact.status == "BASELINED" {
+        activation.operation == "BASELINE"
+      } else if artifact.status == "ACCEPTED" {
+        activation.operation == "ACCEPT"
+      } else {
+        activation.operation == "ROLLBACK"
+      }
+      operation_valid && verifier_activation_valid(activation, result)
+    },
+  }
+}
+
+fn verifier_parent_pair_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.parent_activation {
+    None => match result.parent_activation_artifact { None => true, Some(_) => false },
+    Some(reference) => match result.parent_activation_artifact {
+      None => false,
+      Some(artifact) => verifier_activation_artifact_valid(artifact, reference, result),
+    },
+  }
+}
+
+fn verifier_corpus_embedded_valid(
+  borrow corpus: prompt_artifacts.PromptEvaluationCorpus,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if corpus.schema_version != 1 ||
+  corpus.artifact_kind != "PROMPT_EVALUATION_CORPUS" ||
+  !verifier_valid_ascii_identifier(corpus.corpus_id, 128) ||
+  !verifier_corpus_revision_valid(corpus.corpus_revision) ||
+  corpus.task_files.len() < 1 || corpus.task_files.len() > 64 ||
+  !verifier_valid_digest(corpus.content_sha256) {
+    return false
+  }
+  mut task_file := 0
+  loop {
+    if task_file >= corpus.task_files.len() { break }
+    if !verifier_owned_string_valid(corpus.task_files[task_file], 4_096, false) { return false }
+    mut prior_file := 0
+    loop {
+      if prior_file >= task_file { break }
+      if verifier_owned_strings_equal(corpus.task_files[prior_file], corpus.task_files[task_file]) { return false }
+      prior_file = prior_file + 1
+    }
+    task_file = task_file + 1
+  }
+  return match result.corpus_source {
+    None => false,
+    Some(reference) => verifier_reference_valid(
+      reference,
+      "PROMPT_EVALUATION_CORPUS",
+      corpus.corpus_id,
+      corpus.content_sha256,
+    ),
+  }
+}
+
+fn verifier_corpus_pair_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.corpus {
+    None => match result.corpus_source { None => true, Some(_) => false },
+    Some(corpus) => verifier_corpus_embedded_valid(corpus, result),
+  }
+}
+
+fn verifier_acceptance_policy_embedded_valid(
+  borrow policy: prompt_artifacts.PromptAcceptancePolicy,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if policy.schema_version != 1 ||
+  policy.artifact_kind != "PROMPT_ACCEPTANCE_POLICY" ||
+  !verifier_valid_ascii_identifier(policy.policy_id, 128) ||
+  policy.minimum_task_count < 1 || policy.minimum_task_count > 64 ||
+  policy.minimum_samples_per_variant < 2 || policy.minimum_samples_per_variant > 16 ||
+  policy.minimum_completion_gain_count < 1 ||
+  policy.minimum_completion_gain_count > 1_024 ||
+  policy.minimum_time_improvement_ppm < 1 || policy.minimum_time_improvement_ppm > 1_000_000 ||
+  policy.maximum_time_regression_ppm < 0 || policy.maximum_time_regression_ppm > 1_000_000 ||
+  policy.maximum_repair_loop_regression_count < 0 || policy.maximum_repair_loop_regression_count > 65_536 ||
+  !verifier_valid_digest(policy.content_sha256) {
+    return false
+  }
+  return match result.acceptance_policy_source {
+    None => false,
+    Some(reference) => verifier_reference_valid(
+      reference,
+      "PROMPT_ACCEPTANCE_POLICY",
+      policy.policy_id,
+      policy.content_sha256,
+    ),
+  }
+}
+
+fn verifier_acceptance_policy_pair_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.acceptance_policy {
+    None => match result.acceptance_policy_source { None => true, Some(_) => false },
+    Some(policy) => verifier_acceptance_policy_embedded_valid(policy, result),
+  }
+}
+
+fn verifier_generation_policy_embedded_valid(
+  borrow policy: prompt_artifacts.GenerationPolicy,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  seed_end_valid := match policy.seed_base.checked_add(result.sample_count - 1) {
+    None => false,
+    Some(_) => true,
+  }
+  if policy.schema_version != 1 ||
+  policy.artifact_kind != "GENERATION_POLICY" ||
+  !verifier_valid_ascii_identifier(policy.generation_policy_id, 128) ||
+  !verifier_valid_text(policy.evaluation_provider_kind, 256) ||
+  !verifier_valid_text(policy.evaluation_provider_endpoint_id, 256) ||
+  !verifier_valid_text(policy.evaluation_provider_model, 256) ||
+  !verifier_valid_digest(policy.provider_control_sha256) ||
+  !verifier_valid_text(policy.provider_service_revision, 256) ||
+  policy.max_prompt_bytes <= 0 || policy.max_prompt_bytes > 1_048_576 ||
+  policy.max_tokens <= 0 || policy.max_tokens > 1_048_576 ||
+  policy.temperature_micros < 0 || policy.temperature_micros > 1_000_000 ||
+  policy.seed_mode != "PAIRED_FIXED" ||
+  !seed_end_valid ||
+  !verifier_valid_digest(policy.content_sha256) {
+    return false
+  }
+  return match result.generation_policy_source {
+    None => false,
+    Some(reference) => verifier_reference_valid(
+      reference,
+      "GENERATION_POLICY",
+      policy.generation_policy_id,
+      policy.content_sha256,
+    ),
+  }
+}
+
+fn verifier_generation_policy_pair_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.generation_policy {
+    None => match result.generation_policy_source { None => true, Some(_) => false },
+    Some(policy) => verifier_generation_policy_embedded_valid(policy, result),
+  }
+}
+
+fn verifier_provider_control_embedded_valid(
+  borrow control: prompt_artifacts.EvaluationProviderControl,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  provider_kind_valid := control.provider_kind == "CLOUD_OPENAI" ||
+  control.provider_kind == "LOCAL_OPENAI" ||
+  control.provider_kind == "LLAMA_CPP" ||
+  control.provider_kind == "FIXTURE"
+  if control.schema_version != 1 ||
+  control.artifact_kind != "EVALUATION_PROVIDER_CONTROL" ||
+  !verifier_valid_ascii_identifier(control.provider_control_id, 128) ||
+  !provider_kind_valid ||
+  !verifier_valid_text(control.endpoint, 4_096) ||
+  !verifier_valid_text(control.endpoint_id, 256) ||
+  !verifier_valid_text(control.model, 256) ||
+  control.timeout_ns <= 0 || control.timeout_ns > 7_200_000_000_000 ||
+  control.max_response_bytes <= 0 || control.max_response_bytes > 1_048_576 ||
+  !verifier_valid_digest(control.content_sha256) {
+    return false
+  }
+  api_key_valid := match control.api_key_env {
+    None => control.provider_kind != "CLOUD_OPENAI",
+    Some(name) => (control.provider_kind == "CLOUD_OPENAI" || control.provider_kind == "LOCAL_OPENAI") &&
+    verifier_valid_environment_name(name),
+  }
+  tokenize_valid := match control.tokenize_endpoint {
+    None => true,
+    Some(endpoint) => verifier_valid_text(endpoint, 4_096),
+  }
+  if !api_key_valid || !tokenize_valid { return false }
+  return match result.provider_control_source {
+    None => false,
+    Some(reference) => verifier_reference_valid(
+      reference,
+      "EVALUATION_PROVIDER_CONTROL",
+      control.provider_control_id,
+      control.content_sha256,
+    ),
+  }
+}
+
+fn verifier_provider_control_pair_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.provider_control {
+    None => match result.provider_control_source { None => true, Some(_) => false },
+    Some(control) => verifier_provider_control_embedded_valid(control, result),
+  }
+}
+
+fn verifier_workspace_preflight_embedded_valid(
+  borrow preflight: prompt_artifacts.WorkspacePreflightResult,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if preflight.schema_version != 1 ||
+  preflight.artifact_kind != "WORKSPACE_PREFLIGHT_RESULT" ||
+  !verifier_valid_text(preflight.evaluation_id, 128) ||
+  !verifier_valid_digest(preflight.content_sha256) {
+    return false
+  }
+  return match result.workspace_preflight_source {
+    None => false,
+    Some(reference) => verifier_reference_valid(
+      reference,
+      "WORKSPACE_PREFLIGHT_RESULT",
+      preflight.evaluation_id,
+      preflight.content_sha256,
+    ),
+  }
+}
+
+fn verifier_workspace_preflight_pair_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.workspace_preflight {
+    None => match result.workspace_preflight_source { None => true, Some(_) => false },
+    Some(preflight) => verifier_workspace_preflight_embedded_valid(preflight, result),
+  }
+}
+
+fn verifier_task_valid(borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+  limits := task.regression_limits
+  return task.schema_version == 1 &&
+  task.artifact_kind == "PROMPT_EVALUATION_TASK" &&
+  verifier_valid_ascii_identifier(task.task_id, 128) &&
+  verifier_valid_ascii_identifier(task.repo_id, 128) &&
+  verifier_valid_digest(task.repo_revision) &&
+  verifier_valid_text(task.repo_path, 4_096) &&
+  verifier_valid_text(task.cmd, 4_096) &&
+  verifier_valid_text(task.snapshot_cmd, 4_096) &&
+  verifier_valid_text(task.measurement_adapter_runtime, 256) &&
+  verifier_valid_text(task.snapshot_helper_runtime, 256) &&
+  verifier_valid_text(task.cwd, 4_096) &&
+  task.timeout_ns > 0 && task.timeout_ns <= 7_200_000_000_000 &&
+  verifier_valid_text(task.task_prompt_path, 4_096) &&
+  verifier_valid_text(task.context_sources_path, 4_096) &&
+  verifier_valid_text(task.generation_policy_path, 4_096) &&
+  verifier_valid_text(task.provider_control_path, 4_096) &&
+  verifier_valid_text(task.environment_policy_path, 4_096) &&
+  task.artifacts.len() >= 1 && task.artifacts.len() <= 4_096 &&
+  limits.maximum_unrelated_diff_count >= 0 && limits.maximum_unrelated_diff_count <= 1_048_576 &&
+  limits.maximum_patch_size_bytes >= 0 && limits.maximum_patch_size_bytes <= 67_108_864 &&
+  limits.maximum_public_api_change_count >= 0 && limits.maximum_public_api_change_count <= 1_048_576 &&
+  limits.maximum_repair_loops >= 0 && limits.maximum_repair_loops <= 64 &&
+  match limits.maximum_benchmark_regression_ppm {
+    None => true,
+    Some(value) => value >= 0 && value <= 1_000_000,
+  } &&
+  verifier_valid_digest(task.content_sha256) &&
+  verifier_command_array_valid(task.cmd, task.argv) &&
+  verifier_command_array_valid(task.snapshot_cmd, task.snapshot_argv) &&
+  verifier_expectation_array_valid(task.artifacts, 4_096)
+}
+
+fn verifier_command_array_valid(command: str, borrow values: array<string>) -> bool {
+  if values.len() < 1 || values.len() > 64 || !verifier_owned_string_matches(values[0], command) {
+    return false
+  }
+  mut total := 0
+  mut index := 0
+  loop {
+    if index >= values.len() { break }
+    if !verifier_owned_string_valid(values[index], 4_096, true) { return false }
+    with_text := total.checked_add(verifier_owned_string_length(values[index])) else { return false }
+    total = with_text.checked_add(1) else { return false }
+    if total > 262_144 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_string_array_valid(
+  borrow values: array<string>,
+  maximum_count: i64,
+  maximum_length: i64,
+) -> bool {
+  if values.len() > maximum_count { return false }
+  mut index := 0
+  loop {
+    if index >= values.len() { break }
+    if !verifier_owned_string_valid(values[index], maximum_length, true) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_owned_string_valid(borrow value: string, maximum: i64, allow_empty: bool) -> bool {
+  if allow_empty {
+    return verifier_valid_bounded_text(value, maximum)
+  }
+  return verifier_valid_text(value, maximum)
+}
+
+fn verifier_owned_strings_equal(borrow left: string, borrow right: string) -> bool {
+  return left == right
+}
+
+fn verifier_owned_string_matches(borrow value: string, expected: str) -> bool {
+  return value == expected
+}
+
+fn verifier_owned_string_length(borrow value: string) -> i64 {
+  return value.len()
+}
+
+fn verifier_expectation_valid(borrow value: prompt_artifacts.ArtifactExpectation) -> bool {
+  return verifier_valid_text(value.path, 4_096) &&
+  (value.kind == "FILE" || value.kind == "TREE") &&
+  verifier_valid_digest(value.expected_sha256)
+}
+
+fn verifier_expectation_array_valid(
+  borrow values: array<prompt_artifacts.ArtifactExpectation>,
+  maximum_count: i64,
+) -> bool {
+  if values.len() > maximum_count { return false }
+  mut index := 0
+  loop {
+    if index >= values.len() { break }
+    if !verifier_expectation_valid(values[index]) { return false }
+    mut prior := 0
+    loop {
+      if prior >= index { break }
+      if verifier_expectation_same_path(values[prior], values[index]) { return false }
+      prior = prior + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_expectation_same_path(
+  borrow left: prompt_artifacts.ArtifactExpectation,
+  borrow right: prompt_artifacts.ArtifactExpectation,
+) -> bool {
+  return left.path == right.path
+}
+
+fn verifier_task_limit(borrow task: prompt_artifacts.PromptEvaluationTask) -> ScoreTaskLimit {
+  return ScoreTaskLimit {
+    maximum_unrelated_diff_count: task.regression_limits.maximum_unrelated_diff_count,
+    maximum_patch_size_bytes: task.regression_limits.maximum_patch_size_bytes,
+    maximum_public_api_change_count: task.regression_limits.maximum_public_api_change_count,
+    maximum_repair_loops: task.regression_limits.maximum_repair_loops,
+    maximum_benchmark_regression_ppm: task.regression_limits.maximum_benchmark_regression_ppm,
+  }
+}
+
+fn verifier_score_variant(value: str) -> Result<ScoreVariant, Error> {
+  if value == "PARENT" {
+    return Ok(ScoreVariant.Parent)
+  }
+  if value == "CANDIDATE" {
+    return Ok(ScoreVariant.Candidate)
+  }
+  return Err(Error.Invalid)
+}
+
+fn verifier_score_status(value: str) -> Result<ScoreStatus, Error> {
+  if value == "PASS" { return Ok(ScoreStatus.Pass) }
+  if value == "FAIL" { return Ok(ScoreStatus.Fail) }
+  if value == "POLICY_VIOLATION" { return Ok(ScoreStatus.PolicyViolation) }
+  if value == "ERROR" { return Ok(ScoreStatus.Error) }
+  return Err(Error.Invalid)
+}
+
+fn verifier_score_failure(value: str) -> Result<ScoreFailureKind, Error> {
+  if value == "NONE" { return Ok(ScoreFailureKind.None) }
+  if value == "PROVIDER" { return Ok(ScoreFailureKind.Provider) }
+  if value == "PATCH" { return Ok(ScoreFailureKind.Patch) }
+  if value == "BUILD" { return Ok(ScoreFailureKind.Build) }
+  if value == "TEST" { return Ok(ScoreFailureKind.Test) }
+  if value == "POLICY" { return Ok(ScoreFailureKind.Policy) }
+  if value == "CLEANUP" { return Ok(ScoreFailureKind.Cleanup) }
+  if value == "CONTAINMENT" { return Ok(ScoreFailureKind.Containment) }
+  if value == "ADAPTER" { return Ok(ScoreFailureKind.Adapter) }
+  return Err(Error.Invalid)
+}
+
+fn verifier_score_stage(value: str) -> Result<ScoreStage, Error> {
+  if value == "PASS" { return Ok(ScoreStage.Pass) }
+  if value == "FAIL" { return Ok(ScoreStage.Fail) }
+  if value == "NOT_RUN" { return Ok(ScoreStage.NotRun) }
+  if value == "ERROR" { return Ok(ScoreStage.StageError) }
+  return Err(Error.Invalid)
+}
+
+fn verifier_environment_probe_valid(borrow probe: prompt_artifacts.EnvironmentProbe) -> bool {
+  cpu_valid := match probe.logical_cpu_count {
+    None => true,
+    Some(value) => value > 0 && value <= 1_048_576,
+  }
+  return probe.schema_version == 1 &&
+  probe.artifact_kind == "ENVIRONMENT_PROBE" &&
+  verifier_valid_text(probe.producer, 256) &&
+  verifier_valid_text(probe.os, 256) &&
+  verifier_valid_text(probe.os_release, 256) &&
+  verifier_valid_text(probe.architecture, 256) &&
+  verifier_valid_text(probe.cpu, 256) &&
+  cpu_valid &&
+  verifier_valid_text(probe.gpu, 256) &&
+  verifier_valid_text(probe.runtime_identity, 256) &&
+  verifier_valid_digest(probe.content_sha256)
+}
+
+fn verifier_generation_request_valid(borrow request: prompt_artifacts.GenerationRequestIdentity) -> bool {
+  return request.schema_version == 1 &&
+  request.artifact_kind == "GENERATION_REQUEST_IDENTITY" &&
+  verifier_valid_digest(request.rendered_prompt_sha256) &&
+  verifier_valid_digest(request.system_text_sha256) &&
+  verifier_valid_digest(request.user_text_sha256) &&
+  verifier_valid_digest(request.generation_policy_sha256) &&
+  verifier_valid_digest(request.provider_control_sha256) &&
+  verifier_valid_digest(request.environment_policy_sha256) &&
+  request.max_tokens > 0 &&
+  request.temperature_micros >= 0 &&
+  verifier_valid_digest(request.provider_request_sha256) &&
+  verifier_valid_digest(request.seed_attestation_sha256) &&
+  verifier_valid_digest(request.content_sha256)
+}
+
+fn verifier_seed_attestation_valid(borrow seed: prompt_artifacts.SeedCapabilityAttestation) -> bool {
+  applied_valid := if seed.result == "APPLIED" {
+    match seed.applied_seed { None => false, Some(value) => value == seed.requested_seed }
+  } else if seed.result == "UNSUPPORTED" || seed.result == "REJECTED" {
+    match seed.applied_seed { None => true, Some(_) => false }
+  } else {
+    false
+  }
+  return seed.schema_version == 1 &&
+  seed.artifact_kind == "SEED_CAPABILITY_ATTESTATION" &&
+  verifier_valid_text(seed.provider_kind, 256) &&
+  verifier_valid_text(seed.provider_model, 256) &&
+  applied_valid &&
+  verifier_valid_digest(seed.provider_request_sha256) &&
+  verifier_valid_digest(seed.content_sha256)
+}
+
+fn verifier_evaluation_input_valid(
+  borrow input: prompt_artifacts.EvaluationInputIdentity,
+  task_id: str,
+  sample_index: i64,
+) -> bool {
+  return input.schema_version == 1 &&
+  input.artifact_kind == "EVALUATION_INPUT_IDENTITY" &&
+  input.task_id == task_id &&
+  input.sample_index == sample_index &&
+  verifier_valid_digest(input.task_input_snapshot_sha256) &&
+  verifier_valid_digest(input.parent_variant_sha256) &&
+  verifier_valid_digest(input.candidate_variant_sha256) &&
+  verifier_valid_digest(input.task_prompt_sha256) &&
+  verifier_valid_digest(input.context_sources_sha256) &&
+  verifier_valid_digest(input.generation_policy_sha256) &&
+  verifier_valid_digest(input.generation_request_sha256) &&
+  verifier_valid_digest(input.adapter_request_sha256) &&
+  verifier_valid_digest(input.environment_policy_sha256) &&
+  verifier_valid_digest(input.environment_sha256) &&
+  verifier_valid_digest(input.content_sha256)
+}
+
+fn verifier_measurement_valid(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  generation_time_valid := match measurement.generation_to_passing_patch_ns {
+    None => true,
+    Some(value) => value > 0 && value <= 7_200_000_000_000,
+  }
+  benchmark_valid := match task.regression_limits.maximum_benchmark_regression_ppm {
+    None => match measurement.benchmark_regression_ppm { None => true, Some(_) => false },
+    Some(_) => if measurement.status == "PASS" {
+      match measurement.benchmark_regression_ppm {
+        None => false,
+        Some(value) => value >= 0 && value <= 1_000_000,
+      }
+    } else {
+      match measurement.benchmark_regression_ppm { None => true, Some(_) => false }
+    },
+  }
+  return measurement.schema_version == 1 &&
+  measurement.artifact_kind == "TASK_MEASUREMENT" &&
+  measurement.repair_loop_count >= 0 && measurement.repair_loop_count <= 64 &&
+  measurement.unrelated_diff_count >= 0 && measurement.unrelated_diff_count <= 1_048_576 &&
+  measurement.patch_size_bytes >= 0 && measurement.patch_size_bytes <= 67_108_864 &&
+  measurement.public_api_change_count >= 0 && measurement.public_api_change_count <= 1_048_576 &&
+  measurement.policy_violation_count >= 0 && measurement.policy_violation_count <= 1_048_576 &&
+  benchmark_valid &&
+  generation_time_valid &&
+  verifier_valid_digest(measurement.rendered_prompt_sha256) &&
+  verifier_generation_request_valid(measurement.generation_request) &&
+  verifier_environment_probe_valid(measurement.environment_probe) &&
+  verifier_seed_attestation_valid(measurement.seed_attestation) &&
+  measurement.generation_request.provider_request_sha256 == measurement.seed_attestation.provider_request_sha256 &&
+  verifier_valid_bounded_text(measurement.diagnostic_summary, 4_096) &&
+  verifier_valid_bounded_text(measurement.diagnostic_stdout, 16_384) &&
+  verifier_valid_bounded_text(measurement.diagnostic_stderr, 16_384) &&
+  verifier_valid_digest(measurement.content_sha256)
+}
+
+fn verifier_score_row(
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  evaluation_id: str,
+  task_ordinal: i64,
+) -> Result<ScoreRow, Error> {
+  if row.schema_version != 1 ||
+  row.artifact_kind != "PROMPT_TASK_ROW" ||
+  row.evaluation_id != evaluation_id ||
+  row.task_id != task.task_id ||
+  row.sample_index < 1 ||
+  !verifier_valid_text(row.variant_id, 256) ||
+  !verifier_valid_digest(row.variant_sha256) ||
+  row.prompt_preparation_ns < 0 || row.prompt_preparation_ns > 7_200_000_000_000 ||
+  !verifier_evaluation_input_valid(row.evaluation_input, task.task_id, row.sample_index) ||
+  !verifier_measurement_valid(row.measurement, task) ||
+  row.measurement.rendered_prompt_sha256 != row.measurement.generation_request.rendered_prompt_sha256 ||
+  !verifier_valid_digest(row.content_sha256) {
+    return Err(Error.Invalid)
+  }
+
+  total_time_valid := match row.measurement.generation_to_passing_patch_ns {
+    None => match row.time_to_passing_patch_ns { None => true, Some(_) => false },
+    Some(generation_time) => match row.time_to_passing_patch_ns {
+      None => false,
+      Some(total) => {
+        computed := row.prompt_preparation_ns.checked_add(generation_time) else { return Err(Error.Invalid) }
+        total == computed && total > 0 && total <= 7_200_000_000_000
+      },
+    },
+  }
+  if !total_time_valid {
+    return Err(Error.Invalid)
+  }
+
+  variant := verifier_score_variant(row.variant)?
+  status := verifier_score_status(row.measurement.status)?
+  failure := verifier_score_failure(row.measurement.failure_kind)?
+  build := verifier_score_stage(row.measurement.build_status)?
+  test := verifier_score_stage(row.measurement.test_status)?
+  return Ok(ScoreRow {
+      task_ordinal: task_ordinal,
+      sample_index: row.sample_index,
+      variant: variant,
+      status: status,
+      failure_kind: failure,
+      build_status: build,
+      test_status: test,
+      repair_loop_count: row.measurement.repair_loop_count,
+      unrelated_diff_count: row.measurement.unrelated_diff_count,
+      patch_size_bytes: row.measurement.patch_size_bytes,
+      public_api_change_count: row.measurement.public_api_change_count,
+      policy_violation_count: row.measurement.policy_violation_count,
+      cleanup_passed: row.measurement.cleanup_passed,
+      containment_passed: row.measurement.containment_passed,
+      adapter_error: row.measurement.failure_kind == "ADAPTER",
+      prompt_preparation_ns: row.prompt_preparation_ns,
+      generation_to_passing_patch_ns: row.measurement.generation_to_passing_patch_ns,
+      time_to_passing_patch_ns: row.time_to_passing_patch_ns,
+      benchmark_regression_ppm: row.measurement.benchmark_regression_ppm,
+    })
+}
+
+fn verifier_expected_input_matches(
+  borrow expected: prompt_artifacts.PromptExpectedInputDigest,
+  borrow row: prompt_artifacts.PromptTaskRow,
+) -> bool {
+  return expected.schema_version == 1 &&
+  expected.artifact_kind == "PROMPT_EXPECTED_INPUT_DIGEST" &&
+  expected.task_id == row.task_id &&
+  expected.sample_index == row.sample_index &&
+  expected.variant == row.variant &&
+  verifier_valid_digest(expected.rendered_prompt_sha256) &&
+  verifier_valid_digest(expected.context_sources_sha256) &&
+  verifier_valid_digest(expected.generation_request_sha256) &&
+  verifier_valid_digest(expected.adapter_request_sha256) &&
+  verifier_valid_digest(expected.provider_request_sha256) &&
+  verifier_valid_digest(expected.content_sha256) &&
+  expected.rendered_prompt_sha256 == row.measurement.rendered_prompt_sha256 &&
+  expected.context_sources_sha256 == row.evaluation_input.context_sources_sha256 &&
+  expected.generation_request_sha256 == row.evaluation_input.generation_request_sha256 &&
+  expected.adapter_request_sha256 == row.evaluation_input.adapter_request_sha256 &&
+  expected.provider_request_sha256 == row.measurement.generation_request.provider_request_sha256
+}
+
+fn verifier_environment_core_valid(borrow core: prompt_artifacts.EnvironmentIdentityCore) -> bool {
+  cpu_valid := match core.logical_cpu_count {
+    None => true,
+    Some(value) => value > 0 && value <= 1_048_576,
+  }
+  return core.schema_version == 1 &&
+  core.artifact_kind == "ENVIRONMENT_IDENTITY_CORE" &&
+  verifier_valid_text(core.os, 256) &&
+  verifier_valid_text(core.os_release, 256) &&
+  verifier_valid_text(core.architecture, 256) &&
+  verifier_valid_text(core.cpu, 256) &&
+  cpu_valid &&
+  verifier_valid_text(core.gpu, 256) &&
+  verifier_valid_digest(core.align_llm_commit) &&
+  verifier_valid_digest(core.align_revision) &&
+  verifier_valid_text(core.measurement_adapter_runtime, 256) &&
+  verifier_valid_text(core.snapshot_helper_runtime, 256) &&
+  verifier_valid_text(core.source_verifier_runtime, 256) &&
+  verifier_valid_digest(core.source_verifier_policy_sha256) &&
+  verifier_valid_digest(core.environment_policy_sha256)
+}
+
+fn verifier_environment_valid(borrow environment: prompt_artifacts.EnvironmentIdentity) -> bool {
+  return environment.schema_version == 1 &&
+  environment.artifact_kind == "ENVIRONMENT_IDENTITY" &&
+  verifier_environment_core_valid(environment.core) &&
+  verifier_valid_digest(environment.environment_id) &&
+  verifier_valid_digest(environment.content_sha256)
+}
+
+fn verifier_probe_matches_environment(
+  borrow probe: prompt_artifacts.EnvironmentProbe,
+  borrow environment: prompt_artifacts.EnvironmentIdentity,
+) -> bool {
+  return verifier_environment_probe_valid(probe) &&
+  verifier_environment_valid(environment) &&
+  probe.os == environment.core.os &&
+  probe.os_release == environment.core.os_release &&
+  probe.architecture == environment.core.architecture &&
+  probe.cpu == environment.core.cpu &&
+  verifier_optional_i64_equal(probe.logical_cpu_count, environment.core.logical_cpu_count) &&
+  probe.gpu == environment.core.gpu
+}
+
+fn verifier_result_environment_matches_probe(
+  borrow probe: prompt_artifacts.EnvironmentProbe,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  return match result.environment {
+    None => false,
+    Some(environment) => verifier_probe_matches_environment(probe, environment),
+  }
+}
+
+fn verifier_task_id_matches(borrow task: prompt_artifacts.PromptEvaluationTask, task_id: str) -> bool {
+  return task.task_id == task_id
+}
+
+fn verifier_find_task_ordinal(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  task_id: str,
+) -> i64 {
+  mut index := 0
+  loop {
+    if index >= result.tasks.len() { break }
+    if verifier_task_id_matches(result.tasks[index], task_id) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+fn verifier_tasks_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  if result.tasks.len() < 1 || result.tasks.len() > 64 {
+    return false
+  }
+  mut index := 0
+  loop {
+    if index >= result.tasks.len() { break }
+    if !verifier_task_valid(result.tasks[index]) {
+      return false
+    }
+    if !verifier_task_context_valid(result.tasks[index], result) { return false }
+    if index > 0 && !verifier_snapshot_helper_equal(result.tasks[0], result.tasks[index]) {
+      return false
+    }
+    mut prior := 0
+    loop {
+      if prior >= index { break }
+      if verifier_task_id_matches(result.tasks[prior], result.tasks[index].task_id) {
+        return false
+      }
+      prior = prior + 1
+    }
+    index = index + 1
+  }
+  return match result.corpus {
+    None => false,
+    Some(corpus) => corpus.task_files.len() == result.tasks.len(),
+  }
+}
+
+fn verifier_task_context_valid(
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  scope_valid := match result.scope {
+    None => false,
+    Some(scope) => task.repo_id == scope.repo_id,
+  }
+  environment_valid := match result.environment {
+    None => true,
+    Some(environment) => task.measurement_adapter_runtime == environment.core.measurement_adapter_runtime &&
+    task.snapshot_helper_runtime == environment.core.snapshot_helper_runtime,
+  }
+  return scope_valid && environment_valid
+}
+
+fn verifier_snapshot_helper_equal(
+  borrow first: prompt_artifacts.PromptEvaluationTask,
+  borrow current: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  return first.snapshot_cmd == current.snapshot_cmd &&
+  first.cwd == current.cwd &&
+  first.snapshot_helper_runtime == current.snapshot_helper_runtime &&
+  verifier_string_arrays_equal(first.snapshot_argv, current.snapshot_argv)
+}
+
+fn verifier_string_arrays_equal(borrow left: array<string>, borrow right: array<string>) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop {
+    if index >= left.len() { break }
+    if !verifier_owned_strings_equal(left[index], right[index]) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_artifact_digest_valid(borrow digest: prompt_artifacts.ArtifactDigest) -> bool {
+  return verifier_valid_text(digest.path, 4_096) &&
+  verifier_valid_text(digest.mode, 16) &&
+  digest.byte_count >= 0 &&
+  verifier_valid_digest(digest.sha256)
+}
+
+fn verifier_artifact_digest_equal(
+  borrow left: prompt_artifacts.ArtifactDigest,
+  borrow right: prompt_artifacts.ArtifactDigest,
+) -> bool {
+  return verifier_artifact_digest_valid(left) &&
+  verifier_artifact_digest_valid(right) &&
+  left.path == right.path &&
+  left.mode == right.mode &&
+  left.byte_count == right.byte_count &&
+  left.sha256 == right.sha256
+}
+
+fn verifier_path_is_tree_descendant(path: str, root: str) -> bool {
+  path_bytes := path.bytes()
+  root_bytes := root.bytes()
+  if path_bytes.len() <= root_bytes.len() + 1 { return false }
+  mut index := 0
+  loop {
+    if index >= root_bytes.len() { break }
+    if path_bytes[index] != root_bytes[index] { return false }
+    index = index + 1
+  }
+  return path_bytes[root_bytes.len()] == 0x2f
+}
+
+fn verifier_snapshot_artifact_closure(
+  borrow request: prompt_artifacts.SnapshotRequest,
+  borrow snapshot: prompt_artifacts.SnapshotResult,
+) -> bool {
+  mut digest_index := 0
+  mut expectation_index := 0
+  loop {
+    if expectation_index >= request.static_expectations.len() { break }
+    if digest_index >= snapshot.artifact_digests.len() ||
+    snapshot.artifact_digests[digest_index].path != request.static_expectations[expectation_index].path {
+      return false
+    }
+    if request.static_expectations[expectation_index].kind == "FILE" {
+      if snapshot.artifact_digests[digest_index].sha256 !=
+      request.static_expectations[expectation_index].expected_sha256 {
+        return false
+      }
+      digest_index = digest_index + 1
+    } else {
+      root := request.static_expectations[expectation_index].path
+      digest_index = digest_index + 1
+      loop {
+        if digest_index >= snapshot.artifact_digests.len() ||
+        !verifier_path_is_tree_descendant(snapshot.artifact_digests[digest_index].path, root) {
+          break
+        }
+        digest_index = digest_index + 1
+      }
+    }
+    expectation_index = expectation_index + 1
+  }
+  mut additional_index := 0
+  loop {
+    if additional_index >= request.additional_files.len() { break }
+    if digest_index >= snapshot.artifact_digests.len() ||
+    !verifier_owned_string_matches(
+      request.additional_files[additional_index],
+      snapshot.artifact_digests[digest_index].path,
+    ) {
+      return false
+    }
+    digest_index = digest_index + 1
+    additional_index = additional_index + 1
+  }
+  return digest_index == snapshot.artifact_digests.len()
+}
+
+fn verifier_snapshot_request_valid(borrow request: prompt_artifacts.SnapshotRequest) -> bool {
+  return request.schema_version == 1 &&
+  request.artifact_kind == "SNAPSHOT_REQUEST" &&
+  verifier_valid_text(request.task_id, 256) &&
+  verifier_valid_text(request.project_root, 4_096) &&
+  verifier_valid_text(request.repo_path, 4_096) &&
+  verifier_valid_text(request.repo_revision, 256) &&
+  verifier_valid_text(request.workspace_path, 4_096) &&
+  verifier_expectation_array_valid(request.static_expectations, 4_096) &&
+  verifier_string_array_valid(request.additional_files, 4_096, 4_096) &&
+  verifier_string_array_valid(request.allowed_workspace_entries, 4_096, 4_096) &&
+  verifier_valid_digest(request.content_sha256)
+}
+
+fn verifier_snapshot_request_matches(
+  borrow request: prompt_artifacts.SnapshotRequest,
+  digest: str,
+  task_id: str,
+) -> bool {
+  return verifier_snapshot_request_valid(request) &&
+  request.content_sha256 == digest &&
+  request.task_id == task_id
+}
+
+fn verifier_snapshot_result_valid(borrow snapshot: prompt_artifacts.SnapshotResult) -> bool {
+  status_valid := if snapshot.status == "MATCH" {
+    snapshot.error_code == "NONE" && snapshot.error.len() == 0 &&
+    match snapshot.environment_probe { None => false, Some(probe) => verifier_environment_probe_valid(probe) }
+  } else if snapshot.status == "MISMATCH" {
+    (snapshot.error_code == "PATH" ||
+      snapshot.error_code == "TYPE" ||
+      snapshot.error_code == "MODE" ||
+      snapshot.error_code == "CONTENT" ||
+      snapshot.error_code == "TREE" ||
+      snapshot.error_code == "REPO_REVISION" ||
+      snapshot.error_code == "DIRTY_REPO") &&
+    verifier_valid_text(snapshot.error, 4_096) &&
+    match snapshot.environment_probe { None => false, Some(probe) => verifier_environment_probe_valid(probe) }
+  } else if snapshot.status == "ERROR" {
+    verifier_valid_text(snapshot.error, 4_096) &&
+    if snapshot.error_code == "ENVIRONMENT" {
+      match snapshot.environment_probe { None => true, Some(_) => false }
+    } else if snapshot.error_code == "INTERNAL" {
+      match snapshot.environment_probe {
+        None => false,
+        Some(probe) => verifier_environment_probe_valid(probe),
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+  if snapshot.schema_version != 1 ||
+  snapshot.artifact_kind != "SNAPSHOT_RESULT" ||
+  !verifier_valid_text(snapshot.task_id, 256) ||
+  !status_valid ||
+  snapshot.artifact_digests.len() > 4_096 ||
+  !verifier_valid_digest(snapshot.content_sha256) {
+    return false
+  }
+  mut index := 0
+  loop {
+    if index >= snapshot.artifact_digests.len() { break }
+    if !verifier_artifact_digest_valid(snapshot.artifact_digests[index]) {
+      return false
+    }
+    mut prior := 0
+    loop {
+      if prior >= index { break }
+      if verifier_artifact_digest_same_path(snapshot.artifact_digests[prior], snapshot.artifact_digests[index]) {
+        return false
+      }
+      prior = prior + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_snapshot_result_matches(
+  borrow snapshot: prompt_artifacts.SnapshotResult,
+  digest: str,
+  task_id: str,
+) -> bool {
+  return verifier_snapshot_result_valid(snapshot) &&
+  snapshot.content_sha256 == digest &&
+  snapshot.task_id == task_id
+}
+
+fn verifier_snapshot_result_environment_valid(
+  borrow snapshot: prompt_artifacts.SnapshotResult,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  task_ordinal := verifier_find_task_ordinal(result, snapshot.task_id)
+  if task_ordinal < 0 { return false }
+  return match snapshot.environment_probe {
+    None => snapshot.status == "ERROR",
+    Some(probe) => {
+      if probe.producer != "SNAPSHOT_HELPER" ||
+      probe.runtime_identity != result.tasks[task_ordinal].snapshot_helper_runtime {
+        false
+      } else {
+        match result.environment {
+          None => verifier_environment_probe_valid(probe),
+          Some(environment) => verifier_probe_matches_environment(probe, environment),
+        }
+      }
+    },
+  }
+}
+
+fn verifier_snapshot_results_equal(
+  borrow before: prompt_artifacts.SnapshotResult,
+  borrow after: prompt_artifacts.SnapshotResult,
+) -> bool {
+  if before.status != "MATCH" || after.status != "MATCH" ||
+  before.task_id != after.task_id ||
+  before.artifact_digests.len() != after.artifact_digests.len() {
+    return false
+  }
+  probes_equal := match before.environment_probe {
+    None => false,
+    Some(before_probe) => match after.environment_probe {
+      None => false,
+      Some(after_probe) => before_probe.content_sha256 == after_probe.content_sha256,
+    },
+  }
+  if !probes_equal { return false }
+  mut index := 0
+  loop {
+    if index >= before.artifact_digests.len() { break }
+    if !verifier_artifact_digest_equal(before.artifact_digests[index], after.artifact_digests[index]) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_input_snapshot_valid(borrow snapshot: prompt_artifacts.TaskInputSnapshot) -> bool {
+  if snapshot.schema_version != 1 ||
+  snapshot.artifact_kind != "TASK_INPUT_SNAPSHOT" ||
+  !verifier_valid_text(snapshot.task_id, 256) ||
+  !verifier_valid_digest(snapshot.task_manifest_sha256) ||
+  !verifier_valid_digest(snapshot.environment_sha256) ||
+  !verifier_valid_digest(snapshot.content_sha256) ||
+  snapshot.artifact_digests.len() > 4_096 {
+    return false
+  }
+  mut index := 0
+  loop {
+    if index >= snapshot.artifact_digests.len() { break }
+    if !verifier_artifact_digest_valid(snapshot.artifact_digests[index]) { return false }
+    mut prior := 0
+    loop {
+      if prior >= index { break }
+      if verifier_artifact_digest_same_path(snapshot.artifact_digests[prior], snapshot.artifact_digests[index]) {
+        return false
+      }
+      prior = prior + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_artifact_digest_same_path(
+  borrow left: prompt_artifacts.ArtifactDigest,
+  borrow right: prompt_artifacts.ArtifactDigest,
+) -> bool {
+  return left.path == right.path
+}
+
+fn verifier_input_snapshot_matches(
+  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
+  digest: str,
+  task_id: str,
+) -> bool {
+  return verifier_input_snapshot_valid(snapshot) &&
+  snapshot.content_sha256 == digest &&
+  snapshot.task_id == task_id
+}
+
+fn verifier_count_snapshot_requests(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  digest: str,
+  task_id: str,
+) -> i64 {
+  mut count := 0
+  mut index := 0
+  loop {
+    if index >= result.snapshot_requests.len() { break }
+    if verifier_snapshot_request_matches(result.snapshot_requests[index], digest, task_id) {
+      count = count + 1
+    }
+    index = index + 1
+  }
+  return count
+}
+
+fn verifier_count_snapshot_results(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  digest: str,
+  task_id: str,
+) -> i64 {
+  mut count := 0
+  mut index := 0
+  loop {
+    if index >= result.snapshot_results.len() { break }
+    if verifier_snapshot_result_matches(result.snapshot_results[index], digest, task_id) {
+      count = count + 1
+    }
+    index = index + 1
+  }
+  return count
+}
+
+fn verifier_find_snapshot_request(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  digest: str,
+  task_id: str,
+) -> i64 {
+  mut index := 0
+  loop {
+    if index >= result.snapshot_requests.len() { break }
+    if verifier_snapshot_request_matches(result.snapshot_requests[index], digest, task_id) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+fn verifier_count_input_snapshots(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  digest: str,
+  task_id: str,
+) -> i64 {
+  mut count := 0
+  mut index := 0
+  loop {
+    if index >= result.input_snapshots.len() { break }
+    if verifier_input_snapshot_matches(result.input_snapshots[index], digest, task_id) {
+      count = count + 1
+    }
+    index = index + 1
+  }
+  return count
+}
+
+fn verifier_find_snapshot_result(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  digest: str,
+  task_id: str,
+) -> i64 {
+  mut index := 0
+  loop {
+    if index >= result.snapshot_results.len() { break }
+    if verifier_snapshot_result_matches(result.snapshot_results[index], digest, task_id) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+fn verifier_find_input_snapshot(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  digest: str,
+  task_id: str,
+) -> i64 {
+  mut index := 0
+  loop {
+    if index >= result.input_snapshots.len() { break }
+    if verifier_input_snapshot_matches(result.input_snapshots[index], digest, task_id) {
+      return index
+    }
+    index = index + 1
+  }
+  return -1
+}
+
+fn verifier_attestation_base_valid(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  return attestation.schema_version == 1 &&
+  attestation.artifact_kind == "RUN_SNAPSHOT_ATTESTATION" &&
+  verifier_valid_text(attestation.task_id, 256) &&
+  attestation.sample_index >= 1 && attestation.sample_index <= result.sample_count &&
+  (attestation.variant == "PARENT" || attestation.variant == "CANDIDATE") &&
+  verifier_valid_digest(attestation.snapshot_request_sha256) &&
+  verifier_valid_digest(attestation.before_snapshot_result_sha256) &&
+  verifier_valid_digest(attestation.content_sha256) &&
+  verifier_count_snapshot_requests(
+    result,
+    attestation.snapshot_request_sha256,
+    attestation.task_id,
+  ) == 1 &&
+  verifier_count_snapshot_results(
+    result,
+    attestation.before_snapshot_result_sha256,
+    attestation.task_id,
+  ) == 1
+}
+
+fn verifier_complete_attestation_valid(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if !verifier_attestation_base_valid(attestation, result) ||
+  attestation.status != "COMPLETE" ||
+  attestation.error_code != "NONE" || attestation.error.len() != 0 ||
+  attestation.task_id != row.task_id ||
+  attestation.sample_index != row.sample_index ||
+  attestation.variant != row.variant {
+    return false
+  }
+  before_index := verifier_find_snapshot_result(
+    result,
+    attestation.before_snapshot_result_sha256,
+    attestation.task_id,
+  )
+  if before_index < 0 { return false }
+  return match attestation.after_snapshot_result_sha256 {
+    None => false,
+    Some(after_digest) => {
+      after_index := verifier_find_snapshot_result(result, after_digest, attestation.task_id)
+      if after_index < 0 ||
+      !verifier_snapshot_results_equal(
+        result.snapshot_results[before_index],
+        result.snapshot_results[after_index],
+      ) {
+        false
+      } else {
+        match attestation.before_input_snapshot_sha256 {
+          None => false,
+          Some(before_input) => match attestation.after_input_snapshot_sha256 {
+            None => false,
+            Some(after_input) => before_input == after_input &&
+            before_input == row.evaluation_input.task_input_snapshot_sha256 &&
+            verifier_count_input_snapshots(result, before_input, attestation.task_id) == 1,
+          },
+        }
+      }
+    },
+  }
+}
+
+fn verifier_failed_attestation_valid(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if !verifier_attestation_base_valid(attestation, result) ||
+  attestation.status == "COMPLETE" ||
+  attestation.error_code != result.error_code ||
+  attestation.error != result.error ||
+  !verifier_valid_text(attestation.error, 4_096) {
+    return false
+  }
+  before_index := verifier_find_snapshot_result(
+    result,
+    attestation.before_snapshot_result_sha256,
+    attestation.task_id,
+  )
+  request_index := verifier_find_snapshot_request(
+    result,
+    attestation.snapshot_request_sha256,
+    attestation.task_id,
+  )
+  if before_index < 0 || request_index < 0 { return false }
+  before_match := result.snapshot_results[before_index].status == "MATCH"
+  before_closure := before_match && verifier_snapshot_artifact_closure(
+    result.snapshot_requests[request_index],
+    result.snapshot_results[before_index],
+  )
+  after_none := match attestation.after_snapshot_result_sha256 { None => true, Some(_) => false }
+  before_input_none := match attestation.before_input_snapshot_sha256 { None => true, Some(_) => false }
+  after_input_none := match attestation.after_input_snapshot_sha256 { None => true, Some(_) => false }
+  before_input_valid := match attestation.before_input_snapshot_sha256 {
+    None => false,
+    Some(digest) => verifier_count_input_snapshots(result, digest, attestation.task_id) == 1,
+  }
+  after_input_valid := match attestation.after_input_snapshot_sha256 {
+    None => false,
+    Some(digest) => verifier_count_input_snapshots(result, digest, attestation.task_id) == 1,
+  }
+  before_input_baseline := match attestation.before_input_snapshot_sha256 {
+    None => false,
+    Some(digest) => verifier_input_digest_is_baseline(digest, attestation.task_id, result),
+  }
+  after_input_baseline := match attestation.after_input_snapshot_sha256 {
+    None => false,
+    Some(digest) => verifier_input_digest_is_baseline(digest, attestation.task_id, result),
+  }
+  before_input_observation_matches := match attestation.before_input_snapshot_sha256 {
+    None => false,
+    Some(digest) => {
+      input_index := verifier_find_input_snapshot(result, digest, attestation.task_id)
+      input_index >= 0 && verifier_snapshot_input_artifacts_equal(
+        result.snapshot_results[before_index],
+        result.input_snapshots[input_index],
+      )
+    },
+  }
+  environment_present := match result.environment { None => false, Some(_) => true }
+
+  if attestation.status == "PRECHECK_FAILED" {
+    return !before_match && after_none && before_input_none && after_input_none &&
+    (attestation.error_code == "WORKSPACE_UNSAFE" ||
+      attestation.error_code == "SNAPSHOT_MISMATCH" ||
+      attestation.error_code == "SNAPSHOT_ERROR")
+  }
+  if attestation.status == "PRECHECK_DRIFT" {
+    return before_closure && after_none && before_input_valid && before_input_observation_matches &&
+    !before_input_baseline && after_input_none &&
+    (attestation.error_code == "INPUT_DRIFT" || attestation.error_code == "ENVIRONMENT_DRIFT")
+  }
+  if attestation.status == "ADAPTER_FAILED" {
+    return before_closure && after_none && before_input_valid && before_input_observation_matches &&
+    before_input_baseline && after_input_none &&
+    (attestation.error_code == "ADAPTER_TIMEOUT" ||
+      attestation.error_code == "ADAPTER_PROCESS_OUTPUT" ||
+      attestation.error_code == "ADAPTER_RESULT")
+  }
+  return match attestation.after_snapshot_result_sha256 {
+    None => false,
+    Some(after_digest) => {
+      after_index := verifier_find_snapshot_result(result, after_digest, attestation.task_id)
+      if after_index < 0 || !before_closure || !before_input_valid ||
+      !before_input_observation_matches || !before_input_baseline {
+        false
+      } else if attestation.status == "POSTCHECK_FAILED" {
+        environment_present && result.snapshot_results[after_index].status != "MATCH" && after_input_none &&
+        (attestation.error_code == "SNAPSHOT_MISMATCH" || attestation.error_code == "SNAPSHOT_ERROR")
+      } else if attestation.status == "POSTCHECK_DRIFT" {
+        after_input_index := match attestation.after_input_snapshot_sha256 {
+          None => -1,
+          Some(digest) => verifier_find_input_snapshot(result, digest, attestation.task_id),
+        }
+        environment_present && result.snapshot_results[after_index].status == "MATCH" &&
+        verifier_snapshot_artifact_closure(
+          result.snapshot_requests[request_index],
+          result.snapshot_results[after_index],
+        ) &&
+        after_input_valid && after_input_index >= 0 &&
+        verifier_snapshot_input_artifacts_equal(
+          result.snapshot_results[after_index],
+          result.input_snapshots[after_input_index],
+        ) &&
+        !after_input_baseline &&
+        (attestation.error_code == "INPUT_DRIFT" || attestation.error_code == "ENVIRONMENT_DRIFT")
+      } else {
+        false
+      }
+    },
+  }
+}
+
+fn verifier_input_digest_is_baseline(
+  digest: str,
+  task_id: str,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.input_snapshots.len() { break }
+    if verifier_input_snapshot_is_task_baseline(result.input_snapshots[index], digest, task_id) {
+      return true
+    }
+    if verifier_input_snapshot_has_task(result.input_snapshots[index], task_id) {
+      return false
+    }
+    index = index + 1
+  }
+  return false
+}
+
+fn verifier_input_snapshot_is_task_baseline(
+  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
+  digest: str,
+  task_id: str,
+) -> bool {
+  return snapshot.task_id == task_id && snapshot.content_sha256 == digest
+}
+
+fn verifier_input_snapshot_has_task(
+  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
+  task_id: str,
+) -> bool {
+  return snapshot.task_id == task_id
+}
+
+fn verifier_complete_status(value: str) -> bool {
+  return value == "IMPROVED" || value == "NO_IMPROVEMENT" || value == "SERIOUS_REGRESSION"
+}
+
+fn verifier_evaluation_id_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.evaluation_id {
+    None => false,
+    Some(value) => verifier_valid_ascii_identifier(value, 128),
+  }
+}
+
+fn verifier_trace_failure_absent(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.trace_failure { None => true, Some(_) => false }
+}
+
+fn verifier_complete_inputs_present(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.experiment { None => false, Some(_) => true } &&
+  match result.experiment_artifact { None => false, Some(_) => true } &&
+  match result.parent_activation { None => false, Some(_) => true } &&
+  match result.parent_activation_artifact { None => false, Some(_) => true } &&
+  match result.scope { None => false, Some(_) => true } &&
+  match result.parent_variant { None => false, Some(_) => true } &&
+  match result.candidate_variant { None => false, Some(_) => true } &&
+  match result.corpus_source { None => false, Some(_) => true } &&
+  match result.corpus { None => false, Some(_) => true } &&
+  match result.acceptance_policy_source { None => false, Some(_) => true } &&
+  match result.acceptance_policy { None => false, Some(_) => true } &&
+  match result.generation_policy_source { None => false, Some(_) => true } &&
+  match result.generation_policy { None => false, Some(_) => true } &&
+  match result.provider_control_source { None => false, Some(_) => true } &&
+  match result.provider_control { None => false, Some(_) => true } &&
+  match result.workspace_preflight_source { None => false, Some(_) => true } &&
+  match result.workspace_preflight_request { None => false, Some(_) => true } &&
+  match result.workspace_preflight { None => false, Some(_) => true }
+}
+
+fn verifier_embedded_pairs_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return verifier_experiment_pair_valid(result) &&
+  verifier_parent_pair_valid(result) &&
+  verifier_corpus_pair_valid(result) &&
+  verifier_acceptance_policy_pair_valid(result) &&
+  verifier_generation_policy_pair_valid(result) &&
+  verifier_provider_control_pair_valid(result) &&
+  verifier_workspace_preflight_pair_valid(result)
+}
+
+fn verifier_common_identity_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  if !verifier_evaluation_id_valid(result) ||
+  !verifier_trace_failure_absent(result) ||
+  result.sample_count < 2 || result.sample_count > 16 ||
+  !verifier_embedded_pairs_valid(result) {
+    return false
+  }
+  return match result.scope {
+    None => false,
+    Some(scope) => {
+      if !verifier_scope_valid(scope) {
+        false
+      } else {
+        corpus_valid := match result.corpus {
+          None => true,
+          Some(corpus) => corpus.corpus_id == scope.corpus_id &&
+          corpus.corpus_revision.content_sha256 == scope.corpus_revision.content_sha256
+        }
+        acceptance_valid := match result.acceptance_policy {
+          None => true,
+          Some(policy) => policy.content_sha256 == scope.acceptance_policy_sha256
+        }
+        generation_valid := match result.generation_policy {
+          None => true,
+          Some(policy) => policy.content_sha256 == scope.generation_policy_sha256 &&
+          policy.evaluation_provider_kind == scope.evaluation_provider_kind &&
+          policy.evaluation_provider_model == scope.evaluation_provider_model
+        }
+        provider_valid := match result.provider_control {
+          None => true,
+          Some(control) => control.provider_kind == scope.evaluation_provider_kind &&
+          control.model == scope.evaluation_provider_model
+        }
+        policy_control_valid := match result.generation_policy {
+          None => true,
+          Some(policy) => match result.provider_control {
+            None => true,
+            Some(control) => policy.provider_control_sha256 == control.content_sha256 &&
+            policy.evaluation_provider_endpoint_id == control.endpoint_id &&
+            policy.evaluation_provider_kind == control.provider_kind &&
+            policy.evaluation_provider_model == control.model,
+          },
+        }
+        parent_valid := match result.parent_variant {
+          None => true,
+          Some(parent) => verifier_variant_scope_valid(parent, scope),
+        }
+        candidate_valid := match result.candidate_variant {
+          None => true,
+          Some(candidate) => verifier_variant_scope_valid(candidate, scope),
+        }
+        variants_distinct := match result.parent_variant {
+          None => true,
+          Some(parent) => match result.candidate_variant {
+            None => true,
+            Some(candidate) => parent.content_sha256 != candidate.content_sha256,
+          },
+        }
+        corpus_valid && acceptance_valid && generation_valid && provider_valid && policy_control_valid &&
+        parent_valid && candidate_valid && variants_distinct
+      }
+    },
+  }
+}
+
+fn verifier_policy_fits_result(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.acceptance_policy {
+    None => false,
+    Some(policy) => {
+      maximum_rows := result.tasks.len().checked_mul(result.sample_count) else { return false }
+      policy.minimum_task_count <= result.tasks.len() &&
+      policy.minimum_samples_per_variant <= result.sample_count &&
+      policy.minimum_completion_gain_count <= maximum_rows
+    },
+  }
+}
+
+fn verifier_workspace_request_valid(
+  borrow request: prompt_artifacts.WorkspacePreflightRequest,
+  evaluation_id: str,
+) -> bool {
+  return request.schema_version == 1 &&
+  request.artifact_kind == "WORKSPACE_PREFLIGHT_REQUEST" &&
+  request.evaluation_id == evaluation_id &&
+  verifier_valid_text(request.project_root, 4_096) &&
+  verifier_valid_text(request.workspace_path, 4_096) &&
+  verifier_valid_digest(request.content_sha256)
+}
+
+fn verifier_workspace_result_trace_valid(
+  borrow preflight: prompt_artifacts.WorkspacePreflightResult,
+  evaluation_id: str,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if preflight.evaluation_id != evaluation_id {
+    return false
+  }
+  if preflight.status == "SAFE" {
+    return preflight.error_code == "NONE" && preflight.error.len() == 0 &&
+    verifier_valid_text(preflight.physical_project_root, 4_096) &&
+    verifier_valid_text(preflight.physical_workspace_path, 4_096) &&
+    match preflight.environment_probe {
+      None => false,
+      Some(probe) => verifier_preflight_probe_valid(probe, result),
+    }
+  }
+  if preflight.status == "UNSAFE" || preflight.status == "ERROR" {
+    helper_code_valid := if preflight.status == "UNSAFE" {
+      preflight.error_code == "TYPE" ||
+      preflight.error_code == "SYMLINK" ||
+      preflight.error_code == "ESCAPE" ||
+      preflight.error_code == "NOT_EMPTY"
+    } else {
+      preflight.error_code == "ENVIRONMENT" || preflight.error_code == "INTERNAL"
+    }
+    result_code := if preflight.status == "UNSAFE" { "WORKSPACE_UNSAFE" } else { "SNAPSHOT_ERROR" }
+    paths_valid := verifier_valid_bounded_text(preflight.physical_project_root, 4_096) &&
+    verifier_valid_bounded_text(preflight.physical_workspace_path, 4_096) &&
+    (preflight.physical_project_root.len() == 0 || preflight.physical_workspace_path.len() == 0)
+    return result.status == "ERROR" &&
+    result.error_code == result_code &&
+    helper_code_valid && paths_valid &&
+    preflight.error == result.error &&
+    verifier_valid_text(preflight.error, 4_096) &&
+    match preflight.environment_probe { None => true, Some(_) => false }
+  }
+  return false
+}
+
+fn verifier_preflight_probe_valid(
+  borrow probe: prompt_artifacts.EnvironmentProbe,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if result.tasks.len() == 0 ||
+  probe.producer != "SNAPSHOT_HELPER" ||
+  probe.runtime_identity != result.tasks[0].snapshot_helper_runtime {
+    return false
+  }
+  return match result.environment {
+    None => verifier_environment_probe_valid(probe),
+    Some(environment) => verifier_probe_matches_environment(probe, environment),
+  }
+}
+
+fn verifier_workspace_trace_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.evaluation_id {
+    None => false,
+    Some(evaluation_id) => match result.workspace_preflight_request {
+      None => false,
+      Some(request) => {
+        if !verifier_workspace_request_valid(request, evaluation_id) {
+          false
+        } else {
+          match result.workspace_preflight {
+            None => false,
+            Some(preflight) => verifier_workspace_result_trace_valid(preflight, evaluation_id, result),
+          }
+        }
+      },
+    },
+  }
+}
+
+fn verifier_snapshot_request_trace_valid(
+  borrow request: prompt_artifacts.SnapshotRequest,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  task_ordinal := verifier_find_task_ordinal(result, request.task_id)
+  if !verifier_snapshot_request_valid(request) || task_ordinal < 0 ||
+  !verifier_snapshot_request_task_matches(request, result.tasks[task_ordinal]) {
+    return false
+  }
+  return match result.workspace_preflight_request {
+    None => false,
+    Some(preflight) => request.project_root == preflight.project_root &&
+    request.workspace_path == preflight.workspace_path,
+  }
+}
+
+fn verifier_snapshot_request_task_matches(
+  borrow request: prompt_artifacts.SnapshotRequest,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  return request.task_id == task.task_id &&
+  request.repo_path == task.repo_path &&
+  request.repo_revision == task.repo_revision &&
+  request.require_clean_repo == task.require_clean_repo &&
+  verifier_expectation_arrays_equal(request.static_expectations, task.artifacts)
+}
+
+fn verifier_expectation_arrays_equal(
+  borrow left: array<prompt_artifacts.ArtifactExpectation>,
+  borrow right: array<prompt_artifacts.ArtifactExpectation>,
+) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop {
+    if index >= left.len() { break }
+    if !verifier_expectations_equal(left[index], right[index]) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_expectations_equal(
+  borrow left: prompt_artifacts.ArtifactExpectation,
+  borrow right: prompt_artifacts.ArtifactExpectation,
+) -> bool {
+  return left.path == right.path &&
+  left.kind == right.kind &&
+  left.expected_sha256 == right.expected_sha256
+}
+
+fn verifier_snapshot_request_task_ordinal(
+  borrow request: prompt_artifacts.SnapshotRequest,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> i64 {
+  return verifier_find_task_ordinal(result, request.task_id)
+}
+
+fn verifier_snapshot_request_same_digest(
+  borrow left: prompt_artifacts.SnapshotRequest,
+  borrow right: prompt_artifacts.SnapshotRequest,
+) -> bool {
+  return left.content_sha256 == right.content_sha256
+}
+
+fn verifier_snapshot_result_task_ordinal(
+  borrow snapshot: prompt_artifacts.SnapshotResult,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> i64 {
+  return verifier_find_task_ordinal(result, snapshot.task_id)
+}
+
+fn verifier_snapshot_result_same_digest(
+  borrow left: prompt_artifacts.SnapshotResult,
+  borrow right: prompt_artifacts.SnapshotResult,
+) -> bool {
+  return left.content_sha256 == right.content_sha256
+}
+
+fn verifier_input_snapshot_task_ordinal(
+  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> i64 {
+  return verifier_find_task_ordinal(result, snapshot.task_id)
+}
+
+fn verifier_input_snapshot_same_digest(
+  borrow left: prompt_artifacts.TaskInputSnapshot,
+  borrow right: prompt_artifacts.TaskInputSnapshot,
+) -> bool {
+  return left.content_sha256 == right.content_sha256
+}
+
+fn verifier_artifact_digest_arrays_equal(
+  borrow left: array<prompt_artifacts.ArtifactDigest>,
+  borrow right: array<prompt_artifacts.ArtifactDigest>,
+) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop {
+    if index >= left.len() { break }
+    if !verifier_artifact_digest_equal(left[index], right[index]) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_snapshot_input_artifacts_equal(
+  borrow snapshot: prompt_artifacts.SnapshotResult,
+  borrow input: prompt_artifacts.TaskInputSnapshot,
+) -> bool {
+  return verifier_artifact_digest_arrays_equal(snapshot.artifact_digests, input.artifact_digests)
+}
+
+fn verifier_input_snapshot_matches_task(
+  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  environment_valid := match result.environment {
+    None => true,
+    Some(environment) => snapshot.environment_sha256 == environment.environment_id,
+  }
+  return verifier_input_snapshot_valid(snapshot) &&
+  snapshot.task_id == task.task_id &&
+  snapshot.task_manifest_sha256 == task.content_sha256 &&
+  environment_valid
+}
+
+fn verifier_trace_arrays_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  if result.snapshot_requests.len() > 4_096 ||
+  result.snapshot_results.len() > 4_096 ||
+  result.input_snapshots.len() > 4_096 ||
+  result.snapshot_attestations.len() > 2_048 {
+    return false
+  }
+
+  mut prior_task := -1
+  mut index := 0
+  loop {
+    if index >= result.snapshot_requests.len() { break }
+    task := verifier_snapshot_request_task_ordinal(result.snapshot_requests[index], result)
+    if !verifier_snapshot_request_trace_valid(result.snapshot_requests[index], result) || task < prior_task { return false }
+    mut prior := 0
+    loop {
+      if prior >= index { break }
+      if verifier_snapshot_request_same_digest(result.snapshot_requests[prior], result.snapshot_requests[index]) { return false }
+      prior = prior + 1
+    }
+    prior_task = task
+    index = index + 1
+  }
+
+  prior_task = -1
+  index = 0
+  loop {
+    if index >= result.snapshot_results.len() { break }
+    task := verifier_snapshot_result_task_ordinal(result.snapshot_results[index], result)
+    if !verifier_snapshot_result_valid(result.snapshot_results[index]) ||
+    !verifier_snapshot_result_environment_valid(result.snapshot_results[index], result) ||
+    task < 0 || task < prior_task { return false }
+    mut prior := 0
+    loop {
+      if prior >= index { break }
+      if verifier_snapshot_result_same_digest(result.snapshot_results[prior], result.snapshot_results[index]) { return false }
+      prior = prior + 1
+    }
+    prior_task = task
+    index = index + 1
+  }
+
+  prior_task = -1
+  index = 0
+  loop {
+    if index >= result.input_snapshots.len() { break }
+    task := verifier_input_snapshot_task_ordinal(result.input_snapshots[index], result)
+    if !verifier_input_snapshot_valid(result.input_snapshots[index]) ||
+    task < 0 || task < prior_task ||
+    !verifier_input_snapshot_task_manifest_valid(result.input_snapshots[index], result.tasks[task]) {
+      return false
+    }
+    mut prior := 0
+    loop {
+      if prior >= index { break }
+      if verifier_input_snapshot_same_digest(result.input_snapshots[prior], result.input_snapshots[index]) { return false }
+      prior = prior + 1
+    }
+    prior_task = task
+    index = index + 1
+  }
+  return verifier_all_trace_records_referenced(result)
+}
+
+fn verifier_input_snapshot_task_manifest_valid(
+  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  return snapshot.task_id == task.task_id &&
+  snapshot.task_manifest_sha256 == task.content_sha256
+}
+
+fn verifier_attestation_references_request(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  digest: str,
+) -> bool {
+  return attestation.snapshot_request_sha256 == digest
+}
+
+fn verifier_attestation_references_result(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  digest: str,
+) -> bool {
+  if attestation.before_snapshot_result_sha256 == digest { return true }
+  return match attestation.after_snapshot_result_sha256 {
+    None => false,
+    Some(after_digest) => after_digest == digest,
+  }
+}
+
+fn verifier_attestation_references_input(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  digest: str,
+) -> bool {
+  before_valid := match attestation.before_input_snapshot_sha256 {
+    None => false,
+    Some(before_digest) => before_digest == digest,
+  }
+  if before_valid { return true }
+  return match attestation.after_input_snapshot_sha256 {
+    None => false,
+    Some(after_digest) => after_digest == digest,
+  }
+}
+
+fn verifier_request_record_referenced(
+  borrow request: prompt_artifacts.SnapshotRequest,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.snapshot_attestations.len() { break }
+    if verifier_attestation_references_request(result.snapshot_attestations[index], request.content_sha256) {
+      return true
+    }
+    index = index + 1
+  }
+  return false
+}
+
+fn verifier_result_record_referenced(
+  borrow snapshot: prompt_artifacts.SnapshotResult,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.snapshot_attestations.len() { break }
+    if verifier_attestation_references_result(result.snapshot_attestations[index], snapshot.content_sha256) {
+      return true
+    }
+    index = index + 1
+  }
+  return false
+}
+
+fn verifier_input_record_referenced(
+  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.snapshot_attestations.len() { break }
+    if verifier_attestation_references_input(result.snapshot_attestations[index], snapshot.content_sha256) {
+      return true
+    }
+    index = index + 1
+  }
+  return false
+}
+
+fn verifier_all_trace_records_referenced(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.snapshot_requests.len() { break }
+    if !verifier_request_record_referenced(result.snapshot_requests[index], result) { return false }
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index >= result.snapshot_results.len() { break }
+    if !verifier_result_record_referenced(result.snapshot_results[index], result) { return false }
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index >= result.input_snapshots.len() { break }
+    if !verifier_input_record_referenced(result.input_snapshots[index], result) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_expected_schedule(
+  invocation_index: i64,
+  sample_count: i64,
+) -> (i64, i64, bool) {
+  task_width := sample_count * 2
+  task := invocation_index / task_width
+  task_offset := invocation_index % task_width
+  sample := task_offset / 2 + 1
+  variant_offset := task_offset % 2
+  parent := if sample % 2 == 1 { variant_offset == 0 } else { variant_offset == 1 }
+  return (task, sample, parent)
+}
+
+fn verifier_attestation_schedule_valid(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  invocation_index: i64,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  (task, sample, parent) := verifier_expected_schedule(invocation_index, result.sample_count)
+  if task < 0 || task >= result.tasks.len() { return false }
+  expected_variant := if parent { "PARENT" } else { "CANDIDATE" }
+  return attestation.task_id == result.tasks[task].task_id &&
+  attestation.sample_index == sample &&
+  attestation.variant == expected_variant
+}
+
+fn verifier_row_cross_identity_valid(
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  variant_valid := if row.variant == "PARENT" {
+    match result.parent_variant {
+      None => false,
+      Some(variant) => row.variant_id == variant.variant_id && row.variant_sha256 == variant.content_sha256,
+    }
+  } else if row.variant == "CANDIDATE" {
+    match result.candidate_variant {
+      None => false,
+      Some(variant) => row.variant_id == variant.variant_id && row.variant_sha256 == variant.content_sha256,
+    }
+  } else {
+    false
+  }
+  variants_bound := match result.parent_variant {
+    None => false,
+    Some(parent) => match result.candidate_variant {
+      None => false,
+      Some(candidate) => row.evaluation_input.parent_variant_sha256 == parent.content_sha256 &&
+      row.evaluation_input.candidate_variant_sha256 == candidate.content_sha256,
+    },
+  }
+  policy_bound := match result.generation_policy {
+    None => false,
+    Some(policy) => row.evaluation_input.generation_policy_sha256 == policy.content_sha256 &&
+    row.measurement.generation_request.generation_policy_sha256 == policy.content_sha256 &&
+    row.measurement.generation_request.max_tokens == policy.max_tokens &&
+    row.measurement.generation_request.temperature_micros == policy.temperature_micros,
+  }
+  seed_schedule_bound := match result.generation_policy {
+    None => false,
+    Some(policy) => {
+      offset := row.sample_index - 1
+      expected_seed := policy.seed_base.checked_add(offset) else { return false }
+      row.evaluation_input.paired_seed == expected_seed
+    },
+  }
+  control_bound := match result.provider_control {
+    None => false,
+    Some(control) => row.measurement.generation_request.provider_control_sha256 == control.content_sha256 &&
+    row.measurement.seed_attestation.provider_kind == control.provider_kind &&
+    row.measurement.seed_attestation.provider_model == control.model,
+  }
+  environment_bound := match result.environment {
+    None => false,
+    Some(environment) => row.evaluation_input.environment_sha256 == environment.environment_id &&
+    row.evaluation_input.environment_policy_sha256 == environment.core.environment_policy_sha256 &&
+    row.measurement.generation_request.environment_policy_sha256 == environment.core.environment_policy_sha256 &&
+    verifier_probe_matches_environment(row.measurement.environment_probe, environment),
+  }
+  seed_bound := row.evaluation_input.paired_seed == row.measurement.generation_request.paired_seed &&
+  row.evaluation_input.paired_seed == row.measurement.seed_attestation.requested_seed &&
+  row.evaluation_input.generation_request_sha256 == row.measurement.generation_request.content_sha256 &&
+  row.measurement.generation_request.seed_attestation_sha256 == row.measurement.seed_attestation.content_sha256
+  return variant_valid && variants_bound && policy_bound && seed_schedule_bound && control_bound && environment_bound && seed_bound &&
+  row.measurement.environment_probe.producer == "MEASUREMENT_ADAPTER" &&
+  row.measurement.environment_probe.runtime_identity == task.measurement_adapter_runtime
+}
+
+fn verifier_complete_attestation_cross_valid(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if !verifier_complete_attestation_valid(attestation, row, result) { return false }
+  request_index := verifier_find_snapshot_request(
+    result,
+    attestation.snapshot_request_sha256,
+    attestation.task_id,
+  )
+  before_index := verifier_find_snapshot_result(result, attestation.before_snapshot_result_sha256, attestation.task_id)
+  input_index := verifier_find_input_snapshot(result, row.evaluation_input.task_input_snapshot_sha256, row.task_id)
+  after_index := match attestation.after_snapshot_result_sha256 {
+    None => -1,
+    Some(digest) => verifier_find_snapshot_result(result, digest, attestation.task_id),
+  }
+  if request_index < 0 || before_index < 0 || after_index < 0 || input_index < 0 ||
+  !verifier_snapshot_artifact_closure(
+    result.snapshot_requests[request_index],
+    result.snapshot_results[before_index],
+  ) ||
+  !verifier_snapshot_artifact_closure(
+    result.snapshot_requests[request_index],
+    result.snapshot_results[after_index],
+  ) ||
+  !verifier_input_snapshot_matches_task(result.input_snapshots[input_index], task, result) ||
+  !verifier_snapshot_input_cross_valid(
+    result.snapshot_results[before_index],
+    result.input_snapshots[input_index],
+    result,
+  ) {
+    return false
+  }
+  return verifier_row_cross_identity_valid(row, task, result)
+}
+
+fn verifier_snapshot_input_cross_valid(
+  borrow snapshot: prompt_artifacts.SnapshotResult,
+  borrow input: prompt_artifacts.TaskInputSnapshot,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if !verifier_artifact_digest_arrays_equal(snapshot.artifact_digests, input.artifact_digests) {
+    return false
+  }
+  return match snapshot.environment_probe {
+    None => false,
+    Some(probe) => verifier_result_environment_matches_probe(probe, result),
+  }
+}
+
+fn verifier_preflight_is_safe(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.workspace_preflight {
+    None => false,
+    Some(preflight) => preflight.status == "SAFE",
+  }
+}
+
+fn verifier_last_row_is_error(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  if result.rows.len() == 0 { return false }
+  return verifier_row_measurement_is_error(result.rows[result.rows.len() - 1])
+}
+
+fn verifier_row_measurement_is_error(borrow row: prompt_artifacts.PromptTaskRow) -> bool {
+  return row.measurement.status == "ERROR"
+}
+
+fn verifier_rows_and_attestations_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  is_complete_result := verifier_complete_status(result.status)
+  if is_complete_result {
+    task_samples := result.tasks.len().checked_mul(result.sample_count) else { return false }
+    expected := task_samples.checked_mul(2) else { return false }
+    if result.rows.len() != expected ||
+    result.snapshot_attestations.len() != expected ||
+    result.input_snapshots.len() != result.tasks.len() ||
+    !verifier_preflight_is_safe(result) {
+      return false
+    }
+  } else if result.status == "ERROR" {
+    if result.snapshot_attestations.len() < result.rows.len() ||
+    result.snapshot_attestations.len() > result.rows.len() + 1 {
+      return false
+    }
+    if !verifier_preflight_is_safe(result) {
+      return result.rows.len() == 0 &&
+      result.snapshot_attestations.len() == 0 &&
+      result.snapshot_requests.len() == 0 &&
+      result.snapshot_results.len() == 0 &&
+      result.input_snapshots.len() == 0
+    }
+  } else {
+    return false
+  }
+
+  mut index := 0
+  loop {
+    if index >= result.rows.len() { break }
+    (task_ordinal, _, _) := verifier_expected_schedule(index, result.sample_count)
+    if task_ordinal < 0 || task_ordinal >= result.tasks.len() ||
+    !verifier_attestation_schedule_valid(result.snapshot_attestations[index], index, result) ||
+    !verifier_complete_attestation_cross_valid(
+      result.snapshot_attestations[index],
+      result.rows[index],
+      result.tasks[task_ordinal],
+      result,
+    ) {
+      return false
+    }
+    index = index + 1
+  }
+
+  if result.status == "ERROR" {
+    if result.snapshot_attestations.len() == result.rows.len() + 1 {
+      if result.error_code == "CLEANUP_FAILED" ||
+      !verifier_attestation_schedule_valid(result.snapshot_attestations[result.rows.len()], result.rows.len(), result) ||
+      !verifier_failed_attestation_valid(result.snapshot_attestations[result.rows.len()], result) {
+        return false
+      }
+    } else if !(result.error_code == "CLEANUP_FAILED" || verifier_last_row_is_error(result)) {
+      return false
+    }
+  }
+  return true
+}
+
+fn verifier_expected_inputs_valid(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> bool {
+  if evidence.expected_inputs.len() != result.rows.len() { return false }
+  mut index := 0
+  loop {
+    if index >= result.rows.len() { break }
+    if !verifier_expected_input_matches(evidence.expected_inputs[index], result.rows[index]) {
+      return false
+    }
+    mut prior := 0
+    loop {
+      if prior >= index { break }
+      if verifier_expected_input_same_identity(evidence.expected_inputs[prior], evidence.expected_inputs[index]) {
+        return false
+      }
+      prior = prior + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_expected_input_same_identity(
+  borrow left: prompt_artifacts.PromptExpectedInputDigest,
+  borrow right: prompt_artifacts.PromptExpectedInputDigest,
+) -> bool {
+  return left.task_id == right.task_id &&
+  left.sample_index == right.sample_index &&
+  left.variant == right.variant
+}
+
+fn verifier_build_rows(
+  out: region,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> Result<array<ScoreRow>, Error> {
+  mut values: array_builder<ScoreRow> := array_builder(out)
+  mut index := 0
+  loop {
+    if index >= result.rows.len() { break }
+    (task_ordinal, _, _) := verifier_expected_schedule(index, result.sample_count)
+    if task_ordinal < 0 || task_ordinal >= result.tasks.len() { return Err(Error.Invalid) }
+    score_row := verifier_score_row_for_result(
+      result.rows[index],
+      result.tasks[task_ordinal],
+      result,
+      task_ordinal,
+    )?
+    values.push(score_row)
+    index = index + 1
+  }
+  return Ok(values.build())
+}
+
+fn verifier_score_row_for_result(
+  borrow row: prompt_artifacts.PromptTaskRow,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  task_ordinal: i64,
+) -> Result<ScoreRow, Error> {
+  return match result.evaluation_id {
+    None => Err(Error.Invalid),
+    Some(evaluation_id) => verifier_score_row(row, task, evaluation_id, task_ordinal),
+  }
+}
+
+fn verifier_build_task_limits(
+  out: region,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> array<ScoreTaskLimit> {
+  mut values: array_builder<ScoreTaskLimit> := array_builder(out)
+  mut index := 0
+  loop {
+    if index >= result.tasks.len() { break }
+    values.push(verifier_task_limit(result.tasks[index]))
+    index = index + 1
+  }
+  return values.build()
+}
+
+fn verifier_prefix_valid(
+  rows: slice<ScoreRow>,
+  task_limits: slice<ScoreTaskLimit>,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  prefix := validate_prefix(rows, task_limits, result.sample_count)
+  if prefix.error_code != 0 || prefix.error_index != -1 ||
+  prefix.row_count != result.rows.len() {
+    return false
+  }
+  if verifier_complete_status(result.status) {
+    return match prefix.status {
+      ValidPrefix => prefix.row_count == prefix.expected_row_count,
+      TerminalError => false,
+      InvalidInput => false,
+    }
+  }
+  if result.status != "ERROR" { return false }
+  if verifier_last_row_is_error(result) {
+    return match prefix.status { TerminalError => true, _ => false }
+  }
+  return match prefix.status { ValidPrefix => true, _ => false }
+}
+
+fn verifier_i64_array(count: i64) -> array<i64> {
+  mut values: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index >= count { break }
+    values.push(0)
+    index = index + 1
+  }
+  return values.build()
+}
+
+fn verifier_bool_array(count: i64) -> array<bool> {
+  mut values: array_builder<bool> := array_builder()
+  mut index := 0
+  loop {
+    if index >= count { break }
+    values.push(false)
+    index = index + 1
+  }
+  return values.build()
+}
+
+fn verifier_reason_capacity(task_count: i64, sample_count: i64) -> Result<i64, Error> {
+  pairs := task_count.checked_mul(sample_count) else { return Err(Error.Invalid) }
+  pair_reasons := pairs.checked_mul(9) else { return Err(Error.Invalid) }
+  with_tasks := pair_reasons.checked_add(task_count) else { return Err(Error.Invalid) }
+  capacity := with_tasks.checked_add(2) else { return Err(Error.Invalid) }
+  if capacity < 0 || capacity > 9_282 { return Err(Error.Invalid) }
+  return Ok(capacity)
+}
+
+fn verifier_task_aggregate_matches(
+  borrow persisted: prompt_artifacts.TaskAggregate,
+  ordinal: i64,
+  task_id: str,
+  task_ordinal: slice<i64>,
+  parent_pass: slice<i64>,
+  candidate_pass: slice<i64>,
+  parent_repairs: slice<i64>,
+  candidate_repairs: slice<i64>,
+  paired_pass: slice<i64>,
+  parent_median_present: slice<bool>,
+  parent_median: slice<i64>,
+  candidate_median_present: slice<bool>,
+  candidate_median: slice<i64>,
+  improvement_present: slice<bool>,
+  improvement: slice<i64>,
+  regression_present: slice<bool>,
+  regression: slice<i64>,
+) -> bool {
+  return persisted.task_id == task_id &&
+  task_ordinal[ordinal] == ordinal &&
+  persisted.parent_pass_count == parent_pass[ordinal] &&
+  persisted.candidate_pass_count == candidate_pass[ordinal] &&
+  persisted.parent_repair_loop_count == parent_repairs[ordinal] &&
+  persisted.candidate_repair_loop_count == candidate_repairs[ordinal] &&
+  persisted.paired_pass_count == paired_pass[ordinal] &&
+  verifier_output_optional_equal(
+    parent_median_present[ordinal],
+    parent_median[ordinal],
+    persisted.parent_paired_median_time_ns,
+  ) &&
+  verifier_output_optional_equal(
+    candidate_median_present[ordinal],
+    candidate_median[ordinal],
+    persisted.candidate_paired_median_time_ns,
+  ) &&
+  verifier_output_optional_equal(
+    improvement_present[ordinal],
+    improvement[ordinal],
+    persisted.time_improvement_ppm,
+  ) &&
+  verifier_output_optional_equal(
+    regression_present[ordinal],
+    regression[ordinal],
+    persisted.time_regression_ppm,
+  )
+}
+
+fn verifier_corpus_aggregate_matches(
+  borrow persisted: prompt_artifacts.CorpusAggregate,
+  computed: ScoreCorpusAggregate,
+) -> bool {
+  return persisted.task_count == computed.task_count &&
+  persisted.sample_count == computed.sample_count &&
+  persisted.parent_pass_count == computed.parent_pass_count &&
+  persisted.candidate_pass_count == computed.candidate_pass_count &&
+  persisted.parent_repair_loop_count == computed.parent_repair_loop_count &&
+  persisted.candidate_repair_loop_count == computed.candidate_repair_loop_count &&
+  persisted.paired_pass_count == computed.paired_pass_count &&
+  verifier_optional_i64_equal(persisted.parent_paired_median_time_ns, computed.parent_paired_median_time_ns) &&
+  verifier_optional_i64_equal(persisted.candidate_paired_median_time_ns, computed.candidate_paired_median_time_ns) &&
+  persisted.completion_gain_count == computed.completion_gain_count &&
+  verifier_optional_i64_equal(persisted.time_improvement_ppm, computed.time_improvement_ppm) &&
+  verifier_optional_i64_equal(persisted.time_regression_ppm, computed.time_regression_ppm) &&
+  persisted.repair_loop_regression_count == computed.repair_loop_regression_count
+}
+
+fn verifier_reason_code_matches(text: str, ordinal: i64) -> bool {
+  if ordinal == 0 { return text == "PASS_TO_FAIL" }
+  if ordinal == 1 { return text == "BUILD" }
+  if ordinal == 2 { return text == "TEST" }
+  if ordinal == 3 { return text == "POLICY" }
+  if ordinal == 4 { return text == "UNRELATED_DIFF" }
+  if ordinal == 5 { return text == "PUBLIC_API" }
+  if ordinal == 6 { return text == "PATCH_SIZE" }
+  if ordinal == 7 { return text == "REPAIR_LOOPS" }
+  if ordinal == 8 { return text == "BENCHMARK" }
+  if ordinal == 9 { return text == "TIME" }
+  return false
+}
+
+fn verifier_canonical_nonnegative(text: str, expected: i64) -> bool {
+  if text.len() == 0 || expected < 0 { return false }
+  bytes := text.bytes()
+  if bytes.len() > 1 && bytes[0] == 0x30 { return false }
+  mut number := 0
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    byte := bytes[index]
+    if byte < 0x30 || byte > 0x39 { return false }
+    number = number.checked_mul(10) else { return false }
+    number = number.checked_add((byte - 0x30) as i64) else { return false }
+    index = index + 1
+  }
+  return number == expected
+}
+
+fn verifier_reason_value_matches(text: str, kind: i64, number: i64) -> bool {
+  if kind == 0 { return text == "NONE" && number == 0 }
+  if kind == 1 { return text == "PASS" && number == 0 }
+  if kind == 2 { return text == "FAIL" && number == 0 }
+  if kind == 3 { return text == "POLICY_VIOLATION" && number == 0 }
+  if kind == 4 { return text == "ERROR" && number == 0 }
+  if kind == 5 { return verifier_canonical_nonnegative(text, number) }
+  return false
+}
+
+fn verifier_reason_task_matches(
+  borrow persisted: prompt_artifacts.RegressionReason,
+  ordinal: i64,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if ordinal == -1 { return persisted.task_id == "CORPUS" }
+  if ordinal < 0 || ordinal >= result.tasks.len() { return false }
+  return verifier_reason_task_id_matches(persisted, result.tasks[ordinal])
+}
+
+fn verifier_reason_task_id_matches(
+  borrow persisted: prompt_artifacts.RegressionReason,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  return persisted.task_id == task.task_id
+}
+
+fn verifier_reason_matches(
+  borrow persisted: prompt_artifacts.RegressionReason,
+  index: i64,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  reason_task: slice<i64>,
+  reason_sample: slice<i64>,
+  reason_code: slice<i64>,
+  parent_kind: slice<i64>,
+  parent_number: slice<i64>,
+  candidate_kind: slice<i64>,
+  candidate_number: slice<i64>,
+  limit_kind: slice<i64>,
+  limit_number: slice<i64>,
+) -> bool {
+  return verifier_reason_task_matches(persisted, reason_task[index], result) &&
+  persisted.sample_index == reason_sample[index] &&
+  verifier_reason_code_matches(persisted.code, reason_code[index]) &&
+  verifier_reason_value_matches(persisted.parent_value, parent_kind[index], parent_number[index]) &&
+  verifier_reason_value_matches(persisted.candidate_value, candidate_kind[index], candidate_number[index]) &&
+  verifier_reason_value_matches(persisted.limit, limit_kind[index], limit_number[index])
+}
+
+fn verifier_policy_limit_from_result(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> Result<ScorePolicyLimit, Error> {
+  return match result.acceptance_policy {
+    None => Err(Error.Invalid),
+    Some(policy) => Ok(ScorePolicyLimit {
+        maximum_time_regression_ppm: policy.maximum_time_regression_ppm,
+        maximum_repair_loop_regression_count: policy.maximum_repair_loop_regression_count,
+      }),
+  }
+}
+
+fn verifier_aggregate_valid(
+  rows: slice<ScoreRow>,
+  task_limits: slice<ScoreTaskLimit>,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> Result<ScoreCorpusAggregate, Error> {
+  task_count := result.tasks.len()
+  reason_capacity := verifier_reason_capacity(task_count, result.sample_count)?
+  mut task_ordinal := verifier_i64_array(task_count)
+  mut parent_pass := verifier_i64_array(task_count)
+  mut candidate_pass := verifier_i64_array(task_count)
+  mut parent_repairs := verifier_i64_array(task_count)
+  mut candidate_repairs := verifier_i64_array(task_count)
+  mut paired_pass := verifier_i64_array(task_count)
+  mut parent_median_present := verifier_bool_array(task_count)
+  mut parent_median := verifier_i64_array(task_count)
+  mut candidate_median_present := verifier_bool_array(task_count)
+  mut candidate_median := verifier_i64_array(task_count)
+  mut improvement_present := verifier_bool_array(task_count)
+  mut improvement := verifier_i64_array(task_count)
+  mut regression_present := verifier_bool_array(task_count)
+  mut regression := verifier_i64_array(task_count)
+
+  mut reason_task := verifier_i64_array(reason_capacity)
+  mut reason_sample := verifier_i64_array(reason_capacity)
+  mut reason_code := verifier_i64_array(reason_capacity)
+  mut parent_kind := verifier_i64_array(reason_capacity)
+  mut parent_number := verifier_i64_array(reason_capacity)
+  mut candidate_kind := verifier_i64_array(reason_capacity)
+  mut candidate_number := verifier_i64_array(reason_capacity)
+  mut limit_kind := verifier_i64_array(reason_capacity)
+  mut limit_number := verifier_i64_array(reason_capacity)
+
+  policy_limit := verifier_policy_limit_from_result(result)?
+  scored := aggregate(
+    rows,
+    task_limits,
+    policy_limit,
+    result.sample_count,
+    task_ordinal,
+    parent_pass,
+    candidate_pass,
+    parent_repairs,
+    candidate_repairs,
+    paired_pass,
+    parent_median_present,
+    parent_median,
+    candidate_median_present,
+    candidate_median,
+    improvement_present,
+    improvement,
+    regression_present,
+    regression,
+    reason_task,
+    reason_sample,
+    reason_code,
+    parent_kind,
+    parent_number,
+    candidate_kind,
+    candidate_number,
+    limit_kind,
+    limit_number,
+  )
+  aggregate_complete := match scored.status { Complete => true, _ => false }
+  if !aggregate_complete || scored.error_code != 0 || scored.error_index != -1 ||
+  scored.reason_count < 0 || scored.reason_count > reason_capacity ||
+  scored.reason_count != result.serious_regression_reasons.len() ||
+  result.task_aggregates.len() != task_count {
+    return Err(Error.Invalid)
+  }
+
+  mut index := 0
+  loop {
+    if index >= task_count { break }
+    if !verifier_task_aggregate_matches(
+      result.task_aggregates[index],
+      index,
+      result.tasks[index].task_id,
+      task_ordinal,
+      parent_pass,
+      candidate_pass,
+      parent_repairs,
+      candidate_repairs,
+      paired_pass,
+      parent_median_present,
+      parent_median,
+      candidate_median_present,
+      candidate_median,
+      improvement_present,
+      improvement,
+      regression_present,
+      regression,
+    ) {
+      return Err(Error.Invalid)
+    }
+    index = index + 1
+  }
+
+  index = 0
+  loop {
+    if index >= scored.reason_count { break }
+    if !verifier_reason_matches(
+      result.serious_regression_reasons[index],
+      index,
+      result,
+      reason_task,
+      reason_sample,
+      reason_code,
+      parent_kind,
+      parent_number,
+      candidate_kind,
+      candidate_number,
+      limit_kind,
+      limit_number,
+    ) {
+      return Err(Error.Invalid)
+    }
+    index = index + 1
+  }
+
+  corpus_valid := match result.corpus_aggregate {
+    None => false,
+    Some(corpus) => verifier_corpus_aggregate_matches(corpus, scored.corpus),
+  }
+  if !corpus_valid { return Err(Error.Invalid) }
+  return Ok(scored.corpus)
+}
+
+fn verifier_all_task_completion_not_lower(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.task_aggregates.len() { break }
+    if !verifier_task_completion_not_lower(result.task_aggregates[index]) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_task_completion_not_lower(borrow aggregate_value: prompt_artifacts.TaskAggregate) -> bool {
+  return aggregate_value.candidate_pass_count >= aggregate_value.parent_pass_count
+}
+
+fn verifier_status_matches_policy(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  corpus: ScoreCorpusAggregate,
+  borrow policy: prompt_artifacts.PromptAcceptancePolicy,
+) -> bool {
+  if result.serious_regression_reasons.len() > 0 {
+    return result.status == "SERIOUS_REGRESSION"
+  }
+  completion_improved := corpus.completion_gain_count >= policy.minimum_completion_gain_count
+  time_improved := if corpus.candidate_pass_count == corpus.parent_pass_count &&
+  verifier_all_task_completion_not_lower(result) &&
+  corpus.candidate_repair_loop_count <= corpus.parent_repair_loop_count {
+    match corpus.time_improvement_ppm {
+      None => false,
+      Some(value) => value >= policy.minimum_time_improvement_ppm,
+    }
+  } else {
+    false
+  }
+  expected_improved := completion_improved || time_improved
+  return if expected_improved {
+    result.status == "IMPROVED"
+  } else {
+    result.status == "NO_IMPROVEMENT"
+  }
+}
+
+fn verifier_status_matches(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  corpus: ScoreCorpusAggregate,
+) -> bool {
+  return match result.acceptance_policy {
+    None => false,
+    Some(policy) => verifier_status_matches_policy(result, corpus, policy),
+  }
+}
+
+fn verifier_all_seeds_applied(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  mut index := 0
+  loop {
+    if index >= result.rows.len() { break }
+    if !verifier_row_seed_applied(result.rows[index]) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn verifier_row_seed_applied(borrow row: prompt_artifacts.PromptTaskRow) -> bool {
+  return row.measurement.seed_attestation.result == "APPLIED"
+}
+
+fn verifier_gate_environment_eligible(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.environment {
+    None => false,
+    Some(environment) => match environment.core.logical_cpu_count {
+      None => false,
+      Some(value) => value > 0,
+    },
+  }
+}
+
+fn verifier_gate_provider_eligible(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.provider_control {
+    None => false,
+    Some(control) => control.provider_kind != "FIXTURE",
+  }
+}
+
+fn verifier_gate_policy_minima(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.acceptance_policy {
+    None => false,
+    Some(policy) => result.tasks.len() >= policy.minimum_task_count &&
+    result.sample_count >= policy.minimum_samples_per_variant,
+  }
+}
+
+fn verifier_gate_computed(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> bool {
+  return result.status == "IMPROVED" &&
+  result.serious_regression_reasons.len() == 0 &&
+  evidence.trust.align_llm_reachability == "VERIFIED" &&
+  evidence.trust.align_reachability == "VERIFIED" &&
+  evidence.trust.corpus_reachability == "VERIFIED" &&
+  verifier_gate_environment_eligible(result) &&
+  verifier_gate_provider_eligible(result) &&
+  verifier_gate_policy_minima(result) &&
+  verifier_all_seeds_applied(result)
+}
+
+fn verifier_complete_environment_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.environment {
+    None => false,
+    Some(environment) => verifier_environment_valid(environment),
+  }
+}
+
+fn verifier_corpus_aggregate_absent(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return match result.corpus_aggregate { None => true, Some(_) => false }
+}
+
+fn verifier_invalid_result_shape(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return result.status == "INVALID_INPUT" &&
+  !result.gate_eligible &&
+  result.rows.len() == 0 &&
+  result.task_aggregates.len() == 0 &&
+  result.serious_regression_reasons.len() == 0 &&
+  result.snapshot_requests.len() == 0 &&
+  result.snapshot_results.len() == 0 &&
+  result.input_snapshots.len() == 0 &&
+  result.snapshot_attestations.len() == 0 &&
+  verifier_corpus_aggregate_absent(result) &&
+  match result.workspace_preflight_source { None => true, Some(_) => false } &&
+  match result.workspace_preflight { None => true, Some(_) => false } &&
+  match result.environment { None => true, Some(_) => false }
+}
+
+fn verifier_invalid_embedded_state_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  tasks_valid := if result.tasks.len() == 0 { true } else { verifier_tasks_valid(result) }
+  policy_valid := match result.acceptance_policy {
+    None => true,
+    Some(_) => if result.tasks.len() == 0 { false } else { verifier_policy_fits_result(result) },
+  }
+  workspace_valid := match result.workspace_preflight_request {
+    None => true,
+    Some(request) => match result.evaluation_id {
+      None => false,
+      Some(evaluation_id) => verifier_workspace_request_valid(request, evaluation_id),
+    },
+  }
+  return tasks_valid && policy_valid && workspace_valid
+}
+
+fn verifier_error_result_shape(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return result.status == "ERROR" &&
+  !result.gate_eligible &&
+  result.task_aggregates.len() == 0 &&
+  result.serious_regression_reasons.len() == 0 &&
+  verifier_corpus_aggregate_absent(result)
+}
+
+fn verifier_noncomplete_prefix(
+  out: region,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> Result<PromptScoreStatus, Error> {
+  rows := verifier_build_rows(out, result)?
+  limits := verifier_build_task_limits(out, result)
+  if !verifier_prefix_valid(rows, limits, result) { return Err(Error.Invalid) }
+  return Ok(PromptScoreStatus.NoncompleteError)
+}
+
+fn verifier_complete_score(
+  out: region,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> Result<PromptScoreStatus, Error> {
+  rows := verifier_build_rows(out, result)?
+  limits := verifier_build_task_limits(out, result)
+  if !verifier_prefix_valid(rows, limits, result) { return Err(Error.Invalid) }
+  corpus := verifier_aggregate_valid(rows, limits, result)?
+  if !verifier_status_matches(result, corpus) { return Err(Error.Invalid) }
+  computed_gate := verifier_gate_computed(result, evidence)
+  if result.gate_eligible != computed_gate { return Err(Error.Invalid) }
+  if computed_gate {
+    return Ok(PromptScoreStatus.ImprovedEligible)
+  }
+  return Ok(PromptScoreStatus.CompleteIneligible)
+}
+
+pub fn verify_result(
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+  borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> Result<PromptScoreStatus, Error> {
+  if !verifier_base_result_valid(result) || !verifier_pair_identity_valid(result, evidence) {
+    return Err(Error.Invalid)
+  }
+  if result.error_code == "RESULT_TOO_LARGE" {
+    if !verifier_compact_result_valid(result, evidence) {
+      return Err(Error.Invalid)
+    }
+    return Ok(PromptScoreStatus.NoncompleteError)
+  }
+  if !verifier_common_identity_valid(result) || !verifier_scope_trust_valid(result, evidence) {
+    return Err(Error.Invalid)
+  }
+  if result.status == "INVALID_INPUT" {
+    if !verifier_invalid_result_shape(result) ||
+    !verifier_invalid_embedded_state_valid(result) ||
+    evidence.expected_inputs.len() != 0 {
+      return Err(Error.Invalid)
+    }
+    return Ok(PromptScoreStatus.NoncompleteError)
+  }
+  if !verifier_complete_inputs_present(result) ||
+  !verifier_tasks_valid(result) ||
+  !verifier_policy_fits_result(result) ||
+  !verifier_workspace_trace_valid(result) ||
+  !verifier_trace_arrays_valid(result) ||
+  !verifier_rows_and_attestations_valid(result) ||
+  !verifier_expected_inputs_valid(result, evidence) {
+    return Err(Error.Invalid)
+  }
+  if result.status == "ERROR" {
+    if !verifier_error_result_shape(result) { return Err(Error.Invalid) }
+    return arena out {
+      verifier_noncomplete_prefix(out, result)
+    }
+  }
+  if !verifier_complete_status(result.status) ||
+  !verifier_complete_environment_valid(result) {
+    return Err(Error.Invalid)
+  }
+  return arena out {
+    verifier_complete_score(out, result, evidence)
+  }
 }
