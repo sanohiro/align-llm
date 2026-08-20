@@ -42,7 +42,7 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`5aa5b23ace02109ad5ef9c36ba6d2acaba9ae7ad`. The reviewed
+`19c3db144c462bf7d6784f88d64cc124229b7ec2`. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-20): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, 15, 16, and 17 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, and 14 remain ALIGN_MERGED.** Request 2's timeout adoption, Request 9's C7 adoption, Request 11's C6-EVALUATION adoption, and Request 14's C6f2 publication adoption remain pending. Requests 16 and 17 are adopted by the decoded C6c2 verifier at the exact Align merge recorded below.
+> **Status (2026-08-20): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, 15–18 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, and 14 remain ALIGN_MERGED.** Request 2's timeout adoption, Request 9's C7 adoption, Request 11's C6-EVALUATION adoption, and Request 14's C6f2 publication adoption remain pending. Request 18 is adopted by the C6d offline lifecycle owner at the exact Align merge recorded below.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -5590,6 +5590,158 @@ The align-llm adoption fixture decodes and repeatedly inspects the real result/e
 including corpus, task, trace, aggregate, reason, and expected-input arrays. The C6c2 owner then
 uses that surface throughout the complete decoded verifier and proves both caller-owned inputs
 remain live after verification.
+
+---
+
+## Request 18 — `std.fs`: retained-root regular-file access
+
+```text
+Status: ALIGN_LLM_VERIFIED
+Priority: high
+Blocking: yes
+Blocked gate or slice: C6d offline accept/rollback CLI and any later C6 owner that consumes an ordinary artifact through the common physical-path trust boundary
+Independent work that may continue: C6 pure rendering/scoring/verifier work, C6f1 source-helper design, C6f2 publication design, provider work, and every Align capability unrelated to trusted filesystem traversal
+Resume condition: met by the exact pin, `c6d-request18-adoption`, and the final capable C6d integration gate
+Align commit or pull request: design PR #866, merged as `0b9d25e4d2ac34877ec79f28516f5f31c70ea9e0`; implementation PR #867, merged as `19c3db144c462bf7d6784f88d64cc124229b7ec2`
+align-llm verification: `.align-revision` pins `19c3db144c462bf7d6784f88d64cc124229b7ec2`; `make c6d-request18-adoption` passes the retained-root input/output matrix; the final native Linux x86_64 capable `make ci` passes on the same C6d integration head
+```
+
+### Motivation and pinned-state evidence
+
+C6's common command contract rejects every symlink or dangling-link component, physical escape,
+non-regular artifact input, and unsafe output parent before consuming bytes or starting later work.
+The C6d offline `accept` and `rollback` commands must enforce that boundary without a subprocess,
+network call, ambient registry, or application-private native shim.
+
+At pinned Align revision `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`, `fs.open(path)` returns a
+reader after ordinary OS pathname resolution, so intermediate and final symlinks are followed and
+special files are not rejected before open. `fs.exists` is a boolean following check and
+`fs.read_dir` is an owned-name enumeration, not file metadata. Request 14's
+`fs.create_exclusive(path)` rejects an occupied final entry atomically but deliberately uses
+ordinary parent resolution. The language exposes no `lstat`, retained directory handle, safe
+beneath-open, or equivalent operation. A sequence of `exists`/`read_dir`/`open`, a Python helper,
+shell command, `/proc` path, or app-specific FFI would either remain racy, lose the declared macOS
+floor, add hidden work, or bypass Align's reviewed standard-library boundary.
+
+The concrete implementation attempt that exposed this gap already has passing verifier-first
+accept and immutable-lineage rollback logic. It cannot become a review candidate while input opens
+may follow an escaping link, a FIFO/device may be opened before type rejection, or output
+writability is discovered only after request validation. This request closes only that general
+filesystem gap; it does not move C6 lifecycle semantics into Align.
+
+### Requested public surface
+
+Add the following operations, or an equivalent reviewed surface with the same retained-root and
+error semantics:
+
+```text
+fs.open_beneath(root: str, relative: str) -> Result<reader, Error>
+fs.create_exclusive_beneath(root: str, relative: str) -> Result<writer, Error>
+```
+
+Both arguments are borrowed UTF-8 views retained only for the call. `root` names an existing
+directory and may be absolute or relative under the existing current-directory rule; the exact
+single component `.` is allowed as the explicit current-directory root and exact `/` as the
+filesystem root. Every other root component
+must be non-empty and must not be `.` or `..`. `relative` is a non-empty relative path with no
+leading or trailing separator and no empty, `.` or `..` component. Interior NUL, invalid ABI UTF-8,
+unrepresentable length, and checked path-copy capacity overflow are invalid before filesystem work.
+No operation normalizes, truncates, hashes, or silently rewrites an input.
+
+The runtime opens and retains the root directory, then resolves every `relative` component from
+retained directory descriptors. No root, parent, or final symlink is followed. Replacing or
+renaming a public ancestor after its descriptor is retained cannot redirect the operation to a
+different tree. The implementation may use Linux `openat2` where the accepted kernel provides the
+exact semantics, but the contract is the descriptor-relative algorithm, not a Linux-only syscall;
+macOS uses the equivalent no-follow `openat`/metadata sequence. There is no `realpath`, pathname
+prefix comparison, subprocess, process-global root, sandbox, or hidden retry.
+
+`open_beneath` publishes the existing owned `reader` only after the final entry is proven to be a
+regular file opened from the retained parent. A directory, symlink, FIFO, socket, device, or other
+special entry is `Error.Invalid` and no artifact byte is read. The returned reader owns the opened
+descriptor; later caller reads use that descriptor even if the public name changes. The operation
+does not promise that an out-of-band writer cannot mutate the regular file after open; C6 retains
+its documented immutable-input/single-writer precondition.
+
+`create_exclusive_beneath` retains and validates every root/parent directory, then performs one
+native exclusive create of the absent final component relative to the retained final parent. An
+occupied final entry of any type produces the same native `EEXIST`-backed `Error.Code` contract as
+Request 14 and is untouched. Success returns the existing owned `writer`; Drop closes it and never
+removes the entry. This operation does not add rename, pair atomicity, temporary naming, rollback,
+durability, or implicit cleanup.
+
+The two operations add no same-final exclusion, wait, or byte snapshot. When open and exclusive
+create race on one initially absent entry, open returns `NotFound` if its no-follow observation wins,
+or may acquire the newly installed regular inode while the writer remains live. A pre-existing
+regular entry makes create return EEXIST while open may succeed; a pre-existing non-regular entry
+makes create return EEXIST and open return `Invalid`. C6 rejects input/output overlap under its
+immutable-input/single-writer precondition.
+
+### Public-contract ledger
+
+| Surface | Exact result/error and precedence | Ownership, allocation, effects, and identity | First real-client acceptance |
+| --- | --- | --- | --- |
+| `fs.open_beneath(root, relative)` | Validate the ABI output slot, then validate/copy/parse the complete root before inspecting relative, then validate/copy/parse the complete relative before traversing root components followed by relative parent components in written order. Missing root/component/final is `NotFound`; permission is `Denied`; unsafe grammar, a symlink component, non-directory intermediate, or non-regular final is `Invalid`; other native failures use the fixed errno mapping. No reader or byte is published on failure. Invalid root grammar wins over every relative-view error; the first invalid component in each traversed sequence wins. | Paths are borrowed. Per-call NUL-terminated copies and retained directory descriptors are released on every failure; terminal allocator exhaustion keeps Align's locked abort policy. Success returns the existing Move `reader`, with its existing read/Drop/`?`/`map_err`/branch/loop/return semantics. The operation is Impure, has no mutable global state, adds one explicit HIR/MIR/runtime key, and uses the existing reader nominal identity. Proposed ABI shape A12: `i32(ptr,i64,ptr,i64,ptr)`. | `c6d-request18-adoption` opens exact-cap and short-read JSON files beneath a physical project root; rejects root/intermediate/final symlinks, dangling links, missing input, directory, FIFO, socket/device where available, outside-root attempts, `.`/`..`/empty components, invalid UTF-8 bytes at the ABI owner, and permission/read failures before decoding. After separate lexical validation, it maps `NotFound` to `INPUT_NOT_FOUND`, `Invalid` (including no-follow/type rejection) to `INPUT_TYPE`, and `Denied`/other read failures to `INPUT_READ`. |
+| `fs.create_exclusive_beneath(root, relative)` | Apply the same root/relative validation and component order, ending with one exclusive create at the retained parent. Missing/denied/unsafe parents map as above. Every occupied final entry is native EEXIST through `Error.Code`; no existing entry is opened, truncated, replaced, or removed. The output slot remains null on every recoverable failure. | Paths are borrowed and component owners/descriptors are per-call. Success returns the existing Move `writer`; write/flush/Drop and partial-file behavior remain Request 14's contract. The operation is Impure, adds no cleanup thread or lock, has a distinct HIR/MIR/runtime key, and uses the existing writer identity. Proposed ABI shape A12. | C6d decodes its request, derives the CLI result parent/root and final component, obtains the exclusive writer before request-field validation, writes exactly one canonical success or decoded-request failure result, rejects unsafe/existing/unwritable parents without a result artifact, and proves an existing output is unchanged. Request 14's C6f2 pair adoption remains separately owned. |
+
+The operations add no option object, environment variable, wire format, persisted tag, reflection,
+cache format, filesystem-class query, or platform-dependent public flag. Relative roots retain the
+existing explicit path/current-directory behavior. C6d supplies an absolute `project_root` for
+artifact inputs; for its caller-named result it passes the lexical parent and basename as the two
+arguments, so output preflight remains independent of request-field validity after decode.
+
+### Implementation closure matrix and acceptance
+
+| Axis | Compiler/runtime owner | Required regression |
+| --- | --- | --- |
+| Formation and public types | `align_sema` exact import/name/arity/type checks; distinct HIR kinds | direct and imported calls, owned-string arguments borrowed not moved, missing import, wrong arity/type, generic body, Impure classification |
+| Lexical validation and multi-invalid order | shared strict path-view/component decoder; generated and foreign ABI calls | null/length/UTF-8/empty/NUL/capacity cases; root before relative; first bad component; exact `.` root exception; no descriptor/native final operation before complete lexical validation |
+| Retained root and component traversal | target-specific runtime helper using directory descriptors and no-follow operations | absolute/relative/`.` roots; nested success; root/intermediate/final symlink and dangling-link rejection; rename/replace public ancestors after retention cannot redirect the operation; all intermediate fds close |
+| Regular input type and reader publication | final no-follow metadata/open plus existing Reader constructor | regular empty/non-empty files; directory, FIFO, Unix socket, device, and symlink reject before byte read; missing/denied/read error mapping; exactly one reader descriptor transferred and dropped across normal/`?`/`map_err`/branch/loop/return paths |
+| Exclusive output and writer publication | retained final-parent descriptor plus one native exclusive create and existing Writer constructor | absent success; occupied regular/directory/symlink/FIFO/device unchanged; two competing creators exactly one winner; write/flush/partial-file/Drop and explicit cleanup preserve Request 14 semantics |
+| Mutation and race boundary | descriptor identity from root through final operation | ancestor/root/final rename and replacement schedules before and after each retained descriptor; no pathname restart; immutable-input mutation remains an explicit consumer precondition rather than a false API guarantee |
+| HIR, MIR, LLVM, and checked replay | every expression visitor, checked-HIR validator, replay clone, MIR lowering/print/fingerprint, LLVM runtime call | enum-sweep tripwire, forged operand/type/effect/output metadata rejection, exact A12 declarations, whole/per-unit/generic/interface/cache edit-revert parity |
+| Allocation and cleanup | path copies, component scratch, root/intermediate/final descriptors, Reader/Writer construction | zero/one/many components; every lexical/native failure point; checked capacity overflow; terminal OOM child; fd/allocation counters balanced; no partially published handle |
+| Concurrency/global state | per-call roots, descriptors, path buffers, and native calls | same-process pair matrix including barrier-controlled absent/newly-created/pre-existing-regular/pre-existing-special same-final open/create outcomes, repeated cycles, two independent processes, competing final creates, no process-global cwd mutation or shared retained root |
+| Platform and compatibility | Linux x86_64/ARM64 and macOS Apple Silicon runtime owners | local ext4/tmpfs and APFS, linked worktree/path roots, platform syscall disposition, no `/proc` dependency, no Windows or remote-filesystem claim |
+
+No benchmark is required because the request makes a safety/ownership promise, not a throughput or
+latency promise. The implementation must first settle one Align-owned public-contract ledger and
+propagate it through the English filesystem design, Japanese mirror, language/spec surface,
+runtime ABI ledger, roadmap, and handoff. Rust implementation begins only after one fresh
+independent adversarial review of that contract and capability boundary. The implementation PR then
+uses the `align-self-review` skill, the focused filesystem/runtime/ABI owners, the bounded gate,
+Clippy, and one fresh full-diff review.
+
+### References
+
+- `docs/specs/c6-prompt-context-optimizer.md` §§1.2, 4, 5, 6, 10, and 11 — physical trust,
+  validation precedence, lifecycle ownership, and C6d acceptance.
+- `../align/docs/impl/std-design/fs.md` and
+  `../align/docs/impl/27-fs-exclusive-publication-plan.md` — current path resolution, existing
+  reader/writer ownership, and Request 14's deliberately final-component-only guarantee.
+- `../align/docs/impl/20-runtime-abi-ledger.md` — runtime-key registry and A12 ABI shape.
+- `../align/crates/align_runtime/src/lib.rs` — current path marshalling, Reader/Writer constructors,
+  errno mapping, and native filesystem operations.
+- `../align/crates/align_sema/src/hir.rs`, `../align/crates/align_mir/src/lib.rs`, and
+  `../align/crates/align_codegen_llvm/src/lib.rs` — filesystem expression and lowering closure.
+
+### Align response and real-client adoption
+
+Align PR #867 shipped `fs.open_beneath` and `fs.create_exclusive_beneath` through the standard
+filesystem HIR/MIR/runtime boundary on Linux and macOS. The returned values are the existing owned
+`reader` and `writer`; inputs remain borrowed, traversal state is per call, input success requires a
+regular file, output success performs one exclusive final create, and no process-global cwd, retry,
+cleanup thread, or application-private FFI is involved.
+
+C6d consumes the surface in `src/prompt_artifact_io.align` and `src/prompt_state.align`. Request and
+artifact reads stay bounded and beneath retained roots; accept invokes the shared decoded verifier
+before constructing an activation; rollback validates immutable lineage; one pre-acquired writer
+publishes a bounded canonical result and explicitly flushes it. The focused owner covers exact-cap
+and multi-read JSON, deterministic multi-invalid order and error mapping, root/intermediate/final
+and dangling symlinks, missing/denied/special inputs, unsafe/occupied output paths, destination
+preservation, and exactly one winner between concurrent creators. The routine `prompt-state-smoke`
+retains verifier-first acceptance, immutable rollback, tamper, lineage, and CLI coverage.
 
 ---
 

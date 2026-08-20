@@ -1,0 +1,787 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+binary="${ALIGN_LLM_BIN:-${project_root}/main}"
+temporary_dir="$(mktemp -d)"
+fixture_output="${temporary_dir}/fixture.jsonl"
+trap 'rm -rf "${temporary_dir}"' EXIT
+
+cp "${project_root}/eval/fixtures/c6-prompt-state/templates.jsonl" "${fixture_output}"
+
+python3 - "${fixture_output}" "${temporary_dir}" <<'PY'
+import copy
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+fixture_path = Path(sys.argv[1])
+root = Path(sys.argv[2])
+documents = [json.loads(line) for line in fixture_path.read_text(encoding="utf-8").splitlines()]
+if len(documents) != 4:
+    raise SystemExit(f"expected four fixture documents, got {len(documents)}")
+eligible, ineligible, evidence_template, baseline = documents
+
+
+def canonical_bytes(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def bind_digest(value):
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def bind_variant(value):
+    bind_digest(value["base_prompt"])
+    bind_digest(value["repo_prompt"])
+    bind_digest(value)
+
+
+def bind_scope(value, variant):
+    bind_digest(value["corpus_revision"])
+    value["base_prompt_sha256"] = variant["base_prompt"]["content_sha256"]
+    value["repo_prompt_sha256"] = variant["repo_prompt"]["content_sha256"]
+    bind_digest(value)
+
+
+def canonicalize_evaluation(value):
+    bind_variant(value["parent_variant"])
+    bind_variant(value["candidate_variant"])
+    bind_scope(value["scope"], value["parent_variant"])
+    value["corpus"]["corpus_revision"] = copy.deepcopy(value["scope"]["corpus_revision"])
+    value["experiment_artifact"]["scope"] = copy.deepcopy(value["scope"])
+    value["experiment_artifact"]["candidate_variant"] = copy.deepcopy(value["candidate_variant"])
+    for row in value["rows"]:
+        selected = value["parent_variant"] if row["variant"] == "PARENT" else value["candidate_variant"]
+        row["variant_sha256"] = selected["content_sha256"]
+        row["evaluation_input"]["parent_variant_sha256"] = value["parent_variant"]["content_sha256"]
+        row["evaluation_input"]["candidate_variant_sha256"] = value["candidate_variant"]["content_sha256"]
+
+
+def reference(path, decision_id, digest):
+    return {
+        "artifact_kind": "PROMPT_ACTIVATION_RESULT",
+        "path": path,
+        "artifact_id": decision_id,
+        "content_sha256": digest,
+    }
+
+
+bind_variant(baseline["activation"]["effective_variant"])
+bind_scope(baseline["activation"]["scope"], baseline["activation"]["effective_variant"])
+baseline["decision_id"] = "decision"
+baseline["activation"]["activation_id"] = "decision/activation"
+bind_digest(baseline["activation"])
+bind_digest(baseline)
+baseline_reference = reference("baseline.json", "decision", baseline["content_sha256"])
+
+
+def bind_evaluation(value):
+    canonicalize_evaluation(value)
+    value["parent_activation"] = copy.deepcopy(baseline_reference)
+    value["parent_activation_artifact"] = copy.deepcopy(baseline)
+    value["experiment_artifact"]["parent_activation"] = copy.deepcopy(baseline_reference)
+    bind_digest(value["experiment_artifact"])
+    value["experiment"]["content_sha256"] = value["experiment_artifact"]["content_sha256"]
+    bind_digest(value)
+
+
+bind_evaluation(eligible)
+bind_evaluation(ineligible)
+
+
+def evidence_for(result):
+    evidence = copy.deepcopy(evidence_template)
+    evidence["evaluation_result_sha256"] = result["content_sha256"]
+    bind_digest(evidence)
+    return evidence
+
+
+eligible_evidence = evidence_for(eligible)
+ineligible_evidence = evidence_for(ineligible)
+tampered = copy.deepcopy(eligible)
+tampered["gate_eligible"] = False
+bind_digest(tampered)
+tampered_evidence = evidence_for(tampered)
+
+noncomplete = copy.deepcopy(eligible)
+noncomplete["status"] = "INVALID_INPUT"
+noncomplete["error_code"] = "INVALID_BOUNDS"
+noncomplete["error"] = "invalid evaluation request"
+noncomplete["gate_eligible"] = False
+noncomplete.pop("workspace_preflight_source", None)
+noncomplete.pop("workspace_preflight", None)
+noncomplete.pop("environment", None)
+noncomplete["snapshot_requests"] = []
+noncomplete["snapshot_results"] = []
+noncomplete["input_snapshots"] = []
+noncomplete["snapshot_attestations"] = []
+noncomplete["rows"] = []
+noncomplete["task_aggregates"] = []
+noncomplete.pop("corpus_aggregate", None)
+noncomplete["serious_regression_reasons"] = []
+bind_digest(noncomplete)
+noncomplete_evidence = evidence_for(noncomplete)
+noncomplete_evidence["expected_inputs"] = []
+bind_digest(noncomplete_evidence)
+
+other_parent = copy.deepcopy(baseline)
+other_parent["decision_id"] = "other"
+other_parent["activation"]["activation_id"] = "other/activation"
+bind_digest(other_parent["activation"])
+bind_digest(other_parent)
+
+for name, value in (
+    ("baseline.json", baseline),
+    ("other-parent.json", other_parent),
+    ("eligible.json", eligible),
+    ("eligible-evidence.json", eligible_evidence),
+    ("ineligible.json", ineligible),
+    ("ineligible-evidence.json", ineligible_evidence),
+    ("tampered.json", tampered),
+    ("tampered-evidence.json", tampered_evidence),
+    ("noncomplete.json", noncomplete),
+    ("noncomplete-evidence.json", noncomplete_evidence),
+):
+    (root / name).write_bytes(canonical_bytes(value))
+
+
+def accept_request(decision_id, evaluation, parent, evidence):
+    return {
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_ACCEPT_REQUEST",
+        "decision_id": decision_id,
+        "project_root": str(root),
+        "evaluation_path": evaluation,
+        "parent_activation_path": parent,
+        "evaluation_evidence_path": evidence,
+    }
+
+
+requests = {
+    "accept.json": accept_request("accept-one", "eligible.json", "baseline.json", "eligible-evidence.json"),
+    "ineligible-request.json": accept_request(
+        "accept-ineligible", "ineligible.json", "baseline.json", "ineligible-evidence.json"
+    ),
+    "tampered-request.json": accept_request(
+        "accept-tampered", "tampered.json", "baseline.json", "tampered-evidence.json"
+    ),
+    "parent-mismatch-request.json": accept_request(
+        "accept-mismatch", "eligible.json", "other-parent.json", "eligible-evidence.json"
+    ),
+    "noncomplete-request.json": accept_request(
+        "accept-noncomplete", "noncomplete.json", "baseline.json", "noncomplete-evidence.json"
+    ),
+}
+for name, value in requests.items():
+    (root / name).write_bytes(canonical_bytes(value))
+PY
+
+run_success() {
+  local operation="$1"
+  local request="$2"
+  local result="$3"
+  local expected_status="$4"
+  local output="${temporary_dir}/${expected_status}.stdout"
+  local diagnostic="${temporary_dir}/${expected_status}.stderr"
+  if ! "${binary}" prompt "${operation}" "${request}" "${result}" >"${output}" 2>"${diagnostic}"; then
+    printf 'prompt %s unexpectedly failed for %s\n' "${operation}" "${expected_status}" >&2
+    tail -c 32768 "${diagnostic}" >&2
+    if test -f "${result}"; then
+      tail -c 32768 "${result}" >&2
+    fi
+    exit 1
+  fi
+  grep -Fxq "${expected_status}" "${output}"
+}
+
+run_failure() {
+  local operation="$1"
+  local request="$2"
+  local result="$3"
+  local expected_status="$4"
+  local output="${temporary_dir}/${expected_status}.stdout"
+  local diagnostic="${temporary_dir}/${expected_status}.stderr"
+  if "${binary}" prompt "${operation}" "${request}" "${result}" >"${output}" 2>"${diagnostic}"; then
+    printf 'prompt %s unexpectedly succeeded for %s\n' "${operation}" "${expected_status}" >&2
+    exit 1
+  fi
+  grep -Fxq "${expected_status}" "${output}"
+}
+
+cp "${temporary_dir}/baseline.json" "${temporary_dir}/baseline.before.json"
+run_success accept "${temporary_dir}/accept.json" "${temporary_dir}/accepted.json" ACCEPTED
+cmp -s "${temporary_dir}/baseline.before.json" "${temporary_dir}/baseline.json"
+
+run_failure accept "${temporary_dir}/ineligible-request.json" "${temporary_dir}/ineligible-result.json" INELIGIBLE
+run_failure accept "${temporary_dir}/tampered-request.json" "${temporary_dir}/tampered-result.json" INVALID_INPUT
+run_failure accept "${temporary_dir}/parent-mismatch-request.json" "${temporary_dir}/mismatch-result.json" PARENT_MISMATCH
+run_failure accept "${temporary_dir}/noncomplete-request.json" "${temporary_dir}/noncomplete-result.json" INVALID_INPUT
+python3 - "${temporary_dir}/noncomplete-result.json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if value.get("error") != "evaluation is not complete":
+    raise SystemExit(f"noncomplete evaluation reached the wrong acceptance classification: {value!r}")
+PY
+
+printf '%s\n' sentinel >"${temporary_dir}/existing.json"
+if "${binary}" prompt accept "${temporary_dir}/accept.json" "${temporary_dir}/existing.json" \
+  >"${temporary_dir}/existing.stdout" 2>"${temporary_dir}/existing.stderr"; then
+  printf '%s\n' "existing activation output was replaced" >&2
+  exit 1
+fi
+test "$(cat "${temporary_dir}/existing.json")" = sentinel
+
+python3 - "${temporary_dir}" <<'PY'
+import copy
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+
+
+def load(name):
+    return json.loads((root / name).read_text(encoding="utf-8"))
+
+
+def canonical_bytes(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def bind_digest(value):
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def write(name, value):
+    (root / name).write_bytes(canonical_bytes(value))
+
+
+baseline = load("baseline.json")
+accepted = load("accepted.json")
+if "activation" not in accepted:
+    raise SystemExit(f"accepted result omitted activation: {accepted!r}")
+assert accepted["status"] == "ACCEPTED"
+assert accepted["activation"]["operation"] == "ACCEPT"
+assert accepted["activation"]["parent_activation_id"] == baseline["activation"]["activation_id"]
+assert accepted["activation"]["parent_activation_sha256"] == baseline["activation"]["content_sha256"]
+assert accepted["activation"]["accepted_evaluation_sha256"] == load("eligible.json")["content_sha256"]
+
+rollback = {
+    "schema_version": 1,
+    "artifact_kind": "PROMPT_ROLLBACK_REQUEST",
+    "decision_id": "rollback-one",
+    "project_root": str(root),
+    "current_activation_path": "accepted.json",
+    "target_activation_path": "baseline.json",
+    "ancestor_activation_paths": [],
+    "reason": "restore the reviewed baseline",
+}
+write("rollback.json", rollback)
+
+second = copy.deepcopy(accepted)
+second["decision_id"] = "second"
+second["activation"]["activation_id"] = "second/activation"
+second["activation"]["parent_activation_id"] = accepted["activation"]["activation_id"]
+second["activation"]["parent_activation_sha256"] = accepted["activation"]["content_sha256"]
+bind_digest(second["activation"])
+bind_digest(second)
+write("second.json", second)
+multi = copy.deepcopy(rollback)
+multi["decision_id"] = "rollback-multi"
+multi["current_activation_path"] = "second.json"
+multi["ancestor_activation_paths"] = ["accepted.json"]
+write("rollback-multi.json", multi)
+
+unknown = copy.deepcopy(rollback)
+unknown["decision_id"] = "rollback-unknown"
+unknown["target_activation_path"] = "other-parent.json"
+write("rollback-unknown.json", unknown)
+
+duplicate = copy.deepcopy(rollback)
+duplicate["decision_id"] = "rollback-duplicate"
+duplicate["ancestor_activation_paths"] = ["baseline.json"]
+write("rollback-duplicate.json", duplicate)
+
+same_target = copy.deepcopy(baseline)
+same_target["decision_id"] = "same-target"
+same_target["activation"]["activation_id"] = "same-target/activation"
+same_target["activation"]["effective_variant"] = copy.deepcopy(accepted["activation"]["effective_variant"])
+bind_digest(same_target["activation"])
+bind_digest(same_target)
+write("same-target.json", same_target)
+same_current = copy.deepcopy(accepted)
+same_current["decision_id"] = "same-current"
+same_current["activation"]["activation_id"] = "same-current/activation"
+same_current["activation"]["parent_activation_id"] = same_target["activation"]["activation_id"]
+same_current["activation"]["parent_activation_sha256"] = same_target["activation"]["content_sha256"]
+bind_digest(same_current["activation"])
+bind_digest(same_current)
+write("same-current.json", same_current)
+no_change = copy.deepcopy(rollback)
+no_change["decision_id"] = "rollback-no-change"
+no_change["current_activation_path"] = "same-current.json"
+no_change["target_activation_path"] = "same-target.json"
+write("rollback-no-change.json", no_change)
+
+foreign_target = copy.deepcopy(baseline)
+foreign_target["decision_id"] = "foreign-target"
+foreign_target["activation"]["activation_id"] = "foreign-target/activation"
+foreign_target["activation"]["scope"]["repo_id"] = "foreign-repository"
+bind_digest(foreign_target["activation"]["scope"])
+bind_digest(foreign_target["activation"])
+bind_digest(foreign_target)
+write("foreign-target.json", foreign_target)
+foreign_current = copy.deepcopy(accepted)
+foreign_current["decision_id"] = "foreign-current"
+foreign_current["activation"]["activation_id"] = "foreign-current/activation"
+foreign_current["activation"]["parent_activation_id"] = foreign_target["activation"]["activation_id"]
+foreign_current["activation"]["parent_activation_sha256"] = foreign_target["activation"]["content_sha256"]
+bind_digest(foreign_current["activation"])
+bind_digest(foreign_current)
+write("foreign-current.json", foreign_current)
+scope_mismatch = copy.deepcopy(rollback)
+scope_mismatch["decision_id"] = "rollback-scope"
+scope_mismatch["current_activation_path"] = "foreign-current.json"
+scope_mismatch["target_activation_path"] = "foreign-target.json"
+write("rollback-scope.json", scope_mismatch)
+
+file_set_target = copy.deepcopy(baseline)
+file_set_target["decision_id"] = "file-set-target"
+file_set_target["activation"]["activation_id"] = "file-set-target/activation"
+file_set_revision = file_set_target["activation"]["scope"]["corpus_revision"]
+file_set_revision["source_kind"] = "FILE_SET"
+file_set_revision["source_repository_id"] = ""
+bind_digest(file_set_revision)
+bind_digest(file_set_target["activation"]["scope"])
+bind_digest(file_set_target["activation"])
+bind_digest(file_set_target)
+write("file-set-target.json", file_set_target)
+
+file_set_current = copy.deepcopy(accepted)
+file_set_current["decision_id"] = "file-set-current"
+file_set_current["activation"]["activation_id"] = "file-set-current/activation"
+file_set_current["activation"]["scope"] = copy.deepcopy(file_set_target["activation"]["scope"])
+file_set_current["activation"]["parent_activation_id"] = file_set_target["activation"]["activation_id"]
+file_set_current["activation"]["parent_activation_sha256"] = file_set_target["activation"]["content_sha256"]
+bind_digest(file_set_current["activation"])
+bind_digest(file_set_current)
+write("file-set-current.json", file_set_current)
+file_set_rollback = copy.deepcopy(rollback)
+file_set_rollback["decision_id"] = "rollback-file-set"
+file_set_rollback["current_activation_path"] = "file-set-current.json"
+file_set_rollback["target_activation_path"] = "file-set-target.json"
+write("rollback-file-set.json", file_set_rollback)
+
+broken_ancestor = copy.deepcopy(second)
+broken_ancestor["decision_id"] = "broken-ancestor"
+broken_ancestor["activation"]["activation_id"] = "broken-ancestor/activation"
+broken_ancestor["activation"]["scope"]["repo_id"] = "foreign-repository"
+bind_digest(broken_ancestor["activation"]["scope"])
+broken_ancestor["activation"]["parent_activation_id"] = "wrong-parent/activation"
+broken_ancestor["activation"]["parent_activation_sha256"] = "f" * 64
+bind_digest(broken_ancestor["activation"])
+bind_digest(broken_ancestor)
+write("broken-ancestor.json", broken_ancestor)
+
+precedence_current = copy.deepcopy(accepted)
+precedence_current["decision_id"] = "precedence-current"
+precedence_current["activation"]["activation_id"] = "precedence-current/activation"
+precedence_current["activation"]["parent_activation_id"] = broken_ancestor["activation"]["activation_id"]
+precedence_current["activation"]["parent_activation_sha256"] = broken_ancestor["activation"]["content_sha256"]
+bind_digest(precedence_current["activation"])
+bind_digest(precedence_current)
+write("precedence-current.json", precedence_current)
+precedence_request = copy.deepcopy(rollback)
+precedence_request["decision_id"] = "rollback-precedence"
+precedence_request["current_activation_path"] = "precedence-current.json"
+precedence_request["target_activation_path"] = "baseline.json"
+precedence_request["ancestor_activation_paths"] = ["broken-ancestor.json", "accepted.json"]
+write("rollback-precedence.json", precedence_request)
+
+nested_tamper = copy.deepcopy(accepted)
+nested_tamper["decision_id"] = "nested-tamper"
+nested_tamper["activation"]["activation_id"] = "nested-tamper/activation"
+nested_tamper["activation"]["effective_variant"]["base_prompt"]["text"] += " tampered"
+bind_digest(nested_tamper["activation"]["effective_variant"])
+bind_digest(nested_tamper["activation"])
+bind_digest(nested_tamper)
+write("nested-tamper.json", nested_tamper)
+nested_tamper_request = copy.deepcopy(rollback)
+nested_tamper_request["decision_id"] = "rollback-nested-tamper"
+nested_tamper_request["current_activation_path"] = "nested-tamper.json"
+write("rollback-nested-tamper.json", nested_tamper_request)
+PY
+
+cp "${temporary_dir}/accepted.json" "${temporary_dir}/accepted.before.json"
+run_success rollback "${temporary_dir}/rollback.json" "${temporary_dir}/rolled-back.json" ROLLED_BACK
+run_success rollback "${temporary_dir}/rollback-multi.json" "${temporary_dir}/rolled-back-multi.json" ROLLED_BACK
+run_success rollback "${temporary_dir}/rollback-file-set.json" "${temporary_dir}/rolled-back-file-set.json" ROLLED_BACK
+cmp -s "${temporary_dir}/accepted.before.json" "${temporary_dir}/accepted.json"
+cmp -s "${temporary_dir}/baseline.before.json" "${temporary_dir}/baseline.json"
+
+run_failure rollback "${temporary_dir}/rollback-unknown.json" "${temporary_dir}/unknown-result.json" UNKNOWN_TARGET
+run_failure rollback "${temporary_dir}/rollback-duplicate.json" "${temporary_dir}/duplicate-result.json" INVALID_INPUT
+run_failure rollback "${temporary_dir}/rollback-no-change.json" "${temporary_dir}/no-change-result.json" NO_CHANGE
+run_failure rollback "${temporary_dir}/rollback-scope.json" "${temporary_dir}/scope-result.json" SCOPE_MISMATCH
+run_failure rollback "${temporary_dir}/rollback-nested-tamper.json" "${temporary_dir}/nested-tamper-result.json" INVALID_INPUT
+
+python3 - "${temporary_dir}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+
+
+def load(name):
+    return json.loads((root / name).read_text(encoding="utf-8"))
+
+
+def digest(value):
+    claimed = value["content_sha256"]
+    value = dict(value)
+    value["content_sha256"] = ""
+    actual = hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert actual == claimed, (actual, claimed)
+
+
+baseline = load("baseline.json")
+accepted = load("accepted.json")
+rolled_back = load("rolled-back.json")
+multi = load("rolled-back-multi.json")
+for value in (accepted, rolled_back, multi):
+    digest(value["activation"])
+    digest(value)
+assert rolled_back["status"] == "ROLLED_BACK"
+assert rolled_back["activation"]["operation"] == "ROLLBACK"
+assert rolled_back["activation"]["parent_activation_id"] == accepted["activation"]["activation_id"]
+assert rolled_back["activation"]["rollback_target_activation_id"] == baseline["activation"]["activation_id"]
+assert rolled_back["activation"]["effective_variant"] == baseline["activation"]["effective_variant"]
+assert rolled_back["activation"]["accepted_evaluation_id"] == ""
+assert load("ineligible-result.json").get("activation") is None
+assert load("tampered-result.json").get("activation") is None
+assert load("mismatch-result.json").get("activation") is None
+assert load("unknown-result.json").get("activation") is None
+assert load("duplicate-result.json").get("activation") is None
+assert load("no-change-result.json").get("activation") is None
+assert load("scope-result.json").get("activation") is None
+assert load("nested-tamper-result.json").get("activation") is None
+PY
+
+if "${binary}" prompt accept "${temporary_dir}/accept.json" \
+  >"${temporary_dir}/arity.stdout" 2>"${temporary_dir}/arity.stderr"; then
+  printf '%s\n' "prompt accept accepted invalid arity" >&2
+  exit 1
+fi
+if "${binary}" prompt unknown "${temporary_dir}/accept.json" "${temporary_dir}/unknown-cli.json" \
+  >"${temporary_dir}/unknown-cli.stdout" 2>"${temporary_dir}/unknown-cli.stderr"; then
+  printf '%s\n' "prompt CLI accepted an unknown operation" >&2
+  exit 1
+fi
+
+if [[ "${ALIGN_C6D_REQUEST18_ADOPTION:-0}" == 1 ]]; then
+  python3 - "${temporary_dir}" <<'PY'
+import copy
+import json
+import os
+import shutil
+import socket
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+
+
+def load(name):
+    return json.loads((root / name).read_text(encoding="utf-8"))
+
+
+def canonical_bytes(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def write_request(name, **updates):
+    value = copy.deepcopy(load("accept.json"))
+    value.update(updates)
+    (root / name).write_bytes(canonical_bytes(value))
+
+
+real_linked = root / "real-linked"
+real_linked.mkdir()
+shutil.copyfile(root / "eligible.json", real_linked / "eligible.json")
+os.symlink("real-linked", root / "linked")
+os.symlink("eligible.json", root / "eligible-link.json")
+os.symlink("missing-target.json", root / "dangling-input.json")
+os.symlink("missing-directory", root / "dangling-linked")
+(root / "directory-input").mkdir()
+os.mkfifo(root / "fifo-input")
+input_socket = socket.socket(socket.AF_UNIX)
+input_socket.bind(str(root / "socket-input"))
+input_socket.close()
+shutil.copyfile(root / "eligible.json", root / "denied-input.json")
+os.chmod(root / "denied-input.json", 0)
+
+os.symlink(str(root), root / "root-link")
+os.symlink("accept.json", root / "request-link.json")
+os.symlink(str(root), root / "request-parent-link")
+(root / "request-directory").mkdir()
+os.mkfifo(root / "request-fifo")
+request_socket = socket.socket(socket.AF_UNIX)
+request_socket.bind(str(root / "request-socket"))
+request_socket.close()
+
+write_request("root-link-request.json", project_root=str(root / "root-link"))
+write_request("root-regular-request.json", project_root=str(root / "eligible.json"))
+write_request("root-missing-request.json", project_root=str(root / "missing-root"))
+write_request("intermediate-link-request.json", evaluation_path="linked/eligible.json")
+write_request("intermediate-regular-request.json", evaluation_path="eligible.json/child")
+write_request("intermediate-dangling-request.json", evaluation_path="dangling-linked/eligible.json")
+write_request("final-link-request.json", evaluation_path="eligible-link.json")
+write_request("dangling-request.json", evaluation_path="dangling-input.json")
+write_request("missing-request.json", evaluation_path="missing-input.json")
+write_request("directory-request.json", evaluation_path="directory-input")
+write_request("fifo-request.json", evaluation_path="fifo-input")
+write_request("socket-request.json", evaluation_path="socket-input")
+write_request("denied-request.json", evaluation_path="denied-input.json")
+(root / "invalid-utf8-input").write_bytes(b"\xff")
+write_request("invalid-utf8-request.json", evaluation_path="invalid-utf8-input")
+(root / "malformed-evaluation.json").write_text("{", encoding="ascii")
+write_request("malformed-evaluation-request.json", evaluation_path="malformed-evaluation.json")
+write_request("parent-relative-request.json", evaluation_path="../eligible.json")
+write_request("absolute-input-request.json", evaluation_path=str(root / "eligible.json"))
+write_request("dot-input-request.json", evaluation_path="./eligible.json")
+write_request("empty-component-request.json", evaluation_path="nested//eligible.json")
+write_request("trailing-separator-request.json", evaluation_path="eligible.json/")
+write_request(
+    "accept-input-order-request.json",
+    evaluation_path="missing-input.json",
+    evaluation_evidence_path="eligible-link.json",
+    parent_activation_path="eligible-link.json",
+)
+write_request(
+    "accept-evidence-order-request.json",
+    evaluation_evidence_path="missing-evidence.json",
+    parent_activation_path="eligible-link.json",
+)
+
+multi_read = (root / "eligible.json").read_bytes() + b" " * 70000
+(root / "multi-read-eligible.json").write_bytes(multi_read)
+write_request("multi-read-request.json", evaluation_path="multi-read-eligible.json")
+
+rollback = load("rollback.json")
+rollback["current_activation_path"] = "missing-current.json"
+rollback["ancestor_activation_paths"] = ["eligible-link.json"]
+rollback["target_activation_path"] = "eligible-link.json"
+(root / "rollback-current-order-request.json").write_bytes(canonical_bytes(rollback))
+rollback["current_activation_path"] = "accepted.json"
+rollback["ancestor_activation_paths"] = ["missing-ancestor.json"]
+(root / "rollback-ancestor-order-request.json").write_bytes(canonical_bytes(rollback))
+rollback["current_activation_path"] = "second.json"
+rollback["ancestor_activation_paths"] = ["accepted.json"]
+rollback["target_activation_path"] = "missing-target.json"
+(root / "rollback-target-order-request.json").write_bytes(canonical_bytes(rollback))
+rollback = load("rollback.json")
+rollback["reason"] = ""
+(root / "rollback-invalid-reason-request.json").write_bytes(canonical_bytes(rollback))
+rollback["current_activation_path"] = "missing-current.json"
+(root / "rollback-current-before-reason-request.json").write_bytes(canonical_bytes(rollback))
+
+accept_bytes = canonical_bytes(load("accept.json"))
+if len(accept_bytes) >= 65536:
+    raise SystemExit("accept request unexpectedly reaches the request cap")
+(root / "exact-cap-request.json").write_bytes(accept_bytes + b" " * (65536 - len(accept_bytes)))
+(root / "cap-plus-one-request.json").write_bytes(accept_bytes + b" " * (65537 - len(accept_bytes)))
+(root / "malformed-request.json").write_text("{", encoding="ascii")
+
+(root / "output-real").mkdir()
+os.symlink("output-real", root / "output-parent-link")
+(root / "output-target").write_text("target-sentinel\n", encoding="utf-8")
+os.symlink("output-target", root / "output-final-link")
+(root / "existing-output").write_text("existing-sentinel\n", encoding="utf-8")
+(root / "output-directory").mkdir()
+os.mkfifo(root / "output-fifo")
+output_socket = socket.socket(socket.AF_UNIX)
+output_socket.bind(str(root / "output-socket"))
+output_socket.close()
+(root / "denied-output-parent").mkdir()
+os.chmod(root / "denied-output-parent", 0o500)
+(root / "unused").mkdir()
+
+device_available = False
+if hasattr(os, "mknod") and hasattr(os, "makedev"):
+    try:
+        os.mknod(root / "device-input", stat.S_IFCHR | 0o600, os.makedev(1, 3))
+        device_available = True
+    except (PermissionError, OSError):
+        pass
+(root / "device-available").write_text("yes" if device_available else "no", encoding="ascii")
+if device_available:
+    write_request("device-request.json", evaluation_path="device-input")
+PY
+
+  expect_operation_result_code() {
+    local operation="$1"
+    local request="$2"
+    local result="$3"
+    local expected_code="$4"
+    run_failure "${operation}" "${request}" "${result}" INVALID_INPUT
+    python3 - "${result}" "${expected_code}" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if value.get("error_code") != sys.argv[2]:
+    raise SystemExit(f"expected {sys.argv[2]}, got {value.get('error_code')}: {value!r}")
+if value.get("activation") is not None:
+    raise SystemExit(f"input failure published an activation: {value!r}")
+PY
+  }
+
+  expect_result_code() {
+    expect_operation_result_code accept "$1" "$2" "$3"
+  }
+
+  expect_rollback_result_code() {
+    expect_operation_result_code rollback "$1" "$2" "$3"
+  }
+
+  expect_no_result() {
+    local request="$1"
+    local result="$2"
+    if "${binary}" prompt accept "${request}" "${result}" \
+      >"${temporary_dir}/preflight.stdout" 2>"${temporary_dir}/preflight.stderr"; then
+      printf 'unsafe preflight unexpectedly succeeded: %s -> %s\n' "${request}" "${result}" >&2
+      exit 1
+    fi
+    if test -e "${result}" || test -L "${result}"; then
+      printf 'unsafe preflight created a result: %s\n' "${result}" >&2
+      exit 1
+    fi
+  }
+
+  expect_result_code "${temporary_dir}/root-link-request.json" "${temporary_dir}/root-link-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/root-regular-request.json" "${temporary_dir}/root-regular-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/root-missing-request.json" "${temporary_dir}/root-missing-result.json" INPUT_NOT_FOUND
+  expect_result_code "${temporary_dir}/intermediate-link-request.json" "${temporary_dir}/intermediate-link-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/intermediate-regular-request.json" "${temporary_dir}/intermediate-regular-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/intermediate-dangling-request.json" "${temporary_dir}/intermediate-dangling-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/final-link-request.json" "${temporary_dir}/final-link-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/dangling-request.json" "${temporary_dir}/dangling-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/missing-request.json" "${temporary_dir}/missing-result.json" INPUT_NOT_FOUND
+  expect_result_code "${temporary_dir}/directory-request.json" "${temporary_dir}/directory-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/fifo-request.json" "${temporary_dir}/fifo-result.json" INPUT_TYPE
+  expect_result_code "${temporary_dir}/socket-request.json" "${temporary_dir}/socket-result.json" INPUT_TYPE
+  if [[ "$(cat "${temporary_dir}/device-available")" == yes ]]; then
+    expect_result_code "${temporary_dir}/device-request.json" "${temporary_dir}/device-result.json" INPUT_TYPE
+  fi
+  if [[ "$(id -u)" != 0 ]]; then
+    expect_result_code "${temporary_dir}/denied-request.json" "${temporary_dir}/denied-result.json" INPUT_READ
+  fi
+  expect_result_code "${temporary_dir}/invalid-utf8-request.json" "${temporary_dir}/invalid-utf8-result.json" INPUT_READ
+  expect_result_code "${temporary_dir}/malformed-evaluation-request.json" "${temporary_dir}/malformed-evaluation-result.json" INVALID_REFERENCE
+
+  expect_result_code "${temporary_dir}/parent-relative-request.json" "${temporary_dir}/parent-relative-result.json" INVALID_BOUNDS
+  expect_result_code "${temporary_dir}/absolute-input-request.json" "${temporary_dir}/absolute-input-result.json" INVALID_BOUNDS
+  expect_result_code "${temporary_dir}/dot-input-request.json" "${temporary_dir}/dot-input-result.json" INVALID_BOUNDS
+  expect_result_code "${temporary_dir}/empty-component-request.json" "${temporary_dir}/empty-component-result.json" INVALID_BOUNDS
+  expect_result_code "${temporary_dir}/trailing-separator-request.json" "${temporary_dir}/trailing-separator-result.json" INVALID_BOUNDS
+
+  expect_result_code "${temporary_dir}/accept-input-order-request.json" "${temporary_dir}/accept-input-order-result.json" INPUT_NOT_FOUND
+  expect_result_code "${temporary_dir}/accept-evidence-order-request.json" "${temporary_dir}/accept-evidence-order-result.json" INPUT_NOT_FOUND
+  expect_rollback_result_code "${temporary_dir}/rollback-current-order-request.json" "${temporary_dir}/rollback-current-order-result.json" INPUT_NOT_FOUND
+  expect_rollback_result_code "${temporary_dir}/rollback-ancestor-order-request.json" "${temporary_dir}/rollback-ancestor-order-result.json" INPUT_TYPE
+  expect_rollback_result_code "${temporary_dir}/rollback-target-order-request.json" "${temporary_dir}/rollback-target-order-result.json" INPUT_NOT_FOUND
+  expect_rollback_result_code "${temporary_dir}/rollback-precedence.json" "${temporary_dir}/rollback-precedence-result.json" INVALID_REFERENCE
+  expect_rollback_result_code "${temporary_dir}/rollback-invalid-reason-request.json" "${temporary_dir}/rollback-invalid-reason-result.json" INVALID_BOUNDS
+  expect_rollback_result_code "${temporary_dir}/rollback-current-before-reason-request.json" "${temporary_dir}/rollback-current-before-reason-result.json" INPUT_NOT_FOUND
+
+  run_success accept "${temporary_dir}/exact-cap-request.json" "${temporary_dir}/exact-cap-result.json" ACCEPTED
+  run_success accept "${temporary_dir}/multi-read-request.json" "${temporary_dir}/multi-read-result.json" ACCEPTED
+  expect_no_result "${temporary_dir}/cap-plus-one-request.json" "${temporary_dir}/cap-plus-one-result.json"
+  expect_no_result "${temporary_dir}/malformed-request.json" "${temporary_dir}/malformed-request-result.json"
+
+  expect_no_result "${temporary_dir}/request-link.json" "${temporary_dir}/request-link-result.json"
+  expect_no_result "${temporary_dir}/request-parent-link/accept.json" "${temporary_dir}/request-parent-link-result.json"
+  expect_no_result "${temporary_dir}/request-directory" "${temporary_dir}/request-directory-result.json"
+  expect_no_result "${temporary_dir}/request-fifo" "${temporary_dir}/request-fifo-result.json"
+  expect_no_result "${temporary_dir}/request-socket" "${temporary_dir}/request-socket-result.json"
+
+  expect_no_result "${temporary_dir}/accept.json" "${temporary_dir}/output-parent-link/new.json"
+  test ! -e "${temporary_dir}/output-real/new.json"
+  if "${binary}" prompt accept "${temporary_dir}/accept.json" "${temporary_dir}/existing-output" \
+    >"${temporary_dir}/existing-preflight.stdout" 2>"${temporary_dir}/existing-preflight.stderr"; then
+    printf '%s\n' "exclusive output replaced an existing regular file" >&2
+    exit 1
+  fi
+  test "$(cat "${temporary_dir}/existing-output")" = existing-sentinel
+  for occupied in output-final-link output-directory output-fifo output-socket; do
+    if "${binary}" prompt accept "${temporary_dir}/accept.json" "${temporary_dir}/${occupied}" \
+      >"${temporary_dir}/${occupied}.stdout" 2>"${temporary_dir}/${occupied}.stderr"; then
+      printf 'exclusive output accepted occupied entry: %s\n' "${occupied}" >&2
+      exit 1
+    fi
+  done
+  test -L "${temporary_dir}/output-final-link"
+  test "$(cat "${temporary_dir}/output-target")" = target-sentinel
+  test -d "${temporary_dir}/output-directory"
+  test -p "${temporary_dir}/output-fifo"
+  test -S "${temporary_dir}/output-socket"
+  if [[ "$(cat "${temporary_dir}/device-available")" == yes ]]; then
+    if "${binary}" prompt accept "${temporary_dir}/accept.json" "${temporary_dir}/device-input" \
+      >"${temporary_dir}/output-device.stdout" 2>"${temporary_dir}/output-device.stderr"; then
+      printf '%s\n' "exclusive output accepted an occupied device" >&2
+      exit 1
+    fi
+    test -c "${temporary_dir}/device-input"
+  fi
+  expect_no_result "${temporary_dir}/accept.json" "${temporary_dir}/missing-output-parent/result.json"
+  if [[ "$(id -u)" != 0 ]]; then
+    expect_no_result "${temporary_dir}/accept.json" "${temporary_dir}/denied-output-parent/result.json"
+  fi
+  expect_no_result "${temporary_dir}/accept.json" "${temporary_dir}/unused/../unsafe-output.json"
+
+  set +e
+  "${binary}" prompt accept "${temporary_dir}/accept.json" "${temporary_dir}/race-result.json" \
+    >"${temporary_dir}/race-one.stdout" 2>"${temporary_dir}/race-one.stderr" &
+  race_one=$!
+  "${binary}" prompt accept "${temporary_dir}/accept.json" "${temporary_dir}/race-result.json" \
+    >"${temporary_dir}/race-two.stdout" 2>"${temporary_dir}/race-two.stderr" &
+  race_two=$!
+  wait "${race_one}"
+  race_one_status=$?
+  wait "${race_two}"
+  race_two_status=$?
+  set -e
+  if ! { [[ "${race_one_status}" == 0 && "${race_two_status}" != 0 ]] ||
+    [[ "${race_one_status}" != 0 && "${race_two_status}" == 0 ]]; }; then
+    printf 'exclusive output race did not produce exactly one winner: %s %s\n' \
+      "${race_one_status}" "${race_two_status}" >&2
+    exit 1
+  fi
+  python3 - "${temporary_dir}/race-result.json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if value.get("status") != "ACCEPTED" or value.get("activation") is None:
+    raise SystemExit(f"exclusive race winner published an invalid result: {value!r}")
+PY
+
+  chmod 700 "${temporary_dir}/denied-output-parent"
+  chmod 600 "${temporary_dir}/denied-input.json"
+  printf '%s\n' "c6d request18 adoption: retained-root input/output matrix PASS"
+fi
+
+printf '%s\n' "prompt state smoke: verifier-first accept, immutable rollback, lineage, and CLI cases PASS"

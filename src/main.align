@@ -9,6 +9,7 @@ import model
 import provider
 import repo_index
 import patch_eval
+import prompt_state
 import verification_loop
 import result
 import std.env
@@ -21,6 +22,7 @@ fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
   print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --select-tests <repo> <changed-path> <tests.json> [timeout-ns] | --evaluate-patch <repo> <patch.diff> <evaluation.json> [timeout-ns] | --verify-loop <task.json> <result.json> | --eval [corpus] | --loop]")
+  print("       main prompt <accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
 
@@ -288,6 +290,30 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
   return Ok(())
 }
 
+fn prompt_state_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 {
+    return Err(Error.Invalid)
+  }
+  operation := args[2]
+  status := if operation == "accept" {
+    prompt_state.accept_file(args[3], args[4])?
+  } else if operation == "rollback" {
+    prompt_state.rollback_file(args[3], args[4])?
+  } else {
+    return Err(Error.Invalid)
+  }
+  print("prompt operation:")
+  print(operation)
+  print("status:")
+  print(prompt_state.command_status_label(status))
+  print("output:")
+  print(args[4])
+  if !prompt_state.command_status_success(status) {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
 // A repair provider that declines to fix anything (always gives up). It lets the loop's control
 // exits be demonstrated without a model: an already-passing check needs no provider, and a
 // persistently failing check ends in GAVE_UP on the first iteration. A real provider (LLM + patch
@@ -393,29 +419,33 @@ pub fn main(args: array<str>) -> Result<(), Error> {
         if args[1] == "--selfcheck" {
           self_check()?
         } else {
-          if args[1] == "--provider" {
-            provider_demo(args)?
+          if args[1] == "prompt" {
+            prompt_state_demo(args)?
           } else {
-            if args[1] == "--evaluate-patch" {
-              patch_evaluation_demo(args)?
+            if args[1] == "--provider" {
+              provider_demo(args)?
             } else {
-              if args[1] == "--verify-loop" {
-                verification_loop_demo(args)?
+              if args[1] == "--evaluate-patch" {
+                patch_evaluation_demo(args)?
               } else {
-                if args[1] == "--select-tests" {
-                  select_tests_demo(args)?
+                if args[1] == "--verify-loop" {
+                  verification_loop_demo(args)?
                 } else {
-                  if args[1] == "--index" {
-                    index_demo(args)?
+                  if args[1] == "--select-tests" {
+                    select_tests_demo(args)?
                   } else {
-                    if args[1] == "--eval" {
-                      corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
-                      eval.run_suite(corpus)?
+                    if args[1] == "--index" {
+                      index_demo(args)?
                     } else {
-                      if args[1] == "--loop" {
-                        loop_demo()
+                      if args[1] == "--eval" {
+                        corpus := if args.len() >= 3 { args[2] } else { "eval/tasks/smoke-v1.json" }
+                        eval.run_suite(corpus)?
                       } else {
-                        print_help()
+                        if args[1] == "--loop" {
+                          loop_demo()
+                        } else {
+                          print_help()
+                        }
                       }
                     }
                   }

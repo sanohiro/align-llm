@@ -61,6 +61,8 @@ expected_records = [
     "PromptVerifierTrust",
     "PromptExpectedInputDigest",
     "PromptEvaluationEvidence",
+    "PromptAcceptRequest",
+    "PromptRollbackRequest",
     "PromptActivation",
     "PromptActivationResult",
     "PromptAcceptancePolicy",
@@ -81,7 +83,7 @@ for match in re.finditer(r"^pub ([A-Z][A-Za-z0-9_]*) \{\n(.*?)^\}", source, re.M
     )
 if records != expected_records:
     raise SystemExit(f"artifact graph declaration order mismatch: {records!r}")
-if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (50, 543, 50, 50):
+if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (52, 558, 52, 52):
     raise SystemExit(
         "artifact graph shape mismatch: "
         f"records={len(records)} fields={fields} "
@@ -94,6 +96,45 @@ PY
 variant_output="${temporary_dir}/variant.json"
 "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${variant_fixture}" >"${variant_output}"
 cmp "${variant_output}" "${variant_fixture}"
+
+valid_missing_id_failure="${temporary_dir}/valid-missing-id-failure.json"
+invalid_missing_id_failure="${temporary_dir}/invalid-missing-id-failure.json"
+python3 - "${valid_missing_id_failure}" "${invalid_missing_id_failure}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+
+def write(path, status, error_code, error):
+    value = {
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_ACTIVATION_RESULT",
+        "status": status,
+        "error_code": error_code,
+        "error": error,
+        "content_sha256": "",
+    }
+    canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    value["content_sha256"] = hashlib.sha256(canonical).hexdigest()
+    Path(path).write_text(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+write(sys.argv[1], "INVALID_INPUT", "INVALID_BOUNDS", "invalid request identifier")
+write(sys.argv[2], "INELIGIBLE", "INELIGIBLE", "evaluation is not eligible")
+PY
+
+"${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" \
+  activation-valid "${temporary_dir}" "$(basename "${valid_missing_id_failure}")"
+if "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" \
+  activation-valid "${temporary_dir}" "$(basename "${invalid_missing_id_failure}")" \
+  >"${temporary_dir}/invalid-missing-id.stdout" 2>"${temporary_dir}/invalid-missing-id.stderr"; then
+  printf '%s\n' "non-INVALID_INPUT failure accepted a missing decision ID" >&2
+  exit 1
+fi
 
 unknown_variant="${temporary_dir}/unknown-variant.json"
 invalid_variant="${temporary_dir}/invalid-variant.json"

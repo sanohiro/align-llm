@@ -1,30 +1,93 @@
 module prompt_artifact_io
 
 import prompt_artifacts
+import std.crypto
+import std.encoding
 import std.fs
 
 ARTIFACT_MAX_BYTES := 2097152
+REQUEST_MAX_BYTES := 65536
+EVALUATION_MAX_BYTES := 268435456
+EVIDENCE_MAX_BYTES := 8388608
 
-fn read_bounded(path: str, maximum: i64) -> Result<string, Error> {
+pub InputSourceStatus { Loaded, NotFound, InputType, InputRead }
+
+pub InputSource {
+  status: InputSourceStatus,
+  source: string,
+}
+
+fn digest_text(value: str) -> string {
+  digest := crypto.sha256(value)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn read_bounded_reader(reader: reader, maximum: i64) -> Result<string, Error> {
   if maximum <= 0 {
     return Err(Error.Invalid)
   }
-  reader := fs.open(path)?
-  // One extra byte is the probe: a full buffer is not itself an overflow until the probe byte is
-  // observed. The decoder never sees input above the declared artifact cap.
-  mut bytes := buffer(maximum + 1)
-  count := reader.read(bytes)?
-  if count > maximum {
-    return Err(Error.Invalid)
-  }
-  if count == maximum {
-    mut probe := buffer(1)
-    probe_count := reader.read(probe)?
-    if probe_count > 0 {
-      return Err(Error.Invalid)
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == maximum {
+      // A full cap is valid only at EOF. The probe byte is never appended or decoded.
+      mut probe := buffer(1)
+      probe_count := reader.read(probe)?
+      if probe_count > 0 {
+        return Err(Error.Invalid)
+      }
+      break
     }
+    remaining := maximum - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      tail_count := reader.read(tail)?
+      accumulated.append(tail.bytes())
+      tail_count
+    } else {
+      chunk_count := reader.read(chunk)?
+      accumulated.append(chunk.bytes())
+      chunk_count
+    }
+    if count == 0 {
+      break
+    }
+    total = total + count
   }
-  return Ok(bytes.bytes().as_str()?.clone())
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
+fn read_bounded(path: str, maximum: i64) -> Result<string, Error> {
+  reader := fs.open(path)?
+  return read_bounded_reader(reader, maximum)
+}
+
+fn read_bounded_beneath(root: str, relative: str, maximum: i64) -> Result<string, Error> {
+  reader := fs.open_beneath(root, relative)?
+  return read_bounded_reader(reader, maximum)
+}
+
+fn failed_source(status: InputSourceStatus) -> InputSource {
+  return InputSource { status: status, source: "".clone() }
+}
+
+fn read_beneath_source(root: str, relative: str, maximum: i64) -> InputSource {
+  reader := match fs.open_beneath(root, relative) {
+    Ok(value) => value,
+    Err(failure) => {
+      status := match failure {
+        NotFound => InputSourceStatus.NotFound,
+        Invalid => InputSourceStatus.InputType,
+        _ => InputSourceStatus.InputRead,
+      }
+      return failed_source(status)
+    },
+  }
+  source := read_bounded_reader(reader, maximum) else {
+    return failed_source(InputSourceStatus.InputRead)
+  }
+  return InputSource { status: InputSourceStatus.Loaded, source: source }
 }
 
 pub fn load_prompt_variant(path: str) -> Result<prompt_artifacts.PromptVariant, Error> {
@@ -42,4 +105,76 @@ pub fn encode_prompt_variant(value: prompt_artifacts.PromptVariant) -> Result<st
     return Err(Error.Invalid)
   }
   return Ok(prompt_artifacts.encode_prompt_variant_bounded(value, ARTIFACT_MAX_BYTES)?)
+}
+
+pub fn load_prompt_accept_request(root: str, relative: str) -> Result<prompt_artifacts.PromptAcceptRequest, Error> {
+  source := read_bounded_beneath(root, relative, REQUEST_MAX_BYTES)?
+  view: str := source
+  return prompt_artifacts.decode_prompt_accept_request(view)
+}
+
+pub fn load_prompt_rollback_request(root: str, relative: str) -> Result<prompt_artifacts.PromptRollbackRequest, Error> {
+  source := read_bounded_beneath(root, relative, REQUEST_MAX_BYTES)?
+  view: str := source
+  return prompt_artifacts.decode_prompt_rollback_request(view)
+}
+
+pub fn read_prompt_evaluation_result_source(root: str, relative: str) -> InputSource {
+  return read_beneath_source(root, relative, EVALUATION_MAX_BYTES)
+}
+
+pub fn decode_prompt_evaluation_result_source(value: str) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  decoded := prompt_artifacts.decode_prompt_evaluation_result(value)?
+  mut normalized := prompt_artifacts.decode_prompt_evaluation_result(value)?
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_evaluation_result_bounded(normalized, EVALUATION_MAX_BYTES)?
+  if digest_text(canonical) != claimed {
+    return Err(Error.Invalid)
+  }
+  return Ok(decoded)
+}
+
+pub fn read_prompt_evaluation_evidence_source(root: str, relative: str) -> InputSource {
+  return read_beneath_source(root, relative, EVIDENCE_MAX_BYTES)
+}
+
+pub fn decode_prompt_evaluation_evidence_source(value: str) -> Result<prompt_artifacts.PromptEvaluationEvidence, Error> {
+  decoded := prompt_artifacts.decode_prompt_evaluation_evidence(value)?
+  mut normalized := prompt_artifacts.decode_prompt_evaluation_evidence(value)?
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_evaluation_evidence_bounded(normalized, EVIDENCE_MAX_BYTES)?
+  if digest_text(canonical) != claimed {
+    return Err(Error.Invalid)
+  }
+  return Ok(decoded)
+}
+
+pub fn read_prompt_activation_result_source(root: str, relative: str) -> InputSource {
+  return read_beneath_source(root, relative, ARTIFACT_MAX_BYTES)
+}
+
+pub fn read_prompt_activation_result_source_owned(root: str, borrow relative: string) -> InputSource {
+  return read_prompt_activation_result_source(root, relative)
+}
+
+pub fn decode_prompt_activation_result_source(value: str) -> Result<prompt_artifacts.PromptActivationResult, Error> {
+  decoded := prompt_artifacts.decode_prompt_activation_result(value)?
+  if !prompt_artifacts.verify_prompt_activation_result_content(decoded) {
+    return Err(Error.Invalid)
+  }
+  return Ok(decoded)
+}
+
+pub fn write_prompt_activation_result(
+  output: writer,
+  value: prompt_artifacts.PromptActivationResult,
+) -> Result<(), Error> {
+  if !prompt_artifacts.verify_prompt_activation_result_content(value) {
+    return Err(Error.Invalid)
+  }
+  encoded := prompt_artifacts.encode_prompt_activation_result_bounded(value, ARTIFACT_MAX_BYTES)?
+  output.write(encoded)?
+  return output.flush()
 }
