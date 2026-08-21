@@ -103,6 +103,7 @@ class ImmutableInput:
                 raise AdapterError(f"{label} sealing failed")
             self.descriptor = descriptor
             self.seals = seals
+            self.byte_count = len(raw)
             descriptor = -1
         except OSError:
             raise AdapterError(f"{label} is unavailable") from None
@@ -457,7 +458,7 @@ def capture_fixture_output(
     return captures["stdout"].bytes(), captures["stderr"].bytes()
 
 
-def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, bytes, bytes]:
+def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, bytes, bytes, int]:
     timeout = max(0.001, timeout_ns / 1_000_000_000)
     environment = {
         "LANG": "C",
@@ -468,15 +469,17 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, byt
     }
     process: subprocess.Popen[bytes] | None = None
     retained: list[ImmutableInput] = []
+    patch_byte_count = 0
     try:
         if not CHILD_SUBREAPER_ENABLED:
-            return "ERROR", False, False, b"", b"child-subreaper containment is unavailable"
+            return "ERROR", False, False, b"", b"child-subreaper containment is unavailable", 0
         runner = ImmutableInput(RUNNER, RUNNER_SHA256, "coding-runner")
         retained.append(runner)
         task = ImmutableInput(TASK, TASK_SHA256, "coding-task")
         retained.append(task)
         patch = ImmutableInput(PATCHES[variant], PATCH_SHA256[variant], "coding-patch")
         retained.append(patch)
+        patch_byte_count = patch.byte_count
         process = subprocess.Popen(
             [
                 sys.executable, "-c", RUNNER_BOOTSTRAP, str(runner.descriptor), str(RUNNER),
@@ -496,19 +499,19 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, byt
             item.verify_sealed()
         if process_group_exists(process.pid) or owned_descendant_ids(process):
             cleanup_passed = cleanup_process_group(process)
-            return "ERROR", cleanup_passed, False, b"", b"contained runner left a descendant"
+            return "ERROR", cleanup_passed, False, b"", b"contained runner left a descendant", patch_byte_count
         outcome = "PASS" if process.returncode == 0 else "TEST_FAIL" if process.returncode == 4 else "ERROR"
-        return outcome, True, True, stdout, stderr
+        return outcome, True, True, stdout, stderr, patch_byte_count
     except subprocess.TimeoutExpired as error:
         assert process is not None
         cleanup_passed = cleanup_process_group(process)
-        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT], patch_byte_count
     except OSError as error:
         cleanup_passed = True if process is None else cleanup_process_group(process)
-        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT], patch_byte_count
     except AdapterError as error:
         cleanup_passed = True if process is None else cleanup_process_group(process)
-        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT], patch_byte_count
     finally:
         for item in retained:
             item.close()
@@ -517,26 +520,32 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, byt
 def measurement(
     request: Mapping[str, Any], rendered: Mapping[str, Any], policy: Mapping[str, Any], control: Mapping[str, Any]
 ) -> dict[str, Any]:
-    outcome, cleanup_passed, containment_passed, stdout, stderr = execute_fixture(
-        request["variant"], int(control["timeout_ns"])
-    )
+    prompt_oversized = len(rendered["text"].encode("utf-8")) > policy["max_prompt_bytes"]
+    if prompt_oversized:
+        outcome, cleanup_passed, containment_passed = "POLICY", True, True
+        stdout, stderr, patch_byte_count = b"", b"", 0
+    else:
+        outcome, cleanup_passed, containment_passed, stdout, stderr, patch_byte_count = execute_fixture(
+            request["variant"], int(control["timeout_ns"])
+        )
     generation, attestation = provider_identities(request, rendered, policy, control)
     is_candidate = request["variant"] == "CANDIDATE"
     passed = outcome == "PASS"
     expected_failure = outcome == "TEST_FAIL"
-    status = "PASS" if passed else "FAIL" if expected_failure else "ERROR"
+    policy_violation = outcome == "POLICY"
+    status = "PASS" if passed else "FAIL" if expected_failure else "POLICY_VIOLATION" if policy_violation else "ERROR"
     value = {
         "schema_version": 1,
         "artifact_kind": "TASK_MEASUREMENT",
         "status": "ERROR" if not cleanup_passed or not containment_passed else status,
-        "failure_kind": "CLEANUP" if not cleanup_passed else "CONTAINMENT" if not containment_passed else "NONE" if passed else "TEST" if expected_failure else "ADAPTER",
-        "build_status": "PASS" if outcome != "ERROR" else "ERROR",
-        "test_status": "PASS" if passed else "FAIL" if expected_failure else "ERROR",
+        "failure_kind": "CONTAINMENT" if not containment_passed else "CLEANUP" if not cleanup_passed else "NONE" if passed else "TEST" if expected_failure else "POLICY" if policy_violation else "ADAPTER",
+        "build_status": "NOT_RUN" if policy_violation else "PASS" if outcome != "ERROR" else "ERROR",
+        "test_status": "NOT_RUN" if policy_violation else "PASS" if passed else "FAIL" if expected_failure else "ERROR",
         "repair_loop_count": 1 if expected_failure else 0,
         "unrelated_diff_count": 0,
-        "patch_size_bytes": PATCHES[request["variant"]].stat().st_size,
+        "patch_size_bytes": patch_byte_count,
         "public_api_change_count": 0,
-        "policy_violation_count": 0,
+        "policy_violation_count": 1 if policy_violation else 0,
         "cleanup_passed": cleanup_passed,
         "containment_passed": containment_passed,
         "benchmark_regression_ppm": None,
@@ -545,7 +554,7 @@ def measurement(
         "generation_request": generation,
         "environment_probe": environment_probe(),
         "seed_attestation": attestation,
-        "diagnostic_summary": "contained fixture passed" if passed else "contained fixture failed as expected" if expected_failure else "contained fixture runner failed",
+        "diagnostic_summary": "prompt exceeds max_prompt_bytes" if policy_violation else "contained fixture passed" if passed else "contained fixture failed as expected" if expected_failure else "contained fixture runner failed",
         "diagnostic_stdout": stdout.decode("utf-8", "replace"),
         "diagnostic_stderr": stderr.decode("utf-8", "replace"),
         "content_sha256": "",

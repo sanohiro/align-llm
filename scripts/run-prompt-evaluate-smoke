@@ -426,6 +426,13 @@ def verify_reviewed_execution_boundary() -> None:
                 not module.valid_snapshot_result(malformed, "task", snapshot_request, project),
                 f"semantically malformed {mutation} snapshot result was accepted",
             )
+        oversized_snapshot = copy.deepcopy(snapshot)
+        oversized_snapshot["artifact_digests"][0]["byte_count"] = module.SNAPSHOT_ARTIFACT_LIMIT + 1
+        module.bind(oversized_snapshot)
+        require(
+            not module.valid_snapshot_result(oversized_snapshot, "task", snapshot_request, project),
+            "snapshot aggregate byte cap plus one was accepted",
+        )
     malformed_measurement = module.bind({
         "schema_version": 1, "artifact_kind": "TASK_MEASUREMENT", "status": "PASS",
         "content_sha256": "",
@@ -437,6 +444,78 @@ def verify_reviewed_execution_boundary() -> None:
         ),
         "semantically incomplete measurement was accepted",
     )
+    measurement_states = [
+        {
+            "status": "PASS", "failure_kind": "NONE", "build_status": "PASS", "test_status": "PASS",
+            "cleanup_passed": True, "containment_passed": True, "policy_violation_count": 0,
+            "generation_to_passing_patch_ns": 1,
+        },
+        {
+            "status": "FAIL", "failure_kind": "TEST", "build_status": "PASS", "test_status": "FAIL",
+            "cleanup_passed": True, "containment_passed": True, "policy_violation_count": 0,
+            "generation_to_passing_patch_ns": None,
+        },
+        {
+            "status": "POLICY_VIOLATION", "failure_kind": "POLICY",
+            "build_status": "NOT_RUN", "test_status": "NOT_RUN",
+            "cleanup_passed": True, "containment_passed": True, "policy_violation_count": 1,
+            "generation_to_passing_patch_ns": None,
+        },
+        {
+            "status": "ERROR", "failure_kind": "CONTAINMENT",
+            "build_status": "ERROR", "test_status": "ERROR",
+            "cleanup_passed": False, "containment_passed": False, "policy_violation_count": 0,
+            "generation_to_passing_patch_ns": None,
+        },
+    ]
+    for failure, build_status, test_status in (
+        ("PROVIDER", "NOT_RUN", "NOT_RUN"),
+        ("PATCH", "NOT_RUN", "NOT_RUN"),
+        ("BUILD", "FAIL", "NOT_RUN"),
+    ):
+        measurement_states.append({
+            "status": "FAIL", "failure_kind": failure,
+            "build_status": build_status, "test_status": test_status,
+            "cleanup_passed": True, "containment_passed": True,
+            "policy_violation_count": 0, "generation_to_passing_patch_ns": None,
+        })
+    for build_status, test_status in (("PASS", "NOT_RUN"), ("PASS", "PASS")):
+        measurement_states.append({
+            "status": "POLICY_VIOLATION", "failure_kind": "POLICY",
+            "build_status": build_status, "test_status": test_status,
+            "cleanup_passed": True, "containment_passed": True,
+            "policy_violation_count": 1, "generation_to_passing_patch_ns": None,
+        })
+    measurement_states.extend((
+        {
+            "status": "ERROR", "failure_kind": "CLEANUP",
+            "build_status": "ERROR", "test_status": "ERROR",
+            "cleanup_passed": False, "containment_passed": True,
+            "policy_violation_count": 0, "generation_to_passing_patch_ns": None,
+        },
+        {
+            "status": "ERROR", "failure_kind": "ADAPTER",
+            "build_status": "ERROR", "test_status": "ERROR",
+            "cleanup_passed": True, "containment_passed": True,
+            "policy_violation_count": 0, "generation_to_passing_patch_ns": None,
+        },
+    ))
+    require(all(module.measurement_state_valid(value) for value in measurement_states),
+            "valid measurement state was rejected")
+    state_mutations = []
+    for name, value in (
+        ("failure_kind", "TEST"), ("test_status", "NOT_RUN"),
+        ("cleanup_passed", False), ("containment_passed", False),
+        ("policy_violation_count", 1), ("generation_to_passing_patch_ns", None),
+    ):
+        changed = dict(measurement_states[0])
+        changed[name] = value
+        state_mutations.append(changed)
+    cleanup_precedence = dict(measurement_states[3])
+    cleanup_precedence["failure_kind"] = "CLEANUP"
+    state_mutations.append(cleanup_precedence)
+    require(all(not module.measurement_state_valid(value) for value in state_mutations),
+            "contradictory measurement state was accepted")
 
     policy = {
         "allowed_variables": [
@@ -522,6 +601,18 @@ def verify_reviewed_execution_boundary() -> None:
         raise RuntimeError("task-file count cap plus one was accepted")
     except module.EvaluationError:
         pass
+    expectation = {"path": "input", "kind": "FILE", "expected_sha256": "a" * 64}
+    require(module.artifact_expectations_valid([dict(expectation) for _ in range(64)]),
+            "exact static-expectation cap was rejected")
+    require(not module.artifact_expectations_valid([dict(expectation) for _ in range(65)]),
+            "static-expectation cap plus one was accepted")
+    try:
+        module.expected_snapshot_paths({
+            "static_expectations": [], "additional_files": [f"input-{index}" for index in range(33)],
+        }, Path("/"))
+        raise RuntimeError("additional-file cap plus one was accepted")
+    except module.EvaluationError:
+        pass
 
     with tempfile.TemporaryDirectory(prefix="prompt-reviewed-source-") as directory:
         root = Path(directory)
@@ -542,7 +633,9 @@ def verify_reviewed_execution_boundary() -> None:
             ],
         }]
         request = {"verifier_corpus_source_path": str(source)}
-        module.verify_task_source_membership(request, tasks, project)
+        module.verify_task_source_membership(
+            request, tasks, project, trust={"corpus_reachability": "UNVERIFIED"},
+        )
         (project / "workspace/scripts").mkdir(parents=True)
         (project / "workspace/scripts/prompt-fixed-adapter.py").write_text("cwd-controlled adapter")
         command_task = {
@@ -560,11 +653,10 @@ def verify_reviewed_execution_boundary() -> None:
         finally:
             retained.close()
         (project / "scripts/prompt-fixed-adapter.py").write_text("attacker-controlled adapter")
-        try:
-            module.verify_task_source_membership(request, tasks, project)
-            raise RuntimeError("project-local task code escaped reviewed-source membership")
-        except module.EvaluationError:
-            pass
+        unavailable_request = {"verifier_corpus_source_path": str(root / "unavailable-source")}
+        module.verify_task_source_membership(
+            unavailable_request, tasks, project, trust={"corpus_reachability": "UNVERIFIED"},
+        )
 
     with tempfile.TemporaryDirectory(prefix="prompt-tree-caps-") as directory:
         project = Path(directory)
@@ -578,6 +670,21 @@ def verify_reviewed_execution_boundary() -> None:
         try:
             module.bounded_declared_tree(project, "exact-entries")
             raise RuntimeError("TREE entry cap plus one was accepted")
+        except module.EvaluationError:
+            pass
+
+        snapshot_tree = project / "snapshot-tree"
+        snapshot_tree.mkdir()
+        for index in range(127):
+            (snapshot_tree / f"entry-{index:03d}").write_bytes(b"")
+        require(
+            len(module.bounded_snapshot_tree_paths(project, "snapshot-tree", 128)) == 128,
+            "exact snapshot TREE entry cap was rejected",
+        )
+        (snapshot_tree / "entry-127").write_bytes(b"")
+        try:
+            module.bounded_snapshot_tree_paths(project, "snapshot-tree", 128)
+            raise RuntimeError("snapshot TREE entry cap plus one was accepted")
         except module.EvaluationError:
             pass
 
@@ -1159,6 +1266,16 @@ def main() -> int:
             )
         store(project, "artifacts/acceptance.json", acceptance)
 
+        oversized_task_path = project / task_files[0]
+        canonical_task = json.loads(oversized_task_path.read_text())
+        oversized_task = copy.deepcopy(canonical_task)
+        while len(oversized_task["artifacts"]) < 65:
+            oversized_task["artifacts"].append(dict(oversized_task["artifacts"][0]))
+        bind(oversized_task)
+        store(project, task_files[0], oversized_task)
+        require_source_invalid(source_invalid_base, "oversized-static-result.json", "INVALID_SCHEMA")
+        store(project, task_files[0], canonical_task)
+
         store(project, "artifacts/source-policy.json", source_policy)
         request_path.write_bytes(canonical(request))
 
@@ -1558,6 +1675,59 @@ def main() -> int:
         for task_path, task_document in zip(task_files, original_task_documents):
             store(project, task_path, task_document)
 
+        automatic_drift_counter = root / "automatic-input-snapshot-count"
+        automatic_drift_helper = project / "scripts/automatic-input-drift-helper.py"
+        automatic_target = project / original_task_documents[0]["task_prompt_path"]
+        automatic_original = automatic_target.read_bytes()
+        automatic_drift_source = (project / "scripts/prompt-snapshot-helper.py").read_text().replace(
+            "            result = snapshot(request)\n",
+            "            result = snapshot(request)\n"
+            f"            counter = Path({str(automatic_drift_counter)!r})\n"
+            "            count = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "            counter.write_text(str(count))\n"
+            f"            target = Path({str(automatic_target)!r})\n"
+            "            if count == 2:\n"
+            "                target.write_bytes(target.read_bytes() + b' ')\n",
+            1,
+        )
+        require(
+            automatic_drift_source != (project / "scripts/prompt-snapshot-helper.py").read_text(),
+            "automatic-input drift fixture did not patch",
+        )
+        automatic_drift_helper.write_text(automatic_drift_source)
+        automatic_drift_helper.chmod(0o755)
+        reviewed_automatic_drift = reviewed_source / "scripts/automatic-input-drift-helper.py"
+        reviewed_automatic_drift.write_text(automatic_drift_source)
+        reviewed_automatic_drift.chmod(0o755)
+        automatic_drift_digest = raw_digest(automatic_drift_helper)
+        for task_path in task_files:
+            task_document = json.loads((project / task_path).read_text())
+            task_document["snapshot_argv"] = ["/usr/bin/python3", "scripts/automatic-input-drift-helper.py"]
+            task_document["snapshot_helper_runtime"] = "PYTHON:" + automatic_drift_digest
+            task_document["artifacts"].append({
+                "path": "scripts/automatic-input-drift-helper.py", "kind": "FILE",
+                "expected_sha256": file_expectation_digest(project, "scripts/automatic-input-drift-helper.py"),
+            })
+            bind(task_document)
+            store(project, task_path, task_document)
+        automatic_drift = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        automatic_drift_result = load_result(result_path, "automatic input drift")
+        require(
+            automatic_drift.returncode != 0
+            and automatic_drift_result["error_code"] == "INPUT_DRIFT"
+            and automatic_drift_result["snapshot_attestations"][-1]["status"] == "PRECHECK_DRIFT"
+            and len(automatic_drift_result["rows"]) == 1,
+            "automatic input drift was scored or reached the next adapter",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
+        automatic_target.write_bytes(automatic_original)
+        for task_path, task_document in zip(task_files, original_task_documents):
+            store(project, task_path, task_document)
+
         malformed_snapshot_helper = project / "scripts/malformed-snapshot-helper.py"
         malformed_snapshot_source = (project / "scripts/prompt-snapshot-helper.py").read_text().replace(
             "            result = snapshot(request)\n",
@@ -1820,6 +1990,125 @@ def main() -> int:
         result_path.unlink()
         evidence_path.unlink()
         shutil.copy2(SOURCE / "scripts/prompt-evaluate.py", cleanup_evaluator)
+
+        evaluator_spec = importlib.util.spec_from_file_location(
+            "prompt_evaluate_policy_limits", SOURCE / "scripts/prompt-evaluate.py",
+        )
+        require(evaluator_spec is not None and evaluator_spec.loader is not None,
+                "prompt policy evaluator helper could not be loaded")
+        evaluator_module = importlib.util.module_from_spec(evaluator_spec)
+        evaluator_spec.loader.exec_module(evaluator_module)
+        prompt_lengths = []
+        for task_document in original_task_documents:
+            task_prompt = json.loads((project / task_document["task_prompt_path"]).read_text())
+            context = json.loads((project / task_document["context_sources_path"]).read_text())
+            parent_rendered, _ = evaluator_module.render(parent_variant, task_prompt, context)
+            candidate_rendered, _ = evaluator_module.render(candidate_variant, task_prompt, context)
+            prompt_lengths.append((len(parent_rendered.encode("utf-8")), len(candidate_rendered.encode("utf-8"))))
+        require(len(set(prompt_lengths)) == 1, "prompt-limit fixture tasks rendered different byte counts")
+        parent_prompt_bytes, candidate_prompt_bytes = prompt_lengths[0]
+
+        def configure_prompt_limit(maximum: int) -> None:
+            generation["max_prompt_bytes"] = maximum
+            bind(generation)
+            store(project, "artifacts/generation-policy.json", generation)
+            scope["generation_policy_sha256"] = generation["content_sha256"]
+            bind(scope)
+            activation["scope"] = scope
+            bind(activation)
+            parent["activation"] = activation
+            bind(parent)
+            store(project, "artifacts/parent.json", parent)
+            experiment["scope"] = scope
+            experiment["parent_activation"] = reference(
+                "PROMPT_ACTIVATION_RESULT", "artifacts/parent.json", "baseline-v1",
+                parent["content_sha256"],
+            )
+            bind(experiment)
+            store(project, "artifacts/experiment.json", experiment)
+
+        configure_prompt_limit(parent_prompt_bytes)
+        parent_exact = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        parent_exact_result = load_result(result_path, "exact parent prompt cap")
+        require(
+            parent_exact.returncode == 0
+            and parent_exact_result["status"] == "SERIOUS_REGRESSION"
+            and all(
+                row["measurement"]["status"] == "POLICY_VIOLATION"
+                for row in parent_exact_result["rows"] if row["variant"] == "CANDIDATE"
+            ),
+            "exact parent prompt cap or oversized candidate policy result changed",
+        )
+        parent_exact_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            parent_exact_verified.returncode == 0
+            and parent_exact_verified.stdout.strip() == "COMPLETE_INELIGIBLE",
+            "prompt policy violation pair failed strict verification",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
+
+        configure_prompt_limit(parent_prompt_bytes - 1)
+        parent_oversized = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        parent_oversized_result = load_result(result_path, "oversized parent prompt")
+        require(
+            parent_oversized.returncode != 0
+            and parent_oversized_result["status"] == "ERROR"
+            and parent_oversized_result["error_code"] == "ADAPTER_RESULT"
+            and parent_oversized_result["snapshot_attestations"][-1]["status"] == "ADAPTER_FAILED"
+            and not parent_oversized_result["rows"],
+            "oversized parent prompt reached the adapter or lost its terminal pair",
+        )
+        parent_oversized_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            parent_oversized_verified.returncode == 0
+            and parent_oversized_verified.stdout.strip() == "NONCOMPLETE_ERROR",
+            "oversized parent terminal pair failed strict verification",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
+        configure_prompt_limit(candidate_prompt_bytes)
+
+        unavailable_source_request = dict(request)
+        unavailable_source_request["verifier_corpus_source_path"] = str(root / "unavailable-corpus-source")
+        request_path.write_bytes(canonical(unavailable_source_request))
+        unavailable_source = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        unavailable_source_result = load_result(result_path, "unavailable corpus source")
+        unavailable_source_evidence = json.loads(evidence_path.read_text())
+        require(
+            unavailable_source.returncode == 0
+            and unavailable_source_result["status"] == "IMPROVED"
+            and not unavailable_source_result["gate_eligible"]
+            and unavailable_source_evidence["trust"]["corpus_reachability"] == "UNVERIFIED",
+            "unavailable corpus source did not remain a complete non-gate comparison",
+        )
+        unavailable_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            unavailable_verified.returncode == 0
+            and unavailable_verified.stdout.strip() == "COMPLETE_INELIGIBLE",
+            "unavailable corpus source pair failed strict verification",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
+        request_path.write_bytes(canonical(request))
 
         completed = subprocess.run(
             [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],

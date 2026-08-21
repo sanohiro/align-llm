@@ -125,6 +125,24 @@ def main() -> int:
         require(result["status"] == "PASS" and result["test_status"] == "PASS", "candidate fixture did not pass")
         require(result["generation_to_passing_patch_ns"] == 80_000_000, "candidate fixture timing changed")
 
+        policy["max_prompt_bytes"] = len(rendered["text"].encode("utf-8")) - 1
+        bind(policy)
+        store(policy_path, policy)
+        completed, result = invoke("CANDIDATE", "policy-violation.json")
+        require(
+            completed.returncode == 0
+            and result["status"] == "POLICY_VIOLATION"
+            and result["failure_kind"] == "POLICY"
+            and result["build_status"] == "NOT_RUN"
+            and result["test_status"] == "NOT_RUN"
+            and result["policy_violation_count"] == 1
+            and result["patch_size_bytes"] == 0,
+            "oversized candidate did not produce the exact pre-run policy violation",
+        )
+        policy["max_prompt_bytes"] = 65_536
+        bind(policy)
+        store(policy_path, policy)
+
         completed, result = invoke("CANDIDATE", "tampered.json", tamper=True)
         require(completed.returncode != 0 and result is None, "tampered adapter request was accepted")
 
@@ -132,6 +150,24 @@ def main() -> int:
         require(module_spec is not None and module_spec.loader is not None, "fixed adapter module could not be loaded")
         module = importlib.util.module_from_spec(module_spec)
         module_spec.loader.exec_module(module)
+        original_execute_for_precedence = module.execute_fixture
+        module.execute_fixture = lambda variant, timeout: ("ERROR", False, False, b"", b"both failed", 0)
+        try:
+            precedence = module.measurement(
+                {
+                    "variant": "CANDIDATE", "paired_seed": 100,
+                    "environment_policy_sha256": "3" * 64,
+                },
+                rendered, policy, control,
+            )
+        finally:
+            module.execute_fixture = original_execute_for_precedence
+        require(
+            precedence["status"] == "ERROR"
+            and precedence["failure_kind"] == "CONTAINMENT"
+            and not precedence["cleanup_passed"] and not precedence["containment_passed"],
+            "simultaneous containment/cleanup failure lost containment precedence",
+        )
         original_cleanup = module.cleanup_process_group
         cleanup_calls = 0
 
@@ -153,7 +189,7 @@ def main() -> int:
             f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)\n"
         )
         select_runner(descendant_runner)
-        outcome, cleanup_passed, containment_passed, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        outcome, cleanup_passed, containment_passed, _, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
         require(outcome == "ERROR" and cleanup_passed and not containment_passed, "runner descendant was not classified")
         require(cleanup_calls == 1, "fixed adapter descendant cleanup was not exactly once")
         time.sleep(0.8)
@@ -166,7 +202,7 @@ def main() -> int:
             f"os.write(2, b'e' * {module.DIAGNOSTIC_LIMIT + 1})\n"
         )
         select_runner(bounded_runner)
-        outcome, cleanup_passed, containment_passed, stdout, stderr = module.execute_fixture(
+        outcome, cleanup_passed, containment_passed, stdout, stderr, _ = module.execute_fixture(
             "CANDIDATE", 2_000_000_000,
         )
         require(
@@ -183,7 +219,7 @@ def main() -> int:
             f"os.write(2, b'y' * {module.DIAGNOSTIC_LIMIT})\n"
         )
         select_runner(exact_runner)
-        outcome, _, _, stdout, stderr = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        outcome, _, _, stdout, stderr, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
         require(
             outcome == "PASS" and len(stdout) == module.DIAGNOSTIC_LIMIT
             and len(stderr) == module.DIAGNOSTIC_LIMIT
@@ -195,10 +231,10 @@ def main() -> int:
         operational_runner = root / "operational-runner.py"
         operational_runner.write_text("raise SystemExit(1)\n")
         select_runner(operational_runner)
-        outcome, _, _, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        outcome, _, _, _, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
         require(outcome == "ERROR", "runner operational failure became a test failure")
         original_execute = module.execute_fixture
-        module.execute_fixture = lambda _variant, _timeout: ("ERROR", True, True, b"", b"runner failed")
+        module.execute_fixture = lambda _variant, _timeout: ("ERROR", True, True, b"", b"runner failed", 0)
         operational_request = {
             "variant": "CANDIDATE", "paired_seed": 100,
             "environment_policy_sha256": "3" * 64,
@@ -215,7 +251,7 @@ def main() -> int:
         expected_failure_runner = root / "expected-failure-runner.py"
         expected_failure_runner.write_text("raise SystemExit(4)\n")
         select_runner(expected_failure_runner)
-        outcome, _, _, _, _ = module.execute_fixture("PARENT", 2_000_000_000)
+        outcome, _, _, _, _, _ = module.execute_fixture("PARENT", 2_000_000_000)
         require(outcome == "TEST_FAIL", "declared candidate validation failure lost its distinct outcome")
 
         retained_marker = root / "replacement-runner-ran"
@@ -250,13 +286,14 @@ def main() -> int:
 
         module.subprocess.Popen = replace_after_admission
         try:
-            outcome, cleanup_passed, containment_passed, _, _ = module.execute_fixture(
+            outcome, cleanup_passed, containment_passed, _, _, patch_byte_count = module.execute_fixture(
                 "CANDIDATE", 2_000_000_000,
             )
         finally:
             module.subprocess.Popen = original_popen
         require(
-            outcome == "PASS" and cleanup_passed and containment_passed and not retained_marker.exists(),
+            outcome == "PASS" and cleanup_passed and containment_passed
+            and patch_byte_count == len("admitted patch") and not retained_marker.exists(),
             "replacement runner/task/patch crossed the retained adapter boundary",
         )
 

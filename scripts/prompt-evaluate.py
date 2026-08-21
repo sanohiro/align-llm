@@ -24,6 +24,7 @@ REQUEST_LIMIT = 65_536
 ARTIFACT_LIMIT = 2_097_152
 MEASUREMENT_LIMIT = 262_144
 SNAPSHOT_LIMIT = 1_048_576
+SNAPSHOT_ARTIFACT_LIMIT = 1_073_741_824
 RESULT_LIMIT = 268_435_456
 EVIDENCE_LIMIT = 8_388_608
 CHILD_CLEANUP_MARGIN_NS = 5_000_000_000
@@ -584,7 +585,7 @@ def activation_valid(value: Any) -> bool:
 
 def artifact_expectations_valid(value: Any) -> bool:
     return (
-        isinstance(value, list) and 1 <= len(value) <= 4096
+        isinstance(value, list) and 1 <= len(value) <= 64
         and all(
             exact_record(item, ARTIFACT_EXPECTATION_FIELDS)
             and bounded_text(item.get("path"), 4096)
@@ -1181,38 +1182,64 @@ def valid_artifact_digest(value: Any) -> bool:
     )
 
 
+def bounded_snapshot_tree_paths(
+    project: Path, relative: str, maximum_entries: int,
+) -> list[str]:
+    if maximum_entries < 1:
+        raise EvaluationError("snapshot expanded path count exceeds its bound")
+    root = relative_path(project, relative)
+    metadata = os.lstat(root)
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise EvaluationError("snapshot tree root is unsafe")
+    selected = [relative]
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        entries = []
+        with os.scandir(directory) as iterator:
+            for entry in iterator:
+                if len(selected) + len(entries) >= maximum_entries:
+                    raise EvaluationError("snapshot expanded path count exceeds its bound")
+                entries.append(entry)
+        entries.sort(key=lambda item: os.fsencode(item.name))
+        for entry in entries:
+            metadata = entry.stat(follow_symlinks=False)
+            child_path = Path(entry.path)
+            child = str(child_path.relative_to(project))
+            if stat.S_ISDIR(metadata.st_mode):
+                selected.append(child)
+                pending.append(child_path)
+            elif stat.S_ISREG(metadata.st_mode):
+                selected.append(child)
+            else:
+                raise EvaluationError("snapshot tree contains an unsafe entry")
+    selected.sort(key=os.fsencode)
+    return selected
+
+
 def expected_snapshot_paths(request: Mapping[str, Any], project: Path) -> list[str]:
+    static_expectations = request.get("static_expectations")
+    additional_files = request.get("additional_files")
+    if (
+        not isinstance(static_expectations, list) or len(static_expectations) > 64
+        or not isinstance(additional_files, list) or len(additional_files) > 32
+    ):
+        raise EvaluationError("snapshot declaration count exceeds its bound")
     paths: list[str] = []
     expanded = 0
-    for expectation in request["static_expectations"]:
+    for expectation in static_expectations:
         relative = expectation["path"]
         if expectation["kind"] == "FILE":
             selected = [relative]
         elif expectation["kind"] == "TREE":
-            root = relative_path(project, relative)
-            selected = [relative]
-            pending = [root]
-            while pending:
-                directory = pending.pop()
-                entries = sorted(os.scandir(directory), key=lambda item: os.fsencode(item.name))
-                for entry in entries:
-                    metadata = entry.stat(follow_symlinks=False)
-                    child = str(Path(entry.path).relative_to(project))
-                    if stat.S_ISDIR(metadata.st_mode):
-                        selected.append(child)
-                        pending.append(Path(entry.path))
-                    elif stat.S_ISREG(metadata.st_mode):
-                        selected.append(child)
-                    else:
-                        raise EvaluationError("snapshot tree contains an unsafe entry")
-            selected.sort(key=os.fsencode)
+            selected = bounded_snapshot_tree_paths(project, relative, 128 - expanded)
         else:
             raise EvaluationError("snapshot expectation kind is invalid")
         expanded += len(selected)
         if expanded > 128:
             raise EvaluationError("snapshot expanded path count exceeds its bound")
         paths.extend(selected)
-    paths.extend(request["additional_files"])
+    paths.extend(additional_files)
     if len(paths) != len(set(paths)):
         raise EvaluationError("snapshot paths overlap")
     return paths
@@ -1243,6 +1270,8 @@ def valid_snapshot_result(
     except (EvaluationError, OSError, ValueError):
         return False
     observed_paths = [item["path"] for item in value["artifact_digests"]]
+    if sum(item["byte_count"] for item in value["artifact_digests"]) > SNAPSHOT_ARTIFACT_LIMIT:
+        return False
     if value["status"] in ("MATCH", "MISMATCH"):
         if value["status"] == "MATCH" and observed_paths != expected_paths:
             return False
@@ -1305,16 +1334,62 @@ def valid_workspace_preflight(value: Any, evaluation_id: str) -> bool:
     )
 
 
+def measurement_state_valid(value: Mapping[str, Any]) -> bool:
+    status = value.get("status")
+    failure = value.get("failure_kind")
+    build = value.get("build_status")
+    test = value.get("test_status")
+    cleanup = value.get("cleanup_passed")
+    containment = value.get("containment_passed")
+    violations = value.get("policy_violation_count")
+    elapsed = value.get("generation_to_passing_patch_ns")
+    if status == "PASS":
+        return (
+            failure == "NONE" and build == "PASS" and test == "PASS"
+            and cleanup is True and containment is True and violations == 0
+            and isinstance(elapsed, int) and not isinstance(elapsed, bool) and elapsed > 0
+        )
+    if status == "FAIL":
+        stages = {
+            "PROVIDER": ("NOT_RUN", "NOT_RUN"),
+            "PATCH": ("NOT_RUN", "NOT_RUN"),
+            "BUILD": ("FAIL", "NOT_RUN"),
+            "TEST": ("PASS", "FAIL"),
+        }
+        return (
+            failure in stages and (build, test) == stages[failure]
+            and cleanup is True and containment is True and violations == 0 and elapsed is None
+        )
+    if status == "POLICY_VIOLATION":
+        return (
+            failure == "POLICY"
+            and (build, test) in (("NOT_RUN", "NOT_RUN"), ("PASS", "NOT_RUN"), ("PASS", "PASS"))
+            and cleanup is True and containment is True
+            and isinstance(violations, int) and not isinstance(violations, bool) and violations > 0
+            and elapsed is None
+        )
+    if status != "ERROR" or elapsed is not None:
+        return False
+    if containment is False:
+        return failure == "CONTAINMENT"
+    if cleanup is False:
+        return containment is True and failure == "CLEANUP"
+    return (
+        containment is True and cleanup is True and failure == "ADAPTER"
+        and (build == "ERROR" or test == "ERROR")
+    )
+
+
 def valid_task_measurement(
     value: Any, task: Mapping[str, Any], rendered_sha256: str,
-    adapter_request: Mapping[str, Any], sample: int, seed: int,
+    adapter_request: Mapping[str, Any], sample: int, seed: int, prompt_oversized: bool = False,
 ) -> bool:
     if (
         not isinstance(value, dict)
         or tuple(value) != TASK_MEASUREMENT_FIELDS
         or value.get("schema_version") != 1
         or value.get("artifact_kind") != "TASK_MEASUREMENT"
-        or value.get("status") not in ("PASS", "FAIL", "ERROR")
+        or value.get("status") not in ("PASS", "FAIL", "POLICY_VIOLATION", "ERROR")
         or value.get("failure_kind") not in (
             "NONE", "PROVIDER", "PATCH", "BUILD", "TEST", "POLICY", "CLEANUP", "CONTAINMENT", "ADAPTER",
         )
@@ -1357,6 +1432,12 @@ def valid_task_measurement(
                 or value["generation_to_passing_patch_ns"] > 7_200_000_000_000
             )
         )
+    ):
+        return False
+    if not measurement_state_valid(value):
+        return False
+    if prompt_oversized and (
+        adapter_request.get("variant") != "CANDIDATE" or value.get("status") != "POLICY_VIOLATION"
     ):
         return False
     generation = value.get("generation_request")
@@ -1527,7 +1608,7 @@ def invoke_adapter(
     task: Mapping[str, Any], adapter_request: Mapping[str, Any], request_path: Path,
     variant_path: Path, rendered_path: Path, measurement_path: Path,
     project: Path, environment: Mapping[str, str], provider_timeout_ns: int, sample: int, seed: int,
-    owned_paths: set[Path],
+    prompt_oversized: bool, owned_paths: set[Path],
 ) -> dict[str, Any]:
     descriptor = -1
     try:
@@ -1576,6 +1657,7 @@ def invoke_adapter(
         measurement = load_bound(measurement_path, "TASK_MEASUREMENT", MEASUREMENT_LIMIT)
         if not valid_task_measurement(
             measurement, task, adapter_request["rendered_prompt_sha256"], adapter_request, sample, seed,
+            prompt_oversized=prompt_oversized,
         ):
             raise EvaluationError("measurement adapter result is semantically invalid")
     except (EvaluationError, OSError, TypeError, ValueError, KeyError):
@@ -2259,9 +2341,18 @@ def verify_task_source_membership(
     task_files: Sequence[str] = (), policy: Mapping[str, Any] | None = None,
     trust: Mapping[str, Any] | None = None, environment: Mapping[str, str] | None = None,
 ) -> None:
-    source = physical_directory(Path(request["verifier_corpus_source_path"]))
     strict = trust is not None and trust.get("corpus_reachability") == "VERIFIED"
     declared, execution = declared_source_files(tasks, task_files if strict else (), project)
+    if not execution.issubset(declared):
+        raise EvaluationError("task execution helper is absent from reviewed task source")
+    if FIXED_ADAPTER_PATH not in declared or FIXED_SNAPSHOT_HELPER_PATH not in declared:
+        raise EvaluationError("fixed evaluator helpers are absent from reviewed task source")
+    try:
+        source = physical_directory(Path(request["verifier_corpus_source_path"]))
+    except (EvaluationError, OSError):
+        if strict:
+            raise
+        return
     file_set: dict[str, tuple[int, str]] = {}
     git: RetainedRegularFile | None = None
     if strict and request["verifier_corpus_source_kind"] == "FILE_SET":
@@ -2311,10 +2402,6 @@ def verify_task_source_membership(
         if git is not None:
             git.verify_unchanged(policy["git_executable_sha256"])
             git.close()
-    if not execution.issubset(declared):
-        raise EvaluationError("task execution helper is absent from reviewed task source")
-    if FIXED_ADAPTER_PATH not in declared or FIXED_SNAPSHOT_HELPER_PATH not in declared:
-        raise EvaluationError("fixed evaluator helpers are absent from reviewed task source")
 
 
 def validated_task_files(value: Any) -> list[str]:
@@ -2989,7 +3076,13 @@ def evaluate(
                     })
                     if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
                         input_snapshots.append(input_snapshot)
-                    current_static_digests = before["artifact_digests"][:len(task["artifacts"])]
+                    persistent_paths = set(expected_snapshot_paths({
+                        "static_expectations": task["artifacts"],
+                        "additional_files": automatic_files,
+                    }, project))
+                    current_static_digests = [
+                        item for item in before["artifact_digests"] if item["path"] in persistent_paths
+                    ]
                     if baseline_artifact_digests is None:
                         baseline_artifact_digests = current_static_digests
                         baseline_environment_probe = before["environment_probe"]
@@ -3032,6 +3125,30 @@ def evaluate(
                             checkpoint,
                             cleanup_diagnosed=True,
                         )
+                    if (
+                        variant_name == "PARENT"
+                        and len(rendered["text"].encode("utf-8")) > generation["max_prompt_bytes"]
+                    ):
+                        failure_detail = "parent rendered prompt exceeds max_prompt_bytes"
+                        attestations.append(bind({
+                            "schema_version": 1,
+                            "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
+                            "task_id": task["task_id"],
+                            "sample_index": sample,
+                            "variant": variant_name,
+                            "status": "ADAPTER_FAILED",
+                            "error_code": "ADAPTER_RESULT",
+                            "error": failure_detail,
+                            "snapshot_request_sha256": snapshot_request["content_sha256"],
+                            "before_snapshot_result_sha256": before["content_sha256"],
+                            "after_snapshot_result_sha256": None,
+                            "before_input_snapshot_sha256": input_snapshot["content_sha256"],
+                            "after_input_snapshot_sha256": None,
+                            "content_sha256": "",
+                        }))
+                        return finish(
+                            evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), checkpoint,
+                        )
                     try:
                         measurement = invoke_adapter(
                             task, adapter_request, adapter_request_path, variant_path, rendered_path, measurement_path,
@@ -3040,6 +3157,7 @@ def evaluate(
                             control["timeout_ns"],
                             sample,
                             generation["seed_base"] + sample - 1,
+                            len(rendered["text"].encode("utf-8")) > generation["max_prompt_bytes"],
                             owned_paths,
                         )
                     except AdapterFailure as failure:
@@ -3119,7 +3237,9 @@ def evaluate(
                             evaluation_result("ERROR", failure_code, failure_detail), checkpoint,
                             cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
                         )
-                    after_static_digests = after["artifact_digests"][:len(task["artifacts"])]
+                    after_static_digests = [
+                        item for item in after["artifact_digests"] if item["path"] in persistent_paths
+                    ]
                     post_drift_code = "NONE"
                     post_drift_detail = ""
                     post_drift_code = classify_task_drift(
