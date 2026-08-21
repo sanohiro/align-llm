@@ -147,6 +147,15 @@ def main() -> int:
         require(module_spec is not None and module_spec.loader is not None, "snapshot helper module could not be loaded")
         module = importlib.util.module_from_spec(module_spec)
         module_spec.loader.exec_module(module)
+        original_cleanup = module.cleanup_process_group
+        cleanup_calls = 0
+
+        def counted_cleanup(process, maximum_seconds=2.0):
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+            return original_cleanup(process, maximum_seconds)
+
+        module.cleanup_process_group = counted_cleanup
         marker = root / "snapshot-git-descendant-survived"
         descendant_git = root / "descendant-git"
         descendant_git.write_text(
@@ -160,6 +169,7 @@ def main() -> int:
             raise RuntimeError("snapshot Git descendant was accepted")
         except module.SnapshotError:
             pass
+        require(cleanup_calls == 1, "snapshot Git descendant cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "snapshot helper left a Git descendant alive")
 

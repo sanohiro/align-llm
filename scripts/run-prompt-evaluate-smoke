@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -126,6 +127,28 @@ def verify_compact_overflow_boundary() -> None:
     }
     expected_inputs = [{"retained": False}]
     require(not module.canonical_fits(oversized, 32), "oversized-result detector accepted a cap breach")
+    crossing = copy.deepcopy(oversized)
+    crossing["tasks"][0]["padding"] = "x" * 4096
+    unbound_size = len(module.canonical(crossing))
+    bound_crossing_cap = unbound_size + 16
+    require(
+        module.canonical_fits(crossing, bound_crossing_cap),
+        "digest-crossing fixture did not fit before binding",
+    )
+    original_result_limit = module.RESULT_LIMIT
+    with tempfile.TemporaryDirectory(prefix="prompt-result-bound-") as directory:
+        result_path = Path(directory) / "result.json"
+        evidence_path = Path(directory) / "evidence.json"
+        try:
+            module.RESULT_LIMIT = bound_crossing_cap
+            persisted, _ = module.write_prepared_pair(result_path, evidence_path, crossing, {}, [])
+        finally:
+            module.RESULT_LIMIT = original_result_limit
+        require(
+            persisted["error_code"] == "RESULT_TOO_LARGE"
+            and len(result_path.read_bytes()) <= bound_crossing_cap,
+            "final digest expansion did not select the compact result",
+        )
     module.compact_oversized_result(oversized, expected_inputs)
     trace_preimage = (
         f"1 WORKSPACE_PREFLIGHT_REQUEST {request_record['content_sha256']}\n"
@@ -154,6 +177,15 @@ def verify_descendant_cleanup_boundary() -> None:
     require(spec is not None and spec.loader is not None, "evaluator helper could not be loaded")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    original_cleanup = module.cleanup_process_group
+    cleanup_calls = 0
+
+    def counted_cleanup(process, maximum_seconds=2.0):
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return original_cleanup(process, maximum_seconds)
+
+    module.cleanup_process_group = counted_cleanup
     with tempfile.TemporaryDirectory(prefix="prompt-descendant-") as directory:
         marker = Path(directory) / "survived"
         child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
@@ -167,9 +199,11 @@ def verify_descendant_cleanup_boundary() -> None:
             raise RuntimeError("timed child unexpectedly completed")
         except module.ChildBoundaryError as failure:
             require(failure.reason == "TIMEOUT", "descendant fixture returned the wrong failure")
+        require(cleanup_calls == 1, "timed evaluator child cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "timed evaluator child left a live descendant")
 
+        cleanup_calls = 0
         marker = Path(directory) / "post-exit-survived"
         child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
         parent = (
@@ -182,6 +216,7 @@ def verify_descendant_cleanup_boundary() -> None:
             raise RuntimeError("parent with a live descendant unexpectedly completed")
         except module.ChildBoundaryError as failure:
             require(failure.reason == "PROCESS", "post-exit descendant returned the wrong failure")
+        require(cleanup_calls == 1, "post-exit evaluator child cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "successful evaluator parent left a live descendant")
 
@@ -204,6 +239,8 @@ def copy_runtime(project: Path) -> None:
 
 
 def main() -> int:
+    align_boundary = (SOURCE / "src/prompt_evaluate.align").read_text()
+    require("command.timeout_ns" not in align_boundary, "Align evaluator armed an outer child deadline")
     verify_compact_overflow_boundary()
     verify_descendant_cleanup_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
@@ -403,6 +440,86 @@ def main() -> int:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         require(built.returncode == 0, f"evaluator command did not compile: {built.stderr.decode()[-4096:]}")
+
+        source_child_marker = project / "source-child-ran"
+        marker_helper = project / "scripts/source-verifier-marker.py"
+        marker_helper.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(source_child_marker)!r}).write_text('ran')\n"
+        )
+        marker_helper_digest = raw_digest(marker_helper)
+        marker_policy = dict(source_policy)
+        marker_policy["helper_path"] = "scripts/source-verifier-marker.py"
+        marker_policy["helper_sha256"] = marker_helper_digest
+        marker_policy["helper_runtime"] = f"CPYTHON:{python_digest}:{marker_helper_digest}"
+        bind(marker_policy)
+        store(project, "artifacts/source-policy.json", marker_policy)
+        source_invalid_base = dict(request)
+        source_invalid_base["verifier_source_policy_sha256"] = marker_policy["content_sha256"]
+
+        def require_source_invalid(value, name: str, expected_code: str):
+            invalid_result_path = project / name
+            request_path.write_bytes(canonical(value))
+            completed = subprocess.run(
+                [str(build_root / "main"), "prompt", "evaluate", str(request_path), name],
+                cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            result_value = json.loads(invalid_result_path.read_text()) if invalid_result_path.exists() else None
+            require(
+                completed.returncode != 0
+                and result_value is not None
+                and result_value["status"] == "INVALID_INPUT"
+                and result_value["error_code"] == expected_code
+                and not evidence_path.exists()
+                and not source_child_marker.exists()
+                and not any(os.scandir(workspace)),
+                f"source declaration {name} crossed the child boundary: {result_value!r}",
+            )
+            invalid_result_path.unlink()
+
+        missing_manifest = dict(source_invalid_base)
+        missing_manifest["verifier_corpus_source_kind"] = "FILE_SET"
+        missing_manifest["verifier_corpus_source_repository_id"] = ""
+        missing_manifest["verifier_corpus_source_sha256"] = "a" * 64
+        require_source_invalid(missing_manifest, "missing-manifest-result.json", "INVALID_PATH")
+
+        null_manifest = {}
+        for key, child in source_invalid_base.items():
+            null_manifest[key] = child
+            if key == "verifier_corpus_source_kind":
+                null_manifest["verifier_corpus_file_set_manifest_path"] = None
+        null_manifest["verifier_corpus_source_kind"] = "FILE_SET"
+        null_manifest["verifier_corpus_source_repository_id"] = ""
+        null_manifest["verifier_corpus_source_sha256"] = "a" * 64
+        require_source_invalid(null_manifest, "null-manifest-result.json", "INVALID_PATH")
+
+        relative_source = dict(source_invalid_base)
+        relative_source["verifier_corpus_source_path"] = "relative-corpus"
+        require_source_invalid(relative_source, "relative-source-result.json", "INVALID_PATH")
+
+        invalid_source_identity = dict(source_invalid_base)
+        invalid_source_identity["verifier_corpus_source_sha256"] = "not-a-digest"
+        require_source_invalid(invalid_source_identity, "invalid-source-identity-result.json", "INVALID_DIGEST")
+
+        store(project, "artifacts/source-policy.json", source_policy)
+        request_path.write_bytes(canonical(request))
+
+        non_ascii_identifier = dict(request)
+        non_ascii_identifier["evaluation_id"] = "evaluation-\u00e9"
+        request_path.write_bytes(canonical(non_ascii_identifier))
+        invalid_identifier = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "invalid-identifier-result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            invalid_identifier.returncode != 0
+            and not (project / "invalid-identifier-result.json").exists()
+            and not evidence_path.exists()
+            and not source_child_marker.exists(),
+            "non-ASCII evaluation identifier crossed the Align boundary",
+        )
+        request_path.write_bytes(canonical(request))
+
         invalid = subprocess.run(
             [str(build_root / "main"), "prompt", "evaluate", str(request_path), "../escape.json"],
             cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,

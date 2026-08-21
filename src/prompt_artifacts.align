@@ -7,6 +7,17 @@ import std.encoding
 // C6a1/C6a2 owns the persisted declared-record graph. Every text field in this module is an
 // explicitly owned `string`; borrowed `str` values are accepted only at the codec boundary.
 
+fn canonical_with_explicit_null(canonical: str, anchor: str, field: str) -> Result<string, Error> {
+  offset := canonical.find(anchor) else { return Err(Error.Invalid) }
+  output := builder()
+  output.write(canonical[0..offset])
+  output.write("\"")
+  output.write(field)
+  output.write("\":null,")
+  output.write(canonical[offset..canonical.len()])
+  return Ok(output.to_string())
+}
+
 pub PromptTextArtifact {
   schema_version: i64,
   artifact_kind: string,
@@ -1505,6 +1516,10 @@ pub fn encode_environment_variable_bounded(value: EnvironmentVariable, max_bytes
 
 pub fn decode_prompt_source_verifier_policy(value: str) -> Result<PromptSourceVerifierPolicy, Error> {
   decoded: PromptSourceVerifierPolicy := json.decode(value)?
+  canonical_value: PromptSourceVerifierPolicy := json.decode(value)?
+  canonical: string := json.encode(canonical_value).clone()
+  canonical_view: str := canonical
+  if canonical_view != value { return Err(Error.Invalid) }
   return Ok(decoded)
 }
 
@@ -1635,6 +1650,21 @@ pub fn encode_prompt_experiment_result_bounded(value: PromptExperimentResult, ma
 
 pub fn decode_prompt_evaluate_request(value: str) -> Result<PromptEvaluateRequest, Error> {
   decoded: PromptEvaluateRequest := json.decode(value)?
+  canonical_value: PromptEvaluateRequest := json.decode(value)?
+  canonical: string := json.encode(canonical_value).clone()
+  canonical_view: str := canonical
+  if canonical_view != value {
+    shape: PromptEvaluateRequest := json.decode(value)?
+    absent := match shape.verifier_corpus_file_set_manifest_path { None => true, Some(_) => false }
+    if !absent { return Err(Error.Invalid) }
+    explicit: string := canonical_with_explicit_null(
+      canonical_view,
+      "\"verifier_corpus_source_repository_id\":",
+      "verifier_corpus_file_set_manifest_path",
+    )?
+    explicit_view: str := explicit
+    if explicit_view != value { return Err(Error.Invalid) }
+  }
   return Ok(decoded)
 }
 
@@ -1921,6 +1951,21 @@ pub fn encode_prompt_gate_manifest_bounded(value: PromptGateManifest, max_bytes:
 
 pub fn decode_prompt_gate_source_locator(value: str) -> Result<PromptGateSourceLocator, Error> {
   decoded: PromptGateSourceLocator := json.decode(value)?
+  canonical_value: PromptGateSourceLocator := json.decode(value)?
+  canonical: string := json.encode(canonical_value).clone()
+  canonical_view: str := canonical
+  if canonical_view != value {
+    shape: PromptGateSourceLocator := json.decode(value)?
+    absent := match shape.corpus_file_set_manifest_relative_path { None => true, Some(_) => false }
+    if !absent { return Err(Error.Invalid) }
+    explicit: string := canonical_with_explicit_null(
+      canonical_view,
+      "\"source_verifier_policy_relative_path\":",
+      "corpus_file_set_manifest_relative_path",
+    )?
+    explicit_view: str := explicit
+    if explicit_view != value { return Err(Error.Invalid) }
+  }
   return Ok(decoded)
 }
 

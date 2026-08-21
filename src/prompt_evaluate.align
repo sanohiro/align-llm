@@ -14,12 +14,24 @@ fn print_owned_text(borrow value: string) {
 }
 
 fn valid_component(value: str) -> bool {
-  if value.len() <= 0 || value.len() > 4096 { return false }
+  if value.len() <= 0 || value.len() > 255 { return false }
   bytes := value.bytes()
   mut index := 0
   loop {
     if index >= bytes.len() { break }
     if bytes[index] == 0 || bytes[index] == 0x2f { return false }
+    index = index + 1
+  }
+  return value != "." && value != ".."
+}
+
+fn valid_identifier(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 128 { return false }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    if bytes[index] < 0x20 || bytes[index] > 0x7e || bytes[index] == 0x2f { return false }
     index = index + 1
   }
   return value != "." && value != ".."
@@ -193,7 +205,7 @@ pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateS
   request := prompt_artifact_io.load_prompt_evaluate_request(request_path) else {
     return PromptEvaluateStatus.InvalidInput
   }
-  if !valid_component(request.evaluation_id) ||
+  if !valid_identifier(request.evaluation_id) ||
   !valid_relative_path(result_relative) {
     return PromptEvaluateStatus.InvalidInput
   }
@@ -236,7 +248,6 @@ pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateS
     ].to_array(),
   )
   command.cwd(request.project_root)
-  command.timeout_ns(7_200_000_000_000)
   command.max_capture_bytes(1)
   command.env_clear()
   command.env("LANG", "C")

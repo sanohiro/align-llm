@@ -493,6 +493,7 @@ def fixed_git(git: Path, git_descriptor: int, repository: Path, *arguments: str)
     output = bytearray()
     selector = selectors.DefaultSelector()
     deadline = time.monotonic() + 10
+    cleanup_attempted = False
     try:
         assert process.stdout is not None
         os.set_blocking(process.stdout.fileno(), False)
@@ -521,12 +522,15 @@ def fixed_git(git: Path, git_descriptor: int, repository: Path, *arguments: str)
             raise VerificationError("fixed Git command timed out")
         process.wait(timeout=remaining)
         if process_group_exists(process.pid):
+            cleanup_attempted = True
             if not cleanup_process_group(process):
                 raise VerificationCleanupError("fixed Git command cleanup failed")
             raise VerificationError("fixed Git command left a descendant")
     except (OSError, subprocess.TimeoutExpired, VerificationError) as failure:
-        if not cleanup_process_group(process):
-            raise VerificationCleanupError("fixed Git command cleanup failed") from None
+        if not cleanup_attempted:
+            cleanup_attempted = True
+            if not cleanup_process_group(process):
+                raise VerificationCleanupError("fixed Git command cleanup failed") from None
         if isinstance(failure, VerificationCleanupError):
             raise failure
         raise VerificationError("fixed Git command failed or exceeded its boundary") from None
@@ -630,10 +634,12 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_metadata: os.stat_r
             raise VerificationError("file-set entry suffix is malformed")
         relative = raw[path_start:path_end]
         digest = raw[path_end + 3:suffix_end - 1]
-        if not HEX64.fullmatch(digest.decode("ascii", "strict")):
+        if len(digest) != 64 or any(byte not in b"0123456789abcdef" for byte in digest):
             raise VerificationError("file-set entry digest is invalid")
         components = relative.split(b"/")
-        if relative.startswith(b"/") or any(not part or part in (b".", b"..") for part in components):
+        if relative.startswith(b"/") or any(
+            not part or b"\0" in part or part in (b".", b"..") for part in components
+        ):
             raise VerificationError("file-set path is invalid")
         if prior is not None and relative <= prior:
             raise VerificationError("file-set paths are not strictly sorted")

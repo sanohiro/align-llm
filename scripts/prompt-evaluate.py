@@ -175,6 +175,69 @@ def valid_hex(value: Any, sizes: tuple[int, ...] = (64,)) -> bool:
     return isinstance(value, str) and len(value) in sizes and all(character in HEX for character in value)
 
 
+def valid_ascii_identifier(value: Any, *, allow_empty: bool = False) -> bool:
+    if not isinstance(value, str):
+        return False
+    raw = value.encode("utf-8")
+    return (allow_empty and not raw) or bool(raw) and len(raw) <= 128 and all(0x20 <= byte <= 0x7E for byte in raw)
+
+
+def validate_absolute_path_syntax(value: Any, label: str) -> None:
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 4096 or "\0" in value:
+        raise EvaluationError(f"{label} path is invalid")
+    components = value.split("/")
+    if components[0] != "" or len(components) < 2 or any(
+        not component
+        or component in (".", "..")
+        or len(component.encode("utf-8")) > 255
+        for component in components[1:]
+    ):
+        raise EvaluationError(f"{label} path is invalid")
+
+
+def validate_request_source_declaration(request: Mapping[str, Any]) -> None:
+    evaluation_id = request.get("evaluation_id")
+    if (
+        not valid_ascii_identifier(evaluation_id)
+        or "/" in evaluation_id
+        or evaluation_id in (".", "..")
+    ):
+        raise EvaluationError("evaluation identifier is invalid")
+    kind = request.get("verifier_corpus_source_kind")
+    manifest = request.get("verifier_corpus_file_set_manifest_path")
+    if kind == "FILE_SET":
+        if not isinstance(manifest, str):
+            raise EvaluationError("file-set manifest path is required")
+        validate_absolute_path_syntax(manifest, "file-set manifest")
+        if request.get("verifier_corpus_source_repository_id") != "":
+            raise EvaluationError("file-set repository identity must be empty")
+        if not valid_hex(request.get("verifier_corpus_source_sha256")):
+            raise EvaluationError("file-set source digest is invalid")
+    elif kind == "GIT_COMMIT":
+        if manifest is not None:
+            raise EvaluationError("Git source must not declare a file-set manifest")
+        if not valid_ascii_identifier(request.get("verifier_corpus_source_repository_id")):
+            raise EvaluationError("Git source repository identity is invalid")
+        if not valid_hex(request.get("verifier_corpus_source_sha256"), (40, 64)):
+            raise EvaluationError("Git source digest is invalid")
+    else:
+        raise EvaluationError("corpus source kind is invalid")
+    for name, label in (
+        ("verifier_align_llm_repository_path", "align-llm repository"),
+        ("verifier_align_repository_path", "Align repository"),
+        ("verifier_corpus_source_path", "corpus source"),
+        ("verifier_python_executable_path", "source verifier Python executable"),
+        ("verifier_git_executable_path", "source verifier Git executable"),
+    ):
+        validate_absolute_path_syntax(request.get(name), label)
+    if not valid_hex(request.get("verifier_align_llm_commit"), (40, 64)):
+        raise EvaluationError("align-llm source identity is invalid")
+    if not valid_hex(request.get("verifier_align_revision"), (40, 64)):
+        raise EvaluationError("Align source identity is invalid")
+    if not valid_hex(request.get("verifier_source_policy_sha256")):
+        raise EvaluationError("source verifier policy digest is invalid")
+
+
 def read_bounded(path: Path, maximum: int) -> bytes:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -373,6 +436,7 @@ def run_child(
     captures = {"stdout": bytearray(), "stderr": bytearray()}
     selector = selectors.DefaultSelector()
     deadline = time.monotonic() + timeout_ns / 1_000_000_000
+    cleanup_attempted = False
     try:
         for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
             assert stream is not None
@@ -404,12 +468,15 @@ def run_child(
             raise ChildBoundaryError("TIMEOUT")
         process.wait(timeout=remaining)
         if process_group_exists(process.pid):
+            cleanup_attempted = True
             if not cleanup_process_group(process):
                 raise ChildBoundaryError("CLEANUP")
             raise ChildBoundaryError("PROCESS")
     except (OSError, subprocess.TimeoutExpired, ChildBoundaryError) as failure:
-        if not cleanup_process_group(process):
-            raise ChildBoundaryError("CLEANUP") from None
+        if not cleanup_attempted:
+            cleanup_attempted = True
+            if not cleanup_process_group(process):
+                raise ChildBoundaryError("CLEANUP") from None
         if isinstance(failure, ChildBoundaryError):
             raise failure
         if isinstance(failure, subprocess.TimeoutExpired):
@@ -552,9 +619,10 @@ def write_prepared_pair(
     trust: Mapping[str, Any],
     expected_inputs: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    bind(result)
     if not canonical_fits(result, RESULT_LIMIT):
         compact_oversized_result(result, expected_inputs)
-    bind(result)
+        bind(result)
     evidence = bind({
         "schema_version": 1,
         "artifact_kind": "PROMPT_EVALUATION_EVIDENCE",
@@ -872,6 +940,15 @@ def unavailable_trust(request: Mapping[str, Any]) -> dict[str, Any]:
 def validate_source_boundary(
     request: Mapping[str, Any], policy: Mapping[str, Any], project: Path
 ) -> None:
+    if (
+        not valid_ascii_identifier(policy.get("policy_id"))
+        or not valid_hex(policy.get("helper_sha256"))
+        or not valid_hex(policy.get("interpreter_sha256"))
+        or not valid_hex(policy.get("git_executable_sha256"))
+        or not isinstance(policy.get("helper_runtime"), str)
+        or len(policy["helper_runtime"].encode("utf-8")) > 256
+    ):
+        raise EvaluationError("source verifier policy identity is invalid")
     helper = relative_path(project, policy["helper_path"])
     python = Path(request["verifier_python_executable_path"])
     git = Path(request["verifier_git_executable_path"])
@@ -1131,18 +1208,8 @@ def evaluate(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     request = load_json(request_path, REQUEST_LIMIT)
     request_fields = tuple(request)
-    option_fields_valid = (
-        request_fields == EVALUATE_REQUEST_FIELDS
-        and (
-            request.get("verifier_corpus_source_kind") == "FILE_SET"
-            or request.get("verifier_corpus_file_set_manifest_path") is None
-        )
-    ) or (
-        request_fields == EVALUATE_REQUEST_FIELDS_OMITTED
-        and request.get("verifier_corpus_source_kind") != "FILE_SET"
-    )
     if (
-        not option_fields_valid
+        request_fields not in (EVALUATE_REQUEST_FIELDS, EVALUATE_REQUEST_FIELDS_OMITTED)
         or request.get("schema_version") != 1
         or request.get("artifact_kind") != "PROMPT_EVALUATE_REQUEST"
     ):
@@ -1171,6 +1238,7 @@ def evaluate(
         )
         raise ResultOnlyInvalid("evaluation evidence path is invalid")
     try:
+        validate_request_source_declaration(request)
         inputs = validated_evaluation_inputs(request, project)
     except (EvaluationError, OSError, TypeError, ValueError, KeyError, IndexError) as failure:
         code = validation_error_code(failure)

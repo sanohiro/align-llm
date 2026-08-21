@@ -337,6 +337,7 @@ def git_identity(
         output = bytearray()
         selector = selectors.DefaultSelector()
         deadline = time.monotonic() + 10
+        cleanup_attempted = False
         try:
             assert process.stdout is not None
             os.set_blocking(process.stdout.fileno(), False)
@@ -362,12 +363,15 @@ def git_identity(
                         raise SnapshotError("task repository Git output exceeded its cap")
             process.wait(timeout=max(0.001, deadline - time.monotonic()))
             if process_group_exists(process.pid):
+                cleanup_attempted = True
                 if not cleanup_process_group(process):
                     raise SnapshotCleanupError("task repository Git command cleanup failed")
                 raise SnapshotError("task repository Git command left a descendant")
         except (OSError, subprocess.TimeoutExpired, SnapshotError) as failure:
-            if not cleanup_process_group(process):
-                raise SnapshotCleanupError("task repository Git command cleanup failed") from None
+            if not cleanup_attempted:
+                cleanup_attempted = True
+                if not cleanup_process_group(process):
+                    raise SnapshotCleanupError("task repository Git command cleanup failed") from None
             if isinstance(failure, SnapshotCleanupError):
                 raise failure
             raise SnapshotError("task repository Git command failed") from None

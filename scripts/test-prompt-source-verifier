@@ -255,6 +255,41 @@ def main() -> int:
         bind(value)
         code, result = invoke(root, value)
         require(code == 0 and result["corpus_reachability"] == "VERIFIED", "raw-byte file set was not verified")
+
+        non_ascii_digest_manifest = bytes(manifest).replace(
+            hashlib.sha256(b"ordinary").hexdigest().encode(),
+            b"\xff" + hashlib.sha256(b"ordinary").hexdigest().encode()[1:],
+            1,
+        )
+        non_ascii_digest_path = root / "non-ascii-digest.manifest"
+        non_ascii_digest_path.write_bytes(non_ascii_digest_manifest)
+        non_ascii_digest_value = dict(value)
+        non_ascii_digest_value["corpus_file_set_manifest_path"] = str(non_ascii_digest_path)
+        non_ascii_digest_value["expected_corpus_source_sha256"] = hashlib.sha256(non_ascii_digest_manifest).hexdigest()
+        bind(non_ascii_digest_value)
+        code, result = invoke(root, non_ascii_digest_value)
+        require(
+            code == 0 and result["corpus_reachability"] == "UNVERIFIED",
+            "non-ASCII file-set digest escaped the observation failure path",
+        )
+
+        nul_relative = b"bad\0name"
+        nul_manifest = (
+            b"ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100640 "
+            + str(len(nul_relative)).encode() + b" " + nul_relative + b"\0F " + b"0" * 64 + b"\n"
+        )
+        nul_manifest_path = root / "nul-path.manifest"
+        nul_manifest_path.write_bytes(nul_manifest)
+        nul_value = dict(value)
+        nul_value["corpus_file_set_manifest_path"] = str(nul_manifest_path)
+        nul_value["expected_corpus_source_sha256"] = hashlib.sha256(nul_manifest).hexdigest()
+        bind(nul_value)
+        code, result = invoke(root, nul_value)
+        require(
+            code == 0 and result["corpus_reachability"] == "UNVERIFIED",
+            "NUL file-set path escaped the observation failure path",
+        )
+
         (file_set / "ordinary.txt").write_text("tampered")
         code, result = invoke(root, value)
         require(code == 0 and result["corpus_reachability"] == "UNVERIFIED", "tampered file set was verified")
@@ -362,12 +397,25 @@ def main() -> int:
             "exit 1\n"
         )
         descendant_git.chmod(0o755)
-        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
-        value["git_executable_path"] = str(descendant_git)
-        value["git_executable_sha256"] = hashlib.sha256(descendant_git.read_bytes()).hexdigest()
-        bind(value)
-        code, result = invoke(root, value)
-        require(code == 0 and result["status"] == "COMPLETE", "descendant Git failure did not produce a result")
+        original_cleanup = module.cleanup_process_group
+        cleanup_calls = 0
+
+        def counted_cleanup(process, maximum_seconds=2.0):
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+            return original_cleanup(process, maximum_seconds)
+
+        module.cleanup_process_group = counted_cleanup
+        git_descriptor = os.open(descendant_git, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            try:
+                module.fixed_git(Path(f"/proc/self/fd/{git_descriptor}"), git_descriptor, llm, "rev-parse", "HEAD")
+                raise RuntimeError("source verifier descendant Git was accepted")
+            except module.VerificationError:
+                pass
+        finally:
+            os.close(git_descriptor)
+        require(cleanup_calls == 1, "source verifier descendant cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "source verifier left a Git descendant alive")
 

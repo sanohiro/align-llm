@@ -212,6 +212,15 @@ trusted helpers and its fixed contained adapter; those children must not call `s
 descendant to another process group. A capability that admits an escape-capable child must use the
 fresh-worker cgroup boundary and is outside this in-process group contract.
 
+`src/prompt_evaluate.align` arms no second wall-clock deadline around the Python evaluator. The
+Python process is the sole owner of the fixed helper deadlines and each declared task deadline, so
+a maximum-time child that starts after validation cannot outlive an earlier outer deadline. The
+Align wrapper retains Request 11's bounded capture and direct-child result handling. Capable gate
+execution places the complete wrapper/evaluator tree in the authenticated fresh-worker cgroup;
+that cgroup is the authoritative whole-tree owner for abrupt gate cancellation and is drained
+before removal. A direct supplementary CLI run has no cleanup guarantee after an uncatchable host
+termination.
+
 #### Producer-owned environment identity
 
 The producer/verifier table is fixed before implementation. A child never supplies the final
@@ -3217,7 +3226,7 @@ of the same containment gap. This matrix reopens that axis before the implementa
 | Reopened invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
 | Source-verifier runtime identity | `PromptSourceVerifierPolicy`, evaluator, future gate locator | bind the exact helper and explicit CPython executable bytes in `CPYTHON:<interpreter_sha256>:<helper_sha256>`; validate policy, helper, interpreter, and Git digests before launch; never select an interpreter through a shebang or ambient path | evaluator source-policy runtime mismatch, interpreter tamper, helper tamper, and exact-argv fixtures in `prompt-evaluate-smoke`; gate equivalents remain owned by C6-MEASURED |
-| Descendant ownership | evaluator, snapshot helper, source verifier, fixed adapter, their Git/task children | on the required Linux floor start every content-bound trusted direct child in a PID-owned private session/group, prohibit session/group escape, and apply the specified group signal, direct wait, bounded group-absence proof, and cleanup-precedence sequence for timeout, output cap where the boundary captures output, nonzero/malformed failure, and successful-parent-with-live-descendant states | marker-bearing evaluator timeout and successful-parent descendant fixtures plus source-verifier, snapshot-helper, and fixed-adapter live-descendant fixtures prove marker and process-group absence; their existing timeout/output owners retain the ordinary failure cases; Request 11 adoption remains the Align outer-boundary owner |
+| Descendant ownership | evaluator, snapshot helper, source verifier, fixed adapter, their Git/task children | on the required Linux floor start every content-bound trusted direct child in a PID-owned private session/group, prohibit session/group escape, and apply the specified group signal, direct wait, bounded group-absence proof, and cleanup-precedence sequence for timeout, output cap where the boundary captures output, nonzero/malformed failure, and successful-parent-with-live-descendant states | marker-bearing evaluator timeout and successful-parent descendant fixtures plus source-verifier, snapshot-helper, and fixed-adapter live-descendant fixtures prove marker and process-group absence; their existing timeout/output owners retain the ordinary failure cases; Request 11 owns bounded outer capture while the qualified fresh-worker cgroup owns abrupt whole-tree cancellation |
 | FILE_SET physical containment | source verifier | retain separate manifest and source-root descriptors, walk every raw byte component with no-follow directory-relative opens, and obtain type/mode/device/inode/bytes/digest from the same retained final descriptor; reject a symlink ancestor, special final, root escape, and manifest physical alias while accepting valid non-UTF-8 path bytes | source-verifier FILE_SET symlink-ancestor, non-UTF-8 acceptance, special-file, root-escape, manifest-alias, and digest fixtures plus same-descriptor pre/post identity checks |
 
 The runtime change is intentionally structural rather than a nominal-label patch. The interpreter
@@ -3233,6 +3242,31 @@ matched is `UNVERIFIED`; malformed request field or absolute-path syntax remains
 `INVALID_INPUT`.
 `prompt-evaluate-smoke` covers representative ordered invalid-input pairs and proves that no later
 snapshot or adapter side effect occurs; the focused helper owners cover the observation failures.
+
+### 10.1d Final-review evaluator boundary closure
+
+The final C6-EVALUATION review found that the first runtime-containment matrix still treated a
+flat Unix process group as if it were a hierarchy and did not close the complete invalid-input and
+wire-compatibility surface. This matrix reopens `evaluator-runtime-containment` before the repair;
+each row must map to the final diff and owner evidence before publication.
+
+| Reopened invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Outer deadline and descendant ownership | `src/prompt_evaluate.align`, Python evaluator, authenticated fresh worker | the Align wrapper arms no independent timeout that can expire before a later-started maximum-time task; Python remains the sole per-child deadline/group owner, while capable gate execution places the complete evaluator tree in the already-qualified fresh-worker cgroup whose teardown is authoritative for abrupt outer cancellation | `prompt-evaluate-smoke` rejects an outer `timeout_ns` arm and retains the bounded inner timeout/descendant fixtures; `fresh-worker-qualification` and the capable gate retain cgroup admission, kill, drain, and removal evidence |
+| Exactly-once group cleanup | evaluator, snapshot helper, source verifier, fixed adapter | every child boundary records whether cleanup was attempted; after the first successful group-absence proof it propagates the saved diagnosis without entering a generic cleanup path or signaling the reusable PGID again | evaluator, snapshot-helper, and source-verifier successful-parent/live-descendant fixtures count exactly one cleanup attempt; the fixed-adapter owner retains its single-return cleanup paths |
+| Pre-side-effect source validation | decoded request boundary and source-policy owner | validate identifier, digest, discriminator, option-pairing, repository-ID, absolute-root, manifest, interpreter, Git, and policy shapes before any helper, snapshot, or adapter child; only a syntactically valid source whose physical observation is unavailable becomes `UNVERIFIED` | evaluator null/missing FILE_SET manifest, relative root, invalid identity, non-ASCII/oversized ID, and ordered multi-invalid fixtures prove result-only `INVALID_INPUT` and no child marker |
+| Final result size | bounded result persistence owner | bind the final digest before testing the persisted byte bound; if it exceeds the cap, clear the large graph, construct and bind the compact `RESULT_TOO_LARGE` record, and size/write only that final representation | compact-overflow owner covers an unbound record whose final digest crosses the cap and proves the compact pair persists |
+| Raw FILE_SET malformed bytes | source verifier | validate digest bytes without an implicit Unicode decode and reject embedded NUL in every raw path component as corpus observation failure; no `UnicodeDecodeError` or `ValueError` escapes the declared `VerificationError` path | FILE_SET non-ASCII digest and embedded-NUL fixtures return bounded `UNVERIFIED` results with no traceback or partial output |
+| Schema-v1 compatibility evidence | Align codec owner plus canonical digest owner | for policy, evaluate request, and gate locator, decode exact golden bytes and compare semantics, re-encode exact bytes, reject missing/duplicate/reordered fields, cover both optional manifest states, and prove every helper/interpreter/runtime/Git mutation changes the canonical preimage/digest | `prompt-runtime-schema-v1` semantic/byte, invalid-field-order, optional-`Some`, and mutation goldens |
+| Durable continuation state | `HANDOFF.md` | while findings or the capable gate remain open, the next action names repair, owner verification, preflight, and capable CI before merge; merge becomes the next action only after those gates pass | author-side HANDOFF consistency pass and `git diff --check` |
+
+The outer timeout removal is deliberate, not an unbounded-child promise. Every admitted task and
+helper retains its own fixed or declared finite deadline. The wrapper performs only request/output
+ownership around that Python owner. Abrupt cancellation of the wrapper is authoritative only in
+the capable fresh-worker profile, where the complete wrapper, evaluator, private child groups, and
+session-breaking descendants inherit one cgroup leaf before execution and the worker proves the
+leaf empty before removal. A supplementary direct CLI invocation does not claim cleanup after an
+uncatchable host termination.
 
 Applicability decisions:
 
