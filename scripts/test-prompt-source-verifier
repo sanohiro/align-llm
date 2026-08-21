@@ -273,6 +273,34 @@ def main() -> int:
             "non-ASCII file-set digest escaped the observation failure path",
         )
 
+        overlong_count_manifest = b"ALIGN-LLM-CORPUS-FILE-SET-V1\n" + b"9" * 5000 + b"\n"
+        overlong_count_path = root / "overlong-count.manifest"
+        overlong_count_path.write_bytes(overlong_count_manifest)
+        overlong_count_value = dict(value)
+        overlong_count_value["corpus_file_set_manifest_path"] = str(overlong_count_path)
+        overlong_count_value["expected_corpus_source_sha256"] = hashlib.sha256(overlong_count_manifest).hexdigest()
+        bind(overlong_count_value)
+        code, result = invoke(root, overlong_count_value)
+        require(
+            code == 0 and result["corpus_reachability"] == "UNVERIFIED",
+            "overlong file-set entry count escaped the observation failure path",
+        )
+
+        overlong_path_count_manifest = (
+            b"ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100640 " + b"9" * 5000 + b" value"
+        )
+        overlong_path_count_path = root / "overlong-path-count.manifest"
+        overlong_path_count_path.write_bytes(overlong_path_count_manifest)
+        overlong_path_count_value = dict(value)
+        overlong_path_count_value["corpus_file_set_manifest_path"] = str(overlong_path_count_path)
+        overlong_path_count_value["expected_corpus_source_sha256"] = hashlib.sha256(overlong_path_count_manifest).hexdigest()
+        bind(overlong_path_count_value)
+        code, result = invoke(root, overlong_path_count_value)
+        require(
+            code == 0 and result["corpus_reachability"] == "UNVERIFIED",
+            "overlong file-set path length escaped the observation failure path",
+        )
+
         nul_relative = b"bad\0name"
         nul_manifest = (
             b"ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100640 "

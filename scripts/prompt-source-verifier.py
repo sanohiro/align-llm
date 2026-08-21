@@ -602,9 +602,10 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_metadata: os.stat_r
         raise VerificationError("file-set manifest header is invalid")
     cursor = len(prefix)
     newline = raw.find(b"\n", cursor)
-    if newline < 0 or not DECIMAL.fullmatch(raw[cursor:newline]):
+    count_raw = raw[cursor:newline]
+    if newline < 0 or len(count_raw) > 7 or not DECIMAL.fullmatch(count_raw):
         raise VerificationError("file-set entry count is invalid")
-    count = int(raw[cursor:newline])
+    count = int(count_raw)
     if count < 1 or count > 1_048_576:
         raise VerificationError("file-set entry count is out of range")
     cursor = newline + 1
@@ -620,10 +621,17 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_metadata: os.stat_r
       for _ in range(count):
         mode_end = raw.find(b" ", cursor)
         count_end = raw.find(b" ", mode_end + 1)
-        if mode_end < 0 or count_end < 0 or not MODE.fullmatch(raw[cursor:mode_end]) or not DECIMAL.fullmatch(raw[mode_end + 1:count_end]):
+        path_count_raw = raw[mode_end + 1:count_end]
+        if (
+            mode_end < 0
+            or count_end < 0
+            or not MODE.fullmatch(raw[cursor:mode_end])
+            or len(path_count_raw) > 4
+            or not DECIMAL.fullmatch(path_count_raw)
+        ):
             raise VerificationError("file-set entry prefix is malformed")
         mode = int(raw[cursor:mode_end], 8)
-        path_count = int(raw[mode_end + 1:count_end])
+        path_count = int(path_count_raw)
         if path_count < 1 or path_count > 4096:
             raise VerificationError("file-set path length is out of range")
         path_start = count_end + 1

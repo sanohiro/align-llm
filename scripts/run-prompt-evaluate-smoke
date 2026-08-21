@@ -251,6 +251,31 @@ def verify_descendant_cleanup_boundary() -> None:
         require(not marker.exists(), "successful evaluator parent left a live descendant")
 
 
+def verify_workspace_ownership_boundary() -> None:
+    module_path = SOURCE / "scripts" / "prompt-evaluate.py"
+    spec = importlib.util.spec_from_file_location("prompt_evaluate_ownership", module_path)
+    require(spec is not None and spec.loader is not None, "evaluator helper could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with tempfile.TemporaryDirectory(prefix="prompt-ownership-") as directory:
+        root = Path(directory)
+        current = [root / f"current-{kind}.json" for kind in ("variant", "rendered", "request", "measurement")]
+        future = root / "future-variant.json"
+        require(
+            module.invocation_workspace_entries(*current) == sorted(path.name for path in current)
+            and future.name not in module.invocation_workspace_entries(*current),
+            "workspace admission was not limited to the exact current invocation",
+        )
+        stale = root / "retired.json"
+        stale.write_text("owned")
+        owned = {stale}
+        require(module.retire_owned_path(stale, owned) and not owned, "removed path retained stale ownership")
+        stale.write_text("competitor")
+        require(module.retire_owned_path(stale, owned), "retired path did not remain retired")
+        require(not module.cleanup_owned_paths(owned), "empty ownership set reported a survivor")
+        require(stale.read_text() == "competitor", "retired ownership removed a competing replacement")
+
+
 def copy_runtime(project: Path) -> None:
     for relative in (
         "scripts/prompt-evaluate.py", "scripts/prompt-fixed-adapter.py", "scripts/prompt-snapshot-helper.py",
@@ -273,6 +298,7 @@ def main() -> int:
     require("command.timeout_ns" not in align_boundary, "Align evaluator armed an outer child deadline")
     verify_compact_overflow_boundary()
     verify_descendant_cleanup_boundary()
+    verify_workspace_ownership_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
         root = Path(directory)
         project = root / "project"
@@ -823,6 +849,58 @@ def main() -> int:
         evidence_path.unlink()
         for task_path, task_document in zip(task_files, original_task_documents):
             store(project, task_path, task_document)
+
+        cleanup_counter = root / "cleanup-retirement-count"
+        cleanup_evaluator = project / "scripts/prompt-evaluate.py"
+        cleanup_evaluator_source = cleanup_evaluator.read_text().replace(
+            "    if path not in owned_paths:\n"
+            "        return True\n",
+            "    if path not in owned_paths:\n"
+            "        return True\n"
+            "    if path.name.endswith('-snapshot-result.json'):\n"
+            f"        counter = Path({str(cleanup_counter)!r})\n"
+            "        count = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "        counter.write_text(str(count))\n"
+            "        if count >= 2:\n"
+            "            return False\n",
+            1,
+        )
+        require(cleanup_evaluator_source != cleanup_evaluator.read_text(), "cleanup evaluator fixture did not patch")
+        cleanup_evaluator.write_text(cleanup_evaluator_source)
+        cleanup_failed = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            result_path.exists() and evidence_path.exists(),
+            "post-row cleanup fixture did not publish: "
+            f"stdout={cleanup_failed.stdout!r} stderr={cleanup_failed.stderr!r} "
+            f"workspace={sorted(path.name for path in workspace.iterdir())}",
+        )
+        cleanup_result = json.loads(result_path.read_text())
+        require(
+            cleanup_failed.returncode != 0
+            and cleanup_result["status"] == "ERROR"
+            and cleanup_result["error_code"] == "CLEANUP_FAILED"
+            and len(cleanup_result["rows"]) == 1
+            and cleanup_result["snapshot_attestations"][0]["status"] == "COMPLETE",
+            "post-row evaluator cleanup failure did not retain its terminal prefix pair",
+        )
+        cleanup_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            cleanup_verified.returncode == 0 and cleanup_verified.stdout.strip() == "NONCOMPLETE_ERROR",
+            "post-row cleanup prefix did not pass strict verification: "
+            f"stdout={cleanup_verified.stdout!r} stderr={cleanup_verified.stderr!r} result={cleanup_result!r}",
+        )
+        require(len(list(workspace.iterdir())) == 1, "cleanup failure did not stop at the first invocation")
+        for path in list(workspace.iterdir()):
+            path.unlink()
+        result_path.unlink()
+        evidence_path.unlink()
+        shutil.copy2(SOURCE / "scripts/prompt-evaluate.py", cleanup_evaluator)
 
         completed = subprocess.run(
             [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],

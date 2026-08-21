@@ -190,6 +190,15 @@ fn write_exclusive(path_value: str, value: str) -> Result<(), Error> {
   return output.flush()
 }
 
+ExclusiveWriteStatus { Written, CreateFailed, WriteFailed }
+
+fn write_exclusive_detailed(path_value: str, value: str) -> ExclusiveWriteStatus {
+  output := fs.create_exclusive(path_value) else { return ExclusiveWriteStatus.CreateFailed }
+  output.write(value) else { return ExclusiveWriteStatus.WriteFailed }
+  output.flush() else { return ExclusiveWriteStatus.WriteFailed }
+  return ExclusiveWriteStatus.Written
+}
+
 fn remove_if_owned(path_value: str, owned: bool) -> bool {
   if !owned {
     return true
@@ -282,15 +291,52 @@ pub fn publish_prompt_pair_bytes_detailed(
   !absent_beneath(project_root, evidence_temporary_relative) {
     return pair_write_result(PairWriteStatus.OutputWrite)
   }
-  match write_exclusive(result_temporary, result_bytes) {
-    Ok(_) => { result_temporary_owned = true },
-    Err(_) => { return pair_write_result(PairWriteStatus.OutputWrite) },
+  match write_exclusive_detailed(result_temporary, result_bytes) {
+    Written => { result_temporary_owned = true },
+    CreateFailed => { return pair_write_result(PairWriteStatus.OutputWrite) },
+    WriteFailed => {
+      result_temporary_owned = true
+      clean_result := remove_if_owned(result_temporary, result_temporary_owned)
+      if clean_result { result_temporary_owned = false }
+      if !clean_result {
+        return cleanup_failed_pair_result(
+          project_root,
+          result_relative_path,
+          result_temporary_relative,
+          evidence_temporary_relative,
+          result_final_owned,
+          result_temporary_owned,
+          evidence_temporary_owned,
+        )
+      }
+      return pair_write_result(PairWriteStatus.OutputWrite)
+    },
   }
-  match write_exclusive(evidence_temporary, evidence_bytes) {
-    Ok(_) => { evidence_temporary_owned = true },
-    Err(_) => {
-      if !remove_if_owned(result_temporary, result_temporary_owned) ||
-      !absent_beneath(project_root, result_temporary_relative) {
+  match write_exclusive_detailed(evidence_temporary, evidence_bytes) {
+    Written => { evidence_temporary_owned = true },
+    CreateFailed => {
+      clean_result := remove_if_owned(result_temporary, result_temporary_owned)
+      if clean_result { result_temporary_owned = false }
+      if !clean_result {
+        return cleanup_failed_pair_result(
+          project_root,
+          result_relative_path,
+          result_temporary_relative,
+          evidence_temporary_relative,
+          result_final_owned,
+          result_temporary_owned,
+          evidence_temporary_owned,
+        )
+      }
+      return pair_write_result(PairWriteStatus.OutputWrite)
+    },
+    WriteFailed => {
+      evidence_temporary_owned = true
+      clean_result := remove_if_owned(result_temporary, result_temporary_owned)
+      clean_evidence := remove_if_owned(evidence_temporary, evidence_temporary_owned)
+      if clean_result { result_temporary_owned = false }
+      if clean_evidence { evidence_temporary_owned = false }
+      if !clean_result || !clean_evidence {
         return cleanup_failed_pair_result(
           project_root,
           result_relative_path,
@@ -309,9 +355,9 @@ pub fn publish_prompt_pair_bytes_detailed(
   !absent_beneath(project_root, evidence_relative_path) {
     clean_result := remove_if_owned(result_temporary, result_temporary_owned)
     clean_evidence := remove_if_owned(evidence_temporary, evidence_temporary_owned)
-    if !clean_result || !clean_evidence ||
-    !absent_beneath(project_root, result_temporary_relative) ||
-    !absent_beneath(project_root, evidence_temporary_relative) {
+    if clean_result { result_temporary_owned = false }
+    if clean_evidence { evidence_temporary_owned = false }
+    if !clean_result || !clean_evidence {
       return cleanup_failed_pair_result(
         project_root,
         result_relative_path,
@@ -333,9 +379,9 @@ pub fn publish_prompt_pair_bytes_detailed(
     Err(_) => {
       clean_result := remove_if_owned(result_temporary, result_temporary_owned)
       clean_evidence := remove_if_owned(evidence_temporary, evidence_temporary_owned)
-      if !clean_result || !clean_evidence ||
-      !absent_beneath(project_root, result_temporary_relative) ||
-      !absent_beneath(project_root, evidence_temporary_relative) {
+      if clean_result { result_temporary_owned = false }
+      if clean_evidence { evidence_temporary_owned = false }
+      if !clean_result || !clean_evidence {
         return cleanup_failed_pair_result(
           project_root,
           result_relative_path,
@@ -355,9 +401,9 @@ pub fn publish_prompt_pair_bytes_detailed(
     Err(_) => {
       clean_result := remove_if_owned(result_path, result_final_owned)
       clean_evidence := remove_if_owned(evidence_temporary, evidence_temporary_owned)
-      if !clean_result || !clean_evidence ||
-      !absent_beneath(project_root, result_relative_path) ||
-      !absent_beneath(project_root, evidence_temporary_relative) {
+      if clean_result { result_final_owned = false }
+      if clean_evidence { evidence_temporary_owned = false }
+      if !clean_result || !clean_evidence {
         return cleanup_failed_pair_result(
           project_root,
           result_relative_path,

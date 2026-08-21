@@ -20,10 +20,14 @@ file records durable project state.
   result-only; operational failures retain the exact valid trace prefix and paired evidence. Its
   review reopened exact interpreter identity, descendant ownership, FILE_SET physical traversal,
   nested deadline hierarchy, pre-allocation result binding, validation precedence, and capable-gate
-  execution as one runtime-containment axis. The revised candidate binds and descriptor-launches
-  the exact CPython/helper/Git bytes, gives nested owners cleanup/report margins, streams canonical
-  result binding, proves private process-group absence, retains FILE_SET roots/manifests/final
-  files, and executes the complete evaluator adoption owner inside capable-only `make ci`.
+  execution as one runtime-containment axis. The final ownership review additionally reopened exact
+  per-invocation workspace admission, cleanup-before-pair construction, immediate publication-owner
+  retirement, and bounded FILE_SET decimal decoding on that same axis. The revised candidate binds
+  and descriptor-launches the exact CPython/helper/Git bytes, gives nested owners cleanup/report
+  margins, streams canonical result binding, proves private process-group absence, admits only the
+  current invocation's four workspace names, constructs terminal evidence after owned cleanup,
+  retains FILE_SET roots/manifests/final files, and executes the complete evaluator adoption owner
+  inside capable-only `make ci`.
 - Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. C6d now builds on that
   decoded verifier: `prompt accept` verifies result/evidence before constructing an immutable
   activation, `prompt rollback` validates immutable lineage, and both commands use retained-root
@@ -109,9 +113,11 @@ file records durable project state.
   `gmake --no-print-directory c6-prompt-artifact-adoption`, `gmake --no-print-directory check`, and
   `gmake --no-print-directory format-check`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2` after the reopened
-  deadline/allocation/precedence/gate repair. The identity-bound Makefile change requires its fresh
-  baseline source/oracle/finalization chain; exact-head preflight and final capable `make ci` remain
-  pending. Focused evidence covers Request 11 exact-cap,
+  deadline/allocation/precedence/gate repair and the final ownership-boundary repair. Source
+  `8b328a679005`, oracle `bab3787e2518`, and
+  finalization `fa39131ba64c` form its passing identity-bound baseline chain. The final ownership
+  repair's replacement baseline chain, exact-head review, preflight, and final capable `make ci`
+  remain pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
@@ -253,10 +259,9 @@ file records durable project state.
 
 ## Next actions
 
-1. Commit the closed C6-EVALUATION deadline, allocation, validation-order, and capable-gate matrix;
-   record its identity-bound baseline source/oracle/finalization chain, complete the final review,
-   run exact-head preflight, and pass final capable `make ci` before merging and beginning
-   C6-MEASURED.
+1. Record the ownership-repaired C6-EVALUATION source in a replacement identity-bound baseline
+   source/oracle/finalization chain, complete the required exact-head review, run exact-head
+   preflight, and pass final capable `make ci` before merging and beginning C6-MEASURED.
 2. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
    do not infer a provider-quality claim from the deterministic fixture comparison.
 

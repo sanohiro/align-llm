@@ -560,10 +560,14 @@ def render(variant: Mapping[str, Any], task_prompt: Mapping[str, Any], context: 
     return text, digest(text)
 
 
-def write_exclusive(path: Path, raw: bytes, maximum: int) -> None:
+def write_exclusive(
+    path: Path, raw: bytes, maximum: int, owned_paths: set[Path] | None = None,
+) -> None:
     if len(raw) > maximum:
         raise EvaluationError("evaluation output exceeds its bound")
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    if owned_paths is not None:
+        owned_paths.add(path)
     try:
         offset = 0
         while offset < len(raw):
@@ -579,10 +583,34 @@ def temporary_json(
     owned_paths: set[Path] | None = None,
 ) -> Path:
     path = directory / name
-    write_exclusive(path, canonical(value), ARTIFACT_LIMIT)
-    if owned_paths is not None:
-        owned_paths.add(path)
+    write_exclusive(path, canonical(value), ARTIFACT_LIMIT, owned_paths)
     return path
+
+
+def retire_owned_path(path: Path, owned_paths: set[Path]) -> bool:
+    """Remove one path and retire ownership before any later occupant can be considered ours."""
+    if path not in owned_paths:
+        return True
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    owned_paths.discard(path)
+    return True
+
+
+def cleanup_owned_paths(owned_paths: set[Path]) -> list[Path]:
+    """Best-effort cleanup whose return contains only still-owned survivors."""
+    for path in sorted(
+        tuple(owned_paths), key=lambda item: (len(item.parts), os.fsencode(item)), reverse=True,
+    ):
+        retire_owned_path(path, owned_paths)
+    return sorted(owned_paths, key=lambda item: os.fsencode(item))
+
+
+def invocation_workspace_entries(*paths: Path) -> list[str]:
+    """Return the exact current invocation namespace admitted by both snapshots."""
+    return sorted(path.name for path in paths)
 
 
 def invoke_snapshot(
@@ -601,12 +629,10 @@ def invoke_snapshot(
         if completed.returncode != 0 or completed.stdout or completed.stderr:
             raise EvaluationError("snapshot helper process failed")
         result = load_bound(result_path, "SNAPSHOT_RESULT", SNAPSHOT_LIMIT)
-        result_path.unlink()
         if result.get("task_id") != task["task_id"] or result.get("status") not in ("MATCH", "MISMATCH", "ERROR"):
             raise EvaluationError("snapshot helper result is invalid")
         return result
     except ChildBoundaryError as failure:
-        result_path.unlink(missing_ok=True)
         return bind({
             "schema_version": 1,
             "artifact_kind": "SNAPSHOT_RESULT",
@@ -619,7 +645,6 @@ def invoke_snapshot(
             "content_sha256": "",
         })
     except (EvaluationError, OSError, TypeError, KeyError):
-        result_path.unlink(missing_ok=True)
         return bind({
             "schema_version": 1,
             "artifact_kind": "SNAPSHOT_RESULT",
@@ -637,6 +662,7 @@ def invoke_adapter(
     task: Mapping[str, Any], adapter_request: Mapping[str, Any], request_path: Path,
     variant_path: Path, rendered_path: Path, measurement_path: Path,
     project: Path, environment: Mapping[str, str], provider_timeout_ns: int, sample: int, seed: int,
+    owned_paths: set[Path],
 ) -> dict[str, Any]:
     argv = command(task, "argv", project) + [
         "--prompt-variant", str(variant_path), "--rendered-prompt", str(rendered_path),
@@ -652,6 +678,9 @@ def invoke_adapter(
             0,
         )
     except ChildBoundaryError as failure:
+        cleanup_passed = retire_owned_path(measurement_path, owned_paths)
+        if not cleanup_passed:
+            raise AdapterFailure("CLEANUP_FAILED", "measurement artifact cleanup failed") from None
         if failure.reason == "CLEANUP":
             raise AdapterFailure("CLEANUP_FAILED", "measurement adapter cleanup failed") from None
         if failure.reason == "TIMEOUT":
@@ -660,12 +689,17 @@ def invoke_adapter(
             raise AdapterFailure("ADAPTER_PROCESS_OUTPUT", "measurement adapter produced process output") from None
         raise AdapterFailure("ADAPTER_RESULT", "measurement adapter process failed") from None
     if completed.returncode != 0 or completed.stdout or completed.stderr:
+        if not retire_owned_path(measurement_path, owned_paths):
+            raise AdapterFailure("CLEANUP_FAILED", "measurement artifact cleanup failed")
         raise AdapterFailure("ADAPTER_RESULT", "measurement adapter process failed")
     try:
         measurement = load_bound(measurement_path, "TASK_MEASUREMENT", MEASUREMENT_LIMIT)
-    except EvaluationError:
+    except (EvaluationError, OSError, TypeError, ValueError, KeyError):
+        if not retire_owned_path(measurement_path, owned_paths):
+            raise AdapterFailure("CLEANUP_FAILED", "measurement artifact cleanup failed") from None
         raise AdapterFailure("ADAPTER_RESULT", "measurement adapter result is invalid") from None
-    measurement_path.unlink()
+    if not retire_owned_path(measurement_path, owned_paths):
+        raise AdapterFailure("CLEANUP_FAILED", "measurement artifact cleanup failed")
     return measurement
 
 
@@ -1458,19 +1492,38 @@ def evaluate(
             snapshot_requests, snapshot_results, input_snapshots, attestations, rows,
         )
 
+    def finish(
+        result: dict[str, Any],
+        checkpoint: tuple[int, int, int, int, int, int] | None = None,
+        cleanup_diagnosed: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        survivors = cleanup_owned_paths(owned_paths)
+        if cleanup_diagnosed or survivors:
+            if checkpoint is not None and len(rows) == checkpoint[4]:
+                del snapshot_requests[checkpoint[0]:]
+                del snapshot_results[checkpoint[1]:]
+                del input_snapshots[checkpoint[2]:]
+                del attestations[checkpoint[3]:]
+                del expected_inputs[checkpoint[5]:]
+            detail = (
+                result.get("error", "")
+                if cleanup_diagnosed and not survivors
+                else "evaluator-owned workspace cleanup failed"
+            )
+            result = evaluation_result("ERROR", "CLEANUP_FAILED", detail)
+        return write_prepared_pair(prepared_result, prepared_evidence, result, trust, expected_inputs)
+
     for task_ordinal, task in enumerate(tasks):
         task_prompt, context = task_inputs[task_ordinal]
-        entry_names: list[str] = []
-        for sample in range(1, request["sample_count"] + 1):
-            for variant_name in ("PARENT", "CANDIDATE"):
-                prefix = f"t{task_ordinal + 1}-s{sample}-{variant_name.lower()}"
-                entry_names.extend((f"{prefix}-variant.json", f"{prefix}-rendered.json", f"{prefix}-request.json", f"{prefix}-measurement.json"))
-        entry_names.append(f"t{task_ordinal + 1}-snapshot-result.json")
         with tempfile.TemporaryDirectory(prefix="prompt-snapshot-request-") as request_directory:
             schedule = []
             for sample in range(1, request["sample_count"] + 1):
                 schedule.extend(("PARENT", "CANDIDATE") if sample % 2 else ("CANDIDATE", "PARENT"))
                 for variant_name in schedule[-2:]:
+                    checkpoint = (
+                        len(snapshot_requests), len(snapshot_results), len(input_snapshots),
+                        len(attestations), len(rows), len(expected_inputs),
+                    )
                     variant = parent_variant if variant_name == "PARENT" else candidate
                     prefix = f"t{task_ordinal + 1}-s{sample}-{variant_name.lower()}"
                     variant_path = temporary_json(workspace, f"{prefix}-variant.json", variant, owned_paths)
@@ -1518,7 +1571,9 @@ def evaluate(
                             str(adapter_request_path.relative_to(project)),
                         ],
                         "workspace_path": str(workspace),
-                        "allowed_workspace_entries": sorted(entry_names),
+                        "allowed_workspace_entries": invocation_workspace_entries(
+                            variant_path, rendered_path, adapter_request_path, measurement_path,
+                        ),
                         "content_sha256": "",
                     })
                     snapshot_request_path = Path(request_directory) / "request.json"
@@ -1557,9 +1612,9 @@ def evaluate(
                             "after_input_snapshot_sha256": None,
                             "content_sha256": "",
                         }))
-                        return write_prepared_pair(
-                            prepared_result, prepared_evidence,
-                            evaluation_result("ERROR", failure_code, failure_detail), trust, expected_inputs,
+                        return finish(
+                            evaluation_result("ERROR", failure_code, failure_detail), checkpoint,
+                            cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
                         )
                     input_snapshot = bind({
                         "schema_version": 1,
@@ -1572,6 +1627,14 @@ def evaluate(
                     })
                     if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
                         input_snapshots.append(input_snapshot)
+                    if not retire_owned_path(snapshot_result_path, owned_paths):
+                        return finish(
+                            evaluation_result(
+                                "ERROR", "CLEANUP_FAILED", "snapshot result cleanup failed",
+                            ),
+                            checkpoint,
+                            cleanup_diagnosed=True,
+                        )
                     try:
                         measurement = invoke_adapter(
                             task, adapter_request, adapter_request_path, variant_path, rendered_path, measurement_path,
@@ -1580,6 +1643,7 @@ def evaluate(
                             control["timeout_ns"],
                             sample,
                             generation["seed_base"] + sample - 1,
+                            owned_paths,
                         )
                     except AdapterFailure as failure:
                         attestations.append(bind({
@@ -1598,12 +1662,10 @@ def evaluate(
                             "after_input_snapshot_sha256": None,
                             "content_sha256": "",
                         }))
-                        return write_prepared_pair(
-                            prepared_result,
-                            prepared_evidence,
+                        return finish(
                             evaluation_result("ERROR", failure.code, failure.detail),
-                            trust,
-                            expected_inputs,
+                            checkpoint,
+                            cleanup_diagnosed=failure.code == "CLEANUP_FAILED",
                         )
                     if measurement.get("rendered_prompt_sha256") != rendered["content_sha256"]:
                         failure_detail = "measurement adapter result identity disagrees"
@@ -1623,10 +1685,10 @@ def evaluate(
                             "after_input_snapshot_sha256": None,
                             "content_sha256": "",
                         }))
-                        return write_prepared_pair(
-                            prepared_result, prepared_evidence,
-                            evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), trust, expected_inputs,
+                        return finish(
+                            evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), checkpoint,
                         )
+                    owned_paths.add(snapshot_result_path)
                     after = invoke_snapshot(
                         task, snapshot_request_path, snapshot_result_path, project,
                         environment_values, preflight["environment_probe"],
@@ -1656,9 +1718,9 @@ def evaluate(
                             "after_input_snapshot_sha256": None,
                             "content_sha256": "",
                         }))
-                        return write_prepared_pair(
-                            prepared_result, prepared_evidence,
-                            evaluation_result("ERROR", failure_code, failure_detail), trust, expected_inputs,
+                        return finish(
+                            evaluation_result("ERROR", failure_code, failure_detail), checkpoint,
+                            cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
                         )
                     if before["artifact_digests"] != after["artifact_digests"]:
                         after_input_snapshot = bind({
@@ -1689,9 +1751,8 @@ def evaluate(
                             "after_input_snapshot_sha256": after_input_snapshot["content_sha256"],
                             "content_sha256": "",
                         }))
-                        return write_prepared_pair(
-                            prepared_result, prepared_evidence,
-                            evaluation_result("ERROR", "INPUT_DRIFT", failure_detail), trust, expected_inputs,
+                        return finish(
+                            evaluation_result("ERROR", "INPUT_DRIFT", failure_detail), checkpoint,
                         )
                     evaluation_input = bind({
                         "schema_version": 1, "artifact_kind": "EVALUATION_INPUT_IDENTITY", "task_id": task["task_id"],
@@ -1737,17 +1798,27 @@ def evaluate(
                         "before_input_snapshot_sha256": input_snapshot["content_sha256"],
                         "after_input_snapshot_sha256": input_snapshot["content_sha256"], "content_sha256": "",
                     }))
+                    cleanup_passed = True
+                    for path in (snapshot_result_path, adapter_request_path, rendered_path, variant_path):
+                        if not retire_owned_path(path, owned_paths):
+                            cleanup_passed = False
+                    if not cleanup_passed:
+                        return finish(
+                            evaluation_result(
+                                "ERROR", "CLEANUP_FAILED", "evaluator-owned workspace cleanup failed",
+                            ),
+                            checkpoint,
+                            cleanup_diagnosed=True,
+                        )
                     if measurement.get("status") == "ERROR":
                         failure_detail = measurement.get("diagnostic_summary") or "measurement adapter returned an error"
                         failure_code = "CLEANUP_FAILED" if not measurement.get("cleanup_passed", True) else "ADAPTER_RESULT"
-                        return write_prepared_pair(
-                            prepared_result, prepared_evidence,
-                            evaluation_result("ERROR", failure_code, failure_detail[:4096]), trust, expected_inputs,
+                        return finish(
+                            evaluation_result("ERROR", failure_code, failure_detail[:4096]), checkpoint,
+                            cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
                         )
                     if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
                         input_snapshots.append(input_snapshot)
-                    for path in (adapter_request_path, rendered_path, variant_path):
-                        path.unlink()
 
     task_aggregates = []
     for task in tasks:
@@ -1776,7 +1847,7 @@ def evaluate(
     result = evaluation_result("IMPROVED", "NONE", "")
     result["task_aggregates"] = task_aggregates
     result["corpus_aggregate"] = corpus_aggregate
-    return write_prepared_pair(prepared_result, prepared_evidence, result, trust, expected_inputs)
+    return finish(result)
 
 
 def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
@@ -1806,14 +1877,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     except ResultOnlyInvalid:
         status = 0
     except (EvaluationError, OSError, TypeError, ValueError, KeyError, IndexError):
-        status = 2
-    cleanup_failed = False
-    for path in sorted(owned_paths, key=lambda item: len(item.parts), reverse=True):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            cleanup_failed = True
-    return 3 if cleanup_failed else status
+        return 3 if cleanup_owned_paths(owned_paths) else 2
+    return status
 
 
 if __name__ == "__main__":

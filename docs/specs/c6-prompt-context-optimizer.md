@@ -3289,6 +3289,21 @@ boundary redesign, not another set of isolated line fixes.
 | Deterministic validation precedence | decoded request, source-policy owner, remaining artifact owners, workspace owner | after output preflight validate request bounds, then source-policy syntax/decode/identity and executable bindings, then remaining artifact identities, and only then physically resolve the workspace | a malformed source policy paired with an unavailable workspace returns the earlier `INVALID_SCHEMA` result and produces no child marker |
 | Durable continuation state | `HANDOFF.md` | record the reopened matrix, repair owners, exact-head preflight, and capable CI as the remaining sequence; do not describe an already committed matrix as future work | author-side matrix-to-diff and HANDOFF consistency pass |
 
+### 10.1f Final ownership-boundary closure
+
+The complete review of the preceding redesign found one remaining ownership model split across
+workspace admission, terminal cleanup, and pair publication. This matrix reopens
+`evaluator-runtime-containment` for that common ownership axis. The repair must close the class as
+one boundary before another candidate review.
+
+| Reopened invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Per-invocation workspace admission | evaluator and snapshot helper | each pre/post snapshot permits only the current invocation's evaluator-created variant, rendered prompt, adapter request, and reserved measurement path; future and retired invocation names are absent, and successful removal immediately retires ownership so a later occupant is never removed as stale evaluator state | evaluator ownership owner proves the exact four-name allowlist, future-name rejection, removal-time retirement, and competitor preservation |
+| Cleanup-before-terminal-pair | evaluator result/evidence producer | incorporate every valid snapshot, measurement, row, and attestation before removing its owned files; perform the complete owned-workspace cleanup before constructing and writing the terminal pair; a cleanup failure produces `ERROR`/`CLEANUP_FAILED` with the final valid prefix retained and is never converted into a nonzero helper exit that discards prepared evidence | evaluator cleanup owner forces a post-row removal failure, verifies the retained-prefix pair, and proves no later invocation starts |
+| Publication ownership retirement | `prompt_artifact_io` pair publisher | after every successful temporary or final removal, clear that path's ownership before any later observation; a replacement arriving after removal is competitor-owned, yields `OUTPUT_WRITE`, and is neither reported as an orphan nor removed | Request 14 adoption asserts ownership flags retire at each successful removal and retains the concurrent collision/cleanup fixtures |
+| Bounded FILE_SET decimal decode | source verifier | reject a decimal token longer than the maximum field's canonical width before integer conversion, then apply its numeric bound; Python runtime integer-digit limits never escape the declared `VerificationError` observation path | source-verifier FILE_SET owner covers overlong entry-count and path-length tokens as bounded `UNVERIFIED` results without traceback or partial output |
+| Durable continuation state | `HANDOFF.md` | name this ownership-boundary repair, its owner checks, the required exact-head review, preflight, and capable CI as the remaining sequence; completed matrix and baseline-chain commits are historical evidence, not future actions | author-side matrix-to-diff and HANDOFF consistency pass |
+
 Applicability decisions:
 
 | Dimension | Decision |

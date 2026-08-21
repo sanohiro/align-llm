@@ -65,6 +65,13 @@ def assert_no_temporary(root: Path) -> None:
 
 
 def main() -> int:
+    publisher_source = (ROOT / "src/prompt_artifact_io.align").read_text()
+    require(
+        publisher_source.count("if clean_result { result_temporary_owned = false }") == 5
+        and publisher_source.count("if clean_evidence { evidence_temporary_owned = false }") == 4
+        and publisher_source.count("if clean_result { result_final_owned = false }") == 1,
+        "pair cleanup did not retire each successful removal before absence checks",
+    )
     with tempfile.TemporaryDirectory(prefix="c6f2-request14-build-") as build_directory:
         binary = build(Path(build_directory))
         with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
