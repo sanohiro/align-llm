@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import resource
+import signal
 import subprocess
 import sys
 import tempfile
@@ -54,6 +56,29 @@ def invoke(binary: Path, root: Path, expected: str, result: str = "result", evid
     )
 
 
+def invoke_with_zero_file_limit(
+    binary: Path, root: Path, expected: str, result: str, evidence: str,
+) -> subprocess.CompletedProcess[str]:
+    def limit_files() -> None:
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+
+    return subprocess.run(
+        [
+            str(binary), str(root), "result.json", "evidence.json", "adoption",
+            result, evidence, expected,
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=os.environ.copy(),
+        timeout=10,
+        preexec_fn=limit_files,
+    )
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
@@ -64,14 +89,57 @@ def assert_no_temporary(root: Path) -> None:
     require(not temporaries, f"temporary paths survived: {temporaries}")
 
 
-def main() -> int:
-    publisher_source = (ROOT / "src/prompt_artifact_io.align").read_text()
-    require(
-        publisher_source.count("if clean_result { result_temporary_owned = false }") == 5
-        and publisher_source.count("if clean_evidence { evidence_temporary_owned = false }") == 4
-        and publisher_source.count("if clean_result { result_final_owned = false }") == 1,
-        "pair cleanup did not retire each successful removal before absence checks",
+def build_unlink_replacement_hook(directory: Path) -> Path:
+    source = directory / "replace-after-unlink.c"
+    library = directory / "replace-after-unlink.so"
+    source.write_text(
+        "#define _GNU_SOURCE\n"
+        "#include <dlfcn.h>\n"
+        "#include <fcntl.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "#include <unistd.h>\n"
+        "static int matches(const char *path, const char *target) {\n"
+        "  const char *path_base = strrchr(path, '/');\n"
+        "  const char *target_base = strrchr(target, '/');\n"
+        "  return strcmp(path_base ? path_base + 1 : path, target_base ? target_base + 1 : target) == 0;\n"
+        "}\n"
+        "static void replace_at(int dirfd, const char *path) {\n"
+        "  const char *target = getenv(\"ALIGN_LLM_REPLACE_AFTER_UNLINK\");\n"
+        "  if (!target || !matches(path, target)) return;\n"
+        "  int fd = openat(dirfd, path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);\n"
+        "  if (fd >= 0) { (void)write(fd, \"competitor\", 10); close(fd); }\n"
+        "}\n"
+        "int unlink(const char *path) {\n"
+        "  static int (*real_unlink)(const char *) = 0;\n"
+        "  if (!real_unlink) real_unlink = dlsym(RTLD_NEXT, \"unlink\");\n"
+        "  int result = real_unlink(path); if (result == 0) replace_at(AT_FDCWD, path); return result;\n"
+        "}\n"
+        "int unlinkat(int dirfd, const char *path, int flags) {\n"
+        "  static int (*real_unlinkat)(int, const char *, int) = 0;\n"
+        "  if (!real_unlinkat) real_unlinkat = dlsym(RTLD_NEXT, \"unlinkat\");\n"
+        "  int result = real_unlinkat(dirfd, path, flags); if (result == 0) replace_at(dirfd, path); return result;\n"
+        "}\n"
+        "int renameat2(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, unsigned int flags) {\n"
+        "  static int (*real_renameat2)(int, const char *, int, const char *, unsigned int) = 0;\n"
+        "  if (!real_renameat2) real_renameat2 = dlsym(RTLD_NEXT, \"renameat2\");\n"
+        "  const char *target = getenv(\"ALIGN_LLM_COLLIDE_ON_RENAME\");\n"
+        "  if (target && matches(newpath, target)) {\n"
+        "    int fd = openat(newdirfd, newpath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);\n"
+        "    if (fd >= 0) { (void)write(fd, \"evidence-competitor\", 19); close(fd); }\n"
+        "  }\n"
+        "  return real_renameat2(olddirfd, oldpath, newdirfd, newpath, flags);\n"
+        "}\n"
     )
+    completed = subprocess.run(
+        ["cc", "-shared", "-fPIC", "-O2", "-o", str(library), str(source), "-ldl"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+    )
+    require(completed.returncode == 0, f"unlink replacement hook build failed: {completed.stderr}")
+    return library
+
+
+def main() -> int:
     with tempfile.TemporaryDirectory(prefix="c6f2-request14-build-") as build_directory:
         binary = build(Path(build_directory))
         with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
@@ -81,6 +149,52 @@ def main() -> int:
             require((root / "result.json").read_text() == "result", "result bytes changed")
             require((root / "evidence.json").read_text() == "evidence", "evidence bytes changed")
             assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-write-failure-") as directory:
+            root = Path(directory)
+            result_failure = invoke_with_zero_file_limit(binary, root, "OUTPUT_WRITE", "result", "evidence")
+            require(
+                result_failure.returncode == 0 and result_failure.stdout.strip() == "OUTPUT_WRITE",
+                f"result partial-write failure changed: {result_failure.stderr}",
+            )
+            require(not (root / "result.json").exists() and not (root / "evidence.json").exists(),
+                    "result partial-write failure left an output")
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-write-failure-") as directory:
+            root = Path(directory)
+            evidence_failure = invoke_with_zero_file_limit(binary, root, "OUTPUT_WRITE", "", "evidence")
+            require(
+                evidence_failure.returncode == 0 and evidence_failure.stdout.strip() == "OUTPUT_WRITE",
+                f"evidence partial-write failure changed: {evidence_failure.stderr}",
+            )
+            require(not (root / "result.json").exists() and not (root / "evidence.json").exists(),
+                    "evidence partial-write failure left an output")
+            assert_no_temporary(root)
+
+        if sys.platform.startswith("linux"):
+            with tempfile.TemporaryDirectory(prefix="c6f2-request14-late-competitor-") as directory:
+                root = Path(directory)
+                hook = build_unlink_replacement_hook(root)
+                environment = os.environ.copy()
+                environment["LD_PRELOAD"] = str(hook)
+                environment["ALIGN_LLM_REPLACE_AFTER_UNLINK"] = str(root / "result.json")
+                environment["ALIGN_LLM_COLLIDE_ON_RENAME"] = str(root / "evidence.json")
+                late = subprocess.run(
+                    [
+                        str(binary), str(root), "result.json", "evidence.json", "adoption",
+                        "result", "evidence", "OUTPUT_WRITE",
+                    ],
+                    cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=False, env=environment, timeout=10,
+                )
+                require(late.returncode == 0 and late.stdout.strip() == "OUTPUT_WRITE",
+                        f"late competitor changed publication status: {late.stderr}")
+                require((root / "result.json").read_text() == "competitor",
+                        "late competitor replacing a retired result was removed")
+                require((root / "evidence.json").read_text() == "evidence-competitor",
+                        "evidence collision was replaced during late-competitor cleanup")
+                assert_no_temporary(root)
 
         with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
             root = Path(directory)

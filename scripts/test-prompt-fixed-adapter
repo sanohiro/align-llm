@@ -146,14 +146,73 @@ def main() -> int:
         child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
         descendant_runner.write_text(
             "import subprocess,sys\n"
-            f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)\n"
         )
         module.RUNNER = descendant_runner
-        passed, cleanup_passed, containment_passed, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
-        require(not passed and cleanup_passed and not containment_passed, "runner descendant was not classified")
+        outcome, cleanup_passed, containment_passed, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        require(outcome == "ERROR" and cleanup_passed and not containment_passed, "runner descendant was not classified")
         require(cleanup_calls == 1, "fixed adapter descendant cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "fixed adapter left a runner descendant alive")
+
+        bounded_runner = root / "bounded-runner.py"
+        bounded_runner.write_text(
+            "import os\n"
+            f"os.write(1, b'o' * {module.DIAGNOSTIC_LIMIT + 1})\n"
+            f"os.write(2, b'e' * {module.DIAGNOSTIC_LIMIT + 1})\n"
+        )
+        module.RUNNER = bounded_runner
+        outcome, cleanup_passed, containment_passed, stdout, stderr = module.execute_fixture(
+            "CANDIDATE", 2_000_000_000,
+        )
+        require(
+            outcome == "PASS" and cleanup_passed and containment_passed
+            and len(stdout) == module.DIAGNOSTIC_LIMIT and len(stderr) == module.DIAGNOSTIC_LIMIT
+            and stdout.endswith(module.TRUNCATION_MARKER) and stderr.endswith(module.TRUNCATION_MARKER),
+            "simultaneous cap+1 diagnostics were not bounded",
+        )
+
+        exact_runner = root / "exact-runner.py"
+        exact_runner.write_text(
+            "import os\n"
+            f"os.write(1, b'x' * {module.DIAGNOSTIC_LIMIT})\n"
+            f"os.write(2, b'y' * {module.DIAGNOSTIC_LIMIT})\n"
+        )
+        module.RUNNER = exact_runner
+        outcome, _, _, stdout, stderr = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        require(
+            outcome == "PASS" and len(stdout) == module.DIAGNOSTIC_LIMIT
+            and len(stderr) == module.DIAGNOSTIC_LIMIT
+            and not stdout.endswith(module.TRUNCATION_MARKER)
+            and not stderr.endswith(module.TRUNCATION_MARKER),
+            "exact-cap diagnostics were changed",
+        )
+
+        operational_runner = root / "operational-runner.py"
+        operational_runner.write_text("raise SystemExit(1)\n")
+        module.RUNNER = operational_runner
+        outcome, _, _, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        require(outcome == "ERROR", "runner operational failure became a test failure")
+        original_execute = module.execute_fixture
+        module.execute_fixture = lambda _variant, _timeout: ("ERROR", True, True, b"", b"runner failed")
+        operational_request = {
+            "variant": "CANDIDATE", "paired_seed": 100,
+            "environment_policy_sha256": "3" * 64,
+        }
+        operational_measurement = module.measurement(operational_request, rendered, policy, control)
+        module.execute_fixture = original_execute
+        require(
+            operational_measurement["status"] == "ERROR"
+            and operational_measurement["failure_kind"] == "ADAPTER"
+            and operational_measurement["test_status"] == "ERROR"
+            and operational_measurement["generation_to_passing_patch_ns"] is None,
+            "runner operational failure produced a scoreable measurement",
+        )
+        expected_failure_runner = root / "expected-failure-runner.py"
+        expected_failure_runner.write_text("raise SystemExit(4)\n")
+        module.RUNNER = expected_failure_runner
+        outcome, _, _, _, _ = module.execute_fixture("PARENT", 2_000_000_000)
+        require(outcome == "TEST_FAIL", "declared candidate validation failure lost its distinct outcome")
 
     print("prompt fixed adapter: PASS")
     return 0

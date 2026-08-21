@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -33,6 +34,12 @@ SOURCE_POLICY_FIELDS = (
     "schema_version", "artifact_kind", "policy_id", "helper_path", "helper_sha256",
     "helper_runtime", "interpreter_sha256", "git_executable_sha256", "content_sha256",
 )
+SOURCE_RESULT_FIELDS = (
+    "schema_version", "artifact_kind", "status", "error_code", "error",
+    "align_llm_reachability", "align_llm_observed_head", "align_reachability",
+    "align_observed_revision", "corpus_reachability", "corpus_observed_source_sha256",
+    "content_sha256",
+)
 EVALUATE_REQUEST_FIELDS = (
     "schema_version", "artifact_kind", "evaluation_id", "project_root", "experiment_path",
     "parent_activation_path", "corpus_path", "sample_count", "acceptance_policy_path",
@@ -47,6 +54,21 @@ EVALUATE_REQUEST_FIELDS = (
 EVALUATE_REQUEST_FIELDS_OMITTED = tuple(
     name for name in EVALUATE_REQUEST_FIELDS if name != "verifier_corpus_file_set_manifest_path"
 )
+PR_SET_CHILD_SUBREAPER = 36
+
+
+def enable_child_subreaper() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        return ctypes.CDLL(None, use_errno=True).prctl(
+            PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0,
+        ) == 0
+    except (AttributeError, OSError):
+        return False
+
+
+CHILD_SUBREAPER_ENABLED = enable_child_subreaper()
 
 
 class EvaluationError(ValueError):
@@ -68,10 +90,6 @@ class AdapterFailure(EvaluationError):
         super().__init__(detail)
         self.code = code
         self.detail = detail
-
-
-class ResultOnlyInvalid(EvaluationError):
-    """A decoded request failed before the paired-evidence boundary."""
 
 
 class RetainedRegularFile:
@@ -130,10 +148,80 @@ def process_group_exists(group: int) -> bool:
         return True
 
 
-def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
-    """Kill the private group, reap the direct child, and prove group absence."""
+def descendant_process_ids(root_pids: set[int]) -> set[int]:
+    parents: dict[int, list[int]] = {}
+    if not sys.platform.startswith("linux"):
+        return set()
+    for status_path in Path("/proc").glob("[0-9]*/status"):
+        try:
+            pid = int(status_path.parent.name)
+            parent_line = next(
+                line for line in status_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("PPid:")
+            )
+            parent = int(parent_line.split()[1])
+        except (OSError, StopIteration, ValueError):
+            continue
+        parents.setdefault(parent, []).append(pid)
+    descendants: set[int] = set()
+    pending = list(root_pids)
+    while pending:
+        parent = pending.pop()
+        for child in parents.get(parent, []):
+            if child not in descendants:
+                descendants.add(child)
+                pending.append(child)
+    return descendants
 
+
+def kill_process_ids(process_ids: set[int]) -> bool:
     complete = True
+    for pid in process_ids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            complete = False
+    return complete
+
+
+def reap_process_ids(process_ids: set[int], maximum_seconds: float) -> None:
+    pending = set(process_ids)
+    deadline = time.monotonic() + maximum_seconds
+    while pending and time.monotonic() < deadline:
+        for pid in tuple(pending):
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                if not Path(f"/proc/{pid}").exists():
+                    pending.discard(pid)
+                continue
+            if waited == pid:
+                pending.discard(pid)
+        if pending:
+            time.sleep(0.01)
+
+
+def owned_descendant_ids(process: subprocess.Popen[bytes] | None = None) -> set[int]:
+    roots = {os.getpid()}
+    if process is not None:
+        roots.add(process.pid)
+    descendants = descendant_process_ids(roots)
+    descendants.discard(os.getpid())
+    if process is not None:
+        descendants.discard(process.pid)
+    return descendants
+
+
+def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+    """Kill the private group plus nested-session descendants and prove absence."""
+
+    if not CHILD_SUBREAPER_ENABLED:
+        return False
+    complete = True
+    owned = owned_descendant_ids(process)
+    complete = kill_process_ids(owned)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -144,10 +232,20 @@ def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: flo
         process.wait(timeout=maximum_seconds)
     except (OSError, subprocess.TimeoutExpired):
         complete = False
+    adopted = owned_descendant_ids()
+    complete = kill_process_ids(adopted) and complete
+    owned.update(adopted)
+    reap_process_ids(owned, maximum_seconds)
     deadline = time.monotonic() + maximum_seconds
-    while process_group_exists(process.pid) and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        adopted = owned_descendant_ids()
+        if not process_group_exists(process.pid) and not adopted:
+            return complete
+        complete = kill_process_ids(adopted) and complete
+        owned.update(adopted)
+        reap_process_ids(adopted, 0.05)
         time.sleep(0.01)
-    return complete and not process_group_exists(process.pid)
+    return complete and not process_group_exists(process.pid) and not owned_descendant_ids()
 
 
 def canonical_chunks(value: Any, *, omit_mapping_none: bool = False):
@@ -362,7 +460,11 @@ def relative_path(project: Path, value: Any, *, must_exist: bool = True) -> Path
         raise EvaluationError("project-relative path has an invalid component")
     target = project.joinpath(*parts)
     parent = target if must_exist else target.parent
-    physical_directory(parent if parent.is_dir() else parent.parent)
+    physical_parent = physical_directory(parent if not must_exist or parent.is_dir() else parent.parent)
+    if not must_exist:
+        metadata = os.stat(physical_parent, follow_symlinks=False)
+        if metadata.st_mode & 0o222 == 0 or not os.access(physical_parent, os.W_OK | os.X_OK):
+            raise EvaluationError("evaluation output parent is not writable")
     if must_exist:
         try:
             resolved = target.resolve(strict=True)
@@ -464,6 +566,8 @@ def run_child(
 ) -> subprocess.CompletedProcess[bytes]:
     if timeout_ns <= 0:
         raise EvaluationError("child timeout is invalid")
+    if not CHILD_SUBREAPER_ENABLED:
+        raise ChildBoundaryError("PROCESS")
     try:
         process = subprocess.Popen(
             argv,
@@ -512,7 +616,7 @@ def run_child(
         if remaining <= 0:
             raise ChildBoundaryError("TIMEOUT")
         process.wait(timeout=remaining)
-        if process_group_exists(process.pid):
+        if process_group_exists(process.pid) or owned_descendant_ids(process):
             cleanup_attempted = True
             if not cleanup_process_group(process):
                 raise ChildBoundaryError("CLEANUP")
@@ -587,6 +691,16 @@ def temporary_json(
     return path
 
 
+def create_owned_output(path: Path, owned_paths: set[Path]) -> int:
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    owned_paths.add(path)
+    return descriptor
+
+
 def retire_owned_path(path: Path, owned_paths: set[Path]) -> bool:
     """Remove one path and retire ownership before any later occupant can be considered ours."""
     if path not in owned_paths:
@@ -616,16 +730,25 @@ def invocation_workspace_entries(*paths: Path) -> list[str]:
 def invoke_snapshot(
     task: Mapping[str, Any], request_path: Path, result_path: Path, project: Path,
     environment: Mapping[str, str], environment_probe: Mapping[str, Any],
+    owned_paths: set[Path],
 ) -> dict[str, Any]:
-    argv = command(task, "snapshot_argv", project) + ["--snapshot-request", str(request_path), "--result", str(result_path)]
+    descriptor = -1
     try:
+        descriptor = create_owned_output(result_path, owned_paths)
+        argv = command(task, "snapshot_argv", project) + [
+            "--snapshot-request", str(request_path), "--result", str(result_path),
+            "--result-fd", str(descriptor),
+        ]
         completed = run_child(
             argv,
             project / task["cwd"],
             environment,
             max(nested_owner_timeout(task["timeout_ns"]), SNAPSHOT_HELPER_OUTER_TIMEOUT_NS),
             0,
+            (descriptor,),
         )
+        os.close(descriptor)
+        descriptor = -1
         if completed.returncode != 0 or completed.stdout or completed.stderr:
             raise EvaluationError("snapshot helper process failed")
         result = load_bound(result_path, "SNAPSHOT_RESULT", SNAPSHOT_LIMIT)
@@ -656,6 +779,9 @@ def invoke_snapshot(
             "artifact_digests": [],
             "content_sha256": "",
         })
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def invoke_adapter(
@@ -664,18 +790,22 @@ def invoke_adapter(
     project: Path, environment: Mapping[str, str], provider_timeout_ns: int, sample: int, seed: int,
     owned_paths: set[Path],
 ) -> dict[str, Any]:
-    argv = command(task, "argv", project) + [
-        "--prompt-variant", str(variant_path), "--rendered-prompt", str(rendered_path),
-        "--sample-index", str(sample), "--paired-seed", str(seed),
-        "--adapter-request", str(request_path), "--result", str(measurement_path),
-    ]
+    descriptor = -1
     try:
+        descriptor = create_owned_output(measurement_path, owned_paths)
+        argv = command(task, "argv", project) + [
+            "--prompt-variant", str(variant_path), "--rendered-prompt", str(rendered_path),
+            "--sample-index", str(sample), "--paired-seed", str(seed),
+            "--adapter-request", str(request_path), "--result", str(measurement_path),
+            "--result-fd", str(descriptor),
+        ]
         completed = run_child(
             argv,
             project / task["cwd"],
             environment,
             nested_owner_timeout(max(task["timeout_ns"], provider_timeout_ns)),
             0,
+            (descriptor,),
         )
     except ChildBoundaryError as failure:
         cleanup_passed = retire_owned_path(measurement_path, owned_paths)
@@ -688,6 +818,11 @@ def invoke_adapter(
         if failure.reason == "OUTPUT":
             raise AdapterFailure("ADAPTER_PROCESS_OUTPUT", "measurement adapter produced process output") from None
         raise AdapterFailure("ADAPTER_RESULT", "measurement adapter process failed") from None
+    except OSError:
+        raise AdapterFailure("ADAPTER_RESULT", "measurement result path is occupied or unavailable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if completed.returncode != 0 or completed.stdout or completed.stderr:
         if not retire_owned_path(measurement_path, owned_paths):
             raise AdapterFailure("CLEANUP_FAILED", "measurement artifact cleanup failed")
@@ -703,9 +838,7 @@ def invoke_adapter(
     return measurement
 
 
-def write_prepared_pair(
-    prepared_result: Path,
-    prepared_evidence: Path,
+def prepare_pair(
     result: dict[str, Any],
     trust: Mapping[str, Any],
     expected_inputs: list[dict[str, Any]],
@@ -723,12 +856,6 @@ def write_prepared_pair(
         "expected_inputs": expected_inputs,
         "content_sha256": "",
     })
-    write_exclusive(prepared_result, canonical(result), RESULT_LIMIT)
-    try:
-        write_exclusive(prepared_evidence, canonical(evidence), EVIDENCE_LIMIT)
-    except BaseException:
-        prepared_result.unlink(missing_ok=True)
-        raise
     return result, evidence
 
 
@@ -833,17 +960,21 @@ def compact_oversized_result(result: dict[str, Any], expected_inputs: list[dict[
     result.update(compact)
 
 
-def write_invalid_result_only(
-    prepared_result: Path,
+def invalid_result_only(
     evaluation_id: str,
     sample_count: Any,
     error_code: str,
     error: str,
-) -> None:
+) -> dict[str, Any]:
+    safe_evaluation_id = (
+        evaluation_id
+        if valid_ascii_identifier(evaluation_id) and "/" not in evaluation_id and evaluation_id not in (".", "..")
+        else None
+    )
     result = {
         "schema_version": 1,
         "artifact_kind": "PROMPT_EVALUATION_RESULT",
-        "evaluation_id": evaluation_id,
+        "evaluation_id": safe_evaluation_id,
         "status": "INVALID_INPUT",
         "error_code": error_code,
         "error": error,
@@ -881,7 +1012,7 @@ def write_invalid_result_only(
         "content_sha256": "",
     }
     bind(result)
-    write_exclusive(prepared_result, canonical(result), RESULT_LIMIT)
+    return result
 
 
 def evaluation_result_record(
@@ -993,7 +1124,7 @@ def build_environment(
 
 
 def valid_source_observation(value: Mapping[str, Any]) -> bool:
-    if value.get("status") not in ("COMPLETE", "UNAVAILABLE"):
+    if tuple(value) != SOURCE_RESULT_FIELDS or value.get("status") not in ("COMPLETE", "UNAVAILABLE"):
         return False
     fields = (
         ("align_llm_reachability", "align_llm_observed_head"),
@@ -1012,10 +1143,10 @@ def valid_source_observation(value: Mapping[str, Any]) -> bool:
     if value["status"] == "COMPLETE":
         return value.get("error_code") == "NONE" and value.get("error") == ""
     return (
-        isinstance(value.get("error_code"), str)
-        and bool(value["error_code"])
+        value.get("error_code") == "GIT_UNAVAILABLE"
         and isinstance(value.get("error"), str)
         and 0 < len(value["error"].encode("utf-8")) <= 4096
+        and all(value.get(reachability) == "UNVERIFIED" and value.get(observed) is None for reachability, observed in fields)
     )
 
 
@@ -1190,6 +1321,8 @@ def source_trust(
 
 def validation_error_code(error: BaseException) -> str:
     detail = str(error).lower()
+    if "identifier" in detail:
+        return "INVALID_ID"
     if "unavailable" in detail or "not found" in detail:
         return "INPUT_NOT_FOUND"
     if "type" in detail or "regular" in detail:
@@ -1304,12 +1437,10 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
 
 def evaluate(
     request_path: Path,
-    prepared_result: Path,
-    prepared_evidence: Path,
     final_result_relative: str,
     final_evidence_relative: str,
     owned_paths: set[Path],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     request = load_json(request_path, REQUEST_LIMIT)
     request_fields = tuple(request)
     if (
@@ -1333,24 +1464,23 @@ def evaluate(
     except (EvaluationError, KeyError, TypeError):
         evidence_valid = False
     if not evidence_valid:
-        write_invalid_result_only(
-            prepared_result,
+        result = invalid_result_only(
             request.get("evaluation_id", ""),
             request.get("sample_count", 0),
             "INVALID_PATH",
             "evaluation evidence path is invalid",
         )
-        raise ResultOnlyInvalid("evaluation evidence path is invalid")
+        return result, None
     try:
         validate_request_source_declaration(request)
         inputs = validated_evaluation_inputs(request, project)
     except (EvaluationError, OSError, TypeError, ValueError, KeyError, IndexError) as failure:
         code = validation_error_code(failure)
         detail = str(failure)[:4096] or "evaluation input is invalid"
-        write_invalid_result_only(
-            prepared_result, request.get("evaluation_id", ""), request.get("sample_count", 0), code, detail,
+        result = invalid_result_only(
+            request.get("evaluation_id", ""), request.get("sample_count", 0), code, detail,
         )
-        raise ResultOnlyInvalid(detail) from None
+        return result, None
     workspace = inputs["workspace"]
     experiment = inputs["experiment"]
     parent = inputs["parent"]
@@ -1440,20 +1570,20 @@ def evaluate(
         result = evaluation_result_record(
             result_context, "ERROR", result_code, detail, preflight, None, [], [], [], [], [],
         )
-        return write_prepared_pair(prepared_result, prepared_evidence, result, trust, [])
+        return prepare_pair(result, trust, [])
     try:
         trust = source_trust(request, source_policy, project, environment_values)
     except AdapterFailure as failure:
         result = evaluation_result_record(
             result_context, "ERROR", failure.code, failure.detail, preflight, None, [], [], [], [], [],
         )
-        return write_prepared_pair(prepared_result, prepared_evidence, result, trust, [])
+        return prepare_pair(result, trust, [])
     except EvaluationError:
         result = evaluation_result_record(
             result_context, "ERROR", "INPUT_DRIFT", "source verifier executable identity drifted",
             preflight, None, [], [], [], [], [],
         )
-        return write_prepared_pair(prepared_result, prepared_evidence, result, trust, [])
+        return prepare_pair(result, trust, [])
     seed_base = generation.get("seed_base")
     maximum_offset = request["sample_count"] - 1
     if (
@@ -1476,7 +1606,7 @@ def evaluate(
             [],
             [],
         )
-        return write_prepared_pair(prepared_result, prepared_evidence, result, trust, [])
+        return prepare_pair(result, trust, [])
     environment = build_environment(preflight["environment_probe"], request, first_task, source_policy, environment_policy)
 
     rows: list[dict[str, Any]] = []
@@ -1511,7 +1641,7 @@ def evaluate(
                 else "evaluator-owned workspace cleanup failed"
             )
             result = evaluation_result("ERROR", "CLEANUP_FAILED", detail)
-        return write_prepared_pair(prepared_result, prepared_evidence, result, trust, expected_inputs)
+        return prepare_pair(result, trust, expected_inputs)
 
     for task_ordinal, task in enumerate(tasks):
         task_prompt, context = task_inputs[task_ordinal]
@@ -1539,7 +1669,6 @@ def evaluate(
                         raise EvaluationError("rendered prompt digest changed")
                     rendered_path = temporary_json(workspace, f"{prefix}-rendered.json", rendered, owned_paths)
                     measurement_path = workspace / f"{prefix}-measurement.json"
-                    owned_paths.add(measurement_path)
                     adapter_request = bind({
                         "schema_version": 1, "artifact_kind": "TASK_ADAPTER_REQUEST",
                         "evaluation_id": request["evaluation_id"], "task_id": task["task_id"], "sample_index": sample,
@@ -1579,11 +1708,11 @@ def evaluate(
                     snapshot_request_path = Path(request_directory) / "request.json"
                     snapshot_request_path.unlink(missing_ok=True)
                     temporary_json(Path(request_directory), "request.json", snapshot_request)
-                    snapshot_result_path = workspace / f"t{task_ordinal + 1}-snapshot-result.json"
-                    owned_paths.add(snapshot_result_path)
+                    snapshot_result_path = Path(request_directory) / f"t{task_ordinal + 1}-snapshot-result.json"
                     before = invoke_snapshot(
                         task, snapshot_request_path, snapshot_result_path, project,
                         environment_values, preflight["environment_probe"],
+                        owned_paths,
                     )
                     if not any(item["content_sha256"] == snapshot_request["content_sha256"] for item in snapshot_requests):
                         snapshot_requests.append(snapshot_request)
@@ -1688,10 +1817,10 @@ def evaluate(
                         return finish(
                             evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail), checkpoint,
                         )
-                    owned_paths.add(snapshot_result_path)
                     after = invoke_snapshot(
                         task, snapshot_request_path, snapshot_result_path, project,
                         environment_values, preflight["environment_probe"],
+                        owned_paths,
                     )
                     if not any(item["content_sha256"] == after["content_sha256"] for item in snapshot_results):
                         snapshot_results.append(after)
@@ -1853,11 +1982,25 @@ def evaluate(
 def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--request", required=True, type=Path)
-    parser.add_argument("--prepared-result", required=True, type=Path)
-    parser.add_argument("--prepared-evidence", required=True, type=Path)
     parser.add_argument("--final-result-relative", required=True)
     parser.add_argument("--final-evidence-relative", required=True)
     return parser.parse_args(arguments)
+
+
+def emit_evaluation_output(
+    result: Mapping[str, Any], evidence: Mapping[str, Any] | None,
+) -> None:
+    result_bytes = canonical(result)
+    if len(result_bytes) > RESULT_LIMIT:
+        raise EvaluationError("evaluation result exceeds its bound")
+    evidence_bytes = b"" if evidence is None else canonical(evidence)
+    if len(evidence_bytes) > EVIDENCE_LIMIT:
+        raise EvaluationError("evaluation evidence exceeds its bound")
+    pieces = [b"1\n", result_bytes] if evidence is None else [b"2\n", result_bytes, b"\n", evidence_bytes]
+    for piece in pieces:
+        offset = 0
+        while offset < len(piece):
+            offset += os.write(sys.stdout.fileno(), piece[offset:])
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
@@ -1865,16 +2008,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
     owned_paths: set[Path] = set()
     status = 2
     try:
-        evaluate(
+        result, evidence = evaluate(
             values.request,
-            values.prepared_result,
-            values.prepared_evidence,
             values.final_result_relative,
             values.final_evidence_relative,
             owned_paths,
         )
-        status = 0
-    except ResultOnlyInvalid:
+        emit_evaluation_output(result, evidence)
         status = 0
     except (EvaluationError, OSError, TypeError, ValueError, KeyError, IndexError):
         return 3 if cleanup_owned_paths(owned_paths) else 2

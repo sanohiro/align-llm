@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
 import platform
+import selectors
 import signal
 import stat
 import subprocess
@@ -29,6 +31,22 @@ ARTIFACT_LIMIT = 2_097_152
 RESULT_LIMIT = 262_144
 DIAGNOSTIC_LIMIT = 16_384
 HEX64 = frozenset("0123456789abcdef")
+PR_SET_CHILD_SUBREAPER = 36
+TRUNCATION_MARKER = b"\n[output truncated]"
+
+
+def enable_child_subreaper() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        return ctypes.CDLL(None, use_errno=True).prctl(
+            PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0,
+        ) == 0
+    except (AttributeError, OSError):
+        return False
+
+
+CHILD_SUBREAPER_ENABLED = enable_child_subreaper()
 
 
 class AdapterError(ValueError):
@@ -45,8 +63,78 @@ def process_group_exists(group: int) -> bool:
         return True
 
 
-def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+def descendant_process_ids(root_pids: set[int]) -> set[int]:
+    parents: dict[int, list[int]] = {}
+    if not sys.platform.startswith("linux"):
+        return set()
+    for status_path in Path("/proc").glob("[0-9]*/status"):
+        try:
+            pid = int(status_path.parent.name)
+            parent_line = next(
+                line for line in status_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("PPid:")
+            )
+            parent = int(parent_line.split()[1])
+        except (OSError, StopIteration, ValueError):
+            continue
+        parents.setdefault(parent, []).append(pid)
+    descendants: set[int] = set()
+    pending = list(root_pids)
+    while pending:
+        parent = pending.pop()
+        for child in parents.get(parent, []):
+            if child not in descendants:
+                descendants.add(child)
+                pending.append(child)
+    return descendants
+
+
+def owned_descendant_ids(process: subprocess.Popen[bytes] | None = None) -> set[int]:
+    roots = {os.getpid()}
+    if process is not None:
+        roots.add(process.pid)
+    descendants = descendant_process_ids(roots)
+    descendants.discard(os.getpid())
+    if process is not None:
+        descendants.discard(process.pid)
+    return descendants
+
+
+def kill_process_ids(process_ids: set[int]) -> bool:
     complete = True
+    for pid in process_ids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            complete = False
+    return complete
+
+
+def reap_process_ids(process_ids: set[int], maximum_seconds: float) -> None:
+    pending = set(process_ids)
+    deadline = time.monotonic() + maximum_seconds
+    while pending and time.monotonic() < deadline:
+        for pid in tuple(pending):
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                if not Path(f"/proc/{pid}").exists():
+                    pending.discard(pid)
+                continue
+            if waited == pid:
+                pending.discard(pid)
+        if pending:
+            time.sleep(0.01)
+
+
+def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+    if not CHILD_SUBREAPER_ENABLED:
+        return False
+    complete = True
+    owned = owned_descendant_ids(process)
+    complete = kill_process_ids(owned)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -57,10 +145,19 @@ def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: flo
         process.wait(timeout=maximum_seconds)
     except (OSError, subprocess.TimeoutExpired):
         complete = False
+    adopted = owned_descendant_ids()
+    complete = kill_process_ids(adopted) and complete
+    owned.update(adopted)
+    reap_process_ids(owned, maximum_seconds)
     deadline = time.monotonic() + maximum_seconds
-    while process_group_exists(process.pid) and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        adopted = owned_descendant_ids()
+        if not process_group_exists(process.pid) and not adopted:
+            return complete
+        complete = kill_process_ids(adopted) and complete
+        reap_process_ids(adopted, 0.05)
         time.sleep(0.01)
-    return complete and not process_group_exists(process.pid)
+    return complete and not process_group_exists(process.pid) and not owned_descendant_ids()
 
 
 def canonical_bytes(value: Mapping[str, Any]) -> bytes:
@@ -227,7 +324,70 @@ def provider_identities(
     return generation, attestation
 
 
-def execute_fixture(variant: str, timeout_ns: int) -> tuple[bool, bool, bool, bytes, bytes]:
+class BoundedCapture:
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.truncated = False
+
+    def append(self, chunk: bytes) -> None:
+        if self.truncated:
+            return
+        remaining = DIAGNOSTIC_LIMIT - len(self.data)
+        if len(chunk) > remaining:
+            self.data.extend(chunk[:remaining])
+            self.truncated = True
+        else:
+            self.data.extend(chunk)
+
+    def bytes(self) -> bytes:
+        if not self.truncated:
+            return bytes(self.data)
+        prefix = max(0, DIAGNOSTIC_LIMIT - len(TRUNCATION_MARKER))
+        return bytes(self.data[:prefix]) + TRUNCATION_MARKER
+
+
+def capture_fixture_output(
+    process: subprocess.Popen[bytes], timeout: float,
+) -> tuple[bytes, bytes]:
+    captures = {"stdout": BoundedCapture(), "stderr": BoundedCapture()}
+    selector = selectors.DefaultSelector()
+    deadline = time.monotonic() + timeout
+    try:
+        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+            assert stream is not None
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, name)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            events = selector.select(remaining)
+            if not events:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            for key, _ in events:
+                stream = key.fileobj
+                try:
+                    chunk = os.read(stream.fileno(), 65_536)
+                except BlockingIOError:
+                    continue
+                if chunk:
+                    captures[key.data].append(chunk)
+                else:
+                    selector.unregister(stream)
+                    stream.close()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        process.wait(timeout=remaining)
+    finally:
+        selector.close()
+        for stream in (process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
+    return captures["stdout"].bytes(), captures["stderr"].bytes()
+
+
+def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, bytes, bytes]:
     timeout = max(0.001, timeout_ns / 1_000_000_000)
     environment = {
         "LANG": "C",
@@ -238,6 +398,8 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[bool, bool, bool, by
     }
     process: subprocess.Popen[bytes] | None = None
     try:
+        if not CHILD_SUBREAPER_ENABLED:
+            return "ERROR", False, False, b"", b"child-subreaper containment is unavailable"
         process = subprocess.Popen(
             [sys.executable, str(RUNNER), str(TASK), str(PATCHES[variant])],
             cwd=ROOT,
@@ -248,37 +410,40 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[bool, bool, bool, by
             close_fds=True,
             start_new_session=True,
         )
-        stdout, stderr = process.communicate(timeout=timeout)
-        if process_group_exists(process.pid):
+        stdout, stderr = capture_fixture_output(process, timeout)
+        if process_group_exists(process.pid) or owned_descendant_ids(process):
             cleanup_passed = cleanup_process_group(process)
-            return False, cleanup_passed, False, b"", b"contained runner left a descendant"
-        return process.returncode == 0, True, True, stdout[:DIAGNOSTIC_LIMIT], stderr[:DIAGNOSTIC_LIMIT]
+            return "ERROR", cleanup_passed, False, b"", b"contained runner left a descendant"
+        outcome = "PASS" if process.returncode == 0 else "TEST_FAIL" if process.returncode == 4 else "ERROR"
+        return outcome, True, True, stdout, stderr
     except subprocess.TimeoutExpired as error:
         assert process is not None
         cleanup_passed = cleanup_process_group(process)
-        return False, cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
     except OSError as error:
         cleanup_passed = True if process is None else cleanup_process_group(process)
-        return False, cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
 
 
 def measurement(
     request: Mapping[str, Any], rendered: Mapping[str, Any], policy: Mapping[str, Any], control: Mapping[str, Any]
 ) -> dict[str, Any]:
-    passed, cleanup_passed, containment_passed, stdout, stderr = execute_fixture(
+    outcome, cleanup_passed, containment_passed, stdout, stderr = execute_fixture(
         request["variant"], int(control["timeout_ns"])
     )
     generation, attestation = provider_identities(request, rendered, policy, control)
     is_candidate = request["variant"] == "CANDIDATE"
-    status = "PASS" if passed else "FAIL"
+    passed = outcome == "PASS"
+    expected_failure = outcome == "TEST_FAIL"
+    status = "PASS" if passed else "FAIL" if expected_failure else "ERROR"
     value = {
         "schema_version": 1,
         "artifact_kind": "TASK_MEASUREMENT",
         "status": "ERROR" if not cleanup_passed or not containment_passed else status,
-        "failure_kind": "CLEANUP" if not cleanup_passed else "CONTAINMENT" if not containment_passed else "NONE" if passed else "TEST",
-        "build_status": "PASS",
-        "test_status": "PASS" if passed else "FAIL",
-        "repair_loop_count": 0 if passed else 1,
+        "failure_kind": "CLEANUP" if not cleanup_passed else "CONTAINMENT" if not containment_passed else "NONE" if passed else "TEST" if expected_failure else "ADAPTER",
+        "build_status": "PASS" if outcome != "ERROR" else "ERROR",
+        "test_status": "PASS" if passed else "FAIL" if expected_failure else "ERROR",
+        "repair_loop_count": 1 if expected_failure else 0,
         "unrelated_diff_count": 0,
         "patch_size_bytes": PATCHES[request["variant"]].stat().st_size,
         "public_api_change_count": 0,
@@ -291,7 +456,7 @@ def measurement(
         "generation_request": generation,
         "environment_probe": environment_probe(),
         "seed_attestation": attestation,
-        "diagnostic_summary": "contained fixture passed" if passed else "contained fixture failed as expected",
+        "diagnostic_summary": "contained fixture passed" if passed else "contained fixture failed as expected" if expected_failure else "contained fixture runner failed",
         "diagnostic_stdout": stdout.decode("utf-8", "replace"),
         "diagnostic_stderr": stderr.decode("utf-8", "replace"),
         "content_sha256": "",
@@ -313,6 +478,25 @@ def write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         os.close(descriptor)
 
 
+def write_retained_result(path: Path, descriptor: int, value: Mapping[str, Any]) -> None:
+    raw = canonical_bytes(value)
+    if len(raw) > RESULT_LIMIT:
+        raise AdapterError("adapter result exceeds its bound")
+    descriptor_metadata = os.fstat(descriptor)
+    path_metadata = os.stat(path, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(descriptor_metadata.st_mode)
+        or descriptor_metadata.st_size != 0
+        or (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
+        != (path_metadata.st_dev, path_metadata.st_ino)
+    ):
+        raise AdapterError("adapter result descriptor identity is invalid")
+    offset = 0
+    while offset < len(raw):
+        offset += os.write(descriptor, raw[offset:])
+    os.fsync(descriptor)
+
+
 def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompt-variant", required=True, type=Path)
@@ -321,6 +505,7 @@ def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--paired-seed", required=True, type=int)
     parser.add_argument("--adapter-request", required=True, type=Path)
     parser.add_argument("--result", required=True, type=Path)
+    parser.add_argument("--result-fd", type=int)
     return parser.parse_args(arguments)
 
 
@@ -354,7 +539,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
             or policy["seed_mode"] != "PAIRED_FIXED"
         ):
             raise AdapterError("adapter declared identities disagree")
-        write_exclusive(values.result, measurement(request, rendered, policy, control))
+        result = measurement(request, rendered, policy, control)
+        if values.result_fd is None:
+            write_exclusive(values.result, result)
+        else:
+            write_retained_result(values.result, values.result_fd, result)
         return 0
     except (AdapterError, OSError, TypeError, ValueError, KeyError):
         return 2

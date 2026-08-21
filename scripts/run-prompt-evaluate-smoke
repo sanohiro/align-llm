@@ -156,19 +156,16 @@ def verify_compact_overflow_boundary() -> None:
         "digest-crossing fixture did not fit before binding",
     )
     original_result_limit = module.RESULT_LIMIT
-    with tempfile.TemporaryDirectory(prefix="prompt-result-bound-") as directory:
-        result_path = Path(directory) / "result.json"
-        evidence_path = Path(directory) / "evidence.json"
-        try:
-            module.RESULT_LIMIT = bound_crossing_cap
-            persisted, _ = module.write_prepared_pair(result_path, evidence_path, crossing, {}, [])
-        finally:
-            module.RESULT_LIMIT = original_result_limit
-        require(
-            persisted["error_code"] == "RESULT_TOO_LARGE"
-            and len(result_path.read_bytes()) <= bound_crossing_cap,
-            "final digest expansion did not select the compact result",
-        )
+    try:
+        module.RESULT_LIMIT = bound_crossing_cap
+        persisted, _ = module.prepare_pair(crossing, {}, [])
+    finally:
+        module.RESULT_LIMIT = original_result_limit
+    require(
+        persisted["error_code"] == "RESULT_TOO_LARGE"
+        and len(module.canonical(persisted)) <= bound_crossing_cap,
+        "final digest expansion did not select the compact result",
+    )
     module.compact_oversized_result(oversized, expected_inputs)
     trace_preimage = (
         f"1 WORKSPACE_PREFLIGHT_REQUEST {request_record['content_sha256']}\n"
@@ -221,7 +218,7 @@ def verify_descendant_cleanup_boundary() -> None:
         child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
         parent = (
             "import subprocess,sys,time;"
-            f"subprocess.Popen([sys.executable,'-c',{child!r}]);"
+            f"subprocess.Popen([sys.executable,'-c',{child!r}],start_new_session=True);"
             "time.sleep(5)"
         )
         try:
@@ -239,7 +236,7 @@ def verify_descendant_cleanup_boundary() -> None:
         parent = (
             "import subprocess,sys;"
             f"subprocess.Popen([sys.executable,'-c',{child!r}],"
-            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)"
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)"
         )
         try:
             module.run_child([sys.executable, "-c", parent], SOURCE, {}, 2_000_000_000, 0)
@@ -274,6 +271,70 @@ def verify_workspace_ownership_boundary() -> None:
         require(module.retire_owned_path(stale, owned), "retired path did not remain retired")
         require(not module.cleanup_owned_paths(owned), "empty ownership set reported a survivor")
         require(stale.read_text() == "competitor", "retired ownership removed a competing replacement")
+        occupied = root / "occupied-result.json"
+        occupied.write_text("competitor")
+        try:
+            module.create_owned_output(occupied, owned)
+            raise RuntimeError("occupied child result path was created")
+        except FileExistsError:
+            pass
+        require(not owned and occupied.read_text() == "competitor", "child result collision acquired ownership")
+        created = root / "created-result.json"
+        descriptor = module.create_owned_output(created, owned)
+        require(created in owned, "successful child result creation did not acquire ownership")
+        os.close(descriptor)
+        require(module.retire_owned_path(created, owned) and not owned, "child result ownership did not retire")
+        created.write_text("late competitor")
+        require(module.cleanup_owned_paths(owned) == [] and created.read_text() == "late competitor",
+                "retired child result name removed a late competitor")
+
+
+def verify_source_envelope_boundary() -> None:
+    module_path = SOURCE / "scripts" / "prompt-evaluate.py"
+    spec = importlib.util.spec_from_file_location("prompt_evaluate_source_envelope", module_path)
+    require(spec is not None and spec.loader is not None, "evaluator helper could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    unavailable = {
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_SOURCE_VERIFIER_RESULT",
+        "status": "UNAVAILABLE",
+        "error_code": "GIT_UNAVAILABLE",
+        "error": "fixed Git command is unavailable",
+        "align_llm_reachability": "UNVERIFIED",
+        "align_llm_observed_head": None,
+        "align_reachability": "UNVERIFIED",
+        "align_observed_revision": None,
+        "corpus_reachability": "UNVERIFIED",
+        "corpus_observed_source_sha256": None,
+        "content_sha256": "a" * 64,
+    }
+    require(module.valid_source_observation(unavailable), "canonical unavailable source envelope was rejected")
+    mutations = []
+    for name, value in (
+        ("error_code", "OTHER"),
+        ("error", ""),
+        ("error", "x" * 4097),
+        ("align_llm_reachability", "VERIFIED"),
+        ("align_llm_observed_head", "a" * 40),
+        ("align_reachability", "VERIFIED"),
+        ("align_observed_revision", "b" * 40),
+        ("corpus_reachability", "VERIFIED"),
+        ("corpus_observed_source_sha256", "c" * 64),
+    ):
+        changed = dict(unavailable)
+        changed[name] = value
+        mutations.append(changed)
+    reordered = dict(unavailable)
+    reordered["status"] = reordered.pop("status")
+    mutations.append(reordered)
+    extra = dict(unavailable)
+    extra["unexpected"] = None
+    mutations.append(extra)
+    require(
+        all(not module.valid_source_observation(value) for value in mutations),
+        "malformed unavailable source envelope was accepted",
+    )
 
 
 def copy_runtime(project: Path) -> None:
@@ -295,10 +356,17 @@ def copy_runtime(project: Path) -> None:
 
 def main() -> int:
     align_boundary = (SOURCE / "src/prompt_evaluate.align").read_text()
-    require("command.timeout_ns" not in align_boundary, "Align evaluator armed an outer child deadline")
+    require(
+        "command.timeout_ns" not in align_boundary
+        and "command.max_capture_bytes(276824067)" in align_boundary
+        and ".prepared." not in align_boundary
+        and "cleanup_optional" not in align_boundary,
+        "Align evaluator process/result carrier boundary changed",
+    )
     verify_compact_overflow_boundary()
     verify_descendant_cleanup_boundary()
     verify_workspace_ownership_boundary()
+    verify_source_envelope_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
         root = Path(directory)
         project = root / "project"
@@ -576,14 +644,112 @@ def main() -> int:
             [str(build_root / "main"), "prompt", "evaluate", str(request_path), "invalid-identifier-result.json"],
             cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
+        invalid_identifier_path = project / "invalid-identifier-result.json"
+        invalid_identifier_result = json.loads(invalid_identifier_path.read_text())
         require(
             invalid_identifier.returncode != 0
-            and not (project / "invalid-identifier-result.json").exists()
+            and invalid_identifier_result["status"] == "INVALID_INPUT"
+            and invalid_identifier_result["error_code"] == "INVALID_ID"
+            and invalid_identifier_result.get("evaluation_id") is None
             and not evidence_path.exists()
             and not source_child_marker.exists(),
-            "non-ASCII evaluation identifier crossed the Align boundary",
+            "non-ASCII evaluation identifier did not produce a safe result-only artifact",
         )
+        invalid_identifier_path.unlink()
         request_path.write_bytes(canonical(request))
+
+        for ordinal, invalid_id in enumerate(("", ".", "..", "evaluation/bad", "x" * 129), start=1):
+            invalid_request = dict(request)
+            invalid_request["evaluation_id"] = invalid_id
+            request_path.write_bytes(canonical(invalid_request))
+            invalid_path = project / f"invalid-identifier-{ordinal}.json"
+            completed = subprocess.run(
+                [str(build_root / "main"), "prompt", "evaluate", str(request_path), invalid_path.name],
+                cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            value = json.loads(invalid_path.read_text())
+            require(
+                completed.returncode != 0 and value["status"] == "INVALID_INPUT"
+                and value["error_code"] == "INVALID_ID" and value.get("evaluation_id") is None
+                and not evidence_path.exists() and not source_child_marker.exists(),
+                f"invalid evaluation identifier {invalid_id!r} did not produce the safe result shape: {value!r}",
+            )
+            invalid_path.unlink()
+        request_path.write_bytes(canonical(request))
+
+        missing_evidence_parent = dict(request)
+        missing_evidence_parent["evaluation_evidence_path"] = "missing-evidence-parent/evidence.json"
+        request_path.write_bytes(canonical(missing_evidence_parent))
+        missing_evidence_result = project / "missing-evidence-parent-result.json"
+        completed = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), missing_evidence_result.name],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        value = json.loads(missing_evidence_result.read_text())
+        require(
+            completed.returncode != 0 and value["status"] == "INVALID_INPUT"
+            and value["error_code"] == "INVALID_PATH" and not source_child_marker.exists(),
+            "missing evidence parent did not fail before external work",
+        )
+        missing_evidence_result.unlink()
+
+        unwritable_parent = project / "unwritable-evidence-parent"
+        unwritable_parent.mkdir()
+        unwritable_parent.chmod(0o500)
+        try:
+            unwritable_evidence = dict(request)
+            unwritable_evidence["evaluation_evidence_path"] = "unwritable-evidence-parent/evidence.json"
+            request_path.write_bytes(canonical(unwritable_evidence))
+            unwritable_result = project / "unwritable-evidence-parent-result.json"
+            completed = subprocess.run(
+                [str(build_root / "main"), "prompt", "evaluate", str(request_path), unwritable_result.name],
+                cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+        finally:
+            unwritable_parent.chmod(0o700)
+        value = json.loads(unwritable_result.read_text())
+        require(
+            completed.returncode != 0 and value["status"] == "INVALID_INPUT"
+            and value["error_code"] == "INVALID_PATH" and not source_child_marker.exists(),
+            "unwritable evidence parent did not fail before external work",
+        )
+        unwritable_result.unlink()
+        request_path.write_bytes(canonical(request))
+
+        completed = subprocess.run(
+            [
+                str(build_root / "main"), "prompt", "evaluate", str(request_path),
+                "missing-result-parent/result.json",
+            ],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            completed.returncode != 0 and not (project / "missing-result-parent").exists()
+            and not evidence_path.exists() and not source_child_marker.exists(),
+            "missing result parent crossed the external-work boundary",
+        )
+
+        evaluator_path = project / "scripts/prompt-evaluate.py"
+        evaluator_source = evaluator_path.read_text()
+        malformed_source = evaluator_source.replace(
+            "def main(arguments: Sequence[str] | None = None) -> int:\n",
+            "def main(arguments: Sequence[str] | None = None) -> int:\n"
+            "    os.write(sys.stdout.fileno(), b'2\\n{}\\n')\n"
+            "    return 0\n",
+            1,
+        )
+        require(malformed_source != evaluator_source, "malformed carrier fixture did not patch")
+        evaluator_path.write_text(malformed_source)
+        malformed = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "malformed-carrier-result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            malformed.returncode != 0 and not (project / "malformed-carrier-result.json").exists()
+            and not evidence_path.exists(),
+            "malformed evaluator stream carrier was published",
+        )
+        evaluator_path.write_text(evaluator_source)
 
         invalid = subprocess.run(
             [str(build_root / "main"), "prompt", "evaluate", str(request_path), "../escape.json"],
@@ -742,7 +908,7 @@ def main() -> int:
             snapshot_mismatch.returncode != 0
             and mismatch_result["error_code"] == "SNAPSHOT_MISMATCH"
             and mismatch_result["snapshot_attestations"][0]["status"] == "PRECHECK_FAILED",
-            "snapshot mismatch did not retain its failed precheck",
+            f"snapshot mismatch did not retain its failed precheck: {mismatch_result!r}; stderr={snapshot_mismatch.stderr!r}",
         )
         mismatch_verified = subprocess.run(
             [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
@@ -759,10 +925,11 @@ def main() -> int:
 
         drifting_adapter = project / "scripts/drifting-adapter.py"
         drifting_source = (project / "scripts/prompt-fixed-adapter.py").read_text().replace(
-            "        write_exclusive(values.result, measurement(request, rendered, policy, control))\n",
-            "        write_exclusive(values.result, measurement(request, rendered, policy, control))\n"
+            "        else:\n            write_retained_result(values.result, values.result_fd, result)\n        return 0\n",
+            "        else:\n            write_retained_result(values.result, values.result_fd, result)\n"
             "        with values.prompt_variant.open('ab') as stream:\n"
-            "            stream.write(b'\\n')\n",
+            "            stream.write(b'\\n')\n"
+            "        return 0\n",
             1,
         )
         require(drifting_source != (project / "scripts/prompt-fixed-adapter.py").read_text(), "drift fixture did not patch")
@@ -895,7 +1062,10 @@ def main() -> int:
             "post-row cleanup prefix did not pass strict verification: "
             f"stdout={cleanup_verified.stdout!r} stderr={cleanup_verified.stderr!r} result={cleanup_result!r}",
         )
-        require(len(list(workspace.iterdir())) == 1, "cleanup failure did not stop at the first invocation")
+        require(
+            cleanup_counter.read_text() == "3" and not any(workspace.iterdir()),
+            "cleanup failure did not stop at the first invocation",
+        )
         for path in list(workspace.iterdir()):
             path.unlink()
         result_path.unlink()

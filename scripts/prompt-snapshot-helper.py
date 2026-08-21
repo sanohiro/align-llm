@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -23,6 +24,19 @@ RESULT_LIMIT = 1_048_576
 MAX_ARTIFACTS = 4096
 GIT_OUTPUT_LIMIT = 262_144
 HEX64 = frozenset("0123456789abcdef")
+PR_SET_CHILD_SUBREAPER = 36
+
+
+def enable_child_subreaper() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        return ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
+    except (AttributeError, OSError):
+        return False
+
+
+CHILD_SUBREAPER_ENABLED = enable_child_subreaper()
 
 
 class SnapshotError(ValueError):
@@ -43,8 +57,73 @@ def process_group_exists(group: int) -> bool:
         return True
 
 
-def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+def descendant_process_ids(root_pids: set[int]) -> set[int]:
+    parents: dict[int, list[int]] = {}
+    for status_path in Path("/proc").glob("[0-9]*/status"):
+        try:
+            pid = int(status_path.parent.name)
+            parent_line = next(line for line in status_path.read_text().splitlines() if line.startswith("PPid:"))
+            parent = int(parent_line.split()[1])
+        except (OSError, StopIteration, ValueError):
+            continue
+        parents.setdefault(parent, []).append(pid)
+    descendants: set[int] = set()
+    pending = list(root_pids)
+    while pending:
+        parent = pending.pop()
+        for child in parents.get(parent, []):
+            if child not in descendants:
+                descendants.add(child)
+                pending.append(child)
+    return descendants
+
+
+def owned_descendant_ids(process: subprocess.Popen[bytes] | None = None) -> set[int]:
+    roots = {os.getpid()}
+    if process is not None:
+        roots.add(process.pid)
+    descendants = descendant_process_ids(roots)
+    descendants.discard(os.getpid())
+    if process is not None:
+        descendants.discard(process.pid)
+    return descendants
+
+
+def kill_process_ids(process_ids: set[int]) -> bool:
     complete = True
+    for pid in process_ids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            complete = False
+    return complete
+
+
+def reap_process_ids(process_ids: set[int], maximum_seconds: float) -> None:
+    pending = set(process_ids)
+    deadline = time.monotonic() + maximum_seconds
+    while pending and time.monotonic() < deadline:
+        for pid in tuple(pending):
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                if not Path(f"/proc/{pid}").exists():
+                    pending.discard(pid)
+                continue
+            if waited == pid:
+                pending.discard(pid)
+        if pending:
+            time.sleep(0.01)
+
+
+def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+    if not CHILD_SUBREAPER_ENABLED:
+        return False
+    complete = True
+    owned = owned_descendant_ids(process)
+    complete = kill_process_ids(owned)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -55,10 +134,19 @@ def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: flo
         process.wait(timeout=maximum_seconds)
     except (OSError, subprocess.TimeoutExpired):
         complete = False
+    adopted = owned_descendant_ids()
+    complete = kill_process_ids(adopted) and complete
+    owned.update(adopted)
+    reap_process_ids(owned, maximum_seconds)
     deadline = time.monotonic() + maximum_seconds
-    while process_group_exists(process.pid) and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        adopted = owned_descendant_ids()
+        if not process_group_exists(process.pid) and not adopted:
+            return complete
+        complete = kill_process_ids(adopted) and complete
+        reap_process_ids(adopted, 0.05)
         time.sleep(0.01)
-    return complete and not process_group_exists(process.pid)
+    return complete and not process_group_exists(process.pid) and not owned_descendant_ids()
 
 
 def canonical_bytes(value: Mapping[str, Any]) -> bytes:
@@ -322,6 +410,8 @@ def git_identity(
         "GIT_GRAFT_FILE": "/dev/null",
     }
     def fixed_git(*arguments: str) -> bytes:
+        if not CHILD_SUBREAPER_ENABLED:
+            raise SnapshotCleanupError("task repository child containment is unavailable")
         try:
             process = subprocess.Popen(
                 [str(git), "--no-pager", "-C", str(repository), *arguments],
@@ -362,7 +452,7 @@ def git_identity(
                     if len(output) > GIT_OUTPUT_LIMIT:
                         raise SnapshotError("task repository Git output exceeded its cap")
             process.wait(timeout=max(0.001, deadline - time.monotonic()))
-            if process_group_exists(process.pid):
+            if process_group_exists(process.pid) or owned_descendant_ids(process):
                 cleanup_attempted = True
                 if not cleanup_process_group(process):
                     raise SnapshotCleanupError("task repository Git command cleanup failed")
@@ -464,6 +554,25 @@ def write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         os.close(descriptor)
 
 
+def write_retained_result(path: Path, descriptor: int, value: Mapping[str, Any]) -> None:
+    raw = canonical_bytes(value)
+    if len(raw) > RESULT_LIMIT:
+        raise SnapshotError("snapshot result exceeds its bound")
+    descriptor_metadata = os.fstat(descriptor)
+    path_metadata = os.stat(path, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(descriptor_metadata.st_mode)
+        or descriptor_metadata.st_size != 0
+        or (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
+        != (path_metadata.st_dev, path_metadata.st_ino)
+    ):
+        raise SnapshotError("snapshot result descriptor identity is invalid")
+    offset = 0
+    while offset < len(raw):
+        offset += os.write(descriptor, raw[offset:])
+    os.fsync(descriptor)
+
+
 PREFLIGHT_FIELDS = (
     "schema_version", "artifact_kind", "evaluation_id", "project_root", "workspace_path", "content_sha256",
 )
@@ -480,6 +589,7 @@ def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     group.add_argument("--workspace-preflight-request", type=Path)
     group.add_argument("--snapshot-request", type=Path)
     parser.add_argument("--result", type=Path)
+    parser.add_argument("--result-fd", type=int)
     return parser.parse_args(arguments)
 
 
@@ -498,7 +608,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
             if values.result is None:
                 raise SnapshotError("snapshot mode requires a result path")
             request = decode_request(values.snapshot_request, "SNAPSHOT_REQUEST", SNAPSHOT_FIELDS)
-            write_exclusive(values.result, snapshot(request))
+            result = snapshot(request)
+            if values.result_fd is None:
+                write_exclusive(values.result, result)
+            else:
+                write_retained_result(values.result, values.result_fd, result)
         return 0
     except (OSError, SnapshotError):
         return 2

@@ -114,10 +114,14 @@ file records durable project state.
   `gmake --no-print-directory format-check`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2` after the reopened
   deadline/allocation/precedence/gate repair and the final ownership-boundary repair. Source
-  `8b328a679005`, oracle `bab3787e2518`, and
-  finalization `fa39131ba64c` form its passing identity-bound baseline chain. The final ownership
-  repair's replacement baseline chain, exact-head review, preflight, and final capable `make ci`
-  remain pending. Focused evidence covers Request 11 exact-cap,
+  `163af7baa210`, oracle `549db0052fc2`, and finalization `d8d45c806658` form the ownership-repaired
+  passing identity-bound baseline chain. The exact-head review of that chain found the remaining
+  cross-process result-boundary class: nested-session descendants, unbounded adapter diagnostics,
+  operational runner failures scored as tests, pre-creation child-output ownership, deterministic
+  prepared-output cleanup, missing output-parent preflight, invalid-ID result suppression,
+  malformed unavailable-source envelopes, behavioral publication gaps, and stale continuity. The
+  reopened §10.1g redesign, its replacement baseline because the recorded coding runner changed,
+  exact-head review, preflight, and final capable `make ci` remain pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
@@ -259,10 +263,14 @@ file records durable project state.
 
 ## Next actions
 
-1. Record the ownership-repaired C6-EVALUATION source in a replacement identity-bound baseline
+1. Finish the reopened §10.1g evaluator child/result-boundary redesign, run its focused ownership,
+   nested-session, bounded-output, failure-classification, output-parent, source-envelope, and
+   publication-transition owners, then commit it with
+   `Closure-Matrix-Reopened: evaluator-runtime-containment`.
+2. Record the runner-changing repair in a replacement identity-bound baseline
    source/oracle/finalization chain, complete the required exact-head review, run exact-head
    preflight, and pass final capable `make ci` before merging and beginning C6-MEASURED.
-2. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
+3. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
    do not infer a provider-quality claim from the deterministic fixture comparison.
 
 ## Recovery and preservation

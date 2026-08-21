@@ -202,17 +202,18 @@ oversized result.
 Every Python-owned direct process boundary starts the child in a new session whose process-group ID
 is the retained direct-child PID. On timeout, output overflow, nonzero/malformed failure, or a
 direct child that exits while its group still has members, the owner sends `SIGKILL` to that group,
-waits the direct child, and polls the group until `killpg(pgid, 0)` proves absence. A group ID cannot
-be reused while any member of the old group remains, and the owner sends no signal after the first
-absence proof. Non-child descendants are reparented to the host's process reaper; C6 promises their
-termination and group absence, not `waitpid` ownership of them. A failed kill, direct wait, or
-bounded absence proof is `CLEANUP_FAILED` and takes precedence over the triggering process error.
-Normal success performs the same no-live-group proof. This Linux model is required for gate
-evidence; a host without `/proc/self/fd`, sessions, and group signaling returns the explicit
-environment failure rather than claiming containment. C6-EVALUATION invokes only content-bound
-trusted helpers and its fixed contained adapter; those children must not call `setsid` or move a
-descendant to another process group. A capability that admits an escape-capable child must use the
-fresh-worker cgroup boundary and is outside this in-process group contract.
+waits the direct child, and polls the group until `killpg(pgid, 0)` proves absence. Every Python
+owner first enables Linux child-subreaper mode. It enumerates direct and transitive `/proc`
+descendants, kills members that entered nested sessions or process groups, reaps adopted children,
+and proves both private-group and descendant absence before returning. A group ID cannot be reused
+while any member of the old group remains, and the owner sends no signal after the first complete
+absence proof. A failed kill, direct wait, adopted-child reap, or bounded absence proof is
+`CLEANUP_FAILED` and takes precedence over the triggering process error. Normal success performs
+the same no-live-tree proof. This Linux model is required for gate evidence; a host without
+`/proc/self/fd`, `/proc` parent identities, child-subreaper support, sessions, and group signaling
+returns the explicit environment failure rather than claiming containment. Nested `setsid` is not
+an escape from an invocation owner; the authenticated fresh-worker cgroup remains the outer owner
+for abrupt termination of the complete evaluator.
 
 `src/prompt_evaluate.align` arms no second wall-clock deadline around the Python evaluator. Within
 Python, every earlier-starting evaluator clock leaves its nested owner time to clean up and report:
@@ -220,6 +221,10 @@ an adapter receives the greater of its declared task and provider-control durati
 the two 10-second snapshot Git operations finish inside a fixed 35-second evaluator boundary, and
 the at-most-nine 10-second source-verifier Git operations finish inside a fixed 125-second
 boundary. The Align wrapper retains Request 11's bounded capture and direct-child result handling.
+The Python evaluator emits a one-byte discriminator plus one bounded canonical result and optional
+evidence record on stdout; stderr is empty. The wrapper rejects malformed framing or an over-cap
+stream, decodes and verifies the records while the captured owner lives, and alone publishes the
+final result/evidence files.
 `c6-evaluation-adoption` is a capable-only `make ci` goal, so capable gate execution places the
 complete wrapper/evaluator tree in the authenticated fresh-worker cgroup; that cgroup is the
 authoritative whole-tree owner for abrupt gate cancellation and is drained
@@ -1646,8 +1651,10 @@ writes the result at the CLI output path and the evidence at this explicit path 
 the evidence never points back to a path in the result. The pair has no cross-file atomicity promise,
 but its temporary and failure behavior is exact. C6f2 may implement this contract only after the
 shipped Request 14 operations pass `c6f2-request14-adoption`; no check-then-create or delete-before-
-rename substitute is permitted. After both canonical byte strings are complete and
-validated in memory, the evaluator exclusively creates one bounded temporary file beside each target,
+rename substitute is permitted. Python never creates a deterministic prepared result or evidence
+path: its bounded process-stream carrier transfers the canonical records to
+`src/prompt_evaluate.align`. After both canonical byte strings are complete and validated in
+memory, the Align publisher exclusively creates one bounded temporary file beside each target,
 writes and closes both temporary files, and rechecks that both final target paths are still absent. The
 evaluator owns both temporary files. It then finalizes in fixed order with no-replace renames: the
 result temporary file to the result path followed by the evidence temporary file to the evidence
@@ -2060,14 +2067,17 @@ overlaps another.
 The task adapter owns deterministic checkout setup, candidate generation, verification, cleanup,
 and resource containment. `workspace_path` must be a caller-created empty directory dedicated to
 this evaluation and must pass the physical preflight above. The evaluator chooses one new
-measurement path per invocation under it. The
-adapter writes exactly one `TaskMeasurement`, emits no stdout or stderr, and exits zero for a
+measurement path per invocation under it, exclusively creates that file, records ownership
+immediately, and passes the retained writable descriptor to the adapter. The adapter writes exactly
+one `TaskMeasurement` through that descriptor, emits no stdout or stderr, and exits zero for a
 complete measured pass or failure. A nonzero exit, process output, missing result, or extra
 workspace entry beyond the evaluator's exact currently owned request/variant/rendered/result paths
 makes the evaluation `ERROR`; adapter checkouts must therefore be removed before it returns.
 
-The evaluator reads at most 262,144 bytes plus one probe byte from each measurement through
-`std.fs.open`; a larger result is `ERROR` without whole-file allocation. It removes owned
+The evaluator reads at most 262,144 bytes plus one probe byte from each measurement through its
+retained path after the child exits; a larger result is `ERROR` without whole-file allocation.
+Snapshot results use the same parent-created descriptor protocol outside the raw workspace. A
+create collision establishes no ownership and is never removed. The evaluator removes owned
 measurement, snapshot, variant, and rendered-prompt files after incorporating them, then requires
 the workspace to be empty. Snapshot files use a 1,048,576-byte bound plus one probe byte. Cleanup
 failure is `ERROR` with `CLEANUP_FAILED`. If the measurement and its complete before/after
@@ -3231,7 +3241,7 @@ of the same containment gap. This matrix reopens that axis before the implementa
 | Reopened invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
 | Source-verifier runtime identity | `PromptSourceVerifierPolicy`, evaluator, future gate locator | bind the exact helper and explicit CPython executable bytes in `CPYTHON:<interpreter_sha256>:<helper_sha256>`; validate policy, helper, interpreter, and Git digests before launch; never select an interpreter through a shebang or ambient path | evaluator source-policy runtime mismatch, interpreter tamper, helper tamper, and exact-argv fixtures in `prompt-evaluate-smoke`; gate equivalents remain owned by C6-MEASURED |
-| Descendant ownership | evaluator, snapshot helper, source verifier, fixed adapter, their Git/task children | on the required Linux floor start every content-bound trusted direct child in a PID-owned private session/group, prohibit session/group escape, and apply the specified group signal, direct wait, bounded group-absence proof, and cleanup-precedence sequence for timeout, output cap where the boundary captures output, nonzero/malformed failure, and successful-parent-with-live-descendant states | marker-bearing evaluator timeout and successful-parent descendant fixtures plus source-verifier, snapshot-helper, and fixed-adapter live-descendant fixtures prove marker and process-group absence; their existing timeout/output owners retain the ordinary failure cases; Request 11 owns bounded outer capture while the qualified fresh-worker cgroup owns abrupt whole-tree cancellation |
+| Descendant ownership | evaluator, snapshot helper, source verifier, fixed adapter, their Git/task children | on the required Linux floor enable child-subreaper mode, start every content-bound trusted direct child in a PID-owned private session/group, enumerate and kill transitive or adopted descendants even after nested `setsid`, then apply the specified group signal, direct wait, bounded reap/absence proof, and cleanup-precedence sequence for timeout, output cap where the boundary captures output, nonzero/malformed failure, and successful-parent-with-live-descendant states | marker-bearing nested-session evaluator timeout and successful-parent fixtures plus source-verifier, snapshot-helper, and fixed-adapter nested-session fixtures prove marker, process-group, and descendant absence; their existing timeout/output owners retain the ordinary failure cases; Request 11 owns bounded outer capture while the qualified fresh-worker cgroup owns abrupt whole-tree cancellation |
 | FILE_SET physical containment | source verifier | retain separate manifest and source-root descriptors, walk every raw byte component with no-follow directory-relative opens, and obtain type/mode/device/inode/bytes/digest from the same retained final descriptor; reject a symlink ancestor, special final, root escape, and manifest physical alias while accepting valid non-UTF-8 path bytes | source-verifier FILE_SET symlink-ancestor, non-UTF-8 acceptance, special-file, root-escape, manifest-alias, and digest fixtures plus same-descriptor pre/post identity checks |
 
 The runtime change is intentionally structural rather than a nominal-label patch. The interpreter
@@ -3303,6 +3313,31 @@ one boundary before another candidate review.
 | Publication ownership retirement | `prompt_artifact_io` pair publisher | after every successful temporary or final removal, clear that path's ownership before any later observation; a replacement arriving after removal is competitor-owned, yields `OUTPUT_WRITE`, and is neither reported as an orphan nor removed | Request 14 adoption asserts ownership flags retire at each successful removal and retains the concurrent collision/cleanup fixtures |
 | Bounded FILE_SET decimal decode | source verifier | reject a decimal token longer than the maximum field's canonical width before integer conversion, then apply its numeric bound; Python runtime integer-digit limits never escape the declared `VerificationError` observation path | source-verifier FILE_SET owner covers overlong entry-count and path-length tokens as bounded `UNVERIFIED` results without traceback or partial output |
 | Durable continuation state | `HANDOFF.md` | name this ownership-boundary repair, its owner checks, the required exact-head review, preflight, and capable CI as the remaining sequence; completed matrix and baseline-chain commits are historical evidence, not future actions | author-side matrix-to-diff and HANDOFF consistency pass |
+
+### 10.1g Evaluator child/result boundary redesign
+
+The exact-head review of the ownership-boundary repair found that file ownership, child-tree
+ownership, bounded capture, and operational-failure classification still changed meaning between
+the Align wrapper, evaluator, and nested Python owners. This reopens
+`evaluator-runtime-containment` for the missing cross-process result boundary. The repair is one
+capability boundary: splitting it would leave either an unprovable file owner or an adapter outcome
+that the scorer could still misclassify. It may exceed 1,000 changed hand-written lines because the
+same behavioral owners must exercise the producer, carrier, consumer, and cleanup transitions
+together; separate producer and consumer changes would duplicate fixtures while leaving a dormant
+and unsafe intermediate protocol.
+
+| Reopened invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Complete descendant ownership | evaluator, fixed adapter, snapshot helper, source verifier, coding runner | every Python child owner enables Linux child-subreaper mode, kills the private process group and every direct, transitive, or adopted descendant across nested sessions, reaps owned children, and proves group and descendant absence before returning; a nested `setsid` child cannot survive into the next invocation | evaluator, adapter, snapshot-helper, and source-verifier owners launch a marker-bearing nested-session descendant and prove bounded cleanup plus marker absence |
+| Bounded adapter diagnostics | fixed adapter | drain stdout and stderr concurrently into independently bounded prefixes; never call an unbounded `communicate`; cap, cap+1, simultaneous-stream, timeout, and descendant cleanup preserve the declared diagnostic limit | fixed-adapter owner measures retained byte counts and termination for both streams at the boundary |
+| Operational runner outcome | coding runner and fixed adapter | the content-bound runner uses a distinct terminal code for an expected post-repair validation failure; launch, timeout, containment, cleanup, output, and internal runner failures produce `ERROR`/`ADAPTER`, never an ordinary `FAIL`/`TEST` row eligible for improvement scoring | parent expected-failure and candidate-pass rows remain scoreable; timeout, launch, internal-error, and unexpected exit fixtures terminate evaluation as adapter errors |
+| Child output-file ownership | evaluator, snapshot helper, fixed adapter | the evaluator exclusively creates each snapshot/measurement result, records ownership immediately after successful creation, and passes its retained descriptor to the child; a create collision establishes no ownership, while every successful removal retires ownership before later observation | occupied snapshot/measurement names are preserved end to end; descriptor-backed success, failed-child cleanup, and late replacement cases prove exact ownership transitions |
+| Cross-language evaluation result carrier | Python evaluator and `src/prompt_evaluate.align` | Python returns one bounded canonical result and optional evidence record through the captured process stream and never creates deterministic prepared files; the Align wrapper owns decode, verification, and exclusive final pair publication, so no file is cleaned without an owner established in that process | result-only invalid input, verified pair, cap/over-cap process output, malformed framing, occupied final output, and wrapper publication cleanup owners |
+| Output-parent preflight | evaluator | before source verification, snapshots, or adapters, require each output's immediate parent to be an existing physical writable directory and the two targets to remain distinct and absent | missing, non-directory, symlinked, and unwritable immediate-parent fixtures prove `INVALID_PATH` precedence and no child marker |
+| Invalid identifier result | evaluator result-only boundary | a decoded request with an invalid evaluation identifier returns `INVALID_INPUT`/`INVALID_ID` with `evaluation_id: null`; it never uses invalid text as a filesystem component and never suppresses the required result artifact | empty, non-ASCII, separator, dot, and oversized identifier cases persist and verify a result-only record with no evidence |
+| Unavailable source envelope | evaluator source-verifier consumer | `UNAVAILABLE` accepts only the declared `GIT_UNAVAILABLE` code, bounded non-empty detail, all three `UNVERIFIED` reachability values, and all three absent observations; no malformed unavailable envelope contributes trusted identity | wrong code, verified reachability, present observation, empty/oversized error, and reordered/extra-field cases terminate as source-verifier failure |
+| Publication failure transitions | Request 14 pair publisher | runtime owners force result-write and evidence-write failures after exclusive creation, plus a competitor replacement immediately after successful removal; owned paths retire on removal and a later occupant is never removed or reported | executable Request 14 adoption covers both `WriteFailed` arms and the late-competitor transition without source-text counting |
+| Durable continuation state | `HANDOFF.md` | record the completed replacement baseline chain as history and name this reopened redesign, its owner checks, replacement baseline if a recorded input changes, exact-head review, preflight, and capable CI as remaining work | author-side matrix-to-diff and HANDOFF consistency pass |
 
 Applicability decisions:
 

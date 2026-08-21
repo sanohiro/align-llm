@@ -86,6 +86,10 @@ class TaskError(Exception):
     pass
 
 
+class CandidateValidationFailed(TaskError):
+    """The candidate reached its declared validation command but did not pass it."""
+
+
 class CommandTimedOut(TaskError):
     pass
 
@@ -1652,7 +1656,7 @@ def _validate_candidate(
     if index_snapshot(checkout) != candidate_index:
         raise TaskError("validation changed the candidate Git index after repair")
     if after.returncode != 0:
-        raise TaskError("candidate patch did not pass validation")
+        raise CandidateValidationFailed("candidate patch did not pass validation")
 
 
 def validate_candidate(
@@ -1707,6 +1711,9 @@ def main() -> int:
                 task["validation_timeout_seconds"],
                 task["source_revision"],
             )
+    except CandidateValidationFailed as error:
+        print(f"task error: {error}", file=sys.stderr)
+        return 4
     except TaskError as error:
         print(f"task error: {error}", file=sys.stderr)
         return 1

@@ -421,7 +421,7 @@ def main() -> int:
         descendant_git = root / "descendant-git"
         descendant_git.write_text(
             "#!/bin/sh\n"
-            f"(exec >/dev/null 2>&1; sleep 0.6; printf x > {shlex.quote(str(marker))}) &\n"
+            f"setsid sh -c 'exec >/dev/null 2>&1; sleep 0.6; printf x > {shlex.quote(str(marker))}' &\n"
             "exit 1\n"
         )
         descendant_git.chmod(0o755)
