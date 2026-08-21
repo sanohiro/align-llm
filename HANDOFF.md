@@ -128,13 +128,22 @@ file records durable project state.
   incomplete environment-policy validation, and partial result-only publication. The reopened
   §10.1h redesign is complete. Source `c24e82462a64`, oracle `d023c2f9c6d5`, and finalization
   `75cfc9c79b38` form its passing replacement identity-bound baseline chain. The redesigned
-  exact-head review, preflight, and final capable `make ci` remain pending. Focused evidence covers Request 11 exact-cap,
+  exact-head review found the retained-source/complete-score class: an outer pathname reopen,
+  corpus files not proven as commit or FILE_SET members, task-cwd helper resolution, fixture-only
+  scoring, incomplete automatic snapshots and child observations, raw-only FILE expectations, and
+  generic mismatch errors. The reopened §10.1i redesign is complete. Source `6e52ff04a698`, oracle
+  `1e07ffe13553`, and finalization `365249123ec6` form its passing replacement identity-bound
+  baseline chain. The redesigned exact-head review, preflight, and final capable `make ci` remain
+  pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
   invalid inputs; content-bound interpreter/helper/Git launch; evaluator/helper/adapter descendant
-  cleanup; raw-byte FILE_SET traversal and physical-alias rejection; schema-v1 byte goldens; and
-  lifecycle consumption of the evaluator-produced pair.
+  cleanup; exact Git-blob and FILE_SET task-source membership; retained evaluator/helper execution;
+  automatic identity-input drift; canonical FILE mode/content identity; exact snapshot observation
+  closure and mismatch families; every complete score status and gate path; raw-byte FILE_SET
+  traversal and physical-alias rejection; schema-v1 byte goldens; and lifecycle consumption of the
+  evaluator-produced pair.
 - C6d owner: `make c6d-request18-adoption` and the final capable `make ci`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The focused owner covers request and artifact bounds,
   retained-root symlink/special-file rejection, deterministic error precedence, exclusive output
