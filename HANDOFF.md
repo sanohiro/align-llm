@@ -3,20 +3,21 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-20)
+## Active checkpoint (2026-08-21)
 
-- The current capability is C6d offline prompt activation. `.align-revision` pins Align merge
-  `19c3db144c462bf7d6784f88d64cc124229b7ec2`, which adds Request 18 retained-root regular-file
-  access and retains the Request 16/17 borrowed projection surfaces used by the decoded verifier.
+- The current capability is C6-EVALUATION deterministic contained comparison on
+  `agent/c6-evaluation`. `.align-revision` remains pinned to Align merge
+  `19c3db144c462bf7d6784f88d64cc124229b7ec2`, which contains the Request 11 bounded process and
+  Request 14 exclusive publication surfaces consumed by this wave.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
-- The register records Requests 7, 8, 10, 12, 13, and 15–18 as `ALIGN_LLM_VERIFIED`.
-  Requests 2, 9, 11, and 14 remain `ALIGN_MERGED`; Request 14's surface is present at the current
-  pin but its pair-publication adoption remains owned by C6f2.
-- The active C6b-memory consumer validates the complete C5 failure-memory JSONL source, selects
-  matching events by task and bounded reverse scan, renders them chronologically, and reports
-  `INVALID_FAILURE_MEMORY` without changing the valid prompt digest contract. Request 14 remains
-  unadopted and is not consumed by that boundary.
+- The register records Requests 7, 8, 10–18 as `ALIGN_LLM_VERIFIED`. Requests 11 and 14 are adopted
+  by C6-EVALUATION through bounded child containment and result/evidence no-replace publication;
+  Requests 2 and 9 remain `ALIGN_MERGED` for their later named consumers.
+- C6-EVALUATION now drives the deterministic two-task corpus through source/workspace verification,
+  alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
+  prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
+  result-only; operational failures retain the exact valid trace prefix and paired evidence.
 - Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. C6d now builds on that
   decoded verifier: `prompt accept` verifies result/evidence before constructing an immutable
   activation, `prompt rollback` validates immutable lineage, and both commands use retained-root
@@ -40,8 +41,8 @@ file records durable project state.
   Request 4 as `f04672bce6f8689c9b219d0a20e770571e2d638b`, PR #808 shipped Request 11 as
   `82da9f580cc005fbb78f67af6847c7b4ce6626c4`, and PR #807 shipped Request 12 as
   `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are `CLOSED`; Requests 8, 10, and
-  12 are `ALIGN_LLM_VERIFIED` for the C6 consumer capability, while Request 11 remains
-  `ALIGN_MERGED` for the later C6-EVALUATION boundary.
+  12 are `ALIGN_LLM_VERIFIED` for the C6 consumer capability; Request 11 is now also
+  `ALIGN_LLM_VERIFIED` through C6-EVALUATION.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -81,8 +82,8 @@ file records durable project state.
 - C6-LIFECYCLE has completed the Request 7/8/10/12/13/15 adoption wave in PR #94, Requests 16/17
   through the real decoded verifier, and Request 18 through the C6d retained-root lifecycle owner.
   The public verifier keeps its settled borrowed signature and no compatibility API was added.
-  Request 14 remains unadopted for C6f2, and Request 11 remains merged for the later C6-EVALUATION
-  boundary. Requests 4–6 are closed with real-client and native installed-profile evidence.
+  Requests 11 and 14 are adopted by the contained evaluator and pair-publication owners. Requests
+  4–6 are closed with real-client and native installed-profile evidence.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -98,6 +99,13 @@ file records durable project state.
 
 ## Latest durable verification
 
+- C6-EVALUATION owners: `gmake --no-print-directory c6-evaluation-adoption`, `make check`,
+  `make format-check`, and the final capable `make ci`: PASS at Align
+  `19c3db144c462bf7d6784f88d64cc124229b7ec2`. Focused evidence covers Request 11 exact-cap,
+  over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
+  creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
+  Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
+  invalid inputs; and lifecycle consumption of the evaluator-produced pair.
 - C6d owner: `make c6d-request18-adoption` and the final capable `make ci`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The focused owner covers request and artifact bounds,
   retained-root symlink/special-file rejection, deterministic error precedence, exclusive output
@@ -233,9 +241,9 @@ file records durable project state.
 
 ## Next actions
 
-1. Begin the next eligible C6 capability from the roadmap without pulling Request 11 process work
-   or Request 14 pair publication ahead of its owning boundary.
-2. Keep Request 14 adoption with C6f2 and Requests 11, 2, and 9 with their named future owners.
+1. Merge C6-EVALUATION, refresh `main`, and begin C6-MEASURED from the roadmap.
+2. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
+   do not infer a provider-quality claim from the deterministic fixture comparison.
 
 ## Recovery and preservation
 

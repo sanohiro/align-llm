@@ -33,7 +33,7 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption ci
 
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
@@ -116,8 +116,32 @@ prompt-verifier-smoke:
 prompt-state-smoke: build
 	./scripts/run-prompt-state-smoke
 
+prompt-source-verifier-smoke:
+	./scripts/test-prompt-source-verifier
+
+prompt-snapshot-helper-smoke:
+	./scripts/test-prompt-snapshot-helper
+
+prompt-fixed-adapter-smoke:
+	./scripts/test-prompt-fixed-adapter
+
+prompt-evaluate-smoke:
+	./scripts/run-prompt-evaluate-smoke
+
 c6d-request18-adoption: build
 	ALIGN_C6D_REQUEST18_ADOPTION=1 ./scripts/run-prompt-state-smoke
+
+c6f1-request11-adoption:
+	./scripts/run-c6f1-request11-adoption
+
+c6f2-request14-adoption:
+	./scripts/run-c6f2-request14-adoption
+
+c6-evaluation-adoption:
+	+MAKEFLAGS= GNUMAKEFLAGS= $(MAKE) --no-print-directory -j1 \
+	  c6f1-request11-adoption c6f2-request14-adoption \
+	  prompt-source-verifier-smoke prompt-snapshot-helper-smoke \
+	  prompt-fixed-adapter-smoke prompt-evaluate-smoke
 
 baseline-check:
 	python3 ./eval/runners/verify-baseline.py

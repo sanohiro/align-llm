@@ -1,0 +1,40 @@
+module c6f1_request11_adoption
+
+import core.json
+import std.process
+
+fn parse_i64(value: str) -> Result<i64, Error> {
+  decoded: i64 := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() < 6 {
+    return Err(Error.Invalid)
+  }
+  cap := parse_i64(args[1])?
+  timeout_ns := parse_i64(args[2])?
+  cwd := args[3]
+  command_path := args[4]
+  return arena out {
+    mut child_args: array_builder<str> := array_builder(out)
+    mut index := 4
+    loop {
+      if index >= args.len() { break }
+      child_args.push(args[index])
+      index = index + 1
+    }
+    command := process.command(command_path, child_args.build())
+    command.cwd(cwd)
+    command.timeout_ns(timeout_ns)
+    command.max_capture_bytes(cap)
+    command.env_clear()
+    command.env("LANG", "C")
+    command.env("LC_ALL", "C")
+    output := command.run()?
+    print(output.code())
+    print(output.stdout())
+    print(output.stderr())
+    Ok(())
+  }
+}

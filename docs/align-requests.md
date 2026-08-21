@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-20): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, 15–18 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, and 14 remain ALIGN_MERGED.** Request 2's timeout adoption, Request 9's C7 adoption, Request 11's C6-EVALUATION adoption, and Request 14's C6f2 publication adoption remain pending. Request 18 is adopted by the C6d offline lifecycle owner at the exact Align merge recorded below.
+> **Status (2026-08-21): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10–18 are ALIGN_LLM_VERIFIED; Requests 2 and 9 remain ALIGN_MERGED.** C6-EVALUATION adopts Request 11's bounded process surface and Request 14's no-replace pair publication with their focused owners and final capable integration gate. Request 2's timeout adoption remains with C6e/C6g1, Request 9's adoption remains with C7, and Request 18 remains adopted by the C6d offline lifecycle owner at the exact Align merge recorded below.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -4961,14 +4961,14 @@ evidence.
 ## Request 11 — `std.process`: bounded child output capture
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6f1 trusted snapshot/workspace boundary, C6f2 paired evaluator, and C6g1 real-consumer process boundaries
 Independent work that may continue: C6a1 through C6d2 pure codecs, rendering, scoring, activation, and any work without an external child process
-Resume condition: after ALIGN_MERGED, the C6-EVALUATION prerequisite wave rebuilds the sibling release compiler/runtime and updates `.align-revision` with its other merged prerequisites, then C6's focused helper/adapter over-cap, timeout, environment, kill/reap, and cleanup qualification passes before the wave's one final `make ci`
+Resume condition: satisfied by C6-EVALUATION at the existing pin; the focused helper/adapter exact-cap, over-cap, timeout, environment, kill/reap, and cleanup qualifications and the wave's final `make ci` pass
 Align commit or pull request: Align design PR #806, merged as `30ff5830ce556e949edf31500a154ca7de4b1b7c`; implementation PR #808, merged as `82da9f580cc005fbb78f67af6847c7b4ce6626c4`
-align-llm verification: pending
+align-llm verification: `c6f1-request11-adoption` and `c6-evaluation-adoption` pass at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exact-cap, cap-plus-one, simultaneous streams, timeout, post-EOF, repeated/concurrent invocation, descendant cleanup, and the final capable `make ci`
 ```
 
 ### Motivation and current-state evidence
@@ -5201,17 +5201,17 @@ The Align design and implementation must prove:
 ## Request 14 — `std.fs`: exclusive creation and no-replace publication
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator result/evidence publication and any later C6 command that promises no-replace artifact finalization
 Independent work that may continue: C6c1p and C6c2 pure verification, prompt rendering, scoring, design work, and any implementation that does not publish a pair with exclusive creation and no-replace rename
-Resume condition: the C6-EVALUATION prerequisite wave runs focused `c6f2-request14-adoption` against the pinned compiler and passes the exact publication race/cleanup matrix before that wave's one final `make ci`
+Resume condition: satisfied by C6-EVALUATION; `c6f2-request14-adoption` passes the exact publication race/cleanup matrix at the pinned compiler before the wave's final `make ci`
 Align commit or pull request: design PR #859, merged as `a21eb8416f2088df68026f10c63a38cd0bd65538`; implementation PR #861, merged as `3c2edd2f399c9e2c9551b4227c61b36d6a041e20`
-align-llm verification: pending `c6f2-request14-adoption`; the current pin contains the surface but C6c2 does not consume it
+align-llm verification: `c6f2-request14-adoption` and `c6-evaluation-adoption` pass at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exclusive staging, fixed result-then-evidence no-replace finalization, occupied regular/directory/symlink/FIFO targets, competing creators, reverse cleanup, exact evaluator-owned orphan reporting, and the final capable `make ci`
 ```
 
-### Align response (2026-08-19 — shipped; adoption pending)
+### Align response (2026-08-21 — shipped and adopted)
 
 Align ships `fs.create_exclusive(path: str) -> Result<writer, Error>` and
 `fs.rename_no_replace(source: str, destination: str) -> Result<(), Error>`. The implementation

@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Focused C6f1 workspace and snapshot helper owner tests."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+HELPER = ROOT / "scripts" / "prompt-snapshot-helper.py"
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def canonical_digest_item(value):
+    if isinstance(value, dict):
+        return {key: canonical_digest_item(child) for key, child in value.items() if child is not None}
+    if isinstance(value, list):
+        return [canonical_digest_item(child) for child in value]
+    return value
+
+
+def bind(value):
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(canonical(canonical_digest_item(value))).hexdigest()
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def tree_digest(project: Path, relative: str) -> str:
+    root = project / relative
+    entries = [(relative, root, "D")]
+    for directory, names, files in os.walk(root):
+        names.sort(key=os.fsencode)
+        files.sort(key=os.fsencode)
+        parent = Path(directory).relative_to(project).as_posix()
+        entries.extend((f"{parent}/{name}", Path(directory) / name, "D") for name in names)
+        entries.extend((f"{parent}/{name}", Path(directory) / name, "F") for name in files)
+    output = bytearray()
+    for name, path, kind in sorted(entries):
+        metadata = path.stat()
+        mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}"
+        output.extend(f"{mode} {name}".encode() + b"\0" + kind.encode())
+        if kind == "F":
+            output.extend(b" " + hashlib.sha256(path.read_bytes()).hexdigest().encode())
+        output.extend(b"\n")
+    return hashlib.sha256(output).hexdigest()
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="prompt-snapshot-") as directory:
+        root = Path(directory)
+        project = root / "project"
+        project.mkdir()
+        workspace = project / "workspace"
+        workspace.mkdir()
+        (project / "input.txt").write_text("input")
+
+        preflight = {
+            "schema_version": 1, "artifact_kind": "WORKSPACE_PREFLIGHT_REQUEST",
+            "evaluation_id": "eval", "project_root": str(project),
+            "workspace_path": str(workspace), "content_sha256": "",
+        }
+        bind(preflight)
+        preflight_path = root / "preflight.json"
+        preflight_path.write_bytes(canonical(preflight))
+        completed = subprocess.run(
+            [str(HELPER), "--workspace-preflight-request", str(preflight_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(completed.stdout)
+        require(completed.returncode == 0 and result["status"] == "SAFE", "empty workspace was not safe")
+
+        digest = hashlib.sha256((project / "input.txt").read_bytes()).hexdigest()
+        snapshot = {
+            "schema_version": 1, "artifact_kind": "SNAPSHOT_REQUEST", "task_id": "task",
+            "project_root": str(project), "repo_path": str(project), "repo_revision": "0" * 40,
+            "require_clean_repo": False,
+            "static_expectations": [{"path": "input.txt", "kind": "FILE", "expected_sha256": digest}],
+            "additional_files": [], "workspace_path": str(workspace), "allowed_workspace_entries": [],
+            "content_sha256": "",
+        }
+        bind(snapshot)
+        snapshot_path = root / "snapshot.json"
+        result_path = root / "result.json"
+        snapshot_path.write_bytes(canonical(snapshot))
+        completed = subprocess.run(
+            [str(HELPER), "--snapshot-request", str(snapshot_path), "--result", str(result_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(result_path.read_text())
+        require(completed.returncode == 0 and result["status"] == "MATCH", "valid snapshot did not match")
+        require(result["artifact_digests"][0]["sha256"] == digest, "snapshot digest changed")
+
+        tree = project / "tree"
+        tree.mkdir()
+        (tree / "empty").mkdir()
+        (tree / "value.txt").write_text("tree value")
+        snapshot["static_expectations"] = [
+            {"path": "tree", "kind": "TREE", "expected_sha256": tree_digest(project, "tree")}
+        ]
+        bind(snapshot)
+        snapshot_path.write_bytes(canonical(snapshot))
+        result_path.unlink()
+        completed = subprocess.run(
+            [str(HELPER), "--snapshot-request", str(snapshot_path), "--result", str(result_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(result_path.read_text())
+        require(completed.returncode == 0 and result["status"] == "MATCH", "valid tree snapshot did not match")
+        require(result["artifact_digests"][0]["path"] == "tree", "tree root was not first")
+        require(any(item["path"] == "tree/empty" for item in result["artifact_digests"]), "empty tree directory was omitted")
+
+        (workspace / "intruder").write_text("x")
+        result_path.unlink()
+        completed = subprocess.run(
+            [str(HELPER), "--snapshot-request", str(snapshot_path), "--result", str(result_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(result_path.read_text())
+        require(completed.returncode == 0 and result["status"] == "ERROR", "undeclared workspace entry matched")
+
+        preflight["evaluation_id"] = "tampered"
+        preflight_path.write_bytes(canonical(preflight))
+        completed = subprocess.run(
+            [str(HELPER), "--workspace-preflight-request", str(preflight_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(completed.returncode != 0 and not completed.stdout, "tampered preflight request was accepted")
+
+    print("prompt snapshot helper: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        print(f"prompt snapshot helper: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)

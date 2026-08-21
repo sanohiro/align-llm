@@ -1,0 +1,304 @@
+module prompt_evaluate
+
+import prompt_artifact_io
+import prompt_score
+import std.fs
+import std.path
+import std.process
+
+pub PromptEvaluateStatus { Published, InvalidInput, EvaluationFailed, OutputWrite, CleanupFailed }
+
+fn print_owned_text(borrow value: string) {
+  view: str := value
+  print(view)
+}
+
+fn valid_component(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 4096 { return false }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    if bytes[index] == 0 || bytes[index] == 0x2f { return false }
+    index = index + 1
+  }
+  return value != "." && value != ".."
+}
+
+fn valid_relative_path(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 4096 { return false }
+  bytes := value.bytes()
+  if bytes[0] == 0x2f { return false }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index > bytes.len() { break }
+    if index == bytes.len() || bytes[index] == 0x2f {
+      if !valid_component(value[start..index]) { return false }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn temporary_relative(value: str, evaluation_id: str, kind: str) -> string {
+  output := builder()
+  output.write(value)
+  output.write(".prepared.")
+  output.write(evaluation_id)
+  output.write(".")
+  output.write(kind)
+  return output.to_string()
+}
+
+fn remove_owned(path_value: str) -> bool {
+  return match fs.remove(path_value) {
+    Ok(_) => true,
+    Err(_) => false,
+  }
+}
+
+fn absent_beneath(root: str, relative: str) -> bool {
+  return match fs.open_beneath(root, relative) {
+    Ok(_) => false,
+    Err(failure) => match failure { NotFound => true, _ => false },
+  }
+}
+
+fn cleanup_optional(root: str, relative: str, path_value: str) -> bool {
+  if absent_beneath(root, relative) { return true }
+  return remove_owned(path_value) && absent_beneath(root, relative)
+}
+
+fn report_prepared_cleanup_failure(
+  result_clean: bool,
+  evidence_clean: bool,
+  result_relative: str,
+  evidence_relative: str,
+) {
+  print("recovery paths:")
+  if !result_clean { print(result_relative) }
+  if !evidence_clean { print(evidence_relative) }
+}
+
+fn publish_verified_pair(
+  project_root: str,
+  prepared_result_relative: str,
+  prepared_evidence_relative: str,
+  prepared_result: str,
+  prepared_evidence: str,
+  result_relative: str,
+  evidence_relative: str,
+  evaluation_id: str,
+) -> Result<PromptEvaluateStatus, Error> {
+  result_source := prompt_artifact_io.read_prompt_evaluation_result_source(project_root, prepared_result_relative)
+  evidence_source := prompt_artifact_io.read_prompt_evaluation_evidence_source(project_root, prepared_evidence_relative)
+  result := match result_source.status {
+    Loaded => prompt_artifact_io.decode_prompt_evaluation_result_source(result_source.source)?,
+    _ => { return Err(Error.Invalid) },
+  }
+  evidence := match evidence_source.status {
+    Loaded => prompt_artifact_io.decode_prompt_evaluation_evidence_source(evidence_source.source)?,
+    _ => { return Err(Error.Invalid) },
+  }
+  prompt_score.verify_result(result, evidence)?
+  complete := result.status == "IMPROVED" ||
+  result.status == "NO_IMPROVEMENT" ||
+  result.status == "SERIOUS_REGRESSION"
+  if !remove_owned(prepared_result) || !remove_owned(prepared_evidence) {
+    return Err(Error.Invalid)
+  }
+  published := prompt_artifact_io.write_prompt_evaluation_pair_detailed(
+    project_root,
+    result_relative,
+    evidence_relative,
+    evaluation_id,
+    result,
+    evidence,
+  )
+  match published.status {
+    CleanupFailed => {
+      print("recovery paths:")
+      mut index := 0
+      loop {
+        if index >= published.surviving_owned_paths.len() { break }
+        print_owned_text(published.surviving_owned_paths[index])
+        index = index + 1
+      }
+    },
+    _ => {},
+  }
+  return Ok(match published.status {
+      Published => if complete { PromptEvaluateStatus.Published } else { PromptEvaluateStatus.EvaluationFailed },
+      OutputWrite => PromptEvaluateStatus.OutputWrite,
+      CleanupFailed => PromptEvaluateStatus.CleanupFailed,
+    })
+}
+
+fn publish_prepared_output(
+  project_root: str,
+  prepared_result_relative: str,
+  prepared_evidence_relative: str,
+  prepared_result: str,
+  prepared_evidence: str,
+  result_relative: str,
+  evidence_relative: str,
+  evaluation_id: str,
+) -> Result<PromptEvaluateStatus, Error> {
+  evidence_source := prompt_artifact_io.read_prompt_evaluation_evidence_source(
+    project_root,
+    prepared_evidence_relative,
+  )
+  return match evidence_source.status {
+    Loaded => publish_verified_pair(
+      project_root,
+      prepared_result_relative,
+      prepared_evidence_relative,
+      prepared_result,
+      prepared_evidence,
+      result_relative,
+      evidence_relative,
+      evaluation_id,
+    ),
+    NotFound => {
+      result_source := prompt_artifact_io.read_prompt_evaluation_result_source(
+        project_root,
+        prepared_result_relative,
+      )
+      result := match result_source.status {
+        Loaded => prompt_artifact_io.decode_prompt_evaluation_result_source(result_source.source)?,
+        _ => { return Err(Error.Invalid) },
+      }
+      if result.status != "INVALID_INPUT" {
+        return Err(Error.Invalid)
+      }
+      if !remove_owned(prepared_result) { return Err(Error.Invalid) }
+      published := prompt_artifact_io.write_prompt_evaluation_result_only(
+        project_root,
+        result_relative,
+        result,
+      )
+      return Ok(match published {
+          Published => PromptEvaluateStatus.InvalidInput,
+          OutputWrite => PromptEvaluateStatus.OutputWrite,
+          CleanupFailed => PromptEvaluateStatus.CleanupFailed,
+        })
+    },
+    _ => Err(Error.Invalid),
+  }
+}
+
+pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateStatus {
+  request := prompt_artifact_io.load_prompt_evaluate_request(request_path) else {
+    return PromptEvaluateStatus.InvalidInput
+  }
+  if !valid_component(request.evaluation_id) ||
+  !valid_relative_path(result_relative) {
+    return PromptEvaluateStatus.InvalidInput
+  }
+
+  prepared_result_relative := temporary_relative(result_relative, request.evaluation_id, "result")
+  evidence_temporary_base: string := if valid_relative_path(request.evaluation_evidence_path) &&
+  request.evaluation_evidence_path != result_relative {
+    request.evaluation_evidence_path.clone()
+  } else {
+    result_relative.clone()
+  }
+  prepared_evidence_relative := temporary_relative(
+    evidence_temporary_base,
+    request.evaluation_id,
+    "evidence",
+  )
+  prepared_result := path.join(request.project_root, prepared_result_relative)
+  prepared_evidence := path.join(request.project_root, prepared_evidence_relative)
+  evaluator := path.join(request.project_root, "scripts/prompt-evaluate.py")
+  evaluator_view: str := evaluator
+  prepared_result_view: str := prepared_result
+  prepared_evidence_view: str := prepared_evidence
+  evidence_relative_view: str := request.evaluation_evidence_path
+
+  command := process.command(
+    "/usr/bin/python3",
+    [
+      "/usr/bin/python3",
+      evaluator_view,
+      "--request",
+      request_path,
+      "--prepared-result",
+      prepared_result_view,
+      "--prepared-evidence",
+      prepared_evidence_view,
+      "--final-result-relative",
+      result_relative,
+      "--final-evidence-relative",
+      evidence_relative_view,
+    ].to_array(),
+  )
+  command.cwd(request.project_root)
+  command.timeout_ns(7_200_000_000_000)
+  command.max_capture_bytes(1)
+  command.env_clear()
+  command.env("LANG", "C")
+  command.env("LC_ALL", "C")
+  command.env("PATH", "/usr/bin:/bin")
+  command.env("PYTHONDONTWRITEBYTECODE", "1")
+  command.env("PYTHONNOUSERSITE", "1")
+  output := command.run() else {
+    result_clean := cleanup_optional(request.project_root, prepared_result_relative, prepared_result_view)
+    evidence_clean := cleanup_optional(request.project_root, prepared_evidence_relative, prepared_evidence_view)
+    if !result_clean || !evidence_clean {
+      report_prepared_cleanup_failure(
+        result_clean, evidence_clean, prepared_result_relative, prepared_evidence_relative,
+      )
+      return PromptEvaluateStatus.CleanupFailed
+    }
+    return PromptEvaluateStatus.EvaluationFailed
+  }
+  if output.code() != 0 || output.stdout().len() != 0 || output.stderr().len() != 0 {
+    result_clean := cleanup_optional(request.project_root, prepared_result_relative, prepared_result_view)
+    evidence_clean := cleanup_optional(request.project_root, prepared_evidence_relative, prepared_evidence_view)
+    if !result_clean || !evidence_clean {
+      report_prepared_cleanup_failure(
+        result_clean, evidence_clean, prepared_result_relative, prepared_evidence_relative,
+      )
+      return PromptEvaluateStatus.CleanupFailed
+    }
+    return PromptEvaluateStatus.EvaluationFailed
+  }
+
+  published := publish_prepared_output(
+    request.project_root,
+    prepared_result_relative,
+    prepared_evidence_relative,
+    prepared_result_view,
+    prepared_evidence_view,
+    result_relative,
+    evidence_relative_view,
+    request.evaluation_id,
+  ) else {
+    result_clean := cleanup_optional(request.project_root, prepared_result_relative, prepared_result_view)
+    evidence_clean := cleanup_optional(request.project_root, prepared_evidence_relative, prepared_evidence_view)
+    if !result_clean || !evidence_clean {
+      report_prepared_cleanup_failure(
+        result_clean, evidence_clean, prepared_result_relative, prepared_evidence_relative,
+      )
+      return PromptEvaluateStatus.CleanupFailed
+    }
+    return PromptEvaluateStatus.EvaluationFailed
+  }
+  return published
+}
+
+pub fn status_label(status: PromptEvaluateStatus) -> str = match status {
+  Published => "PUBLISHED",
+  InvalidInput => "INVALID_INPUT",
+  EvaluationFailed => "EVALUATION_FAILED",
+  OutputWrite => "OUTPUT_WRITE",
+  CleanupFailed => "OUTPUT_PAIR_CLEANUP_FAILED",
+}
+
+pub fn status_success(status: PromptEvaluateStatus) -> bool = match status {
+  Published => true,
+  _ => false,
+}

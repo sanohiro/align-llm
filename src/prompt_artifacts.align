@@ -381,6 +381,33 @@ pub PromptExperimentResult {
   content_sha256: string,
 }
 
+pub PromptEvaluateRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  evaluation_id: string,
+  project_root: string,
+  experiment_path: string,
+  parent_activation_path: string,
+  corpus_path: string,
+  sample_count: i64,
+  acceptance_policy_path: string,
+  workspace_path: string,
+  workspace_preflight_path: string,
+  verifier_align_llm_repository_path: string,
+  verifier_align_llm_commit: string,
+  verifier_align_repository_path: string,
+  verifier_align_revision: string,
+  verifier_corpus_source_path: string,
+  verifier_corpus_source_kind: string,
+  verifier_corpus_file_set_manifest_path: Option<string>,
+  verifier_corpus_source_repository_id: string,
+  verifier_corpus_source_sha256: string,
+  verifier_source_policy_path: string,
+  verifier_source_policy_sha256: string,
+  verifier_git_executable_path: string,
+  evaluation_evidence_path: string,
+}
+
 pub PromptSourceVerifierRequest {
   schema_version: i64,
   artifact_kind: string,
@@ -781,6 +808,23 @@ fn valid_content_digest(value: str) -> bool {
   return true
 }
 
+fn valid_source_revision(value: str) -> bool {
+  if value.len() != 40 && value.len() != 64 {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    b := bytes[index]
+    if !((b >= 0x30 && b <= 0x39) || (b >= 0x61 && b <= 0x66)) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
 fn valid_prompt_text_kind(value: str) -> bool {
   return value == "BASE_PROMPT" ||
   value == "REPO_PROMPT" ||
@@ -950,12 +994,16 @@ fn valid_scope_shape(borrow value: PromptScope) -> bool {
   value.artifact_kind == "PROMPT_SCOPE" &&
   valid_ascii_identifier(value.repo_id, 128) &&
   valid_nonempty_text(value.repo_profile_revision, 256) &&
-  valid_content_digest(value.align_revision) &&
+  valid_source_revision(value.align_revision) &&
   valid_ascii_identifier(value.corpus_id, 128) &&
   value.corpus_revision.schema_version == 1 &&
   value.corpus_revision.artifact_kind == "CORPUS_REVISION" &&
   valid_corpus_source_identity(value.corpus_revision) &&
-  valid_content_digest(value.corpus_revision.source_sha256) &&
+  if value.corpus_revision.source_kind == "GIT_COMMIT" {
+    valid_source_revision(value.corpus_revision.source_sha256)
+  } else {
+    valid_content_digest(value.corpus_revision.source_sha256)
+  } &&
   valid_content_digest(value.corpus_revision.content_sha256) &&
   (value.evaluation_provider_kind == "FIXTURE" ||
     value.evaluation_provider_kind == "CLOUD_OPENAI" ||
@@ -1078,7 +1126,11 @@ fn corpus_revision_content_digest(borrow value: CorpusRevision) -> Result<string
 fn verify_corpus_revision_content(borrow value: CorpusRevision) -> bool {
   if value.schema_version != 1 || value.artifact_kind != "CORPUS_REVISION" ||
   !valid_corpus_source_identity(value) ||
-  !valid_content_digest(value.source_sha256) || !valid_content_digest(value.content_sha256) {
+  !(if value.source_kind == "GIT_COMMIT" {
+      valid_source_revision(value.source_sha256)
+    } else {
+      valid_content_digest(value.source_sha256)
+    }) || !valid_content_digest(value.content_sha256) {
     return false
   }
   expected := corpus_revision_content_digest(value) else {
@@ -1575,6 +1627,19 @@ pub fn encode_prompt_experiment_result(value: PromptExperimentResult) -> string 
 }
 
 pub fn encode_prompt_experiment_result_bounded(value: PromptExperimentResult, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+pub fn decode_prompt_evaluate_request(value: str) -> Result<PromptEvaluateRequest, Error> {
+  decoded: PromptEvaluateRequest := json.decode(value)?
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_evaluate_request(value: PromptEvaluateRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_evaluate_request_bounded(value: PromptEvaluateRequest, max_bytes: i64) -> Result<string, Error> {
   return json.encode_bounded(value, max_bytes)
 }
 

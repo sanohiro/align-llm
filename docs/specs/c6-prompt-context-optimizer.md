@@ -1,11 +1,11 @@
 # C6 Prompt and Context Optimizer
 
-Status: design plan of record; the C6b renderer core, the C6b-memory failure-memory selector,
-C6c1 row validation/aggregation kernel, and C6c1p prefix validator are the current foundations.
-The remaining contract is delivered through the consumer-complete capability
-waves in Section 11. Historical C6a-C6g labels identify acceptance and ownership cells, not required
-branch or pull request boundaries. JSON/document binding remains dependent on its named Align
-prerequisites; no code may target a proposed surface.
+Status: design plan of record; C6-LIFECYCLE and C6-EVALUATION are implemented foundations, including
+artifact codecs, rendering, failure-memory selection, verification, offline activation, deterministic
+contained comparison, and result/evidence publication. C6-MEASURED remains to deliver provider
+proposal and measured acceptance through the consumer-complete capability waves in Section 11.
+Historical C6a-C6g labels identify acceptance and ownership cells, not required branch or pull
+request boundaries. No code may target a proposed Align surface.
 
 This document refines C6 from `docs/specs/roadmap.md` and the Prompt Optimizer contract in
 `docs/specs/align-llm.md`. If this document conflicts with either parent specification, the parent
@@ -73,8 +73,8 @@ hypothetical API part of C6:
    shapes, including partial push/build/drop behavior. Request 8 was registered in align-llm PR #32,
    its reviewed design merged in Align PR #799, and its implementation merged in Align PR #801 as
    `029e27465d79e24cd36d374aae41dca0ec7e6979`. Request 8 is `ALIGN_LLM_VERIFIED` after the
-   `c6c2-request8-adoption` owner and final capable gate passed in Align-llm PR #94; the later
-   `c6f2-array-builder-adoption` remains the paired-evaluator consumer's separate evidence.
+   `c6c2-request8-adoption` owner and final capable gate passed in Align-llm PR #94; C6-EVALUATION
+   adds the paired-evaluator consumer evidence.
 5. **Request 13 — recursive owned C6 JSON artifact graphs.** C6 artifacts contain nested records,
    options, runtime-sized arrays, and persistent text. Request 9's intentionally flat owned-text
    route is not sufficient, and the current borrowed JSON route cannot encode a record containing
@@ -87,11 +87,12 @@ hypothetical API part of C6:
    10 owns the separately reviewed recursive `DropPlan`, reallocation, and partial-construction
    extension. Its design merged in Align PR #802 and its implementation merged in PR #804 as
    `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Requests 8 and 10 are `ALIGN_LLM_VERIFIED`
-   through their ordered real-client adoption owners in Align-llm PR #94; C6f2 and C6c2 still
-   require their own consumer qualification and the remaining process/publication prerequisites.
-7. **Request 11 — bounded child-process capture.** The current `std.process.run()` captures
-   stdout/stderr without a receiver-selected limit. C6f1, C6f2, and C6g1 must wait for a shipped
-   cap that kills/reaps over-limit children before claiming their helper and adapter bounds.
+   through their ordered real-client adoption owners in Align-llm PR #94; C6-EVALUATION adds the
+   C6f2 recursive result/evidence consumer qualification.
+7. **Request 11 — bounded child-process capture.** Align ships the receiver-selected cap that
+   kills/reaps over-limit children. C6-EVALUATION adopts it for the evaluator helper boundary and
+   passes exact-cap, over-cap, timeout, post-EOF, concurrent, and descendant-cleanup evidence;
+   C6g1 retains its later real-provider consumer check.
 8. **Request 12 — bounded canonical JSON encoding.** The current `core.json.encode` returns a
    complete owned string and cannot prove the C6 268,435,456-byte result cap before allocation.
    Request 12 is `ALIGN_LLM_VERIFIED` through the C6-LIFECYCLE adoption wave in Align-llm PR #94;
@@ -99,8 +100,9 @@ hypothetical API part of C6:
    retain it as a prerequisite.
 9. **Request 14 — exclusive creation and no-replace publication.** C6f2's result/evidence pair
    contract uses Align's shipped `fs.create_exclusive` and `fs.rename_no_replace` surface. The
-   current pin contains it, but C6f2 must still pass the named `c6f2-request14-adoption` gate and
-   must not use a check-then-create, delete-before-rename, or undeclared native workaround.
+   current pin contains it, and C6-EVALUATION passes the named `c6f2-request14-adoption` gate with
+   competing-creator, special-file, reverse-cleanup, and exact owned-orphan evidence. It uses no
+   check-then-create, delete-before-rename, or undeclared native workaround.
 10. **Request 16 — borrowed sum-payload projection.** C6c2's settled borrowed signature must inspect
    optional owned records without consuming or cloning them. Align PR #857 shipped the finite
    borrowed sum projection, and `c6-borrowed-option-adoption` now passes through the shared real C6
@@ -2179,7 +2181,7 @@ when it creates a new retained record, while an attestation always contributes o
 invocation. The maximum is derived from 2 preflight records, 4,096 snapshot requests, 4,096
 snapshot results, 64 task-input snapshots, and 2,048 attestations. `trace_digest_sha256` is the
 SHA-256 of the ordered byte preimage
-`<ordinal decimal> SP <artifact kind> SP <record content_sha256> LF` for every such trace record
+`<one-based ordinal decimal> SP <artifact kind> SP <record content_sha256> LF` for every such trace record
 observed before the result-size failure; the preimage is streamed and is not persisted. The
 `RESULT_TOO_LARGE` result has `status: ERROR`, `error_code: RESULT_TOO_LARGE`, `trace_failure: Some`,
 `gate_eligible: false`, an established `evaluation_id` and `scope`, and only the bounded error,
@@ -3168,6 +3170,10 @@ review rather than helper-only pull requests.
    merged. This capability may proceed without C6e because its fixed adapter does not call a model
    provider. It is complete only when the lifecycle consumes an evaluator-produced artifact through
    the existing contained task runner.
+   This wave deliberately exceeds roughly 1,000 hand-written lines because its trusted helpers,
+   retained execution trace, pair publication, and lifecycle consumer form one strict proof chain.
+   Splitting any helper from the evaluator would expose a dormant security boundary and duplicate
+   the source, process, snapshot, and cleanup fixtures without leaving a useful stable consumer.
 3. **C6-MEASURED — provider proposal and measured acceptance.** Complete C6e, C6g1, and C6g2 after
    Requests 2 and 5 and the shared persistence/process prerequisites are adopted. Deliver the
    bounded provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and

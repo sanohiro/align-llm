@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Focused C6f1 source-verifier owner tests."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+HELPER = ROOT / "scripts" / "prompt-source-verifier.py"
+GIT = Path("/usr/bin/git")
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def canonical_digest_item(value):
+    if isinstance(value, dict):
+        return {key: canonical_digest_item(child) for key, child in value.items() if child is not None}
+    if isinstance(value, list):
+        return [canonical_digest_item(child) for child in value]
+    return value
+
+
+def bind(value):
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(canonical(canonical_digest_item(value))).hexdigest()
+
+
+def git(repository: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        [str(GIT), *arguments], cwd=repository, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, check=True,
+    )
+    return completed.stdout.strip()
+
+
+def repository(root: Path, name: str) -> tuple[Path, str]:
+    path = root / name
+    path.mkdir()
+    git(path, "init", "-q")
+    git(path, "config", "user.name", "C6 Fixture")
+    git(path, "config", "user.email", "c6@example.invalid")
+    (path / "source.txt").write_text(name)
+    git(path, "add", "source.txt")
+    git(path, "commit", "-qm", "fixture")
+    return path, git(path, "rev-parse", "HEAD")
+
+
+def request(llm: Path, llm_head: str, align: Path, align_head: str, corpus: Path, corpus_head: str):
+    value = {
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_SOURCE_VERIFIER_REQUEST",
+        "mode": "EVALUATION",
+        "align_llm_repository_path": str(llm),
+        "expected_align_llm_commit": llm_head,
+        "tested_align_llm_head": None,
+        "align_repository_path": str(align),
+        "expected_align_revision": align_head,
+        "corpus_source_path": str(corpus),
+        "corpus_source_kind": "GIT_COMMIT",
+        "corpus_file_set_manifest_path": None,
+        "expected_corpus_source_repository_id": "fixture/corpus",
+        "expected_corpus_source_sha256": corpus_head,
+        "git_executable_path": str(GIT),
+        "git_executable_sha256": hashlib.sha256(GIT.read_bytes()).hexdigest(),
+        "content_sha256": "",
+    }
+    bind(value)
+    return value
+
+
+def invoke(root: Path, value) -> tuple[int, dict | None]:
+    request_path = root / "request.json"
+    result_path = root / "result.json"
+    if result_path.exists():
+        result_path.unlink()
+    request_path.write_bytes(canonical(value))
+    completed = subprocess.run(
+        [str(HELPER), "--source-verifier-request", str(request_path), "--result", str(result_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    result = json.loads(result_path.read_text()) if result_path.exists() else None
+    return completed.returncode, result
+
+
+def require(condition: bool, message: str):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="prompt-source-verifier-") as directory:
+        root = Path(directory)
+        llm, llm_head = repository(root, "llm")
+        align, align_head = repository(root, "align")
+        corpus, corpus_head = repository(root, "corpus")
+        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        code, result = invoke(root, value)
+        require(code == 0 and result is not None, "valid source verification failed")
+        require(result["status"] == "COMPLETE", "valid verification is not complete")
+        require(result["align_llm_reachability"] == "VERIFIED", "align-llm was not verified")
+        require(result["align_reachability"] == "VERIFIED", "Align was not verified")
+        require(result["corpus_reachability"] == "VERIFIED", "corpus was not verified")
+
+        git(llm, "remote", "add", "origin", "https://example.invalid/fixture.git")
+        git(llm, "config", "branch.fixture.remote", "origin")
+        git(llm, "config", "branch.fixture.merge", "refs/heads/main")
+        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        code, result = invoke(root, value)
+        require(
+            code == 0 and result["align_llm_reachability"] == "VERIFIED",
+            "ordinary clone remote and branch metadata was rejected",
+        )
+
+        git(llm, "config", "include.path", str(root / "never-read.config"))
+        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        code, result = invoke(root, value)
+        require(
+            code == 0 and result["align_llm_reachability"] == "UNVERIFIED",
+            "local include configuration was trusted",
+        )
+        git(llm, "config", "--unset", "include.path")
+
+        (llm / "dirty.txt").write_text("dirty")
+        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        code, result = invoke(root, value)
+        require(code == 0 and result["align_llm_reachability"] == "UNVERIFIED", "dirty source was verified")
+        (llm / "dirty.txt").unlink()
+
+        sentinel = root / "sentinel"
+        git(llm, "config", "core.fsmonitor", f"touch {sentinel}")
+        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        code, result = invoke(root, value)
+        require(code == 0 and result["align_llm_reachability"] == "UNVERIFIED", "command-bearing config was verified")
+        require(not sentinel.exists(), "command-bearing local Git config executed")
+        git(llm, "config", "--unset", "core.fsmonitor")
+
+        git(corpus, "replace", corpus_head, corpus_head)
+        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        code, result = invoke(root, value)
+        require(code == 0 and result["corpus_reachability"] == "UNVERIFIED", "replacement namespace was verified")
+        git(corpus, "replace", "-d", corpus_head)
+
+        packed, packed_head = repository(root, "packed-replacement")
+        (packed / "source.txt").write_text("replacement target")
+        git(packed, "add", "source.txt")
+        git(packed, "commit", "-qm", "replacement target")
+        replacement_target = git(packed, "rev-parse", "HEAD")
+        git(packed, "reset", "--hard", "-q", packed_head)
+        git(packed, "replace", packed_head, replacement_target)
+        git(packed, "pack-refs", "--all", "--prune")
+        loose_replacement = packed / ".git/refs/replace" / packed_head
+        packed_refs = packed / ".git/packed-refs"
+        packed_text = packed_refs.read_text() if packed_refs.exists() else "# pack-refs with: peeled fully-peeled sorted \n"
+        packed_refs.write_text(packed_text + f"{replacement_target} refs/replace/{packed_head}\n")
+        if loose_replacement.exists():
+            loose_replacement.unlink()
+        if loose_replacement.parent.exists():
+            loose_replacement.parent.rmdir()
+        require(not (packed / ".git/refs/replace").exists(), "replacement fixture did not become packed")
+        packed_value = request(llm, llm_head, align, align_head, packed, packed_head)
+        code, result = invoke(root, packed_value)
+        require(code == 0 and result["corpus_reachability"] == "UNVERIFIED", "packed replacement ref was verified")
+
+        gate, evaluated_head = repository(root, "gate")
+        (gate / "source.txt").write_text("gate head")
+        git(gate, "add", "source.txt")
+        git(gate, "commit", "-qm", "gate head")
+        gate_head = git(gate, "rev-parse", "HEAD")
+        gate_value = request(gate, evaluated_head, align, align_head, corpus, corpus_head)
+        gate_value["mode"] = "GATE"
+        gate_value["tested_align_llm_head"] = gate_head
+        bind(gate_value)
+        code, result = invoke(root, gate_value)
+        require(
+            code == 0
+            and result["align_llm_reachability"] == "VERIFIED"
+            and result["align_llm_observed_head"] == gate_head,
+            "gate head and evaluated-commit ancestry were conflated",
+        )
+        gate_value["expected_align_llm_commit"] = "0" * 40
+        bind(gate_value)
+        code, result = invoke(root, gate_value)
+        require(
+            code == 0
+            and result["align_llm_reachability"] == "UNVERIFIED"
+            and result["align_llm_observed_head"] == gate_head,
+            "gate accepted a non-ancestor evaluated commit",
+        )
+
+        file_set = root / "file-set"
+        file_set.mkdir()
+        entries = [(b"ordinary.txt", b"ordinary"), (b"raw-\xff.txt", b"raw")]
+        directory_fd = os.open(file_set, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for name, content in entries:
+                descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640, dir_fd=directory_fd)
+                try:
+                    os.write(descriptor, content)
+                finally:
+                    os.close(descriptor)
+        finally:
+            os.close(directory_fd)
+        manifest = bytearray(b"ALIGN-LLM-CORPUS-FILE-SET-V1\n2\n")
+        for name, content in sorted(entries):
+            metadata = os.stat(file_set / os.fsdecode(name), follow_symlinks=False)
+            mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}".encode()
+            digest = hashlib.sha256(content).hexdigest().encode()
+            manifest.extend(mode + b" " + str(len(name)).encode() + b" " + name + b"\0F " + digest + b"\n")
+        manifest_path = root / "file-set.manifest"
+        manifest_path.write_bytes(manifest)
+        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        value.update(
+            corpus_source_path=str(file_set), corpus_source_kind="FILE_SET",
+            corpus_file_set_manifest_path=str(manifest_path), expected_corpus_source_repository_id="",
+            expected_corpus_source_sha256=hashlib.sha256(manifest).hexdigest(),
+        )
+        bind(value)
+        code, result = invoke(root, value)
+        require(code == 0 and result["corpus_reachability"] == "VERIFIED", "raw-byte file set was not verified")
+        (file_set / "ordinary.txt").write_text("tampered")
+        code, result = invoke(root, value)
+        require(code == 0 and result["corpus_reachability"] == "UNVERIFIED", "tampered file set was verified")
+
+        noisy_git = root / "noisy-git"
+        noisy_git.write_text("#!/bin/sh\nhead -c 262145 /dev/zero\n")
+        noisy_git.chmod(0o755)
+        value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        value["git_executable_path"] = str(noisy_git)
+        value["git_executable_sha256"] = hashlib.sha256(noisy_git.read_bytes()).hexdigest()
+        bind(value)
+        code, result = invoke(root, value)
+        require(code == 0 and result["status"] == "COMPLETE", "bounded Git failure did not produce a result")
+        require(
+            result["align_llm_reachability"] == "UNVERIFIED"
+            and result["align_reachability"] == "UNVERIFIED"
+            and result["corpus_reachability"] == "UNVERIFIED",
+            "over-cap Git output was trusted",
+        )
+
+        tampered = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        tampered["expected_align_revision"] = "0" * 40
+        code, result = invoke(root, tampered)
+        require(code != 0 and result is None, "tampered request digest was accepted")
+
+    print("prompt source verifier: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f"prompt source verifier: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)

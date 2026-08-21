@@ -1,0 +1,762 @@
+#!/usr/bin/env python3
+"""Build a two-task fixed corpus and verify the evaluator-produced artifact pair."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+SOURCE = Path(__file__).resolve().parent.parent
+ALIGNC = SOURCE / "scripts" / "alignc"
+GIT = Path("/usr/bin/git")
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def canonical_digest_item(value):
+    if isinstance(value, dict):
+        return {key: canonical_digest_item(child) for key, child in value.items() if child is not None}
+    if isinstance(value, list):
+        return [canonical_digest_item(child) for child in value]
+    return value
+
+
+def bind(value):
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(canonical(canonical_digest_item(value))).hexdigest()
+    return value
+
+
+def store(project: Path, relative: str, value):
+    path = project / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical(value))
+    return value
+
+
+def text(kind: str, identifier: str, value: str):
+    return bind({
+        "schema_version": 1, "artifact_kind": kind, "artifact_id": identifier,
+        "text": value, "content_sha256": "",
+    })
+
+
+def variant(identifier: str, candidate: str, base, repo, learned: str):
+    return bind({
+        "schema_version": 1, "artifact_kind": "PROMPT_VARIANT", "variant_id": identifier,
+        "base_prompt": base, "repo_prompt": repo, "learned_prompt_append": learned,
+        "context_policy": {
+            "include_patch_evaluation": False, "include_failure_memory": False,
+            "include_diagnostics": False, "max_patch_evaluation_bytes": 0,
+            "max_failure_events": 0, "max_failure_context_bytes": 0,
+            "max_diagnostic_bytes_per_stream": 0,
+        },
+        "candidate_id": candidate, "content_sha256": "",
+    })
+
+
+def reference(kind: str, path: str, identifier: str, digest: str):
+    return {"artifact_kind": kind, "path": path, "artifact_id": identifier, "content_sha256": digest}
+
+
+def raw_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def git_head(path: Path) -> str:
+    return subprocess.run(
+        [str(GIT), "-C", str(path), "rev-parse", "HEAD"], text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+    ).stdout.strip()
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def verify_compact_overflow_boundary() -> None:
+    module_path = SOURCE / "scripts" / "prompt-evaluate.py"
+    spec = importlib.util.spec_from_file_location("prompt_evaluate_boundary", module_path)
+    require(spec is not None and spec.loader is not None, "evaluator helper could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    request_record = bind({
+        "schema_version": 1,
+        "artifact_kind": "WORKSPACE_PREFLIGHT_REQUEST",
+        "content_sha256": "",
+    })
+    result_record = bind({
+        "schema_version": 1,
+        "artifact_kind": "WORKSPACE_PREFLIGHT_RESULT",
+        "content_sha256": "",
+    })
+    attestation = bind({
+        "schema_version": 1,
+        "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
+        "content_sha256": "",
+    })
+    oversized = {
+        "evaluation_id": "overflow-evaluation",
+        "scope": {"scope": "retained"},
+        "sample_count": 2,
+        "workspace_preflight_request": request_record,
+        "workspace_preflight": result_record,
+        "snapshot_requests": [],
+        "snapshot_results": [],
+        "input_snapshots": [],
+        "snapshot_attestations": [attestation],
+        "tasks": [{"padding": "x" * 128}],
+        "rows": [],
+        "task_aggregates": [],
+        "serious_regression_reasons": [],
+    }
+    expected_inputs = [{"retained": False}]
+    require(not module.canonical_fits(oversized, 32), "oversized-result detector accepted a cap breach")
+    module.compact_oversized_result(oversized, expected_inputs)
+    trace_preimage = (
+        f"1 WORKSPACE_PREFLIGHT_REQUEST {request_record['content_sha256']}\n"
+        f"2 WORKSPACE_PREFLIGHT_RESULT {result_record['content_sha256']}\n"
+        f"3 RUN_SNAPSHOT_ATTESTATION {attestation['content_sha256']}\n"
+    ).encode()
+    trace = oversized["trace_failure"]
+    require(
+        oversized["status"] == "ERROR"
+        and oversized["error_code"] == "RESULT_TOO_LARGE"
+        and oversized["scope"] == {"scope": "retained"}
+        and oversized["tasks"] == []
+        and oversized["rows"] == []
+        and oversized["environment"] is None
+        and trace["attempted_invocation_count"] == 1
+        and trace["trace_record_count"] == 3
+        and trace["trace_digest_sha256"] == hashlib.sha256(trace_preimage).hexdigest()
+        and expected_inputs == [],
+        "compact oversized-result envelope changed",
+    )
+
+
+def copy_runtime(project: Path) -> None:
+    for relative in (
+        "scripts/prompt-evaluate.py", "scripts/prompt-fixed-adapter.py", "scripts/prompt-snapshot-helper.py",
+        "scripts/prompt-source-verifier.py", "eval/runners/run-coding-task.py",
+        "eval/tasks/coding-v1/python-inclusive-range/task.json",
+        "eval/baselines/patches/python-inclusive-range.patch",
+        "eval/baselines/patches/python-inclusive-range-parent.patch",
+    ):
+        destination = project / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SOURCE / relative, destination)
+    shutil.copytree(
+        SOURCE / "eval/fixtures/python-inclusive-range-v1",
+        project / "eval/fixtures/python-inclusive-range-v1",
+    )
+
+
+def main() -> int:
+    verify_compact_overflow_boundary()
+    with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
+        root = Path(directory)
+        project = root / "project"
+        project.mkdir()
+        copy_runtime(project)
+        workspace = project / "workspace"
+        workspace.mkdir()
+
+        adapter_runtime = "PYTHON:" + raw_digest(project / "scripts/prompt-fixed-adapter.py")
+        snapshot_runtime = "PYTHON:" + raw_digest(project / "scripts/prompt-snapshot-helper.py")
+        git_digest = raw_digest(GIT)
+        source_helper_digest = raw_digest(project / "scripts/prompt-source-verifier.py")
+
+        control = bind({
+            "schema_version": 1, "artifact_kind": "EVALUATION_PROVIDER_CONTROL",
+            "provider_control_id": "fixture-control", "provider_kind": "FIXTURE",
+            "endpoint": "fixture://inclusive-range", "endpoint_id": "fixture-endpoint",
+            "model": "inclusive-range-v1", "api_key_env": None, "tokenize_endpoint": None,
+            "timeout_ns": 30_000_000_000, "max_response_bytes": 65_536, "content_sha256": "",
+        })
+        store(project, "artifacts/provider-control.json", control)
+        generation = bind({
+            "schema_version": 1, "artifact_kind": "GENERATION_POLICY",
+            "generation_policy_id": "fixture-generation", "evaluation_provider_kind": "FIXTURE",
+            "evaluation_provider_endpoint_id": "fixture-endpoint",
+            "evaluation_provider_model": "inclusive-range-v1",
+            "provider_control_sha256": control["content_sha256"], "provider_service_revision": "fixture-v1",
+            "max_prompt_bytes": 65_536, "max_tokens": 1_024, "temperature_micros": 0,
+            "seed_mode": "PAIRED_FIXED", "seed_base": 100, "content_sha256": "",
+        })
+        store(project, "artifacts/generation-policy.json", generation)
+        acceptance = bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_ACCEPTANCE_POLICY", "policy_id": "fixture-acceptance",
+            "minimum_task_count": 2, "minimum_samples_per_variant": 2,
+            "minimum_completion_gain_count": 1, "minimum_time_improvement_ppm": 1,
+            "maximum_time_regression_ppm": 100_000, "maximum_repair_loop_regression_count": 0,
+            "content_sha256": "",
+        })
+        store(project, "artifacts/acceptance.json", acceptance)
+        environment_policy = bind({
+            "schema_version": 1, "artifact_kind": "ENVIRONMENT_POLICY", "policy_id": "fixture-environment",
+            "allowed_variables": [
+                {"name": "LANG", "non_secret_value": "C", "source": "FIXED", "precedence": 0},
+                {"name": "LC_ALL", "non_secret_value": "C", "source": "FIXED", "precedence": 1},
+                {"name": "PATH", "non_secret_value": "/usr/bin:/bin", "source": "FIXED", "precedence": 2},
+                {"name": "PYTHONDONTWRITEBYTECODE", "non_secret_value": "1", "source": "FIXED", "precedence": 3},
+                {"name": "PYTHONNOUSERSITE", "non_secret_value": "1", "source": "FIXED", "precedence": 4},
+            ],
+            "executable_paths": ["/usr/bin/python3"], "locale": "C", "content_sha256": "",
+        })
+        store(project, "artifacts/environment.json", environment_policy)
+        source_policy = bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_SOURCE_VERIFIER_POLICY", "policy_id": "fixture-source",
+            "helper_path": "scripts/prompt-source-verifier.py", "helper_sha256": source_helper_digest,
+            "helper_runtime": "PYTHON:" + source_helper_digest, "git_executable_sha256": git_digest,
+            "content_sha256": "",
+        })
+        store(project, "artifacts/source-policy.json", source_policy)
+
+        align_revision = (SOURCE / ".align-revision").read_text().strip()
+        source_head = git_head(SOURCE)
+        corpus_revision = bind({
+            "schema_version": 1, "artifact_kind": "CORPUS_REVISION", "source_kind": "GIT_COMMIT",
+            "source_repository_id": "align-llm-fixture", "source_sha256": source_head, "content_sha256": "",
+        })
+        base = text("BASE_PROMPT", "base-v1", "Return a minimal correct patch.")
+        repo = text("REPO_PROMPT", "repo-v1", "Respect the repository validation command.")
+        parent_variant = variant("parent-v1", "baseline", base, repo, "")
+        candidate_variant = variant("candidate-v1", "candidate", base, repo, "Include the inclusive stop value.")
+        scope = bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_SCOPE", "repo_id": "inclusive-range",
+            "repo_profile_revision": "fixture-v1", "align_revision": align_revision,
+            "corpus_id": "prompt-fixed-v1", "corpus_revision": corpus_revision,
+            "evaluation_provider_kind": "FIXTURE", "evaluation_provider_model": "inclusive-range-v1",
+            "generation_policy_sha256": generation["content_sha256"],
+            "acceptance_policy_sha256": acceptance["content_sha256"],
+            "base_prompt_sha256": base["content_sha256"], "repo_prompt_sha256": repo["content_sha256"],
+            "content_sha256": "",
+        })
+        activation = bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_ACTIVATION", "activation_id": "baseline-v1/activation",
+            "operation": "BASELINE", "scope": scope, "parent_activation_id": "",
+            "parent_activation_sha256": "", "effective_variant": parent_variant,
+            "accepted_evaluation_id": "", "accepted_evaluation_sha256": "",
+            "rollback_target_activation_id": "", "rollback_target_activation_sha256": "",
+            "decision_reason": "", "content_sha256": "",
+        })
+        parent = bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_ACTIVATION_RESULT", "decision_id": "baseline-v1",
+            "status": "BASELINED", "error_code": "NONE", "error": "", "activation": activation,
+            "content_sha256": "",
+        })
+        store(project, "artifacts/parent.json", parent)
+        parent_reference = reference(
+            "PROMPT_ACTIVATION_RESULT", "artifacts/parent.json", "baseline-v1", parent["content_sha256"]
+        )
+        experiment = bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_EXPERIMENT_RESULT", "experiment_id": "experiment-v1",
+            "status": "PROPOSED", "error_code": "NONE", "error": "", "parent_activation": parent_reference,
+            "scope": scope, "opportunity": reference("OPPORTUNITY", "artifacts/opportunity.json", "opportunity-v1", "a" * 64),
+            "proposal_provider_kind": "LOCAL_OPENAI", "proposal_provider_endpoint_id": "fixture-proposal",
+            "proposal_provider_model": "fixture-proposal", "proposal_elapsed_ns": 0,
+            "proposal_status_code": None, "proposal_summary": "deterministic candidate",
+            "candidate_variant": candidate_variant, "bounded_provider_output": "", "content_sha256": "",
+        })
+        store(project, "artifacts/experiment.json", experiment)
+
+        artifact_paths = (
+            "scripts/prompt-fixed-adapter.py", "scripts/prompt-snapshot-helper.py",
+            "eval/runners/run-coding-task.py", "eval/tasks/coding-v1/python-inclusive-range/task.json",
+            "eval/baselines/patches/python-inclusive-range.patch",
+            "eval/baselines/patches/python-inclusive-range-parent.patch",
+        )
+        expectations = [
+            {"path": relative, "kind": "FILE", "expected_sha256": raw_digest(project / relative)}
+            for relative in artifact_paths
+        ]
+        task_files = []
+        for number in (1, 2):
+            task_id = f"inclusive-range-{number}"
+            prompt = text("TASK_PROMPT", f"task-prompt-{number}", "Fix inclusive_total so the stop value is included.")
+            prompt_path = f"artifacts/task-prompt-{number}.json"
+            store(project, prompt_path, prompt)
+            empty = text("PATCH_EVALUATION", f"patch-{number}", "")
+            memory = text("FAILURE_MEMORY_JSONL", f"memory-{number}", "")
+            stdout = text("DIAGNOSTIC_STDOUT", f"stdout-{number}", "")
+            stderr = text("DIAGNOSTIC_STDERR", f"stderr-{number}", "")
+            context = bind({
+                "schema_version": 1, "artifact_kind": "CONTEXT_SOURCES", "task_id": task_id,
+                "patch_evaluation": empty, "failure_memory_jsonl": memory,
+                "diagnostic_stdout": stdout, "diagnostic_stderr": stderr, "content_sha256": "",
+            })
+            context_path = f"artifacts/context-{number}.json"
+            store(project, context_path, context)
+            task = bind({
+                "schema_version": 1, "artifact_kind": "PROMPT_EVALUATION_TASK", "task_id": task_id,
+                "repo_id": "inclusive-range", "repo_revision": source_head,
+                "repo_path": "eval/fixtures/python-inclusive-range-v1/repository", "require_clean_repo": False,
+                "cmd": "/usr/bin/python3", "argv": ["/usr/bin/python3", "scripts/prompt-fixed-adapter.py"],
+                "snapshot_cmd": "/usr/bin/python3",
+                "snapshot_argv": ["/usr/bin/python3", "scripts/prompt-snapshot-helper.py"],
+                "measurement_adapter_runtime": adapter_runtime, "snapshot_helper_runtime": snapshot_runtime,
+                "cwd": ".", "timeout_ns": 30_000_000_000, "task_prompt_path": prompt_path,
+                "context_sources_path": context_path, "generation_policy_path": "artifacts/generation-policy.json",
+                "provider_control_path": "artifacts/provider-control.json",
+                "environment_policy_path": "artifacts/environment.json", "artifacts": expectations,
+                "regression_limits": {
+                    "maximum_unrelated_diff_count": 0, "maximum_patch_size_bytes": 16_384,
+                    "maximum_public_api_change_count": 0, "maximum_repair_loops": 2,
+                    "maximum_benchmark_regression_ppm": None,
+                },
+                "content_sha256": "",
+            })
+            task_path = f"artifacts/task-{number}.json"
+            store(project, task_path, task)
+            task_files.append(task_path)
+        corpus = bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_EVALUATION_CORPUS", "corpus_id": "prompt-fixed-v1",
+            "corpus_revision": corpus_revision, "task_files": task_files, "content_sha256": "",
+        })
+        store(project, "artifacts/corpus.json", corpus)
+        preflight = bind({
+            "schema_version": 1, "artifact_kind": "WORKSPACE_PREFLIGHT_REQUEST",
+            "evaluation_id": "evaluation-v1", "project_root": str(project), "workspace_path": str(workspace),
+            "content_sha256": "",
+        })
+        store(project, "artifacts/preflight.json", preflight)
+        request = {
+            "schema_version": 1, "artifact_kind": "PROMPT_EVALUATE_REQUEST", "evaluation_id": "evaluation-v1",
+            "project_root": str(project), "experiment_path": "artifacts/experiment.json",
+            "parent_activation_path": "artifacts/parent.json", "corpus_path": "artifacts/corpus.json",
+            "sample_count": 2, "acceptance_policy_path": "artifacts/acceptance.json",
+            "workspace_path": str(workspace), "workspace_preflight_path": "artifacts/preflight.json",
+            "verifier_align_llm_repository_path": str(SOURCE), "verifier_align_llm_commit": source_head,
+            "verifier_align_repository_path": str((SOURCE / "../align").resolve()),
+            "verifier_align_revision": align_revision, "verifier_corpus_source_path": str(SOURCE),
+            "verifier_corpus_source_kind": "GIT_COMMIT", "verifier_corpus_file_set_manifest_path": None,
+            "verifier_corpus_source_repository_id": "align-llm-fixture",
+            "verifier_corpus_source_sha256": source_head,
+            "verifier_source_policy_path": "artifacts/source-policy.json",
+            "verifier_source_policy_sha256": source_policy["content_sha256"],
+            "verifier_git_executable_path": str(GIT), "evaluation_evidence_path": "evidence.json",
+        }
+        request_path = project / "evaluate-request.json"
+        request_path.write_bytes(canonical(request))
+        result_path = project / "result.json"
+        evidence_path = project / "evidence.json"
+        build_root = root / "build"
+        build_root.mkdir()
+        built = subprocess.run(
+            [str(ALIGNC), "build", str(SOURCE / "src/main.align")], cwd=build_root,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(built.returncode == 0, f"evaluator command did not compile: {built.stderr.decode()[-4096:]}")
+        invalid = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "../escape.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(invalid.returncode != 0 and not (root / "escape.json").exists(), "unsafe result path was accepted")
+        invalid_evidence_request = dict(request)
+        invalid_evidence_request["evaluation_evidence_path"] = "../escape-evidence.json"
+        request_path.write_bytes(canonical(invalid_evidence_request))
+        invalid_evidence = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "invalid-evidence-result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        invalid_evidence_result_path = project / "invalid-evidence-result.json"
+        require(invalid_evidence.returncode != 0, "unsafe evidence path was accepted")
+        require(
+            invalid_evidence_result_path.exists(),
+            f"unsafe evidence path did not publish result-only: stdout={invalid_evidence.stdout!r} stderr={invalid_evidence.stderr!r}",
+        )
+        invalid_evidence_result = json.loads(invalid_evidence_result_path.read_text())
+        require(
+            invalid_evidence_result["status"] == "INVALID_INPUT"
+            and invalid_evidence_result["error_code"] == "INVALID_PATH"
+            and not (root / "escape-evidence.json").exists(),
+            "unsafe evidence path result-only shape changed",
+        )
+        invalid_evidence_result_path.unlink()
+        request_path.write_bytes(canonical(request))
+
+        missing_input_request = dict(request)
+        missing_input_request["experiment_path"] = "artifacts/missing-experiment.json"
+        request_path.write_bytes(canonical(missing_input_request))
+        missing_input_result_path = project / "missing-input-result.json"
+        missing_input = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), missing_input_result_path.name],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        missing_result = json.loads(missing_input_result_path.read_text())
+        require(
+            missing_input.returncode != 0
+            and missing_result["status"] == "INVALID_INPUT"
+            and missing_result["error_code"] == "INPUT_NOT_FOUND"
+            and not evidence_path.exists()
+            and not any(os.scandir(workspace)),
+            "missing referenced input did not publish side-effect-free result-only",
+        )
+        missing_input_result_path.unlink()
+
+        experiment_path = project / "artifacts/experiment.json"
+        original_experiment_bytes = experiment_path.read_bytes()
+        tampered_experiment = json.loads(original_experiment_bytes)
+        tampered_experiment["proposal_summary"] = "tampered without digest update"
+        experiment_path.write_bytes(canonical(tampered_experiment))
+        request_path.write_bytes(canonical(request))
+        tampered_input_result_path = project / "tampered-input-result.json"
+        tampered_input = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), tampered_input_result_path.name],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        tampered_result = json.loads(tampered_input_result_path.read_text())
+        require(
+            tampered_input.returncode != 0
+            and tampered_result["status"] == "INVALID_INPUT"
+            and tampered_result["error_code"] == "INVALID_DIGEST"
+            and not evidence_path.exists()
+            and not any(os.scandir(workspace)),
+            "tampered referenced input did not publish INVALID_DIGEST result-only",
+        )
+        tampered_input_result_path.unlink()
+        experiment_path.write_bytes(original_experiment_bytes)
+
+        evidence_path.write_bytes(b"occupied evidence sentinel")
+        occupied_evidence_result_path = project / "occupied-evidence-result.json"
+        occupied_evidence = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), occupied_evidence_result_path.name],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            occupied_evidence.returncode != 0
+            and json.loads(occupied_evidence_result_path.read_text())["error_code"] == "INVALID_PATH"
+            and evidence_path.read_bytes() == b"occupied evidence sentinel",
+            "occupied evidence destination ownership changed",
+        )
+        occupied_evidence_result_path.unlink()
+        evidence_path.unlink()
+
+        alias_request = dict(request)
+        alias_request["evaluation_evidence_path"] = "alias-result.json"
+        request_path.write_bytes(canonical(alias_request))
+        alias_result_path = project / "alias-result.json"
+        alias = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), alias_result_path.name],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            alias.returncode != 0
+            and json.loads(alias_result_path.read_text())["error_code"] == "INVALID_PATH",
+            "result/evidence alias was not result-only INVALID_PATH",
+        )
+        alias_result_path.unlink()
+        request_path.write_bytes(canonical(request))
+
+        workspace_sentinel = workspace / "caller-owned-sentinel"
+        workspace_sentinel.write_bytes(b"sentinel")
+        unsafe_workspace = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        unsafe_result = json.loads(result_path.read_text())
+        require(
+            unsafe_workspace.returncode != 0
+            and unsafe_result["status"] == "ERROR"
+            and unsafe_result["error_code"] == "WORKSPACE_UNSAFE"
+            and workspace_sentinel.read_bytes() == b"sentinel",
+            "unsafe workspace did not publish a non-mutating terminal pair",
+        )
+        unsafe_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            unsafe_verified.returncode == 0 and unsafe_verified.stdout.strip() == "NONCOMPLETE_ERROR",
+            "unsafe workspace pair did not pass strict verification",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
+        workspace_sentinel.unlink()
+
+        original_task_documents = [json.loads((project / task_path).read_text()) for task_path in task_files]
+        mismatch_helper = project / "scripts/mismatch-snapshot-helper.py"
+        mismatch_source = (project / "scripts/prompt-snapshot-helper.py").read_text()
+        mismatch_source = mismatch_source.replace(
+            'status="MATCH",\n            error_code="NONE",\n            error="",',
+            'status="MISMATCH",\n            error_code="CONTENT",\n            error="forced snapshot mismatch",',
+            1,
+        )
+        require(mismatch_source != (project / "scripts/prompt-snapshot-helper.py").read_text(), "snapshot mismatch fixture did not patch")
+        mismatch_helper.write_text(mismatch_source)
+        mismatch_helper.chmod(0o755)
+        mismatch_digest = raw_digest(mismatch_helper)
+        for task_path in task_files:
+            task_document = json.loads((project / task_path).read_text())
+            task_document["snapshot_argv"] = ["/usr/bin/python3", "scripts/mismatch-snapshot-helper.py"]
+            task_document["snapshot_helper_runtime"] = "PYTHON:" + mismatch_digest
+            task_document["artifacts"].append({
+                "path": "scripts/mismatch-snapshot-helper.py", "kind": "FILE", "expected_sha256": mismatch_digest,
+            })
+            bind(task_document)
+            store(project, task_path, task_document)
+        snapshot_mismatch = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        mismatch_result = json.loads(result_path.read_text())
+        require(
+            snapshot_mismatch.returncode != 0
+            and mismatch_result["error_code"] == "SNAPSHOT_MISMATCH"
+            and mismatch_result["snapshot_attestations"][0]["status"] == "PRECHECK_FAILED",
+            "snapshot mismatch did not retain its failed precheck",
+        )
+        mismatch_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            mismatch_verified.returncode == 0 and mismatch_verified.stdout.strip() == "NONCOMPLETE_ERROR",
+            "snapshot mismatch pair did not pass strict verification",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
+        for task_path, task_document in zip(task_files, original_task_documents):
+            store(project, task_path, task_document)
+
+        drifting_adapter = project / "scripts/drifting-adapter.py"
+        drifting_source = (project / "scripts/prompt-fixed-adapter.py").read_text().replace(
+            "        write_exclusive(values.result, measurement(request, rendered, policy, control))\n",
+            "        write_exclusive(values.result, measurement(request, rendered, policy, control))\n"
+            "        with values.prompt_variant.open('ab') as stream:\n"
+            "            stream.write(b'\\n')\n",
+            1,
+        )
+        require(drifting_source != (project / "scripts/prompt-fixed-adapter.py").read_text(), "drift fixture did not patch")
+        drifting_adapter.write_text(drifting_source)
+        drifting_adapter.chmod(0o755)
+        drifting_digest = raw_digest(drifting_adapter)
+        for task_path in task_files:
+            task_document = json.loads((project / task_path).read_text())
+            task_document["argv"] = ["/usr/bin/python3", "scripts/drifting-adapter.py"]
+            task_document["measurement_adapter_runtime"] = "PYTHON:" + drifting_digest
+            task_document["artifacts"].append({
+                "path": "scripts/drifting-adapter.py", "kind": "FILE", "expected_sha256": drifting_digest,
+            })
+            bind(task_document)
+            store(project, task_path, task_document)
+        drifted = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        drift_result = json.loads(result_path.read_text())
+        require(
+            drifted.returncode != 0
+            and drift_result["error_code"] == "INPUT_DRIFT"
+            and drift_result["snapshot_attestations"][0]["status"] == "POSTCHECK_DRIFT",
+            "postcheck drift did not retain its terminal attestation",
+        )
+        drift_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            drift_verified.returncode == 0 and drift_verified.stdout.strip() == "NONCOMPLETE_ERROR",
+            "postcheck drift pair did not pass strict verification",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
+        for task_path, task_document in zip(task_files, original_task_documents):
+            store(project, task_path, task_document)
+
+        error_adapter = project / "scripts/error-adapter.py"
+        error_source = (project / "scripts/prompt-fixed-adapter.py").read_text().replace(
+            "    bind_digest(value)\n    return value\n\n\ndef write_exclusive",
+            "    value.update(status='ERROR', failure_kind='ADAPTER', build_status='ERROR', "
+            "test_status='NOT_RUN', generation_to_passing_patch_ns=None, "
+            "diagnostic_summary='adapter terminal error')\n"
+            "    bind_digest(value)\n    return value\n\n\ndef write_exclusive",
+            1,
+        )
+        require(error_source != (project / "scripts/prompt-fixed-adapter.py").read_text(), "error fixture did not patch")
+        error_adapter.write_text(error_source)
+        error_adapter.chmod(0o755)
+        error_digest = raw_digest(error_adapter)
+        for task_path in task_files:
+            task_document = json.loads((project / task_path).read_text())
+            task_document["argv"] = ["/usr/bin/python3", "scripts/error-adapter.py"]
+            task_document["measurement_adapter_runtime"] = "PYTHON:" + error_digest
+            task_document["artifacts"].append({
+                "path": "scripts/error-adapter.py", "kind": "FILE", "expected_sha256": error_digest,
+            })
+            bind(task_document)
+            store(project, task_path, task_document)
+        adapter_error = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        adapter_error_result = json.loads(result_path.read_text())
+        require(
+            adapter_error.returncode != 0
+            and adapter_error_result["error_code"] == "ADAPTER_RESULT"
+            and len(adapter_error_result["rows"]) == 1
+            and adapter_error_result["rows"][0]["measurement"]["status"] == "ERROR"
+            and adapter_error_result["snapshot_attestations"][0]["status"] == "COMPLETE",
+            "terminal adapter measurement did not retain its valid row",
+        )
+        adapter_error_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            adapter_error_verified.returncode == 0 and adapter_error_verified.stdout.strip() == "NONCOMPLETE_ERROR",
+            "terminal adapter row did not pass strict prefix verification",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
+        for task_path, task_document in zip(task_files, original_task_documents):
+            store(project, task_path, task_document)
+
+        completed = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(completed.returncode == 0, f"evaluator failed: {completed.stderr.decode(errors='replace')}")
+        require(b"PUBLISHED" in completed.stdout and not completed.stderr, "evaluator command did not publish")
+        result = json.loads(result_path.read_text())
+        require(result["status"] == "IMPROVED" and result["gate_eligible"] is False, "fixture result status changed")
+        require([row["variant"] for row in result["rows"]] == [
+            "PARENT", "CANDIDATE", "CANDIDATE", "PARENT",
+            "PARENT", "CANDIDATE", "CANDIDATE", "PARENT",
+        ], "paired execution order changed")
+        verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            verified.returncode == 0,
+            f"strict evaluator verification failed (stage {verified.stdout.strip()}): {verified.stderr[-4096:]}",
+        )
+        require(
+            verified.stdout.strip() == "COMPLETE_INELIGIBLE",
+            f"fixture evaluation was not lifecycle-consumable: {verified.stdout.strip()}",
+        )
+        accept_request = {
+            "schema_version": 1, "artifact_kind": "PROMPT_ACCEPT_REQUEST", "decision_id": "accept-v1",
+            "project_root": str(project), "evaluation_path": "result.json",
+            "parent_activation_path": "artifacts/parent.json", "evaluation_evidence_path": "evidence.json",
+        }
+        accept_request_path = project / "accept-request.json"
+        accept_request_path.write_bytes(canonical(accept_request))
+        accept_result_path = project / "accept-result.json"
+        accepted = subprocess.run(
+            [str(build_root / "main"), "prompt", "accept", str(accept_request_path), str(accept_result_path)],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        accept_result = json.loads(accept_result_path.read_text()) if accept_result_path.exists() else {}
+        require(
+            accepted.returncode != 0 and b"INELIGIBLE" in accepted.stdout,
+            f"lifecycle did not consume fixture result: result={accept_result!r} stdout={accepted.stdout!r} stderr={accepted.stderr[-2048:]!r}",
+        )
+        require(accept_result["status"] == "INELIGIBLE", "lifecycle ineligibility artifact changed")
+        original_result = result_path.read_bytes()
+        original_evidence = evidence_path.read_bytes()
+        collision = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(collision.returncode != 0, "occupied evaluation outputs were accepted")
+        require(result_path.read_bytes() == original_result, "occupied result was replaced")
+        require(evidence_path.read_bytes() == original_evidence, "occupied evidence was replaced")
+        require(not any(os.scandir(workspace)), "evaluator left workspace artifacts")
+        require(not list(project.glob("*.prepared.*")), "evaluator left prepared artifacts")
+        require(not list(project.glob("*.tmp.*")), "evaluator left publication artifacts")
+
+        result_path.unlink()
+        evidence_path.unlink()
+        noisy_adapter = project / "scripts/noisy-adapter.py"
+        noisy_adapter.write_text("#!/usr/bin/python3\nimport sys\nsys.stdout.write('x')\n")
+        noisy_adapter.chmod(0o755)
+        noisy_digest = raw_digest(noisy_adapter)
+        for task_path in task_files:
+            task_document = json.loads((project / task_path).read_text())
+            task_document["argv"] = ["/usr/bin/python3", "scripts/noisy-adapter.py"]
+            task_document["measurement_adapter_runtime"] = "PYTHON:" + noisy_digest
+            task_document["artifacts"].append({
+                "path": "scripts/noisy-adapter.py", "kind": "FILE", "expected_sha256": noisy_digest,
+            })
+            bind(task_document)
+            store(project, task_path, task_document)
+        over_cap = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(over_cap.returncode != 0, "adapter stdout cap breach was accepted")
+        cap_result = json.loads(result_path.read_text())
+        require(
+            cap_result["status"] == "ERROR" and cap_result["error_code"] == "ADAPTER_PROCESS_OUTPUT",
+            "cap breach did not publish its terminal error",
+        )
+        cap_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            cap_verified.returncode == 0 and cap_verified.stdout.strip() == "NONCOMPLETE_ERROR",
+            "cap breach pair did not pass strict prefix verification",
+        )
+        require(not any(os.scandir(workspace)), "cap breach left workspace artifacts")
+        require(not list(project.glob("*.prepared.*")), "cap breach left prepared artifacts")
+        result_path.unlink()
+        evidence_path.unlink()
+
+        noisy_adapter.write_text("#!/usr/bin/python3\nimport time\ntime.sleep(5)\n")
+        timeout_digest = raw_digest(noisy_adapter)
+        for task_path in task_files:
+            task_document = json.loads((project / task_path).read_text())
+            task_document["measurement_adapter_runtime"] = "PYTHON:" + timeout_digest
+            task_document["timeout_ns"] = 500_000_000
+            task_document["artifacts"][-1]["expected_sha256"] = timeout_digest
+            bind(task_document)
+            store(project, task_path, task_document)
+        started = time.monotonic()
+        timed_out = subprocess.run(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        elapsed = time.monotonic() - started
+        require(timed_out.returncode != 0 and elapsed < 3, "adapter timeout was not bounded")
+        timeout_result = json.loads(result_path.read_text())
+        require(
+            timeout_result["status"] == "ERROR" and timeout_result["error_code"] == "ADAPTER_TIMEOUT",
+            "timeout did not publish its terminal error",
+        )
+        timeout_verified = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(
+            timeout_verified.returncode == 0 and timeout_verified.stdout.strip() == "NONCOMPLETE_ERROR",
+            "timeout pair did not pass strict prefix verification",
+        )
+        require(not any(os.scandir(workspace)), "timeout left workspace artifacts")
+        require(not list(project.glob("*.prepared.*")), "timeout left prepared artifacts")
+
+    print("prompt evaluate: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
+        print(f"prompt evaluate: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)
