@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import signal
 import stat
 import subprocess
 import sys
@@ -207,18 +208,30 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[bool, bytes, bytes]:
         "PYTHONNOUSERSITE": "1",
     }
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, str(RUNNER), str(TASK), str(PATCHES[variant])],
             cwd=ROOT,
             env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
+            close_fds=True,
+            start_new_session=True,
         )
-        return completed.returncode == 0, completed.stdout[:DIAGNOSTIC_LIMIT], completed.stderr[:DIAGNOSTIC_LIMIT]
-    except (OSError, subprocess.TimeoutExpired) as error:
+        stdout, stderr = process.communicate(timeout=timeout)
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+            return False, b"", b"contained runner left a descendant"
+        return process.returncode == 0, stdout[:DIAGNOSTIC_LIMIT], stderr[:DIAGNOSTIC_LIMIT]
+    except subprocess.TimeoutExpired as error:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=1)
+        return False, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+    except OSError as error:
         return False, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
 
 

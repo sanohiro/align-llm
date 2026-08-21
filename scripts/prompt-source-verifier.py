@@ -382,6 +382,7 @@ def fixed_git(git: Path, repository: Path, *arguments: str) -> bytes:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             close_fds=True,
+            start_new_session=True,
         )
     except OSError:
         raise VerificationError("fixed Git command is unavailable") from None
@@ -415,9 +416,16 @@ def fixed_git(git: Path, repository: Path, *arguments: str) -> bytes:
         if remaining <= 0:
             raise VerificationError("fixed Git command timed out")
         process.wait(timeout=remaining)
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+            raise VerificationError("fixed Git command left a descendant")
     except (OSError, subprocess.TimeoutExpired, VerificationError):
         try:
-            os.kill(process.pid, signal.SIGKILL)
+            os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         try:
@@ -478,8 +486,10 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_path: Path) -> None
     cursor = newline + 1
     prior: bytes | None = None
     resolved_root = physical_directory(root)
-    resolved_manifest = manifest_path.resolve(strict=True)
-    for _ in range(count):
+    manifest_metadata = os.stat(manifest_path, follow_symlinks=False)
+    root_descriptor = os.open(resolved_root, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+      for _ in range(count):
         mode_end = raw.find(b" ", cursor)
         count_end = raw.find(b" ", mode_end + 1)
         if mode_end < 0 or count_end < 0 or not MODE.fullmatch(raw[cursor:mode_end]) or not DECIMAL.fullmatch(raw[mode_end + 1:count_end]):
@@ -501,20 +511,38 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_path: Path) -> None
         components = relative.split(b"/")
         if relative.startswith(b"/") or any(not part or part in (b".", b"..") for part in components):
             raise VerificationError("file-set path is invalid")
+        try:
+            relative.decode("utf-8", "strict")
+        except UnicodeError:
+            raise VerificationError("file-set path is not UTF-8") from None
         if prior is not None and relative <= prior:
             raise VerificationError("file-set paths are not strictly sorted")
         prior = relative
-        candidate = Path(os.fsdecode(os.fsencode(resolved_root) + b"/" + relative))
+        parent_descriptor = os.dup(root_descriptor)
         try:
-            descriptor = os.open(candidate, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            for component in components[:-1]:
+                next_descriptor = os.open(
+                    component,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=parent_descriptor,
+                )
+                os.close(parent_descriptor)
+                parent_descriptor = next_descriptor
+            descriptor = os.open(
+                components[-1],
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=parent_descriptor,
+            )
         except OSError as error:
             raise VerificationError("file-set entry is unavailable") from None
+        finally:
+            os.close(parent_descriptor)
         try:
             metadata = os.fstat(descriptor)
             observed_mode = stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode)
             if not stat.S_ISREG(metadata.st_mode) or observed_mode != mode:
                 raise VerificationError("file-set entry type or mode disagrees")
-            if candidate.resolve(strict=True) == resolved_manifest:
+            if metadata.st_dev == manifest_metadata.st_dev and metadata.st_ino == manifest_metadata.st_ino:
                 raise VerificationError("file-set manifest lists itself")
             hasher = hashlib.sha256()
             while True:
@@ -527,6 +555,8 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_path: Path) -> None
         finally:
             os.close(descriptor)
         cursor = suffix_end
+    finally:
+        os.close(root_descriptor)
     if cursor != len(raw):
         raise VerificationError("file-set manifest has trailing bytes")
 

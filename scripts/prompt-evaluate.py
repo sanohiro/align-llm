@@ -253,6 +253,7 @@ def run_child(argv: list[str], cwd: Path, environment: Mapping[str, str], timeou
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             close_fds=True,
+            start_new_session=True,
         )
     except OSError:
         raise ChildBoundaryError("PROCESS") from None
@@ -289,9 +290,16 @@ def run_child(argv: list[str], cwd: Path, environment: Mapping[str, str], timeou
         if remaining <= 0:
             raise ChildBoundaryError("TIMEOUT")
         process.wait(timeout=remaining)
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+            raise ChildBoundaryError("PROCESS")
     except (OSError, subprocess.TimeoutExpired, ChildBoundaryError) as failure:
         try:
-            os.kill(process.pid, signal.SIGKILL)
+            os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         try:

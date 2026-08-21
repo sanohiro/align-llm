@@ -11,13 +11,15 @@ file records durable project state.
   Request 14 exclusive publication surfaces consumed by this wave.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
-- The register records Requests 7, 8, 10–18 as `ALIGN_LLM_VERIFIED`. Requests 11 and 14 are adopted
-  by C6-EVALUATION through bounded child containment and result/evidence no-replace publication;
+- The register records Requests 7, 8, 10, 12, 13, and 15–18 as `ALIGN_LLM_VERIFIED`. Requests 11 and
+  14 remain `ALIGN_MERGED` while the C6-EVALUATION candidate closes its runtime-containment matrix;
   Requests 2 and 9 remain `ALIGN_MERGED` for their later named consumers.
-- C6-EVALUATION now drives the deterministic two-task corpus through source/workspace verification,
+- The C6-EVALUATION candidate drives the deterministic two-task corpus through source/workspace verification,
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
-  result-only; operational failures retain the exact valid trace prefix and paired evidence.
+  result-only; operational failures retain the exact valid trace prefix and paired evidence. Its
+  review reopened exact interpreter identity, descendant ownership, and FILE_SET physical traversal
+  as one runtime-containment axis before publication.
 - Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. C6d now builds on that
   decoded verifier: `prompt accept` verifies result/evidence before constructing an immutable
   activation, `prompt rollback` validates immutable lineage, and both commands use retained-root
@@ -41,8 +43,8 @@ file records durable project state.
   Request 4 as `f04672bce6f8689c9b219d0a20e770571e2d638b`, PR #808 shipped Request 11 as
   `82da9f580cc005fbb78f67af6847c7b4ce6626c4`, and PR #807 shipped Request 12 as
   `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are `CLOSED`; Requests 8, 10, and
-  12 are `ALIGN_LLM_VERIFIED` for the C6 consumer capability; Request 11 is now also
-  `ALIGN_LLM_VERIFIED` through C6-EVALUATION.
+  12 are `ALIGN_LLM_VERIFIED` for the C6 consumer capability; Request 11 remains `ALIGN_MERGED`
+  until the revised C6-EVALUATION owner and final capable gate pass.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -99,9 +101,9 @@ file records durable project state.
 
 ## Latest durable verification
 
-- C6-EVALUATION owners: `gmake --no-print-directory c6-evaluation-adoption`, `make check`,
-  `make format-check`, and the final capable `make ci`: PASS at Align
-  `19c3db144c462bf7d6784f88d64cc124229b7ec2`. Focused evidence covers Request 11 exact-cap,
+- C6-EVALUATION candidate owners: `gmake --no-print-directory c6-evaluation-adoption`, `make check`,
+  and `make format-check`: PASS at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2` before the
+  runtime-containment redesign; the final capable `make ci` remains pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only

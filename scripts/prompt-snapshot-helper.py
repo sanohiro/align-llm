@@ -296,6 +296,7 @@ def git_identity(repository: Path, expected: str, require_clean: bool) -> None:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
+                start_new_session=True,
             )
         except OSError:
             raise SnapshotError("task repository Git command is unavailable") from None
@@ -326,9 +327,16 @@ def git_identity(repository: Path, expected: str, require_clean: bool) -> None:
                     if len(output) > GIT_OUTPUT_LIMIT:
                         raise SnapshotError("task repository Git output exceeded its cap")
             process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+                raise SnapshotError("task repository Git command left a descendant")
         except (OSError, subprocess.TimeoutExpired, SnapshotError):
             try:
-                os.kill(process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             try:

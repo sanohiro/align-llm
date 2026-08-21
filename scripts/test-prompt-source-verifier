@@ -199,7 +199,7 @@ def main() -> int:
 
         file_set = root / "file-set"
         file_set.mkdir()
-        entries = [(b"ordinary.txt", b"ordinary"), (b"raw-\xff.txt", b"raw")]
+        entries = [(b"ordinary.txt", b"ordinary"), ("utf8-日本.txt".encode(), b"utf8")]
         directory_fd = os.open(file_set, os.O_RDONLY | os.O_DIRECTORY)
         try:
             for name, content in entries:
@@ -226,10 +226,69 @@ def main() -> int:
         )
         bind(value)
         code, result = invoke(root, value)
-        require(code == 0 and result["corpus_reachability"] == "VERIFIED", "raw-byte file set was not verified")
+        require(code == 0 and result["corpus_reachability"] == "VERIFIED", "UTF-8 file set was not verified")
         (file_set / "ordinary.txt").write_text("tampered")
         code, result = invoke(root, value)
         require(code == 0 and result["corpus_reachability"] == "UNVERIFIED", "tampered file set was verified")
+
+        escaped_root = root / "escaped-file-set"
+        escaped_root.mkdir()
+        outside = root / "outside-file-set"
+        outside.mkdir()
+        outside_file = outside / "secret.txt"
+        outside_file.write_bytes(b"secret")
+        (escaped_root / "link").symlink_to(outside, target_is_directory=True)
+        escaped_relative = b"link/secret.txt"
+        escaped_metadata = os.stat(outside_file, follow_symlinks=False)
+        escaped_mode = f"{stat.S_IFMT(escaped_metadata.st_mode) | stat.S_IMODE(escaped_metadata.st_mode):06o}".encode()
+        escaped_manifest = (
+            b"ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n"
+            + escaped_mode + b" " + str(len(escaped_relative)).encode() + b" " + escaped_relative
+            + b"\0F " + hashlib.sha256(b"secret").hexdigest().encode() + b"\n"
+        )
+        escaped_manifest_path = root / "escaped-file-set.manifest"
+        escaped_manifest_path.write_bytes(escaped_manifest)
+        escaped_value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        escaped_value.update(
+            corpus_source_path=str(escaped_root), corpus_source_kind="FILE_SET",
+            corpus_file_set_manifest_path=str(escaped_manifest_path), expected_corpus_source_repository_id="",
+            expected_corpus_source_sha256=hashlib.sha256(escaped_manifest).hexdigest(),
+        )
+        bind(escaped_value)
+        code, result = invoke(root, escaped_value)
+        require(
+            code == 0 and result["corpus_reachability"] == "UNVERIFIED",
+            "file-set symlink ancestor escaped its retained root",
+        )
+
+        invalid_name_root = root / "invalid-name-file-set"
+        invalid_name_root.mkdir()
+        invalid_name = b"raw-\xff.txt"
+        invalid_root_fd = os.open(invalid_name_root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            invalid_fd = os.open(invalid_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640, dir_fd=invalid_root_fd)
+            os.write(invalid_fd, b"raw")
+            os.close(invalid_fd)
+        finally:
+            os.close(invalid_root_fd)
+        invalid_manifest = (
+            b"ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100640 " + str(len(invalid_name)).encode() + b" "
+            + invalid_name + b"\0F " + hashlib.sha256(b"raw").hexdigest().encode() + b"\n"
+        )
+        invalid_manifest_path = root / "invalid-name-file-set.manifest"
+        invalid_manifest_path.write_bytes(invalid_manifest)
+        invalid_value = request(llm, llm_head, align, align_head, corpus, corpus_head)
+        invalid_value.update(
+            corpus_source_path=str(invalid_name_root), corpus_source_kind="FILE_SET",
+            corpus_file_set_manifest_path=str(invalid_manifest_path), expected_corpus_source_repository_id="",
+            expected_corpus_source_sha256=hashlib.sha256(invalid_manifest).hexdigest(),
+        )
+        bind(invalid_value)
+        code, result = invoke(root, invalid_value)
+        require(
+            code == 0 and result["corpus_reachability"] == "UNVERIFIED",
+            "non-UTF-8 file-set path was persisted",
+        )
 
         noisy_git = root / "noisy-git"
         noisy_git.write_text("#!/bin/sh\nhead -c 262145 /dev/zero\n")

@@ -147,6 +147,29 @@ def verify_compact_overflow_boundary() -> None:
     )
 
 
+def verify_descendant_cleanup_boundary() -> None:
+    module_path = SOURCE / "scripts" / "prompt-evaluate.py"
+    spec = importlib.util.spec_from_file_location("prompt_evaluate_descendants", module_path)
+    require(spec is not None and spec.loader is not None, "evaluator helper could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with tempfile.TemporaryDirectory(prefix="prompt-descendant-") as directory:
+        marker = Path(directory) / "survived"
+        child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
+        parent = (
+            "import subprocess,sys,time;"
+            f"subprocess.Popen([sys.executable,'-c',{child!r}]);"
+            "time.sleep(5)"
+        )
+        try:
+            module.run_child([sys.executable, "-c", parent], SOURCE, {}, 200_000_000, 0)
+            raise RuntimeError("timed child unexpectedly completed")
+        except module.ChildBoundaryError as failure:
+            require(failure.reason == "TIMEOUT", "descendant fixture returned the wrong failure")
+        time.sleep(0.8)
+        require(not marker.exists(), "timed evaluator child left a live descendant")
+
+
 def copy_runtime(project: Path) -> None:
     for relative in (
         "scripts/prompt-evaluate.py", "scripts/prompt-fixed-adapter.py", "scripts/prompt-snapshot-helper.py",
@@ -166,6 +189,7 @@ def copy_runtime(project: Path) -> None:
 
 def main() -> int:
     verify_compact_overflow_boundary()
+    verify_descendant_cleanup_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
         root = Path(directory)
         project = root / "project"
