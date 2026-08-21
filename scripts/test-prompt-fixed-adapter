@@ -141,6 +141,10 @@ def main() -> int:
             return original_cleanup(process, maximum_seconds)
 
         module.cleanup_process_group = counted_cleanup
+        def select_runner(path):
+            module.RUNNER = path
+            module.RUNNER_SHA256 = hashlib.sha256(path.read_bytes()).hexdigest()
+
         marker = root / "runner-descendant-survived"
         descendant_runner = root / "descendant-runner.py"
         child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
@@ -148,7 +152,7 @@ def main() -> int:
             "import subprocess,sys\n"
             f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)\n"
         )
-        module.RUNNER = descendant_runner
+        select_runner(descendant_runner)
         outcome, cleanup_passed, containment_passed, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
         require(outcome == "ERROR" and cleanup_passed and not containment_passed, "runner descendant was not classified")
         require(cleanup_calls == 1, "fixed adapter descendant cleanup was not exactly once")
@@ -161,7 +165,7 @@ def main() -> int:
             f"os.write(1, b'o' * {module.DIAGNOSTIC_LIMIT + 1})\n"
             f"os.write(2, b'e' * {module.DIAGNOSTIC_LIMIT + 1})\n"
         )
-        module.RUNNER = bounded_runner
+        select_runner(bounded_runner)
         outcome, cleanup_passed, containment_passed, stdout, stderr = module.execute_fixture(
             "CANDIDATE", 2_000_000_000,
         )
@@ -178,7 +182,7 @@ def main() -> int:
             f"os.write(1, b'x' * {module.DIAGNOSTIC_LIMIT})\n"
             f"os.write(2, b'y' * {module.DIAGNOSTIC_LIMIT})\n"
         )
-        module.RUNNER = exact_runner
+        select_runner(exact_runner)
         outcome, _, _, stdout, stderr = module.execute_fixture("CANDIDATE", 2_000_000_000)
         require(
             outcome == "PASS" and len(stdout) == module.DIAGNOSTIC_LIMIT
@@ -190,7 +194,7 @@ def main() -> int:
 
         operational_runner = root / "operational-runner.py"
         operational_runner.write_text("raise SystemExit(1)\n")
-        module.RUNNER = operational_runner
+        select_runner(operational_runner)
         outcome, _, _, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
         require(outcome == "ERROR", "runner operational failure became a test failure")
         original_execute = module.execute_fixture
@@ -210,9 +214,51 @@ def main() -> int:
         )
         expected_failure_runner = root / "expected-failure-runner.py"
         expected_failure_runner.write_text("raise SystemExit(4)\n")
-        module.RUNNER = expected_failure_runner
+        select_runner(expected_failure_runner)
         outcome, _, _, _, _ = module.execute_fixture("PARENT", 2_000_000_000)
         require(outcome == "TEST_FAIL", "declared candidate validation failure lost its distinct outcome")
+
+        retained_marker = root / "replacement-runner-ran"
+        retained_runner = root / "retained-runner.py"
+        retained_task = root / "retained-task.json"
+        retained_patch = root / "retained.patch"
+        retained_runner.write_text(
+            "from pathlib import Path\n"
+            "import sys\n"
+            "valid = Path(sys.argv[2]).read_text() == 'admitted task' and "
+            "Path(sys.argv[3]).read_text() == 'admitted patch'\n"
+            "raise SystemExit(0 if valid else 9)\n"
+        )
+        retained_task.write_text("admitted task")
+        retained_patch.write_text("admitted patch")
+        select_runner(retained_runner)
+        module.TASK = retained_task
+        module.TASK_SHA256 = hashlib.sha256(retained_task.read_bytes()).hexdigest()
+        module.PATCHES["CANDIDATE"] = retained_patch
+        module.PATCH_SHA256["CANDIDATE"] = hashlib.sha256(retained_patch.read_bytes()).hexdigest()
+        original_popen = module.subprocess.Popen
+
+        def replace_after_admission(*args, **kwargs):
+            retained_runner.write_text(
+                "from pathlib import Path\n"
+                f"Path({str(retained_marker)!r}).write_text('replacement ran')\n"
+                "raise SystemExit(99)\n"
+            )
+            retained_task.write_text("replacement task")
+            retained_patch.write_text("replacement patch")
+            return original_popen(*args, **kwargs)
+
+        module.subprocess.Popen = replace_after_admission
+        try:
+            outcome, cleanup_passed, containment_passed, _, _ = module.execute_fixture(
+                "CANDIDATE", 2_000_000_000,
+            )
+        finally:
+            module.subprocess.Popen = original_popen
+        require(
+            outcome == "PASS" and cleanup_passed and containment_passed and not retained_marker.exists(),
+            "replacement runner/task/patch crossed the retained adapter boundary",
+        )
 
     print("prompt fixed adapter: PASS")
     return 0

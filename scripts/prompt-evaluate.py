@@ -90,6 +90,102 @@ SEED_ATTESTATION_FIELDS = (
     "schema_version", "artifact_kind", "provider_kind", "provider_model", "requested_seed",
     "result", "applied_seed", "provider_request_sha256", "content_sha256",
 )
+PROMPT_TEXT_FIELDS = ("schema_version", "artifact_kind", "artifact_id", "text", "content_sha256")
+ARTIFACT_REFERENCE_FIELDS = ("artifact_kind", "path", "artifact_id", "content_sha256")
+CONTEXT_POLICY_FIELDS = (
+    "include_patch_evaluation", "include_failure_memory", "include_diagnostics",
+    "max_patch_evaluation_bytes", "max_failure_events", "max_failure_context_bytes",
+    "max_diagnostic_bytes_per_stream",
+)
+PROMPT_VARIANT_FIELDS = (
+    "schema_version", "artifact_kind", "variant_id", "base_prompt", "repo_prompt",
+    "learned_prompt_append", "context_policy", "candidate_id", "content_sha256",
+)
+CORPUS_REVISION_FIELDS = (
+    "schema_version", "artifact_kind", "source_kind", "source_repository_id", "source_sha256",
+    "content_sha256",
+)
+PROMPT_SCOPE_FIELDS = (
+    "schema_version", "artifact_kind", "repo_id", "repo_profile_revision", "align_revision",
+    "corpus_id", "corpus_revision", "evaluation_provider_kind", "evaluation_provider_model",
+    "generation_policy_sha256", "acceptance_policy_sha256", "base_prompt_sha256",
+    "repo_prompt_sha256", "content_sha256",
+)
+PROMPT_EXPERIMENT_FIELDS = (
+    "schema_version", "artifact_kind", "experiment_id", "status", "error_code", "error",
+    "parent_activation", "scope", "opportunity", "proposal_provider_kind",
+    "proposal_provider_endpoint_id", "proposal_provider_model", "proposal_elapsed_ns",
+    "proposal_status_code", "proposal_summary", "candidate_variant", "bounded_provider_output",
+    "content_sha256",
+)
+PROMPT_ACTIVATION_FIELDS = (
+    "schema_version", "artifact_kind", "activation_id", "operation", "scope",
+    "parent_activation_id", "parent_activation_sha256", "effective_variant",
+    "accepted_evaluation_id", "accepted_evaluation_sha256", "rollback_target_activation_id",
+    "rollback_target_activation_sha256", "decision_reason", "content_sha256",
+)
+PROMPT_ACTIVATION_RESULT_FIELDS = (
+    "schema_version", "artifact_kind", "decision_id", "status", "error_code", "error",
+    "activation", "content_sha256",
+)
+PROMPT_CORPUS_FIELDS = (
+    "schema_version", "artifact_kind", "corpus_id", "corpus_revision", "task_files",
+    "content_sha256",
+)
+ARTIFACT_EXPECTATION_FIELDS = ("path", "kind", "expected_sha256")
+REGRESSION_LIMIT_FIELDS = (
+    "maximum_unrelated_diff_count", "maximum_patch_size_bytes", "maximum_public_api_change_count",
+    "maximum_repair_loops", "maximum_benchmark_regression_ppm",
+)
+PROMPT_TASK_FIELDS = (
+    "schema_version", "artifact_kind", "task_id", "repo_id", "repo_revision", "repo_path",
+    "require_clean_repo", "cmd", "argv", "snapshot_cmd", "snapshot_argv",
+    "measurement_adapter_runtime", "snapshot_helper_runtime", "cwd", "timeout_ns",
+    "task_prompt_path", "context_sources_path", "generation_policy_path", "provider_control_path",
+    "environment_policy_path", "artifacts", "regression_limits", "content_sha256",
+)
+ACCEPTANCE_POLICY_FIELDS = (
+    "schema_version", "artifact_kind", "policy_id", "minimum_task_count",
+    "minimum_samples_per_variant", "minimum_completion_gain_count", "minimum_time_improvement_ppm",
+    "maximum_time_regression_ppm", "maximum_repair_loop_regression_count", "content_sha256",
+)
+WORKSPACE_PREFLIGHT_REQUEST_FIELDS = (
+    "schema_version", "artifact_kind", "evaluation_id", "project_root", "workspace_path",
+    "content_sha256",
+)
+GENERATION_POLICY_FIELDS = (
+    "schema_version", "artifact_kind", "generation_policy_id", "evaluation_provider_kind",
+    "evaluation_provider_endpoint_id", "evaluation_provider_model", "provider_control_sha256",
+    "provider_service_revision", "max_prompt_bytes", "max_tokens", "temperature_micros",
+    "seed_mode", "seed_base", "content_sha256",
+)
+PROVIDER_CONTROL_FIELDS = (
+    "schema_version", "artifact_kind", "provider_control_id", "provider_kind", "endpoint",
+    "endpoint_id", "model", "api_key_env", "tokenize_endpoint", "timeout_ns",
+    "max_response_bytes", "content_sha256",
+)
+ENVIRONMENT_POLICY_FIELDS = (
+    "schema_version", "artifact_kind", "policy_id", "allowed_variables", "executable_paths",
+    "locale", "content_sha256",
+)
+CONTEXT_SOURCES_FIELDS = (
+    "schema_version", "artifact_kind", "task_id", "patch_evaluation", "failure_memory_jsonl",
+    "diagnostic_stdout", "diagnostic_stderr", "content_sha256",
+)
+INPUT_ARTIFACT_FIELDS = {
+    "PROMPT_EXPERIMENT_RESULT": PROMPT_EXPERIMENT_FIELDS,
+    "PROMPT_ACTIVATION_RESULT": PROMPT_ACTIVATION_RESULT_FIELDS,
+    "PROMPT_EVALUATION_CORPUS": PROMPT_CORPUS_FIELDS,
+    "PROMPT_ACCEPTANCE_POLICY": ACCEPTANCE_POLICY_FIELDS,
+    "WORKSPACE_PREFLIGHT_REQUEST": WORKSPACE_PREFLIGHT_REQUEST_FIELDS,
+    "PROMPT_EVALUATION_TASK": PROMPT_TASK_FIELDS,
+    "GENERATION_POLICY": GENERATION_POLICY_FIELDS,
+    "EVALUATION_PROVIDER_CONTROL": PROVIDER_CONTROL_FIELDS,
+    "ENVIRONMENT_POLICY": ENVIRONMENT_POLICY_FIELDS,
+    "TASK_PROMPT": PROMPT_TEXT_FIELDS,
+    "CONTEXT_SOURCES": CONTEXT_SOURCES_FIELDS,
+    "PROMPT_SOURCE_VERIFIER_POLICY": SOURCE_POLICY_FIELDS,
+}
 
 
 def enable_child_subreaper() -> bool:
@@ -371,6 +467,260 @@ def valid_ascii_identifier(value: Any, *, allow_empty: bool = False) -> bool:
     return (allow_empty and not raw) or bool(raw) and len(raw) <= 128 and all(0x20 <= byte <= 0x7E for byte in raw)
 
 
+def exact_record(value: Any, fields: tuple[str, ...], kind: str | None = None) -> bool:
+    return (
+        isinstance(value, dict)
+        and tuple(value) == fields
+        and (kind is None or value.get("schema_version") == 1 and value.get("artifact_kind") == kind)
+    )
+
+
+def record_digest_valid(value: Mapping[str, Any]) -> bool:
+    return valid_hex(value.get("content_sha256")) and canonical_digest(
+        {**value, "content_sha256": ""},
+    ) == value["content_sha256"]
+
+
+def bounded_text(value: Any, maximum: int, *, empty: bool = False) -> bool:
+    return (
+        isinstance(value, str) and "\0" not in value
+        and (empty or bool(value)) and len(value.encode("utf-8")) <= maximum
+    )
+
+
+def bounded_integer(value: Any, minimum: int, maximum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum
+
+
+def prompt_text_valid(value: Any, kind: str) -> bool:
+    return (
+        exact_record(value, PROMPT_TEXT_FIELDS, kind)
+        and valid_ascii_identifier(value.get("artifact_id"))
+        and bounded_text(value.get("text"), ARTIFACT_LIMIT, empty=True)
+        and record_digest_valid(value)
+    )
+
+
+def reference_valid(value: Any, kind: str) -> bool:
+    return (
+        exact_record(value, ARTIFACT_REFERENCE_FIELDS)
+        and value.get("artifact_kind") == kind
+        and bounded_text(value.get("path"), 4096)
+        and valid_ascii_identifier(value.get("artifact_id"))
+        and valid_hex(value.get("content_sha256"))
+    )
+
+
+def context_policy_valid(value: Any) -> bool:
+    return (
+        exact_record(value, CONTEXT_POLICY_FIELDS)
+        and all(isinstance(value.get(name), bool) for name in (
+            "include_patch_evaluation", "include_failure_memory", "include_diagnostics",
+        ))
+        and all(bounded_integer(value.get(name), 0, ARTIFACT_LIMIT) for name in (
+            "max_patch_evaluation_bytes", "max_failure_context_bytes", "max_diagnostic_bytes_per_stream",
+        ))
+        and bounded_integer(value.get("max_failure_events"), 0, 1_048_576)
+    )
+
+
+def variant_valid(value: Any) -> bool:
+    return (
+        exact_record(value, PROMPT_VARIANT_FIELDS, "PROMPT_VARIANT")
+        and valid_ascii_identifier(value.get("variant_id"))
+        and prompt_text_valid(value.get("base_prompt"), "BASE_PROMPT")
+        and prompt_text_valid(value.get("repo_prompt"), "REPO_PROMPT")
+        and bounded_text(value.get("learned_prompt_append"), ARTIFACT_LIMIT, empty=True)
+        and context_policy_valid(value.get("context_policy"))
+        and valid_ascii_identifier(value.get("candidate_id"), allow_empty=True)
+        and record_digest_valid(value)
+    )
+
+
+def corpus_revision_valid(value: Any) -> bool:
+    return (
+        exact_record(value, CORPUS_REVISION_FIELDS, "CORPUS_REVISION")
+        and value.get("source_kind") in ("GIT_COMMIT", "FILE_SET")
+        and isinstance(value.get("source_repository_id"), str)
+        and valid_hex(value.get("source_sha256"), (40, 64))
+        and record_digest_valid(value)
+    )
+
+
+def scope_valid(value: Any) -> bool:
+    return (
+        exact_record(value, PROMPT_SCOPE_FIELDS, "PROMPT_SCOPE")
+        and all(valid_ascii_identifier(value.get(name)) for name in (
+            "repo_id", "repo_profile_revision", "corpus_id",
+        ))
+        and valid_hex(value.get("align_revision"), (40, 64))
+        and corpus_revision_valid(value.get("corpus_revision"))
+        and all(bounded_text(value.get(name), 256) for name in (
+            "evaluation_provider_kind", "evaluation_provider_model",
+        ))
+        and all(valid_hex(value.get(name)) for name in (
+            "generation_policy_sha256", "acceptance_policy_sha256", "base_prompt_sha256",
+            "repo_prompt_sha256", "content_sha256",
+        ))
+        and record_digest_valid(value)
+    )
+
+
+def activation_valid(value: Any) -> bool:
+    return (
+        exact_record(value, PROMPT_ACTIVATION_FIELDS, "PROMPT_ACTIVATION")
+        and valid_ascii_identifier(value.get("activation_id"))
+        and value.get("operation") in ("BASELINE", "ACCEPT", "ROLLBACK")
+        and scope_valid(value.get("scope"))
+        and variant_valid(value.get("effective_variant"))
+        and all(isinstance(value.get(name), str) for name in (
+            "parent_activation_id", "parent_activation_sha256", "accepted_evaluation_id",
+            "accepted_evaluation_sha256", "rollback_target_activation_id",
+            "rollback_target_activation_sha256", "decision_reason",
+        ))
+        and record_digest_valid(value)
+    )
+
+
+def artifact_expectations_valid(value: Any) -> bool:
+    return (
+        isinstance(value, list) and 1 <= len(value) <= 4096
+        and all(
+            exact_record(item, ARTIFACT_EXPECTATION_FIELDS)
+            and bounded_text(item.get("path"), 4096)
+            and item.get("kind") in ("FILE", "TREE")
+            and valid_hex(item.get("expected_sha256"))
+            for item in value
+        )
+    )
+
+
+def validate_input_artifact_shape(kind: str, value: Mapping[str, Any]) -> None:
+    fields = INPUT_ARTIFACT_FIELDS.get(kind)
+    if fields is None:
+        return
+    if not exact_record(value, fields, kind) or not record_digest_valid(value):
+        raise EvaluationError(f"{kind} schema is invalid")
+    valid = True
+    if kind == "PROMPT_EXPERIMENT_RESULT":
+        valid = (
+            valid_ascii_identifier(value.get("experiment_id"))
+            and value.get("status") == "PROPOSED" and value.get("error_code") == "NONE"
+            and value.get("error") == "" and reference_valid(value.get("parent_activation"), "PROMPT_ACTIVATION_RESULT")
+            and scope_valid(value.get("scope")) and reference_valid(value.get("opportunity"), "OPPORTUNITY")
+            and all(bounded_text(value.get(name), 256) for name in (
+                "proposal_provider_kind", "proposal_provider_endpoint_id", "proposal_provider_model",
+            ))
+            and bounded_integer(value.get("proposal_elapsed_ns"), 0, 7_200_000_000_000)
+            and value.get("proposal_status_code") is None
+            and bounded_text(value.get("proposal_summary"), 4096, empty=True)
+            and variant_valid(value.get("candidate_variant"))
+            and bounded_text(value.get("bounded_provider_output"), ARTIFACT_LIMIT, empty=True)
+        )
+    elif kind == "PROMPT_ACTIVATION_RESULT":
+        valid = (
+            valid_ascii_identifier(value.get("decision_id")) and value.get("status") == "BASELINED"
+            and value.get("error_code") == "NONE" and value.get("error") == ""
+            and activation_valid(value.get("activation"))
+        )
+    elif kind == "PROMPT_EVALUATION_CORPUS":
+        valid = (
+            valid_ascii_identifier(value.get("corpus_id"))
+            and corpus_revision_valid(value.get("corpus_revision"))
+            and isinstance(value.get("task_files"), list)
+            and 1 <= len(value["task_files"]) <= 64
+            and all(bounded_text(item, 4096) for item in value["task_files"])
+        )
+    elif kind == "PROMPT_ACCEPTANCE_POLICY":
+        valid = (
+            valid_ascii_identifier(value.get("policy_id"))
+            and bounded_integer(value.get("minimum_task_count"), 1, 64)
+            and bounded_integer(value.get("minimum_samples_per_variant"), 2, 16)
+            and bounded_integer(value.get("minimum_completion_gain_count"), 1, 1024)
+            and bounded_integer(value.get("minimum_time_improvement_ppm"), 1, 1_000_000)
+            and bounded_integer(value.get("maximum_time_regression_ppm"), 0, 1_000_000)
+            and bounded_integer(value.get("maximum_repair_loop_regression_count"), 0, 65_536)
+        )
+    elif kind == "WORKSPACE_PREFLIGHT_REQUEST":
+        valid = (
+            valid_ascii_identifier(value.get("evaluation_id"))
+            and bounded_text(value.get("project_root"), 4096)
+            and bounded_text(value.get("workspace_path"), 4096)
+        )
+    elif kind == "PROMPT_EVALUATION_TASK":
+        limits = value.get("regression_limits")
+        valid = (
+            valid_ascii_identifier(value.get("task_id")) and valid_ascii_identifier(value.get("repo_id"))
+            and valid_hex(value.get("repo_revision"), (40, 64)) and bounded_text(value.get("repo_path"), 4096)
+            and isinstance(value.get("require_clean_repo"), bool)
+            and all(bounded_text(value.get(name), 4096) for name in (
+                "cmd", "snapshot_cmd", "cwd", "task_prompt_path", "context_sources_path",
+                "generation_policy_path", "provider_control_path", "environment_policy_path",
+            ))
+            and all(bounded_text(value.get(name), 256) for name in (
+                "measurement_adapter_runtime", "snapshot_helper_runtime",
+            ))
+            and bounded_integer(value.get("timeout_ns"), 1, 7_200_000_000_000)
+            and artifact_expectations_valid(value.get("artifacts"))
+            and exact_record(limits, REGRESSION_LIMIT_FIELDS)
+            and bounded_integer(limits.get("maximum_unrelated_diff_count"), 0, 1_048_576)
+            and bounded_integer(limits.get("maximum_patch_size_bytes"), 0, 67_108_864)
+            and bounded_integer(limits.get("maximum_public_api_change_count"), 0, 1_048_576)
+            and bounded_integer(limits.get("maximum_repair_loops"), 0, 64)
+            and (limits.get("maximum_benchmark_regression_ppm") is None or bounded_integer(
+                limits.get("maximum_benchmark_regression_ppm"), 0, 1_000_000,
+            ))
+        )
+    elif kind == "GENERATION_POLICY":
+        valid = (
+            valid_ascii_identifier(value.get("generation_policy_id"))
+            and all(bounded_text(value.get(name), 256) for name in (
+                "evaluation_provider_kind", "evaluation_provider_endpoint_id",
+                "evaluation_provider_model", "provider_service_revision",
+            ))
+            and valid_hex(value.get("provider_control_sha256"))
+            and bounded_integer(value.get("max_prompt_bytes"), 1, 1_048_576)
+            and bounded_integer(value.get("max_tokens"), 1, 1_048_576)
+            and bounded_integer(value.get("temperature_micros"), 0, 1_000_000)
+            and value.get("seed_mode") == "PAIRED_FIXED"
+            and bounded_integer(value.get("seed_base"), -(2**63), 2**63 - 1)
+        )
+    elif kind == "EVALUATION_PROVIDER_CONTROL":
+        valid = (
+            valid_ascii_identifier(value.get("provider_control_id"))
+            and all(bounded_text(value.get(name), 4096 if name == "endpoint" else 256) for name in (
+                "provider_kind", "endpoint", "endpoint_id", "model",
+            ))
+            and (value.get("api_key_env") is None or bounded_text(value.get("api_key_env"), 256))
+            and (value.get("tokenize_endpoint") is None or bounded_text(value.get("tokenize_endpoint"), 4096))
+            and bounded_integer(value.get("timeout_ns"), 1, 7_200_000_000_000)
+            and bounded_integer(value.get("max_response_bytes"), 1, RESULT_LIMIT)
+        )
+    elif kind == "ENVIRONMENT_POLICY":
+        valid = valid_ascii_identifier(value.get("policy_id")) and isinstance(value.get("allowed_variables"), list)
+    elif kind == "TASK_PROMPT":
+        valid = prompt_text_valid(value, "TASK_PROMPT")
+    elif kind == "CONTEXT_SOURCES":
+        valid = (
+            valid_ascii_identifier(value.get("task_id"))
+            and prompt_text_valid(value.get("patch_evaluation"), "PATCH_EVALUATION")
+            and prompt_text_valid(value.get("failure_memory_jsonl"), "FAILURE_MEMORY_JSONL")
+            and prompt_text_valid(value.get("diagnostic_stdout"), "DIAGNOSTIC_STDOUT")
+            and prompt_text_valid(value.get("diagnostic_stderr"), "DIAGNOSTIC_STDERR")
+        )
+    elif kind == "PROMPT_SOURCE_VERIFIER_POLICY":
+        valid = (
+            valid_ascii_identifier(value.get("policy_id"))
+            and bounded_text(value.get("helper_path"), 4096)
+            and bounded_text(value.get("helper_runtime"), 256)
+            and all(valid_hex(value.get(name)) for name in (
+                "helper_sha256", "interpreter_sha256", "git_executable_sha256",
+            ))
+        )
+    if not valid:
+        raise EvaluationError(f"{kind} value is invalid")
+
+
 def validate_absolute_path_syntax(value: Any, label: str) -> None:
     if not isinstance(value, str) or len(value.encode("utf-8")) > 4096 or "\0" in value:
         raise EvaluationError(f"{label} path is invalid")
@@ -478,6 +828,7 @@ def load_bound(path: Path, kind: str, maximum: int = ARTIFACT_LIMIT) -> dict[str
     normalized["content_sha256"] = ""
     if hashlib.sha256(canonical_digest_bytes(normalized)).hexdigest() != value["content_sha256"]:
         raise EvaluationError(f"{kind} digest does not match")
+    validate_input_artifact_shape(kind, value)
     return value
 
 
@@ -1746,27 +2097,75 @@ def canonical_file_expectation(relative: str, metadata: os.stat_result, content_
     return hashlib.sha256(raw).hexdigest()
 
 
+def bounded_declared_tree(
+    project: Path, relative: str, maximum_entries: int = 128,
+    maximum_bytes: int = ARTIFACT_LIMIT,
+) -> tuple[list[str], int, int]:
+    root = relative_path(project, relative)
+    root_metadata = os.lstat(root)
+    if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
+        raise EvaluationError("task source tree root is unsafe")
+    files: list[str] = []
+    entry_count = 1
+    byte_count = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        entries = []
+        with os.scandir(directory) as iterator:
+            for entry in iterator:
+                if entry_count + len(entries) >= maximum_entries:
+                    raise EvaluationError("task source tree exceeds its entry cap")
+                entries.append(entry)
+        entries.sort(key=lambda item: os.fsencode(item.name))
+        for entry in entries:
+            metadata = entry.stat(follow_symlinks=False)
+            entry_count += 1
+            path = Path(entry.path)
+            if stat.S_ISDIR(metadata.st_mode):
+                pending.append(path)
+            elif stat.S_ISREG(metadata.st_mode):
+                byte_count += metadata.st_size
+                if byte_count > maximum_bytes:
+                    raise EvaluationError("task source tree exceeds its byte cap")
+                files.append(str(path.relative_to(project)))
+            else:
+                raise EvaluationError("task source tree contains an unsafe entry")
+    return files, entry_count, byte_count
+
+
 def declared_source_files(
     tasks: Sequence[Mapping[str, Any]], task_files: Sequence[str], project: Path,
 ) -> tuple[dict[str, str | None], set[str]]:
     declared: dict[str, str | None] = {relative: None for relative in task_files}
     execution: set[str] = set()
     for task in tasks:
+        expanded_entries = 0
+        expanded_bytes = 0
         execution.update((task["argv"][1], task["snapshot_argv"][1]))
         for expectation in task["artifacts"]:
             relative = expectation["path"]
             if expectation["kind"] == "FILE":
+                metadata = os.lstat(relative_path(project, relative))
+                if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    raise EvaluationError("task source file is unsafe")
+                expanded_entries += 1
+                expanded_bytes += metadata.st_size
+                if expanded_entries > 128 or expanded_bytes > ARTIFACT_LIMIT:
+                    raise EvaluationError("task source artifacts exceed their cap")
                 declared[relative] = expectation["expected_sha256"]
                 continue
-            root = relative_path(project, relative)
-            for directory, names, files in os.walk(root, followlinks=False):
-                names.sort(key=os.fsencode)
-                files.sort(key=os.fsencode)
-                for name in files:
-                    path = Path(directory) / name
-                    if path.is_symlink() or not path.is_file():
-                        raise EvaluationError("task source tree contains an unsafe entry")
-                    declared[str(path.relative_to(project))] = None
+            if expanded_entries >= 128:
+                raise EvaluationError("task source artifacts exceed their cap")
+            files, entries, byte_count = bounded_declared_tree(
+                project, relative, 128 - expanded_entries, ARTIFACT_LIMIT - expanded_bytes,
+            )
+            expanded_entries += entries
+            expanded_bytes += byte_count
+            if expanded_entries > 128 or expanded_bytes > ARTIFACT_LIMIT:
+                raise EvaluationError("task source artifacts exceed their cap")
+            for path in files:
+                declared[path] = None
     return declared, execution
 
 

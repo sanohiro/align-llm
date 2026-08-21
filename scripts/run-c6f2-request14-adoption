@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import resource
 import signal
@@ -102,8 +103,15 @@ def require(condition: bool, message: str) -> None:
 
 
 def assert_no_temporary(root: Path) -> None:
-    temporaries = list(root.glob("*.tmp.*"))
+    temporaries = list(root.glob(".align-prompt-*"))
     require(not temporaries, f"temporary paths survived: {temporaries}")
+
+
+def temporary_name(final_path: str, evaluation_id: str, suffix: str) -> str:
+    digest = hashlib.sha256(
+        final_path.encode() + b"\0" + evaluation_id.encode() + b"\0" + suffix.encode()
+    ).hexdigest()
+    return f".align-prompt-{digest}.{suffix}"
 
 
 def build_unlink_replacement_hook(directory: Path) -> Path:
@@ -186,6 +194,24 @@ def main() -> int:
             require((root / "result.json").read_text() == "result", "result-only bytes changed")
             assert_no_temporary(root)
 
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-name-max-") as directory:
+            root = Path(directory)
+            maximum_name = "r" * 255
+            name_max = subprocess.run(
+                [
+                    str(binary), str(root), maximum_name, "__result_only__", "ignored",
+                    "result", "ignored", "PUBLISHED",
+                ],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=False, env=os.environ.copy(), timeout=10,
+            )
+            require(
+                name_max.returncode == 0 and name_max.stdout.strip() == "PUBLISHED"
+                and (root / maximum_name).read_text() == "result",
+                f"255-byte result basename did not publish: {name_max.stderr}",
+            )
+            assert_no_temporary(root)
+
         with tempfile.TemporaryDirectory(prefix="c6f2-request14-result-only-write-") as directory:
             root = Path(directory)
             result_only_failure = invoke_result_only(
@@ -209,7 +235,8 @@ def main() -> int:
                 cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=os.environ.copy(),
             )
-            staged = root / "result.json.tmp.result-only.result"
+            staged_name = temporary_name("result.json", "result-only", "result")
+            staged = root / staged_name
             deadline = time.monotonic() + 5
             while not staged.exists() and cleanup_process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.001)
@@ -222,7 +249,7 @@ def main() -> int:
             require(
                 cleanup_process.returncode == 0
                 and stdout.splitlines() == [
-                    "OUTPUT_PAIR_CLEANUP_FAILED", "result.json.tmp.result-only.result",
+                    "OUTPUT_PAIR_CLEANUP_FAILED", staged_name,
                 ]
                 and not (root / "result.json").exists()
                 and staged.exists(),
@@ -296,7 +323,7 @@ def main() -> int:
                 command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=os.environ.copy(),
             )
-            staged = root / "evidence.json.tmp.adoption.evidence"
+            staged = root / temporary_name("evidence.json", "adoption", "evidence")
             deadline = time.monotonic() + 5
             while not staged.exists() and racing.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.001)
@@ -319,7 +346,9 @@ def main() -> int:
                 command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=os.environ.copy(),
             )
-            staged = root / "evidence.json.tmp.adoption.evidence"
+            result_staged_name = temporary_name("result.json", "adoption", "result")
+            evidence_staged_name = temporary_name("evidence.json", "adoption", "evidence")
+            staged = root / evidence_staged_name
             deadline = time.monotonic() + 5
             while not staged.exists() and failing_cleanup.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.001)
@@ -334,8 +363,8 @@ def main() -> int:
             require(
                 failing_cleanup.returncode == 0 and lines == [
                     "OUTPUT_PAIR_CLEANUP_FAILED",
-                    "result.json.tmp.adoption.result",
-                    "evidence.json.tmp.adoption.evidence",
+                    result_staged_name,
+                    evidence_staged_name,
                 ],
                 f"cleanup recovery paths changed: stdout={stdout!r} stderr={stderr!r}",
             )

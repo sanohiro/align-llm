@@ -3389,6 +3389,26 @@ derive from the trace.
 | Declared mismatch family | snapshot helper | classify repository, path, type, mode, content, tree, and workspace mismatches at the first failed check as `MISMATCH` with its exact code and observed prefix; reserve `ERROR` for environment, internal, and cleanup failure | every mismatch code and prefix is covered separately; internal and cleanup remain `ERROR` |
 | Durable continuation state | `HANDOFF.md` | record the §10.1h reviewed chain as superseded evidence and name this reopened matrix, its replacement baseline, final preflight, capable gate, and publication sequence | author-side matrix-to-diff and HANDOFF consistency pass |
 
+### 10.1j Inner retained execution and admission bounds
+
+The final review of §10.1i found that its retained-source proof ended at the fixed adapter: that
+adapter still reopened its runner, task manifest, and patch pathnames after admission. The same
+review found three pre-side-effect/resource closure gaps: generic content-digest admission did not
+prove complete artifact schemas, reviewed TREE enumeration preceded its declared caps, and
+publication derived a temporary component longer than a valid requested output component. This
+reopens `retained-source-complete-score` as `inner-retained-admission-bounds`. The four cells remain
+one consumer capability because malformed or over-limit input must terminate before any retained
+execution owner is launched, and successful execution must retain the exact bytes through bounded
+publication.
+
+| Reopened invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Complete pre-side-effect schema admission | evaluator artifact loader and per-kind validators | every decoded experiment, activation, corpus, task, acceptance, generation, provider, preflight, environment, prompt, and context artifact has exact ordered fields, discriminator/option types, and scalar bounds validated before source verification, snapshots, or adapters | digest-valid missing, extra, reordered, wrong-type, and out-of-bound fields produce result-only `INVALID_INPUT` and no child marker |
+| Inner retained runner inputs | fixed adapter and coding runner boundary | open no-follow bounded owners for the runner, task manifest, and selected patch; verify their admitted SHA-256 identities, pass the task and patch by retained descriptors, and execute the exact retained runner bytes without reopening its pathname | replace and restore runner, task, and patch after child admission; no replacement marker/result executes and the admitted result remains stable |
+| Reviewed TREE resource parity | evaluator reviewed-source enumeration and snapshot helper | count TREE roots, directories, files, and aggregate regular-file bytes with the same 128-entry and 2,097,152-byte caps before retaining or comparing the source set | exact entry/byte caps pass; cap plus one fails before source membership Git/FILE_SET work or any child marker |
+| Bounded publication sibling | artifact I/O publication owner | derive the temporary sibling component from a fixed bounded prefix plus content-bound identifier/suffix, independent of the requested basename length, while preserving exclusive creation and cleanup ownership | 255-byte requested basename publishes successfully; occupied target, competing creator, special file, and reverse cleanup remain unchanged |
+| Durable continuation state | `HANDOFF.md` | record the §10.1i chain and review as superseded evidence and name this reopened matrix, replacement baseline, final review, preflight, capable gate, and publication sequence | author-side matrix-to-diff and HANDOFF consistency pass |
+
 Applicability decisions:
 
 | Dimension | Decision |

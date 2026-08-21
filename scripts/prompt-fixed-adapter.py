@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import fcntl
 import hashlib
 import json
 import os
@@ -26,6 +27,12 @@ PATCHES = {
     "PARENT": ROOT / "eval" / "baselines" / "patches" / "python-inclusive-range-parent.patch",
     "CANDIDATE": ROOT / "eval" / "baselines" / "patches" / "python-inclusive-range.patch",
 }
+RUNNER_SHA256 = "cdf59d8560c9f7d0fd488e6ab1e005182e904cae47c8ec4768b0a45ed41de2d6"
+TASK_SHA256 = "176666546ddae73f98c56fe421d911f6743c08fc3f093297a09f90b811995f93"
+PATCH_SHA256 = {
+    "PARENT": "a2c2aac194d3cdad9808c23923afa64cf8f09909d2b5519ae08c7d94218d1fe3",
+    "CANDIDATE": "dd5cc51395782e77775d63d982973458200769318a7c5c94c4a54c4c999824ce",
+}
 REQUEST_LIMIT = 65_536
 ARTIFACT_LIMIT = 2_097_152
 RESULT_LIMIT = 262_144
@@ -33,6 +40,11 @@ DIAGNOSTIC_LIMIT = 16_384
 HEX64 = frozenset("0123456789abcdef")
 PR_SET_CHILD_SUBREAPER = 36
 TRUNCATION_MARKER = b"\n[output truncated]"
+RUNNER_BOOTSTRAP = (
+    "import os,sys;fd=int(sys.argv.pop(1));name=sys.argv.pop(1);"
+    "data=b''.join(iter(lambda:os.read(fd,65536),b''));"
+    "globals()['__file__']=name;exec(compile(data,name,'exec'))"
+)
 
 
 def enable_child_subreaper() -> bool:
@@ -51,6 +63,64 @@ CHILD_SUBREAPER_ENABLED = enable_child_subreaper()
 
 class AdapterError(ValueError):
     """The adapter request or a declared input is invalid."""
+
+
+class ImmutableInput:
+    """A verified pathname snapshot copied into one sealed anonymous regular file."""
+
+    def __init__(self, path: Path, expected_sha256: str, label: str) -> None:
+        source = -1
+        descriptor = -1
+        try:
+            source = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            before = os.fstat(source)
+            if not stat.S_ISREG(before.st_mode) or before.st_size < 0 or before.st_size > ARTIFACT_LIMIT:
+                raise AdapterError(f"{label} type or size is invalid")
+            raw = bytearray()
+            offset = 0
+            while offset < before.st_size:
+                chunk = os.pread(source, min(65_536, before.st_size - offset), offset)
+                if not chunk:
+                    raise AdapterError(f"{label} changed while reading")
+                raw.extend(chunk)
+                offset += len(chunk)
+            after = os.fstat(source)
+            identity = lambda value: (
+                value.st_dev, value.st_ino, value.st_mode, value.st_size, value.st_mtime_ns,
+            )
+            if identity(before) != identity(after) or hashlib.sha256(raw).hexdigest() != expected_sha256:
+                raise AdapterError(f"{label} identity disagrees")
+            descriptor = os.memfd_create(
+                f"align-{label}", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+            )
+            written = 0
+            while written < len(raw):
+                written += os.write(descriptor, raw[written:])
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            seals = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+            fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, seals)
+            if fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) != seals:
+                raise AdapterError(f"{label} sealing failed")
+            self.descriptor = descriptor
+            self.seals = seals
+            descriptor = -1
+        except OSError:
+            raise AdapterError(f"{label} is unavailable") from None
+        finally:
+            if source >= 0:
+                os.close(source)
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def process_path(self) -> str:
+        return f"/proc/self/fd/{self.descriptor}"
+
+    def verify_sealed(self) -> None:
+        if fcntl.fcntl(self.descriptor, fcntl.F_GET_SEALS) != self.seals:
+            raise AdapterError("retained runner input lost its seals")
+
+    def close(self) -> None:
+        os.close(self.descriptor)
 
 
 def process_group_exists(group: int) -> bool:
@@ -397,11 +467,21 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, byt
         "PYTHONNOUSERSITE": "1",
     }
     process: subprocess.Popen[bytes] | None = None
+    retained: list[ImmutableInput] = []
     try:
         if not CHILD_SUBREAPER_ENABLED:
             return "ERROR", False, False, b"", b"child-subreaper containment is unavailable"
+        runner = ImmutableInput(RUNNER, RUNNER_SHA256, "coding-runner")
+        retained.append(runner)
+        task = ImmutableInput(TASK, TASK_SHA256, "coding-task")
+        retained.append(task)
+        patch = ImmutableInput(PATCHES[variant], PATCH_SHA256[variant], "coding-patch")
+        retained.append(patch)
         process = subprocess.Popen(
-            [sys.executable, str(RUNNER), str(TASK), str(PATCHES[variant])],
+            [
+                sys.executable, "-c", RUNNER_BOOTSTRAP, str(runner.descriptor), str(RUNNER),
+                "--retained-inputs", task.process_path(), patch.process_path(),
+            ],
             cwd=ROOT,
             env=environment,
             stdin=subprocess.DEVNULL,
@@ -409,8 +489,11 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, byt
             stderr=subprocess.PIPE,
             close_fds=True,
             start_new_session=True,
+            pass_fds=tuple(item.descriptor for item in retained),
         )
         stdout, stderr = capture_fixture_output(process, timeout)
+        for item in retained:
+            item.verify_sealed()
         if process_group_exists(process.pid) or owned_descendant_ids(process):
             cleanup_passed = cleanup_process_group(process)
             return "ERROR", cleanup_passed, False, b"", b"contained runner left a descendant"
@@ -423,6 +506,12 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, byt
     except OSError as error:
         cleanup_passed = True if process is None else cleanup_process_group(process)
         return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+    except AdapterError as error:
+        cleanup_passed = True if process is None else cleanup_process_group(process)
+        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+    finally:
+        for item in retained:
+            item.close()
 
 
 def measurement(

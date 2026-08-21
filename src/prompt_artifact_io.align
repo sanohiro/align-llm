@@ -235,10 +235,21 @@ fn absent_beneath(root: str, relative: str) -> bool {
 }
 
 fn temporary_path(final_path: str, evaluation_id: str, suffix: str) -> string {
+  base := path.base(final_path)
+  parent_length := final_path.len() - base.len()
+  preimage := builder()
+  preimage.write(final_path)
+  preimage.write("\0")
+  preimage.write(evaluation_id)
+  preimage.write("\0")
+  preimage.write(suffix)
+  preimage_text := preimage.to_string()
+  digest := crypto.sha256(preimage_text)
+  encoded := encoding.hex_encode(digest[0..digest.len()])
   output := builder()
-  output.write(final_path)
-  output.write(".tmp.")
-  output.write(evaluation_id)
+  output.write(final_path[0..parent_length])
+  output.write(".align-prompt-")
+  output.write(encoded)
   output.write(".")
   output.write(suffix)
   return output.to_string()
@@ -291,15 +302,14 @@ pub fn publish_prompt_pair_bytes_detailed(
 ) -> PairWriteResult {
   result_path := path.join(project_root, result_relative_path)
   evidence_path := path.join(project_root, evidence_relative_path)
-  result_temporary := temporary_path(result_path, evaluation_id, "result")
-  evidence_temporary := temporary_path(evidence_path, evaluation_id, "evidence")
-
   mut result_temporary_owned := false
   mut evidence_temporary_owned := false
   mut result_final_owned := false
 
   result_temporary_relative := temporary_path(result_relative_path, evaluation_id, "result")
   evidence_temporary_relative := temporary_path(evidence_relative_path, evaluation_id, "evidence")
+  result_temporary := path.join(project_root, result_temporary_relative)
+  evidence_temporary := path.join(project_root, evidence_temporary_relative)
   if !absent_beneath(project_root, result_relative_path) ||
   !absent_beneath(project_root, evidence_relative_path) ||
   !absent_beneath(project_root, result_temporary_relative) ||

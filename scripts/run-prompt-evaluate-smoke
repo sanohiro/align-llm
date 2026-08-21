@@ -566,6 +566,35 @@ def verify_reviewed_execution_boundary() -> None:
         except module.EvaluationError:
             pass
 
+    with tempfile.TemporaryDirectory(prefix="prompt-tree-caps-") as directory:
+        project = Path(directory)
+        exact_entries = project / "exact-entries"
+        exact_entries.mkdir()
+        for index in range(127):
+            (exact_entries / f"entry-{index:03d}").write_bytes(b"")
+        _, entry_count, byte_count = module.bounded_declared_tree(project, "exact-entries")
+        require(entry_count == 128 and byte_count == 0, "exact TREE entry cap was rejected")
+        (exact_entries / "entry-127").write_bytes(b"")
+        try:
+            module.bounded_declared_tree(project, "exact-entries")
+            raise RuntimeError("TREE entry cap plus one was accepted")
+        except module.EvaluationError:
+            pass
+
+        exact_bytes = project / "exact-bytes"
+        exact_bytes.mkdir()
+        payload = exact_bytes / "payload"
+        payload.write_bytes(b"x" * module.ARTIFACT_LIMIT)
+        _, entry_count, byte_count = module.bounded_declared_tree(project, "exact-bytes")
+        require(entry_count == 2 and byte_count == module.ARTIFACT_LIMIT,
+                "exact TREE byte cap was rejected")
+        payload.write_bytes(b"x" * (module.ARTIFACT_LIMIT + 1))
+        try:
+            module.bounded_declared_tree(project, "exact-bytes")
+            raise RuntimeError("TREE byte cap plus one was accepted")
+        except module.EvaluationError:
+            pass
+
 
 def file_set_manifest(root: Path, paths: list[str]) -> bytes:
     records = []
@@ -1103,6 +1132,32 @@ def main() -> int:
         paired_invalid["workspace_path"] = str(project / "missing-workspace")
         paired_invalid["verifier_source_policy_sha256"] = malformed_policy["content_sha256"]
         require_source_invalid(paired_invalid, "paired-invalid-result.json", "INVALID_SCHEMA")
+
+        store(project, "artifacts/source-policy.json", marker_policy)
+        malformed_acceptances = []
+        missing_acceptance = dict(acceptance)
+        missing_acceptance.pop("minimum_completion_gain_count")
+        malformed_acceptances.append(missing_acceptance)
+        extra_acceptance = dict(acceptance)
+        extra_acceptance["unexpected"] = None
+        malformed_acceptances.append(extra_acceptance)
+        reordered_acceptance = dict(acceptance)
+        policy_id = reordered_acceptance.pop("policy_id")
+        reordered_acceptance["policy_id"] = policy_id
+        malformed_acceptances.append(reordered_acceptance)
+        wrong_type_acceptance = dict(acceptance)
+        wrong_type_acceptance["minimum_completion_gain_count"] = "1"
+        malformed_acceptances.append(wrong_type_acceptance)
+        out_of_bound_acceptance = dict(acceptance)
+        out_of_bound_acceptance["minimum_task_count"] = 0
+        malformed_acceptances.append(out_of_bound_acceptance)
+        for ordinal, malformed_acceptance in enumerate(malformed_acceptances, start=1):
+            bind(malformed_acceptance)
+            store(project, "artifacts/acceptance.json", malformed_acceptance)
+            require_source_invalid(
+                source_invalid_base, f"malformed-acceptance-{ordinal}.json", "INVALID_SCHEMA",
+            )
+        store(project, "artifacts/acceptance.json", acceptance)
 
         store(project, "artifacts/source-policy.json", source_policy)
         request_path.write_bytes(canonical(request))
