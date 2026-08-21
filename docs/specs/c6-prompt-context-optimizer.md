@@ -3409,6 +3409,26 @@ publication.
 | Bounded publication sibling | artifact I/O publication owner | derive the temporary sibling component from a fixed bounded prefix plus content-bound identifier/suffix, independent of the requested basename length, while preserving exclusive creation and cleanup ownership | 255-byte requested basename publishes successfully; occupied target, competing creator, special file, and reverse cleanup remain unchanged |
 | Durable continuation state | `HANDOFF.md` | record the §10.1i chain and review as superseded evidence and name this reopened matrix, replacement baseline, final review, preflight, capable gate, and publication sequence | author-side matrix-to-diff and HANDOFF consistency pass |
 
+### 10.1k Evaluation semantic closure
+
+The replacement review of §10.1j found that admission and retention were complete but the evaluator
+still did not consume five already-settled semantic cells: prompt-size policy, the complete automatic
+snapshot set across invocations, the 64-entry static declaration cap, unavailable-source non-gate
+execution, and containment-first failure precedence. This is a new P1 after a revised full-diff
+review, so the matrix reopens `inner-retained-admission-bounds` as `evaluation-semantic-closure`
+rather than continuing the local patch loop. The root-cause audit also includes bounded TREE
+expansion in the evaluator's snapshot-result validator and the complete adapter-measurement state
+machine, because both are consumers of the same settled limits and precedence contract.
+
+| Reopened invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Prompt-size policy | evaluator render boundary and fixed adapter | reject an oversized parent as evaluation `ERROR`; return and validate an exact `POLICY_VIOLATION` measurement for an oversized candidate before runner execution | parent/candidate exact cap and cap plus one; oversized candidate leaves no runner marker and scores a serious `POLICY` regression |
+| Complete invocation drift | evaluator precheck comparison | compare the complete ordered snapshot digest array, including automatic and invocation-owned additional files, against the first invocation | mutate each automatic input between a prior postcheck and the next precheck; every mutation yields `PRECHECK_DRIFT` before adapter execution |
+| Snapshot declaration/resource parity | evaluator input and child-result validators plus snapshot helper | admit at most 64 static expectations and 32 additional files before any child; enumerate expected TREE paths with the same remaining 128-entry cap while walking, not after unbounded collection | exact static/additional/TREE caps pass; each cap plus one returns result-only `INVALID_INPUT` or a malformed-child terminal result without a child marker |
+| Unavailable-source non-gate path | verifier trust and task-source membership | require physical source membership only when corpus reachability is `VERIFIED`; preserve `UNVERIFIED` trust and execute the already-admitted project task boundary as non-gate comparison when the declared corpus root is absent or unreadable | absent and unreadable corpus roots retain `UNVERIFIED`, produce a complete non-gate pair, and never become `SNAPSHOT_ERROR` |
+| Complete measurement state machine | fixed adapter producer and evaluator child-result validator | enforce all `PASS`, `FAIL`, `POLICY_VIOLATION`, and `ERROR` field combinations; containment precedes cleanup, which precedes adapter/stage error | parameterized valid states plus contradictory status/failure/stage/flag/time/policy mutations; simultaneous containment and cleanup failure persists `CONTAINMENT` |
+| Durable continuation state | `HANDOFF.md` | record the §10.1j chain and review as superseded evidence and name this reopened matrix, replacement baseline, preflight, capable gate, and publication sequence | author-side matrix-to-diff and HANDOFF consistency pass |
+
 Applicability decisions:
 
 | Dimension | Decision |
