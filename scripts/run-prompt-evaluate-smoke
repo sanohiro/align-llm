@@ -1037,13 +1037,10 @@ def main() -> int:
             "content_sha256": "",
         })
         store(project, "artifacts/acceptance.json", acceptance)
-        allowed_variables = [
-            {"name": "LANG", "non_secret_value": "C", "source": "EXPLICIT_POLICY", "precedence": 0},
-            {"name": "LC_ALL", "non_secret_value": "C", "source": "EXPLICIT_POLICY", "precedence": 1},
-            {"name": "PATH", "non_secret_value": "/tools:/usr/bin:/bin", "source": "EXPLICIT_POLICY", "precedence": 2},
-            {"name": "PYTHONDONTWRITEBYTECODE", "non_secret_value": "1", "source": "EXPLICIT_POLICY", "precedence": 3},
-            {"name": "PYTHONNOUSERSITE", "non_secret_value": "1", "source": "EXPLICIT_POLICY", "precedence": 4},
-        ]
+        allowed_variable_values = {
+            "LANG": "C", "LC_ALL": "C", "PATH": "/tools:/usr/bin:/bin",
+            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+        }
         executable_paths = ["/usr/bin/python3"]
         for name in (
             "ALIGN_LLM_FRESH_COMPILER", "ALIGN_LLM_BWRAP", "ALIGN_LLM_PRLIMIT",
@@ -1051,12 +1048,16 @@ def main() -> int:
         ):
             value = os.environ.get(name)
             if value is not None:
-                allowed_variables.append({
-                    "name": name, "non_secret_value": value,
-                    "source": "EXPLICIT_POLICY", "precedence": len(allowed_variables),
-                })
+                allowed_variable_values[name] = value
                 if name in ("ALIGN_LLM_BWRAP", "ALIGN_LLM_PRLIMIT", "ALIGN_LLM_PYTHON"):
                     executable_paths.append(value)
+        allowed_variables = [
+            {
+                "name": name, "non_secret_value": value,
+                "source": "EXPLICIT_POLICY", "precedence": precedence,
+            }
+            for precedence, (name, value) in enumerate(sorted(allowed_variable_values.items()))
+        ]
         environment_policy = bind({
             "schema_version": 1, "artifact_kind": "ENVIRONMENT_POLICY", "policy_id": "fixture-environment",
             "allowed_variables": allowed_variables,
