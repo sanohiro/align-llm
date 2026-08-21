@@ -3142,7 +3142,7 @@ fn verifier_snapshot_result_valid(borrow snapshot: prompt_artifacts.SnapshotResu
     verifier_valid_text(snapshot.error, 4_096) &&
     if snapshot.error_code == "ENVIRONMENT" {
       match snapshot.environment_probe { None => true, Some(_) => false }
-    } else if snapshot.error_code == "INTERNAL" {
+    } else if snapshot.error_code == "INTERNAL" || snapshot.error_code == "CLEANUP" {
       match snapshot.environment_probe {
         None => false,
         Some(probe) => verifier_environment_probe_valid(probe),
@@ -3190,6 +3190,22 @@ fn verifier_snapshot_result_matches(
   snapshot.task_id == task_id
 }
 
+fn verifier_attestation_reports_environment_drift(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  snapshot_sha256: str,
+) -> bool {
+  if attestation.error_code != "ENVIRONMENT_DRIFT" {
+    return false
+  }
+  if attestation.before_snapshot_result_sha256 == snapshot_sha256 {
+    return true
+  }
+  return match attestation.after_snapshot_result_sha256 {
+    None => false,
+    Some(value) => value == snapshot_sha256,
+  }
+}
+
 fn verifier_snapshot_result_environment_valid(
   borrow snapshot: prompt_artifacts.SnapshotResult,
   borrow result: prompt_artifacts.PromptEvaluationResult,
@@ -3205,7 +3221,26 @@ fn verifier_snapshot_result_environment_valid(
       } else {
         match result.environment {
           None => verifier_environment_probe_valid(probe),
-          Some(environment) => verifier_probe_matches_environment(probe, environment),
+          Some(environment) => {
+            if verifier_probe_matches_environment(probe, environment) {
+              true
+            } else {
+              mut index := 0
+              mut attested := false
+              loop {
+                if index >= result.snapshot_attestations.len() { break }
+                if verifier_attestation_reports_environment_drift(
+                  result.snapshot_attestations[index],
+                  snapshot.content_sha256,
+                ) {
+                  attested = true
+                  break
+                }
+                index = index + 1
+              }
+              attested
+            }
+          },
         }
       }
     },
@@ -3736,9 +3771,16 @@ fn verifier_workspace_result_trace_valid(
       preflight.error_code == "ESCAPE" ||
       preflight.error_code == "NOT_EMPTY"
     } else {
-      preflight.error_code == "ENVIRONMENT" || preflight.error_code == "INTERNAL"
+      preflight.error_code == "ENVIRONMENT" || preflight.error_code == "INTERNAL" ||
+      preflight.error_code == "CLEANUP"
     }
-    result_code := if preflight.status == "UNSAFE" { "WORKSPACE_UNSAFE" } else { "SNAPSHOT_ERROR" }
+    result_code := if preflight.status == "UNSAFE" {
+      "WORKSPACE_UNSAFE"
+    } else if preflight.error_code == "CLEANUP" {
+      "CLEANUP_FAILED"
+    } else {
+      "SNAPSHOT_ERROR"
+    }
     paths_valid := verifier_valid_bounded_text(preflight.physical_project_root, 4_096) &&
     verifier_valid_bounded_text(preflight.physical_workspace_path, 4_096) &&
     (preflight.physical_project_root.len() == 0 || preflight.physical_workspace_path.len() == 0)

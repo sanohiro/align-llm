@@ -147,7 +147,82 @@ def main() -> int:
         require(module_spec is not None and module_spec.loader is not None, "snapshot helper module could not be loaded")
         module = importlib.util.module_from_spec(module_spec)
         module_spec.loader.exec_module(module)
+
+        bounded_tree = project / "bounded-tree"
+        bounded_tree.mkdir()
+        for index in range(127):
+            (bounded_tree / f"f{index:03d}").write_bytes(b"")
+        snapshot["static_expectations"] = [{
+            "path": "bounded-tree", "kind": "TREE",
+            "expected_sha256": tree_digest(project, "bounded-tree"),
+        }]
+        snapshot["additional_files"] = []
+        snapshot["allowed_workspace_entries"] = ["intruder"]
+        bounded = module.snapshot(snapshot)
+        require(bounded["status"] == "MATCH", "exactly 128 expanded tree entries were rejected")
+        (bounded_tree / "f127").write_bytes(b"")
+        snapshot["static_expectations"][0]["expected_sha256"] = tree_digest(project, "bounded-tree")
+        bind(snapshot)
+        require(module.snapshot(snapshot)["status"] == "ERROR", "129 expanded tree entries were accepted")
+        (bounded_tree / "f127").unlink()
+
+        byte_file = project / "byte-cap"
+        byte_file.write_bytes(b"1234")
+        snapshot["static_expectations"] = [{
+            "path": "byte-cap", "kind": "FILE",
+            "expected_sha256": hashlib.sha256(byte_file.read_bytes()).hexdigest(),
+        }]
+        bind(snapshot)
+        original_byte_cap = module.MAX_ARTIFACT_BYTES
+        module.MAX_ARTIFACT_BYTES = 4
+        require(module.snapshot(snapshot)["status"] == "MATCH", "exact aggregate byte cap was rejected")
+        byte_file.write_bytes(b"12345")
+        snapshot["static_expectations"][0]["expected_sha256"] = hashlib.sha256(byte_file.read_bytes()).hexdigest()
+        bind(snapshot)
+        require(module.snapshot(snapshot)["status"] == "ERROR", "aggregate byte cap plus one was accepted")
+        module.MAX_ARTIFACT_BYTES = original_byte_cap
+
+        repository = root / "repository"
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.email", "snapshot@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.name", "Snapshot Test"], check=True)
+        (repository / "tracked").write_text("tracked")
+        subprocess.run(["git", "-C", str(repository), "add", "tracked"], check=True)
+        subprocess.run(["git", "-C", str(repository), "commit", "-qm", "initial"], check=True)
+        repository_head = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        fsmonitor_marker = root / "fsmonitor-ran"
+        fsmonitor = root / "fsmonitor"
+        fsmonitor.write_text(f"#!/bin/sh\nprintf x > {shlex.quote(str(fsmonitor_marker))}\n")
+        fsmonitor.chmod(0o755)
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "core.fsmonitor", str(fsmonitor)], check=True,
+        )
+        try:
+            module.git_identity(repository, repository_head, True)
+            raise RuntimeError("command-bearing local Git config was accepted")
+        except module.SnapshotError:
+            pass
+        require(not fsmonitor_marker.exists(), "local core.fsmonitor executed before rejection")
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "--unset", "core.fsmonitor"], check=True,
+        )
+        module.reject_git_extensions(repository)
+        included_config = root / "included-git-config"
+        included_config.write_text("[core]\n\tfsmonitor = /bin/false\n")
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "include.path", str(included_config)], check=True,
+        )
+        try:
+            module.git_identity(repository, repository_head, True)
+            raise RuntimeError("local Git include configuration was accepted")
+        except module.SnapshotError:
+            pass
+
         original_cleanup = module.cleanup_process_group
+        original_reject_git_extensions = module.reject_git_extensions
         cleanup_calls = 0
 
         def counted_cleanup(process, maximum_seconds=2.0):
@@ -156,6 +231,7 @@ def main() -> int:
             return original_cleanup(process, maximum_seconds)
 
         module.cleanup_process_group = counted_cleanup
+        module.reject_git_extensions = lambda repository: None
         marker = root / "snapshot-git-descendant-survived"
         descendant_git = root / "descendant-git"
         descendant_git.write_text(
@@ -172,6 +248,7 @@ def main() -> int:
         require(cleanup_calls == 1, "snapshot Git descendant cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "snapshot helper left a Git descendant alive")
+        module.reject_git_extensions = original_reject_git_extensions
 
     print("prompt snapshot helper: PASS")
     return 0

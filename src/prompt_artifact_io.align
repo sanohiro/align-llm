@@ -69,6 +69,11 @@ fn read_bounded_beneath(root: str, relative: str, maximum: i64) -> Result<string
   return read_bounded_reader(reader, maximum)
 }
 
+pub fn verify_bounded_source_digest(root: str, relative: str, expected_sha256: str) -> bool {
+  source := read_bounded_beneath(root, relative, ARTIFACT_MAX_BYTES) else { return false }
+  return digest_text(source) == expected_sha256
+}
+
 fn failed_source(status: InputSourceStatus) -> InputSource {
   return InputSource { status: status, source: "".clone() }
 }
@@ -481,19 +486,87 @@ pub fn write_prompt_evaluation_pair(
   return detailed.status
 }
 
+pub fn publish_prompt_result_bytes_detailed(
+  project_root: str,
+  result_relative_path: str,
+  result_bytes: str,
+) -> PairWriteResult {
+  result_path := path.join(project_root, result_relative_path)
+  result_temporary_relative := temporary_path(result_relative_path, "result-only", "result")
+  result_temporary := path.join(project_root, result_temporary_relative)
+  mut result_temporary_owned := false
+  if !absent_beneath(project_root, result_relative_path) ||
+  !absent_beneath(project_root, result_temporary_relative) {
+    return pair_write_result(PairWriteStatus.OutputWrite)
+  }
+  match write_exclusive_detailed(result_temporary, result_bytes) {
+    Written => { result_temporary_owned = true },
+    CreateFailed => { return pair_write_result(PairWriteStatus.OutputWrite) },
+    WriteFailed => {
+      result_temporary_owned = true
+      cleaned := remove_if_owned(result_temporary, result_temporary_owned)
+      if cleaned { return pair_write_result(PairWriteStatus.OutputWrite) }
+      mut paths: array_builder<string> := array_builder()
+      if !absent_beneath(project_root, result_temporary_relative) {
+        paths.push(result_temporary_relative.clone())
+      }
+      return PairWriteResult {
+        status: PairWriteStatus.CleanupFailed,
+        surviving_owned_paths: paths.build(),
+      }
+    },
+  }
+  if !absent_beneath(project_root, result_relative_path) {
+    cleaned := remove_if_owned(result_temporary, result_temporary_owned)
+    if cleaned { return pair_write_result(PairWriteStatus.OutputWrite) }
+    mut paths: array_builder<string> := array_builder()
+    if !absent_beneath(project_root, result_temporary_relative) {
+      paths.push(result_temporary_relative.clone())
+    }
+    return PairWriteResult {
+      status: PairWriteStatus.CleanupFailed,
+      surviving_owned_paths: paths.build(),
+    }
+  }
+  return match fs.rename_no_replace(result_temporary, result_path) {
+    Ok(_) => pair_write_result(PairWriteStatus.Published),
+    Err(_) => {
+      cleaned := remove_if_owned(result_temporary, result_temporary_owned)
+      if cleaned { return pair_write_result(PairWriteStatus.OutputWrite) }
+      mut paths: array_builder<string> := array_builder()
+      if !absent_beneath(project_root, result_temporary_relative) {
+        paths.push(result_temporary_relative.clone())
+      }
+      PairWriteResult {
+        status: PairWriteStatus.CleanupFailed,
+        surviving_owned_paths: paths.build(),
+      }
+    },
+  }
+}
+
+pub fn write_prompt_evaluation_result_only_detailed(
+  project_root: str,
+  result_relative_path: str,
+  result: prompt_artifacts.PromptEvaluationResult,
+) -> PairWriteResult {
+  result_bytes := prompt_artifacts.encode_prompt_evaluation_result_bounded(result, EVALUATION_MAX_BYTES) else {
+    return pair_write_result(PairWriteStatus.OutputWrite)
+  }
+  return publish_prompt_result_bytes_detailed(project_root, result_relative_path, result_bytes)
+}
+
 pub fn write_prompt_evaluation_result_only(
   project_root: str,
   result_relative_path: str,
   result: prompt_artifacts.PromptEvaluationResult,
 ) -> PairWriteStatus {
-  result_bytes := prompt_artifacts.encode_prompt_evaluation_result_bounded(result, EVALUATION_MAX_BYTES) else {
-    return PairWriteStatus.OutputWrite
-  }
-  result_path := path.join(project_root, result_relative_path)
-  return match write_exclusive(result_path, result_bytes) {
-    Ok(_) => PairWriteStatus.Published,
-    Err(_) => PairWriteStatus.OutputWrite,
-  }
+  detailed := write_prompt_evaluation_result_only_detailed(
+    project_root,
+    result_relative_path,
+    result,
+  )
+  return detailed.status
 }
 
 pub fn read_prompt_activation_result_source(root: str, relative: str) -> InputSource {

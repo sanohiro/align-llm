@@ -8,6 +8,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import selectors
 import signal
 import stat
@@ -55,6 +56,40 @@ EVALUATE_REQUEST_FIELDS_OMITTED = tuple(
     name for name in EVALUATE_REQUEST_FIELDS if name != "verifier_corpus_file_set_manifest_path"
 )
 PR_SET_CHILD_SUBREAPER = 36
+ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+FIXED_ADAPTER_PATH = "scripts/prompt-fixed-adapter.py"
+FIXED_SNAPSHOT_HELPER_PATH = "scripts/prompt-snapshot-helper.py"
+ENVIRONMENT_PROBE_FIELDS = (
+    "schema_version", "artifact_kind", "producer", "os", "os_release", "architecture",
+    "cpu", "logical_cpu_count", "gpu", "runtime_identity", "content_sha256",
+)
+ARTIFACT_DIGEST_FIELDS = ("path", "mode", "byte_count", "sha256")
+SNAPSHOT_RESULT_FIELDS = (
+    "schema_version", "artifact_kind", "task_id", "status", "error_code", "error",
+    "environment_probe", "artifact_digests", "content_sha256",
+)
+WORKSPACE_PREFLIGHT_RESULT_FIELDS = (
+    "schema_version", "artifact_kind", "evaluation_id", "status", "error_code", "error",
+    "physical_project_root", "physical_workspace_path", "environment_probe", "content_sha256",
+)
+TASK_MEASUREMENT_FIELDS = (
+    "schema_version", "artifact_kind", "status", "failure_kind", "build_status", "test_status",
+    "repair_loop_count", "unrelated_diff_count", "patch_size_bytes", "public_api_change_count",
+    "policy_violation_count", "cleanup_passed", "containment_passed", "benchmark_regression_ppm",
+    "generation_to_passing_patch_ns", "rendered_prompt_sha256", "generation_request",
+    "environment_probe", "seed_attestation", "diagnostic_summary", "diagnostic_stdout",
+    "diagnostic_stderr", "content_sha256",
+)
+GENERATION_REQUEST_FIELDS = (
+    "schema_version", "artifact_kind", "rendered_prompt_sha256", "system_text_sha256",
+    "user_text_sha256", "generation_policy_sha256", "provider_control_sha256",
+    "environment_policy_sha256", "max_tokens", "temperature_micros", "paired_seed",
+    "provider_request_sha256", "seed_attestation_sha256", "content_sha256",
+)
+SEED_ATTESTATION_FIELDS = (
+    "schema_version", "artifact_kind", "provider_kind", "provider_model", "requested_seed",
+    "result", "applied_seed", "provider_request_sha256", "content_sha256",
+)
 
 
 def enable_child_subreaper() -> bool:
@@ -489,6 +524,7 @@ def child_environment(policy: Mapping[str, Any]) -> dict[str, str]:
     executable_paths = policy.get("executable_paths")
     if not isinstance(executable_paths, list) or len(executable_paths) > 32:
         raise EvaluationError("environment executable policy exceeds its bound")
+    executable_total = 0
     if any(
         not isinstance(item, str)
         or not item.startswith("/")
@@ -498,6 +534,13 @@ def child_environment(policy: Mapping[str, Any]) -> dict[str, str]:
         for item in executable_paths
     ):
         raise EvaluationError("environment executable path is invalid")
+    for item in executable_paths:
+        executable_total += len(item.encode("utf-8"))
+        if executable_total > 65_536:
+            raise EvaluationError("environment executable policy exceeds its byte bound")
+    locale = policy.get("locale")
+    if not isinstance(locale, str) or not locale or len(locale.encode("utf-8")) > 64 or "\0" in locale:
+        raise EvaluationError("environment locale is invalid")
     output: dict[str, str] = {}
     prior = ""
     total = 0
@@ -511,11 +554,12 @@ def child_environment(policy: Mapping[str, Any]) -> dict[str, str]:
             or not name
             or len(name.encode("utf-8")) > 256
             or "\0" in name
+            or ENVIRONMENT_NAME.fullmatch(name) is None
             or not isinstance(value, str)
             or len(value.encode("utf-8")) > 4096
             or "\0" in value
             or not isinstance(item["source"], str)
-            or not item["source"]
+            or item["source"] != "EXPLICIT_POLICY"
             or item["precedence"] != ordinal
             or name <= prior
             or name in output
@@ -526,6 +570,8 @@ def child_environment(policy: Mapping[str, Any]) -> dict[str, str]:
             raise EvaluationError("environment policy exceeds its byte bound")
         output[name] = value
         prior = name
+    if output.get("LANG") != locale or output.get("LC_ALL") != locale:
+        raise EvaluationError("environment locale disagrees with LANG or LC_ALL")
     return output
 
 
@@ -722,6 +768,266 @@ def cleanup_owned_paths(owned_paths: set[Path]) -> list[Path]:
     return sorted(owned_paths, key=lambda item: os.fsencode(item))
 
 
+def valid_environment_probe(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and tuple(value) == ENVIRONMENT_PROBE_FIELDS
+        and value.get("schema_version") == 1
+        and value.get("artifact_kind") == "ENVIRONMENT_PROBE"
+        and all(
+            isinstance(value.get(name), str) and 0 < len(value[name].encode("utf-8")) <= 256
+            for name in ("producer", "os", "os_release", "architecture", "cpu", "gpu", "runtime_identity")
+        )
+        and (
+            value.get("logical_cpu_count") is None
+            or isinstance(value.get("logical_cpu_count"), int)
+            and not isinstance(value.get("logical_cpu_count"), bool)
+            and 0 < value["logical_cpu_count"] <= 1_048_576
+        )
+        and valid_hex(value.get("content_sha256"))
+        and canonical_digest({**value, "content_sha256": ""}) == value["content_sha256"]
+    )
+
+
+def valid_artifact_digest(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and tuple(value) == ARTIFACT_DIGEST_FIELDS
+        and isinstance(value.get("path"), str)
+        and 0 < len(value["path"].encode("utf-8")) <= 4096
+        and isinstance(value.get("mode"), str)
+        and 0 < len(value["mode"].encode("utf-8")) <= 16
+        and isinstance(value.get("byte_count"), int)
+        and not isinstance(value.get("byte_count"), bool)
+        and value["byte_count"] >= 0
+        and valid_hex(value.get("sha256"))
+    )
+
+
+def valid_snapshot_result(value: Any, task_id: str) -> bool:
+    if (
+        not isinstance(value, dict)
+        or tuple(value) != SNAPSHOT_RESULT_FIELDS
+        or value.get("schema_version") != 1
+        or value.get("artifact_kind") != "SNAPSHOT_RESULT"
+        or value.get("task_id") != task_id
+        or value.get("status") not in ("MATCH", "MISMATCH", "ERROR")
+        or not isinstance(value.get("error_code"), str)
+        or not isinstance(value.get("error"), str)
+        or not isinstance(value.get("artifact_digests"), list)
+        or len(value["artifact_digests"]) > 160
+        or not all(valid_artifact_digest(item) for item in value["artifact_digests"])
+        or len({item["path"] for item in value["artifact_digests"]}) != len(value["artifact_digests"])
+    ):
+        return False
+    if value["environment_probe"] is not None and not valid_environment_probe(value["environment_probe"]):
+        return False
+    if value["status"] == "MATCH":
+        return value["error_code"] == "NONE" and value["error"] == "" and value["environment_probe"] is not None
+    if not 0 < len(value["error"].encode("utf-8")) <= 4096:
+        return False
+    if value["status"] == "MISMATCH":
+        return (
+            value["error_code"] in ("PATH", "TYPE", "MODE", "CONTENT", "TREE", "REPO_REVISION", "DIRTY_REPO")
+            and value["environment_probe"] is not None
+        )
+    return (
+        value["error_code"] == "ENVIRONMENT" and value["environment_probe"] is None
+        or value["error_code"] in ("INTERNAL", "CLEANUP") and value["environment_probe"] is not None
+    )
+
+
+def valid_workspace_preflight(value: Any, evaluation_id: str) -> bool:
+    if not (
+        isinstance(value, dict)
+        and tuple(value) == WORKSPACE_PREFLIGHT_RESULT_FIELDS
+        and value.get("schema_version") == 1
+        and value.get("artifact_kind") == "WORKSPACE_PREFLIGHT_RESULT"
+        and value.get("evaluation_id") == evaluation_id
+        and value.get("status") in ("SAFE", "UNSAFE", "ERROR")
+        and isinstance(value.get("error_code"), str)
+        and isinstance(value.get("error"), str)
+        and isinstance(value.get("physical_project_root"), str)
+        and isinstance(value.get("physical_workspace_path"), str)
+        and (
+            value.get("environment_probe") is None
+            or valid_environment_probe(value.get("environment_probe"))
+        )
+    ):
+        return False
+    if value["status"] == "SAFE":
+        return (
+            value["error_code"] == "NONE"
+            and value["error"] == ""
+            and value["physical_project_root"] != ""
+            and value["physical_workspace_path"] != ""
+            and value["environment_probe"] is not None
+        )
+    if not 0 < len(value["error"].encode("utf-8")) <= 4096:
+        return False
+    paths_valid = value["physical_project_root"] == "" or value["physical_workspace_path"] == ""
+    if value["status"] == "UNSAFE":
+        return (
+            value["error_code"] in ("TYPE", "SYMLINK", "ESCAPE", "NOT_EMPTY")
+            and paths_valid
+            and value["environment_probe"] is None
+        )
+    return (
+        value["error_code"] in ("ENVIRONMENT", "INTERNAL", "CLEANUP")
+        and paths_valid
+        and value["environment_probe"] is None
+    )
+
+
+def valid_task_measurement(
+    value: Any, task: Mapping[str, Any], rendered_sha256: str,
+    adapter_request: Mapping[str, Any], sample: int, seed: int,
+) -> bool:
+    if (
+        not isinstance(value, dict)
+        or tuple(value) != TASK_MEASUREMENT_FIELDS
+        or value.get("schema_version") != 1
+        or value.get("artifact_kind") != "TASK_MEASUREMENT"
+        or value.get("status") not in ("PASS", "FAIL", "ERROR")
+        or value.get("failure_kind") not in (
+            "NONE", "PROVIDER", "PATCH", "BUILD", "TEST", "POLICY", "CLEANUP", "CONTAINMENT", "ADAPTER",
+        )
+        or value.get("build_status") not in ("PASS", "FAIL", "NOT_RUN", "ERROR")
+        or value.get("test_status") not in ("PASS", "FAIL", "NOT_RUN", "ERROR")
+        or not isinstance(value.get("cleanup_passed"), bool)
+        or not isinstance(value.get("containment_passed"), bool)
+        or value.get("rendered_prompt_sha256") != rendered_sha256
+        or not all(isinstance(value.get(name), str) for name in (
+            "failure_kind", "build_status", "test_status", "diagnostic_summary",
+            "diagnostic_stdout", "diagnostic_stderr",
+        ))
+        or not all(
+            isinstance(value.get(name), int) and not isinstance(value.get(name), bool) and value[name] >= 0
+            for name in (
+                "repair_loop_count", "unrelated_diff_count", "patch_size_bytes",
+                "public_api_change_count", "policy_violation_count",
+            )
+        )
+        or value["repair_loop_count"] > 64
+        or value["unrelated_diff_count"] > 1_048_576
+        or value["patch_size_bytes"] > 67_108_864
+        or value["public_api_change_count"] > 1_048_576
+        or value["policy_violation_count"] > 1_048_576
+        or (
+            value.get("benchmark_regression_ppm") is not None
+            and (
+                not isinstance(value.get("benchmark_regression_ppm"), int)
+                or isinstance(value.get("benchmark_regression_ppm"), bool)
+                or value["benchmark_regression_ppm"] < 0
+                or value["benchmark_regression_ppm"] > 1_000_000
+            )
+        )
+        or (
+            value.get("generation_to_passing_patch_ns") is not None
+            and (
+                not isinstance(value.get("generation_to_passing_patch_ns"), int)
+                or isinstance(value.get("generation_to_passing_patch_ns"), bool)
+                or value["generation_to_passing_patch_ns"] <= 0
+                or value["generation_to_passing_patch_ns"] > 7_200_000_000_000
+            )
+        )
+    ):
+        return False
+    generation = value.get("generation_request")
+    attestation = value.get("seed_attestation")
+    if (
+        not isinstance(generation, dict)
+        or tuple(generation) != GENERATION_REQUEST_FIELDS
+        or generation.get("schema_version") != 1
+        or generation.get("artifact_kind") != "GENERATION_REQUEST_IDENTITY"
+        or generation.get("rendered_prompt_sha256") != rendered_sha256
+        or generation.get("paired_seed") != seed
+        or not all(valid_hex(generation.get(name)) for name in (
+            "rendered_prompt_sha256", "system_text_sha256", "user_text_sha256",
+            "generation_policy_sha256", "provider_control_sha256", "environment_policy_sha256",
+            "provider_request_sha256", "seed_attestation_sha256", "content_sha256",
+        ))
+        or not all(
+            isinstance(generation.get(name), int)
+            and not isinstance(generation.get(name), bool)
+            and -(2**63) <= generation[name] <= 2**63 - 1
+            for name in ("max_tokens", "temperature_micros", "paired_seed")
+        )
+        or generation.get("max_tokens", 0) <= 0
+        or generation.get("temperature_micros", -1) < 0
+        or not valid_hex(generation.get("content_sha256"))
+        or canonical_digest({**generation, "content_sha256": ""}) != generation.get("content_sha256")
+        or not isinstance(attestation, dict)
+        or tuple(attestation) != SEED_ATTESTATION_FIELDS
+        or attestation.get("schema_version") != 1
+        or attestation.get("artifact_kind") != "SEED_CAPABILITY_ATTESTATION"
+        or attestation.get("requested_seed") != seed
+        or not isinstance(attestation.get("provider_kind"), str)
+        or not 0 < len(attestation["provider_kind"].encode("utf-8")) <= 256
+        or not isinstance(attestation.get("provider_model"), str)
+        or not 0 < len(attestation["provider_model"].encode("utf-8")) <= 256
+        or attestation.get("result") not in ("APPLIED", "UNSUPPORTED", "REJECTED")
+        or (
+            attestation.get("applied_seed") is not None
+            and (
+                not isinstance(attestation.get("applied_seed"), int)
+                or isinstance(attestation.get("applied_seed"), bool)
+                or not -(2**63) <= attestation["applied_seed"] <= 2**63 - 1
+            )
+        )
+        or not valid_hex(attestation.get("provider_request_sha256"))
+        or not valid_hex(attestation.get("content_sha256"))
+        or canonical_digest({**attestation, "content_sha256": ""}) != attestation.get("content_sha256")
+        or attestation.get("provider_request_sha256") != generation.get("provider_request_sha256")
+        or generation.get("seed_attestation_sha256") != attestation.get("content_sha256")
+        or not valid_environment_probe(value.get("environment_probe"))
+        or len(value["diagnostic_summary"].encode("utf-8")) > 4096
+        or len(value["diagnostic_stdout"].encode("utf-8")) > 16384
+        or len(value["diagnostic_stderr"].encode("utf-8")) > 16384
+        or (
+            task["regression_limits"].get("maximum_benchmark_regression_ppm") is None
+            and value.get("benchmark_regression_ppm") is not None
+        )
+        or (
+            task["regression_limits"].get("maximum_benchmark_regression_ppm") is not None
+            and value["status"] == "PASS"
+            and value.get("benchmark_regression_ppm") is None
+        )
+        or (
+            task["regression_limits"].get("maximum_benchmark_regression_ppm") is not None
+            and value["status"] != "PASS"
+            and value.get("benchmark_regression_ppm") is not None
+        )
+        or (
+            attestation.get("result") == "APPLIED"
+            and attestation.get("applied_seed") != seed
+        )
+        or (
+            attestation.get("result") != "APPLIED"
+            and attestation.get("applied_seed") is not None
+        )
+    ):
+        return False
+    return (
+        adapter_request.get("task_id") == task.get("task_id")
+        and adapter_request.get("sample_index") == sample
+        and adapter_request.get("paired_seed") == seed
+    )
+
+
+def classify_task_drift(
+    environment_probe: Mapping[str, Any],
+    artifact_digests: Sequence[Mapping[str, Any]],
+    baseline_environment_probe: Mapping[str, Any],
+    baseline_artifact_digests: Sequence[Mapping[str, Any]],
+) -> str:
+    if environment_probe != baseline_environment_probe:
+        return "ENVIRONMENT_DRIFT"
+    if artifact_digests != baseline_artifact_digests:
+        return "INPUT_DRIFT"
+    return "NONE"
+
+
 def invocation_workspace_entries(*paths: Path) -> list[str]:
     """Return the exact current invocation namespace admitted by both snapshots."""
     return sorted(path.name for path in paths)
@@ -752,7 +1058,7 @@ def invoke_snapshot(
         if completed.returncode != 0 or completed.stdout or completed.stderr:
             raise EvaluationError("snapshot helper process failed")
         result = load_bound(result_path, "SNAPSHOT_RESULT", SNAPSHOT_LIMIT)
-        if result.get("task_id") != task["task_id"] or result.get("status") not in ("MATCH", "MISMATCH", "ERROR"):
+        if not valid_snapshot_result(result, task["task_id"]):
             raise EvaluationError("snapshot helper result is invalid")
         return result
     except ChildBoundaryError as failure:
@@ -829,6 +1135,10 @@ def invoke_adapter(
         raise AdapterFailure("ADAPTER_RESULT", "measurement adapter process failed")
     try:
         measurement = load_bound(measurement_path, "TASK_MEASUREMENT", MEASUREMENT_LIMIT)
+        if not valid_task_measurement(
+            measurement, task, adapter_request["rendered_prompt_sha256"], adapter_request, sample, seed,
+        ):
+            raise EvaluationError("measurement adapter result is semantically invalid")
     except (EvaluationError, OSError, TypeError, ValueError, KeyError):
         if not retire_owned_path(measurement_path, owned_paths):
             raise AdapterFailure("CLEANUP_FAILED", "measurement artifact cleanup failed") from None
@@ -1342,6 +1652,52 @@ def validation_error_code(error: BaseException) -> str:
     return "INVALID_SCHEMA"
 
 
+def verify_task_source_membership(
+    request: Mapping[str, Any], tasks: Sequence[Mapping[str, Any]], project: Path,
+) -> None:
+    source = physical_directory(Path(request["verifier_corpus_source_path"]))
+    admitted: set[str] = set()
+    for task in tasks:
+        artifacts = task.get("artifacts")
+        if not isinstance(artifacts, list) or len(artifacts) > 64:
+            raise EvaluationError("task source artifact count is invalid")
+        for expectation in artifacts:
+            if not isinstance(expectation, dict) or expectation.get("kind") not in ("FILE", "TREE"):
+                raise EvaluationError("task source artifact declaration is invalid")
+            if expectation["kind"] == "TREE":
+                continue
+            relative = expectation.get("path")
+            expected = expectation.get("expected_sha256")
+            if not isinstance(relative, str) or not valid_hex(expected):
+                raise EvaluationError("task source artifact declaration is invalid")
+            project_path = relative_path(project, relative)
+            source_path = relative_path(source, relative)
+            project_file = RetainedRegularFile(project_path, ARTIFACT_LIMIT)
+            try:
+                source_file = RetainedRegularFile(source_path, ARTIFACT_LIMIT)
+                try:
+                    if project_file.sha256() != expected or source_file.sha256() != expected:
+                        raise EvaluationError("task execution source is not a reviewed corpus member")
+                finally:
+                    source_file.close()
+            finally:
+                project_file.close()
+            admitted.add(relative)
+    if FIXED_ADAPTER_PATH not in admitted or FIXED_SNAPSHOT_HELPER_PATH not in admitted:
+        raise EvaluationError("fixed evaluator helpers are absent from reviewed task source")
+
+
+def validated_task_files(value: Any) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or len(value) < 1
+        or len(value) > 64
+        or not all(isinstance(item, str) for item in value)
+    ):
+        raise EvaluationError("corpus task count is invalid")
+    return value
+
+
 def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> dict[str, Any]:
     if request["sample_count"] < 2 or request["sample_count"] > 16:
         raise EvaluationError("sample count is invalid")
@@ -1357,9 +1713,8 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
     corpus = load_bound(relative_path(project, request["corpus_path"]), "PROMPT_EVALUATION_CORPUS")
     acceptance = load_bound(relative_path(project, request["acceptance_policy_path"]), "PROMPT_ACCEPTANCE_POLICY")
     preflight_request = load_bound(relative_path(project, request["workspace_preflight_path"]), "WORKSPACE_PREFLIGHT_REQUEST")
-    tasks = [load_bound(relative_path(project, item), "PROMPT_EVALUATION_TASK") for item in corpus["task_files"]]
-    if len(tasks) < 1 or len(tasks) > 64:
-        raise EvaluationError("corpus task count is invalid")
+    task_files = validated_task_files(corpus.get("task_files"))
+    tasks = [load_bound(relative_path(project, item), "PROMPT_EVALUATION_TASK") for item in task_files]
     first_task = tasks[0]
     generation = load_bound(relative_path(project, first_task["generation_policy_path"]), "GENERATION_POLICY")
     control = load_bound(relative_path(project, first_task["provider_control_path"]), "EVALUATION_PROVIDER_CONTROL")
@@ -1396,6 +1751,21 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
             raise EvaluationError("task working directory is invalid")
         validate_task_command(task, "cmd", environment_policy, project)
         validate_task_command(task, "snapshot_cmd", environment_policy, project)
+        artifact_paths = {
+            expectation.get("path") for expectation in task.get("artifacts", [])
+            if isinstance(expectation, dict) and expectation.get("kind") == "FILE"
+        }
+        if (
+            len(task["argv"]) != 2
+            or task["argv"][0] != task["cmd"]
+            or task["argv"][1] not in artifact_paths
+            or len(task["snapshot_argv"]) != 2
+            or task["snapshot_argv"][0] != task["snapshot_cmd"]
+            or task["snapshot_argv"][1] not in artifact_paths
+        ):
+            raise EvaluationError("task executable is not the fixed reviewed adapter boundary")
+        relative_path(project, task["argv"][1])
+        relative_path(project, task["snapshot_argv"][1])
         task_generation = load_bound(relative_path(project, task["generation_policy_path"]), "GENERATION_POLICY")
         task_control = load_bound(relative_path(project, task["provider_control_path"]), "EVALUATION_PROVIDER_CONTROL")
         task_environment = load_bound(relative_path(project, task["environment_policy_path"]), "ENVIRONMENT_POLICY")
@@ -1516,6 +1886,39 @@ def evaluate(
         "preflight_request": preflight_request,
     }
 
+    def failed_preflight(error_code: str, detail: str) -> dict[str, Any]:
+        return bind({
+            "schema_version": 1,
+            "artifact_kind": "WORKSPACE_PREFLIGHT_RESULT",
+            "evaluation_id": request["evaluation_id"],
+            "status": "ERROR",
+            "error_code": error_code,
+            "error": detail,
+            "physical_project_root": "",
+            "physical_workspace_path": "",
+            "environment_probe": None,
+            "content_sha256": "",
+        })
+
+    try:
+        trust = source_trust(request, source_policy, project, environment_values)
+        verify_task_source_membership(request, tasks, project)
+    except AdapterFailure as failure:
+        preflight = failed_preflight("CLEANUP", failure.detail)
+        result = evaluation_result_record(
+            result_context, "ERROR", failure.code, failure.detail, preflight, None,
+            [], [], [], [], [],
+        )
+        return prepare_pair(result, trust, [])
+    except (EvaluationError, OSError, TypeError, KeyError, ValueError) as failure:
+        detail = str(failure)[:4096] or "reviewed source admission failed"
+        preflight = failed_preflight("INTERNAL", detail)
+        result = evaluation_result_record(
+            result_context, "ERROR", "SNAPSHOT_ERROR", detail, preflight, None,
+            [], [], [], [], [],
+        )
+        return prepare_pair(result, trust, [])
+
     preflight_path = relative_path(project, request["workspace_preflight_path"])
     snapshot_command = command(first_task, "snapshot_argv", project)
     try:
@@ -1532,7 +1935,11 @@ def evaluate(
         normalized_preflight = dict(preflight)
         claimed = normalized_preflight.get("content_sha256")
         normalized_preflight["content_sha256"] = ""
-        if not valid_hex(claimed) or hashlib.sha256(canonical_digest_bytes(normalized_preflight)).hexdigest() != claimed:
+        if (
+            not valid_hex(claimed)
+            or hashlib.sha256(canonical_digest_bytes(normalized_preflight)).hexdigest() != claimed
+            or not valid_workspace_preflight(preflight, request["evaluation_id"])
+        ):
             raise EvaluationError("workspace preflight result is malformed")
     except ChildBoundaryError as failure:
         preflight = bind({
@@ -1569,19 +1976,6 @@ def evaluate(
         detail = preflight.get("error", "workspace preflight failed")
         result = evaluation_result_record(
             result_context, "ERROR", result_code, detail, preflight, None, [], [], [], [], [],
-        )
-        return prepare_pair(result, trust, [])
-    try:
-        trust = source_trust(request, source_policy, project, environment_values)
-    except AdapterFailure as failure:
-        result = evaluation_result_record(
-            result_context, "ERROR", failure.code, failure.detail, preflight, None, [], [], [], [], [],
-        )
-        return prepare_pair(result, trust, [])
-    except EvaluationError:
-        result = evaluation_result_record(
-            result_context, "ERROR", "INPUT_DRIFT", "source verifier executable identity drifted",
-            preflight, None, [], [], [], [], [],
         )
         return prepare_pair(result, trust, [])
     seed_base = generation.get("seed_base")
@@ -1645,6 +2039,8 @@ def evaluate(
 
     for task_ordinal, task in enumerate(tasks):
         task_prompt, context = task_inputs[task_ordinal]
+        baseline_artifact_digests: list[dict[str, Any]] | None = None
+        baseline_environment_probe: dict[str, Any] | None = None
         with tempfile.TemporaryDirectory(prefix="prompt-snapshot-request-") as request_directory:
             schedule = []
             for sample in range(1, request["sample_count"] + 1):
@@ -1756,6 +2152,41 @@ def evaluate(
                     })
                     if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
                         input_snapshots.append(input_snapshot)
+                    current_static_digests = before["artifact_digests"][:len(task["artifacts"])]
+                    if baseline_artifact_digests is None:
+                        baseline_artifact_digests = current_static_digests
+                        baseline_environment_probe = before["environment_probe"]
+                    else:
+                        drift_code = "NONE"
+                        drift_detail = ""
+                        drift_code = classify_task_drift(
+                            before["environment_probe"], current_static_digests,
+                            baseline_environment_probe, baseline_artifact_digests,
+                        )
+                        if drift_code == "ENVIRONMENT_DRIFT":
+                            drift_detail = "task environment drifted between adapter invocations"
+                        elif drift_code == "INPUT_DRIFT":
+                            drift_detail = "task input drifted between adapter invocations"
+                        if drift_code != "NONE":
+                            attestations.append(bind({
+                                "schema_version": 1,
+                                "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
+                                "task_id": task["task_id"],
+                                "sample_index": sample,
+                                "variant": variant_name,
+                                "status": "PRECHECK_DRIFT",
+                                "error_code": drift_code,
+                                "error": drift_detail,
+                                "snapshot_request_sha256": snapshot_request["content_sha256"],
+                                "before_snapshot_result_sha256": before["content_sha256"],
+                                "after_snapshot_result_sha256": None,
+                                "before_input_snapshot_sha256": input_snapshot["content_sha256"],
+                                "after_input_snapshot_sha256": None,
+                                "content_sha256": "",
+                            }))
+                            return finish(
+                                evaluation_result("ERROR", drift_code, drift_detail), checkpoint,
+                            )
                     if not retire_owned_path(snapshot_result_path, owned_paths):
                         return finish(
                             evaluation_result(
@@ -1851,7 +2282,21 @@ def evaluate(
                             evaluation_result("ERROR", failure_code, failure_detail), checkpoint,
                             cleanup_diagnosed=failure_code == "CLEANUP_FAILED",
                         )
-                    if before["artifact_digests"] != after["artifact_digests"]:
+                    after_static_digests = after["artifact_digests"][:len(task["artifacts"])]
+                    post_drift_code = "NONE"
+                    post_drift_detail = ""
+                    post_drift_code = classify_task_drift(
+                        after["environment_probe"], after_static_digests,
+                        baseline_environment_probe, baseline_artifact_digests,
+                    )
+                    if post_drift_code == "ENVIRONMENT_DRIFT":
+                        post_drift_detail = "task environment drifted after adapter invocation"
+                    elif post_drift_code == "INPUT_DRIFT":
+                        post_drift_detail = "task input drifted from its first admitted invocation"
+                    elif before["artifact_digests"] != after["artifact_digests"]:
+                        post_drift_code = "INPUT_DRIFT"
+                        post_drift_detail = "task input drifted after adapter invocation"
+                    if post_drift_code != "NONE":
                         after_input_snapshot = bind({
                             "schema_version": 1,
                             "artifact_kind": "TASK_INPUT_SNAPSHOT",
@@ -1863,7 +2308,6 @@ def evaluate(
                         })
                         if not any(item["content_sha256"] == after_input_snapshot["content_sha256"] for item in input_snapshots):
                             input_snapshots.append(after_input_snapshot)
-                        failure_detail = "task input drifted after adapter invocation"
                         attestations.append(bind({
                             "schema_version": 1,
                             "artifact_kind": "RUN_SNAPSHOT_ATTESTATION",
@@ -1871,8 +2315,8 @@ def evaluate(
                             "sample_index": sample,
                             "variant": variant_name,
                             "status": "POSTCHECK_DRIFT",
-                            "error_code": "INPUT_DRIFT",
-                            "error": failure_detail,
+                            "error_code": post_drift_code,
+                            "error": post_drift_detail,
                             "snapshot_request_sha256": snapshot_request["content_sha256"],
                             "before_snapshot_result_sha256": before["content_sha256"],
                             "after_snapshot_result_sha256": after["content_sha256"],
@@ -1881,7 +2325,7 @@ def evaluate(
                             "content_sha256": "",
                         }))
                         return finish(
-                            evaluation_result("ERROR", "INPUT_DRIFT", failure_detail), checkpoint,
+                            evaluation_result("ERROR", post_drift_code, post_drift_detail), checkpoint,
                         )
                     evaluation_input = bind({
                         "schema_version": 1, "artifact_kind": "EVALUATION_INPUT_IDENTITY", "task_id": task["task_id"],

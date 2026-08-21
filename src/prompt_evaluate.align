@@ -5,6 +5,9 @@ import prompt_score
 import std.path
 import std.process
 
+EVALUATOR_SOURCE_RELATIVE := "scripts/prompt-evaluate.py"
+EVALUATOR_SOURCE_SHA256 := "c4a9561f8de3027abc0ab408d7f9067cb463b17e987c9b3085e0b907542f5d92"
+
 pub PromptEvaluateStatus { Published, InvalidInput, EvaluationFailed, OutputWrite, CleanupFailed }
 
 fn print_owned_text(borrow value: string) {
@@ -82,12 +85,24 @@ fn publish_evaluator_output(
       if result.status != "INVALID_INPUT" {
         return Err(Error.Invalid)
       }
-      published := prompt_artifact_io.write_prompt_evaluation_result_only(
+      published := prompt_artifact_io.write_prompt_evaluation_result_only_detailed(
         project_root,
         result_relative,
         result,
       )
-      return Ok(match published {
+      match published.status {
+        CleanupFailed => {
+          print("recovery paths:")
+          mut index := 0
+          loop {
+            if index >= published.surviving_owned_paths.len() { break }
+            print_owned_text(published.surviving_owned_paths[index])
+            index = index + 1
+          }
+        },
+        _ => {},
+      }
+      return Ok(match published.status {
           Published => PromptEvaluateStatus.InvalidInput,
           OutputWrite => PromptEvaluateStatus.OutputWrite,
           CleanupFailed => PromptEvaluateStatus.CleanupFailed,
@@ -136,7 +151,14 @@ pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateS
     return PromptEvaluateStatus.InvalidInput
   }
 
-  evaluator := path.join(request.project_root, "scripts/prompt-evaluate.py")
+  if !prompt_artifact_io.verify_bounded_source_digest(
+    request.project_root,
+    EVALUATOR_SOURCE_RELATIVE,
+    EVALUATOR_SOURCE_SHA256,
+  ) {
+    return PromptEvaluateStatus.InvalidInput
+  }
+  evaluator := path.join(request.project_root, EVALUATOR_SOURCE_RELATIVE)
   evaluator_view: str := evaluator
   evidence_relative_view: str := request.evaluation_evidence_path
 

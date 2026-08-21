@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import selectors
 import signal
 import stat
@@ -21,10 +22,33 @@ from typing import Any, Mapping, Sequence
 
 REQUEST_LIMIT = 1_048_576
 RESULT_LIMIT = 1_048_576
-MAX_ARTIFACTS = 4096
+MAX_EXPANDED_ARTIFACTS = 128
+MAX_STATIC_EXPECTATIONS = 64
+MAX_ADDITIONAL_FILES = 32
+MAX_ARTIFACT_BYTES = 1_073_741_824
 GIT_OUTPUT_LIMIT = 262_144
 HEX64 = frozenset("0123456789abcdef")
 PR_SET_CHILD_SUBREAPER = 36
+ALLOWED_LOCAL_KEYS = (
+    re.compile(r"^remote\.[^.]+\.(url|pushurl|fetch)$"),
+    re.compile(r"^branch\.[^.]+\.(remote|merge)$"),
+)
+REJECTED_EXACT_KEYS = frozenset({
+    "core.alternaterefscommand", "core.askpass", "core.attributesfile", "core.editor",
+    "core.excludesfile", "core.fsmonitor", "core.fsmonitorhookversion", "core.gitproxy",
+    "core.hookspath", "core.pager", "core.sshcommand", "core.worktree", "credential.helper",
+    "diff.external", "gpg.program", "sequence.editor", "uploadpack.packobjectshook",
+})
+REJECTED_KEY_PATTERNS = (
+    re.compile(r"^alias\."), re.compile(r"^browser\..*\.(cmd|path)$"),
+    re.compile(r"^credential\."), re.compile(r"^diff\..*\.(command|textconv)$"),
+    re.compile(r"^difftool\..*\.(cmd|path)$"), re.compile(r"^filter\..*\.(clean|smudge|process)$"),
+    re.compile(r"^gpg\..*\.program$"), re.compile(r"^guitool\..*\.cmd$"),
+    re.compile(r"^http\..*\.proxy$"), re.compile(r"^include\."), re.compile(r"^includeif\."),
+    re.compile(r"^man\..*\.(cmd|path)$"), re.compile(r"^mergetool\..*\.(cmd|path)$"),
+    re.compile(r"^pager\."),
+    re.compile(r"^remote\..*\.(promisor|partialclonefilter|proxy|receivepack|uploadpack)$"),
+)
 
 
 def enable_child_subreaper() -> bool:
@@ -261,7 +285,7 @@ def open_relative(root: Path, raw: bytes) -> tuple[int, os.stat_result]:
         os.close(current)
 
 
-def digest_file(root: Path, raw: bytes) -> dict[str, Any]:
+def digest_file(root: Path, raw: bytes, maximum_bytes: int = MAX_ARTIFACT_BYTES) -> dict[str, Any]:
     descriptor, metadata = open_relative(root, raw)
     try:
         if not stat.S_ISREG(metadata.st_mode):
@@ -269,10 +293,12 @@ def digest_file(root: Path, raw: bytes) -> dict[str, Any]:
         digest = hashlib.sha256()
         size = 0
         while True:
-            chunk = os.read(descriptor, 1_048_576)
+            chunk = os.read(descriptor, min(1_048_576, maximum_bytes + 1 - size))
             if not chunk:
                 break
             size += len(chunk)
+            if size > maximum_bytes:
+                raise SnapshotError("snapshot artifact bytes exceed the aggregate cap")
             digest.update(chunk)
         return {
             "path": os.fsdecode(raw),
@@ -284,30 +310,48 @@ def digest_file(root: Path, raw: bytes) -> dict[str, Any]:
         os.close(descriptor)
 
 
-def walk_tree(root: Path, raw_root: bytes) -> tuple[list[dict[str, Any]], str]:
+def walk_tree(
+    root: Path, raw_root: bytes, maximum_entries: int, maximum_bytes: int,
+) -> tuple[list[dict[str, Any]], str, int, int]:
     base = root / os.fsdecode(raw_root)
     physical_directory(base)
     directories: list[bytes] = [raw_root]
     files_found: list[bytes] = []
-    for directory, names, files in os.walk(base, topdown=True, followlinks=False):
-        names.sort(key=os.fsencode)
-        files.sort(key=os.fsencode)
-        relative_directory = os.fsencode(os.path.relpath(directory, root))
-        for name in names:
-            candidate = Path(directory) / name
-            if candidate.is_symlink():
-                raise SnapshotError("snapshot tree contains a symlink")
-            directories.append(relative_directory + b"/" + os.fsencode(name))
-        for name in files:
-            candidate = Path(directory) / name
-            if candidate.is_symlink() or not candidate.is_file():
-                raise SnapshotError("snapshot tree contains a non-regular entry")
-            files_found.append(relative_directory + b"/" + os.fsencode(name))
-    directories = sorted(set(directories))
+    if maximum_entries < 1:
+        raise SnapshotError("snapshot tree has too many entries")
+    pending: list[tuple[Path, bytes]] = [(base, raw_root)]
+    while pending:
+        directory, relative_directory = pending.pop()
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            raise SnapshotError("snapshot tree is unavailable") from None
+        with entries:
+            for entry in entries:
+                raw_entry = relative_directory + b"/" + os.fsencode(entry.name)
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except OSError:
+                    raise SnapshotError("snapshot tree entry is unavailable") from None
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise SnapshotError("snapshot tree contains a symlink")
+                if stat.S_ISDIR(metadata.st_mode):
+                    directories.append(raw_entry)
+                    pending.append((Path(entry.path), raw_entry))
+                elif stat.S_ISREG(metadata.st_mode):
+                    files_found.append(raw_entry)
+                else:
+                    raise SnapshotError("snapshot tree contains a non-regular entry")
+                if len(directories) + len(files_found) > maximum_entries:
+                    raise SnapshotError("snapshot tree has too many entries")
+    directories.sort()
     files_found.sort()
-    if len(directories) + len(files_found) > MAX_ARTIFACTS:
-        raise SnapshotError("snapshot tree has too many files")
-    file_digests = {os.fsencode(value["path"]): value for value in (digest_file(root, entry) for entry in files_found)}
+    file_digests: dict[bytes, dict[str, Any]] = {}
+    byte_count = 0
+    for entry in files_found:
+        value = digest_file(root, entry, maximum_bytes - byte_count)
+        byte_count += value["byte_count"]
+        file_digests[entry] = value
     manifest = bytearray()
     for entry in sorted((*directories, *files_found)):
         metadata = os.stat(root / os.fsdecode(entry), follow_symlinks=False)
@@ -329,7 +373,7 @@ def walk_tree(root: Path, raw_root: bytes) -> tuple[list[dict[str, Any]], str]:
                 "byte_count": 0,
                 "sha256": tree_sha256,
             })
-    return values, tree_sha256
+    return values, tree_sha256, len(directories) + len(files_found), byte_count
 
 
 def environment_probe() -> dict[str, Any]:
@@ -394,6 +438,86 @@ def workspace_preflight(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def resolve_git_metadata(repository: Path) -> tuple[Path, Path]:
+    root = physical_directory(repository)
+    dotgit = root / ".git"
+    try:
+        metadata = os.lstat(dotgit)
+    except OSError:
+        raise SnapshotError("task repository Git metadata is unavailable") from None
+    if stat.S_ISDIR(metadata.st_mode):
+        git_dir = physical_directory(dotgit)
+    elif stat.S_ISREG(metadata.st_mode):
+        raw = read_bounded(dotgit, 4096)
+        if not raw.startswith(b"gitdir: ") or not raw.endswith(b"\n") or raw.count(b"\n") != 1:
+            raise SnapshotError("task repository gitdir pointer is malformed")
+        candidate = Path(os.fsdecode(raw[8:-1]))
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        git_dir = physical_directory(candidate)
+    else:
+        raise SnapshotError("task repository .git is unsafe")
+    commondir_path = git_dir / "commondir"
+    if commondir_path.exists() or commondir_path.is_symlink():
+        raw = read_bounded(commondir_path, 4096)
+        if not raw.endswith(b"\n") or raw.count(b"\n") != 1 or b"\x00" in raw:
+            raise SnapshotError("task repository commondir pointer is malformed")
+        candidate = Path(os.fsdecode(raw[:-1]))
+        if not candidate.is_absolute():
+            candidate = git_dir / candidate
+        common_dir = physical_directory(candidate)
+    else:
+        common_dir = git_dir
+    return git_dir, common_dir
+
+
+def reject_command_bearing_config(raw: bytes) -> None:
+    if len(raw) > 4_194_304 or b"\x00" in raw:
+        raise SnapshotError("task repository Git config is malformed or too large")
+    section = ""
+    for source_line in raw.splitlines():
+        line = source_line.strip()
+        if not line or line.startswith((b"#", b";")):
+            continue
+        if line.startswith(b"[") and line.endswith(b"]"):
+            try:
+                header = line[1:-1].decode("utf-8", "strict").strip().lower()
+            except UnicodeError:
+                raise SnapshotError("task repository Git config section is invalid") from None
+            match = re.fullmatch(r'([a-z0-9-]+)(?:\s+"((?:[^"\\]|\\.)*)")?', header)
+            if match is None:
+                raise SnapshotError("task repository Git config section is malformed")
+            section = match.group(1)
+            if match.group(2) is not None:
+                section += "." + match.group(2).replace('\\"', '"').lower()
+            continue
+        if not section or b"=" not in line:
+            raise SnapshotError("task repository Git config assignment is malformed")
+        raw_key, _ = line.split(b"=", 1)
+        try:
+            key = f"{section}.{raw_key.decode('ascii', 'strict').strip().lower()}"
+        except UnicodeError:
+            raise SnapshotError("task repository Git config key is invalid") from None
+        rejected = key in REJECTED_EXACT_KEYS or any(pattern.match(key) for pattern in REJECTED_KEY_PATTERNS)
+        allowed = any(pattern.fullmatch(key) for pattern in ALLOWED_LOCAL_KEYS)
+        if rejected and not allowed:
+            raise SnapshotError("task repository Git config has a command-bearing key")
+
+
+def reject_git_extensions(repository: Path) -> None:
+    git_dir, common_dir = resolve_git_metadata(repository)
+    for config in (common_dir / "config", git_dir / "config.worktree"):
+        if config.exists() or config.is_symlink():
+            reject_command_bearing_config(read_bounded(config, 4_194_304))
+    for candidate in (
+        common_dir / "refs" / "replace",
+        common_dir / "info" / "grafts",
+        common_dir / "objects" / "info" / "alternates",
+    ):
+        if candidate.exists() or candidate.is_symlink():
+            raise SnapshotError("task repository Git replacement metadata is present")
+
+
 def git_identity(
     repository: Path, expected: str, require_clean: bool, git: Path = Path("/usr/bin/git")
 ) -> None:
@@ -406,15 +530,28 @@ def git_identity(
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_SYSTEM": "/dev/null",
         "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_PAGER": "cat",
+        "GIT_NO_LAZY_FETCH": "1",
         "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_GRAFT_FILE": "/dev/null",
     }
+    reject_git_extensions(repository)
     def fixed_git(*arguments: str) -> bytes:
         if not CHILD_SUBREAPER_ENABLED:
             raise SnapshotCleanupError("task repository child containment is unavailable")
         try:
             process = subprocess.Popen(
-                [str(git), "--no-pager", "-C", str(repository), *arguments],
+                [
+                    str(git), "--no-pager", "-C", str(repository),
+                    "-c", "core.useReplaceRefs=false",
+                    "-c", "core.alternateRefsCommand=",
+                    "-c", "core.fsmonitor=false",
+                    "-c", "core.hooksPath=/dev/null",
+                    "-c", "credential.helper=",
+                    "-c", "diff.external=",
+                    *arguments,
+                ],
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -473,6 +610,9 @@ def git_identity(
             raise SnapshotError("task repository Git command failed")
         return bytes(output)
 
+    replacement = fixed_git("for-each-ref", "--format=%(refname)%00", "refs/replace/")
+    if replacement:
+        raise SnapshotError("task repository Git replacement namespace is non-empty")
     head = fixed_git("rev-parse", "--verify", "HEAD")
     status = fixed_git("status", "--porcelain=v1", "-z", "--untracked-files=all")
     if head.decode("ascii", "strict").strip() != expected or status:
@@ -509,23 +649,48 @@ def snapshot(value: dict[str, Any]) -> dict[str, Any]:
         actual = {entry.name for entry in os.scandir(workspace)}
         if not actual.issubset(allowed):
             raise SnapshotError("workspace contains an undeclared entry")
+        static_expectations = value["static_expectations"]
+        additional_files = value["additional_files"]
+        if (
+            not isinstance(static_expectations, list)
+            or len(static_expectations) > MAX_STATIC_EXPECTATIONS
+            or not isinstance(additional_files, list)
+            or len(additional_files) > MAX_ADDITIONAL_FILES
+        ):
+            raise SnapshotError("snapshot declaration count exceeds its bound")
         digests: list[dict[str, Any]] = []
-        for expectation in value["static_expectations"]:
+        expanded_entries = 0
+        expanded_bytes = 0
+        for expectation in static_expectations:
             raw = relative_path(expectation["path"])
             if expectation["kind"] == "FILE":
-                values = [digest_file(project, raw)]
+                if expanded_entries >= MAX_EXPANDED_ARTIFACTS:
+                    raise SnapshotError("snapshot has too many expanded entries")
+                value_digest = digest_file(project, raw, MAX_ARTIFACT_BYTES - expanded_bytes)
+                values = [value_digest]
                 observed_sha256 = values[0]["sha256"]
+                entry_count = 1
+                byte_count = value_digest["byte_count"]
             elif expectation["kind"] == "TREE":
-                values, observed_sha256 = walk_tree(project, raw)
+                values, observed_sha256, entry_count, byte_count = walk_tree(
+                    project,
+                    raw,
+                    MAX_EXPANDED_ARTIFACTS - expanded_entries,
+                    MAX_ARTIFACT_BYTES - expanded_bytes,
+                )
             else:
                 raise SnapshotError("snapshot expectation kind is invalid")
             if not values or observed_sha256 != expectation["expected_sha256"]:
                 raise SnapshotError("snapshot expectation digest does not match")
+            expanded_entries += entry_count
+            expanded_bytes += byte_count
             digests.extend(values)
-        for item in value["additional_files"]:
-            digests.append(digest_file(project, relative_path(item)))
-        if len(digests) > MAX_ARTIFACTS:
-            raise SnapshotError("snapshot has too many artifact digests")
+        for item in additional_files:
+            value_digest = digest_file(
+                project, relative_path(item), MAX_ARTIFACT_BYTES - expanded_bytes,
+            )
+            expanded_bytes += value_digest["byte_count"]
+            digests.append(value_digest)
         result.update(
             status="MATCH",
             error_code="NONE",
