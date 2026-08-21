@@ -6,6 +6,7 @@ import prompt_score
 fn digest_a() -> string = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".clone()
 fn digest_b() -> string = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".clone()
 fn digest_c() -> string = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".clone()
+fn adapter_expectation_digest() -> string = "feb45d362834c0986bf5116dada3f79901d2079d339d92b8d4064d355fed4a0c".clone()
 
 fn empty_strings() -> array<string> {
   values: array_builder<string> := array_builder()
@@ -17,7 +18,7 @@ fn expectations() -> array<prompt_artifacts.ArtifactExpectation> {
   values.push(prompt_artifacts.ArtifactExpectation {
       path: "adapter".clone(),
       kind: "FILE".clone(),
-      expected_sha256: digest_a(),
+      expected_sha256: adapter_expectation_digest(),
     })
   values.push(prompt_artifacts.ArtifactExpectation {
       path: "snapshot".clone(),
@@ -42,8 +43,8 @@ fn digests() -> array<prompt_artifacts.ArtifactDigest> {
     })
   values.push(prompt_artifacts.ArtifactDigest {
       path: "snapshot".clone(),
-      mode: "100755".clone(),
-      byte_count: 1,
+      mode: "040755".clone(),
+      byte_count: 0,
       sha256: digest_b(),
     })
   return values.build()
