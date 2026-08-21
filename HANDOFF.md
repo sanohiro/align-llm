@@ -27,7 +27,10 @@ file records durable project state.
   margins, streams canonical result binding, proves private process-group absence, admits only the
   current invocation's four workspace names, constructs terminal evidence after owned cleanup,
   retains FILE_SET roots/manifests/final files, and executes the complete evaluator adoption owner
-  inside capable-only `make ci`.
+  inside capable-only `make ci`. The later exact-head review reopened the inner retained-input and
+  admission-bounds axis: the fixed adapter now executes sealed admitted runner bytes and passes
+  sealed task/patch descriptors, artifact schemas are complete before side effects, reviewed TREE
+  enumeration is bounded while it occurs, and publication uses a fixed-size content-bound sibling.
 - Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. C6d now builds on that
   decoded verifier: `prompt accept` verifies result/evidence before constructing an immutable
   activation, `prompt rollback` validates immutable lineage, and both commands use retained-root
@@ -133,8 +136,12 @@ file records durable project state.
   scoring, incomplete automatic snapshots and child observations, raw-only FILE expectations, and
   generic mismatch errors. The reopened §10.1i redesign is complete. Source `6e52ff04a698`, oracle
   `1e07ffe13553`, and finalization `365249123ec6` form its passing replacement identity-bound
-  baseline chain. The redesigned exact-head review, preflight, and final capable `make ci` remain
-  pending. Focused evidence covers Request 11 exact-cap,
+  baseline chain. Its exact-head review at `0c2f24bd7889` found incomplete artifact schemas before
+  side effects, runner/task/patch pathname reopen after adapter admission, unbounded reviewed TREE
+  enumeration, and overlong publication temporary components. The reopened §10.1j redesign is
+  complete. Source `00f7c7964e04`, oracle `2d15069c7d6f`, and finalization `ef174295ce5a` form its
+  passing replacement identity-bound baseline chain. The replacement exact-head review, preflight,
+  and final capable `make ci` remain pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
@@ -142,8 +149,10 @@ file records durable project state.
   cleanup; exact Git-blob and FILE_SET task-source membership; retained evaluator/helper execution;
   automatic identity-input drift; canonical FILE mode/content identity; exact snapshot observation
   closure and mismatch families; every complete score status and gate path; raw-byte FILE_SET
-  traversal and physical-alias rejection; schema-v1 byte goldens; and lifecycle consumption of the
-  evaluator-produced pair.
+  traversal and physical-alias rejection; schema-v1 byte goldens; complete artifact-schema
+  rejection before child launch; exact and cap-plus-one TREE entry/byte enumeration; retained inner
+  runner/task/patch replacement races; 255-byte publication basenames; and lifecycle consumption of
+  the evaluator-produced pair.
 - C6d owner: `make c6d-request18-adoption` and the final capable `make ci`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The focused owner covers request and artifact bounds,
   retained-root symlink/special-file rejection, deterministic error precedence, exclusive output
