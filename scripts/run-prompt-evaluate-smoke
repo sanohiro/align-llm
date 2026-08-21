@@ -992,7 +992,7 @@ def main() -> int:
             "provider_control_id": "fixture-control", "provider_kind": "FIXTURE",
             "endpoint": "fixture://inclusive-range", "endpoint_id": "fixture-endpoint",
             "model": "inclusive-range-v1", "api_key_env": None, "tokenize_endpoint": None,
-            "timeout_ns": 2_000_000_000, "max_response_bytes": 65_536, "content_sha256": "",
+            "timeout_ns": 30_000_000_000, "max_response_bytes": 65_536, "content_sha256": "",
         })
         store(project, "artifacts/provider-control.json", control)
         generation = bind({
@@ -1668,7 +1668,13 @@ def main() -> int:
             and cross_invocation_result["error_code"] == "ENVIRONMENT_DRIFT"
             and cross_invocation_result["snapshot_attestations"][-1]["status"] == "PRECHECK_DRIFT"
             and evidence_path.exists(),
-            "stable-between-invocation environment drift was scored",
+            "stable-between-invocation environment drift was scored: "
+            f"returncode={cross_invocation.returncode}, "
+            f"error={cross_invocation_result.get('error')!r}, "
+            f"error_code={cross_invocation_result.get('error_code')!r}, "
+            f"rows={cross_invocation_result.get('rows')!r}, "
+            f"attestations={cross_invocation_result.get('snapshot_attestations')!r}, "
+            f"stdout={cross_invocation.stdout!r}, stderr={cross_invocation.stderr!r}",
         )
         result_path.unlink()
         evidence_path.unlink()
@@ -2095,7 +2101,12 @@ def main() -> int:
             and unavailable_source_result["status"] == "IMPROVED"
             and not unavailable_source_result["gate_eligible"]
             and unavailable_source_evidence["trust"]["corpus_reachability"] == "UNVERIFIED",
-            "unavailable corpus source did not remain a complete non-gate comparison",
+            "unavailable corpus source did not remain a complete non-gate comparison: "
+            f"returncode={unavailable_source.returncode}, "
+            f"status={unavailable_source_result.get('status')!r}, "
+            f"gate_eligible={unavailable_source_result.get('gate_eligible')!r}, "
+            f"corpus_reachability={unavailable_source_evidence.get('trust', {}).get('corpus_reachability')!r}, "
+            f"stdout={unavailable_source.stdout!r}, stderr={unavailable_source.stderr!r}",
         )
         unavailable_verified = subprocess.run(
             [str(ALIGNC), "run", str(SOURCE / "src/prompt_evaluate_smoke.align"), str(result_path), str(evidence_path)],
@@ -2210,6 +2221,25 @@ def main() -> int:
         noisy_adapter.write_text("#!/usr/bin/python3\nimport time\ntime.sleep(15)\n")
         reviewed_noisy_adapter.write_text(noisy_adapter.read_text())
         timeout_digest = raw_digest(noisy_adapter)
+        control["timeout_ns"] = 500_000_000
+        bind(control)
+        store(project, "artifacts/provider-control.json", control)
+        generation["provider_control_sha256"] = control["content_sha256"]
+        bind(generation)
+        store(project, "artifacts/generation-policy.json", generation)
+        scope["generation_policy_sha256"] = generation["content_sha256"]
+        bind(scope)
+        activation["scope"] = scope
+        bind(activation)
+        parent["activation"] = activation
+        bind(parent)
+        store(project, "artifacts/parent.json", parent)
+        experiment["scope"] = scope
+        experiment["parent_activation"] = reference(
+            "PROMPT_ACTIVATION_RESULT", "artifacts/parent.json", "baseline-v1", parent["content_sha256"],
+        )
+        bind(experiment)
+        store(project, "artifacts/experiment.json", experiment)
         for task_path in task_files:
             task_document = json.loads((project / task_path).read_text())
             task_document["measurement_adapter_runtime"] = "PYTHON:" + timeout_digest
