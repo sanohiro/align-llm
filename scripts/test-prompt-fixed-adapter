@@ -117,12 +117,18 @@ def main() -> int:
 
         completed, result = invoke("PARENT", "parent.json")
         require(completed.returncode == 0 and not completed.stdout and not completed.stderr, "parent adapter was not silent")
-        require(result["status"] == "FAIL" and result["test_status"] == "FAIL", "parent fixture did not fail")
+        require(
+            result["status"] == "FAIL" and result["test_status"] == "FAIL",
+            f"parent fixture did not fail: {result!r}",
+        )
         require(result["seed_attestation"]["result"] == "APPLIED", "parent seed was not applied")
 
         completed, result = invoke("CANDIDATE", "candidate.json")
         require(completed.returncode == 0 and not completed.stdout and not completed.stderr, "candidate adapter was not silent")
-        require(result["status"] == "PASS" and result["test_status"] == "PASS", "candidate fixture did not pass")
+        require(
+            result["status"] == "PASS" and result["test_status"] == "PASS",
+            f"candidate fixture did not pass: {result!r}",
+        )
         require(result["generation_to_passing_patch_ns"] == 80_000_000, "candidate fixture timing changed")
 
         policy["max_prompt_bytes"] = len(rendered["text"].encode("utf-8")) - 1

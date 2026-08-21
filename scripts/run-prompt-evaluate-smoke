@@ -19,8 +19,15 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent.parent
 ALIGNC = SOURCE / "scripts" / "alignc"
-GIT = Path("/usr/bin/git")
+GIT = Path(os.environ.get("ALIGN_LLM_TOOL_ROOT", "/usr/bin")) / "git"
 PYTHON = Path("/usr/bin/python3").resolve(strict=True)
+
+
+def git_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_GRAFT_FILE"):
+        environment.pop(name, None)
+    return environment
 
 
 def canonical(value):
@@ -89,7 +96,7 @@ def file_expectation_digest(project: Path, relative: str) -> str:
 def git_head(path: Path) -> str:
     return subprocess.run(
         [str(GIT), "-C", str(path), "rev-parse", "HEAD"], text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, env=git_environment(),
     ).stdout.strip()
 
 
@@ -745,16 +752,20 @@ def verify_strict_source_membership_boundary() -> None:
             path = source / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text_value)
-        subprocess.run([str(GIT), "init", "-q", str(source)], check=True)
-        subprocess.run([str(GIT), "-C", str(source), "add", "."], check=True)
+        subprocess.run(
+            [str(GIT), "init", "-q", str(source)], check=True, env=git_environment()
+        )
+        subprocess.run(
+            [str(GIT), "-C", str(source), "add", "."], check=True, env=git_environment()
+        )
         subprocess.run(
             [str(GIT), "-C", str(source), "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
              "commit", "-qm", "fixture"],
-            check=True,
+            check=True, env=git_environment(),
         )
         revision = subprocess.run(
             [str(GIT), "-C", str(source), "rev-parse", "HEAD"], text=True,
-            stdout=subprocess.PIPE, check=True,
+            stdout=subprocess.PIPE, check=True, env=git_environment(),
         ).stdout.strip()
         shutil.copytree(source, project, ignore=shutil.ignore_patterns(".git"))
         tasks = [{
@@ -1013,16 +1024,30 @@ def main() -> int:
             "content_sha256": "",
         })
         store(project, "artifacts/acceptance.json", acceptance)
+        allowed_variables = [
+            {"name": "LANG", "non_secret_value": "C", "source": "EXPLICIT_POLICY", "precedence": 0},
+            {"name": "LC_ALL", "non_secret_value": "C", "source": "EXPLICIT_POLICY", "precedence": 1},
+            {"name": "PATH", "non_secret_value": "/tools:/usr/bin:/bin", "source": "EXPLICIT_POLICY", "precedence": 2},
+            {"name": "PYTHONDONTWRITEBYTECODE", "non_secret_value": "1", "source": "EXPLICIT_POLICY", "precedence": 3},
+            {"name": "PYTHONNOUSERSITE", "non_secret_value": "1", "source": "EXPLICIT_POLICY", "precedence": 4},
+        ]
+        executable_paths = ["/usr/bin/python3"]
+        for name in (
+            "ALIGN_LLM_FRESH_COMPILER", "ALIGN_LLM_BWRAP", "ALIGN_LLM_PRLIMIT",
+            "ALIGN_LLM_TOOL_ROOT", "ALIGN_LLM_PYTHON", "ALIGN_LLM_VALIDATION_USERNS_PATH",
+        ):
+            value = os.environ.get(name)
+            if value is not None:
+                allowed_variables.append({
+                    "name": name, "non_secret_value": value,
+                    "source": "EXPLICIT_POLICY", "precedence": len(allowed_variables),
+                })
+                if name in ("ALIGN_LLM_BWRAP", "ALIGN_LLM_PRLIMIT", "ALIGN_LLM_PYTHON"):
+                    executable_paths.append(value)
         environment_policy = bind({
             "schema_version": 1, "artifact_kind": "ENVIRONMENT_POLICY", "policy_id": "fixture-environment",
-            "allowed_variables": [
-                {"name": "LANG", "non_secret_value": "C", "source": "EXPLICIT_POLICY", "precedence": 0},
-                {"name": "LC_ALL", "non_secret_value": "C", "source": "EXPLICIT_POLICY", "precedence": 1},
-                {"name": "PATH", "non_secret_value": "/usr/bin:/bin", "source": "EXPLICIT_POLICY", "precedence": 2},
-                {"name": "PYTHONDONTWRITEBYTECODE", "non_secret_value": "1", "source": "EXPLICIT_POLICY", "precedence": 3},
-                {"name": "PYTHONNOUSERSITE", "non_secret_value": "1", "source": "EXPLICIT_POLICY", "precedence": 4},
-            ],
-            "executable_paths": ["/usr/bin/python3"], "locale": "C", "content_sha256": "",
+            "allowed_variables": allowed_variables,
+            "executable_paths": executable_paths, "locale": "C", "content_sha256": "",
         })
         store(project, "artifacts/environment.json", environment_policy)
         source_policy = bind({

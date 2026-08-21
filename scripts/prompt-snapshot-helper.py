@@ -552,7 +552,10 @@ def reject_git_extensions(repository: Path) -> None:
 
 
 def git_identity(
-    repository: Path, expected: str, require_clean: bool, git: Path = Path("/usr/bin/git")
+    repository: Path,
+    expected: str,
+    require_clean: bool,
+    git: Path = Path(os.environ.get("ALIGN_LLM_TOOL_ROOT", "/usr/bin")) / "git",
 ) -> None:
     if not require_clean:
         return

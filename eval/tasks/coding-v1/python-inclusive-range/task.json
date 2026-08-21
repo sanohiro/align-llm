@@ -13,6 +13,8 @@
     "discover",
     "-s",
     "tests",
+    "-t",
+    "tests",
     "-v"
   ],
   "validation_timeout_seconds": 10

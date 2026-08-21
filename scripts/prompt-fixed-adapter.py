@@ -28,7 +28,7 @@ PATCHES = {
     "CANDIDATE": ROOT / "eval" / "baselines" / "patches" / "python-inclusive-range.patch",
 }
 RUNNER_SHA256 = "cdf59d8560c9f7d0fd488e6ab1e005182e904cae47c8ec4768b0a45ed41de2d6"
-TASK_SHA256 = "176666546ddae73f98c56fe421d911f6743c08fc3f093297a09f90b811995f93"
+TASK_SHA256 = "4b9cf9726878d12c90e40699a704ac70bca9f7d49ae6a4d37642a4266e90e3c9"
 PATCH_SHA256 = {
     "PARENT": "a2c2aac194d3cdad9808c23923afa64cf8f09909d2b5519ae08c7d94218d1fe3",
     "CANDIDATE": "dd5cc51395782e77775d63d982973458200769318a7c5c94c4a54c4c999824ce",
@@ -463,10 +463,20 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[str, bool, bool, byt
     environment = {
         "LANG": "C",
         "LC_ALL": "C",
-        "PATH": "/usr/bin:/bin",
+        "PATH": "/tools:/usr/bin:/bin",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONNOUSERSITE": "1",
     }
+    for name in (
+        "ALIGN_LLM_FRESH_COMPILER",
+        "ALIGN_LLM_BWRAP",
+        "ALIGN_LLM_PRLIMIT",
+        "ALIGN_LLM_TOOL_ROOT",
+        "ALIGN_LLM_PYTHON",
+        "ALIGN_LLM_VALIDATION_USERNS_PATH",
+    ):
+        if name in os.environ:
+            environment[name] = os.environ[name]
     process: subprocess.Popen[bytes] | None = None
     retained: list[ImmutableInput] = []
     patch_byte_count = 0

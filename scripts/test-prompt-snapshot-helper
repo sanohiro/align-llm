@@ -18,6 +18,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HELPER = ROOT / "scripts" / "prompt-snapshot-helper.py"
+GIT = Path(os.environ.get("ALIGN_LLM_TOOL_ROOT", "/usr/bin")) / "git"
+
+
+def git_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_GRAFT_FILE"):
+        environment.pop(name, None)
+    return environment
+
+
+def fixture_git(*arguments: str, **options):
+    return subprocess.run(
+        [str(GIT), *arguments], check=True, env=git_environment(), **options
+    )
 
 
 def canonical(value):
@@ -196,16 +210,14 @@ def main() -> int:
         repo = project / "repo"
         repo.mkdir()
         (repo / "tracked").write_text("tracked")
-        subprocess.run(["/usr/bin/git", "init", "-q", str(repo)], check=True)
-        subprocess.run(["/usr/bin/git", "-C", str(repo), "add", "tracked"], check=True)
-        subprocess.run(
-            ["/usr/bin/git", "-C", str(repo), "-c", "user.name=fixture",
-             "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"],
-            check=True,
+        fixture_git("init", "-q", str(repo))
+        fixture_git("-C", str(repo), "add", "tracked")
+        fixture_git(
+            "-C", str(repo), "-c", "user.name=fixture",
+            "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture",
         )
-        revision = subprocess.run(
-            ["/usr/bin/git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
-            stdout=subprocess.PIPE, check=True,
+        revision = fixture_git(
+            "-C", str(repo), "rev-parse", "HEAD", text=True, stdout=subprocess.PIPE,
         ).stdout.strip()
         mismatch["repo_path"] = str(repo)
         mismatch["require_clean_repo"] = True
@@ -271,38 +283,31 @@ def main() -> int:
         module.MAX_ARTIFACT_BYTES = original_byte_cap
 
         repository = root / "repository"
-        subprocess.run(["git", "init", "-q", str(repository)], check=True)
-        subprocess.run(["git", "-C", str(repository), "config", "user.email", "snapshot@example.invalid"], check=True)
-        subprocess.run(["git", "-C", str(repository), "config", "user.name", "Snapshot Test"], check=True)
+        fixture_git("init", "-q", str(repository))
+        fixture_git("-C", str(repository), "config", "user.email", "snapshot@example.invalid")
+        fixture_git("-C", str(repository), "config", "user.name", "Snapshot Test")
         (repository / "tracked").write_text("tracked")
-        subprocess.run(["git", "-C", str(repository), "add", "tracked"], check=True)
-        subprocess.run(["git", "-C", str(repository), "commit", "-qm", "initial"], check=True)
-        repository_head = subprocess.run(
-            ["git", "-C", str(repository), "rev-parse", "HEAD"],
-            check=True, stdout=subprocess.PIPE, text=True,
+        fixture_git("-C", str(repository), "add", "tracked")
+        fixture_git("-C", str(repository), "commit", "-qm", "initial")
+        repository_head = fixture_git(
+            "-C", str(repository), "rev-parse", "HEAD", stdout=subprocess.PIPE, text=True,
         ).stdout.strip()
         fsmonitor_marker = root / "fsmonitor-ran"
         fsmonitor = root / "fsmonitor"
         fsmonitor.write_text(f"#!/bin/sh\nprintf x > {shlex.quote(str(fsmonitor_marker))}\n")
         fsmonitor.chmod(0o755)
-        subprocess.run(
-            ["git", "-C", str(repository), "config", "core.fsmonitor", str(fsmonitor)], check=True,
-        )
+        fixture_git("-C", str(repository), "config", "core.fsmonitor", str(fsmonitor))
         try:
             module.git_identity(repository, repository_head, True)
             raise RuntimeError("command-bearing local Git config was accepted")
         except module.SnapshotError:
             pass
         require(not fsmonitor_marker.exists(), "local core.fsmonitor executed before rejection")
-        subprocess.run(
-            ["git", "-C", str(repository), "config", "--unset", "core.fsmonitor"], check=True,
-        )
+        fixture_git("-C", str(repository), "config", "--unset", "core.fsmonitor")
         module.reject_git_extensions(repository)
         included_config = root / "included-git-config"
         included_config.write_text("[core]\n\tfsmonitor = /bin/false\n")
-        subprocess.run(
-            ["git", "-C", str(repository), "config", "include.path", str(included_config)], check=True,
-        )
+        fixture_git("-C", str(repository), "config", "include.path", str(included_config))
         try:
             module.git_identity(repository, repository_head, True)
             raise RuntimeError("local Git include configuration was accepted")
