@@ -238,6 +238,7 @@ pub PromptSourceVerifierPolicy {
   helper_path: string,
   helper_sha256: string,
   helper_runtime: string,
+  interpreter_sha256: string,
   git_executable_sha256: string,
   content_sha256: string,
 }
@@ -404,6 +405,7 @@ pub PromptEvaluateRequest {
   verifier_corpus_source_sha256: string,
   verifier_source_policy_path: string,
   verifier_source_policy_sha256: string,
+  verifier_python_executable_path: string,
   verifier_git_executable_path: string,
   evaluation_evidence_path: string,
 }
@@ -744,6 +746,7 @@ pub PromptGateSourceLocator {
   source_verifier_relative_path: string,
   source_verifier_sha256: string,
   source_verifier_runtime: string,
+  source_verifier_interpreter_sha256: string,
   git_executable_sha256: string,
   content_sha256: string,
 }

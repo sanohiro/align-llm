@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-21): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, and 15–18 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, and 14 remain ALIGN_MERGED.** C6-EVALUATION's focused Request 11 and 14 owners pass, but their status advances only after the reopened runtime-containment matrix and final capable integration gate pass. Request 2's timeout adoption remains with C6e/C6g1, Request 9's adoption remains with C7, and Request 18 remains adopted by the C6d offline lifecycle owner at the exact Align merge recorded below.
+> **Status (2026-08-21): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, and 15–18 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, and 14 remain ALIGN_MERGED.** C6-EVALUATION's reopened runtime-containment matrix and focused Request 11 and 14 owners pass; their status advances only after the final capable integration gate passes. Request 2's timeout adoption remains with C6e/C6g1, Request 9's adoption remains with C7, and Request 18 remains adopted by the C6d offline lifecycle owner at the exact Align merge recorded below.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -4966,9 +4966,9 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6f1 trusted snapshot/workspace boundary, C6f2 paired evaluator, and C6g1 real-consumer process boundaries
 Independent work that may continue: C6a1 through C6d2 pure codecs, rendering, scoring, activation, and any work without an external child process
-Resume condition: the reopened C6-EVALUATION runtime-containment matrix, focused helper/adapter qualification, and the wave's final `make ci` pass
+Resume condition: the reopened C6-EVALUATION runtime-containment matrix and focused helper/adapter qualification pass; the wave's final `make ci` remains
 Align commit or pull request: Align design PR #806, merged as `30ff5830ce556e949edf31500a154ca7de4b1b7c`; implementation PR #808, merged as `82da9f580cc005fbb78f67af6847c7b4ce6626c4`
-align-llm verification: focused `c6f1-request11-adoption` passes at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exact-cap, cap-plus-one, simultaneous streams, timeout, post-EOF, repeated/concurrent invocation, and descendant cleanup; final capable integration remains pending
+align-llm verification: focused `c6f1-request11-adoption` and the reopened evaluator runtime-containment owner pass at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exact-cap, cap-plus-one, simultaneous streams, timeout, post-EOF, repeated/concurrent invocation, retained executable identity, and descendant cleanup; final capable integration remains pending
 ```
 
 ### Motivation and current-state evidence
@@ -5206,7 +5206,7 @@ Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator result/evidence publication and any later C6 command that promises no-replace artifact finalization
 Independent work that may continue: C6c1p and C6c2 pure verification, prompt rendering, scoring, design work, and any implementation that does not publish a pair with exclusive creation and no-replace rename
-Resume condition: the reopened C6-EVALUATION runtime-containment matrix, `c6f2-request14-adoption`, and the wave's final `make ci` pass
+Resume condition: the reopened C6-EVALUATION runtime-containment matrix and `c6f2-request14-adoption` pass; the wave's final `make ci` remains
 Align commit or pull request: design PR #859, merged as `a21eb8416f2088df68026f10c63a38cd0bd65538`; implementation PR #861, merged as `3c2edd2f399c9e2c9551b4227c61b36d6a041e20`
 align-llm verification: focused `c6f2-request14-adoption` passes at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exclusive staging, fixed result-then-evidence no-replace finalization, occupied regular/directory/symlink/FIFO targets, competing creators, reverse cleanup, and exact evaluator-owned orphan reporting; final capable integration remains pending
 ```

@@ -29,6 +29,38 @@ class SnapshotError(ValueError):
     """The snapshot boundary cannot validate its declared input."""
 
 
+class SnapshotCleanupError(SnapshotError):
+    """A snapshot child could not be fully removed."""
+
+
+def process_group_exists(group: int) -> bool:
+    try:
+        os.killpg(group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+    complete = True
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        complete = False
+    try:
+        process.wait(timeout=maximum_seconds)
+    except (OSError, subprocess.TimeoutExpired):
+        complete = False
+    deadline = time.monotonic() + maximum_seconds
+    while process_group_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return complete and not process_group_exists(process.pid)
+
+
 def canonical_bytes(value: Mapping[str, Any]) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -274,7 +306,9 @@ def workspace_preflight(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def git_identity(repository: Path, expected: str, require_clean: bool) -> None:
+def git_identity(
+    repository: Path, expected: str, require_clean: bool, git: Path = Path("/usr/bin/git")
+) -> None:
     if not require_clean:
         return
     environment = {
@@ -290,7 +324,7 @@ def git_identity(repository: Path, expected: str, require_clean: bool) -> None:
     def fixed_git(*arguments: str) -> bytes:
         try:
             process = subprocess.Popen(
-                ["/usr/bin/git", "--no-pager", "-C", str(repository), *arguments],
+                [str(git), "--no-pager", "-C", str(repository), *arguments],
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -327,22 +361,15 @@ def git_identity(repository: Path, expected: str, require_clean: bool) -> None:
                     if len(output) > GIT_OUTPUT_LIMIT:
                         raise SnapshotError("task repository Git output exceeded its cap")
             process.wait(timeout=max(0.001, deadline - time.monotonic()))
-            try:
-                os.killpg(process.pid, 0)
-            except ProcessLookupError:
-                pass
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
+            if process_group_exists(process.pid):
+                if not cleanup_process_group(process):
+                    raise SnapshotCleanupError("task repository Git command cleanup failed")
                 raise SnapshotError("task repository Git command left a descendant")
-        except (OSError, subprocess.TimeoutExpired, SnapshotError):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                pass
+        except (OSError, subprocess.TimeoutExpired, SnapshotError) as failure:
+            if not cleanup_process_group(process):
+                raise SnapshotCleanupError("task repository Git command cleanup failed") from None
+            if isinstance(failure, SnapshotCleanupError):
+                raise failure
             raise SnapshotError("task repository Git command failed") from None
         finally:
             selector.close()
@@ -412,6 +439,8 @@ def snapshot(value: dict[str, Any]) -> dict[str, Any]:
             environment_probe=environment_probe(),
             artifact_digests=digests,
         )
+    except SnapshotCleanupError:
+        result["error_code"] = "CLEANUP"
     except (OSError, SnapshotError, subprocess.SubprocessError, UnicodeError):
         pass
     bind_digest(result)

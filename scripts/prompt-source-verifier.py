@@ -44,6 +44,9 @@ REQUEST_FIELDS = (
     "git_executable_sha256",
     "content_sha256",
 )
+REQUEST_FIELDS_OMITTED = tuple(
+    name for name in REQUEST_FIELDS if name != "corpus_file_set_manifest_path"
+)
 RESULT_FIELDS = (
     "schema_version",
     "artifact_kind",
@@ -106,6 +109,10 @@ class VerificationError(ValueError):
     """The verifier request or a trusted source boundary is malformed."""
 
 
+class VerificationCleanupError(VerificationError):
+    """A source-verifier child could not be fully removed."""
+
+
 def canonical_bytes(value: Mapping[str, Any]) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -149,8 +156,16 @@ def read_bounded(path: Path, limit: int) -> bytes:
 
 
 def json_object(raw: bytes, label: str) -> dict[str, Any]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, child in pairs:
+            if key in value:
+                raise VerificationError(f"{label} has a duplicate field")
+            value[key] = child
+        return value
+
     try:
-        value = json.loads(raw.decode("utf-8", "strict"))
+        value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique_object)
     except (UnicodeError, json.JSONDecodeError) as error:
         raise VerificationError(f"{label} is not valid UTF-8 JSON") from None
     if not isinstance(value, dict):
@@ -180,6 +195,83 @@ def sha256_file(path: Path, limit: int = 268_435_456) -> str:
         os.close(descriptor)
 
 
+class RetainedExecutable:
+    """A regular executable pinned by descriptor for every Git child."""
+
+    def __init__(self, path: Path, maximum: int = 268_435_456) -> None:
+        try:
+            flags = os.O_RDONLY | os.O_CLOEXEC
+            if path.parent != Path("/proc/self/fd") or not path.name.isdigit():
+                flags |= os.O_NOFOLLOW
+            self.descriptor = os.open(path, flags)
+        except OSError:
+            raise VerificationError("declared executable is unavailable") from None
+        self.maximum = maximum
+        try:
+            self.identity = self._identity()
+        except BaseException:
+            os.close(self.descriptor)
+            raise
+
+    def _identity(self) -> tuple[int, int, int, int]:
+        metadata = os.fstat(self.descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size < 0 or metadata.st_size > self.maximum:
+            raise VerificationError("declared executable has an invalid type or size")
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size
+
+    def sha256(self) -> str:
+        hasher = hashlib.sha256()
+        offset = 0
+        while offset < self.identity[3]:
+            chunk = os.pread(self.descriptor, min(1_048_576, self.identity[3] - offset), offset)
+            if not chunk:
+                raise VerificationError("declared executable changed while reading")
+            hasher.update(chunk)
+            offset += len(chunk)
+        return hasher.hexdigest()
+
+    def process_path(self) -> Path:
+        path = Path(f"/proc/self/fd/{self.descriptor}")
+        if not path.exists():
+            raise VerificationError("retained Git execution is unavailable")
+        return path
+
+    def verify_unchanged(self, expected: str) -> None:
+        if self._identity() != self.identity or self.sha256() != expected:
+            raise VerificationError("Git executable changed during source observation")
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def process_group_exists(group: int) -> bool:
+    try:
+        os.killpg(group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+    complete = True
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        complete = False
+    try:
+        process.wait(timeout=maximum_seconds)
+    except (OSError, subprocess.TimeoutExpired):
+        complete = False
+    deadline = time.monotonic() + maximum_seconds
+    while process_group_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return complete and not process_group_exists(process.pid)
+
+
 def require_text(value: Any, label: str, *, maximum: int = 4096, empty: bool = False) -> str:
     if not isinstance(value, str) or (not empty and not value) or "\x00" in value:
         raise VerificationError(f"{label} is not bounded text")
@@ -201,7 +293,18 @@ def full_revision(value: Any) -> bool:
 
 
 def validate_request(value: dict[str, Any]) -> None:
-    if tuple(value) != REQUEST_FIELDS:
+    fields = tuple(value)
+    option_fields_valid = (
+        fields == REQUEST_FIELDS
+        and (
+            value.get("corpus_source_kind") == "FILE_SET"
+            or value.get("corpus_file_set_manifest_path") is None
+        )
+    ) or (
+        fields == REQUEST_FIELDS_OMITTED
+        and value.get("corpus_source_kind") != "FILE_SET"
+    )
+    if not option_fields_valid:
         raise VerificationError("source verifier request has the wrong fields or order")
     if value["schema_version"] != 1 or value["artifact_kind"] != "PROMPT_SOURCE_VERIFIER_REQUEST":
         raise VerificationError("source verifier request header is invalid")
@@ -224,13 +327,13 @@ def validate_request(value: dict[str, Any]) -> None:
     ):
         require_absolute(value[name], name)
     if value["corpus_source_kind"] == "GIT_COMMIT":
-        if value["corpus_file_set_manifest_path"] is not None:
+        if value.get("corpus_file_set_manifest_path") is not None:
             raise VerificationError("Git corpus has a file-set manifest")
         require_text(value["expected_corpus_source_repository_id"], "corpus repository id", maximum=256)
         if not full_revision(value["expected_corpus_source_sha256"]):
             raise VerificationError("Git corpus identity is not a full commit")
     elif value["corpus_source_kind"] == "FILE_SET":
-        if not isinstance(value["corpus_file_set_manifest_path"], str):
+        if not isinstance(value.get("corpus_file_set_manifest_path"), str):
             raise VerificationError("file-set corpus is missing its manifest")
         require_absolute(value["corpus_file_set_manifest_path"], "corpus manifest path")
         if value["expected_corpus_source_repository_id"] != "":
@@ -340,7 +443,7 @@ def parse_config(raw: bytes) -> None:
             raise VerificationError("local Git config has a command-bearing key")
 
 
-def fixed_git(git: Path, repository: Path, *arguments: str) -> bytes:
+def fixed_git(git: Path, git_descriptor: int, repository: Path, *arguments: str) -> bytes:
     command = [
         str(git),
         "--no-pager",
@@ -383,6 +486,7 @@ def fixed_git(git: Path, repository: Path, *arguments: str) -> bytes:
             stderr=subprocess.DEVNULL,
             close_fds=True,
             start_new_session=True,
+            pass_fds=(git_descriptor,),
         )
     except OSError:
         raise VerificationError("fixed Git command is unavailable") from None
@@ -416,22 +520,15 @@ def fixed_git(git: Path, repository: Path, *arguments: str) -> bytes:
         if remaining <= 0:
             raise VerificationError("fixed Git command timed out")
         process.wait(timeout=remaining)
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            os.killpg(process.pid, signal.SIGKILL)
+        if process_group_exists(process.pid):
+            if not cleanup_process_group(process):
+                raise VerificationCleanupError("fixed Git command cleanup failed")
             raise VerificationError("fixed Git command left a descendant")
-    except (OSError, subprocess.TimeoutExpired, VerificationError):
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
+    except (OSError, subprocess.TimeoutExpired, VerificationError) as failure:
+        if not cleanup_process_group(process):
+            raise VerificationCleanupError("fixed Git command cleanup failed") from None
+        if isinstance(failure, VerificationCleanupError):
+            raise failure
         raise VerificationError("fixed Git command failed or exceeded its boundary") from None
     finally:
         selector.close()
@@ -442,7 +539,7 @@ def fixed_git(git: Path, repository: Path, *arguments: str) -> bytes:
     return bytes(output)
 
 
-def reject_git_extensions(common_dir: Path, git_dir: Path, git: Path, repository: Path) -> None:
+def reject_git_extensions(common_dir: Path, git_dir: Path, git: Path, git_descriptor: int, repository: Path) -> None:
     for config in (common_dir / "config", git_dir / "config.worktree"):
         if config.exists() or config.is_symlink():
             parse_config(read_metadata_file(config, 4_194_304))
@@ -453,26 +550,49 @@ def reject_git_extensions(common_dir: Path, git_dir: Path, git: Path, repository
     ):
         if candidate.exists() or candidate.is_symlink():
             raise VerificationError("Git replacement, graft, or alternate metadata is present")
-    replacement = fixed_git(git, repository, "for-each-ref", "--format=%(refname)%00", "refs/replace/")
+    replacement = fixed_git(git, git_descriptor, repository, "for-each-ref", "--format=%(refname)%00", "refs/replace/")
     if replacement:
         raise VerificationError("Git replacement namespace is non-empty")
 
 
-def observe_git(repository: Path, expected: str, git: Path) -> tuple[str, bool]:
+def observe_git(repository: Path, expected: str, git: Path, git_descriptor: int) -> tuple[str, bool]:
     git_dir, common_dir = resolve_git_metadata(repository)
-    reject_git_extensions(common_dir, git_dir, git, repository)
-    observed_raw = fixed_git(git, repository, "rev-parse", "--verify", "HEAD")
+    reject_git_extensions(common_dir, git_dir, git, git_descriptor, repository)
+    observed_raw = fixed_git(git, git_descriptor, repository, "rev-parse", "--verify", "HEAD")
     try:
         observed = observed_raw.decode("ascii", "strict").strip()
     except UnicodeError as error:
         raise VerificationError("Git HEAD is not ASCII") from None
     if not full_revision(observed):
         raise VerificationError("Git HEAD is not a full lowercase commit")
-    status = fixed_git(git, repository, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    status = fixed_git(git, git_descriptor, repository, "status", "--porcelain=v1", "-z", "--untracked-files=all")
     return observed, observed == expected and status == b""
 
 
-def parse_file_set_manifest(raw: bytes, root: Path, manifest_path: Path) -> None:
+def read_manifest(path: Path) -> tuple[bytes, os.stat_result, int]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        raise VerificationError("file-set manifest is unavailable") from None
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size < 0 or metadata.st_size > MANIFEST_LIMIT:
+            raise VerificationError("file-set manifest has an invalid type or size")
+        raw = bytearray()
+        while len(raw) <= MANIFEST_LIMIT:
+            chunk = os.read(descriptor, min(65_536, MANIFEST_LIMIT + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        if len(raw) > MANIFEST_LIMIT:
+            raise VerificationError("file-set manifest exceeds its limit")
+        return bytes(raw), metadata, descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def parse_file_set_manifest(raw: bytes, root: Path, manifest_metadata: os.stat_result) -> None:
     prefix = b"ALIGN-LLM-CORPUS-FILE-SET-V1\n"
     if not raw.startswith(prefix):
         raise VerificationError("file-set manifest header is invalid")
@@ -486,8 +606,12 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_path: Path) -> None
     cursor = newline + 1
     prior: bytes | None = None
     resolved_root = physical_directory(root)
-    manifest_metadata = os.stat(manifest_path, follow_symlinks=False)
-    root_descriptor = os.open(resolved_root, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        root_descriptor = os.open(
+            resolved_root, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+    except OSError:
+        raise VerificationError("file-set root is unavailable") from None
     try:
       for _ in range(count):
         mode_end = raw.find(b" ", cursor)
@@ -511,10 +635,6 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_path: Path) -> None
         components = relative.split(b"/")
         if relative.startswith(b"/") or any(not part or part in (b".", b"..") for part in components):
             raise VerificationError("file-set path is invalid")
-        try:
-            relative.decode("utf-8", "strict")
-        except UnicodeError:
-            raise VerificationError("file-set path is not UTF-8") from None
         if prior is not None and relative <= prior:
             raise VerificationError("file-set paths are not strictly sorted")
         prior = relative
@@ -530,7 +650,7 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_path: Path) -> None
                 parent_descriptor = next_descriptor
             descriptor = os.open(
                 components[-1],
-                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
                 dir_fd=parent_descriptor,
             )
         except OSError as error:
@@ -550,7 +670,13 @@ def parse_file_set_manifest(raw: bytes, root: Path, manifest_path: Path) -> None
                 if not chunk:
                     break
                 hasher.update(chunk)
-            if hasher.hexdigest().encode("ascii") != digest:
+            post_metadata = os.fstat(descriptor)
+            identity = (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size, metadata.st_mtime_ns)
+            post_identity = (
+                post_metadata.st_dev, post_metadata.st_ino, post_metadata.st_mode,
+                post_metadata.st_size, post_metadata.st_mtime_ns,
+            )
+            if post_identity != identity or hasher.hexdigest().encode("ascii") != digest:
                 raise VerificationError("file-set entry digest disagrees")
         finally:
             os.close(descriptor)
@@ -610,45 +736,87 @@ def unavailable_result(code: str, message: str) -> dict[str, Any]:
     return value
 
 
-def optional_git_observation(repository: Path, expected: str, git: Path) -> tuple[str | None, bool]:
+def optional_git_observation(
+    repository: Path, expected: str, git: Path, git_descriptor: int
+) -> tuple[str | None, bool]:
     try:
-        observed, verified = observe_git(repository, expected, git)
+        observed, verified = observe_git(repository, expected, git, git_descriptor)
         return observed, verified
+    except VerificationCleanupError:
+        raise
     except VerificationError:
         return None, False
 
 
 def evaluate(request: dict[str, Any]) -> dict[str, Any]:
-    git = require_absolute(request["git_executable_path"], "Git executable path")
-    if sha256_file(git) != request["git_executable_sha256"]:
-        raise VerificationError("Git executable digest does not match")
-    expected_llm = request["expected_align_llm_commit"] if request["mode"] == "EVALUATION" else request["tested_align_llm_head"]
-    align_llm = optional_git_observation(Path(request["align_llm_repository_path"]), expected_llm, git)
-    if request["mode"] == "GATE" and align_llm[0] is not None and align_llm[1]:
-        try:
-            fixed_git(
-                git,
-                Path(request["align_llm_repository_path"]),
-                "merge-base",
-                "--is-ancestor",
-                request["expected_align_llm_commit"],
-                request["tested_align_llm_head"],
+    git_path = require_absolute(request["git_executable_path"], "Git executable path")
+    git_owner = RetainedExecutable(git_path)
+    try:
+        expected_git = request["git_executable_sha256"]
+        if git_owner.sha256() != expected_git:
+            raise VerificationError("Git executable digest does not match")
+        git = git_owner.process_path()
+        git_descriptor = git_owner.descriptor
+        expected_llm = request["expected_align_llm_commit"] if request["mode"] == "EVALUATION" else request["tested_align_llm_head"]
+        align_llm = optional_git_observation(Path(request["align_llm_repository_path"]), expected_llm, git, git_descriptor)
+        if request["mode"] == "GATE" and align_llm[0] is not None and align_llm[1]:
+            try:
+                fixed_git(
+                    git,
+                    git_descriptor,
+                    Path(request["align_llm_repository_path"]),
+                    "merge-base",
+                    "--is-ancestor",
+                    request["expected_align_llm_commit"],
+                    request["tested_align_llm_head"],
+                )
+            except VerificationError:
+                align_llm = (align_llm[0], False)
+        align = optional_git_observation(
+            Path(request["align_repository_path"]), request["expected_align_revision"], git, git_descriptor
+        )
+        if request["corpus_source_kind"] == "GIT_COMMIT":
+            corpus = optional_git_observation(
+                Path(request["corpus_source_path"]), request["expected_corpus_source_sha256"], git, git_descriptor
             )
-        except VerificationError:
-            align_llm = (align_llm[0], False)
-    align = optional_git_observation(Path(request["align_repository_path"]), request["expected_align_revision"], git)
-    if request["corpus_source_kind"] == "GIT_COMMIT":
-        corpus = optional_git_observation(Path(request["corpus_source_path"]), request["expected_corpus_source_sha256"], git)
-    else:
-        manifest = Path(request["corpus_file_set_manifest_path"])
-        try:
-            raw = read_bounded(manifest, MANIFEST_LIMIT)
-            observed = hashlib.sha256(raw).hexdigest()
-            parse_file_set_manifest(raw, Path(request["corpus_source_path"]), manifest)
-            corpus = (observed, observed == request["expected_corpus_source_sha256"])
-        except VerificationError:
-            corpus = (None, False)
-    return complete_result(align_llm=align_llm, align=align, corpus=corpus)
+        else:
+            manifest = Path(request["corpus_file_set_manifest_path"])
+            manifest_descriptor = -1
+            try:
+                raw, manifest_metadata, manifest_descriptor = read_manifest(manifest)
+                observed = hashlib.sha256(raw).hexdigest()
+                parse_file_set_manifest(raw, Path(request["corpus_source_path"]), manifest_metadata)
+                post_metadata = os.fstat(manifest_descriptor)
+                post_identity = (
+                    post_metadata.st_dev, post_metadata.st_ino, post_metadata.st_mode,
+                    post_metadata.st_size, post_metadata.st_mtime_ns,
+                )
+                initial_identity = (
+                    manifest_metadata.st_dev, manifest_metadata.st_ino, manifest_metadata.st_mode,
+                    manifest_metadata.st_size, manifest_metadata.st_mtime_ns,
+                )
+                post_hasher = hashlib.sha256()
+                offset = 0
+                while offset < post_metadata.st_size:
+                    chunk = os.pread(
+                        manifest_descriptor, min(1_048_576, post_metadata.st_size - offset), offset
+                    )
+                    if not chunk:
+                        raise VerificationError("file-set manifest changed while reading")
+                    post_hasher.update(chunk)
+                    offset += len(chunk)
+                if post_identity != initial_identity or post_hasher.hexdigest() != observed:
+                    raise VerificationError("file-set manifest changed during observation")
+                corpus = (observed, observed == request["expected_corpus_source_sha256"])
+            except (OSError, VerificationError):
+                corpus = (None, False)
+            finally:
+                if manifest_descriptor >= 0:
+                    os.close(manifest_descriptor)
+        git_owner.verify_unchanged(expected_git)
+        return complete_result(align_llm=align_llm, align=align, corpus=corpus)
+    finally:
+        git_owner.close()
 
 
 def write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
@@ -679,6 +847,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         validate_request(request)
         try:
             result = evaluate(request)
+        except VerificationCleanupError:
+            return 3
         except VerificationError as error:
             result = unavailable_result("GIT_UNAVAILABLE", str(error))
         write_exclusive(values.result, result)

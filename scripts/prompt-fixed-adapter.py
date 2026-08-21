@@ -12,6 +12,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -32,6 +33,34 @@ HEX64 = frozenset("0123456789abcdef")
 
 class AdapterError(ValueError):
     """The adapter request or a declared input is invalid."""
+
+
+def process_group_exists(group: int) -> bool:
+    try:
+        os.killpg(group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+    complete = True
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        complete = False
+    try:
+        process.wait(timeout=maximum_seconds)
+    except (OSError, subprocess.TimeoutExpired):
+        complete = False
+    deadline = time.monotonic() + maximum_seconds
+    while process_group_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return complete and not process_group_exists(process.pid)
 
 
 def canonical_bytes(value: Mapping[str, Any]) -> bytes:
@@ -198,7 +227,7 @@ def provider_identities(
     return generation, attestation
 
 
-def execute_fixture(variant: str, timeout_ns: int) -> tuple[bool, bytes, bytes]:
+def execute_fixture(variant: str, timeout_ns: int) -> tuple[bool, bool, bool, bytes, bytes]:
     timeout = max(0.001, timeout_ns / 1_000_000_000)
     environment = {
         "LANG": "C",
@@ -207,6 +236,7 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[bool, bytes, bytes]:
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONNOUSERSITE": "1",
     }
+    process: subprocess.Popen[bytes] | None = None
     try:
         process = subprocess.Popen(
             [sys.executable, str(RUNNER), str(TASK), str(PATCHES[variant])],
@@ -219,34 +249,33 @@ def execute_fixture(variant: str, timeout_ns: int) -> tuple[bool, bytes, bytes]:
             start_new_session=True,
         )
         stdout, stderr = process.communicate(timeout=timeout)
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            os.killpg(process.pid, signal.SIGKILL)
-            return False, b"", b"contained runner left a descendant"
-        return process.returncode == 0, stdout[:DIAGNOSTIC_LIMIT], stderr[:DIAGNOSTIC_LIMIT]
+        if process_group_exists(process.pid):
+            cleanup_passed = cleanup_process_group(process)
+            return False, cleanup_passed, False, b"", b"contained runner left a descendant"
+        return process.returncode == 0, True, True, stdout[:DIAGNOSTIC_LIMIT], stderr[:DIAGNOSTIC_LIMIT]
     except subprocess.TimeoutExpired as error:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=1)
-        return False, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        assert process is not None
+        cleanup_passed = cleanup_process_group(process)
+        return False, cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
     except OSError as error:
-        return False, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        cleanup_passed = True if process is None else cleanup_process_group(process)
+        return False, cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
 
 
 def measurement(
     request: Mapping[str, Any], rendered: Mapping[str, Any], policy: Mapping[str, Any], control: Mapping[str, Any]
 ) -> dict[str, Any]:
-    passed, stdout, stderr = execute_fixture(request["variant"], int(control["timeout_ns"]))
+    passed, cleanup_passed, containment_passed, stdout, stderr = execute_fixture(
+        request["variant"], int(control["timeout_ns"])
+    )
     generation, attestation = provider_identities(request, rendered, policy, control)
     is_candidate = request["variant"] == "CANDIDATE"
     status = "PASS" if passed else "FAIL"
     value = {
         "schema_version": 1,
         "artifact_kind": "TASK_MEASUREMENT",
-        "status": status,
-        "failure_kind": "NONE" if passed else "TEST",
+        "status": "ERROR" if not cleanup_passed or not containment_passed else status,
+        "failure_kind": "CLEANUP" if not cleanup_passed else "CONTAINMENT" if not containment_passed else "NONE" if passed else "TEST",
         "build_status": "PASS",
         "test_status": "PASS" if passed else "FAIL",
         "repair_loop_count": 0 if passed else 1,
@@ -254,8 +283,8 @@ def measurement(
         "patch_size_bytes": PATCHES[request["variant"]].stat().st_size,
         "public_api_change_count": 0,
         "policy_violation_count": 0,
-        "cleanup_passed": True,
-        "containment_passed": True,
+        "cleanup_passed": cleanup_passed,
+        "containment_passed": containment_passed,
         "benchmark_regression_ppm": None,
         "generation_to_passing_patch_ns": 80_000_000 if passed and is_candidate else None,
         "rendered_prompt_sha256": rendered["content_sha256"],

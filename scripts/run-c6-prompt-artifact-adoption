@@ -49,6 +49,7 @@ expected_records = [
     "SeedCapabilityAttestation",
     "CandidateProposal",
     "PromptExperimentResult",
+    "PromptEvaluateRequest",
     "PromptSourceVerifierRequest",
     "PromptSourceVerifierResult",
     "PromptEvaluationCorpus",
@@ -83,7 +84,7 @@ for match in re.finditer(r"^pub ([A-Z][A-Za-z0-9_]*) \{\n(.*?)^\}", source, re.M
     )
 if records != expected_records:
     raise SystemExit(f"artifact graph declaration order mismatch: {records!r}")
-if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (52, 558, 52, 52):
+if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (53, 585, 53, 53):
     raise SystemExit(
         "artifact graph shape mismatch: "
         f"records={len(records)} fields={fields} "
@@ -92,6 +93,8 @@ if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) 
 if "ok: checked 3 unit(s) per-unit" not in Path(sys.argv[2]).read_text(encoding="utf-8"):
     raise SystemExit("artifact graph owner did not compile the graph consumer")
 PY
+
+"${compiler}" run "${project_root}/src/prompt_runtime_schema_smoke.align"
 
 variant_output="${temporary_dir}/variant.json"
 "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${variant_fixture}" >"${variant_output}"

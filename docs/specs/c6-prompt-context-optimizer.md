@@ -197,6 +197,21 @@ allowed implementation. A result over 268,435,456 raw bytes returns the bounded
 `RESULT_TOO_LARGE` compact error shape defined below; it never allocates or writes the oversized
 result.
 
+Every Python-owned direct process boundary starts the child in a new session whose process-group ID
+is the retained direct-child PID. On timeout, output overflow, nonzero/malformed failure, or a
+direct child that exits while its group still has members, the owner sends `SIGKILL` to that group,
+waits the direct child, and polls the group until `killpg(pgid, 0)` proves absence. A group ID cannot
+be reused while any member of the old group remains, and the owner sends no signal after the first
+absence proof. Non-child descendants are reparented to the host's process reaper; C6 promises their
+termination and group absence, not `waitpid` ownership of them. A failed kill, direct wait, or
+bounded absence proof is `CLEANUP_FAILED` and takes precedence over the triggering process error.
+Normal success performs the same no-live-group proof. This Linux model is required for gate
+evidence; a host without `/proc/self/fd`, sessions, and group signaling returns the explicit
+environment failure rather than claiming containment. C6-EVALUATION invokes only content-bound
+trusted helpers and its fixed contained adapter; those children must not call `setsid` or move a
+descendant to another process group. A capability that admits an escape-capable child must use the
+fresh-worker cgroup boundary and is outside this in-process group contract.
+
 #### Producer-owned environment identity
 
 The producer/verifier table is fixed before implementation. A child never supplies the final
@@ -214,7 +229,7 @@ two matching carriers with the requested source-identity claims and policy ident
 | `measurement_adapter_runtime` | task manifest's content-bound adapter executable identity | bounded declared label/digest; carrier must match it |
 | `snapshot_helper_runtime` | task manifest's content-bound snapshot-helper executable identity | bounded declared label/digest; carrier must match it |
 | `source_verifier_runtime` | evaluator's content-bound source-verifier helper contract | bounded canonical runtime identity copied from the validated policy; never supplied by the helper result |
-| `source_verifier_policy_sha256` | evaluator's content-bound source-verifier policy, including helper and Git-tool digests | lowercase full digest; the policy bytes and all executable identities are bound before source observation |
+| `source_verifier_policy_sha256` | evaluator's content-bound source-verifier policy, including helper, interpreter, and Git-tool digests | lowercase full digest; the policy bytes and all executable identities are bound before source observation |
 | `environment_policy_sha256` | evaluator from the validated policy artifact | full digest; included in the identity preimage |
 
 `EnvironmentIdentityCore` is a declared record whose field order is its schema/kind fields followed
@@ -267,10 +282,12 @@ adapters receive exactly that list after `env_clear()`. A policy's canonical byt
 65,536 bytes in addition to the general referenced-artifact cap. `project_root`, `repo_path`,
 `workspace_path`, `cwd`, every artifact path, every output parent, and every adapter-owned path
 use the same lexical and physical checks; the list bounds above apply before expansion.
-Filesystem entries whose raw name is not valid UTF-8 are rejected as `PATH` rather than being
-lossily transcoded into an artifact path. For valid UTF-8 names, the tree digest retains the raw
-filename bytes and `/` separators exactly; this keeps the persisted path representation and the
-physical scan's byte order unambiguous.
+Ordinary JSON path fields require UTF-8 and reject a raw name that is not valid UTF-8 rather than
+lossily transcoding it. The canonical `FILE_SET` manifest is the one byte-oriented exception: its
+length-prefixed path payload may contain any non-NUL byte except `/` separators and the exact
+`.`/`..` components, and the verifier traverses and hashes those bytes without converting them to
+text. For UTF-8 tree paths, the tree digest still retains the raw filename bytes and `/` separators
+exactly; this keeps the persisted representation and physical scan's byte order unambiguous.
 
 Credential delivery is a separate ephemeral injection boundary, not an `EnvironmentPolicy` entry.
 For an adapter child, the evaluator constructs the environment in this order: `env_clear()`, copy
@@ -562,7 +579,7 @@ Every operation request declares an absolute, lexically normalized `project_root
 persisted paths are non-empty UTF-8 paths relative to that root, at most 4,096 bytes, cannot
 contain NUL, and cannot contain an empty component, `.` or `..`, except for the explicitly
 source-bundle-relative `PromptGateSourceLocator` paths defined in §9 and the absolute, read-only
-`PromptEvaluateRequest` verifier source/helper/tool paths. An environment-variable name
+`PromptEvaluateRequest` verifier source/helper/interpreter/tool paths. An environment-variable name
 must match `[A-Za-z_][A-Za-z0-9_]*`, which also excludes `=` and every process-API-aborting form,
 and is at most 256 ASCII bytes. Other provider, runtime, revision, and environment labels are
 non-empty and at most 256 UTF-8 bytes. Every result `error`
@@ -720,6 +737,17 @@ set. A validator rejects a path that escapes the source root,
 duplicates an entry, names a symlink or special file, disagrees on mode or digest, or leaves any
 entry unverified. A gate corpus must include every declared corpus task file in this manifest; a
 file not listed is outside the FILE_SET identity and cannot be consumed by a gate task.
+
+The verifier retains separate no-follow descriptors for the manifest and FILE_SET root. For every
+raw path it duplicates the root owner, opens each intermediate byte component directory-relative
+with directory/no-follow flags, opens the final component regular/no-follow, and obtains mode,
+device/inode identity, byte count, and SHA-256 from that same final descriptor before closing it.
+Manifest-self rejection compares final-file device/inode identity with the retained manifest
+descriptor, so aliases do not evade exclusion. Any missing, replaced, symlinked, special,
+mode-mismatching, digest-mismatching, or unreadable entry makes the corpus observation
+`UNVERIFIED`. Once the request has supplied syntactically valid absolute root and manifest paths,
+malformed manifest framing and an unsafe, unavailable, or wrong-type root/manifest likewise make
+only that source observation `UNVERIFIED`.
 
 `repo_profile_revision` names the immutable repository-rule/profile revision being optimized;
 individual evaluation tasks bind their own source revisions. `corpus_revision` is the complete
@@ -992,15 +1020,15 @@ EnvironmentVariable:
   precedence: i64
 
 PromptSourceVerifierPolicy:
-  schema_version
+  schema_version: i64
   artifact_kind: PROMPT_SOURCE_VERIFIER_POLICY
-  policy_id
-  helper_path
-  helper_sha256
-  helper_runtime
-  interpreter_sha256
-  git_executable_sha256
-  content_sha256
+  policy_id: string
+  helper_path: string
+  helper_sha256: string
+  helper_runtime: string
+  interpreter_sha256: string
+  git_executable_sha256: string
+  content_sha256: string
 
 TaskAdapterRequest:
   schema_version
@@ -1128,6 +1156,26 @@ than relying on a nominal runtime label alone. The evaluator invokes exactly
 it never uses a shebang, ambient `PATH`, `env`, or a nominal Python version. The policy digest is
 checked before either executable path is opened, and the request's policy digest, Python executable
 path, and Git executable path are not rewritten after validation.
+
+This is an outright pre-release schema-version-1 change: an older version-1 policy without
+`interpreter_sha256` is invalid, receives no compatibility default, and is never migrated or
+rewritten. Declared-record order is exactly the order above. The codec owner adds semantic and byte
+goldens for the new field, missing/duplicate/reordered-field rejection, and policy-digest changes
+when any helper, interpreter, runtime, or Git identity changes.
+
+On the Ubuntu 24.04 acceptance floor, validation opens every trusted executable or source carrier
+with no-follow regular-file semantics and rejects its path, type, or digest before any helper side
+effect. Invocation then reopens the same declared path with the same semantics, recomputes the
+digest from that retained descriptor, and launches only from that descriptor. Python launches
+through `/proc/self/fd/<interpreter-fd>` and receives
+`/proc/self/fd/<helper-fd>` as its script argument with both descriptors explicitly inherited; Git
+children likewise execute the retained Git descriptor rather than reopening the public pathname.
+The immutable-input precondition forbids in-place mutation of an opened executable. The owner hashes
+the same descriptor again after the child and rejects any byte or metadata change before accepting
+its output. A pathname replacement between validation and invocation is accepted only when the
+invocation descriptor independently matches the declared content digest; replacement after that
+open cannot redirect it. Absence of the required Linux descriptor-exec facilities is `ENVIRONMENT` and cannot produce gate
+eligibility; supplementary hosts may exercise non-gate paths but are not acceptance evidence.
 
 `endpoint`, `tokenize_endpoint`, and `proposal_provider_endpoint` each have the 4,096-byte bound
 from §1.2. They must use the provider's accepted scheme and host form, contain no userinfo, and
@@ -1564,6 +1612,15 @@ verifier_git_executable_path
 evaluation_evidence_path
 ```
 
+All fields use their declared-record types: `schema_version` and `sample_count` are `i64`,
+`verifier_corpus_file_set_manifest_path` is `Option<string>`, and every other non-discriminator
+field is `string`; field order is exactly the order above. Canonical JSON includes the conditional
+manifest field with its string value for `Some` and omits it for `None`; a decoded explicit `null`
+normalizes to the same `None` and is also accepted at the input boundary. The new
+`verifier_python_executable_path` is required in schema version 1. Older version-1 requests without
+it are invalid with no default, migration, or compatibility path. `PromptGateSourceLocator`
+likewise gains one required `string` field in its declared order and rejects older version-1 bytes.
+
 `evaluation_evidence_path` is the new output path for the independently produced
 `PromptEvaluationEvidence` sidecar. It is a required decoded request field and must be a writable,
 non-existing path under the same project root; its syntax, physical safety, nonexistence, and
@@ -1610,14 +1667,31 @@ ID, and source digest must equal the complete scope `CorpusRevision`;
 the result environment's `align_llm_commit` claim. `verifier_source_policy_path` is a
 project-relative content-bound policy path and its digest must match
 `verifier_source_policy_sha256`; the policy supplies the helper path/digest/runtime and Git-tool
-digest. `verifier_git_executable_path` is an explicit absolute read-only input; it is passed to the
-helper and never persisted in the result or evidence. The source-boundary root, manifest, policy,
-helper, and Git-tool fields are physically checked before use and do not use the ordinary
+digest plus the interpreter digest. `verifier_python_executable_path` and
+`verifier_git_executable_path` are explicit absolute read-only inputs; the former launches the
+helper, while the latter is opened by the evaluator and passed to the helper as an inherited
+`/proc/self/fd` carrier rather than reopened by pathname. Neither public path is persisted in the
+result or evidence. The
+source-boundary root, manifest, policy, helper, interpreter, and Git-tool fields are physically checked before use and do not use the ordinary
 project-relative input-path rule where the schema declares an external absolute path. The
-source-boundary inputs are consumed in this deterministic order: path syntax and physical
-containment, policy/helper/tool digest and runtime validation, source-kind/manifest/repository-label
-agreement, full expected identity shape, then helper invocation and checkout/file-set observation.
-A missing, duplicated, or malformed field is `INVALID_INPUT` before any snapshot or adapter call.
+source-boundary inputs are consumed in this deterministic order after result-output preflight:
+request scalar bounds and evidence path; source-policy path syntax; bounded policy decode,
+schema/kind/fields/digest, then equality with `verifier_source_policy_sha256`; helper path syntax;
+Python path syntax; Git path syntax; canonical composite-runtime comparison; validation
+regular-file open and digest comparison of helper, Python, then Git; remaining evaluation-artifact
+decode and identity checks; workspace preflight; invocation regular-file reopen and digest
+comparison of helper, Python, then Git; source-root and conditional-manifest syntax/type checks; source-kind/manifest/repository-label
+agreement; full expected identity shape; then helper invocation and checkout/file-set observation.
+Policy validation therefore precedes every executable open. The retained executable descriptors are
+released only after post-child same-descriptor digest checks complete.
+A missing, duplicated, reordered, or malformed required field is `INVALID_INPUT` before any
+snapshot or adapter call.
+Path syntax/type failures map to `INVALID_PATH`/`INPUT_TYPE`, a digest or composite-runtime mismatch
+maps to `INVALID_DIGEST`; an absolute source-root or FILE_SET path that passes request syntax but
+cannot be opened, has the wrong observed type, or disagrees with the manifest maps to that source's
+`UNVERIFIED`. A descendant cleanup failure overrides timeout,
+output-cap, child-status, or malformed-result diagnosis as paired evaluation
+`ERROR`/`CLEANUP_FAILED`; the original process diagnosis remains bounded English detail only.
 
 `src/prompt_evaluate.align` owns the source-boundary call and constructs `PromptVerifierTrust`; it
 does not accept caller-supplied reachability booleans. After request and policy validation, it invokes
@@ -1723,9 +1797,10 @@ matching the `CorpusRevision` discriminator. `corpus_file_set_manifest_path` is 
 `FILE_SET` and `None` for `GIT_COMMIT`; in either mode, the expected source digest is the exact
 commit or manifest digest rather than a helper-reported replacement claim.
 
-The evaluator validates the helper and Git executable digests before any source read, creates one
-bounded request file, and invokes exactly `<helper> --source-verifier-request <request>
---result <result>` with no user-supplied extra arguments. The helper runs with `env_clear()` and
+The evaluator validates the helper, interpreter, and Git executable digests in the order above
+before any source read, creates one bounded request file, and invokes exactly
+`<retained-python> <retained-helper> --source-verifier-request <request> --result <result>` with no
+user-supplied extra arguments. The helper runs with `env_clear()` and
 only the fixed non-secret locale/Git configuration entries `LANG=C`, `LC_ALL=C`,
 `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`,
 `GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_NO_REPLACE_OBJECTS=1`, and
@@ -1737,7 +1812,7 @@ request, policy, environment, or caller. The helper uses raw byte filesystem API
 traversal and streams the manifest under its 8,388,608-byte cap; it does not use Align `fs.read_dir`,
 ambient `PATH`, or a credential-bearing environment. A timeout, over-limit output, malformed result,
 unavailable Git tool, missing safe source, or inability to prove a source yields `UNAVAILABLE`/`UNVERIFIED` for the
-unproven sources and no gate eligibility. An invalid helper/tool path, digest, mode, or request is
+unproven sources and no gate eligibility. An invalid helper/interpreter/tool path, digest, mode, or request is
 `INVALID_INPUT` before this child launch.
 
 Before invoking Git for any purpose, the helper performs a bounded raw repository-metadata walk from
@@ -2894,7 +2969,8 @@ machine-specific absolute path. The validator receives the source bundle root as
 input and resolves every applicable locator beneath it after the same physical symlink,
 dangling-link, special-file, and expected-type checks as the evaluation source boundary: the
 align-llm, Align, and corpus paths are real directories, the conditional FILE_SET manifest and
-source-verifier policy are regular files, and the source verifier is a regular executable.
+source-verifier policy and source verifier are regular files. The Python and Git executables are
+explicit machine inputs and are never inferred from those locator paths.
 The source bundle root is not
 read from the environment or inferred from an evidence path.
 
@@ -2920,14 +2996,17 @@ link mismatch fails `make ci`. The gate pull request records the exact command a
 environment used to create the measured artifact without recording credentials.
 
 When a canonical C6 gate manifest is present, the complete command is
-`make ci C6_GATE_SOURCE_BUNDLE_ROOT=/absolute/source-bundle-root C6_GATE_GIT_EXECUTABLE_PATH=/absolute/git`.
+`make ci C6_GATE_SOURCE_BUNDLE_ROOT=/absolute/source-bundle-root C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 C6_GATE_GIT_EXECUTABLE_PATH=/absolute/git`.
 The Make target passes these explicit command-line values to the gate validator as
-`--source-bundle-root` and `--git-executable-path`; it rejects a missing, empty, relative, unsafe,
+`--source-bundle-root`, `--python-executable-path`, and `--git-executable-path`; it rejects a missing, empty, relative, unsafe,
 or unreadable value and has no environment or sibling-checkout fallback.
-Before deriving the head, the validator validates `C6_GATE_GIT_EXECUTABLE_PATH` as an explicit
-absolute regular executable and checks its bytes against the locator/policy Git digest. The Make
-target does not invoke an ambient `git` to perform these checks. The validator then invokes that
-exact executable path, with `env_clear()` and only `LANG=C`, `LC_ALL=C`, `GIT_CONFIG_NOSYSTEM=1`,
+Before deriving the head, the validator retains `C6_GATE_PYTHON_EXECUTABLE_PATH` and
+`C6_GATE_GIT_EXECUTABLE_PATH` as explicit absolute regular executables and checks their same-descriptor bytes against
+the locator/policy interpreter and Git digests. Ubuntu 24.04 gate evidence uses exactly
+the physical, non-symlink Ubuntu 24.04 path `/usr/bin/python3.12` whose digest must match the locator;
+a version string alone is insufficient. The
+Make target does not invoke ambient Python or Git to perform these checks. The validator then invokes
+those retained descriptors, with `env_clear()` and only `LANG=C`, `LC_ALL=C`, `GIT_CONFIG_NOSYSTEM=1`,
 `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_OPTIONAL_LOCKS=0`,
 `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_NO_REPLACE_OBJECTS=1`, and `GIT_GRAFT_FILE=/dev/null`, for each
 fixed command in the actual CI checkout at `$(pwd)`. Before any Git child, the validator performs
@@ -2990,25 +3069,25 @@ explicitly reviewed deferral.
 | --- | --- | --- |
 | Four CLI operations and exact arguments | `src/main.align` | CLI smoke covers valid and invalid arity for every operation |
 | Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_PYTHON_EXECUTABLE_PATH=<absolute-python> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git>` passes all three explicit values as `--source-bundle-root`, `--python-executable-path`, and `--git-executable-path`, rejects missing/relative/unsafe roots or tools before source reads, resolves the Git common directory, rejects replacement/graft/alternate mechanisms, scans local Git configuration while allowing only inert ordinary-clone remote/branch metadata, uses fixed no-replace/no-graft/no-pager/command overrides for every Git command, checks the derived clean CI head and evaluated-commit ancestry as separate proofs, validates the source-verifier policy/helper/interpreter/tool identities, and revalidates every locator and exact source identity |
-| Source-verifier request/result boundary | C6f1 source verifier, `src/prompt_evaluate.align`, gate validator | request/result kind, mode-specific EVALUATION/GATE observed-head semantics, separate evaluated-commit ancestry, exact argv/env/cwd, common-directory and replacement/graft/alternate rejection, bounded local-config scan, fixed Git overrides, helper/Git digests, timeout/capture caps, raw-byte FILE_SET fixtures, `COMPLETE`/`UNAVAILABLE` field shapes, observed-identity equality for `VERIFIED`, and gate rejection of unavailable proof |
+| Source-verifier request/result boundary | C6f1 source verifier, `src/prompt_evaluate.align`, gate validator | request/result kind, mode-specific EVALUATION/GATE observed-head semantics, separate evaluated-commit ancestry, exact argv/env/cwd, common-directory and replacement/graft/alternate rejection, bounded local-config scan, fixed Git overrides, helper/interpreter/Git digests, timeout/capture caps, raw-byte FILE_SET fixtures, `COMPLETE`/`UNAVAILABLE` field shapes, observed-identity equality for `VERIFIED`, and gate rejection of unavailable proof |
 | Mode-specific gate head and ancestry identity | C6f1 source verifier, gate validator | EVALUATION exact-head equality; GATE observed-head equality to derived CI head plus independent expected-commit ancestry; normal-merge fixture where the two SHAs differ; `prompt-source-verifier-mode-identity-smoke` and `prompt-gate-merge-head-ancestry-smoke` |
 | Repository-local Git configuration isolation | C6f1 source verifier, gate validator | raw `.git`/`gitdir`/`commondir` and local/worktree config scan before any Git child, include rejection, command-bearing-key rejection, ordinary-clone inert remote/branch metadata allowlist, fixed `--no-pager`/`-c` overrides, fsmonitor sentinel non-execution, and gate rejection before identity observation; `prompt-source-verifier-local-git-config-smoke` and `prompt-gate-local-git-config-smoke` |
 | Complete replacement-ref namespace | C6f1 source verifier, gate validator | loose, packed-refs, reftable, nonzero/malformed/capped/non-empty `for-each-ref` output, and no-replacement-object controls; `prompt-source-verifier-replacement-namespace-smoke` and `prompt-gate-replacement-namespace-smoke` |
-| Declared records, bounds, canonical digest | `src/prompt_model.align` | round-trip, tamper, unknown-version, and oversize fixtures |
+| Declared records, bounds, canonical digest | `src/prompt_model.align`, `src/prompt_artifacts.align` | `PromptSourceVerifierPolicy`, `PromptEvaluateRequest`, and `PromptGateSourceLocator` exact field-order semantic/byte goldens; missing interpreter field rejects old version-1 bytes; helper/interpreter/runtime/Git identity mutations change canonical digests; round-trip, tamper, unknown-version, and oversize fixtures |
 | Persisted string-label mapping | `src/prompt_model.align` | every allowed and unknown kind/status/operation/stage label plus canonical golden vectors |
 | Fixed hierarchy and rendering order | `src/prompt_model.align` | golden rendered prompt and immutable base/repo/task tests |
 | Initial context-policy semantics | `src/prompt_model.align` | disabled sections, source bounds, UTF-8-safe patch/diagnostic truncation, and C6b-memory failure-memory selection |
 | Content-bound A/B inputs | `src/prompt_evaluate.align`, task manifests | expected digest, workspace preflight, deduplicated snapshot/input-snapshot records, per-invocation pre/post drift, mode, tree, dirty-source, seed, generation, environment, and FILE_SET-manifest regressions |
 | Explicit verifier source inputs | `src/prompt_evaluate.align`, C6f1 source verifier | absolute root/manifest/interpreter/tool path validation, policy/helper/interpreter/Git digest and composite runtime validation, `FILE_SET` option pairing, canonical raw-byte manifest membership/mode/digest, exact clean checkout observations, fixed argv/env/cap/timeout, observed identity copied into evidence, `VERIFIED` equality, and `UNVERIFIED` preservation before any adapter or snapshot call |
 | Explicit adapter request and environment isolation | `src/prompt_evaluate.align`, task adapter | adapter-request identity/path/digest fixtures; env-clear rejection and exact allowlisted-value survival in both directions |
-| Producer-owned environment identity | trusted probe carriers, evaluator verifier | non-circular core preimage, carrier equality, OS/CPU/GPU/compiler/runtime unavailable-value, `Option` CPU-count, source-policy/helper/Git identity, and digest fixtures |
+| Producer-owned environment identity | trusted probe carriers, evaluator verifier | non-circular core preimage, carrier equality, OS/CPU/GPU/compiler/runtime unavailable-value, `Option` CPU-count, source-policy/helper/interpreter/Git identity, and digest fixtures |
 | Physical path trust boundary | snapshot helper, all command owners, explicit verifier source boundary, and Align Request 18 adoption | project-root containment for ordinary inputs plus read-only external verifier-root exception; retained-root request/artifact/result traversal; symlink component, dangling link, output link, special file, physical escape, Git common-directory replacement/graft/alternate entries, relative/absolute, cleanup, and early-exit regressions |
 | Bounded child capture | Align Request 11 adoption, evaluator/provider owners | exact cap, cap+1, stdout/stderr pressure, timeout precedence, kill/reap, invalid bytes, and allocation cleanup |
 | Owned recursive artifact persistence | Align Request 13 adoption, `src/prompt_model.align` | borrowed-wire lifetime, explicit text clone, nested record/option/array graph, source drop, semantic/byte round-trip, and cleanup vectors |
 | Bounded canonical persistence | Align Requests 12 and 13 adoption, codec owners | exact cap, cap+1, escape expansion, nested option/array, overflow, allocation failure, no-partial-write vectors, temporary/final output order, second-finalization failure, and pair cleanup-failure recovery |
 | Exclusive artifact publication | Align Request 14 adoption, `src/prompt_evaluate.align` | `create_exclusive`/`rename_no_replace` or the reviewed shipped equivalents; existing-target and competing-creator failures, no replacement, same-filesystem publication, and pair cleanup/recovery before C6f2 writes any result/evidence output |
 | Evaluation result/evidence pair persistence | `src/prompt_evaluate.align`, `src/main.align`, Request 14 adoption | two exclusively created sibling temporary files, bounded canonical bytes, result-then-evidence no-replace finalization, first-finalization and second-finalization failures, evaluator-owned reverse cleanup, collision destination preservation, owned-path rechecks, `OUTPUT_WRITE`, `OUTPUT_PAIR_CLEANUP_FAILED`, and explicit owned-orphan recovery path; no check-then-create or undeclared native publication workaround |
-| Exact source identity and integration method | explicit evaluator source inputs, C6f1 source verifier, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for evaluator align-llm, derived clean CI-head equality plus evaluated-commit ancestry for the gate, replacement/graft/alternate rejection through the resolved Git common directory, fixed no-replace/no-graft environment, policy/helper/Git identity revalidation, expected/observed-identity binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
+| Exact source identity and integration method | explicit evaluator source inputs, C6f1 source verifier, gate manifest, CI validator, verifier evidence | exact clean full SHA claims, exact-HEAD equality for evaluator align-llm, derived clean CI-head equality plus evaluated-commit ancestry for the gate, replacement/graft/alternate rejection through the resolved Git common directory, fixed no-replace/no-graft environment, policy/helper/interpreter/Git identity revalidation, expected/observed-identity binding, unavailable or mismatching source roots as `UNVERIFIED`, source-bundle locator revalidation, normal-merge, base-tip/head/merge-base, and separate align-llm/external-Align/corpus reachability fixtures |
 | Minimum compatibility floor | `Makefile`, `.github/workflows/ci.yml`, compatibility job | Ubuntu 24.04 x86_64 / Rust 1.96 / LLVM 22 / CPython 3.12 / Make 4.3 acceptance environment |
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
@@ -3051,10 +3130,10 @@ integration risk and one complete verifier/path/publication proof.
 | --- | --- | --- | --- | --- | --- |
 | Construction | declared record decode, field-order validation, canonical digest | owned `PromptRender` construction | aggregate/activation construction plus decoded result/evidence verifier inputs | request, snapshot, row, result, and independent evidence construction | `prompt-codec-construction`, `prompt-row-construction`, `prompt-evidence-construction` |
 | Success | encode/decode semantic and byte golden vectors | fixed hierarchy, bounded patch/diagnostic contexts, and chronological bounded failure-memory selection | `IMPROVED`, `ACCEPTED`, `ROLLED_BACK`; decoded verifier returns the matching Copy verdict | proposal and alternating complete A/B run with evidence sidecar | `prompt-codec-golden`, `prompt-render-golden`, `prompt-model-smoke`, `prompt-lifecycle-smoke`, `prompt-evaluate-order-smoke`, `prompt-verifier-smoke` |
-| Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator performs the raw `.git`/`gitdir`/`commondir` and local-config walk before any Git child, allows only inert ordinary-clone remote/branch metadata, resolves and checks each Git common directory, rejects replacement/graft/alternate mechanisms across loose and packed/ref-backend storage, validates policy/helper/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry as separate proofs, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT` and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-gate-merge-head-ancestry-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
-| Source-verifier process boundary | policy/helper/Git identity and request/result codecs | N/A | raw `.git`/`gitdir`/`commondir` metadata and local/worktree config are scanned before any Git child; fixed argv including no-pager/no-replace/no-graft/command overrides, cleared environment, cwd, common-directory checks, complete replacement namespace enumeration, byte caps, timeout, raw-byte FILE_SET traversal, mode-specific result-status/observed-identity shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-mode-identity-smoke`, `prompt-source-verifier-git-replacement-graft-smoke`, `prompt-source-verifier-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke`, `prompt-source-verifier-replacement-namespace-smoke`, `prompt-source-verifier-observed-identity-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke` |
+| Gate source revalidation | manifest/locator/policy decode, canonical raw-byte FILE_SET manifest, and digest | N/A | gate validator performs the raw `.git`/`gitdir`/`commondir` and local-config walk before any Git child, allows only inert ordinary-clone remote/branch metadata, resolves and checks each Git common directory, rejects replacement/graft/alternate mechanisms across loose and packed/ref-backend storage, validates policy/helper/interpreter/Git identities, checks the derived clean align-llm head and evaluated-commit ancestry as separate proofs, and compares exact identities | explicit `C6_GATE_SOURCE_BUNDLE_ROOT`, `C6_GATE_PYTHON_EXECUTABLE_PATH`, and `C6_GATE_GIT_EXECUTABLE_PATH` reach the validator; no ambient or historical absolute path | `prompt-gate-source-bundle-smoke`, `prompt-gate-source-revalidation-smoke`, `prompt-gate-git-replacement-graft-smoke`, `prompt-gate-local-git-config-smoke`, `prompt-gate-replacement-namespace-smoke`, `prompt-gate-merge-head-ancestry-smoke`, `prompt-gate-ancestry-smoke`, `prompt-file-set-manifest-smoke`, `prompt-source-verifier-boundary-smoke` |
+| Source-verifier process boundary | policy/helper/interpreter/Git identity and request/result codecs | N/A | raw `.git`/`gitdir`/`commondir` metadata and local/worktree config are scanned before any Git child; retained-descriptor exact Python/helper/Git argv, fixed Git no-pager/no-replace/no-graft/command overrides, cleared environment, cwd, common-directory checks, complete replacement namespace enumeration, byte caps, timeout, raw-byte FILE_SET traversal, mode-specific result-status/observed-identity shape, and no side effect before digest validation | C6f1 trusted helper contract; child timeout/output/malformed/unavailable states become explicit unverified evidence or gate failure after complete descendant cleanup, while cleanup failure takes precedence | `prompt-source-verifier-argv-smoke`, `prompt-source-verifier-env-smoke`, `prompt-source-verifier-runtime-smoke`, `prompt-source-verifier-mode-identity-smoke`, `prompt-source-verifier-git-replacement-graft-smoke`, `prompt-source-verifier-local-git-config-smoke`, `prompt-source-verifier-fsmonitor-nonexecution-smoke`, `prompt-source-verifier-replacement-namespace-smoke`, `prompt-source-verifier-observed-identity-smoke`, `prompt-source-verifier-cap-smoke`, `prompt-source-verifier-file-set-bytes-smoke`, `prompt-source-verifier-descendant-cleanup-smoke` |
 | Incomplete prefix | N/A: decoded records are not owned here | N/A | C6c1p `validate_prefix` accepts empty/strict/terminal-error prefixes and classifies all task-limit plan errors before counting; C6c2 skips aggregation and accepts a retained non-`ERROR` row after `CLEANUP_FAILED` | persisted rows and terminal attestation agree with the prefix result | `prompt-score-prefix-smoke`, `prompt-prefix-retention-smoke`, `prompt-verifier-prefix-smoke`, `prompt-verifier-cleanup-retention-smoke` |
-| Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy/source returns `INVALID_INPUT`; malformed or unknown-schema memory returns `INVALID_FAILURE_MEMORY` before composition | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-validation-precedence-smoke` |
+| Invalid/malformed input | cap, schema, kind, field, nested, array, digest, reference order | invalid policy/source returns `INVALID_INPUT`; malformed or unknown-schema memory returns `INVALID_FAILURE_MEMORY` before composition | contradictory decoded result/evidence/row/lineage rejection | no provider/helper/adapter call before the evaluator's complete pre-side-effect validation | `make prompt-model-smoke`, `prompt-codec-invalid`, `prompt-score-invalid`, `prompt-verifier-invalid`, `prompt-evaluate-smoke` |
 | Operational failure | output write returns `Result` error | N/A: renderer is pure and reports invalid context as data | incomplete evaluation cannot activate; evidence/result write errors are not successful pairs | provider/helper/adapter timeout, output, status, drift, cleanup, pair-finalization, collision ownership, and result-size errors | `prompt-output-error-smoke`, `prompt-external-error-smoke`, `prompt-evidence-output-smoke`, `prompt-evidence-pair-finalization-smoke`, `prompt-evidence-pair-collision-ownership-smoke`, `prompt-adapter-failed-attestation-smoke`, `prompt-trace-overflow-smoke` |
 | Early exit | decoded invalid request writes one invalid result | N/A: pure function has no side effect to unwind | first serious result is still fully recomputed; first invalid lineage stops | first source-helper, snapshot, adapter, precheck drift, postcheck, postcheck drift, or result-size failure stops later invocations and retains only the valid prefix or explicit compact envelope | `prompt-first-failure-smoke`, `prompt-prefix-retention-smoke`, `prompt-adapter-failed-terminal-smoke`, `prompt-drift-attestation-smoke`, `prompt-trace-overflow-terminal-smoke` |
 | Cleanup/drop | decoded Move records and digest buffers drop in owner function | rendered string/digest drop with bare result owner | temporary aggregate/activation records drop after encode; borrowed verifier inputs are not retained | process outputs cloned while owner lives; helper/tool owners, evaluator-owned result/evidence temp/final owners, and files/checkouts removed; collision destinations are never removed; failed pair finalization performs reverse cleanup or emits its explicit recovery error; empty raw workspace restored; overflow trace stream released | `prompt-owned-drop-smoke`, `prompt-workspace-cleanup-smoke`, `prompt-verifier-borrow-lifetime-smoke`, `prompt-source-helper-cleanup-smoke`, `prompt-evidence-pair-cleanup-smoke`, `prompt-evidence-pair-collision-ownership-smoke`, `prompt-trace-overflow-drop-smoke` |
@@ -3138,14 +3217,22 @@ of the same containment gap. This matrix reopens that axis before the implementa
 | Reopened invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
 | Source-verifier runtime identity | `PromptSourceVerifierPolicy`, evaluator, future gate locator | bind the exact helper and explicit CPython executable bytes in `CPYTHON:<interpreter_sha256>:<helper_sha256>`; validate policy, helper, interpreter, and Git digests before launch; never select an interpreter through a shebang or ambient path | evaluator source-policy runtime mismatch, interpreter tamper, helper tamper, and exact-argv fixtures in `prompt-evaluate-smoke`; gate equivalents remain owned by C6-MEASURED |
-| Descendant ownership | evaluator, snapshot helper, source verifier, fixed adapter | every direct process boundary starts a private process group; timeout, output cap, failure, and successful-parent-with-live-descendant states kill and reap the complete group before returning | marker-bearing grandchild fixtures for evaluator timeout/over-cap and each helper boundary; Request 11 adoption remains the Align outer-boundary owner |
-| FILE_SET physical containment | source verifier | retain the source-root directory descriptor and walk every UTF-8 path component with no-follow directory-relative opens; reject a symlink ancestor, special final, root escape, manifest self-entry, and non-UTF-8 persisted name before hashing | source-verifier FILE_SET symlink-ancestor, invalid-UTF-8, special-file, and manifest-self fixtures |
+| Descendant ownership | evaluator, snapshot helper, source verifier, fixed adapter, their Git/task children | on the required Linux floor start every content-bound trusted direct child in a PID-owned private session/group, prohibit session/group escape, and apply the specified group signal, direct wait, bounded group-absence proof, and cleanup-precedence sequence for timeout, output cap where the boundary captures output, nonzero/malformed failure, and successful-parent-with-live-descendant states | marker-bearing evaluator timeout and successful-parent descendant fixtures plus source-verifier, snapshot-helper, and fixed-adapter live-descendant fixtures prove marker and process-group absence; their existing timeout/output owners retain the ordinary failure cases; Request 11 adoption remains the Align outer-boundary owner |
+| FILE_SET physical containment | source verifier | retain separate manifest and source-root descriptors, walk every raw byte component with no-follow directory-relative opens, and obtain type/mode/device/inode/bytes/digest from the same retained final descriptor; reject a symlink ancestor, special final, root escape, and manifest physical alias while accepting valid non-UTF-8 path bytes | source-verifier FILE_SET symlink-ancestor, non-UTF-8 acceptance, special-file, root-escape, manifest-alias, and digest fixtures plus same-descriptor pre/post identity checks |
 
 The runtime change is intentionally structural rather than a nominal-label patch. The interpreter
 digest is a declared policy field, the evaluation request supplies its absolute executable path,
 and the future gate supplies the same path as an explicit build input while the checked-in locator
 stores only its digest. No machine-specific absolute interpreter path enters persisted evidence or
 the gate locator.
+
+For every reopened process state, a failed descendant kill/direct-wait/absence proof yields
+`CLEANUP_FAILED` even when timeout, output overflow, child status, or malformed output happened
+first. A syntactically valid FILE_SET whose retained root, manifest, or entry cannot be opened or
+matched is `UNVERIFIED`; malformed request field or absolute-path syntax remains the earlier
+`INVALID_INPUT`.
+`prompt-evaluate-smoke` covers representative ordered invalid-input pairs and proves that no later
+snapshot or adapter side effect occurs; the focused helper owners cover the observation failures.
 
 Applicability decisions:
 
@@ -3648,7 +3735,7 @@ The C6c2 closure matrix is:
 | incomplete-prefix delegation | C6c1p and C6c2 owners in `src/prompt_score.align` | `prompt-score-prefix-smoke` plus `prompt-verifier-smoke` cover empty, terminal-error, cleanup-retained, and complete prefixes; `validate_prefix` agrees with the trace and no aggregate/reason output is manufactured |
 | persisted execution trace | `src/prompt_evaluate.align`, `src/prompt_score.align` | `prompt-verifier-smoke` directly constructs complete, precheck, adapter, postcheck, pre/post drift, retained terminal-row, cleanup-retained, bounded overflow, and malformed-order shapes |
 | independent evidence binding | `src/prompt_evaluate.align`, `src/prompt_score.align`, `src/prompt_state.align`, gate validator | `prompt-verifier-smoke` covers missing, duplicate, out-of-order, mismatched-input, and result-digest evidence; later acceptance/gate owners cover explicit paths, source identity, and manifest pairing |
-| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | `prompt-verifier-smoke` covers verified, unverified, missing-observation, `FIXTURE`, and gate eligibility; C6f1/evaluator owners cover source paths, helper/Git execution, and unavailable-state production |
+| trust and reachability | explicit source boundary owned by `src/prompt_evaluate.align`, C6f1 source verifier, `src/prompt_score.align` | `prompt-verifier-smoke` covers verified, unverified, missing-observation, `FIXTURE`, and gate eligibility; C6f1/evaluator owners cover source paths, helper/interpreter/Git execution, and unavailable-state production |
 | row, aggregate, reason, status, and gate tampering | `src/prompt_score.align` | `prompt-score-smoke`, `prompt-score-prefix-smoke`, and `prompt-verifier-smoke` cover every C6c1 boundary plus status-only, aggregate-only, reason-only, row-identity, and gate-only tampering |
 | malformed input and error precedence | `src/prompt_score.align` | `prompt-verifier-smoke` covers status-specific precheck/adapter/postcheck/drift/cleanup/terminal families, invalid option/discriminator combinations, compact counter and empty-shape checks, and pure rejection without side effects |
 | allocation and cleanup | `src/prompt_score.align`, C6c1p, Requests 8/10 | one bounded temporary `array<ScoreRow>` plus 64 task columns and primitive C6c1 reason columns of exact checked capacity `R_max <= 9,282` only for complete rows; prefix validation uses no output columns; compact overflow verification uses only bounded scalars; checked arithmetic overflow returns invalid before scorer call, while runtime allocator failure follows the declared Request 8/10 terminal child-process policy; no fixed-size workaround, no duplicated scorer, no moved input, no retained view, normal-path drop checks, and terminal allocator-failure fixture |

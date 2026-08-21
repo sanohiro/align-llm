@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -139,6 +142,26 @@ def main() -> int:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         require(completed.returncode != 0 and not completed.stdout, "tampered preflight request was accepted")
+
+        module_spec = importlib.util.spec_from_file_location("prompt_snapshot_descendants", HELPER)
+        require(module_spec is not None and module_spec.loader is not None, "snapshot helper module could not be loaded")
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        marker = root / "snapshot-git-descendant-survived"
+        descendant_git = root / "descendant-git"
+        descendant_git.write_text(
+            "#!/bin/sh\n"
+            f"(exec >/dev/null 2>&1; sleep 0.6; printf x > {shlex.quote(str(marker))}) &\n"
+            "exit 1\n"
+        )
+        descendant_git.chmod(0o755)
+        try:
+            module.git_identity(project, "0" * 40, True, descendant_git)
+            raise RuntimeError("snapshot Git descendant was accepted")
+        except module.SnapshotError:
+            pass
+        time.sleep(0.8)
+        require(not marker.exists(), "snapshot helper left a Git descendant alive")
 
     print("prompt snapshot helper: PASS")
     return 0

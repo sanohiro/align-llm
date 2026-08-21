@@ -25,6 +25,24 @@ SNAPSHOT_LIMIT = 1_048_576
 RESULT_LIMIT = 268_435_456
 EVIDENCE_LIMIT = 8_388_608
 HEX = frozenset("0123456789abcdef")
+SOURCE_POLICY_FIELDS = (
+    "schema_version", "artifact_kind", "policy_id", "helper_path", "helper_sha256",
+    "helper_runtime", "interpreter_sha256", "git_executable_sha256", "content_sha256",
+)
+EVALUATE_REQUEST_FIELDS = (
+    "schema_version", "artifact_kind", "evaluation_id", "project_root", "experiment_path",
+    "parent_activation_path", "corpus_path", "sample_count", "acceptance_policy_path",
+    "workspace_path", "workspace_preflight_path", "verifier_align_llm_repository_path",
+    "verifier_align_llm_commit", "verifier_align_repository_path", "verifier_align_revision",
+    "verifier_corpus_source_path", "verifier_corpus_source_kind",
+    "verifier_corpus_file_set_manifest_path", "verifier_corpus_source_repository_id",
+    "verifier_corpus_source_sha256", "verifier_source_policy_path",
+    "verifier_source_policy_sha256", "verifier_python_executable_path",
+    "verifier_git_executable_path", "evaluation_evidence_path",
+)
+EVALUATE_REQUEST_FIELDS_OMITTED = tuple(
+    name for name in EVALUATE_REQUEST_FIELDS if name != "verifier_corpus_file_set_manifest_path"
+)
 
 
 class EvaluationError(ValueError):
@@ -50,6 +68,82 @@ class AdapterFailure(EvaluationError):
 
 class ResultOnlyInvalid(EvaluationError):
     """A decoded request failed before the paired-evidence boundary."""
+
+
+class RetainedRegularFile:
+    """One no-follow regular file whose identity remains bound through child launch."""
+
+    def __init__(self, path: Path, maximum: int) -> None:
+        try:
+            self.descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except OSError:
+            raise EvaluationError("declared executable is unavailable") from None
+        self.maximum = maximum
+        try:
+            self.identity = self._identity()
+        except BaseException:
+            os.close(self.descriptor)
+            raise
+
+    def _identity(self) -> tuple[int, int, int, int]:
+        metadata = os.fstat(self.descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size < 0 or metadata.st_size > self.maximum:
+            raise EvaluationError("declared executable type or size is invalid")
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size
+
+    def sha256(self) -> str:
+        hasher = hashlib.sha256()
+        offset = 0
+        while offset < self.identity[3]:
+            chunk = os.pread(self.descriptor, min(1_048_576, self.identity[3] - offset), offset)
+            if not chunk:
+                raise EvaluationError("declared executable changed while reading")
+            hasher.update(chunk)
+            offset += len(chunk)
+        return hasher.hexdigest()
+
+    def verify_unchanged(self, expected: str) -> None:
+        if self._identity() != self.identity or self.sha256() != expected:
+            raise EvaluationError("declared executable changed during use")
+
+    def process_path(self) -> str:
+        path = f"/proc/self/fd/{self.descriptor}"
+        if not Path(path).exists():
+            raise EvaluationError("retained executable launch is unavailable")
+        return path
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def process_group_exists(group: int) -> bool:
+    try:
+        os.killpg(group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: float = 2.0) -> bool:
+    """Kill the private group, reap the direct child, and prove group absence."""
+
+    complete = True
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        complete = False
+    try:
+        process.wait(timeout=maximum_seconds)
+    except (OSError, subprocess.TimeoutExpired):
+        complete = False
+    deadline = time.monotonic() + maximum_seconds
+    while process_group_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return complete and not process_group_exists(process.pid)
 
 
 def canonical(value: Any) -> bytes:
@@ -104,8 +198,19 @@ def read_bounded(path: Path, maximum: int) -> bytes:
 
 
 def load_json(path: Path, maximum: int) -> dict[str, Any]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, child in pairs:
+            if key in value:
+                raise EvaluationError("evaluation input has a duplicate field")
+            value[key] = child
+        return value
+
     try:
-        value = json.loads(read_bounded(path, maximum).decode("utf-8", "strict"))
+        value = json.loads(
+            read_bounded(path, maximum).decode("utf-8", "strict"),
+            object_pairs_hook=unique_object,
+        )
     except (UnicodeError, json.JSONDecodeError):
         raise EvaluationError("evaluation input is not UTF-8 JSON") from None
     if not isinstance(value, dict):
@@ -241,7 +346,14 @@ def validate_task_command(task: Mapping[str, Any], name: str, policy: Mapping[st
         relative_path(project, command_value)
 
 
-def run_child(argv: list[str], cwd: Path, environment: Mapping[str, str], timeout_ns: int, cap: int) -> subprocess.CompletedProcess[bytes]:
+def run_child(
+    argv: list[str],
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_ns: int,
+    cap: int,
+    pass_fds: tuple[int, ...] = (),
+) -> subprocess.CompletedProcess[bytes]:
     if timeout_ns <= 0:
         raise EvaluationError("child timeout is invalid")
     try:
@@ -254,6 +366,7 @@ def run_child(argv: list[str], cwd: Path, environment: Mapping[str, str], timeou
             stderr=subprocess.PIPE,
             close_fds=True,
             start_new_session=True,
+            pass_fds=pass_fds,
         )
     except OSError:
         raise ChildBoundaryError("PROCESS") from None
@@ -290,22 +403,13 @@ def run_child(argv: list[str], cwd: Path, environment: Mapping[str, str], timeou
         if remaining <= 0:
             raise ChildBoundaryError("TIMEOUT")
         process.wait(timeout=remaining)
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
-            os.killpg(process.pid, signal.SIGKILL)
+        if process_group_exists(process.pid):
+            if not cleanup_process_group(process):
+                raise ChildBoundaryError("CLEANUP")
             raise ChildBoundaryError("PROCESS")
     except (OSError, subprocess.TimeoutExpired, ChildBoundaryError) as failure:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
+        if not cleanup_process_group(process):
+            raise ChildBoundaryError("CLEANUP") from None
         if isinstance(failure, ChildBoundaryError):
             raise failure
         if isinstance(failure, subprocess.TimeoutExpired):
@@ -383,7 +487,20 @@ def invoke_snapshot(
         if result.get("task_id") != task["task_id"] or result.get("status") not in ("MATCH", "MISMATCH", "ERROR"):
             raise EvaluationError("snapshot helper result is invalid")
         return result
-    except (ChildBoundaryError, EvaluationError, OSError, TypeError, KeyError):
+    except ChildBoundaryError as failure:
+        result_path.unlink(missing_ok=True)
+        return bind({
+            "schema_version": 1,
+            "artifact_kind": "SNAPSHOT_RESULT",
+            "task_id": task["task_id"],
+            "status": "ERROR",
+            "error_code": "CLEANUP" if failure.reason == "CLEANUP" else "INTERNAL",
+            "error": "snapshot helper cleanup failed" if failure.reason == "CLEANUP" else "snapshot helper process failed",
+            "environment_probe": environment_probe,
+            "artifact_digests": [],
+            "content_sha256": "",
+        })
+    except (EvaluationError, OSError, TypeError, KeyError):
         result_path.unlink(missing_ok=True)
         return bind({
             "schema_version": 1,
@@ -411,6 +528,8 @@ def invoke_adapter(
     try:
         completed = run_child(argv, project / task["cwd"], environment, task["timeout_ns"], 0)
     except ChildBoundaryError as failure:
+        if failure.reason == "CLEANUP":
+            raise AdapterFailure("CLEANUP_FAILED", "measurement adapter cleanup failed") from None
         if failure.reason == "TIMEOUT":
             raise AdapterFailure("ADAPTER_TIMEOUT", "measurement adapter timed out") from None
         if failure.reason == "OUTPUT":
@@ -735,64 +854,7 @@ def valid_source_observation(value: Mapping[str, Any]) -> bool:
     )
 
 
-def source_trust(
-    request: Mapping[str, Any], policy: Mapping[str, Any], project: Path, environment: Mapping[str, str]
-) -> dict[str, Any]:
-    helper = relative_path(project, policy["helper_path"])
-    if hashlib.sha256(read_bounded(helper, ARTIFACT_LIMIT)).hexdigest() != policy["helper_sha256"]:
-        raise EvaluationError("source verifier helper digest does not match")
-    git = Path(request["verifier_git_executable_path"])
-    if hashlib.sha256(read_bounded(git, RESULT_LIMIT)).hexdigest() != policy["git_executable_sha256"]:
-        raise EvaluationError("source verifier Git digest does not match")
-    verifier_request = bind({
-        "schema_version": 1, "artifact_kind": "PROMPT_SOURCE_VERIFIER_REQUEST", "mode": "EVALUATION",
-        "align_llm_repository_path": request["verifier_align_llm_repository_path"],
-        "expected_align_llm_commit": request["verifier_align_llm_commit"], "tested_align_llm_head": None,
-        "align_repository_path": request["verifier_align_repository_path"],
-        "expected_align_revision": request["verifier_align_revision"],
-        "corpus_source_path": request["verifier_corpus_source_path"],
-        "corpus_source_kind": request["verifier_corpus_source_kind"],
-        "corpus_file_set_manifest_path": request["verifier_corpus_file_set_manifest_path"],
-        "expected_corpus_source_repository_id": request["verifier_corpus_source_repository_id"],
-        "expected_corpus_source_sha256": request["verifier_corpus_source_sha256"],
-        "git_executable_path": request["verifier_git_executable_path"],
-        "git_executable_sha256": policy["git_executable_sha256"], "content_sha256": "",
-    })
-    with tempfile.TemporaryDirectory(prefix="prompt-source-boundary-") as directory:
-        root = Path(directory)
-        request_path = temporary_json(root, "request.json", verifier_request)
-        result_path = root / "result.json"
-        try:
-            completed = run_child(
-                [str(helper), "--source-verifier-request", str(request_path), "--result", str(result_path)],
-                project, environment, 60_000_000_000, 0,
-            )
-            if completed.returncode != 0 or completed.stdout or completed.stderr:
-                raise EvaluationError("source verifier process failed")
-            observed = load_bound(result_path, "PROMPT_SOURCE_VERIFIER_RESULT", MEASUREMENT_LIMIT)
-            if not valid_source_observation(observed):
-                raise EvaluationError("source verifier result is malformed")
-            if (
-                observed["align_llm_reachability"] == "VERIFIED"
-                and observed["align_llm_observed_head"] != request["verifier_align_llm_commit"]
-            ) or (
-                observed["align_reachability"] == "VERIFIED"
-                and observed["align_observed_revision"] != request["verifier_align_revision"]
-            ) or (
-                observed["corpus_reachability"] == "VERIFIED"
-                and observed["corpus_observed_source_sha256"] != request["verifier_corpus_source_sha256"]
-            ):
-                raise EvaluationError("source verifier result identity disagrees")
-        except EvaluationError:
-            observed = {
-                "status": "UNAVAILABLE",
-                "align_llm_reachability": "UNVERIFIED",
-                "align_llm_observed_head": None,
-                "align_reachability": "UNVERIFIED",
-                "align_observed_revision": None,
-                "corpus_reachability": "UNVERIFIED",
-                "corpus_observed_source_sha256": None,
-            }
+def unavailable_trust(request: Mapping[str, Any]) -> dict[str, Any]:
     return bind({
         "schema_version": 1, "artifact_kind": "PROMPT_VERIFIER_TRUST",
         "expected_align_llm_commit": request["verifier_align_llm_commit"],
@@ -800,14 +862,156 @@ def source_trust(
         "expected_corpus_source_kind": request["verifier_corpus_source_kind"],
         "expected_corpus_source_repository_id": request["verifier_corpus_source_repository_id"],
         "expected_corpus_source_sha256": request["verifier_corpus_source_sha256"],
-        "align_llm_reachability": observed["align_llm_reachability"],
-        "align_llm_observed_head": observed["align_llm_observed_head"],
-        "align_reachability": observed["align_reachability"],
-        "align_observed_revision": observed["align_observed_revision"],
-        "corpus_reachability": observed["corpus_reachability"],
-        "corpus_observed_source_sha256": observed["corpus_observed_source_sha256"],
+        "align_llm_reachability": "UNVERIFIED", "align_llm_observed_head": None,
+        "align_reachability": "UNVERIFIED", "align_observed_revision": None,
+        "corpus_reachability": "UNVERIFIED", "corpus_observed_source_sha256": None,
         "content_sha256": "",
     })
+
+
+def validate_source_boundary(
+    request: Mapping[str, Any], policy: Mapping[str, Any], project: Path
+) -> None:
+    helper = relative_path(project, policy["helper_path"])
+    python = Path(request["verifier_python_executable_path"])
+    git = Path(request["verifier_git_executable_path"])
+    if not python.is_absolute():
+        raise EvaluationError("source verifier Python path is invalid")
+    if not git.is_absolute():
+        raise EvaluationError("source verifier Git path is invalid")
+    expected_runtime = f'CPYTHON:{policy["interpreter_sha256"]}:{policy["helper_sha256"]}'
+    if policy.get("helper_runtime") != expected_runtime:
+        raise EvaluationError("source verifier runtime identity does not match")
+    declared = (
+        (helper, ARTIFACT_LIMIT, policy["helper_sha256"], "helper"),
+        (python, RESULT_LIMIT, policy["interpreter_sha256"], "interpreter"),
+        (git, RESULT_LIMIT, policy["git_executable_sha256"], "Git"),
+    )
+    for path, maximum, expected, label in declared:
+        carrier = RetainedRegularFile(path, maximum)
+        try:
+            if carrier.sha256() != expected:
+                raise EvaluationError(f"source verifier {label} digest does not match")
+        finally:
+            carrier.close()
+
+
+def source_trust(
+    request: Mapping[str, Any], policy: Mapping[str, Any], project: Path, environment: Mapping[str, str]
+) -> dict[str, Any]:
+    helper = relative_path(project, policy["helper_path"])
+    python = Path(request["verifier_python_executable_path"])
+    if not python.is_absolute():
+        raise EvaluationError("source verifier Python path is invalid")
+    expected_runtime = f'CPYTHON:{policy["interpreter_sha256"]}:{policy["helper_sha256"]}'
+    if policy.get("helper_runtime") != expected_runtime:
+        raise EvaluationError("source verifier runtime identity does not match")
+    git = Path(request["verifier_git_executable_path"])
+    if not git.is_absolute():
+        raise EvaluationError("source verifier Git path is invalid")
+    carriers: list[RetainedRegularFile] = []
+    try:
+        helper_carrier = RetainedRegularFile(helper, ARTIFACT_LIMIT)
+        carriers.append(helper_carrier)
+        python_carrier = RetainedRegularFile(python, RESULT_LIMIT)
+        carriers.append(python_carrier)
+        git_carrier = RetainedRegularFile(git, RESULT_LIMIT)
+        carriers.append(git_carrier)
+        if helper_carrier.sha256() != policy["helper_sha256"]:
+            raise EvaluationError("source verifier helper digest does not match")
+        if python_carrier.sha256() != policy["interpreter_sha256"]:
+            raise EvaluationError("source verifier interpreter digest does not match")
+        if git_carrier.sha256() != policy["git_executable_sha256"]:
+            raise EvaluationError("source verifier Git digest does not match")
+        verifier_request = bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_SOURCE_VERIFIER_REQUEST", "mode": "EVALUATION",
+            "align_llm_repository_path": request["verifier_align_llm_repository_path"],
+            "expected_align_llm_commit": request["verifier_align_llm_commit"], "tested_align_llm_head": None,
+            "align_repository_path": request["verifier_align_repository_path"],
+            "expected_align_revision": request["verifier_align_revision"],
+            "corpus_source_path": request["verifier_corpus_source_path"],
+            "corpus_source_kind": request["verifier_corpus_source_kind"],
+            "corpus_file_set_manifest_path": request.get("verifier_corpus_file_set_manifest_path"),
+            "expected_corpus_source_repository_id": request["verifier_corpus_source_repository_id"],
+            "expected_corpus_source_sha256": request["verifier_corpus_source_sha256"],
+            "git_executable_path": git_carrier.process_path(),
+            "git_executable_sha256": policy["git_executable_sha256"], "content_sha256": "",
+        })
+        with tempfile.TemporaryDirectory(prefix="prompt-source-boundary-") as directory:
+            root = Path(directory)
+            request_path = temporary_json(root, "request.json", verifier_request)
+            result_path = root / "result.json"
+            try:
+                completed = run_child(
+                    [
+                        python_carrier.process_path(),
+                        helper_carrier.process_path(),
+                        "--source-verifier-request",
+                        str(request_path),
+                        "--result",
+                        str(result_path),
+                    ],
+                    project,
+                    environment,
+                    60_000_000_000,
+                    0,
+                    (helper_carrier.descriptor, python_carrier.descriptor, git_carrier.descriptor),
+                )
+                if completed.returncode == 3:
+                    raise AdapterFailure("CLEANUP_FAILED", "source verifier cleanup failed")
+                if completed.returncode != 0 or completed.stdout or completed.stderr:
+                    raise EvaluationError("source verifier process failed")
+                observed = load_bound(result_path, "PROMPT_SOURCE_VERIFIER_RESULT", MEASUREMENT_LIMIT)
+                if not valid_source_observation(observed):
+                    raise EvaluationError("source verifier result is malformed")
+                if (
+                    observed["align_llm_reachability"] == "VERIFIED"
+                    and observed["align_llm_observed_head"] != request["verifier_align_llm_commit"]
+                ) or (
+                    observed["align_reachability"] == "VERIFIED"
+                    and observed["align_observed_revision"] != request["verifier_align_revision"]
+                ) or (
+                    observed["corpus_reachability"] == "VERIFIED"
+                    and observed["corpus_observed_source_sha256"] != request["verifier_corpus_source_sha256"]
+                ):
+                    raise EvaluationError("source verifier result identity disagrees")
+            except ChildBoundaryError as failure:
+                if failure.reason == "CLEANUP":
+                    raise AdapterFailure("CLEANUP_FAILED", "source verifier cleanup failed") from None
+                observed = unavailable_trust(request)
+            except AdapterFailure:
+                raise
+            except EvaluationError:
+                observed = {
+                    "status": "UNAVAILABLE",
+                    "align_llm_reachability": "UNVERIFIED",
+                    "align_llm_observed_head": None,
+                    "align_reachability": "UNVERIFIED",
+                    "align_observed_revision": None,
+                    "corpus_reachability": "UNVERIFIED",
+                    "corpus_observed_source_sha256": None,
+                }
+        helper_carrier.verify_unchanged(policy["helper_sha256"])
+        python_carrier.verify_unchanged(policy["interpreter_sha256"])
+        git_carrier.verify_unchanged(policy["git_executable_sha256"])
+        return bind({
+            "schema_version": 1, "artifact_kind": "PROMPT_VERIFIER_TRUST",
+            "expected_align_llm_commit": request["verifier_align_llm_commit"],
+            "expected_align_revision": request["verifier_align_revision"],
+            "expected_corpus_source_kind": request["verifier_corpus_source_kind"],
+            "expected_corpus_source_repository_id": request["verifier_corpus_source_repository_id"],
+            "expected_corpus_source_sha256": request["verifier_corpus_source_sha256"],
+            "align_llm_reachability": observed["align_llm_reachability"],
+            "align_llm_observed_head": observed["align_llm_observed_head"],
+            "align_reachability": observed["align_reachability"],
+            "align_observed_revision": observed["align_observed_revision"],
+            "corpus_reachability": observed["corpus_reachability"],
+            "corpus_observed_source_sha256": observed["corpus_observed_source_sha256"],
+            "content_sha256": "",
+        })
+    finally:
+        for carrier in reversed(carriers):
+            carrier.close()
 
 
 def validation_error_code(error: BaseException) -> str:
@@ -840,14 +1044,17 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
     if request["sample_count"] < 2 or request["sample_count"] > 16:
         raise EvaluationError("sample count is invalid")
 
+    source_policy = load_bound(relative_path(project, request["verifier_source_policy_path"]), "PROMPT_SOURCE_VERIFIER_POLICY")
+    if tuple(source_policy) != SOURCE_POLICY_FIELDS:
+        raise EvaluationError("source verifier policy fields are invalid")
+    if source_policy["content_sha256"] != request["verifier_source_policy_sha256"]:
+        raise EvaluationError("source verifier policy identity disagrees")
+    validate_source_boundary(request, source_policy, project)
     experiment = load_bound(relative_path(project, request["experiment_path"]), "PROMPT_EXPERIMENT_RESULT")
     parent = load_bound(relative_path(project, request["parent_activation_path"]), "PROMPT_ACTIVATION_RESULT")
     corpus = load_bound(relative_path(project, request["corpus_path"]), "PROMPT_EVALUATION_CORPUS")
     acceptance = load_bound(relative_path(project, request["acceptance_policy_path"]), "PROMPT_ACCEPTANCE_POLICY")
     preflight_request = load_bound(relative_path(project, request["workspace_preflight_path"]), "WORKSPACE_PREFLIGHT_REQUEST")
-    source_policy = load_bound(relative_path(project, request["verifier_source_policy_path"]), "PROMPT_SOURCE_VERIFIER_POLICY")
-    if source_policy["content_sha256"] != request["verifier_source_policy_sha256"]:
-        raise EvaluationError("source verifier policy identity disagrees")
     tasks = [load_bound(relative_path(project, item), "PROMPT_EVALUATION_TASK") for item in corpus["task_files"]]
     if len(tasks) < 1 or len(tasks) > 64:
         raise EvaluationError("corpus task count is invalid")
@@ -904,14 +1111,13 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         or any(task["repo_id"] != scope["repo_id"] for task in tasks)
     ):
         raise EvaluationError("evaluation scope identities disagree")
-    trust = source_trust(request, source_policy, project, environment_values)
     return {
         "workspace": workspace, "experiment": experiment, "parent": parent, "corpus": corpus,
         "acceptance": acceptance, "preflight_request": preflight_request, "source_policy": source_policy,
         "tasks": tasks, "first_task": first_task, "generation": generation, "control": control,
         "environment_policy": environment_policy, "environment_values": environment_values,
         "task_inputs": task_inputs, "scope": scope, "candidate": candidate,
-        "parent_variant": parent_variant, "trust": trust,
+        "parent_variant": parent_variant,
     }
 
 
@@ -924,7 +1130,22 @@ def evaluate(
     owned_paths: set[Path],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     request = load_json(request_path, REQUEST_LIMIT)
-    if request.get("schema_version") != 1 or request.get("artifact_kind") != "PROMPT_EVALUATE_REQUEST":
+    request_fields = tuple(request)
+    option_fields_valid = (
+        request_fields == EVALUATE_REQUEST_FIELDS
+        and (
+            request.get("verifier_corpus_source_kind") == "FILE_SET"
+            or request.get("verifier_corpus_file_set_manifest_path") is None
+        )
+    ) or (
+        request_fields == EVALUATE_REQUEST_FIELDS_OMITTED
+        and request.get("verifier_corpus_source_kind") != "FILE_SET"
+    )
+    if (
+        not option_fields_valid
+        or request.get("schema_version") != 1
+        or request.get("artifact_kind") != "PROMPT_EVALUATE_REQUEST"
+    ):
         raise EvaluationError("evaluate request header is invalid")
     project = physical_directory(Path(request["project_root"]))
     final_result = relative_path(project, final_result_relative, must_exist=False)
@@ -975,7 +1196,7 @@ def evaluate(
     scope = inputs["scope"]
     candidate = inputs["candidate"]
     parent_variant = inputs["parent_variant"]
-    trust = inputs["trust"]
+    trust = unavailable_trust(request)
 
     result_context = {
         "request": request,
@@ -1008,7 +1229,20 @@ def evaluate(
         normalized_preflight["content_sha256"] = ""
         if not valid_hex(claimed) or hashlib.sha256(canonical_digest_bytes(normalized_preflight)).hexdigest() != claimed:
             raise EvaluationError("workspace preflight result is malformed")
-    except (ChildBoundaryError, EvaluationError, UnicodeError, json.JSONDecodeError, TypeError, KeyError):
+    except ChildBoundaryError as failure:
+        preflight = bind({
+            "schema_version": 1,
+            "artifact_kind": "WORKSPACE_PREFLIGHT_RESULT",
+            "evaluation_id": request["evaluation_id"],
+            "status": "ERROR",
+            "error_code": "CLEANUP" if failure.reason == "CLEANUP" else "ENVIRONMENT",
+            "error": "workspace preflight helper cleanup failed" if failure.reason == "CLEANUP" else "workspace preflight helper failed",
+            "physical_project_root": "",
+            "physical_workspace_path": "",
+            "environment_probe": None,
+            "content_sha256": "",
+        })
+    except (EvaluationError, UnicodeError, json.JSONDecodeError, TypeError, KeyError):
         preflight = bind({
             "schema_version": 1,
             "artifact_kind": "WORKSPACE_PREFLIGHT_RESULT",
@@ -1022,10 +1256,27 @@ def evaluate(
             "content_sha256": "",
         })
     if preflight.get("status") != "SAFE":
-        result_code = "WORKSPACE_UNSAFE" if preflight.get("status") == "UNSAFE" else "SNAPSHOT_ERROR"
+        result_code = (
+            "WORKSPACE_UNSAFE" if preflight.get("status") == "UNSAFE"
+            else "CLEANUP_FAILED" if preflight.get("error_code") == "CLEANUP"
+            else "SNAPSHOT_ERROR"
+        )
         detail = preflight.get("error", "workspace preflight failed")
         result = evaluation_result_record(
             result_context, "ERROR", result_code, detail, preflight, None, [], [], [], [], [],
+        )
+        return write_prepared_pair(prepared_result, prepared_evidence, result, trust, [])
+    try:
+        trust = source_trust(request, source_policy, project, environment_values)
+    except AdapterFailure as failure:
+        result = evaluation_result_record(
+            result_context, "ERROR", failure.code, failure.detail, preflight, None, [], [], [], [], [],
+        )
+        return write_prepared_pair(prepared_result, prepared_evidence, result, trust, [])
+    except EvaluationError:
+        result = evaluation_result_record(
+            result_context, "ERROR", "INPUT_DRIFT", "source verifier executable identity drifted",
+            preflight, None, [], [], [], [], [],
         )
         return write_prepared_pair(prepared_result, prepared_evidence, result, trust, [])
     seed_base = generation.get("seed_base")
@@ -1143,7 +1394,11 @@ def evaluate(
                     if not any(item["content_sha256"] == before["content_sha256"] for item in snapshot_results):
                         snapshot_results.append(before)
                     if before["status"] != "MATCH":
-                        failure_code = "SNAPSHOT_MISMATCH" if before["status"] == "MISMATCH" else "SNAPSHOT_ERROR"
+                        failure_code = (
+                            "SNAPSHOT_MISMATCH" if before["status"] == "MISMATCH"
+                            else "CLEANUP_FAILED" if before.get("error_code") == "CLEANUP"
+                            else "SNAPSHOT_ERROR"
+                        )
                         failure_detail = before["error"]
                         attestations.append(bind({
                             "schema_version": 1,
@@ -1234,7 +1489,11 @@ def evaluate(
                     if not any(item["content_sha256"] == after["content_sha256"] for item in snapshot_results):
                         snapshot_results.append(after)
                     if after["status"] != "MATCH":
-                        failure_code = "SNAPSHOT_MISMATCH" if after["status"] == "MISMATCH" else "SNAPSHOT_ERROR"
+                        failure_code = (
+                            "SNAPSHOT_MISMATCH" if after["status"] == "MISMATCH"
+                            else "CLEANUP_FAILED" if after.get("error_code") == "CLEANUP"
+                            else "SNAPSHOT_ERROR"
+                        )
                         failure_detail = after["error"]
                         attestations.append(bind({
                             "schema_version": 1,
@@ -1335,9 +1594,10 @@ def evaluate(
                     }))
                     if measurement.get("status") == "ERROR":
                         failure_detail = measurement.get("diagnostic_summary") or "measurement adapter returned an error"
+                        failure_code = "CLEANUP_FAILED" if not measurement.get("cleanup_passed", True) else "ADAPTER_RESULT"
                         return write_prepared_pair(
                             prepared_result, prepared_evidence,
-                            evaluation_result("ERROR", "ADAPTER_RESULT", failure_detail[:4096]), trust, expected_inputs,
+                            evaluation_result("ERROR", failure_code, failure_detail[:4096]), trust, expected_inputs,
                         )
                     if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
                         input_snapshots.append(input_snapshot)

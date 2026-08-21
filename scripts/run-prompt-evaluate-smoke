@@ -19,6 +19,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent.parent
 ALIGNC = SOURCE / "scripts" / "alignc"
 GIT = Path("/usr/bin/git")
+PYTHON = Path("/usr/bin/python3").resolve(strict=True)
 
 
 def canonical(value):
@@ -169,6 +170,21 @@ def verify_descendant_cleanup_boundary() -> None:
         time.sleep(0.8)
         require(not marker.exists(), "timed evaluator child left a live descendant")
 
+        marker = Path(directory) / "post-exit-survived"
+        child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
+        parent = (
+            "import subprocess,sys;"
+            f"subprocess.Popen([sys.executable,'-c',{child!r}],"
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)"
+        )
+        try:
+            module.run_child([sys.executable, "-c", parent], SOURCE, {}, 2_000_000_000, 0)
+            raise RuntimeError("parent with a live descendant unexpectedly completed")
+        except module.ChildBoundaryError as failure:
+            require(failure.reason == "PROCESS", "post-exit descendant returned the wrong failure")
+        time.sleep(0.8)
+        require(not marker.exists(), "successful evaluator parent left a live descendant")
+
 
 def copy_runtime(project: Path) -> None:
     for relative in (
@@ -201,6 +217,7 @@ def main() -> int:
         adapter_runtime = "PYTHON:" + raw_digest(project / "scripts/prompt-fixed-adapter.py")
         snapshot_runtime = "PYTHON:" + raw_digest(project / "scripts/prompt-snapshot-helper.py")
         git_digest = raw_digest(GIT)
+        python_digest = raw_digest(PYTHON)
         source_helper_digest = raw_digest(project / "scripts/prompt-source-verifier.py")
 
         control = bind({
@@ -244,7 +261,8 @@ def main() -> int:
         source_policy = bind({
             "schema_version": 1, "artifact_kind": "PROMPT_SOURCE_VERIFIER_POLICY", "policy_id": "fixture-source",
             "helper_path": "scripts/prompt-source-verifier.py", "helper_sha256": source_helper_digest,
-            "helper_runtime": "PYTHON:" + source_helper_digest, "git_executable_sha256": git_digest,
+            "helper_runtime": f"CPYTHON:{python_digest}:{source_helper_digest}",
+            "interpreter_sha256": python_digest, "git_executable_sha256": git_digest,
             "content_sha256": "",
         })
         store(project, "artifacts/source-policy.json", source_policy)
@@ -366,11 +384,12 @@ def main() -> int:
             "verifier_align_llm_repository_path": str(SOURCE), "verifier_align_llm_commit": source_head,
             "verifier_align_repository_path": str((SOURCE / "../align").resolve()),
             "verifier_align_revision": align_revision, "verifier_corpus_source_path": str(SOURCE),
-            "verifier_corpus_source_kind": "GIT_COMMIT", "verifier_corpus_file_set_manifest_path": None,
+            "verifier_corpus_source_kind": "GIT_COMMIT",
             "verifier_corpus_source_repository_id": "align-llm-fixture",
             "verifier_corpus_source_sha256": source_head,
             "verifier_source_policy_path": "artifacts/source-policy.json",
             "verifier_source_policy_sha256": source_policy["content_sha256"],
+            "verifier_python_executable_path": str(PYTHON),
             "verifier_git_executable_path": str(GIT), "evaluation_evidence_path": "evidence.json",
         }
         request_path = project / "evaluate-request.json"
@@ -449,7 +468,7 @@ def main() -> int:
             and tampered_result["error_code"] == "INVALID_DIGEST"
             and not evidence_path.exists()
             and not any(os.scandir(workspace)),
-            "tampered referenced input did not publish INVALID_DIGEST result-only",
+            f"tampered referenced input did not publish INVALID_DIGEST result-only: {tampered_result!r}",
         )
         tampered_input_result_path.unlink()
         experiment_path.write_bytes(original_experiment_bytes)

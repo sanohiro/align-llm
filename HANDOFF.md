@@ -12,14 +12,16 @@ file records durable project state.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
 - The register records Requests 7, 8, 10, 12, 13, and 15–18 as `ALIGN_LLM_VERIFIED`. Requests 11 and
-  14 remain `ALIGN_MERGED` while the C6-EVALUATION candidate closes its runtime-containment matrix;
+  14 remain `ALIGN_MERGED` until the C6-EVALUATION candidate passes its final capable gate;
   Requests 2 and 9 remain `ALIGN_MERGED` for their later named consumers.
 - The C6-EVALUATION candidate drives the deterministic two-task corpus through source/workspace verification,
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
   result-only; operational failures retain the exact valid trace prefix and paired evidence. Its
   review reopened exact interpreter identity, descendant ownership, and FILE_SET physical traversal
-  as one runtime-containment axis before publication.
+  as one runtime-containment axis. The revised candidate binds and descriptor-launches the exact
+  CPython/helper/Git bytes, proves private process-group absence, retains FILE_SET roots/manifests/
+  final files, and fixes the three changed schema-v1 byte goldens.
 - Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. C6d now builds on that
   decoded verifier: `prompt accept` verifies result/evidence before constructing an immutable
   activation, `prompt rollback` validates immutable lineage, and both commands use retained-root
@@ -101,13 +103,16 @@ file records durable project state.
 
 ## Latest durable verification
 
-- C6-EVALUATION candidate owners: `gmake --no-print-directory c6-evaluation-adoption`, `make check`,
-  and `make format-check`: PASS at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2` before the
-  runtime-containment redesign; the final capable `make ci` remains pending. Focused evidence covers Request 11 exact-cap,
+- C6-EVALUATION candidate owners: `gmake --no-print-directory c6-evaluation-adoption`,
+  `gmake --no-print-directory c6-prompt-artifact-adoption`, `make check`, and `make format-check`:
+  PASS at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2` after the runtime-containment redesign; the final
+  capable `make ci` remains pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
-  invalid inputs; and lifecycle consumption of the evaluator-produced pair.
+  invalid inputs; content-bound interpreter/helper/Git launch; evaluator/helper/adapter descendant
+  cleanup; raw-byte FILE_SET traversal and physical-alias rejection; schema-v1 byte goldens; and
+  lifecycle consumption of the evaluator-produced pair.
 - C6d owner: `make c6d-request18-adoption` and the final capable `make ci`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The focused owner covers request and artifact bounds,
   retained-root symlink/special-file rejection, deterministic error precedence, exclusive output

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -125,6 +127,23 @@ def main() -> int:
 
         completed, result = invoke("CANDIDATE", "tampered.json", tamper=True)
         require(completed.returncode != 0 and result is None, "tampered adapter request was accepted")
+
+        module_spec = importlib.util.spec_from_file_location("prompt_fixed_adapter_descendants", ADAPTER)
+        require(module_spec is not None and module_spec.loader is not None, "fixed adapter module could not be loaded")
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        marker = root / "runner-descendant-survived"
+        descendant_runner = root / "descendant-runner.py"
+        child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
+        descendant_runner.write_text(
+            "import subprocess,sys\n"
+            f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        )
+        module.RUNNER = descendant_runner
+        passed, cleanup_passed, containment_passed, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        require(not passed and cleanup_passed and not containment_passed, "runner descendant was not classified")
+        time.sleep(0.8)
+        require(not marker.exists(), "fixed adapter left a runner descendant alive")
 
     print("prompt fixed adapter: PASS")
     return 0
