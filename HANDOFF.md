@@ -148,10 +148,12 @@ file records durable project state.
   late static-expectation bounds, unavailable-source aborts, and reversed containment/cleanup
   precedence. Because that revised review found new P1s, §10.1k reopened the semantic axis and
   closed the complete measurement state machine plus the same-class retained patch-size and
-  snapshot-result bounds. Source `fc6154d389b6`, oracle `77861b8d3747`, and finalization
-  `39a19a3c117e` form its passing replacement identity-bound baseline chain. Preflight and the final
-  capable `make ci` remain pending; the one full-diff review is the §10.1k finding ledger and no
-  further discovery review is planned. Focused evidence covers Request 11 exact-cap,
+  snapshot-result bounds. Source `06e5e28b2892`, oracle `b8f6e0ece59b`, and finalization
+  `d40cab8bdbf4` form its passing replacement identity-bound baseline chain. Subsequent gate
+  integration made the request fixtures portable, bound fresh tools and the authenticated Git view,
+  and preserved the aggregate's output-only overlay contract. Preflight and the final capable gate
+  remain pending; the one full-diff review is the §10.1k finding ledger and no further discovery
+  review is planned. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
