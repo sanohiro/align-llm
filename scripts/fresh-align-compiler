@@ -5020,6 +5020,7 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         (root / "cargo-home", "/cargo", "dir", False),
         (root / "cargo-target", "/target", "dir", False),
         (root / "baseline-git", "/baseline-git", "dir", False),
+        (root / "baseline-git", "/workspace/.git", "dir", False),
         *(
             (source, target, kind, False)
             for source, target, kind, _ in runtime
