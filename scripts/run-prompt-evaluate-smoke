@@ -30,6 +30,18 @@ def git_environment() -> dict[str, str]:
     return environment
 
 
+def source_git_environment() -> dict[str, str]:
+    environment = git_environment()
+    if os.environ.get("ALIGN_LLM_FRESH_COMPILER") == "1":
+        environment.update({
+            "GIT_DIR": os.environ["ALIGN_LLM_BASELINE_GIT_DIR"],
+            "GIT_COMMON_DIR": os.environ["ALIGN_LLM_BASELINE_GIT_COMMON_DIR"],
+            "GIT_WORK_TREE": os.environ["ALIGN_LLM_BASELINE_GIT_WORK_TREE"],
+            "GIT_GRAFT_FILE": "/dev/null",
+        })
+    return environment
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
 
@@ -96,7 +108,7 @@ def file_expectation_digest(project: Path, relative: str) -> str:
 def git_head(path: Path) -> str:
     return subprocess.run(
         [str(GIT), "-C", str(path), "rev-parse", "HEAD"], text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, env=git_environment(),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, env=source_git_environment(),
     ).stdout.strip()
 
 
@@ -956,6 +968,7 @@ def copy_runtime(project: Path) -> None:
         destination = project / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SOURCE / relative, destination)
+        destination.chmod(stat.S_IMODE(destination.stat().st_mode) | stat.S_IWUSR)
     shutil.copytree(
         SOURCE / "eval/fixtures/python-inclusive-range-v1",
         project / "eval/fixtures/python-inclusive-range-v1",
