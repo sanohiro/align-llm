@@ -27,7 +27,7 @@ PATCHES = {
     "PARENT": ROOT / "eval" / "baselines" / "patches" / "python-inclusive-range-parent.patch",
     "CANDIDATE": ROOT / "eval" / "baselines" / "patches" / "python-inclusive-range.patch",
 }
-RUNNER_SHA256 = "cdf59d8560c9f7d0fd488e6ab1e005182e904cae47c8ec4768b0a45ed41de2d6"
+RUNNER_SHA256 = "6d6c203be044e993f04a2261e3b03c19aca06ae369e25743d8bed174e7879bcd"
 TASK_SHA256 = "1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940"
 PATCH_SHA256 = {
     "PARENT": "a2c2aac194d3cdad9808c23923afa64cf8f09909d2b5519ae08c7d94218d1fe3",

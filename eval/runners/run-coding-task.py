@@ -799,6 +799,9 @@ def validation_sandbox_command(
             _require_sandbox_capability(sandbox_probe_command(namespace_prefix))
             return [
                 *namespace_prefix,
+                "--bind",
+                str(checkout),
+                str(checkout),
                 "--ro-bind",
                 str(checkout / ".git"),
                 str(checkout / ".git"),
