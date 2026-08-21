@@ -126,8 +126,9 @@ file records durable project state.
   evaluator bytes, task code before or unrelated to source observation, task-repository Git config,
   late TREE/task bounds, incomplete child-result validation, missing cross-invocation drift,
   incomplete environment-policy validation, and partial result-only publication. The reopened
-  §10.1h redesign, its replacement baseline, redesigned exact-head review, preflight, and final
-  capable `make ci` remain pending. Focused evidence covers Request 11 exact-cap,
+  §10.1h redesign is complete. Source `c24e82462a64`, oracle `d023c2f9c6d5`, and finalization
+  `75cfc9c79b38` form its passing replacement identity-bound baseline chain. The redesigned
+  exact-head review, preflight, and final capable `make ci` remain pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
@@ -269,11 +270,9 @@ file records durable project state.
 
 ## Next actions
 
-1. Implement the reopened §10.1h reviewed-source execution boundary and its exact evaluator,
-   source-membership, Git-isolation, expansion-bound, semantic-child-result, drift,
-   environment-policy, and result-only publication owners. Record a replacement baseline, complete
-   the required redesigned exact-head review, run exact-head preflight, and pass final capable
-   `make ci` before merging and beginning C6-MEASURED.
+1. Complete the required redesigned exact-head review of the §10.1h candidate, resolve any valid
+   findings as one class, then run exact-head preflight and final capable `make ci` before merging
+   and beginning C6-MEASURED.
 2. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
    do not infer a provider-quality claim from the deterministic fixture comparison.
 
