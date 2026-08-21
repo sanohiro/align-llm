@@ -120,7 +120,8 @@ file records durable project state.
   operational runner failures scored as tests, pre-creation child-output ownership, deterministic
   prepared-output cleanup, missing output-parent preflight, invalid-ID result suppression,
   malformed unavailable-source envelopes, behavioral publication gaps, and stale continuity. The
-  reopened §10.1g redesign, its replacement baseline because the recorded coding runner changed,
+  reopened §10.1g redesign is complete. Source `1b9b98785743`, oracle `a8f4a2990cd3`, and
+  finalization `72e931685fa3` form its passing replacement identity-bound baseline chain. Its
   exact-head review, preflight, and final capable `make ci` remain pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
@@ -263,14 +264,10 @@ file records durable project state.
 
 ## Next actions
 
-1. Finish the reopened §10.1g evaluator child/result-boundary redesign, run its focused ownership,
-   nested-session, bounded-output, failure-classification, output-parent, source-envelope, and
-   publication-transition owners, then commit it with
-   `Closure-Matrix-Reopened: evaluator-runtime-containment`.
-2. Record the runner-changing repair in a replacement identity-bound baseline
-   source/oracle/finalization chain, complete the required exact-head review, run exact-head
-   preflight, and pass final capable `make ci` before merging and beginning C6-MEASURED.
-3. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
+1. Complete the required exact-head review of the reopened §10.1g evaluator child/result-boundary
+   redesign and replacement baseline chain, run exact-head preflight, and pass final capable
+   `make ci` before merging and beginning C6-MEASURED.
+2. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
    do not infer a provider-quality claim from the deterministic fixture comparison.
 
 ## Recovery and preservation
