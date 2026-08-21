@@ -95,6 +95,26 @@ def verify_compact_overflow_boundary() -> None:
     require(spec is not None and spec.loader is not None, "evaluator helper could not be loaded")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    streaming = {"payload": "\\\"\n\u00e9" * 400_000, "optional": None, "content_sha256": ""}
+    chunks = list(module.canonical_chunks(streaming, omit_mapping_none=True))
+    require(
+        max(map(len, chunks)) <= module.CANONICAL_STRING_CHUNK * 6
+        and b"".join(chunks) == canonical(canonical_digest_item(streaming)),
+        "canonical digest stream changed bytes or exceeded its chunk bound",
+    )
+    expected_streaming_digest = hashlib.sha256(b"".join(chunks)).hexdigest()
+    original_digest_bytes = module.canonical_digest_bytes
+    try:
+        module.canonical_digest_bytes = lambda _value: (_ for _ in ()).throw(
+            RuntimeError("whole digest materialization was used")
+        )
+        module.bind(streaming)
+    finally:
+        module.canonical_digest_bytes = original_digest_bytes
+    require(
+        streaming["content_sha256"] == expected_streaming_digest,
+        "result binding did not use the bounded canonical digest stream",
+    )
     request_record = bind({
         "schema_version": 1,
         "artifact_kind": "WORKSPACE_PREFLIGHT_REQUEST",
@@ -177,6 +197,16 @@ def verify_descendant_cleanup_boundary() -> None:
     require(spec is not None and spec.loader is not None, "evaluator helper could not be loaded")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    source = module_path.read_text()
+    require(
+        module.nested_owner_timeout(30_000_000_000) == 35_000_000_000
+        and module.SNAPSHOT_HELPER_OUTER_TIMEOUT_NS >= 2 * 12_000_000_000 + module.CHILD_CLEANUP_MARGIN_NS
+        and module.SOURCE_VERIFIER_OUTER_TIMEOUT_NS >= 9 * 12_000_000_000 + module.CHILD_CLEANUP_MARGIN_NS
+        and source.count("nested_owner_timeout(task[\"timeout_ns\"])") == 1
+        and "nested_owner_timeout(max(task[\"timeout_ns\"], provider_timeout_ns))" in source
+        and "SOURCE_VERIFIER_OUTER_TIMEOUT_NS" in source,
+        "nested child owners lost their cleanup/report deadline margin",
+    )
     original_cleanup = module.cleanup_process_group
     cleanup_calls = 0
 
@@ -262,7 +292,7 @@ def main() -> int:
             "provider_control_id": "fixture-control", "provider_kind": "FIXTURE",
             "endpoint": "fixture://inclusive-range", "endpoint_id": "fixture-endpoint",
             "model": "inclusive-range-v1", "api_key_env": None, "tokenize_endpoint": None,
-            "timeout_ns": 30_000_000_000, "max_response_bytes": 65_536, "content_sha256": "",
+            "timeout_ns": 2_000_000_000, "max_response_bytes": 65_536, "content_sha256": "",
         })
         store(project, "artifacts/provider-control.json", control)
         generation = bind({
@@ -500,6 +530,15 @@ def main() -> int:
         invalid_source_identity = dict(source_invalid_base)
         invalid_source_identity["verifier_corpus_source_sha256"] = "not-a-digest"
         require_source_invalid(invalid_source_identity, "invalid-source-identity-result.json", "INVALID_DIGEST")
+
+        malformed_policy = dict(marker_policy)
+        malformed_policy.pop("helper_runtime")
+        bind(malformed_policy)
+        store(project, "artifacts/source-policy.json", malformed_policy)
+        paired_invalid = dict(request)
+        paired_invalid["workspace_path"] = str(project / "missing-workspace")
+        paired_invalid["verifier_source_policy_sha256"] = malformed_policy["content_sha256"]
+        require_source_invalid(paired_invalid, "paired-invalid-result.json", "INVALID_SCHEMA")
 
         store(project, "artifacts/source-policy.json", source_policy)
         request_path.write_bytes(canonical(request))
@@ -878,7 +917,7 @@ def main() -> int:
         result_path.unlink()
         evidence_path.unlink()
 
-        noisy_adapter.write_text("#!/usr/bin/python3\nimport time\ntime.sleep(5)\n")
+        noisy_adapter.write_text("#!/usr/bin/python3\nimport time\ntime.sleep(15)\n")
         timeout_digest = raw_digest(noisy_adapter)
         for task_path in task_files:
             task_document = json.loads((project / task_path).read_text())
@@ -893,7 +932,7 @@ def main() -> int:
             cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         elapsed = time.monotonic() - started
-        require(timed_out.returncode != 0 and elapsed < 3, "adapter timeout was not bounded")
+        require(timed_out.returncode != 0 and elapsed < 10, "adapter timeout was not bounded")
         timeout_result = json.loads(result_path.read_text())
         require(
             timeout_result["status"] == "ERROR" and timeout_result["error_code"] == "ADAPTER_TIMEOUT",

@@ -28,7 +28,7 @@ EXPECTED = (
     b"provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
     b"verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke "
     b"prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke\n"
-    b"capable-only=eval-coding baseline-check\n"
+    b"capable-only=eval-coding baseline-check c6-evaluation-adoption\n"
     b"serialized=hosted-checks capable-checks ci\n"
 )
 PASS_BYTES = b"check gate topology: PASS\n"
@@ -86,7 +86,7 @@ def exact_environment() -> dict[str, str]:
             "verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke "
             "prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke"
         ),
-        "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": "eval-coding baseline-check",
+        "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": "eval-coding baseline-check c6-evaluation-adoption",
         "ALIGN_LLM_SERIAL_CHECK_AGGREGATES": "hosted-checks capable-checks ci",
     }
 
@@ -504,7 +504,7 @@ def test_validation_contract() -> None:
         ),
         "reordered": (
             "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
-            "baseline-check eval-coding",
+            "baseline-check eval-coding c6-evaluation-adoption",
         ),
         "serialized-removed": (
             "ALIGN_LLM_SERIAL_CHECK_AGGREGATES",
@@ -513,15 +513,15 @@ def test_validation_contract() -> None:
         "empty": ("ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS", ""),
         "leading-space": (
             "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
-            " eval-coding baseline-check",
+            " eval-coding baseline-check c6-evaluation-adoption",
         ),
         "trailing-space": (
             "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
-            "eval-coding baseline-check ",
+            "eval-coding baseline-check c6-evaluation-adoption ",
         ),
         "repeated-space": (
             "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS",
-            "eval-coding  baseline-check",
+            "eval-coding  baseline-check c6-evaluation-adoption",
         ),
     }
     for name, (variable, value) in mutations.items():

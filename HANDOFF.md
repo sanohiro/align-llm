@@ -18,10 +18,12 @@ file records durable project state.
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
   result-only; operational failures retain the exact valid trace prefix and paired evidence. Its
-  review reopened exact interpreter identity, descendant ownership, and FILE_SET physical traversal
-  as one runtime-containment axis. The revised candidate binds and descriptor-launches the exact
-  CPython/helper/Git bytes, proves private process-group absence, retains FILE_SET roots/manifests/
-  final files, and fixes the three changed schema-v1 byte goldens.
+  review reopened exact interpreter identity, descendant ownership, FILE_SET physical traversal,
+  nested deadline hierarchy, pre-allocation result binding, validation precedence, and capable-gate
+  execution as one runtime-containment axis. The revised candidate binds and descriptor-launches
+  the exact CPython/helper/Git bytes, gives nested owners cleanup/report margins, streams canonical
+  result binding, proves private process-group absence, retains FILE_SET roots/manifests/final
+  files, and executes the complete evaluator adoption owner inside capable-only `make ci`.
 - Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. C6d now builds on that
   decoded verifier: `prompt accept` verifies result/evidence before constructing an immutable
   activation, `prompt rollback` validates immutable lineage, and both commands use retained-root
@@ -106,8 +108,10 @@ file records durable project state.
 - C6-EVALUATION candidate owners `gmake --no-print-directory c6-evaluation-adoption`,
   `gmake --no-print-directory c6-prompt-artifact-adoption`, `gmake --no-print-directory check`, and
   `gmake --no-print-directory format-check`: PASS at Align
-  `19c3db144c462bf7d6784f88d64cc124229b7ec2` after the final-review closure repair. Exact-head
-  preflight and final capable `make ci` remain pending. Focused evidence covers Request 11 exact-cap,
+  `19c3db144c462bf7d6784f88d64cc124229b7ec2` after the reopened
+  deadline/allocation/precedence/gate repair. The identity-bound Makefile change requires its fresh
+  baseline source/oracle/finalization chain; exact-head preflight and final capable `make ci` remain
+  pending. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
@@ -249,8 +253,10 @@ file records durable project state.
 
 ## Next actions
 
-1. Commit the closed C6-EVALUATION matrix, run exact-head preflight, then pass the final capable
-   `make ci` before merging and beginning C6-MEASURED.
+1. Commit the closed C6-EVALUATION deadline, allocation, validation-order, and capable-gate matrix;
+   record its identity-bound baseline source/oracle/finalization chain, complete the final review,
+   run exact-head preflight, and pass final capable `make ci` before merging and beginning
+   C6-MEASURED.
 2. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
    do not infer a provider-quality claim from the deterministic fixture comparison.
 

@@ -24,6 +24,10 @@ MEASUREMENT_LIMIT = 262_144
 SNAPSHOT_LIMIT = 1_048_576
 RESULT_LIMIT = 268_435_456
 EVIDENCE_LIMIT = 8_388_608
+CHILD_CLEANUP_MARGIN_NS = 5_000_000_000
+SNAPSHOT_HELPER_OUTER_TIMEOUT_NS = 35_000_000_000
+SOURCE_VERIFIER_OUTER_TIMEOUT_NS = 125_000_000_000
+CANONICAL_STRING_CHUNK = 16_384
 HEX = frozenset("0123456789abcdef")
 SOURCE_POLICY_FIELDS = (
     "schema_version", "artifact_kind", "policy_id", "helper_path", "helper_sha256",
@@ -146,25 +150,66 @@ def cleanup_process_group(process: subprocess.Popen[bytes], maximum_seconds: flo
     return complete and not process_group_exists(process.pid)
 
 
+def canonical_chunks(value: Any, *, omit_mapping_none: bool = False):
+    """Yield canonical JSON in bounded chunks without cloning the value graph."""
+
+    if isinstance(value, Mapping):
+        yield b"{"
+        first = True
+        for key, child in value.items():
+            if omit_mapping_none and child is None:
+                continue
+            if not first:
+                yield b","
+            first = False
+            yield from canonical_chunks(key)
+            yield b":"
+            yield from canonical_chunks(child, omit_mapping_none=omit_mapping_none)
+        yield b"}"
+        return
+    if isinstance(value, (list, tuple)):
+        yield b"["
+        for ordinal, child in enumerate(value):
+            if ordinal:
+                yield b","
+            yield from canonical_chunks(child, omit_mapping_none=omit_mapping_none)
+        yield b"]"
+        return
+    if isinstance(value, str):
+        yield b'"'
+        for offset in range(0, len(value), CANONICAL_STRING_CHUNK):
+            encoded = json.dumps(value[offset : offset + CANONICAL_STRING_CHUNK], ensure_ascii=False)
+            yield encoded[1:-1].encode("utf-8")
+        yield b'"'
+        return
+    yield json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 def canonical(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return b"".join(canonical_chunks(value))
 
 
 def canonical_digest_bytes(value: Any) -> bytes:
-    def omit_none(item: Any) -> Any:
-        if isinstance(item, dict):
-            return {key: omit_none(child) for key, child in item.items() if child is not None}
-        if isinstance(item, list):
-            return [omit_none(child) for child in item]
-        return item
+    return b"".join(canonical_chunks(value, omit_mapping_none=True))
 
-    return canonical(omit_none(value))
+
+def canonical_digest(value: Any) -> str:
+    hasher = hashlib.sha256()
+    for chunk in canonical_chunks(value, omit_mapping_none=True):
+        hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def bind(value: dict[str, Any]) -> dict[str, Any]:
     value["content_sha256"] = ""
-    value["content_sha256"] = hashlib.sha256(canonical_digest_bytes(value)).hexdigest()
+    value["content_sha256"] = canonical_digest(value)
     return value
+
+
+def nested_owner_timeout(timeout_ns: int) -> int:
+    """Leave the trusted inner owner time to kill, reap, and report first."""
+
+    return timeout_ns + CHILD_CLEANUP_MARGIN_NS
 
 
 def digest(value: str) -> str:
@@ -546,7 +591,13 @@ def invoke_snapshot(
 ) -> dict[str, Any]:
     argv = command(task, "snapshot_argv", project) + ["--snapshot-request", str(request_path), "--result", str(result_path)]
     try:
-        completed = run_child(argv, project / task["cwd"], environment, task["timeout_ns"], 0)
+        completed = run_child(
+            argv,
+            project / task["cwd"],
+            environment,
+            max(nested_owner_timeout(task["timeout_ns"]), SNAPSHOT_HELPER_OUTER_TIMEOUT_NS),
+            0,
+        )
         if completed.returncode != 0 or completed.stdout or completed.stderr:
             raise EvaluationError("snapshot helper process failed")
         result = load_bound(result_path, "SNAPSHOT_RESULT", SNAPSHOT_LIMIT)
@@ -585,7 +636,7 @@ def invoke_snapshot(
 def invoke_adapter(
     task: Mapping[str, Any], adapter_request: Mapping[str, Any], request_path: Path,
     variant_path: Path, rendered_path: Path, measurement_path: Path,
-    project: Path, environment: Mapping[str, str], sample: int, seed: int,
+    project: Path, environment: Mapping[str, str], provider_timeout_ns: int, sample: int, seed: int,
 ) -> dict[str, Any]:
     argv = command(task, "argv", project) + [
         "--prompt-variant", str(variant_path), "--rendered-prompt", str(rendered_path),
@@ -593,7 +644,13 @@ def invoke_adapter(
         "--adapter-request", str(request_path), "--result", str(measurement_path),
     ]
     try:
-        completed = run_child(argv, project / task["cwd"], environment, task["timeout_ns"], 0)
+        completed = run_child(
+            argv,
+            project / task["cwd"],
+            environment,
+            nested_owner_timeout(max(task["timeout_ns"], provider_timeout_ns)),
+            0,
+        )
     except ChildBoundaryError as failure:
         if failure.reason == "CLEANUP":
             raise AdapterFailure("CLEANUP_FAILED", "measurement adapter cleanup failed") from None
@@ -644,9 +701,8 @@ def write_prepared_pair(
 def canonical_fits(value: Any, maximum: int) -> bool:
     """Check the persisted JSON bound without first allocating the whole encoding."""
     total = 0
-    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
-    for chunk in encoder.iterencode(value):
-        total += len(chunk.encode("utf-8"))
+    for chunk in canonical_chunks(value):
+        total += len(chunk)
         if total > maximum:
             return False
     return True
@@ -654,27 +710,34 @@ def canonical_fits(value: Any, maximum: int) -> bool:
 
 def compact_oversized_result(result: dict[str, Any], expected_inputs: list[dict[str, Any]]) -> None:
     """Replace an oversized result graph with its bounded trace envelope in place."""
-    records: list[Mapping[str, Any]] = []
+    trace_digest = hashlib.sha256()
+    trace_record_count = 0
+
+    def include(record: Mapping[str, Any]) -> None:
+        nonlocal trace_record_count
+        trace_record_count += 1
+        trace_digest.update(
+            f'{trace_record_count} {record.get("artifact_kind", "")} {record.get("content_sha256", "")}\n'.encode(
+                "utf-8"
+            )
+        )
+
     for name in ("workspace_preflight_request", "workspace_preflight"):
         record = result.get(name)
         if isinstance(record, Mapping):
-            records.append(record)
+            include(record)
     for name in ("snapshot_requests", "snapshot_results", "input_snapshots", "snapshot_attestations"):
         value = result.get(name)
         if isinstance(value, list):
-            records.extend(item for item in value if isinstance(item, Mapping))
-
-    trace_digest = hashlib.sha256()
-    for ordinal, record in enumerate(records, start=1):
-        trace_digest.update(
-            f'{ordinal} {record.get("artifact_kind", "")} {record.get("content_sha256", "")}\n'.encode("utf-8")
-        )
+            for item in value:
+                if isinstance(item, Mapping):
+                    include(item)
     attempted_invocations = len(result.get("snapshot_attestations", []))
     overflow = bind({
         "schema_version": 1,
         "artifact_kind": "PROMPT_TRACE_OVERFLOW",
         "attempted_invocation_count": attempted_invocations,
-        "trace_record_count": len(records),
+        "trace_record_count": trace_record_count,
         "trace_digest_sha256": trace_digest.hexdigest(),
         "content_sha256": "",
     })
@@ -1030,7 +1093,7 @@ def source_trust(
                     ],
                     project,
                     environment,
-                    60_000_000_000,
+                    SOURCE_VERIFIER_OUTER_TIMEOUT_NS,
                     0,
                     (helper_carrier.descriptor, python_carrier.descriptor, git_carrier.descriptor),
                 )
@@ -1113,11 +1176,6 @@ def validation_error_code(error: BaseException) -> str:
 
 
 def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> dict[str, Any]:
-    workspace = physical_directory(Path(request["workspace_path"]))
-    try:
-        workspace.relative_to(project)
-    except ValueError:
-        raise EvaluationError("workspace escapes the project") from None
     if request["sample_count"] < 2 or request["sample_count"] > 16:
         raise EvaluationError("sample count is invalid")
 
@@ -1140,6 +1198,13 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
     control = load_bound(relative_path(project, first_task["provider_control_path"]), "EVALUATION_PROVIDER_CONTROL")
     environment_policy = load_bound(relative_path(project, first_task["environment_policy_path"]), "ENVIRONMENT_POLICY")
     environment_values = child_environment(environment_policy)
+    if (
+        not isinstance(control.get("timeout_ns"), int)
+        or isinstance(control["timeout_ns"], bool)
+        or control["timeout_ns"] <= 0
+        or control["timeout_ns"] > 7_200_000_000_000
+    ):
+        raise EvaluationError("provider control timeout is invalid")
     if control["provider_kind"] != "FIXTURE" or control["api_key_env"] is not None:
         raise EvaluationError("fixed evaluator requires a credential-free fixture provider")
     task_inputs: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -1188,6 +1253,11 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         or any(task["repo_id"] != scope["repo_id"] for task in tasks)
     ):
         raise EvaluationError("evaluation scope identities disagree")
+    workspace = physical_directory(Path(request["workspace_path"]))
+    try:
+        workspace.relative_to(project)
+    except ValueError:
+        raise EvaluationError("workspace escapes the project") from None
     return {
         "workspace": workspace, "experiment": experiment, "parent": parent, "corpus": corpus,
         "acceptance": acceptance, "preflight_request": preflight_request, "source_policy": source_policy,
@@ -1287,7 +1357,10 @@ def evaluate(
     try:
         completed = run_child(
             snapshot_command + ["--workspace-preflight-request", str(preflight_path)],
-            project / first_task["cwd"], environment_values, first_task["timeout_ns"], 65_536,
+            project / first_task["cwd"],
+            environment_values,
+            max(nested_owner_timeout(first_task["timeout_ns"]), SNAPSHOT_HELPER_OUTER_TIMEOUT_NS),
+            65_536,
         )
         if completed.returncode != 0 or completed.stderr:
             raise EvaluationError("workspace preflight process failed")
@@ -1502,7 +1575,11 @@ def evaluate(
                     try:
                         measurement = invoke_adapter(
                             task, adapter_request, adapter_request_path, variant_path, rendered_path, measurement_path,
-                            project, environment_values, sample, generation["seed_base"] + sample - 1,
+                            project,
+                            environment_values,
+                            control["timeout_ns"],
+                            sample,
+                            generation["seed_base"] + sample - 1,
                         )
                     except AdapterFailure as failure:
                         attestations.append(bind({

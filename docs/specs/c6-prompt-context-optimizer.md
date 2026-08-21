@@ -191,11 +191,13 @@ successful move-in/move-out, replacement, `Drop`, `?`, `map_err`, branch and loo
 input, partial arrays, and early return at both the borrowed-wire and owned-record boundaries.
 
 The result cap is a pre-allocation contract, not a post-encode check. C6 uses the Request 12
-bounded canonical encoder for every capped persisted artifact. C6 uses the Request 11 cap-aware
-process surface for every helper and adapter child; `run()` followed by a length check is not an
-allowed implementation. A result over 268,435,456 raw bytes returns the bounded
-`RESULT_TOO_LARGE` compact error shape defined below; it never allocates or writes the oversized
-result.
+bounded canonical encoder for every capped persisted artifact. The Python adoption emits strings
+in at most 16,384-character pieces and streams the canonical digest preimage and persisted-size
+count without cloning the record graph or allocating the complete encoded result. C6 uses the
+Request 11 cap-aware process surface for every helper and adapter child; `run()` followed by a
+length check is not an allowed implementation. A result over 268,435,456 raw bytes returns the
+bounded `RESULT_TOO_LARGE` compact error shape defined below; it never allocates or writes the
+oversized result.
 
 Every Python-owned direct process boundary starts the child in a new session whose process-group ID
 is the retained direct-child PID. On timeout, output overflow, nonzero/malformed failure, or a
@@ -212,12 +214,15 @@ trusted helpers and its fixed contained adapter; those children must not call `s
 descendant to another process group. A capability that admits an escape-capable child must use the
 fresh-worker cgroup boundary and is outside this in-process group contract.
 
-`src/prompt_evaluate.align` arms no second wall-clock deadline around the Python evaluator. The
-Python process is the sole owner of the fixed helper deadlines and each declared task deadline, so
-a maximum-time child that starts after validation cannot outlive an earlier outer deadline. The
-Align wrapper retains Request 11's bounded capture and direct-child result handling. Capable gate
-execution places the complete wrapper/evaluator tree in the authenticated fresh-worker cgroup;
-that cgroup is the authoritative whole-tree owner for abrupt gate cancellation and is drained
+`src/prompt_evaluate.align` arms no second wall-clock deadline around the Python evaluator. Within
+Python, every earlier-starting evaluator clock leaves its nested owner time to clean up and report:
+an adapter receives the greater of its declared task and provider-control durations before the evaluator's additional 5-second margin,
+the two 10-second snapshot Git operations finish inside a fixed 35-second evaluator boundary, and
+the at-most-nine 10-second source-verifier Git operations finish inside a fixed 125-second
+boundary. The Align wrapper retains Request 11's bounded capture and direct-child result handling.
+`c6-evaluation-adoption` is a capable-only `make ci` goal, so capable gate execution places the
+complete wrapper/evaluator tree in the authenticated fresh-worker cgroup; that cgroup is the
+authoritative whole-tree owner for abrupt gate cancellation and is drained
 before removal. A direct supplementary CLI run has no cleanup guarantee after an uncatchable host
 termination.
 
@@ -3252,10 +3257,10 @@ each row must map to the final diff and owner evidence before publication.
 
 | Reopened invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
-| Outer deadline and descendant ownership | `src/prompt_evaluate.align`, Python evaluator, authenticated fresh worker | the Align wrapper arms no independent timeout that can expire before a later-started maximum-time task; Python remains the sole per-child deadline/group owner, while capable gate execution places the complete evaluator tree in the already-qualified fresh-worker cgroup whose teardown is authoritative for abrupt outer cancellation | `prompt-evaluate-smoke` rejects an outer `timeout_ns` arm and retains the bounded inner timeout/descendant fixtures; `fresh-worker-qualification` and the capable gate retain cgroup admission, kill, drain, and removal evidence |
+| Outer deadline and descendant ownership | `src/prompt_evaluate.align`, Python evaluator, authenticated fresh worker | the Align wrapper arms no independent timeout that can expire before a later-started maximum-time task; Python gives each nested owner a cleanup/report margin, while capable gate execution places the complete evaluator tree in the already-qualified fresh-worker cgroup whose teardown is authoritative for abrupt outer cancellation | `prompt-evaluate-smoke` rejects an outer `timeout_ns` arm, asserts the nested deadline constants, and retains the bounded inner timeout/descendant fixtures; `fresh-worker-qualification` and the capable gate retain cgroup admission, kill, drain, and removal evidence |
 | Exactly-once group cleanup | evaluator, snapshot helper, source verifier, fixed adapter | every child boundary records whether cleanup was attempted; after the first successful group-absence proof it propagates the saved diagnosis without entering a generic cleanup path or signaling the reusable PGID again | evaluator, snapshot-helper, and source-verifier successful-parent/live-descendant fixtures count exactly one cleanup attempt; the fixed-adapter owner retains its single-return cleanup paths |
 | Pre-side-effect source validation | decoded request boundary and source-policy owner | validate identifier, digest, discriminator, option-pairing, repository-ID, absolute-root, manifest, interpreter, Git, and policy shapes before any helper, snapshot, or adapter child; only a syntactically valid source whose physical observation is unavailable becomes `UNVERIFIED` | evaluator null/missing FILE_SET manifest, relative root, invalid identity, non-ASCII/oversized ID, and ordered multi-invalid fixtures prove result-only `INVALID_INPUT` and no child marker |
-| Final result size | bounded result persistence owner | bind the final digest before testing the persisted byte bound; if it exceeds the cap, clear the large graph, construct and bind the compact `RESULT_TOO_LARGE` record, and size/write only that final representation | compact-overflow owner covers an unbound record whose final digest crosses the cap and proves the compact pair persists |
+| Final result size | bounded result persistence owner | stream the final digest preimage and persisted-size count in bounded chunks before testing the byte bound; if it exceeds the cap, clear the large graph, construct and stream-bind the compact `RESULT_TOO_LARGE` record, and encode/write only that final representation | compact-overflow owner covers bounded canonical chunks, rejects whole-preimage binding, covers an unbound record whose final digest crosses the cap, and proves the compact pair persists |
 | Raw FILE_SET malformed bytes | source verifier | validate digest bytes without an implicit Unicode decode and reject embedded NUL in every raw path component as corpus observation failure; no `UnicodeDecodeError` or `ValueError` escapes the declared `VerificationError` path | FILE_SET non-ASCII digest and embedded-NUL fixtures return bounded `UNVERIFIED` results with no traceback or partial output |
 | Schema-v1 compatibility evidence | Align codec owner plus canonical digest owner | for policy, evaluate request, and gate locator, decode exact golden bytes and compare semantics, re-encode exact bytes, reject missing/duplicate/reordered fields, cover both optional manifest states, and prove every helper/interpreter/runtime/Git mutation changes the canonical preimage/digest | `prompt-runtime-schema-v1` semantic/byte, invalid-field-order, optional-`Some`, and mutation goldens |
 | Durable continuation state | `HANDOFF.md` | while findings or the capable gate remain open, the next action names repair, owner verification, preflight, and capable CI before merge; merge becomes the next action only after those gates pass | author-side HANDOFF consistency pass and `git diff --check` |
@@ -3267,6 +3272,22 @@ the capable fresh-worker profile, where the complete wrapper, evaluator, private
 session-breaking descendants inherit one cgroup leaf before execution and the worker proves the
 leaf empty before removal. A supplementary direct CLI invocation does not claim cleanup after an
 uncatchable host termination.
+
+### 10.1e Re-review containment and allocation closure
+
+The required complete re-review of the reopened runtime boundary found that parent clocks still
+could expire while a nested session owner was cleaning up, the claimed cgroup evidence did not
+execute C6-EVALUATION, and result binding still materialized the complete canonical preimage before
+the size check. This matrix reopens `evaluator-runtime-containment` again; the repair is one
+boundary redesign, not another set of isolated line fixes.
+
+| Reopened invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Nested deadline hierarchy | evaluator, snapshot helper, source verifier, fixed adapter | every earlier-starting evaluator deadline exceeds the complete inner work deadline plus bounded kill/reap/absence-proof/report time; adapter outer time is the greater of task/provider-control time plus 5 seconds, snapshot outer time is at least 35 seconds, and evaluation-mode source verification uses 125 seconds | `prompt-evaluate-smoke` asserts the exact increasing constants and retains timeout plus live-descendant cleanup fixtures |
+| Capable whole-tree evidence | `Makefile`, gate-topology oracle, authenticated fresh worker | add `c6-evaluation-adoption` to the capable-only ordered goals so final `make ci` actually executes the wrapper/evaluator/helper/adapter tree after cgroup admission; keep it absent from hosted checks | `gate-topology-check` canonical report/self-test plus final capable `make ci` |
+| Pre-allocation result binding | Python evaluator canonical encoder and result persistence | emit canonical strings in bounded pieces, stream the digest preimage without an omitted-`None` graph clone, stream-count the final representation, and allocate/write only a representation already proved at or below the cap | compact-overflow owner compares canonical bytes, bounds every emitted chunk, fails if whole-preimage binding is called, and retains digest-expansion/compact-pair cases |
+| Deterministic validation precedence | decoded request, source-policy owner, remaining artifact owners, workspace owner | after output preflight validate request bounds, then source-policy syntax/decode/identity and executable bindings, then remaining artifact identities, and only then physically resolve the workspace | a malformed source policy paired with an unavailable workspace returns the earlier `INVALID_SCHEMA` result and produces no child marker |
+| Durable continuation state | `HANDOFF.md` | record the reopened matrix, repair owners, exact-head preflight, and capable CI as the remaining sequence; do not describe an already committed matrix as future work | author-side matrix-to-diff and HANDOFF consistency pass |
 
 Applicability decisions:
 
