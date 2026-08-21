@@ -31,6 +31,9 @@ file records durable project state.
   admission-bounds axis: the fixed adapter now executes sealed admitted runner bytes and passes
   sealed task/patch descriptors, artifact schemas are complete before side effects, reviewed TREE
   enumeration is bounded while it occurs, and publication uses a fixed-size content-bound sibling.
+  The replacement review then reopened semantic consumption; prompt limits, complete persistent
+  drift, snapshot declaration caps, unavailable-source non-gate execution, and containment-first
+  measurement validation now follow the already-settled contract.
 - Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. C6d now builds on that
   decoded verifier: `prompt accept` verifies result/evidence before constructing an immutable
   activation, `prompt rollback` validates immutable lineage, and both commands use retained-root
@@ -140,8 +143,15 @@ file records durable project state.
   side effects, runner/task/patch pathname reopen after adapter admission, unbounded reviewed TREE
   enumeration, and overlong publication temporary components. The reopened §10.1j redesign is
   complete. Source `00f7c7964e04`, oracle `2d15069c7d6f`, and finalization `ef174295ce5a` form its
-  passing replacement identity-bound baseline chain. The replacement exact-head review, preflight,
-  and final capable `make ci` remain pending. Focused evidence covers Request 11 exact-cap,
+  passing replacement identity-bound baseline chain. Its replacement exact-head review at
+  `8fd2dfa5884f` found missing prompt-size enforcement, partial cross-invocation input comparison,
+  late static-expectation bounds, unavailable-source aborts, and reversed containment/cleanup
+  precedence. Because that revised review found new P1s, §10.1k reopened the semantic axis and
+  closed the complete measurement state machine plus the same-class retained patch-size and
+  snapshot-result bounds. Source `fc6154d389b6`, oracle `77861b8d3747`, and finalization
+  `39a19a3c117e` form its passing replacement identity-bound baseline chain. Preflight and the final
+  capable `make ci` remain pending; the one full-diff review is the §10.1k finding ledger and no
+  further discovery review is planned. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
@@ -151,8 +161,10 @@ file records durable project state.
   closure and mismatch families; every complete score status and gate path; raw-byte FILE_SET
   traversal and physical-alias rejection; schema-v1 byte goldens; complete artifact-schema
   rejection before child launch; exact and cap-plus-one TREE entry/byte enumeration; retained inner
-  runner/task/patch replacement races; 255-byte publication basenames; and lifecycle consumption of
-  the evaluator-produced pair.
+  runner/task/patch replacement races; 255-byte publication basenames; parent/candidate prompt-byte
+  limits; complete automatic-input drift; present-mismatched and absent-unverified sources; all
+  measurement states and containment-first failure precedence; and lifecycle consumption of the
+  evaluator-produced pair.
 - C6d owner: `make c6d-request18-adoption` and the final capable `make ci`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The focused owner covers request and artifact bounds,
   retained-root symlink/special-file rejection, deterministic error precedence, exclusive output
