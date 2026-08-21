@@ -1573,7 +1573,10 @@ def main() -> int:
             and not preflight_marker.exists()
             and (project / "source-boundary-result.json").exists()
             and evidence_path.exists(),
-            "unreviewed task helper executed before source membership admission",
+            "unreviewed task helper executed before source membership admission: "
+            f"returncode={source_boundary.returncode}, result={source_boundary_result!r}, "
+            f"marker={preflight_marker.exists()}, evidence={evidence_path.exists()}, "
+            f"stdout={source_boundary.stdout!r}, stderr={source_boundary.stderr!r}",
         )
         (project / "source-boundary-result.json").unlink()
         evidence_path.unlink()
