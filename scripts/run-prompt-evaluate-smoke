@@ -956,6 +956,11 @@ def verify_complete_score_boundary() -> None:
     )
 
 
+def copy_writable(source: Path, destination: Path) -> None:
+    shutil.copy2(source, destination)
+    destination.chmod(stat.S_IMODE(destination.stat().st_mode) | stat.S_IWUSR)
+
+
 def copy_runtime(project: Path) -> None:
     for relative in (
         ".align-revision",
@@ -967,8 +972,7 @@ def copy_runtime(project: Path) -> None:
     ):
         destination = project / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(SOURCE / relative, destination)
-        destination.chmod(stat.S_IMODE(destination.stat().st_mode) | stat.S_IWUSR)
+        copy_writable(SOURCE / relative, destination)
     shutil.copytree(
         SOURCE / "eval/fixtures/python-inclusive-range-v1",
         project / "eval/fixtures/python-inclusive-range-v1",
@@ -2004,7 +2008,7 @@ def main() -> int:
             and not any(workspace.iterdir()),
             "modified evaluator crossed the outer reviewed-source boundary",
         )
-        shutil.copy2(SOURCE / "scripts/prompt-evaluate.py", cleanup_evaluator)
+        copy_writable(SOURCE / "scripts/prompt-evaluate.py", cleanup_evaluator)
 
         replacement_marker = root / "replacement-evaluator-ran"
         retained_race = subprocess.Popen(
@@ -2037,7 +2041,7 @@ def main() -> int:
         )
         result_path.unlink()
         evidence_path.unlink()
-        shutil.copy2(SOURCE / "scripts/prompt-evaluate.py", cleanup_evaluator)
+        copy_writable(SOURCE / "scripts/prompt-evaluate.py", cleanup_evaluator)
 
         evaluator_spec = importlib.util.spec_from_file_location(
             "prompt_evaluate_policy_limits", SOURCE / "scripts/prompt-evaluate.py",
