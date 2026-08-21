@@ -77,6 +77,15 @@ def raw_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def file_expectation_digest(project: Path, relative: str) -> str:
+    path = project / relative
+    metadata = path.stat()
+    mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}"
+    return hashlib.sha256(
+        f"{mode} {relative}".encode() + b"\0F " + raw_digest(path).encode() + b"\n"
+    ).hexdigest()
+
+
 def git_head(path: Path) -> str:
     return subprocess.run(
         [str(GIT), "-C", str(path), "rev-parse", "HEAD"], text=True,
@@ -364,20 +373,59 @@ def verify_reviewed_execution_boundary() -> None:
         "environment_probe": environment_probe, "artifact_digests": [artifact_digest],
         "content_sha256": "",
     })
-    require(module.valid_snapshot_result(snapshot, "task"), "canonical snapshot result was rejected")
-    for mutation in ("missing", "extra", "reordered"):
-        malformed = dict(snapshot)
-        if mutation == "missing":
-            malformed.pop("environment_probe")
-        elif mutation == "extra":
-            malformed["unexpected"] = None
-        else:
-            malformed["status"] = malformed.pop("status")
-        module.bind(malformed)
+    with tempfile.TemporaryDirectory(prefix="prompt-snapshot-binding-") as directory:
+        project = Path(directory)
+        (project / "input").write_text("x")
+        (project / "extra").write_text("y")
+        snapshot_request = {
+            "static_expectations": [{"path": "input", "kind": "FILE", "expected_sha256": "b" * 64}],
+            "additional_files": ["extra"],
+        }
+        snapshot["artifact_digests"].append({
+            "path": "extra", "mode": "100644", "byte_count": 1, "sha256": "c" * 64,
+        })
+        module.bind(snapshot)
         require(
-            not module.valid_snapshot_result(malformed, "task"),
-            f"semantically malformed {mutation} snapshot result was accepted",
+            module.valid_snapshot_result(snapshot, "task", snapshot_request, project),
+            "canonical snapshot result was rejected",
         )
+        empty = copy.deepcopy(snapshot)
+        empty["artifact_digests"] = []
+        module.bind(empty)
+        require(
+            not module.valid_snapshot_result(empty, "task", snapshot_request, project),
+            "empty snapshot observation was accepted",
+        )
+        for label, digests in (
+            ("missing", snapshot["artifact_digests"][:-1]),
+            ("extra", snapshot["artifact_digests"] + [{
+                "path": "unrelated", "mode": "100644", "byte_count": 1, "sha256": "d" * 64,
+            }]),
+            ("reordered", list(reversed(snapshot["artifact_digests"]))),
+            ("unrelated", [snapshot["artifact_digests"][0], {
+                "path": "unrelated", "mode": "100644", "byte_count": 1, "sha256": "d" * 64,
+            }]),
+        ):
+            malformed_digests = copy.deepcopy(snapshot)
+            malformed_digests["artifact_digests"] = digests
+            module.bind(malformed_digests)
+            require(
+                not module.valid_snapshot_result(malformed_digests, "task", snapshot_request, project),
+                f"{label} snapshot digest array was accepted",
+            )
+        for mutation in ("missing", "extra", "reordered"):
+            malformed = dict(snapshot)
+            if mutation == "missing":
+                malformed.pop("environment_probe")
+            elif mutation == "extra":
+                malformed["unexpected"] = None
+            else:
+                malformed["status"] = malformed.pop("status")
+            module.bind(malformed)
+            require(
+                not module.valid_snapshot_result(malformed, "task", snapshot_request, project),
+                f"semantically malformed {mutation} snapshot result was accepted",
+            )
     malformed_measurement = module.bind({
         "schema_version": 1, "artifact_kind": "TASK_MEASUREMENT", "status": "PASS",
         "content_sha256": "",
@@ -412,6 +460,41 @@ def verify_reviewed_execution_boundary() -> None:
             raise RuntimeError(f"{label} environment policy was accepted")
         except module.EvaluationError:
             pass
+
+    with tempfile.TemporaryDirectory(prefix="prompt-automatic-inputs-") as directory:
+        project = Path(directory)
+        request = {
+            "experiment_path": "inputs/experiment.json",
+            "parent_activation_path": "inputs/parent.json",
+            "corpus_path": "inputs/corpus.json",
+            "acceptance_policy_path": "inputs/acceptance.json",
+            "workspace_preflight_path": "inputs/preflight.json",
+            "verifier_source_policy_path": "inputs/source-policy.json",
+        }
+        task_file = "inputs/task.json"
+        task = {
+            "generation_policy_path": "inputs/generation.json",
+            "provider_control_path": "inputs/provider.json",
+            "environment_policy_path": "inputs/environment.json",
+            "task_prompt_path": "inputs/task-prompt.json",
+            "context_sources_path": "inputs/context.json",
+        }
+        expected = sorted({
+            *request.values(), ".align-revision", task_file, *task.values(),
+        }, key=os.fsencode)
+        for relative in expected:
+            path = project / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(relative)
+        observed = module.automatic_snapshot_files(request, task_file, task, project)
+        require(observed == expected, "automatic identity-bearing snapshot set changed")
+        for relative in observed:
+            path = project / relative
+            original = path.read_bytes()
+            before = raw_digest(path)
+            path.write_bytes(original + b"x")
+            require(raw_digest(path) != before, f"automatic snapshot input mutation was invisible: {relative}")
+            path.write_bytes(original)
 
     require(
         module.classify_task_drift(environment_probe, [artifact_digest], environment_probe, [artifact_digest]) == "NONE",
@@ -448,14 +531,34 @@ def verify_reviewed_execution_boundary() -> None:
             (base / "scripts").mkdir(parents=True)
             (base / "scripts/prompt-fixed-adapter.py").write_text("reviewed adapter")
             (base / "scripts/prompt-snapshot-helper.py").write_text("reviewed snapshot")
-        tasks = [{"artifacts": [
+        tasks = [{
+            "argv": ["/usr/bin/python3", "scripts/prompt-fixed-adapter.py"],
+            "snapshot_argv": ["/usr/bin/python3", "scripts/prompt-snapshot-helper.py"],
+            "artifacts": [
             {"path": "scripts/prompt-fixed-adapter.py", "kind": "FILE",
-             "expected_sha256": raw_digest(project / "scripts/prompt-fixed-adapter.py")},
+             "expected_sha256": file_expectation_digest(project, "scripts/prompt-fixed-adapter.py")},
             {"path": "scripts/prompt-snapshot-helper.py", "kind": "FILE",
-             "expected_sha256": raw_digest(project / "scripts/prompt-snapshot-helper.py")},
-        ]}]
+             "expected_sha256": file_expectation_digest(project, "scripts/prompt-snapshot-helper.py")},
+            ],
+        }]
         request = {"verifier_corpus_source_path": str(source)}
         module.verify_task_source_membership(request, tasks, project)
+        (project / "workspace/scripts").mkdir(parents=True)
+        (project / "workspace/scripts/prompt-fixed-adapter.py").write_text("cwd-controlled adapter")
+        command_task = {
+            "cmd": "/usr/bin/python3",
+            "argv": ["/usr/bin/python3", "scripts/prompt-fixed-adapter.py"],
+            "measurement_adapter_runtime": "PYTHON:" + raw_digest(project / "scripts/prompt-fixed-adapter.py"),
+        }
+        argv, retained = module.command(command_task, "argv", project)
+        try:
+            require(
+                argv[1] == retained.process_path()
+                and retained.sha256() == raw_digest(project / "scripts/prompt-fixed-adapter.py"),
+                "task helper was resolved relative to its task cwd",
+            )
+        finally:
+            retained.close()
         (project / "scripts/prompt-fixed-adapter.py").write_text("attacker-controlled adapter")
         try:
             module.verify_task_source_membership(request, tasks, project)
@@ -464,8 +567,239 @@ def verify_reviewed_execution_boundary() -> None:
             pass
 
 
+def file_set_manifest(root: Path, paths: list[str]) -> bytes:
+    records = []
+    for relative in paths:
+        path = root / relative
+        metadata = path.stat()
+        mode = stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode)
+        raw_path = relative.encode()
+        records.append(
+            f"{mode:o} {len(raw_path)} ".encode() + raw_path + b"\0F "
+            + raw_digest(path).encode() + b"\n"
+        )
+    return b"ALIGN-LLM-CORPUS-FILE-SET-V1\n" + str(len(records)).encode() + b"\n" + b"".join(records)
+
+
+def verify_strict_source_membership_boundary() -> None:
+    module_path = SOURCE / "scripts/prompt-evaluate.py"
+    spec = importlib.util.spec_from_file_location("prompt_evaluate_strict_source", module_path)
+    require(spec is not None and spec.loader is not None, "strict source evaluator could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    def fixture_run_child(argv, cwd, environment, timeout_ns, cap, pass_fds=()):
+        completed = subprocess.run(
+            argv, cwd=cwd, env=dict(environment), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=pass_fds,
+            timeout=timeout_ns / 1_000_000_000, check=False,
+        )
+        if len(completed.stdout) > cap or len(completed.stderr) > cap:
+            raise module.ChildBoundaryError("OUTPUT")
+        return completed
+    module.run_child = fixture_run_child
+    with tempfile.TemporaryDirectory(prefix="prompt-strict-source-") as directory:
+        root = Path(directory)
+        source = root / "source"
+        project = root / "project"
+        for relative, text_value in (
+            ("scripts/prompt-fixed-adapter.py", "reviewed adapter"),
+            ("scripts/prompt-snapshot-helper.py", "reviewed snapshot"),
+            ("tasks/task.json", "reviewed task"),
+        ):
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text_value)
+        subprocess.run([str(GIT), "init", "-q", str(source)], check=True)
+        subprocess.run([str(GIT), "-C", str(source), "add", "."], check=True)
+        subprocess.run(
+            [str(GIT), "-C", str(source), "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+             "commit", "-qm", "fixture"],
+            check=True,
+        )
+        revision = subprocess.run(
+            [str(GIT), "-C", str(source), "rev-parse", "HEAD"], text=True,
+            stdout=subprocess.PIPE, check=True,
+        ).stdout.strip()
+        shutil.copytree(source, project, ignore=shutil.ignore_patterns(".git"))
+        tasks = [{
+            "argv": ["/usr/bin/python3", "scripts/prompt-fixed-adapter.py"],
+            "snapshot_argv": ["/usr/bin/python3", "scripts/prompt-snapshot-helper.py"],
+            "artifacts": [
+                {"path": relative, "kind": "FILE", "expected_sha256": file_expectation_digest(project, relative)}
+                for relative in ("scripts/prompt-fixed-adapter.py", "scripts/prompt-snapshot-helper.py")
+            ],
+        }]
+        trust = {"corpus_reachability": "VERIFIED"}
+        request = {
+            "verifier_corpus_source_path": str(source), "verifier_corpus_source_kind": "GIT_COMMIT",
+            "verifier_corpus_source_sha256": revision, "verifier_git_executable_path": str(GIT),
+        }
+        policy = {"git_executable_sha256": raw_digest(GIT)}
+        environment = {"LANG": "C", "LC_ALL": "C"}
+        module.verify_task_source_membership(
+            request, tasks, project, ["tasks/task.json"], policy, trust, environment,
+        )
+        tracked_path = "scripts/prompt-fixed-adapter.py"
+        for base in (source, project):
+            (base / tracked_path).write_text("mutable source tree adapter")
+        mutable_tasks = copy.deepcopy(tasks)
+        mutable_tasks[0]["artifacts"][0]["expected_sha256"] = file_expectation_digest(project, tracked_path)
+        try:
+            module.verify_task_source_membership(
+                request, mutable_tasks, project, ["tasks/task.json"], policy, trust, environment,
+            )
+            raise RuntimeError("dirty source-tree bytes were accepted as the committed Git blob")
+        except module.EvaluationError:
+            pass
+        for base in (source, project):
+            (base / tracked_path).write_text("reviewed adapter")
+        for base in (source, project):
+            (base / "scripts/ignored.py").write_text("ignored helper")
+        ignored_tasks = copy.deepcopy(tasks)
+        ignored_tasks[0]["argv"][1] = "scripts/ignored.py"
+        ignored_tasks[0]["artifacts"].append({
+            "path": "scripts/ignored.py", "kind": "FILE",
+            "expected_sha256": file_expectation_digest(project, "scripts/ignored.py"),
+        })
+        try:
+            module.verify_task_source_membership(
+                request, ignored_tasks, project, ["tasks/task.json"], policy, trust, environment,
+            )
+            raise RuntimeError("ignored Git helper was accepted as reviewed source")
+        except module.EvaluationError:
+            pass
+        for base in (source, project):
+            (base / "tasks/untracked.json").write_text("untracked task")
+        try:
+            module.verify_task_source_membership(
+                request, tasks, project, ["tasks/untracked.json"], policy, trust, environment,
+            )
+            raise RuntimeError("untracked Git task manifest was accepted")
+        except module.EvaluationError:
+            pass
+
+        members = [
+            "scripts/prompt-fixed-adapter.py", "scripts/prompt-snapshot-helper.py", "tasks/task.json",
+        ]
+        manifest = root / "corpus.files"
+        manifest.write_bytes(file_set_manifest(source, members))
+        file_set_request = {
+            "verifier_corpus_source_path": str(source), "verifier_corpus_source_kind": "FILE_SET",
+            "verifier_corpus_source_sha256": raw_digest(manifest),
+            "verifier_corpus_file_set_manifest_path": str(manifest),
+        }
+        module.verify_task_source_membership(
+            file_set_request, tasks, project, ["tasks/task.json"], None, trust, None,
+        )
+        manifest.write_bytes(file_set_manifest(source, members[1:]))
+        file_set_request["verifier_corpus_source_sha256"] = raw_digest(manifest)
+        try:
+            module.verify_task_source_membership(
+                file_set_request, tasks, project, ["tasks/task.json"], None, trust, None,
+            )
+            raise RuntimeError("unlisted file-set helper was accepted")
+        except module.EvaluationError:
+            pass
+        manifest.write_bytes(file_set_manifest(source, members))
+        file_set_request["verifier_corpus_source_sha256"] = raw_digest(manifest)
+        project_adapter = project / "scripts/prompt-fixed-adapter.py"
+        original_mode = stat.S_IMODE(project_adapter.stat().st_mode)
+        project_adapter.chmod(0o755)
+        try:
+            module.verify_task_source_membership(
+                file_set_request, tasks, project, ["tasks/task.json"], None, trust, None,
+            )
+            raise RuntimeError("reviewed source mode mismatch was accepted")
+        except module.EvaluationError:
+            pass
+        finally:
+            project_adapter.chmod(original_mode)
+        manifest.write_bytes(file_set_manifest(source, members[:-1]))
+        file_set_request["verifier_corpus_source_sha256"] = raw_digest(manifest)
+        try:
+            module.verify_task_source_membership(
+                file_set_request, tasks, project, ["tasks/task.json"], None, trust, None,
+            )
+            raise RuntimeError("unlisted file-set task manifest was accepted")
+        except module.EvaluationError:
+            pass
+
+
+def verify_complete_score_boundary() -> None:
+    module_path = SOURCE / "scripts/prompt-evaluate.py"
+    spec = importlib.util.spec_from_file_location("prompt_evaluate_score", module_path)
+    require(spec is not None and spec.loader is not None, "score evaluator could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    task = {
+        "task_id": "task", "regression_limits": {
+            "maximum_unrelated_diff_count": 0, "maximum_patch_size_bytes": 1_000,
+            "maximum_public_api_change_count": 0, "maximum_repair_loops": 2,
+            "maximum_benchmark_regression_ppm": None,
+        },
+    }
+    policy = {
+        "maximum_repair_loop_regression_count": 0, "maximum_time_regression_ppm": 100_000,
+        "minimum_completion_gain_count": 1, "minimum_time_improvement_ppm": 100_000,
+        "minimum_task_count": 1, "minimum_samples_per_variant": 1,
+    }
+    trust = {name: "VERIFIED" for name in (
+        "align_llm_reachability", "align_reachability", "corpus_reachability",
+    )}
+    environment = {"core": {"logical_cpu_count": 1}}
+
+    def measurement(status: str) -> dict:
+        passed = status == "PASS"
+        return {
+            "status": status, "build_status": "PASS" if passed else "FAIL",
+            "test_status": "PASS" if passed else "FAIL", "repair_loop_count": 0,
+            "unrelated_diff_count": 0, "patch_size_bytes": 1, "public_api_change_count": 0,
+            "benchmark_regression_ppm": None, "seed_attestation": {"result": "APPLIED"},
+        }
+
+    def rows(parent: str, candidate: str, parent_time: int = 100, candidate_time: int = 100) -> list[dict]:
+        return [
+            {"task_id": "task", "sample_index": 1, "variant": "PARENT",
+             "time_to_passing_patch_ns": parent_time if parent == "PASS" else None,
+             "measurement": measurement(parent)},
+            {"task_id": "task", "sample_index": 1, "variant": "CANDIDATE",
+             "time_to_passing_patch_ns": candidate_time if candidate == "PASS" else None,
+             "measurement": measurement(candidate)},
+        ]
+
+    improved = module.complete_score([task], rows("FAIL", "PASS"), 1, policy, trust, environment, {"provider_kind": "LIVE"})
+    unchanged = module.complete_score([task], rows("PASS", "PASS"), 1, policy, trust, environment, {"provider_kind": "FIXTURE"})
+    faster = module.complete_score([task], rows("PASS", "PASS", 100, 50), 1, policy, trust, environment, {"provider_kind": "LIVE"})
+    regressed = module.complete_score([task], rows("PASS", "FAIL"), 1, policy, trust, environment, {"provider_kind": "LIVE"})
+    task_limited_rows = rows("PASS", "PASS")
+    task_limited_rows[1]["measurement"]["patch_size_bytes"] = 1_001
+    task_limited = module.complete_score(
+        [task], task_limited_rows, 1, policy, trust, environment, {"provider_kind": "LIVE"},
+    )
+    corpus_limited_rows = rows("PASS", "PASS")
+    corpus_limited_rows[1]["measurement"]["repair_loop_count"] = 1
+    corpus_limited = module.complete_score(
+        [task], corpus_limited_rows, 1, policy, trust, environment, {"provider_kind": "LIVE"},
+    )
+    require(improved[0] == "IMPROVED" and improved[1], "completion improvement was not gate eligible")
+    require(unchanged[0] == "NO_IMPROVEMENT" and not unchanged[1], "unchanged score was improved")
+    require(faster[0] == "IMPROVED" and faster[1], "time improvement was not gate eligible")
+    require(
+        regressed[0] == "SERIOUS_REGRESSION"
+        and [item["code"] for item in regressed[4]][:3] == ["PASS_TO_FAIL", "BUILD", "TEST"],
+        "serious regression reason ordering changed",
+    )
+    require(task_limited[4][0]["code"] == "PATCH_SIZE", "task limit regression was not scored")
+    require(
+        corpus_limited[4][0]["task_id"] == "CORPUS"
+        and corpus_limited[4][0]["code"] == "REPAIR_LOOPS",
+        "corpus limit regression was not scored first",
+    )
+
+
 def copy_runtime(project: Path) -> None:
     for relative in (
+        ".align-revision",
         "scripts/prompt-evaluate.py", "scripts/prompt-fixed-adapter.py", "scripts/prompt-snapshot-helper.py",
         "scripts/prompt-source-verifier.py", "eval/runners/run-coding-task.py",
         "eval/tasks/coding-v1/python-inclusive-range/task.json",
@@ -486,6 +820,9 @@ def main() -> int:
     require(
         "command.timeout_ns" not in align_boundary
         and "command.max_capture_bytes(276824067)" in align_boundary
+        and "load_verified_bounded_source" in align_boundary
+        and "EVALUATOR_BOOTSTRAP" in align_boundary
+        and "EVALUATOR_SOURCE_RELATIVE," not in align_boundary.split("process.command(", 1)[1]
         and ".prepared." not in align_boundary
         and "cleanup_optional" not in align_boundary,
         "Align evaluator process/result carrier boundary changed",
@@ -495,6 +832,8 @@ def main() -> int:
     verify_workspace_ownership_boundary()
     verify_source_envelope_boundary()
     verify_reviewed_execution_boundary()
+    verify_strict_source_membership_boundary()
+    verify_complete_score_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
         root = Path(directory)
         project = root / "project"
@@ -614,7 +953,7 @@ def main() -> int:
             "eval/baselines/patches/python-inclusive-range-parent.patch",
         )
         expectations = [
-            {"path": relative, "kind": "FILE", "expected_sha256": raw_digest(project / relative)}
+            {"path": relative, "kind": "FILE", "expected_sha256": file_expectation_digest(project, relative)}
             for relative in artifact_paths
         ]
         task_files = []
@@ -1003,7 +1342,9 @@ def main() -> int:
             task_document["snapshot_helper_runtime"] = "PYTHON:" + unreviewed_snapshot_digest
             for expectation in task_document["artifacts"]:
                 if expectation["path"] == "scripts/prompt-snapshot-helper.py":
-                    expectation["expected_sha256"] = unreviewed_snapshot_digest
+                    expectation["expected_sha256"] = file_expectation_digest(
+                        project, "scripts/prompt-snapshot-helper.py"
+                    )
             bind(task_document)
             store(project, task_path, task_document)
         source_boundary = subprocess.run(
@@ -1077,7 +1418,8 @@ def main() -> int:
             task_document["snapshot_argv"] = ["/usr/bin/python3", "scripts/mismatch-snapshot-helper.py"]
             task_document["snapshot_helper_runtime"] = "PYTHON:" + mismatch_digest
             task_document["artifacts"].append({
-                "path": "scripts/mismatch-snapshot-helper.py", "kind": "FILE", "expected_sha256": mismatch_digest,
+                "path": "scripts/mismatch-snapshot-helper.py", "kind": "FILE",
+                "expected_sha256": file_expectation_digest(project, "scripts/mismatch-snapshot-helper.py"),
             })
             bind(task_document)
             store(project, task_path, task_document)
@@ -1135,7 +1477,7 @@ def main() -> int:
             task_document["snapshot_helper_runtime"] = "PYTHON:" + cross_invocation_digest
             task_document["artifacts"].append({
                 "path": "scripts/cross-invocation-snapshot-helper.py", "kind": "FILE",
-                "expected_sha256": cross_invocation_digest,
+                "expected_sha256": file_expectation_digest(project, "scripts/cross-invocation-snapshot-helper.py"),
             })
             bind(task_document)
             store(project, task_path, task_document)
@@ -1185,7 +1527,7 @@ def main() -> int:
             task_document["snapshot_helper_runtime"] = "PYTHON:" + malformed_snapshot_digest
             task_document["artifacts"].append({
                 "path": "scripts/malformed-snapshot-helper.py", "kind": "FILE",
-                "expected_sha256": malformed_snapshot_digest,
+                "expected_sha256": file_expectation_digest(project, "scripts/malformed-snapshot-helper.py"),
             })
             bind(task_document)
             store(project, task_path, task_document)
@@ -1207,10 +1549,12 @@ def main() -> int:
             store(project, task_path, task_document)
 
         drifting_adapter = project / "scripts/drifting-adapter.py"
+        drifted_task_prompt = project / "artifacts/task-prompt-1.json"
+        original_task_prompt = drifted_task_prompt.read_bytes()
         drifting_source = (project / "scripts/prompt-fixed-adapter.py").read_text().replace(
             "        else:\n            write_retained_result(values.result, values.result_fd, result)\n        return 0\n",
             "        else:\n            write_retained_result(values.result, values.result_fd, result)\n"
-            "        with values.prompt_variant.open('ab') as stream:\n"
+            f"        with Path({str(drifted_task_prompt)!r}).open('ab') as stream:\n"
             "            stream.write(b'\\n')\n"
             "        return 0\n",
             1,
@@ -1227,7 +1571,8 @@ def main() -> int:
             task_document["argv"] = ["/usr/bin/python3", "scripts/drifting-adapter.py"]
             task_document["measurement_adapter_runtime"] = "PYTHON:" + drifting_digest
             task_document["artifacts"].append({
-                "path": "scripts/drifting-adapter.py", "kind": "FILE", "expected_sha256": drifting_digest,
+                "path": "scripts/drifting-adapter.py", "kind": "FILE",
+                "expected_sha256": file_expectation_digest(project, "scripts/drifting-adapter.py"),
             })
             bind(task_document)
             store(project, task_path, task_document)
@@ -1256,6 +1601,7 @@ def main() -> int:
         )
         result_path.unlink()
         evidence_path.unlink()
+        drifted_task_prompt.write_bytes(original_task_prompt)
         for task_path, task_document in zip(task_files, original_task_documents):
             store(project, task_path, task_document)
 
@@ -1280,7 +1626,8 @@ def main() -> int:
             task_document["argv"] = ["/usr/bin/python3", "scripts/error-adapter.py"]
             task_document["measurement_adapter_runtime"] = "PYTHON:" + error_digest
             task_document["artifacts"].append({
-                "path": "scripts/error-adapter.py", "kind": "FILE", "expected_sha256": error_digest,
+                "path": "scripts/error-adapter.py", "kind": "FILE",
+                "expected_sha256": file_expectation_digest(project, "scripts/error-adapter.py"),
             })
             bind(task_document)
             store(project, task_path, task_document)
@@ -1334,7 +1681,7 @@ def main() -> int:
             task_document["measurement_adapter_runtime"] = "PYTHON:" + malformed_adapter_digest
             task_document["artifacts"].append({
                 "path": "scripts/malformed-adapter.py", "kind": "FILE",
-                "expected_sha256": malformed_adapter_digest,
+                "expected_sha256": file_expectation_digest(project, "scripts/malformed-adapter.py"),
             })
             bind(task_document)
             store(project, task_path, task_document)
@@ -1384,6 +1731,39 @@ def main() -> int:
             and not any(workspace.iterdir()),
             "modified evaluator crossed the outer reviewed-source boundary",
         )
+        shutil.copy2(SOURCE / "scripts/prompt-evaluate.py", cleanup_evaluator)
+
+        replacement_marker = root / "replacement-evaluator-ran"
+        retained_race = subprocess.Popen(
+            [str(build_root / "main"), "prompt", "evaluate", str(request_path), "result.json"],
+            cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        child_seen = False
+        deadline = time.monotonic() + 10
+        children_path = Path(f"/proc/{retained_race.pid}/task/{retained_race.pid}/children")
+        while retained_race.poll() is None and time.monotonic() < deadline:
+            try:
+                child_seen = bool(children_path.read_text().strip())
+            except OSError:
+                child_seen = False
+            if child_seen:
+                break
+            time.sleep(0.005)
+        require(child_seen, "outer evaluator launch was not observable for retained-source replacement")
+        cleanup_evaluator.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(replacement_marker)!r}).write_text('replacement ran')\n"
+            "raise SystemExit(99)\n"
+        )
+        retained_stdout, retained_stderr = retained_race.communicate(timeout=120)
+        require(
+            retained_race.returncode == 0 and result_path.exists() and evidence_path.exists()
+            and not replacement_marker.exists(),
+            f"replacement evaluator crossed retained-source launch: stdout={retained_stdout!r}; "
+            f"stderr={retained_stderr!r}",
+        )
+        result_path.unlink()
+        evidence_path.unlink()
         shutil.copy2(SOURCE / "scripts/prompt-evaluate.py", cleanup_evaluator)
 
         completed = subprocess.run(
@@ -1455,7 +1835,8 @@ def main() -> int:
             task_document["argv"] = ["/usr/bin/python3", "scripts/noisy-adapter.py"]
             task_document["measurement_adapter_runtime"] = "PYTHON:" + noisy_digest
             task_document["artifacts"].append({
-                "path": "scripts/noisy-adapter.py", "kind": "FILE", "expected_sha256": noisy_digest,
+                "path": "scripts/noisy-adapter.py", "kind": "FILE",
+                "expected_sha256": file_expectation_digest(project, "scripts/noisy-adapter.py"),
             })
             bind(task_document)
             store(project, task_path, task_document)
@@ -1489,7 +1870,9 @@ def main() -> int:
             task_document = json.loads((project / task_path).read_text())
             task_document["measurement_adapter_runtime"] = "PYTHON:" + timeout_digest
             task_document["timeout_ns"] = 500_000_000
-            task_document["artifacts"][-1]["expected_sha256"] = timeout_digest
+            task_document["artifacts"][-1]["expected_sha256"] = file_expectation_digest(
+                project, "scripts/noisy-adapter.py"
+            )
             bind(task_document)
             store(project, task_path, task_document)
         started = time.monotonic()

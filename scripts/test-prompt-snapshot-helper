@@ -62,6 +62,14 @@ def tree_digest(project: Path, relative: str) -> str:
     return hashlib.sha256(output).hexdigest()
 
 
+def file_digest(project: Path, relative: str) -> str:
+    path = project / relative
+    metadata = path.stat()
+    mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}"
+    content = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(f"{mode} {relative}\0F {content}\n".encode()).hexdigest()
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="prompt-snapshot-") as directory:
         root = Path(directory)
@@ -86,7 +94,7 @@ def main() -> int:
         result = json.loads(completed.stdout)
         require(completed.returncode == 0 and result["status"] == "SAFE", "empty workspace was not safe")
 
-        digest = hashlib.sha256((project / "input.txt").read_bytes()).hexdigest()
+        digest = file_digest(project, "input.txt")
         snapshot = {
             "schema_version": 1, "artifact_kind": "SNAPSHOT_REQUEST", "task_id": "task",
             "project_root": str(project), "repo_path": str(project), "repo_revision": "0" * 40,
@@ -105,7 +113,11 @@ def main() -> int:
         )
         result = json.loads(result_path.read_text())
         require(completed.returncode == 0 and result["status"] == "MATCH", "valid snapshot did not match")
-        require(result["artifact_digests"][0]["sha256"] == digest, "snapshot digest changed")
+        require(
+            result["artifact_digests"][0]["sha256"]
+            == hashlib.sha256((project / "input.txt").read_bytes()).hexdigest(),
+            "snapshot digest changed",
+        )
 
         tree = project / "tree"
         tree.mkdir()
@@ -133,7 +145,10 @@ def main() -> int:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         result = json.loads(result_path.read_text())
-        require(completed.returncode == 0 and result["status"] == "ERROR", "undeclared workspace entry matched")
+        require(
+            completed.returncode == 0 and result["status"] == "MISMATCH" and result["error_code"] == "PATH",
+            "undeclared workspace entry matched",
+        )
 
         preflight["evaluation_id"] = "tampered"
         preflight_path.write_bytes(canonical(preflight))
@@ -147,6 +162,79 @@ def main() -> int:
         require(module_spec is not None and module_spec.loader is not None, "snapshot helper module could not be loaded")
         module = importlib.util.module_from_spec(module_spec)
         module_spec.loader.exec_module(module)
+
+        mismatch = dict(snapshot)
+        mismatch["allowed_workspace_entries"] = ["intruder"]
+        mismatch["static_expectations"] = [{
+            "path": "input.txt", "kind": "FILE", "expected_sha256": file_digest(project, "input.txt"),
+        }]
+        original_mode = stat.S_IMODE((project / "input.txt").stat().st_mode)
+        (project / "input.txt").chmod(0o755)
+        require(
+            module.snapshot(mismatch)["error_code"] == "MODE",
+            "FILE mode mismatch did not retain its exact code",
+        )
+        (project / "input.txt").chmod(original_mode)
+        mismatch["static_expectations"][0]["expected_sha256"] = "f" * 64
+        require(
+            module.snapshot(mismatch)["error_code"] == "CONTENT",
+            "FILE content mismatch did not retain its exact code",
+        )
+        mismatch["static_expectations"] = [{
+            "path": "missing.txt", "kind": "FILE", "expected_sha256": "f" * 64,
+        }]
+        require(module.snapshot(mismatch)["error_code"] == "PATH", "missing FILE did not retain PATH")
+        mismatch["static_expectations"] = [{
+            "path": "tree", "kind": "FILE", "expected_sha256": "f" * 64,
+        }]
+        require(module.snapshot(mismatch)["error_code"] == "TYPE", "directory FILE did not retain TYPE")
+        mismatch["static_expectations"] = [{
+            "path": "tree", "kind": "TREE", "expected_sha256": "f" * 64,
+        }]
+        require(module.snapshot(mismatch)["error_code"] == "TREE", "TREE mismatch did not retain TREE")
+
+        repo = project / "repo"
+        repo.mkdir()
+        (repo / "tracked").write_text("tracked")
+        subprocess.run(["/usr/bin/git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(repo), "add", "tracked"], check=True)
+        subprocess.run(
+            ["/usr/bin/git", "-C", str(repo), "-c", "user.name=fixture",
+             "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"],
+            check=True,
+        )
+        revision = subprocess.run(
+            ["/usr/bin/git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+            stdout=subprocess.PIPE, check=True,
+        ).stdout.strip()
+        mismatch["repo_path"] = str(repo)
+        mismatch["require_clean_repo"] = True
+        mismatch["repo_revision"] = "0" * 40
+        mismatch["static_expectations"] = [{
+            "path": "input.txt", "kind": "FILE", "expected_sha256": file_digest(project, "input.txt"),
+        }]
+        def external_snapshot(value):
+            bind(value)
+            snapshot_path.write_bytes(canonical(value))
+            result_path.unlink(missing_ok=True)
+            completed = subprocess.run(
+                [str(HELPER), "--snapshot-request", str(snapshot_path), "--result", str(result_path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            require(completed.returncode == 0, "repository mismatch helper process failed")
+            return json.loads(result_path.read_text())
+
+        repository_mismatch = external_snapshot(mismatch)
+        require(
+            repository_mismatch["error_code"] == "REPO_REVISION",
+            f"repository revision mismatch did not retain its exact code: {repository_mismatch!r}",
+        )
+        mismatch["repo_revision"] = revision
+        (repo / "dirty").write_text("dirty")
+        require(
+            external_snapshot(mismatch)["error_code"] == "DIRTY_REPO",
+            "dirty repository mismatch did not retain its exact code",
+        )
 
         bounded_tree = project / "bounded-tree"
         bounded_tree.mkdir()
@@ -170,14 +258,14 @@ def main() -> int:
         byte_file.write_bytes(b"1234")
         snapshot["static_expectations"] = [{
             "path": "byte-cap", "kind": "FILE",
-            "expected_sha256": hashlib.sha256(byte_file.read_bytes()).hexdigest(),
+            "expected_sha256": file_digest(project, "byte-cap"),
         }]
         bind(snapshot)
         original_byte_cap = module.MAX_ARTIFACT_BYTES
         module.MAX_ARTIFACT_BYTES = 4
         require(module.snapshot(snapshot)["status"] == "MATCH", "exact aggregate byte cap was rejected")
         byte_file.write_bytes(b"12345")
-        snapshot["static_expectations"][0]["expected_sha256"] = hashlib.sha256(byte_file.read_bytes()).hexdigest()
+        snapshot["static_expectations"][0]["expected_sha256"] = file_digest(project, "byte-cap")
         bind(snapshot)
         require(module.snapshot(snapshot)["status"] == "ERROR", "aggregate byte cap plus one was accepted")
         module.MAX_ARTIFACT_BYTES = original_byte_cap

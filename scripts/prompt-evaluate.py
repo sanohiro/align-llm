@@ -159,6 +159,17 @@ class RetainedRegularFile:
             offset += len(chunk)
         return hasher.hexdigest()
 
+    def read_bytes(self) -> bytes:
+        output = bytearray()
+        offset = 0
+        while offset < self.identity[3]:
+            chunk = os.pread(self.descriptor, min(1_048_576, self.identity[3] - offset), offset)
+            if not chunk:
+                raise EvaluationError("declared source changed while reading")
+            output.extend(chunk)
+            offset += len(chunk)
+        return bytes(output)
+
     def verify_unchanged(self, expected: str) -> None:
         if self._identity() != self.identity or self.sha256() != expected:
             raise EvaluationError("declared executable changed during use")
@@ -685,7 +696,7 @@ def run_child(
     return subprocess.CompletedProcess(argv, process.returncode, bytes(captures["stdout"]), bytes(captures["stderr"]))
 
 
-def command(task: Mapping[str, Any], name: str, project: Path) -> list[str]:
+def command(task: Mapping[str, Any], name: str, project: Path) -> tuple[list[str], RetainedRegularFile]:
     argv = list(task[name])
     if not argv or argv[0] != task["cmd" if name == "argv" else "snapshot_cmd"]:
         raise EvaluationError("task command and argv disagree")
@@ -693,7 +704,22 @@ def command(task: Mapping[str, Any], name: str, project: Path) -> list[str]:
     if not executable.is_absolute():
         executable = project / executable
     argv[0] = str(executable)
-    return argv
+    if len(argv) != 2:
+        raise EvaluationError("task interpreter command must contain one helper")
+    helper_path = relative_path(project, argv[1])
+    runtime_name = "measurement_adapter_runtime" if name == "argv" else "snapshot_helper_runtime"
+    runtime = task[runtime_name]
+    if not isinstance(runtime, str) or not runtime.startswith("PYTHON:") or not valid_hex(runtime[7:]):
+        raise EvaluationError("task helper runtime identity is invalid")
+    helper = RetainedRegularFile(helper_path, ARTIFACT_LIMIT)
+    try:
+        if helper.sha256() != runtime[7:]:
+            raise EvaluationError("task helper runtime digest does not match")
+        argv[1] = helper.process_path()
+        return argv, helper
+    except BaseException:
+        helper.close()
+        raise
 
 
 def render(variant: Mapping[str, Any], task_prompt: Mapping[str, Any], context: Mapping[str, Any]) -> tuple[str, str]:
@@ -804,7 +830,46 @@ def valid_artifact_digest(value: Any) -> bool:
     )
 
 
-def valid_snapshot_result(value: Any, task_id: str) -> bool:
+def expected_snapshot_paths(request: Mapping[str, Any], project: Path) -> list[str]:
+    paths: list[str] = []
+    expanded = 0
+    for expectation in request["static_expectations"]:
+        relative = expectation["path"]
+        if expectation["kind"] == "FILE":
+            selected = [relative]
+        elif expectation["kind"] == "TREE":
+            root = relative_path(project, relative)
+            selected = [relative]
+            pending = [root]
+            while pending:
+                directory = pending.pop()
+                entries = sorted(os.scandir(directory), key=lambda item: os.fsencode(item.name))
+                for entry in entries:
+                    metadata = entry.stat(follow_symlinks=False)
+                    child = str(Path(entry.path).relative_to(project))
+                    if stat.S_ISDIR(metadata.st_mode):
+                        selected.append(child)
+                        pending.append(Path(entry.path))
+                    elif stat.S_ISREG(metadata.st_mode):
+                        selected.append(child)
+                    else:
+                        raise EvaluationError("snapshot tree contains an unsafe entry")
+            selected.sort(key=os.fsencode)
+        else:
+            raise EvaluationError("snapshot expectation kind is invalid")
+        expanded += len(selected)
+        if expanded > 128:
+            raise EvaluationError("snapshot expanded path count exceeds its bound")
+        paths.extend(selected)
+    paths.extend(request["additional_files"])
+    if len(paths) != len(set(paths)):
+        raise EvaluationError("snapshot paths overlap")
+    return paths
+
+
+def valid_snapshot_result(
+    value: Any, task_id: str, request: Mapping[str, Any], project: Path,
+) -> bool:
     if (
         not isinstance(value, dict)
         or tuple(value) != SNAPSHOT_RESULT_FIELDS
@@ -822,6 +887,16 @@ def valid_snapshot_result(value: Any, task_id: str) -> bool:
         return False
     if value["environment_probe"] is not None and not valid_environment_probe(value["environment_probe"]):
         return False
+    try:
+        expected_paths = expected_snapshot_paths(request, project)
+    except (EvaluationError, OSError, ValueError):
+        return False
+    observed_paths = [item["path"] for item in value["artifact_digests"]]
+    if value["status"] in ("MATCH", "MISMATCH"):
+        if value["status"] == "MATCH" and observed_paths != expected_paths:
+            return False
+        if value["status"] == "MISMATCH" and observed_paths != expected_paths[:len(observed_paths)]:
+            return False
     if value["status"] == "MATCH":
         return value["error_code"] == "NONE" and value["error"] == "" and value["environment_probe"] is not None
     if not 0 < len(value["error"].encode("utf-8")) <= 4096:
@@ -1041,7 +1116,8 @@ def invoke_snapshot(
     descriptor = -1
     try:
         descriptor = create_owned_output(result_path, owned_paths)
-        argv = command(task, "snapshot_argv", project) + [
+        argv, helper = command(task, "snapshot_argv", project)
+        argv = argv + [
             "--snapshot-request", str(request_path), "--result", str(result_path),
             "--result-fd", str(descriptor),
         ]
@@ -1051,14 +1127,18 @@ def invoke_snapshot(
             environment,
             max(nested_owner_timeout(task["timeout_ns"]), SNAPSHOT_HELPER_OUTER_TIMEOUT_NS),
             0,
-            (descriptor,),
+            (descriptor, helper.descriptor),
         )
+        helper.verify_unchanged(task["snapshot_helper_runtime"][7:])
+        helper.close()
+        helper = None
         os.close(descriptor)
         descriptor = -1
         if completed.returncode != 0 or completed.stdout or completed.stderr:
             raise EvaluationError("snapshot helper process failed")
         result = load_bound(result_path, "SNAPSHOT_RESULT", SNAPSHOT_LIMIT)
-        if not valid_snapshot_result(result, task["task_id"]):
+        snapshot_request = load_bound(request_path, "SNAPSHOT_REQUEST", SNAPSHOT_LIMIT)
+        if not valid_snapshot_result(result, task["task_id"], snapshot_request, project):
             raise EvaluationError("snapshot helper result is invalid")
         return result
     except ChildBoundaryError as failure:
@@ -1086,6 +1166,8 @@ def invoke_snapshot(
             "content_sha256": "",
         })
     finally:
+        if "helper" in locals() and helper is not None:
+            helper.close()
         if descriptor >= 0:
             os.close(descriptor)
 
@@ -1099,7 +1181,8 @@ def invoke_adapter(
     descriptor = -1
     try:
         descriptor = create_owned_output(measurement_path, owned_paths)
-        argv = command(task, "argv", project) + [
+        argv, helper = command(task, "argv", project)
+        argv = argv + [
             "--prompt-variant", str(variant_path), "--rendered-prompt", str(rendered_path),
             "--sample-index", str(sample), "--paired-seed", str(seed),
             "--adapter-request", str(request_path), "--result", str(measurement_path),
@@ -1111,8 +1194,11 @@ def invoke_adapter(
             environment,
             nested_owner_timeout(max(task["timeout_ns"], provider_timeout_ns)),
             0,
-            (descriptor,),
+            (descriptor, helper.descriptor),
         )
+        helper.verify_unchanged(task["measurement_adapter_runtime"][7:])
+        helper.close()
+        helper = None
     except ChildBoundaryError as failure:
         cleanup_passed = retire_owned_path(measurement_path, owned_paths)
         if not cleanup_passed:
@@ -1127,6 +1213,8 @@ def invoke_adapter(
     except OSError:
         raise AdapterFailure("ADAPTER_RESULT", "measurement result path is occupied or unavailable") from None
     finally:
+        if "helper" in locals() and helper is not None:
+            helper.close()
         if descriptor >= 0:
             os.close(descriptor)
     if completed.returncode != 0 or completed.stdout or completed.stderr:
@@ -1652,38 +1740,181 @@ def validation_error_code(error: BaseException) -> str:
     return "INVALID_SCHEMA"
 
 
+def canonical_file_expectation(relative: str, metadata: os.stat_result, content_sha256: str) -> str:
+    mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}"
+    raw = f"{mode} {relative}".encode("utf-8") + b"\0F " + content_sha256.encode("ascii") + b"\n"
+    return hashlib.sha256(raw).hexdigest()
+
+
+def declared_source_files(
+    tasks: Sequence[Mapping[str, Any]], task_files: Sequence[str], project: Path,
+) -> tuple[dict[str, str | None], set[str]]:
+    declared: dict[str, str | None] = {relative: None for relative in task_files}
+    execution: set[str] = set()
+    for task in tasks:
+        execution.update((task["argv"][1], task["snapshot_argv"][1]))
+        for expectation in task["artifacts"]:
+            relative = expectation["path"]
+            if expectation["kind"] == "FILE":
+                declared[relative] = expectation["expected_sha256"]
+                continue
+            root = relative_path(project, relative)
+            for directory, names, files in os.walk(root, followlinks=False):
+                names.sort(key=os.fsencode)
+                files.sort(key=os.fsencode)
+                for name in files:
+                    path = Path(directory) / name
+                    if path.is_symlink() or not path.is_file():
+                        raise EvaluationError("task source tree contains an unsafe entry")
+                    declared[str(path.relative_to(project))] = None
+    return declared, execution
+
+
+def git_member(
+    source: Path, relative: str, revision: str, git: RetainedRegularFile,
+    environment: Mapping[str, str], content_sha256: str, source_mode: int,
+) -> bool:
+    completed = run_child(
+        [
+            git.process_path(), "--no-pager", "-c", "core.fsmonitor=false",
+            "-c", "core.hooksPath=/dev/null", "-c", "diff.external=",
+            "-c", "credential.helper=", "ls-tree", "-z", "--full-tree", revision, "--", relative,
+        ],
+        source,
+        environment,
+        SOURCE_VERIFIER_OUTER_TIMEOUT_NS,
+        8192,
+        (git.descriptor,),
+    )
+    if completed.returncode != 0 or completed.stderr:
+        raise EvaluationError("corpus Git membership query failed")
+    suffix = b"\t" + relative.encode("utf-8") + b"\0"
+    if not completed.stdout.endswith(suffix) or completed.stdout.count(b"\0") != 1:
+        return False
+    header = completed.stdout[:-len(suffix)]
+    fields = header.split(b" ")
+    if (
+        len(fields) != 3 or fields[1] != b"blob"
+        or fields[0] != f"{source_mode:06o}".encode("ascii")
+        or len(fields[2]) not in (40, 64)
+        or any(byte not in b"0123456789abcdef" for byte in fields[2])
+    ):
+        return False
+    blob = run_child(
+        [git.process_path(), "--no-pager", "-c", "core.fsmonitor=false",
+         "-c", "core.hooksPath=/dev/null", "cat-file", "blob", fields[2].decode("ascii")],
+        source,
+        environment,
+        SOURCE_VERIFIER_OUTER_TIMEOUT_NS,
+        ARTIFACT_LIMIT,
+        (git.descriptor,),
+    )
+    if blob.returncode != 0 or blob.stderr:
+        raise EvaluationError("corpus Git blob query failed")
+    return hashlib.sha256(blob.stdout).hexdigest() == content_sha256
+
+
+def file_set_members(raw: bytes) -> dict[str, tuple[int, str]]:
+    prefix = b"ALIGN-LLM-CORPUS-FILE-SET-V1\n"
+    if not raw.startswith(prefix):
+        raise EvaluationError("corpus file-set manifest is malformed")
+    cursor = len(prefix)
+    newline = raw.find(b"\n", cursor)
+    if newline < 0:
+        raise EvaluationError("corpus file-set manifest is malformed")
+    try:
+        count = int(raw[cursor:newline].decode("ascii"))
+    except (UnicodeError, ValueError):
+        raise EvaluationError("corpus file-set manifest is malformed") from None
+    cursor = newline + 1
+    members: dict[str, tuple[int, str]] = {}
+    for _ in range(count):
+        mode_end = raw.find(b" ", cursor)
+        count_end = raw.find(b" ", mode_end + 1)
+        if mode_end < 0 or count_end < 0:
+            raise EvaluationError("corpus file-set manifest is malformed")
+        try:
+            mode = int(raw[cursor:mode_end], 8)
+            path_count = int(raw[mode_end + 1:count_end].decode("ascii"))
+        except (UnicodeError, ValueError):
+            raise EvaluationError("corpus file-set manifest is malformed") from None
+        start = count_end + 1
+        end = start + path_count
+        if raw[end:end + 3] != b"\0F " or end + 68 > len(raw) or raw[end + 67:end + 68] != b"\n":
+            raise EvaluationError("corpus file-set manifest is malformed")
+        try:
+            relative = raw[start:end].decode("utf-8", "strict")
+            content = raw[end + 3:end + 67].decode("ascii", "strict")
+        except UnicodeError:
+            cursor = end + 68
+            continue
+        members[relative] = (mode, content)
+        cursor = end + 68
+    if cursor != len(raw):
+        raise EvaluationError("corpus file-set manifest is malformed")
+    return members
+
+
 def verify_task_source_membership(
     request: Mapping[str, Any], tasks: Sequence[Mapping[str, Any]], project: Path,
+    task_files: Sequence[str] = (), policy: Mapping[str, Any] | None = None,
+    trust: Mapping[str, Any] | None = None, environment: Mapping[str, str] | None = None,
 ) -> None:
     source = physical_directory(Path(request["verifier_corpus_source_path"]))
-    admitted: set[str] = set()
-    for task in tasks:
-        artifacts = task.get("artifacts")
-        if not isinstance(artifacts, list) or len(artifacts) > 64:
-            raise EvaluationError("task source artifact count is invalid")
-        for expectation in artifacts:
-            if not isinstance(expectation, dict) or expectation.get("kind") not in ("FILE", "TREE"):
-                raise EvaluationError("task source artifact declaration is invalid")
-            if expectation["kind"] == "TREE":
-                continue
-            relative = expectation.get("path")
-            expected = expectation.get("expected_sha256")
-            if not isinstance(relative, str) or not valid_hex(expected):
-                raise EvaluationError("task source artifact declaration is invalid")
-            project_path = relative_path(project, relative)
-            source_path = relative_path(source, relative)
-            project_file = RetainedRegularFile(project_path, ARTIFACT_LIMIT)
+    strict = trust is not None and trust.get("corpus_reachability") == "VERIFIED"
+    declared, execution = declared_source_files(tasks, task_files if strict else (), project)
+    file_set: dict[str, tuple[int, str]] = {}
+    git: RetainedRegularFile | None = None
+    if strict and request["verifier_corpus_source_kind"] == "FILE_SET":
+        manifest = request.get("verifier_corpus_file_set_manifest_path")
+        if not isinstance(manifest, str):
+            raise EvaluationError("corpus file-set manifest is unavailable")
+        manifest_file = RetainedRegularFile(Path(manifest), 8_388_608)
+        try:
+            file_set = file_set_members(manifest_file.read_bytes())
+            manifest_file.verify_unchanged(request["verifier_corpus_source_sha256"])
+        finally:
+            manifest_file.close()
+    elif strict:
+        if policy is None or environment is None:
+            raise EvaluationError("corpus Git membership policy is unavailable")
+        git = RetainedRegularFile(Path(request["verifier_git_executable_path"]), RESULT_LIMIT)
+        if git.sha256() != policy["git_executable_sha256"]:
+            git.close()
+            raise EvaluationError("corpus Git executable identity disagrees")
+    try:
+        for relative, expected in declared.items():
+            project_file = RetainedRegularFile(relative_path(project, relative), ARTIFACT_LIMIT)
+            source_file = RetainedRegularFile(relative_path(source, relative), ARTIFACT_LIMIT)
             try:
-                source_file = RetainedRegularFile(source_path, ARTIFACT_LIMIT)
-                try:
-                    if project_file.sha256() != expected or source_file.sha256() != expected:
-                        raise EvaluationError("task execution source is not a reviewed corpus member")
-                finally:
-                    source_file.close()
+                project_sha = project_file.sha256()
+                source_sha = source_file.sha256()
+                project_metadata = os.fstat(project_file.descriptor)
+                source_metadata = os.fstat(source_file.descriptor)
+                if project_sha != source_sha or project_metadata.st_mode != source_metadata.st_mode:
+                    raise EvaluationError("task execution source is not a reviewed corpus member")
+                if expected is not None and canonical_file_expectation(relative, project_metadata, project_sha) != expected:
+                    raise EvaluationError("task source artifact digest does not match")
+                if strict and request["verifier_corpus_source_kind"] == "FILE_SET":
+                    member = file_set.get(relative)
+                    mode = stat.S_IFMT(source_metadata.st_mode) | stat.S_IMODE(source_metadata.st_mode)
+                    if member != (mode, source_sha):
+                        raise EvaluationError("task source is absent from the verified file set")
+                elif strict and git is not None and not git_member(
+                    source, relative, request["verifier_corpus_source_sha256"], git, environment,
+                    source_sha, stat.S_IFMT(source_metadata.st_mode) | stat.S_IMODE(source_metadata.st_mode),
+                ):
+                    raise EvaluationError("task source is absent from the verified Git commit")
             finally:
+                source_file.close()
                 project_file.close()
-            admitted.add(relative)
-    if FIXED_ADAPTER_PATH not in admitted or FIXED_SNAPSHOT_HELPER_PATH not in admitted:
+    finally:
+        if git is not None:
+            git.verify_unchanged(policy["git_executable_sha256"])
+            git.close()
+    if not execution.issubset(declared):
+        raise EvaluationError("task execution helper is absent from reviewed task source")
+    if FIXED_ADAPTER_PATH not in declared or FIXED_SNAPSHOT_HELPER_PATH not in declared:
         raise EvaluationError("fixed evaluator helpers are absent from reviewed task source")
 
 
@@ -1696,6 +1927,201 @@ def validated_task_files(value: Any) -> list[str]:
     ):
         raise EvaluationError("corpus task count is invalid")
     return value
+
+
+def automatic_snapshot_files(
+    request: Mapping[str, Any], task_file: str, task: Mapping[str, Any], project: Path,
+) -> list[str]:
+    declared = {
+        request["experiment_path"], request["parent_activation_path"], request["corpus_path"],
+        request["acceptance_policy_path"], request["workspace_preflight_path"],
+        request["verifier_source_policy_path"], ".align-revision", task_file,
+        task["generation_policy_path"], task["provider_control_path"], task["environment_policy_path"],
+        task["task_prompt_path"], task["context_sources_path"],
+    }
+    paths = sorted(declared, key=os.fsencode)
+    for relative in paths:
+        RetainedRegularFile(relative_path(project, relative), ARTIFACT_LIMIT).close()
+    if len(paths) > 29:
+        raise EvaluationError("automatic snapshot input count exceeds its bound")
+    return paths
+
+
+def score_median(values: list[int]) -> int | None:
+    if not values:
+        return None
+    values.sort()
+    middle = len(values) // 2
+    if len(values) % 2:
+        return values[middle]
+    lower = values[middle - 1]
+    return lower + (values[middle] - lower) // 2
+
+
+def time_metrics(parent: int | None, candidate: int | None) -> tuple[int | None, int | None]:
+    if parent is None or candidate is None or parent <= 0:
+        return None, None
+    if candidate <= parent:
+        return (parent - candidate) * 1_000_000 // parent, 0
+    return 0, (candidate - parent) * 1_000_000 // parent
+
+
+def reason(
+    task_id: str, sample: int, code: str, parent: str, candidate: str, limit: str,
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id, "sample_index": sample, "code": code,
+        "parent_value": parent, "candidate_value": candidate, "limit": limit,
+    }
+
+
+def status_value(measurement: Mapping[str, Any]) -> str:
+    status = measurement["status"]
+    if status == "POLICY_VIOLATION":
+        return "POLICY_VIOLATION"
+    return status
+
+
+def complete_score(
+    tasks: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], sample_count: int,
+    policy: Mapping[str, Any], trust: Mapping[str, Any], environment: Mapping[str, Any],
+    provider_control: Mapping[str, Any],
+) -> tuple[str, bool, list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+    aggregates: list[dict[str, Any]] = []
+    indexed: list[dict[int, dict[str, Mapping[str, Any]]]] = []
+    corpus_parent_times: list[int] = []
+    corpus_candidate_times: list[int] = []
+    corpus_parent_repairs = 0
+    corpus_candidate_repairs = 0
+    parent_passes = 0
+    candidate_passes = 0
+    paired_passes = 0
+    for task in tasks:
+        selected = [row for row in rows if row["task_id"] == task["task_id"]]
+        pairs: dict[int, dict[str, Mapping[str, Any]]] = {}
+        for row in selected:
+            pairs.setdefault(row["sample_index"], {})[row["variant"]] = row
+        if len(pairs) != sample_count or any(set(pair) != {"PARENT", "CANDIDATE"} for pair in pairs.values()):
+            raise EvaluationError("complete score row schedule is invalid")
+        indexed.append(pairs)
+        parent_rows = [pairs[sample]["PARENT"] for sample in range(1, sample_count + 1)]
+        candidate_rows = [pairs[sample]["CANDIDATE"] for sample in range(1, sample_count + 1)]
+        task_parent_passes = sum(row["measurement"]["status"] == "PASS" for row in parent_rows)
+        task_candidate_passes = sum(row["measurement"]["status"] == "PASS" for row in candidate_rows)
+        task_parent_repairs = sum(row["measurement"]["repair_loop_count"] for row in parent_rows)
+        task_candidate_repairs = sum(row["measurement"]["repair_loop_count"] for row in candidate_rows)
+        task_parent_times: list[int] = []
+        task_candidate_times: list[int] = []
+        task_paired = 0
+        for sample in range(1, sample_count + 1):
+            parent_row = pairs[sample]["PARENT"]
+            candidate_row = pairs[sample]["CANDIDATE"]
+            if parent_row["measurement"]["status"] == "PASS" and candidate_row["measurement"]["status"] == "PASS":
+                task_paired += 1
+                task_parent_times.append(parent_row["time_to_passing_patch_ns"])
+                task_candidate_times.append(candidate_row["time_to_passing_patch_ns"])
+        parent_median = score_median(task_parent_times)
+        candidate_median = score_median(task_candidate_times)
+        improvement, regression = time_metrics(parent_median, candidate_median)
+        aggregates.append({
+            "task_id": task["task_id"], "parent_pass_count": task_parent_passes,
+            "candidate_pass_count": task_candidate_passes,
+            "parent_repair_loop_count": task_parent_repairs,
+            "candidate_repair_loop_count": task_candidate_repairs, "paired_pass_count": task_paired,
+            "parent_paired_median_time_ns": parent_median,
+            "candidate_paired_median_time_ns": candidate_median,
+            "time_improvement_ppm": improvement, "time_regression_ppm": regression,
+        })
+        parent_passes += task_parent_passes
+        candidate_passes += task_candidate_passes
+        corpus_parent_repairs += task_parent_repairs
+        corpus_candidate_repairs += task_candidate_repairs
+        paired_passes += task_paired
+        corpus_parent_times.extend(task_parent_times)
+        corpus_candidate_times.extend(task_candidate_times)
+
+    parent_median = score_median(corpus_parent_times)
+    candidate_median = score_median(corpus_candidate_times)
+    improvement, regression = time_metrics(parent_median, candidate_median)
+    repair_regression = max(0, corpus_candidate_repairs - corpus_parent_repairs)
+    corpus = {
+        "task_count": len(tasks), "sample_count": sample_count, "parent_pass_count": parent_passes,
+        "candidate_pass_count": candidate_passes, "parent_repair_loop_count": corpus_parent_repairs,
+        "candidate_repair_loop_count": corpus_candidate_repairs, "paired_pass_count": paired_passes,
+        "parent_paired_median_time_ns": parent_median,
+        "candidate_paired_median_time_ns": candidate_median,
+        "completion_gain_count": candidate_passes - parent_passes,
+        "time_improvement_ppm": improvement, "time_regression_ppm": regression,
+        "repair_loop_regression_count": repair_regression,
+    }
+    reasons: list[dict[str, Any]] = []
+    if repair_regression > policy["maximum_repair_loop_regression_count"]:
+        reasons.append(reason(
+            "CORPUS", 0, "REPAIR_LOOPS", str(corpus_parent_repairs), str(corpus_candidate_repairs),
+            str(policy["maximum_repair_loop_regression_count"]),
+        ))
+    if regression is not None and regression > policy["maximum_time_regression_ppm"]:
+        reasons.append(reason(
+            "CORPUS", 0, "TIME", str(parent_median), str(candidate_median),
+            str(policy["maximum_time_regression_ppm"]),
+        ))
+    for ordinal, task in enumerate(tasks):
+        aggregate = aggregates[ordinal]
+        limit = task["regression_limits"]
+        task_regression = aggregate["time_regression_ppm"]
+        if task_regression is not None and task_regression > policy["maximum_time_regression_ppm"]:
+            reasons.append(reason(
+                task["task_id"], 0, "TIME", str(aggregate["parent_paired_median_time_ns"]),
+                str(aggregate["candidate_paired_median_time_ns"]), str(policy["maximum_time_regression_ppm"]),
+            ))
+        for sample in range(1, sample_count + 1):
+            parent = indexed[ordinal][sample]["PARENT"]["measurement"]
+            candidate = indexed[ordinal][sample]["CANDIDATE"]["measurement"]
+            candidate_value = status_value(candidate)
+            if parent["status"] == "PASS" and candidate["status"] != "PASS":
+                reasons.append(reason(task["task_id"], sample, "PASS_TO_FAIL", "PASS", candidate_value, "NONE"))
+            if parent["build_status"] == "PASS" and candidate["build_status"] != "PASS":
+                reasons.append(reason(task["task_id"], sample, "BUILD", "PASS", candidate_value, "NONE"))
+            if parent["test_status"] == "PASS" and candidate["test_status"] != "PASS":
+                reasons.append(reason(task["task_id"], sample, "TEST", "PASS", candidate_value, "NONE"))
+            if candidate["status"] == "POLICY_VIOLATION":
+                reasons.append(reason(task["task_id"], sample, "POLICY", "NONE", "POLICY_VIOLATION", "NONE"))
+            for field, maximum, code in (
+                ("unrelated_diff_count", "maximum_unrelated_diff_count", "UNRELATED_DIFF"),
+                ("public_api_change_count", "maximum_public_api_change_count", "PUBLIC_API"),
+                ("patch_size_bytes", "maximum_patch_size_bytes", "PATCH_SIZE"),
+                ("repair_loop_count", "maximum_repair_loops", "REPAIR_LOOPS"),
+            ):
+                if candidate[field] > limit[maximum]:
+                    reasons.append(reason(
+                        task["task_id"], sample, code, "NONE", str(candidate[field]), str(limit[maximum]),
+                    ))
+            benchmark_limit = limit["maximum_benchmark_regression_ppm"]
+            benchmark = candidate["benchmark_regression_ppm"]
+            if candidate["status"] == "PASS" and benchmark_limit is not None and benchmark > benchmark_limit:
+                reasons.append(reason(
+                    task["task_id"], sample, "BENCHMARK", "NONE", str(benchmark), str(benchmark_limit),
+                ))
+    if reasons:
+        status = "SERIOUS_REGRESSION"
+    else:
+        completion = corpus["completion_gain_count"] >= policy["minimum_completion_gain_count"]
+        timing = (
+            candidate_passes == parent_passes
+            and all(item["candidate_pass_count"] >= item["parent_pass_count"] for item in aggregates)
+            and corpus_candidate_repairs <= corpus_parent_repairs
+            and improvement is not None and improvement >= policy["minimum_time_improvement_ppm"]
+        )
+        status = "IMPROVED" if completion or timing else "NO_IMPROVEMENT"
+    gate = (
+        status == "IMPROVED" and not reasons and provider_control["provider_kind"] != "FIXTURE"
+        and trust["align_llm_reachability"] == "VERIFIED"
+        and trust["align_reachability"] == "VERIFIED" and trust["corpus_reachability"] == "VERIFIED"
+        and environment["core"]["logical_cpu_count"] is not None
+        and len(tasks) >= policy["minimum_task_count"] and sample_count >= policy["minimum_samples_per_variant"]
+        and all(row["measurement"]["seed_attestation"]["result"] == "APPLIED" for row in rows)
+    )
+    return status, gate, aggregates, corpus, reasons
 
 
 def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> dict[str, Any]:
@@ -1730,6 +2156,7 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
     if control["provider_kind"] != "FIXTURE" or control["api_key_env"] is not None:
         raise EvaluationError("fixed evaluator requires a credential-free fixture provider")
     task_inputs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    task_snapshot_files: list[list[str]] = []
     task_ids: set[str] = set()
     for task in tasks:
         if (
@@ -1776,6 +2203,9 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         if context["task_id"] != task["task_id"]:
             raise EvaluationError("task context identity disagrees")
         task_inputs.append((task_prompt, context))
+        task_snapshot_files.append(automatic_snapshot_files(
+            request, task_files[len(task_snapshot_files)], task, project,
+        ))
     scope = experiment["scope"]
     candidate = experiment["candidate_variant"]
     parent_variant = parent["activation"]["effective_variant"]
@@ -1800,8 +2230,9 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         "acceptance": acceptance, "preflight_request": preflight_request, "source_policy": source_policy,
         "tasks": tasks, "first_task": first_task, "generation": generation, "control": control,
         "environment_policy": environment_policy, "environment_values": environment_values,
-        "task_inputs": task_inputs, "scope": scope, "candidate": candidate,
-        "parent_variant": parent_variant,
+        "task_inputs": task_inputs, "task_snapshot_files": task_snapshot_files,
+        "scope": scope, "candidate": candidate,
+        "parent_variant": parent_variant, "task_files": task_files,
     }
 
 
@@ -1902,7 +2333,9 @@ def evaluate(
 
     try:
         trust = source_trust(request, source_policy, project, environment_values)
-        verify_task_source_membership(request, tasks, project)
+        verify_task_source_membership(
+            request, tasks, project, inputs["task_files"], source_policy, trust, environment_values,
+        )
     except AdapterFailure as failure:
         preflight = failed_preflight("CLEANUP", failure.detail)
         result = evaluation_result_record(
@@ -1920,7 +2353,7 @@ def evaluate(
         return prepare_pair(result, trust, [])
 
     preflight_path = relative_path(project, request["workspace_preflight_path"])
-    snapshot_command = command(first_task, "snapshot_argv", project)
+    snapshot_command, preflight_helper = command(first_task, "snapshot_argv", project)
     try:
         completed = run_child(
             snapshot_command + ["--workspace-preflight-request", str(preflight_path)],
@@ -1928,7 +2361,9 @@ def evaluate(
             environment_values,
             max(nested_owner_timeout(first_task["timeout_ns"]), SNAPSHOT_HELPER_OUTER_TIMEOUT_NS),
             65_536,
+            (preflight_helper.descriptor,),
         )
+        preflight_helper.verify_unchanged(first_task["snapshot_helper_runtime"][7:])
         if completed.returncode != 0 or completed.stderr:
             raise EvaluationError("workspace preflight process failed")
         preflight = json.loads(completed.stdout.decode("utf-8", "strict"))
@@ -1967,6 +2402,8 @@ def evaluate(
             "environment_probe": None,
             "content_sha256": "",
         })
+    finally:
+        preflight_helper.close()
     if preflight.get("status") != "SAFE":
         result_code = (
             "WORKSPACE_UNSAFE" if preflight.get("status") == "UNSAFE"
@@ -2039,6 +2476,7 @@ def evaluate(
 
     for task_ordinal, task in enumerate(tasks):
         task_prompt, context = task_inputs[task_ordinal]
+        automatic_files = inputs["task_snapshot_files"][task_ordinal]
         baseline_artifact_digests: list[dict[str, Any]] | None = None
         baseline_environment_probe: dict[str, Any] | None = None
         with tempfile.TemporaryDirectory(prefix="prompt-snapshot-request-") as request_directory:
@@ -2090,7 +2528,7 @@ def evaluate(
                         "repo_revision": task["repo_revision"],
                         "require_clean_repo": task["require_clean_repo"],
                         "static_expectations": task["artifacts"],
-                        "additional_files": [
+                        "additional_files": automatic_files + [
                             str(variant_path.relative_to(project)),
                             str(rendered_path.relative_to(project)),
                             str(adapter_request_path.relative_to(project)),
@@ -2393,33 +2831,14 @@ def evaluate(
                     if not any(item["content_sha256"] == input_snapshot["content_sha256"] for item in input_snapshots):
                         input_snapshots.append(input_snapshot)
 
-    task_aggregates = []
-    for task in tasks:
-        selected = [row for row in rows if row["task_id"] == task["task_id"]]
-        parent_rows = [row for row in selected if row["variant"] == "PARENT"]
-        candidate_rows = [row for row in selected if row["variant"] == "CANDIDATE"]
-        if any(row["measurement"]["status"] != "FAIL" for row in parent_rows) or any(row["measurement"]["status"] != "PASS" for row in candidate_rows):
-            raise EvaluationError("fixed adapter produced an unexpected outcome")
-        task_aggregates.append({
-            "task_id": task["task_id"], "parent_pass_count": 0,
-            "candidate_pass_count": len(candidate_rows),
-            "parent_repair_loop_count": sum(row["measurement"]["repair_loop_count"] for row in parent_rows),
-            "candidate_repair_loop_count": 0, "paired_pass_count": 0,
-            "parent_paired_median_time_ns": None, "candidate_paired_median_time_ns": None,
-            "time_improvement_ppm": None, "time_regression_ppm": None,
-        })
-    total_samples = len(tasks) * request["sample_count"]
-    corpus_aggregate = {
-        "task_count": len(tasks), "sample_count": request["sample_count"], "parent_pass_count": 0,
-        "candidate_pass_count": total_samples, "parent_repair_loop_count": total_samples,
-        "candidate_repair_loop_count": 0, "paired_pass_count": 0,
-        "parent_paired_median_time_ns": None, "candidate_paired_median_time_ns": None,
-        "completion_gain_count": total_samples, "time_improvement_ppm": None,
-        "time_regression_ppm": None, "repair_loop_regression_count": 0,
-    }
-    result = evaluation_result("IMPROVED", "NONE", "")
+    status, gate, task_aggregates, corpus_aggregate, reasons = complete_score(
+        tasks, rows, request["sample_count"], acceptance, trust, environment, control,
+    )
+    result = evaluation_result(status, "NONE", "")
+    result["gate_eligible"] = gate
     result["task_aggregates"] = task_aggregates
     result["corpus_aggregate"] = corpus_aggregate
+    result["serious_regression_reasons"] = reasons
     return finish(result)
 
 

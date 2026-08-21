@@ -74,6 +74,16 @@ pub fn verify_bounded_source_digest(root: str, relative: str, expected_sha256: s
   return digest_text(source) == expected_sha256
 }
 
+pub fn load_verified_bounded_source(
+  root: str,
+  relative: str,
+  expected_sha256: str,
+) -> Result<string, Error> {
+  source := read_bounded_beneath(root, relative, ARTIFACT_MAX_BYTES)?
+  if digest_text(source) != expected_sha256 { return Err(Error.Invalid) }
+  return Ok(source)
+}
+
 fn failed_source(status: InputSourceStatus) -> InputSource {
   return InputSource { status: status, source: "".clone() }
 }

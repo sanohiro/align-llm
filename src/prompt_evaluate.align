@@ -2,11 +2,12 @@ module prompt_evaluate
 
 import prompt_artifact_io
 import prompt_score
-import std.path
 import std.process
 
 EVALUATOR_SOURCE_RELATIVE := "scripts/prompt-evaluate.py"
-EVALUATOR_SOURCE_SHA256 := "c4a9561f8de3027abc0ab408d7f9067cb463b17e987c9b3085e0b907542f5d92"
+EVALUATOR_SOURCE_SHA256 := "977d6a4fa7eb52d21d50ba1e0a4ccd50d09eed2c080960f21182d84f994da668"
+EVALUATOR_BOOTSTRAP := "import sys;exec(compile(sys.argv.pop(1)+sys.argv.pop(1)+sys.argv.pop(1),'<reviewed-prompt-evaluate>','exec'))"
+EVALUATOR_ARG_CHUNK_BYTES := 65536
 
 pub PromptEvaluateStatus { Published, InvalidInput, EvaluationFailed, OutputWrite, CleanupFailed }
 
@@ -151,22 +152,29 @@ pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateS
     return PromptEvaluateStatus.InvalidInput
   }
 
-  if !prompt_artifact_io.verify_bounded_source_digest(
+  evaluator_source := prompt_artifact_io.load_verified_bounded_source(
     request.project_root,
     EVALUATOR_SOURCE_RELATIVE,
     EVALUATOR_SOURCE_SHA256,
-  ) {
+  ) else {
     return PromptEvaluateStatus.InvalidInput
   }
-  evaluator := path.join(request.project_root, EVALUATOR_SOURCE_RELATIVE)
-  evaluator_view: str := evaluator
+  evaluator_view: str := evaluator_source
   evidence_relative_view: str := request.evaluation_evidence_path
 
+  if evaluator_view.len() <= EVALUATOR_ARG_CHUNK_BYTES * 2 ||
+  evaluator_view.len() > EVALUATOR_ARG_CHUNK_BYTES * 3 {
+    return PromptEvaluateStatus.InvalidInput
+  }
   command := process.command(
     "/usr/bin/python3",
     [
       "/usr/bin/python3",
-      evaluator_view,
+      "-c",
+      EVALUATOR_BOOTSTRAP,
+      evaluator_view[0..EVALUATOR_ARG_CHUNK_BYTES],
+      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES..EVALUATOR_ARG_CHUNK_BYTES * 2],
+      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES * 2..evaluator_view.len()],
       "--request",
       request_path,
       "--final-result-relative",

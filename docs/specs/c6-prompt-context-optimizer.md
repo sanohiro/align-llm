@@ -3363,6 +3363,32 @@ unproven bytes or cannot produce the required terminal artifact after rejecting 
 | Result-only publication ownership | `prompt_artifact_io`, Align wrapper | result-only output uses an exclusively created sibling temporary, bounded write/flush, no-replace finalization, exact owner retirement, and competitor-preserving cleanup; a partial write never leaves the final path | result-only result-write failure, final collision, cleanup failure, and late-competitor fixtures exercise runtime transitions |
 | Durable continuation state | `HANDOFF.md` | record the §10.1g chain and its finding review as history, and name this reopened redesign, replacement baseline, required redesigned exact-head review, preflight, and capable CI as the remaining sequence | author-side matrix-to-diff and HANDOFF consistency pass |
 
+### 10.1i Retained-source and complete-score redesign
+
+The redesigned exact-head review of §10.1h found that byte equality was still separated from the
+actual launch and source identity: the outer wrapper closed the evaluator source before reopening
+its path, task helpers were compared with a mutable source tree without proving commit or FILE_SET
+membership, and a non-root task `cwd` changed which helper argument Python opened. It also found
+that the evaluator persisted the one fixture's expected aggregates instead of producing every valid
+outcome under the shared scorer, while its snapshots neither covered every identity-bearing input
+nor proved that a helper returned the exact requested observation. This reopens
+`evaluator-runtime-containment` as `retained-source-complete-score`. Source admission, launch,
+snapshot completeness, and scoring remain one capability because any intermediate split can either
+execute bytes outside the admitted source identity or publish a comparison the verifier cannot
+derive from the trace.
+
+| Reopened invariant | Contract owner | Required design decision | Exact regression |
+| --- | --- | --- | --- |
+| Retained outer evaluator | Align wrapper and artifact I/O | read and hash one no-follow bounded evaluator owner, then execute those exact retained bytes without reopening the caller-writable pathname | replace the evaluator after admission and prove neither replacement marker nor replacement result executes; exact admitted bytes still run |
+| Corpus membership, including task manifests | evaluator and source identity | for `GIT_COMMIT`, require every executed/static task file and task manifest to be an exact tracked blob at the verified commit; for `FILE_SET`, require its raw path, mode, and digest entry; compare the project bytes with that admitted identity, not merely a second mutable path | ignored/untracked Git helper, unlisted FILE_SET helper, unlisted task manifest, mode mismatch, and valid split-source fixtures |
+| Effective helper path | evaluator command owner | interpreter commands contain exactly interpreter plus one project-relative helper; resolve that helper from the validated project root and pass its absolute retained-source path, independent of task `cwd` | non-root `cwd` with a conflicting relative helper proves only the admitted root helper runs |
+| Complete shared scoring | Python trace producer and `prompt_score` verifier | derive task/corpus aggregates, ordered reasons, status, and gate eligibility for every valid row outcome and policy; the Align wrapper applies the shared scorer verifier before publication, so no fixture-only shortcut or unverified aggregate can persist | parent/candidate pass/fail, serious regression, no-improvement, completion improvement, time improvement, task limit, corpus limit, and tampered aggregate/reason cases |
+| Complete static snapshot set | evaluator snapshot producer | automatically add every identity-bearing decoded input named in §4.7, including task manifest and `.align-revision`, to each pre/post snapshot in deterministic order without duplicate or overlapping paths | mutation of each automatic input between observations yields drift before scoring; exact ordered fixture remains accepted |
+| Snapshot request/result binding | evaluator snapshot consumer | validate a `MATCH` or `MISMATCH` digest array against the exact ordered expanded static expectations plus additional files requested for that invocation; an empty, reordered, missing, extra, or unrelated array is malformed | digest-valid empty/reordered/missing/extra/unrelated child results produce the paired terminal error |
+| Canonical FILE expectation | snapshot helper | compare a FILE expectation with the SHA-256 of its canonical mode/path/type/content record while retaining the raw file digest in `ArtifactDigest` | same bytes with changed mode/path identity mismatch; exact canonical FILE digest matches |
+| Declared mismatch family | snapshot helper | classify repository, path, type, mode, content, tree, and workspace mismatches at the first failed check as `MISMATCH` with its exact code and observed prefix; reserve `ERROR` for environment, internal, and cleanup failure | every mismatch code and prefix is covered separately; internal and cleanup remain `ERROR` |
+| Durable continuation state | `HANDOFF.md` | record the §10.1h reviewed chain as superseded evidence and name this reopened matrix, its replacement baseline, final preflight, capable gate, and publication sequence | author-side matrix-to-diff and HANDOFF consistency pass |
+
 Applicability decisions:
 
 | Dimension | Decision |

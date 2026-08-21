@@ -71,6 +71,15 @@ class SnapshotCleanupError(SnapshotError):
     """A snapshot child could not be fully removed."""
 
 
+class SnapshotMismatch(SnapshotError):
+    """A declared snapshot identity did not match the observed project."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
 def process_group_exists(group: int) -> bool:
     try:
         os.killpg(group, 0)
@@ -280,7 +289,7 @@ def open_relative(root: Path, raw: bytes) -> tuple[int, os.stat_result]:
         descriptor = os.open(parts[-1], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=current)
         return descriptor, os.fstat(descriptor)
     except OSError as error:
-        raise SnapshotError("snapshot artifact is unavailable or unsafe") from None
+        raise SnapshotMismatch("PATH", "snapshot artifact is unavailable or unsafe") from None
     finally:
         os.close(current)
 
@@ -289,7 +298,7 @@ def digest_file(root: Path, raw: bytes, maximum_bytes: int = MAX_ARTIFACT_BYTES)
     descriptor, metadata = open_relative(root, raw)
     try:
         if not stat.S_ISREG(metadata.st_mode):
-            raise SnapshotError("snapshot artifact is not a regular file")
+            raise SnapshotMismatch("TYPE", "snapshot artifact is not a regular file")
         digest = hashlib.sha256()
         size = 0
         while True:
@@ -310,11 +319,35 @@ def digest_file(root: Path, raw: bytes, maximum_bytes: int = MAX_ARTIFACT_BYTES)
         os.close(descriptor)
 
 
+def file_expectation_sha256(value: Mapping[str, Any]) -> str:
+    raw = (
+        value["mode"].encode("ascii") + b" " + os.fsencode(value["path"])
+        + b"\0F " + value["sha256"].encode("ascii") + b"\n"
+    )
+    return hashlib.sha256(raw).hexdigest()
+
+
+def file_mismatch_code(value: Mapping[str, Any], expected_sha256: str) -> str:
+    observed_mode = value["mode"]
+    for permissions in range(0o10000):
+        mode = f"{stat.S_IFREG | permissions:06o}"
+        if mode == observed_mode:
+            continue
+        candidate = dict(value)
+        candidate["mode"] = mode
+        if file_expectation_sha256(candidate) == expected_sha256:
+            return "MODE"
+    return "CONTENT"
+
+
 def walk_tree(
     root: Path, raw_root: bytes, maximum_entries: int, maximum_bytes: int,
 ) -> tuple[list[dict[str, Any]], str, int, int]:
     base = root / os.fsdecode(raw_root)
-    physical_directory(base)
+    try:
+        physical_directory(base)
+    except SnapshotError:
+        raise SnapshotMismatch("PATH", "snapshot tree is unavailable or unsafe") from None
     directories: list[bytes] = [raw_root]
     files_found: list[bytes] = []
     if maximum_entries < 1:
@@ -325,23 +358,23 @@ def walk_tree(
         try:
             entries = os.scandir(directory)
         except OSError:
-            raise SnapshotError("snapshot tree is unavailable") from None
+            raise SnapshotMismatch("PATH", "snapshot tree is unavailable") from None
         with entries:
             for entry in entries:
                 raw_entry = relative_directory + b"/" + os.fsencode(entry.name)
                 try:
                     metadata = entry.stat(follow_symlinks=False)
                 except OSError:
-                    raise SnapshotError("snapshot tree entry is unavailable") from None
+                    raise SnapshotMismatch("PATH", "snapshot tree entry is unavailable") from None
                 if stat.S_ISLNK(metadata.st_mode):
-                    raise SnapshotError("snapshot tree contains a symlink")
+                    raise SnapshotMismatch("TYPE", "snapshot tree contains a symlink")
                 if stat.S_ISDIR(metadata.st_mode):
                     directories.append(raw_entry)
                     pending.append((Path(entry.path), raw_entry))
                 elif stat.S_ISREG(metadata.st_mode):
                     files_found.append(raw_entry)
                 else:
-                    raise SnapshotError("snapshot tree contains a non-regular entry")
+                    raise SnapshotMismatch("TYPE", "snapshot tree contains a non-regular entry")
                 if len(directories) + len(files_found) > maximum_entries:
                     raise SnapshotError("snapshot tree has too many entries")
     directories.sort()
@@ -615,8 +648,10 @@ def git_identity(
         raise SnapshotError("task repository Git replacement namespace is non-empty")
     head = fixed_git("rev-parse", "--verify", "HEAD")
     status = fixed_git("status", "--porcelain=v1", "-z", "--untracked-files=all")
-    if head.decode("ascii", "strict").strip() != expected or status:
-        raise SnapshotError("task repository identity does not match")
+    if head.decode("ascii", "strict").strip() != expected:
+        raise SnapshotMismatch("REPO_REVISION", "task repository revision does not match")
+    if status:
+        raise SnapshotMismatch("DIRTY_REPO", "task repository is dirty")
 
 
 def snapshot(value: dict[str, Any]) -> dict[str, Any]:
@@ -648,7 +683,7 @@ def snapshot(value: dict[str, Any]) -> dict[str, Any]:
         allowed = {os.fsdecode(relative_path(item)) for item in value["allowed_workspace_entries"]}
         actual = {entry.name for entry in os.scandir(workspace)}
         if not actual.issubset(allowed):
-            raise SnapshotError("workspace contains an undeclared entry")
+            raise SnapshotMismatch("PATH", "workspace contains an undeclared entry")
         static_expectations = value["static_expectations"]
         additional_files = value["additional_files"]
         if (
@@ -668,7 +703,7 @@ def snapshot(value: dict[str, Any]) -> dict[str, Any]:
                     raise SnapshotError("snapshot has too many expanded entries")
                 value_digest = digest_file(project, raw, MAX_ARTIFACT_BYTES - expanded_bytes)
                 values = [value_digest]
-                observed_sha256 = values[0]["sha256"]
+                observed_sha256 = file_expectation_sha256(values[0])
                 entry_count = 1
                 byte_count = value_digest["byte_count"]
             elif expectation["kind"] == "TREE":
@@ -681,7 +716,11 @@ def snapshot(value: dict[str, Any]) -> dict[str, Any]:
             else:
                 raise SnapshotError("snapshot expectation kind is invalid")
             if not values or observed_sha256 != expectation["expected_sha256"]:
-                raise SnapshotError("snapshot expectation digest does not match")
+                code = (
+                    "TREE" if expectation["kind"] == "TREE"
+                    else file_mismatch_code(values[0], expectation["expected_sha256"])
+                )
+                raise SnapshotMismatch(code, "snapshot expectation digest does not match")
             expanded_entries += entry_count
             expanded_bytes += byte_count
             digests.extend(values)
@@ -698,6 +737,8 @@ def snapshot(value: dict[str, Any]) -> dict[str, Any]:
             environment_probe=environment_probe(),
             artifact_digests=digests,
         )
+    except SnapshotMismatch as mismatch:
+        result.update(status="MISMATCH", error_code=mismatch.code, error=mismatch.detail)
     except SnapshotCleanupError:
         result["error_code"] = "CLEANUP"
     except (OSError, SnapshotError, subprocess.SubprocessError, UnicodeError):

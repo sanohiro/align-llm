@@ -1,6 +1,8 @@
 module prompt_score
 
 import prompt_artifacts
+import std.crypto
+import std.encoding
 
 // C6c1 is a provider-independent, allocation-free scoring kernel. The public input rows are
 // borrowed Copy records. Output records are exposed as caller-owned scalar columns because the
@@ -3040,6 +3042,23 @@ fn verifier_artifact_digest_equal(
   left.sha256 == right.sha256
 }
 
+fn verifier_file_expectation_matches(
+  borrow expectation: prompt_artifacts.ArtifactExpectation,
+  borrow digest: prompt_artifacts.ArtifactDigest,
+) -> bool {
+  mut canonical := buffer(0)
+  canonical.append(digest.mode.bytes())
+  canonical.append(" ".bytes())
+  canonical.append(digest.path.bytes())
+  canonical.append("\0F ".bytes())
+  canonical.append(digest.sha256.bytes())
+  canonical.append("\n".bytes())
+  text := canonical.bytes().as_str() else { return false }
+  hashed := crypto.sha256(text)
+  observed := encoding.hex_encode(hashed[0..hashed.len()])
+  return observed == expectation.expected_sha256
+}
+
 fn verifier_path_is_tree_descendant(path: str, root: str) -> bool {
   path_bytes := path.bytes()
   root_bytes := root.bytes()
@@ -3065,8 +3084,16 @@ fn verifier_snapshot_artifact_closure(
     snapshot.artifact_digests[digest_index].path != request.static_expectations[expectation_index].path {
       return false
     }
-    if snapshot.artifact_digests[digest_index].sha256 !=
-    request.static_expectations[expectation_index].expected_sha256 {
+    digest_matches := if request.static_expectations[expectation_index].kind == "FILE" {
+      verifier_file_expectation_matches(
+        request.static_expectations[expectation_index],
+        snapshot.artifact_digests[digest_index],
+      )
+    } else {
+      snapshot.artifact_digests[digest_index].sha256 ==
+      request.static_expectations[expectation_index].expected_sha256
+    }
+    if !digest_matches {
       return false
     }
     if request.static_expectations[expectation_index].kind == "FILE" {
