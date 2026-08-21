@@ -70,9 +70,21 @@ def main() -> int:
         require(stdout_over.returncode != 0, "stdout cap-plus-one unexpectedly succeeded")
         stderr_over = run(binary, 4, 5_000_000_000, "printf 12345 >&2")
         require(stderr_over.returncode != 0, "stderr cap-plus-one unexpectedly succeeded")
-        simultaneous = run(binary, 65_536, 5_000_000_000, "head -c 65537 /dev/zero; head -c 65537 /dev/zero >&2")
-        require(simultaneous.returncode != 0, "simultaneous overflow unexpectedly succeeded")
-        timed = run(binary, 64, 20_000_000, "exec 1>&- 2>&-; sleep 5")
+        simultaneous_script = (
+            "i=0; (while [ \"$i\" -lt 1025 ]; do "
+            "printf 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef; "
+            "i=$((i + 1)); done) & "
+            "i=0; (while [ \"$i\" -lt 1025 ]; do "
+            "printf fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 >&2; "
+            "i=$((i + 1)); done) & wait"
+        )
+        simultaneous = run(binary, 65_536, 5_000_000_000, simultaneous_script)
+        require(
+            simultaneous.returncode != 0,
+            "simultaneous overflow unexpectedly succeeded: "
+            f"stdout={simultaneous.stdout[:256]!r} stderr={simultaneous.stderr[:256]!r}",
+        )
+        timed = run(binary, 64, 20_000_000, "exec 1>&- 2>&-; while :; do :; done")
         require(timed.returncode != 0, "post-EOF timeout unexpectedly succeeded")
 
         invalid_utf8 = run(binary, 64, 5_000_000_000, "printf '\\377'")
@@ -86,8 +98,9 @@ def main() -> int:
 
         marker = Path(directory) / "grandchild.pid"
         cleanup_script = (
-            f"sleep 30 & child=$!; printf '%s' \"$child\" > {shlex.quote(str(marker))}; "
-            "head -c 65 /dev/zero; wait"
+            "/bin/sh -c 'while :; do :; done' & child=$!; "
+            f"printf '%s' \"$child\" > {shlex.quote(str(marker))}; "
+            "i=0; while [ \"$i\" -lt 65 ]; do printf x; i=$((i + 1)); done; wait"
         )
         overflow = run(binary, 64, 5_000_000_000, cleanup_script)
         require(overflow.returncode != 0 and marker.is_file(), "process-group overflow fixture did not run")
