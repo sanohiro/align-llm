@@ -8,11 +8,7 @@
   ],
   "validation_argv": [
     "python3",
-    "-m",
-    "unittest",
-    "discover",
-    "-s",
-    "tests",
+    "tests/test_inclusive_range.py",
     "-v"
   ],
   "validation_timeout_seconds": 10

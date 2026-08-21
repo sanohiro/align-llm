@@ -5001,6 +5001,15 @@ def validate_published_elf(raw: bytes, runtime: Sequence[RuntimeBinding]) -> Non
 def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> None:
     root = admission.root_path
     directories = namespace_directories(runtime)
+    aggregate_fd = os.open(
+        "aggregate-work",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=admission.root_fd,
+    )
+    try:
+        os.mkdir(".git", 0o700, dir_fd=aggregate_fd)
+    finally:
+        os.close(aggregate_fd)
     opened_overlay_descriptors: list[int] = []
     try:
         for source in (
@@ -5020,6 +5029,7 @@ def run_aggregate(admission: Admission, runtime: Sequence[RuntimeBinding]) -> No
         (root / "cargo-home", "/cargo", "dir", False),
         (root / "cargo-target", "/target", "dir", False),
         (root / "baseline-git", "/baseline-git", "dir", False),
+        (root / "baseline-git", "/workspace/.git", "dir", False),
         *(
             (source, target, kind, False)
             for source, target, kind, _ in runtime

@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""Exercise exclusive result/evidence publication and owned cleanup."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import resource
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = ROOT / "src" / "c6f2_request14_adoption.align"
+
+
+def build(directory: Path) -> Path:
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "alignc"), "build", str(SOURCE)],
+        cwd=directory,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"fixture build failed: {completed.stderr}")
+    binary = directory / SOURCE.stem
+    if not binary.is_file():
+        raise RuntimeError("fixture build did not create its executable")
+    return binary
+
+
+def invoke(binary: Path, root: Path, expected: str, result: str = "result", evidence: str = "evidence") -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(binary),
+            str(root),
+            "result.json",
+            "evidence.json",
+            "adoption",
+            result,
+            evidence,
+            expected,
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=os.environ.copy(),
+        timeout=10,
+    )
+
+
+def invoke_with_zero_file_limit(
+    binary: Path, root: Path, expected: str, result: str, evidence: str,
+) -> subprocess.CompletedProcess[str]:
+    def limit_files() -> None:
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+
+    return subprocess.run(
+        [
+            str(binary), str(root), "result.json", "evidence.json", "adoption",
+            result, evidence, expected,
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=os.environ.copy(),
+        timeout=10,
+        preexec_fn=limit_files,
+    )
+
+
+def invoke_result_only(
+    binary: Path, root: Path, expected: str, result: str = "result", *, zero_file_limit: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    def limit_files() -> None:
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+
+    return subprocess.run(
+        [
+            str(binary), str(root), "result.json", "__result_only__", "ignored",
+            result, "ignored", expected,
+        ],
+        cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        env=os.environ.copy(), timeout=10, preexec_fn=limit_files if zero_file_limit else None,
+    )
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def assert_no_temporary(root: Path) -> None:
+    temporaries = list(root.glob(".align-prompt-*"))
+    require(not temporaries, f"temporary paths survived: {temporaries}")
+
+
+def temporary_name(final_path: str, evaluation_id: str, suffix: str) -> str:
+    digest = hashlib.sha256(
+        final_path.encode() + b"\0" + evaluation_id.encode() + b"\0" + suffix.encode()
+    ).hexdigest()
+    return f".align-prompt-{digest}.{suffix}"
+
+
+def build_unlink_replacement_hook(directory: Path) -> Path:
+    source = directory / "replace-after-unlink.c"
+    library = directory / "replace-after-unlink.so"
+    source.write_text(
+        "#define _GNU_SOURCE\n"
+        "#include <dlfcn.h>\n"
+        "#include <fcntl.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "#include <unistd.h>\n"
+        "static int matches(const char *path, const char *target) {\n"
+        "  const char *path_base = strrchr(path, '/');\n"
+        "  const char *target_base = strrchr(target, '/');\n"
+        "  return strcmp(path_base ? path_base + 1 : path, target_base ? target_base + 1 : target) == 0;\n"
+        "}\n"
+        "static void replace_at(int dirfd, const char *path) {\n"
+        "  const char *target = getenv(\"ALIGN_LLM_REPLACE_AFTER_UNLINK\");\n"
+        "  if (!target || !matches(path, target)) return;\n"
+        "  int fd = openat(dirfd, path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);\n"
+        "  if (fd >= 0) { (void)write(fd, \"competitor\", 10); close(fd); }\n"
+        "}\n"
+        "int unlink(const char *path) {\n"
+        "  static int (*real_unlink)(const char *) = 0;\n"
+        "  if (!real_unlink) real_unlink = dlsym(RTLD_NEXT, \"unlink\");\n"
+        "  int result = real_unlink(path); if (result == 0) replace_at(AT_FDCWD, path); return result;\n"
+        "}\n"
+        "int unlinkat(int dirfd, const char *path, int flags) {\n"
+        "  static int (*real_unlinkat)(int, const char *, int) = 0;\n"
+        "  if (!real_unlinkat) real_unlinkat = dlsym(RTLD_NEXT, \"unlinkat\");\n"
+        "  int result = real_unlinkat(dirfd, path, flags); if (result == 0) replace_at(dirfd, path); return result;\n"
+        "}\n"
+        "int renameat2(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, unsigned int flags) {\n"
+        "  static int (*real_renameat2)(int, const char *, int, const char *, unsigned int) = 0;\n"
+        "  if (!real_renameat2) real_renameat2 = dlsym(RTLD_NEXT, \"renameat2\");\n"
+        "  const char *target = getenv(\"ALIGN_LLM_COLLIDE_ON_RENAME\");\n"
+        "  if (target && matches(newpath, target)) {\n"
+        "    int fd = openat(newdirfd, newpath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);\n"
+        "    if (fd >= 0) { (void)write(fd, \"evidence-competitor\", 19); close(fd); }\n"
+        "  }\n"
+        "  return real_renameat2(olddirfd, oldpath, newdirfd, newpath, flags);\n"
+        "}\n"
+    )
+    completed = subprocess.run(
+        ["cc", "-shared", "-fPIC", "-O2", "-o", str(library), str(source), "-ldl"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+    )
+    require(completed.returncode == 0, f"unlink replacement hook build failed: {completed.stderr}")
+    return library
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="c6f2-request14-build-") as build_directory:
+        binary = build(Path(build_directory))
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
+            root = Path(directory)
+            success = invoke(binary, root, "PUBLISHED")
+            require(success.returncode == 0, f"publication failed: {success.stderr}")
+            require((root / "result.json").read_text() == "result", "result bytes changed")
+            require((root / "evidence.json").read_text() == "evidence", "evidence bytes changed")
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-write-failure-") as directory:
+            root = Path(directory)
+            result_failure = invoke_with_zero_file_limit(binary, root, "OUTPUT_WRITE", "result", "evidence")
+            require(
+                result_failure.returncode == 0 and result_failure.stdout.strip() == "OUTPUT_WRITE",
+                f"result partial-write failure changed: {result_failure.stderr}",
+            )
+            require(not (root / "result.json").exists() and not (root / "evidence.json").exists(),
+                    "result partial-write failure left an output")
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-result-only-") as directory:
+            root = Path(directory)
+            result_only = invoke_result_only(binary, root, "PUBLISHED")
+            require(result_only.returncode == 0 and result_only.stdout.strip() == "PUBLISHED",
+                    f"result-only publication failed: {result_only.stderr}")
+            require((root / "result.json").read_text() == "result", "result-only bytes changed")
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-name-max-") as directory:
+            root = Path(directory)
+            maximum_name = "r" * 255
+            name_max = subprocess.run(
+                [
+                    str(binary), str(root), maximum_name, "__result_only__", "ignored",
+                    "result", "ignored", "PUBLISHED",
+                ],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=False, env=os.environ.copy(), timeout=10,
+            )
+            require(
+                name_max.returncode == 0 and name_max.stdout.strip() == "PUBLISHED"
+                and (root / maximum_name).read_text() == "result",
+                f"255-byte result basename did not publish: {name_max.stderr}",
+            )
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-result-only-write-") as directory:
+            root = Path(directory)
+            result_only_failure = invoke_result_only(
+                binary, root, "OUTPUT_WRITE", zero_file_limit=True,
+            )
+            require(
+                result_only_failure.returncode == 0
+                and result_only_failure.stdout.strip() == "OUTPUT_WRITE"
+                and not (root / "result.json").exists(),
+                f"result-only partial write left a final artifact: {result_only_failure.stderr}",
+            )
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-result-only-cleanup-") as directory:
+            root = Path(directory)
+            cleanup_process = subprocess.Popen(
+                [
+                    str(binary), str(root), "result.json", "__result_only__", "ignored",
+                    "__large__", "ignored", "OUTPUT_PAIR_CLEANUP_FAILED",
+                ],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=os.environ.copy(),
+            )
+            staged_name = temporary_name("result.json", "result-only", "result")
+            staged = root / staged_name
+            deadline = time.monotonic() + 5
+            while not staged.exists() and cleanup_process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.001)
+            require(staged.exists(), "result-only cleanup fixture did not reach staging")
+            root.chmod(0o500)
+            try:
+                stdout, stderr = cleanup_process.communicate(timeout=10)
+            finally:
+                root.chmod(0o700)
+            require(
+                cleanup_process.returncode == 0
+                and stdout.splitlines() == [
+                    "OUTPUT_PAIR_CLEANUP_FAILED", staged_name,
+                ]
+                and not (root / "result.json").exists()
+                and staged.exists(),
+                f"result-only cleanup survivor reporting changed: stdout={stdout!r} stderr={stderr!r}",
+            )
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-write-failure-") as directory:
+            root = Path(directory)
+            evidence_failure = invoke_with_zero_file_limit(binary, root, "OUTPUT_WRITE", "", "evidence")
+            require(
+                evidence_failure.returncode == 0 and evidence_failure.stdout.strip() == "OUTPUT_WRITE",
+                f"evidence partial-write failure changed: {evidence_failure.stderr}",
+            )
+            require(not (root / "result.json").exists() and not (root / "evidence.json").exists(),
+                    "evidence partial-write failure left an output")
+            assert_no_temporary(root)
+
+        if sys.platform.startswith("linux"):
+            with tempfile.TemporaryDirectory(prefix="c6f2-request14-result-only-race-") as directory:
+                root = Path(directory)
+                hook = build_unlink_replacement_hook(root)
+                environment = os.environ.copy()
+                environment["LD_PRELOAD"] = str(hook)
+                environment["ALIGN_LLM_COLLIDE_ON_RENAME"] = str(root / "result.json")
+                late_result_only = subprocess.run(
+                    [
+                        str(binary), str(root), "result.json", "__result_only__", "ignored",
+                        "result", "ignored", "OUTPUT_WRITE",
+                    ],
+                    cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=False, env=environment, timeout=10,
+                )
+                require(
+                    late_result_only.returncode == 0
+                    and late_result_only.stdout.strip() == "OUTPUT_WRITE"
+                    and (root / "result.json").read_text() == "evidence-competitor",
+                    f"result-only rename competitor was replaced: {late_result_only.stderr}",
+                )
+                assert_no_temporary(root)
+
+            with tempfile.TemporaryDirectory(prefix="c6f2-request14-late-competitor-") as directory:
+                root = Path(directory)
+                hook = build_unlink_replacement_hook(root)
+                environment = os.environ.copy()
+                environment["LD_PRELOAD"] = str(hook)
+                environment["ALIGN_LLM_REPLACE_AFTER_UNLINK"] = str(root / "result.json")
+                environment["ALIGN_LLM_COLLIDE_ON_RENAME"] = str(root / "evidence.json")
+                late = subprocess.run(
+                    [
+                        str(binary), str(root), "result.json", "evidence.json", "adoption",
+                        "result", "evidence", "OUTPUT_WRITE",
+                    ],
+                    cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=False, env=environment, timeout=10,
+                )
+                require(late.returncode == 0 and late.stdout.strip() == "OUTPUT_WRITE",
+                        f"late competitor changed publication status: {late.stderr}")
+                require((root / "result.json").read_text() == "competitor",
+                        "late competitor replacing a retired result was removed")
+                require((root / "evidence.json").read_text() == "evidence-competitor",
+                        "evidence collision was replaced during late-competitor cleanup")
+                assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
+            root = Path(directory)
+            command = [
+                str(binary), str(root), "result.json", "evidence.json", "adoption",
+                "result", "__large__", "OUTPUT_WRITE",
+            ]
+            racing = subprocess.Popen(
+                command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=os.environ.copy(),
+            )
+            staged = root / temporary_name("evidence.json", "adoption", "evidence")
+            deadline = time.monotonic() + 5
+            while not staged.exists() and racing.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.001)
+            require(staged.exists(), "publication race did not reach evidence staging")
+            with (root / "evidence.json").open("x") as competitor:
+                competitor.write("competitor")
+            stdout, stderr = racing.communicate(timeout=10)
+            require(racing.returncode == 0 and stdout.strip() == "OUTPUT_WRITE", f"publication race failed: {stderr}")
+            require((root / "evidence.json").read_text() == "competitor", "racing evidence was replaced")
+            require(not (root / "result.json").exists(), "result survived racing evidence collision")
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
+            root = Path(directory)
+            command = [
+                str(binary), str(root), "result.json", "evidence.json", "adoption",
+                "result", "__large__", "OUTPUT_PAIR_CLEANUP_FAILED",
+            ]
+            failing_cleanup = subprocess.Popen(
+                command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=os.environ.copy(),
+            )
+            result_staged_name = temporary_name("result.json", "adoption", "result")
+            evidence_staged_name = temporary_name("evidence.json", "adoption", "evidence")
+            staged = root / evidence_staged_name
+            deadline = time.monotonic() + 5
+            while not staged.exists() and failing_cleanup.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.001)
+            require(staged.exists(), "cleanup failure fixture did not reach evidence staging")
+            (root / "evidence.json").write_text("competitor")
+            root.chmod(0o500)
+            try:
+                stdout, stderr = failing_cleanup.communicate(timeout=10)
+            finally:
+                root.chmod(0o700)
+            lines = stdout.splitlines()
+            require(
+                failing_cleanup.returncode == 0 and lines == [
+                    "OUTPUT_PAIR_CLEANUP_FAILED",
+                    result_staged_name,
+                    evidence_staged_name,
+                ],
+                f"cleanup recovery paths changed: stdout={stdout!r} stderr={stderr!r}",
+            )
+            require((root / "evidence.json").read_text() == "competitor", "cleanup removed a competing destination")
+            require(not (root / "result.json").exists(), "cleanup reported a non-owned result destination")
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
+            root = Path(directory)
+            first = subprocess.Popen(
+                [str(binary), str(root), "result.json", "evidence.json", "adoption-a", "result", "evidence", "PUBLISHED"],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ.copy(),
+            )
+            second = subprocess.Popen(
+                [str(binary), str(root), "result.json", "evidence.json", "adoption-b", "result", "evidence", "PUBLISHED"],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ.copy(),
+            )
+            outcomes = [first.communicate(timeout=10), second.communicate(timeout=10)]
+            labels = [stdout.strip() for stdout, _ in outcomes]
+            require(labels.count("PUBLISHED") == 1 and labels.count("OUTPUT_WRITE") == 1, f"concurrent outcomes changed: {labels}")
+            require((root / "result.json").read_text() == "result", "concurrent result bytes changed")
+            require((root / "evidence.json").read_text() == "evidence", "concurrent evidence bytes changed")
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
+            root = Path(directory)
+            (root / "result.json").write_text("competitor")
+            collision = invoke(binary, root, "OUTPUT_WRITE")
+            require(collision.returncode == 0, f"result collision failed: {collision.stderr}")
+            require((root / "result.json").read_text() == "competitor", "result collision was replaced")
+            require(not (root / "evidence.json").exists(), "evidence survived result collision")
+            assert_no_temporary(root)
+
+        with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
+            root = Path(directory)
+            (root / "evidence.json").write_text("competitor")
+            collision = invoke(binary, root, "OUTPUT_WRITE")
+            require(collision.returncode == 0, f"evidence collision failed: {collision.stderr}")
+            require((root / "evidence.json").read_text() == "competitor", "evidence collision was replaced")
+            require(not (root / "result.json").exists(), "result survived evidence collision")
+            assert_no_temporary(root)
+
+        for kind in ("directory", "symlink", "fifo"):
+            with tempfile.TemporaryDirectory(prefix="c6f2-request14-") as directory:
+                root = Path(directory)
+                occupied = root / "result.json"
+                if kind == "directory":
+                    occupied.mkdir()
+                elif kind == "symlink":
+                    occupied.symlink_to("missing-target")
+                else:
+                    os.mkfifo(occupied)
+                collision = invoke(binary, root, "OUTPUT_WRITE")
+                require(collision.returncode == 0, f"{kind} collision failed: {collision.stderr}")
+                require(occupied.is_symlink() if kind == "symlink" else occupied.exists(), f"{kind} collision was removed")
+                require(not (root / "evidence.json").exists(), f"evidence survived {kind} collision")
+                assert_no_temporary(root)
+
+    print("c6f2 request14 adoption: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError) as error:
+        print(f"c6f2 request14 adoption: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)

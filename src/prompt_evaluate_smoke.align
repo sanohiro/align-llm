@@ -1,0 +1,22 @@
+module prompt_evaluate_smoke
+
+import prompt_artifact_io
+import prompt_score
+import std.fs
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 3 {
+    return Err(Error.Invalid)
+  }
+  result_source := fs.read_file(args[1])?
+  evidence_source := fs.read_file(args[2])?
+  result := prompt_artifact_io.decode_prompt_evaluation_result_source(result_source)?
+  evidence := prompt_artifact_io.decode_prompt_evaluation_evidence_source(evidence_source)?
+  status := prompt_score.verify_result(result, evidence)?
+  match status {
+    CompleteIneligible => print("COMPLETE_INELIGIBLE"),
+    ImprovedEligible => print("IMPROVED_ELIGIBLE"),
+    NoncompleteError => print("NONCOMPLETE_ERROR"),
+  }
+  return Ok(())
+}

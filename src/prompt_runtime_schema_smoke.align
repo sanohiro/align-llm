@@ -1,0 +1,246 @@
+module prompt_runtime_schema_smoke
+
+import prompt_artifacts
+
+fn duplicate_first_field(expected: str) -> string {
+  output := builder()
+  output.write("{\"schema_version\":1,")
+  output.write(expected[1..expected.len()])
+  return output.to_string()
+}
+
+fn reorder_first_fields(expected: str, normal_prefix: str, artifact_kind: str) -> string {
+  output := builder()
+  output.write("{\"artifact_kind\":\"")
+  output.write(artifact_kind)
+  output.write("\",\"schema_version\":1,")
+  output.write(expected[normal_prefix.len()..expected.len()])
+  return output.to_string()
+}
+
+fn insert_null_field(expected: str, anchor: str, field: str) -> Result<string, Error> {
+  offset := expected.find(anchor) else { return Err(Error.Invalid) }
+  output := builder()
+  output.write(expected[0..offset])
+  output.write("\"")
+  output.write(field)
+  output.write("\":null,")
+  output.write(expected[offset..expected.len()])
+  return Ok(output.to_string())
+}
+
+fn expect_policy_invalid(value: str) -> Result<(), Error> {
+  return match prompt_artifacts.decode_prompt_source_verifier_policy(value) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn expect_request_invalid(value: str) -> Result<(), Error> {
+  return match prompt_artifacts.decode_prompt_evaluate_request(value) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn expect_locator_invalid(value: str) -> Result<(), Error> {
+  return match prompt_artifacts.decode_prompt_gate_source_locator(value) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn policy_value(helper: str, runtime: str, interpreter: str, git: str) -> prompt_artifacts.PromptSourceVerifierPolicy {
+  return prompt_artifacts.PromptSourceVerifierPolicy {
+    schema_version: 1,
+    artifact_kind: "PROMPT_SOURCE_VERIFIER_POLICY".clone(),
+    policy_id: "policy".clone(),
+    helper_path: "helper.py".clone(),
+    helper_sha256: helper.clone(),
+    helper_runtime: runtime.clone(),
+    interpreter_sha256: interpreter.clone(),
+    git_executable_sha256: git.clone(),
+    content_sha256: "".clone(),
+  }
+}
+
+fn policy_golden() -> Result<(), Error> {
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_SOURCE_VERIFIER_POLICY\",\"policy_id\":\"policy\",\"helper_path\":\"helper.py\",\"helper_sha256\":\"helper\",\"helper_runtime\":\"CPYTHON:python:helper\",\"interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"policy-digest\"}"
+  decoded := prompt_artifacts.decode_prompt_source_verifier_policy(expected)?
+  if decoded.schema_version != 1 || decoded.artifact_kind != "PROMPT_SOURCE_VERIFIER_POLICY" ||
+  decoded.policy_id != "policy" || decoded.helper_path != "helper.py" ||
+  decoded.helper_sha256 != "helper" || decoded.helper_runtime != "CPYTHON:python:helper" ||
+  decoded.interpreter_sha256 != "python" || decoded.git_executable_sha256 != "git" ||
+  decoded.content_sha256 != "policy-digest" ||
+  prompt_artifacts.encode_prompt_source_verifier_policy(decoded) != expected {
+    return Err(Error.Invalid)
+  }
+  legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_SOURCE_VERIFIER_POLICY\",\"policy_id\":\"policy\",\"helper_path\":\"helper.py\",\"helper_sha256\":\"helper\",\"helper_runtime\":\"PYTHON:helper\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"policy-digest\"}"
+  expect_policy_invalid(legacy)?
+  duplicate: string := duplicate_first_field(expected)
+  duplicate_view: str := duplicate
+  expect_policy_invalid(duplicate_view)?
+  normal_prefix := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_SOURCE_VERIFIER_POLICY\","
+  reordered: string := reorder_first_fields(expected, normal_prefix, "PROMPT_SOURCE_VERIFIER_POLICY")
+  reordered_view: str := reordered
+  expect_policy_invalid(reordered_view)?
+
+  base := prompt_artifacts.encode_prompt_source_verifier_policy(
+    policy_value("helper", "CPYTHON:python:helper", "python", "git"),
+  )
+  if base == prompt_artifacts.encode_prompt_source_verifier_policy(
+    policy_value("helper-2", "CPYTHON:python:helper", "python", "git"),
+  ) || base == prompt_artifacts.encode_prompt_source_verifier_policy(
+    policy_value("helper", "CPYTHON:python-2:helper", "python", "git"),
+  ) || base == prompt_artifacts.encode_prompt_source_verifier_policy(
+    policy_value("helper", "CPYTHON:python:helper", "python-2", "git"),
+  ) || base == prompt_artifacts.encode_prompt_source_verifier_policy(
+    policy_value("helper", "CPYTHON:python:helper", "python", "git-2"),
+  ) {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn request_value(manifest: Option<string>) -> prompt_artifacts.PromptEvaluateRequest {
+  return prompt_artifacts.PromptEvaluateRequest {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EVALUATE_REQUEST".clone(),
+    evaluation_id: "evaluation".clone(),
+    project_root: "/project".clone(),
+    experiment_path: "experiment.json".clone(),
+    parent_activation_path: "parent.json".clone(),
+    corpus_path: "corpus.json".clone(),
+    sample_count: 2,
+    acceptance_policy_path: "acceptance.json".clone(),
+    workspace_path: "/project/workspace".clone(),
+    workspace_preflight_path: "preflight.json".clone(),
+    verifier_align_llm_repository_path: "/align-llm".clone(),
+    verifier_align_llm_commit: "llm".clone(),
+    verifier_align_repository_path: "/align".clone(),
+    verifier_align_revision: "align".clone(),
+    verifier_corpus_source_path: "/corpus".clone(),
+    verifier_corpus_source_kind: "GIT_COMMIT".clone(),
+    verifier_corpus_file_set_manifest_path: manifest,
+    verifier_corpus_source_repository_id: "repo".clone(),
+    verifier_corpus_source_sha256: "corpus".clone(),
+    verifier_source_policy_path: "source-policy.json".clone(),
+    verifier_source_policy_sha256: "policy".clone(),
+    verifier_python_executable_path: "/usr/bin/python3.12".clone(),
+    verifier_git_executable_path: "/usr/bin/git".clone(),
+    evaluation_evidence_path: "evidence.json".clone(),
+  }
+}
+
+fn request_golden() -> Result<(), Error> {
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"experiment_path\":\"experiment.json\",\"parent_activation_path\":\"parent.json\",\"corpus_path\":\"corpus.json\",\"sample_count\":2,\"acceptance_policy_path\":\"acceptance.json\",\"workspace_path\":\"/project/workspace\",\"workspace_preflight_path\":\"preflight.json\",\"verifier_align_llm_repository_path\":\"/align-llm\",\"verifier_align_llm_commit\":\"llm\",\"verifier_align_repository_path\":\"/align\",\"verifier_align_revision\":\"align\",\"verifier_corpus_source_path\":\"/corpus\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"corpus\",\"verifier_source_policy_path\":\"source-policy.json\",\"verifier_source_policy_sha256\":\"policy\",\"verifier_python_executable_path\":\"/usr/bin/python3.12\",\"verifier_git_executable_path\":\"/usr/bin/git\",\"evaluation_evidence_path\":\"evidence.json\"}"
+  decoded := prompt_artifacts.decode_prompt_evaluate_request(expected)?
+  if decoded.evaluation_id != "evaluation" || decoded.verifier_python_executable_path != "/usr/bin/python3.12" ||
+  decoded.verifier_git_executable_path != "/usr/bin/git" ||
+  match decoded.verifier_corpus_file_set_manifest_path { Some(_) => true, None => false } {
+    return Err(Error.Invalid)
+  }
+  encoded_decoded := prompt_artifacts.decode_prompt_evaluate_request(expected)?
+  if prompt_artifacts.encode_prompt_evaluate_request(encoded_decoded) != expected { return Err(Error.Invalid) }
+  legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\"}"
+  expect_request_invalid(legacy)?
+  duplicate: string := duplicate_first_field(expected)
+  duplicate_view: str := duplicate
+  expect_request_invalid(duplicate_view)?
+  normal_prefix := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\","
+  reordered: string := reorder_first_fields(expected, normal_prefix, "PROMPT_EVALUATE_REQUEST")
+  reordered_view: str := reordered
+  expect_request_invalid(reordered_view)?
+
+  explicit_null: string := insert_null_field(
+    expected,
+    "\"verifier_corpus_source_repository_id\":",
+    "verifier_corpus_file_set_manifest_path",
+  )?
+  explicit_null_view: str := explicit_null
+  null_decoded := prompt_artifacts.decode_prompt_evaluate_request(explicit_null_view)?
+  if match null_decoded.verifier_corpus_file_set_manifest_path { Some(_) => true, None => false } {
+    return Err(Error.Invalid)
+  }
+
+  some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"experiment_path\":\"experiment.json\",\"parent_activation_path\":\"parent.json\",\"corpus_path\":\"corpus.json\",\"sample_count\":2,\"acceptance_policy_path\":\"acceptance.json\",\"workspace_path\":\"/project/workspace\",\"workspace_preflight_path\":\"preflight.json\",\"verifier_align_llm_repository_path\":\"/align-llm\",\"verifier_align_llm_commit\":\"llm\",\"verifier_align_repository_path\":\"/align\",\"verifier_align_revision\":\"align\",\"verifier_corpus_source_path\":\"/corpus\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_file_set_manifest_path\":\"/manifest\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"corpus\",\"verifier_source_policy_path\":\"source-policy.json\",\"verifier_source_policy_sha256\":\"policy\",\"verifier_python_executable_path\":\"/usr/bin/python3.12\",\"verifier_git_executable_path\":\"/usr/bin/git\",\"evaluation_evidence_path\":\"evidence.json\"}"
+  if prompt_artifacts.encode_prompt_evaluate_request(request_value(Some("/manifest".clone()))) != some_expected {
+    return Err(Error.Invalid)
+  }
+  some_decoded := prompt_artifacts.decode_prompt_evaluate_request(some_expected)?
+  return match some_decoded.verifier_corpus_file_set_manifest_path {
+    Some(value) => if value == "/manifest" { Ok(()) } else { Err(Error.Invalid) },
+    None => Err(Error.Invalid),
+  }
+}
+
+fn locator_value(manifest: Option<string>) -> prompt_artifacts.PromptGateSourceLocator {
+  return prompt_artifacts.PromptGateSourceLocator {
+    schema_version: 1,
+    artifact_kind: "PROMPT_GATE_SOURCE_LOCATOR".clone(),
+    source_bundle_id: "bundle".clone(),
+    align_llm_source_relative_path: "align-llm".clone(),
+    align_source_relative_path: "align".clone(),
+    corpus_source_relative_path: "corpus".clone(),
+    corpus_file_set_manifest_relative_path: manifest,
+    source_verifier_policy_relative_path: "policy.json".clone(),
+    source_verifier_policy_sha256: "policy".clone(),
+    source_verifier_relative_path: "verifier.py".clone(),
+    source_verifier_sha256: "helper".clone(),
+    source_verifier_runtime: "CPYTHON:python:helper".clone(),
+    source_verifier_interpreter_sha256: "python".clone(),
+    git_executable_sha256: "git".clone(),
+    content_sha256: "locator".clone(),
+  }
+}
+
+fn locator_golden() -> Result<(), Error> {
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"locator\"}"
+  decoded := prompt_artifacts.decode_prompt_gate_source_locator(expected)?
+  if decoded.source_bundle_id != "bundle" || decoded.source_verifier_sha256 != "helper" ||
+  decoded.source_verifier_interpreter_sha256 != "python" || decoded.git_executable_sha256 != "git" ||
+  match decoded.corpus_file_set_manifest_relative_path { Some(_) => true, None => false } {
+    return Err(Error.Invalid)
+  }
+  encoded_decoded := prompt_artifacts.decode_prompt_gate_source_locator(expected)?
+  if prompt_artifacts.encode_prompt_gate_source_locator(encoded_decoded) != expected { return Err(Error.Invalid) }
+  legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\"}"
+  expect_locator_invalid(legacy)?
+  duplicate: string := duplicate_first_field(expected)
+  duplicate_view: str := duplicate
+  expect_locator_invalid(duplicate_view)?
+  normal_prefix := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\","
+  reordered: string := reorder_first_fields(expected, normal_prefix, "PROMPT_GATE_SOURCE_LOCATOR")
+  reordered_view: str := reordered
+  expect_locator_invalid(reordered_view)?
+
+  explicit_null: string := insert_null_field(
+    expected,
+    "\"source_verifier_policy_relative_path\":",
+    "corpus_file_set_manifest_relative_path",
+  )?
+  explicit_null_view: str := explicit_null
+  null_decoded := prompt_artifacts.decode_prompt_gate_source_locator(explicit_null_view)?
+  if match null_decoded.corpus_file_set_manifest_relative_path { Some(_) => true, None => false } {
+    return Err(Error.Invalid)
+  }
+
+  some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"corpus_file_set_manifest_relative_path\":\"manifest\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"locator\"}"
+  if prompt_artifacts.encode_prompt_gate_source_locator(locator_value(Some("manifest".clone()))) != some_expected {
+    return Err(Error.Invalid)
+  }
+  some_decoded := prompt_artifacts.decode_prompt_gate_source_locator(some_expected)?
+  return match some_decoded.corpus_file_set_manifest_relative_path {
+    Some(value) => if value == "manifest" { Ok(()) } else { Err(Error.Invalid) },
+    None => Err(Error.Invalid),
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 { return Err(Error.Invalid) }
+  policy_golden()?
+  request_golden()?
+  locator_golden()?
+  print("prompt runtime schema v1: PASS")
+  return Ok(())
+}

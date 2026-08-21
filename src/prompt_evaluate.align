@@ -1,0 +1,225 @@
+module prompt_evaluate
+
+import prompt_artifact_io
+import prompt_score
+import std.process
+
+EVALUATOR_SOURCE_RELATIVE := "scripts/prompt-evaluate.py"
+EVALUATOR_SOURCE_SHA256 := "cdaa34846ec57b8c2c1d4e3f4ccb1a63f7c18333ef8d4fe1936f900dbebea52b"
+EVALUATOR_BOOTSTRAP := "import sys;exec(compile(sys.argv.pop(1)+sys.argv.pop(1)+sys.argv.pop(1),'<reviewed-prompt-evaluate>','exec'))"
+EVALUATOR_ARG_CHUNK_BYTES := 65536
+
+pub PromptEvaluateStatus { Published, InvalidInput, EvaluationFailed, OutputWrite, CleanupFailed }
+
+fn print_owned_text(borrow value: string) {
+  view: str := value
+  print(view)
+}
+
+fn valid_component(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 255 { return false }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    if bytes[index] == 0 || bytes[index] == 0x2f { return false }
+    index = index + 1
+  }
+  return value != "." && value != ".."
+}
+
+fn valid_relative_path(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 4096 { return false }
+  bytes := value.bytes()
+  if bytes[0] == 0x2f { return false }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index > bytes.len() { break }
+    if index == bytes.len() || bytes[index] == 0x2f {
+      if !valid_component(value[start..index]) { return false }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+EvaluatorOutput {
+  result_source: string,
+  evidence_source: Option<string>,
+}
+
+fn decode_evaluator_output(value: str) -> Result<EvaluatorOutput, Error> {
+  bytes := value.bytes()
+  if bytes.len() < 3 || bytes[1] != 0x0a { return Err(Error.Invalid) }
+  if bytes[0] == 0x31 {
+    return Ok(EvaluatorOutput {
+        result_source: value[2..value.len()].clone(),
+        evidence_source: None,
+      })
+  }
+  if bytes[0] != 0x32 { return Err(Error.Invalid) }
+  mut split := 2
+  loop {
+    if split >= bytes.len() { return Err(Error.Invalid) }
+    if bytes[split] == 0x0a { break }
+    split = split + 1
+  }
+  if split == 2 || split + 1 >= bytes.len() { return Err(Error.Invalid) }
+  return Ok(EvaluatorOutput {
+      result_source: value[2..split].clone(),
+      evidence_source: Some(value[split + 1..value.len()].clone()),
+    })
+}
+
+fn publish_evaluator_output(
+  output: EvaluatorOutput,
+  project_root: str,
+  result_relative: str,
+  evidence_relative: str,
+  evaluation_id: str,
+) -> Result<PromptEvaluateStatus, Error> {
+  result := prompt_artifact_io.decode_prompt_evaluation_result_source(output.result_source)?
+  return match output.evidence_source {
+    None => {
+      if result.status != "INVALID_INPUT" {
+        return Err(Error.Invalid)
+      }
+      published := prompt_artifact_io.write_prompt_evaluation_result_only_detailed(
+        project_root,
+        result_relative,
+        result,
+      )
+      match published.status {
+        CleanupFailed => {
+          print("recovery paths:")
+          mut index := 0
+          loop {
+            if index >= published.surviving_owned_paths.len() { break }
+            print_owned_text(published.surviving_owned_paths[index])
+            index = index + 1
+          }
+        },
+        _ => {},
+      }
+      return Ok(match published.status {
+          Published => PromptEvaluateStatus.InvalidInput,
+          OutputWrite => PromptEvaluateStatus.OutputWrite,
+          CleanupFailed => PromptEvaluateStatus.CleanupFailed,
+        })
+    },
+    Some(evidence_source) => {
+      evidence := prompt_artifact_io.decode_prompt_evaluation_evidence_source(evidence_source)?
+      prompt_score.verify_result(result, evidence)?
+      complete := result.status == "IMPROVED" ||
+      result.status == "NO_IMPROVEMENT" ||
+      result.status == "SERIOUS_REGRESSION"
+      published := prompt_artifact_io.write_prompt_evaluation_pair_detailed(
+        project_root,
+        result_relative,
+        evidence_relative,
+        evaluation_id,
+        result,
+        evidence,
+      )
+      match published.status {
+        CleanupFailed => {
+          print("recovery paths:")
+          mut index := 0
+          loop {
+            if index >= published.surviving_owned_paths.len() { break }
+            print_owned_text(published.surviving_owned_paths[index])
+            index = index + 1
+          }
+        },
+        _ => {},
+      }
+      return Ok(match published.status {
+          Published => if complete { PromptEvaluateStatus.Published } else { PromptEvaluateStatus.EvaluationFailed },
+          OutputWrite => PromptEvaluateStatus.OutputWrite,
+          CleanupFailed => PromptEvaluateStatus.CleanupFailed,
+        })
+    },
+  }
+}
+
+pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateStatus {
+  request := prompt_artifact_io.load_prompt_evaluate_request(request_path) else {
+    return PromptEvaluateStatus.InvalidInput
+  }
+  if !valid_relative_path(result_relative) {
+    return PromptEvaluateStatus.InvalidInput
+  }
+
+  evaluator_source := prompt_artifact_io.load_verified_bounded_source(
+    request.project_root,
+    EVALUATOR_SOURCE_RELATIVE,
+    EVALUATOR_SOURCE_SHA256,
+  ) else {
+    return PromptEvaluateStatus.InvalidInput
+  }
+  evaluator_view: str := evaluator_source
+  evidence_relative_view: str := request.evaluation_evidence_path
+
+  if evaluator_view.len() <= EVALUATOR_ARG_CHUNK_BYTES * 2 ||
+  evaluator_view.len() > EVALUATOR_ARG_CHUNK_BYTES * 3 {
+    return PromptEvaluateStatus.InvalidInput
+  }
+  command := process.command(
+    "/usr/bin/python3",
+    [
+      "/usr/bin/python3",
+      "-c",
+      EVALUATOR_BOOTSTRAP,
+      evaluator_view[0..EVALUATOR_ARG_CHUNK_BYTES],
+      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES..EVALUATOR_ARG_CHUNK_BYTES * 2],
+      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES * 2..evaluator_view.len()],
+      "--request",
+      request_path,
+      "--final-result-relative",
+      result_relative,
+      "--final-evidence-relative",
+      evidence_relative_view,
+    ].to_array(),
+  )
+  command.cwd(request.project_root)
+  command.max_capture_bytes(276824067)
+  command.env_clear()
+  command.env("LANG", "C")
+  command.env("LC_ALL", "C")
+  command.env("PATH", "/usr/bin:/bin")
+  command.env("PYTHONDONTWRITEBYTECODE", "1")
+  command.env("PYTHONNOUSERSITE", "1")
+  output := command.run() else {
+    return PromptEvaluateStatus.EvaluationFailed
+  }
+  if output.code() != 0 || output.stdout().len() == 0 || output.stderr().len() != 0 {
+    return PromptEvaluateStatus.EvaluationFailed
+  }
+
+  evaluator_output := decode_evaluator_output(output.stdout()) else {
+    return PromptEvaluateStatus.EvaluationFailed
+  }
+  published := publish_evaluator_output(
+    evaluator_output,
+    request.project_root,
+    result_relative,
+    evidence_relative_view,
+    request.evaluation_id,
+  ) else { return PromptEvaluateStatus.EvaluationFailed }
+  return published
+}
+
+pub fn status_label(status: PromptEvaluateStatus) -> str = match status {
+  Published => "PUBLISHED",
+  InvalidInput => "INVALID_INPUT",
+  EvaluationFailed => "EVALUATION_FAILED",
+  OutputWrite => "OUTPUT_WRITE",
+  CleanupFailed => "OUTPUT_PAIR_CLEANUP_FAILED",
+}
+
+pub fn status_success(status: PromptEvaluateStatus) -> bool = match status {
+  Published => true,
+  _ => false,
+}

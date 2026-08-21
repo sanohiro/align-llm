@@ -1051,6 +1051,12 @@ def live_quota_mutation_case(module, temporary: Path) -> None:
             ),
             "aggregate lacks strict post-child quota validation",
         )
+        require(
+            'os.mkdir(".git", 0o700, dir_fd=aggregate_fd)' in aggregate_owner
+            and aggregate_owner.index('os.mkdir(".git", 0o700, dir_fd=aggregate_fd)')
+            < aggregate_owner.index("overlay_arguments(overlay_descriptors)"),
+            "aggregate Git binding lacks a lower-layer mountpoint",
+        )
     finally:
         module.os.stat = original_stat
         module.os.open = original_open

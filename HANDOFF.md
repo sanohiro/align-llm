@@ -3,20 +3,37 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-20)
+## Active checkpoint (2026-08-21)
 
-- The current capability is C6d offline prompt activation. `.align-revision` pins Align merge
-  `19c3db144c462bf7d6784f88d64cc124229b7ec2`, which adds Request 18 retained-root regular-file
-  access and retains the Request 16/17 borrowed projection surfaces used by the decoded verifier.
+- The current capability is C6-EVALUATION deterministic contained comparison on
+  `agent/c6-evaluation`. `.align-revision` remains pinned to Align merge
+  `19c3db144c462bf7d6784f88d64cc124229b7ec2`, which contains the Request 11 bounded process and
+  Request 14 exclusive publication surfaces consumed by this wave.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
-- The register records Requests 7, 8, 10, 12, 13, and 15–18 as `ALIGN_LLM_VERIFIED`.
-  Requests 2, 9, 11, and 14 remain `ALIGN_MERGED`; Request 14's surface is present at the current
-  pin but its pair-publication adoption remains owned by C6f2.
-- The active C6b-memory consumer validates the complete C5 failure-memory JSONL source, selects
-  matching events by task and bounded reverse scan, renders them chronologically, and reports
-  `INVALID_FAILURE_MEMORY` without changing the valid prompt digest contract. Request 14 remains
-  unadopted and is not consumed by that boundary.
+- The register records Requests 7, 8, 10, 12, 13, and 15–18 as `ALIGN_LLM_VERIFIED`. Requests 11 and
+  14 remain `ALIGN_MERGED` until the C6-EVALUATION candidate passes its final capable gate;
+  Requests 2 and 9 remain `ALIGN_MERGED` for their later named consumers.
+- The C6-EVALUATION candidate drives the deterministic two-task corpus through source/workspace verification,
+  alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
+  prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
+  result-only; operational failures retain the exact valid trace prefix and paired evidence. Its
+  review reopened exact interpreter identity, descendant ownership, FILE_SET physical traversal,
+  nested deadline hierarchy, pre-allocation result binding, validation precedence, and capable-gate
+  execution as one runtime-containment axis. The final ownership review additionally reopened exact
+  per-invocation workspace admission, cleanup-before-pair construction, immediate publication-owner
+  retirement, and bounded FILE_SET decimal decoding on that same axis. The revised candidate binds
+  and descriptor-launches the exact CPython/helper/Git bytes, gives nested owners cleanup/report
+  margins, streams canonical result binding, proves private process-group absence, admits only the
+  current invocation's four workspace names, constructs terminal evidence after owned cleanup,
+  retains FILE_SET roots/manifests/final files, and executes the complete evaluator adoption owner
+  inside capable-only `make ci`. The later exact-head review reopened the inner retained-input and
+  admission-bounds axis: the fixed adapter now executes sealed admitted runner bytes and passes
+  sealed task/patch descriptors, artifact schemas are complete before side effects, reviewed TREE
+  enumeration is bounded while it occurs, and publication uses a fixed-size content-bound sibling.
+  The replacement review then reopened semantic consumption; prompt limits, complete persistent
+  drift, snapshot declaration caps, unavailable-source non-gate execution, and containment-first
+  measurement validation now follow the already-settled contract.
 - Align-llm PR #96 merged as `df8b872d1ed766b5bbca643729bb2dfdb08bde3`. C6d now builds on that
   decoded verifier: `prompt accept` verifies result/evidence before constructing an immutable
   activation, `prompt rollback` validates immutable lineage, and both commands use retained-root
@@ -40,8 +57,8 @@ file records durable project state.
   Request 4 as `f04672bce6f8689c9b219d0a20e770571e2d638b`, PR #808 shipped Request 11 as
   `82da9f580cc005fbb78f67af6847c7b4ce6626c4`, and PR #807 shipped Request 12 as
   `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are `CLOSED`; Requests 8, 10, and
-  12 are `ALIGN_LLM_VERIFIED` for the C6 consumer capability, while Request 11 remains
-  `ALIGN_MERGED` for the later C6-EVALUATION boundary.
+  12 are `ALIGN_LLM_VERIFIED` for the C6 consumer capability; Request 11 remains `ALIGN_MERGED`
+  until the revised C6-EVALUATION owner and final capable gate pass.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -81,8 +98,8 @@ file records durable project state.
 - C6-LIFECYCLE has completed the Request 7/8/10/12/13/15 adoption wave in PR #94, Requests 16/17
   through the real decoded verifier, and Request 18 through the C6d retained-root lifecycle owner.
   The public verifier keeps its settled borrowed signature and no compatibility API was added.
-  Request 14 remains unadopted for C6f2, and Request 11 remains merged for the later C6-EVALUATION
-  boundary. Requests 4–6 are closed with real-client and native installed-profile evidence.
+  Requests 11 and 14 are adopted by the contained evaluator and pair-publication owners. Requests
+  4–6 are closed with real-client and native installed-profile evidence.
 - Preserve the exact fresh-image trust, descriptor, namespace, cgroup, source-identity, and cleanup
   boundaries in `docs/specs/check-gate-topology.md`. Reclassify and update its closure matrix if the
   migrated diff changes those contracts.
@@ -98,6 +115,58 @@ file records durable project state.
 
 ## Latest durable verification
 
+- C6-EVALUATION candidate owners `gmake --no-print-directory c6-evaluation-adoption`,
+  `gmake --no-print-directory c6-prompt-artifact-adoption`, `gmake --no-print-directory check`, and
+  `gmake --no-print-directory format-check`: PASS at Align
+  `19c3db144c462bf7d6784f88d64cc124229b7ec2` after the reopened
+  deadline/allocation/precedence/gate repair and the final ownership-boundary repair. Source
+  `163af7baa210`, oracle `549db0052fc2`, and finalization `d8d45c806658` form the ownership-repaired
+  passing identity-bound baseline chain. The exact-head review of that chain found the remaining
+  cross-process result-boundary class: nested-session descendants, unbounded adapter diagnostics,
+  operational runner failures scored as tests, pre-creation child-output ownership, deterministic
+  prepared-output cleanup, missing output-parent preflight, invalid-ID result suppression,
+  malformed unavailable-source envelopes, behavioral publication gaps, and stale continuity. The
+  reopened §10.1g redesign is complete. Source `1b9b98785743`, oracle `a8f4a2990cd3`, and
+  finalization `72e931685fa3` form its passing replacement identity-bound baseline chain. Its
+  exact-head review found the remaining reviewed-source execution-boundary class: unbound outer
+  evaluator bytes, task code before or unrelated to source observation, task-repository Git config,
+  late TREE/task bounds, incomplete child-result validation, missing cross-invocation drift,
+  incomplete environment-policy validation, and partial result-only publication. The reopened
+  §10.1h redesign is complete. Source `c24e82462a64`, oracle `d023c2f9c6d5`, and finalization
+  `75cfc9c79b38` form its passing replacement identity-bound baseline chain. The redesigned
+  exact-head review found the retained-source/complete-score class: an outer pathname reopen,
+  corpus files not proven as commit or FILE_SET members, task-cwd helper resolution, fixture-only
+  scoring, incomplete automatic snapshots and child observations, raw-only FILE expectations, and
+  generic mismatch errors. The reopened §10.1i redesign is complete. Source `6e52ff04a698`, oracle
+  `1e07ffe13553`, and finalization `365249123ec6` form its passing replacement identity-bound
+  baseline chain. Its exact-head review at `0c2f24bd7889` found incomplete artifact schemas before
+  side effects, runner/task/patch pathname reopen after adapter admission, unbounded reviewed TREE
+  enumeration, and overlong publication temporary components. The reopened §10.1j redesign is
+  complete. Source `00f7c7964e04`, oracle `2d15069c7d6f`, and finalization `ef174295ce5a` form its
+  passing replacement identity-bound baseline chain. Its replacement exact-head review at
+  `8fd2dfa5884f` found missing prompt-size enforcement, partial cross-invocation input comparison,
+  late static-expectation bounds, unavailable-source aborts, and reversed containment/cleanup
+  precedence. Because that revised review found new P1s, §10.1k reopened the semantic axis and
+  closed the complete measurement state machine plus the same-class retained patch-size and
+  snapshot-result bounds. Source `06e5e28b2892`, oracle `b8f6e0ece59b`, and finalization
+  `d40cab8bdbf4` form its passing replacement identity-bound baseline chain. Subsequent gate
+  integration made the request fixtures portable, bound fresh tools and the authenticated Git view,
+  and preserved the aggregate's output-only overlay contract. Preflight and the final capable gate
+  remain pending; the one full-diff review is the §10.1k finding ledger and no further discovery
+  review is planned. Focused evidence covers Request 11 exact-cap,
+  over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
+  creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
+  Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only
+  invalid inputs; content-bound interpreter/helper/Git launch; evaluator/helper/adapter descendant
+  cleanup; exact Git-blob and FILE_SET task-source membership; retained evaluator/helper execution;
+  automatic identity-input drift; canonical FILE mode/content identity; exact snapshot observation
+  closure and mismatch families; every complete score status and gate path; raw-byte FILE_SET
+  traversal and physical-alias rejection; schema-v1 byte goldens; complete artifact-schema
+  rejection before child launch; exact and cap-plus-one TREE entry/byte enumeration; retained inner
+  runner/task/patch replacement races; 255-byte publication basenames; parent/candidate prompt-byte
+  limits; complete automatic-input drift; present-mismatched and absent-unverified sources; all
+  measurement states and containment-first failure precedence; and lifecycle consumption of the
+  evaluator-produced pair.
 - C6d owner: `make c6d-request18-adoption` and the final capable `make ci`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The focused owner covers request and artifact bounds,
   retained-root symlink/special-file rejection, deterministic error precedence, exclusive output
@@ -233,9 +302,11 @@ file records durable project state.
 
 ## Next actions
 
-1. Begin the next eligible C6 capability from the roadmap without pulling Request 11 process work
-   or Request 14 pair publication ahead of its owning boundary.
-2. Keep Request 14 adoption with C6f2 and Requests 11, 2, and 9 with their named future owners.
+1. Complete the required redesigned exact-head review of the §10.1h candidate, resolve any valid
+   findings as one class, then run exact-head preflight and final capable `make ci` before merging
+   and beginning C6-MEASURED.
+2. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
+   do not infer a provider-quality claim from the deterministic fixture comparison.
 
 ## Recovery and preservation
 

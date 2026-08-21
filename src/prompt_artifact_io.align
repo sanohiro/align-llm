@@ -4,6 +4,7 @@ import prompt_artifacts
 import std.crypto
 import std.encoding
 import std.fs
+import std.path
 
 ARTIFACT_MAX_BYTES := 2097152
 REQUEST_MAX_BYTES := 65536
@@ -68,6 +69,21 @@ fn read_bounded_beneath(root: str, relative: str, maximum: i64) -> Result<string
   return read_bounded_reader(reader, maximum)
 }
 
+pub fn verify_bounded_source_digest(root: str, relative: str, expected_sha256: str) -> bool {
+  source := read_bounded_beneath(root, relative, ARTIFACT_MAX_BYTES) else { return false }
+  return digest_text(source) == expected_sha256
+}
+
+pub fn load_verified_bounded_source(
+  root: str,
+  relative: str,
+  expected_sha256: str,
+) -> Result<string, Error> {
+  source := read_bounded_beneath(root, relative, ARTIFACT_MAX_BYTES)?
+  if digest_text(source) != expected_sha256 { return Err(Error.Invalid) }
+  return Ok(source)
+}
+
 fn failed_source(status: InputSourceStatus) -> InputSource {
   return InputSource { status: status, source: "".clone() }
 }
@@ -119,6 +135,12 @@ pub fn load_prompt_rollback_request(root: str, relative: str) -> Result<prompt_a
   return prompt_artifacts.decode_prompt_rollback_request(view)
 }
 
+pub fn load_prompt_evaluate_request(path: str) -> Result<prompt_artifacts.PromptEvaluateRequest, Error> {
+  source := read_bounded(path, REQUEST_MAX_BYTES)?
+  view: str := source
+  return prompt_artifacts.decode_prompt_evaluate_request(view)
+}
+
 pub fn read_prompt_evaluation_result_source(root: str, relative: str) -> InputSource {
   return read_beneath_source(root, relative, EVALUATION_MAX_BYTES)
 }
@@ -149,6 +171,422 @@ pub fn decode_prompt_evaluation_evidence_source(value: str) -> Result<prompt_art
     return Err(Error.Invalid)
   }
   return Ok(decoded)
+}
+
+pub fn finalize_prompt_evaluation_result(
+  value: prompt_artifacts.PromptEvaluationResult,
+) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  if value.content_sha256.len() != 0 {
+    return Err(Error.Invalid)
+  }
+  canonical := prompt_artifacts.encode_prompt_evaluation_result_bounded(value, EVALUATION_MAX_BYTES)?
+  mut finalized := prompt_artifacts.decode_prompt_evaluation_result(canonical)?
+  finalized.content_sha256 = digest_text(canonical)
+  encoded := prompt_artifacts.encode_prompt_evaluation_result_bounded(finalized, EVALUATION_MAX_BYTES)?
+  return prompt_artifacts.decode_prompt_evaluation_result(encoded)
+}
+
+pub fn finalize_prompt_evaluation_evidence(
+  value: prompt_artifacts.PromptEvaluationEvidence,
+) -> Result<prompt_artifacts.PromptEvaluationEvidence, Error> {
+  if value.content_sha256.len() != 0 {
+    return Err(Error.Invalid)
+  }
+  canonical := prompt_artifacts.encode_prompt_evaluation_evidence_bounded(value, EVIDENCE_MAX_BYTES)?
+  mut finalized := prompt_artifacts.decode_prompt_evaluation_evidence(canonical)?
+  finalized.content_sha256 = digest_text(canonical)
+  encoded := prompt_artifacts.encode_prompt_evaluation_evidence_bounded(finalized, EVIDENCE_MAX_BYTES)?
+  return prompt_artifacts.decode_prompt_evaluation_evidence(encoded)
+}
+
+fn write_exclusive(path_value: str, value: str) -> Result<(), Error> {
+  output := fs.create_exclusive(path_value)?
+  output.write(value)?
+  return output.flush()
+}
+
+ExclusiveWriteStatus { Written, CreateFailed, WriteFailed }
+
+fn write_exclusive_detailed(path_value: str, value: str) -> ExclusiveWriteStatus {
+  output := fs.create_exclusive(path_value) else { return ExclusiveWriteStatus.CreateFailed }
+  output.write(value) else { return ExclusiveWriteStatus.WriteFailed }
+  output.flush() else { return ExclusiveWriteStatus.WriteFailed }
+  return ExclusiveWriteStatus.Written
+}
+
+fn remove_if_owned(path_value: str, owned: bool) -> bool {
+  if !owned {
+    return true
+  }
+  return match fs.remove(path_value) {
+    Ok(_) => true,
+    Err(_) => false,
+  }
+}
+
+fn absent_beneath(root: str, relative: str) -> bool {
+  return match fs.open_beneath(root, relative) {
+    Ok(_) => false,
+    Err(failure) => match failure {
+      NotFound => true,
+      _ => false,
+    },
+  }
+}
+
+fn temporary_path(final_path: str, evaluation_id: str, suffix: str) -> string {
+  base := path.base(final_path)
+  parent_length := final_path.len() - base.len()
+  preimage := builder()
+  preimage.write(final_path)
+  preimage.write("\0")
+  preimage.write(evaluation_id)
+  preimage.write("\0")
+  preimage.write(suffix)
+  preimage_text := preimage.to_string()
+  digest := crypto.sha256(preimage_text)
+  encoded := encoding.hex_encode(digest[0..digest.len()])
+  output := builder()
+  output.write(final_path[0..parent_length])
+  output.write(".align-prompt-")
+  output.write(encoded)
+  output.write(".")
+  output.write(suffix)
+  return output.to_string()
+}
+
+pub PairWriteStatus { Published, OutputWrite, CleanupFailed }
+
+pub PairWriteResult {
+  status: PairWriteStatus,
+  surviving_owned_paths: array<string>,
+}
+
+fn pair_write_result(status: PairWriteStatus) -> PairWriteResult {
+  paths: array_builder<string> := array_builder()
+  return PairWriteResult { status: status, surviving_owned_paths: paths.build() }
+}
+
+fn cleanup_failed_pair_result(
+  project_root: str,
+  result_relative_path: str,
+  result_temporary_relative: str,
+  evidence_temporary_relative: str,
+  result_final_owned: bool,
+  result_temporary_owned: bool,
+  evidence_temporary_owned: bool,
+) -> PairWriteResult {
+  mut paths: array_builder<string> := array_builder()
+  if result_final_owned && !absent_beneath(project_root, result_relative_path) {
+    paths.push(result_relative_path.clone())
+  }
+  if result_temporary_owned && !absent_beneath(project_root, result_temporary_relative) {
+    paths.push(result_temporary_relative.clone())
+  }
+  if evidence_temporary_owned && !absent_beneath(project_root, evidence_temporary_relative) {
+    paths.push(evidence_temporary_relative.clone())
+  }
+  return PairWriteResult {
+    status: PairWriteStatus.CleanupFailed,
+    surviving_owned_paths: paths.build(),
+  }
+}
+
+pub fn publish_prompt_pair_bytes_detailed(
+  project_root: str,
+  result_relative_path: str,
+  evidence_relative_path: str,
+  evaluation_id: str,
+  result_bytes: str,
+  evidence_bytes: str,
+) -> PairWriteResult {
+  result_path := path.join(project_root, result_relative_path)
+  evidence_path := path.join(project_root, evidence_relative_path)
+  mut result_temporary_owned := false
+  mut evidence_temporary_owned := false
+  mut result_final_owned := false
+
+  result_temporary_relative := temporary_path(result_relative_path, evaluation_id, "result")
+  evidence_temporary_relative := temporary_path(evidence_relative_path, evaluation_id, "evidence")
+  result_temporary := path.join(project_root, result_temporary_relative)
+  evidence_temporary := path.join(project_root, evidence_temporary_relative)
+  if !absent_beneath(project_root, result_relative_path) ||
+  !absent_beneath(project_root, evidence_relative_path) ||
+  !absent_beneath(project_root, result_temporary_relative) ||
+  !absent_beneath(project_root, evidence_temporary_relative) {
+    return pair_write_result(PairWriteStatus.OutputWrite)
+  }
+  match write_exclusive_detailed(result_temporary, result_bytes) {
+    Written => { result_temporary_owned = true },
+    CreateFailed => { return pair_write_result(PairWriteStatus.OutputWrite) },
+    WriteFailed => {
+      result_temporary_owned = true
+      clean_result := remove_if_owned(result_temporary, result_temporary_owned)
+      if clean_result { result_temporary_owned = false }
+      if !clean_result {
+        return cleanup_failed_pair_result(
+          project_root,
+          result_relative_path,
+          result_temporary_relative,
+          evidence_temporary_relative,
+          result_final_owned,
+          result_temporary_owned,
+          evidence_temporary_owned,
+        )
+      }
+      return pair_write_result(PairWriteStatus.OutputWrite)
+    },
+  }
+  match write_exclusive_detailed(evidence_temporary, evidence_bytes) {
+    Written => { evidence_temporary_owned = true },
+    CreateFailed => {
+      clean_result := remove_if_owned(result_temporary, result_temporary_owned)
+      if clean_result { result_temporary_owned = false }
+      if !clean_result {
+        return cleanup_failed_pair_result(
+          project_root,
+          result_relative_path,
+          result_temporary_relative,
+          evidence_temporary_relative,
+          result_final_owned,
+          result_temporary_owned,
+          evidence_temporary_owned,
+        )
+      }
+      return pair_write_result(PairWriteStatus.OutputWrite)
+    },
+    WriteFailed => {
+      evidence_temporary_owned = true
+      clean_result := remove_if_owned(result_temporary, result_temporary_owned)
+      clean_evidence := remove_if_owned(evidence_temporary, evidence_temporary_owned)
+      if clean_result { result_temporary_owned = false }
+      if clean_evidence { evidence_temporary_owned = false }
+      if !clean_result || !clean_evidence {
+        return cleanup_failed_pair_result(
+          project_root,
+          result_relative_path,
+          result_temporary_relative,
+          evidence_temporary_relative,
+          result_final_owned,
+          result_temporary_owned,
+          evidence_temporary_owned,
+        )
+      }
+      return pair_write_result(PairWriteStatus.OutputWrite)
+    },
+  }
+
+  if !absent_beneath(project_root, result_relative_path) ||
+  !absent_beneath(project_root, evidence_relative_path) {
+    clean_result := remove_if_owned(result_temporary, result_temporary_owned)
+    clean_evidence := remove_if_owned(evidence_temporary, evidence_temporary_owned)
+    if clean_result { result_temporary_owned = false }
+    if clean_evidence { evidence_temporary_owned = false }
+    if !clean_result || !clean_evidence {
+      return cleanup_failed_pair_result(
+        project_root,
+        result_relative_path,
+        result_temporary_relative,
+        evidence_temporary_relative,
+        result_final_owned,
+        result_temporary_owned,
+        evidence_temporary_owned,
+      )
+    }
+    return pair_write_result(PairWriteStatus.OutputWrite)
+  }
+
+  match fs.rename_no_replace(result_temporary, result_path) {
+    Ok(_) => {
+      result_temporary_owned = false
+      result_final_owned = true
+    },
+    Err(_) => {
+      clean_result := remove_if_owned(result_temporary, result_temporary_owned)
+      clean_evidence := remove_if_owned(evidence_temporary, evidence_temporary_owned)
+      if clean_result { result_temporary_owned = false }
+      if clean_evidence { evidence_temporary_owned = false }
+      if !clean_result || !clean_evidence {
+        return cleanup_failed_pair_result(
+          project_root,
+          result_relative_path,
+          result_temporary_relative,
+          evidence_temporary_relative,
+          result_final_owned,
+          result_temporary_owned,
+          evidence_temporary_owned,
+        )
+      }
+      return pair_write_result(PairWriteStatus.OutputWrite)
+    },
+  }
+
+  match fs.rename_no_replace(evidence_temporary, evidence_path) {
+    Ok(_) => { return pair_write_result(PairWriteStatus.Published) },
+    Err(_) => {
+      clean_result := remove_if_owned(result_path, result_final_owned)
+      clean_evidence := remove_if_owned(evidence_temporary, evidence_temporary_owned)
+      if clean_result { result_final_owned = false }
+      if clean_evidence { evidence_temporary_owned = false }
+      if !clean_result || !clean_evidence {
+        return cleanup_failed_pair_result(
+          project_root,
+          result_relative_path,
+          result_temporary_relative,
+          evidence_temporary_relative,
+          result_final_owned,
+          result_temporary_owned,
+          evidence_temporary_owned,
+        )
+      }
+      return pair_write_result(PairWriteStatus.OutputWrite)
+    },
+  }
+}
+
+pub fn publish_prompt_pair_bytes(
+  project_root: str,
+  result_relative_path: str,
+  evidence_relative_path: str,
+  evaluation_id: str,
+  result_bytes: str,
+  evidence_bytes: str,
+) -> PairWriteStatus {
+  detailed := publish_prompt_pair_bytes_detailed(
+    project_root,
+    result_relative_path,
+    evidence_relative_path,
+    evaluation_id,
+    result_bytes,
+    evidence_bytes,
+  )
+  return detailed.status
+}
+
+pub fn write_prompt_evaluation_pair_detailed(
+  project_root: str,
+  result_relative_path: str,
+  evidence_relative_path: str,
+  evaluation_id: str,
+  result: prompt_artifacts.PromptEvaluationResult,
+  evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> PairWriteResult {
+  result_bytes := prompt_artifacts.encode_prompt_evaluation_result_bounded(result, EVALUATION_MAX_BYTES) else {
+    return pair_write_result(PairWriteStatus.OutputWrite)
+  }
+  evidence_bytes := prompt_artifacts.encode_prompt_evaluation_evidence_bounded(evidence, EVIDENCE_MAX_BYTES) else {
+    return pair_write_result(PairWriteStatus.OutputWrite)
+  }
+  return publish_prompt_pair_bytes_detailed(
+    project_root,
+    result_relative_path,
+    evidence_relative_path,
+    evaluation_id,
+    result_bytes,
+    evidence_bytes,
+  )
+}
+
+pub fn write_prompt_evaluation_pair(
+  project_root: str,
+  result_relative_path: str,
+  evidence_relative_path: str,
+  evaluation_id: str,
+  result: prompt_artifacts.PromptEvaluationResult,
+  evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> PairWriteStatus {
+  detailed := write_prompt_evaluation_pair_detailed(
+    project_root,
+    result_relative_path,
+    evidence_relative_path,
+    evaluation_id,
+    result,
+    evidence,
+  )
+  return detailed.status
+}
+
+pub fn publish_prompt_result_bytes_detailed(
+  project_root: str,
+  result_relative_path: str,
+  result_bytes: str,
+) -> PairWriteResult {
+  result_path := path.join(project_root, result_relative_path)
+  result_temporary_relative := temporary_path(result_relative_path, "result-only", "result")
+  result_temporary := path.join(project_root, result_temporary_relative)
+  mut result_temporary_owned := false
+  if !absent_beneath(project_root, result_relative_path) ||
+  !absent_beneath(project_root, result_temporary_relative) {
+    return pair_write_result(PairWriteStatus.OutputWrite)
+  }
+  match write_exclusive_detailed(result_temporary, result_bytes) {
+    Written => { result_temporary_owned = true },
+    CreateFailed => { return pair_write_result(PairWriteStatus.OutputWrite) },
+    WriteFailed => {
+      result_temporary_owned = true
+      cleaned := remove_if_owned(result_temporary, result_temporary_owned)
+      if cleaned { return pair_write_result(PairWriteStatus.OutputWrite) }
+      mut paths: array_builder<string> := array_builder()
+      if !absent_beneath(project_root, result_temporary_relative) {
+        paths.push(result_temporary_relative.clone())
+      }
+      return PairWriteResult {
+        status: PairWriteStatus.CleanupFailed,
+        surviving_owned_paths: paths.build(),
+      }
+    },
+  }
+  if !absent_beneath(project_root, result_relative_path) {
+    cleaned := remove_if_owned(result_temporary, result_temporary_owned)
+    if cleaned { return pair_write_result(PairWriteStatus.OutputWrite) }
+    mut paths: array_builder<string> := array_builder()
+    if !absent_beneath(project_root, result_temporary_relative) {
+      paths.push(result_temporary_relative.clone())
+    }
+    return PairWriteResult {
+      status: PairWriteStatus.CleanupFailed,
+      surviving_owned_paths: paths.build(),
+    }
+  }
+  return match fs.rename_no_replace(result_temporary, result_path) {
+    Ok(_) => pair_write_result(PairWriteStatus.Published),
+    Err(_) => {
+      cleaned := remove_if_owned(result_temporary, result_temporary_owned)
+      if cleaned { return pair_write_result(PairWriteStatus.OutputWrite) }
+      mut paths: array_builder<string> := array_builder()
+      if !absent_beneath(project_root, result_temporary_relative) {
+        paths.push(result_temporary_relative.clone())
+      }
+      PairWriteResult {
+        status: PairWriteStatus.CleanupFailed,
+        surviving_owned_paths: paths.build(),
+      }
+    },
+  }
+}
+
+pub fn write_prompt_evaluation_result_only_detailed(
+  project_root: str,
+  result_relative_path: str,
+  result: prompt_artifacts.PromptEvaluationResult,
+) -> PairWriteResult {
+  result_bytes := prompt_artifacts.encode_prompt_evaluation_result_bounded(result, EVALUATION_MAX_BYTES) else {
+    return pair_write_result(PairWriteStatus.OutputWrite)
+  }
+  return publish_prompt_result_bytes_detailed(project_root, result_relative_path, result_bytes)
+}
+
+pub fn write_prompt_evaluation_result_only(
+  project_root: str,
+  result_relative_path: str,
+  result: prompt_artifacts.PromptEvaluationResult,
+) -> PairWriteStatus {
+  detailed := write_prompt_evaluation_result_only_detailed(
+    project_root,
+    result_relative_path,
+    result,
+  )
+  return detailed.status
 }
 
 pub fn read_prompt_activation_result_source(root: str, relative: str) -> InputSource {

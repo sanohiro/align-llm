@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Exercise bounded child capture through the real C6 process boundary."""
+
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = ROOT / "src" / "c6f1_request11_adoption.align"
+
+
+def build(directory: Path) -> Path:
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "alignc"), "build", str(SOURCE)],
+        cwd=directory,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"fixture build failed: {completed.stderr}")
+    binary = directory / SOURCE.stem
+    if not binary.is_file():
+        raise RuntimeError("fixture build did not create its executable")
+    return binary
+
+
+def run(binary: Path, cap: int, timeout_ns: int, script: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(binary),
+            str(cap),
+            str(timeout_ns),
+            str(ROOT),
+            "/bin/sh",
+            "-c",
+            script,
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env={**os.environ, "ALIGN_LLM_TEMP_ROOT": tempfile.gettempdir()},
+    )
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="c6f1-request11-build-") as directory:
+        binary = build(Path(directory))
+        exact = run(binary, 4, 5_000_000_000, "printf 1234; printf abcd >&2; exit 7")
+        require(exact.returncode == 0, f"exact-cap run failed: {exact.stderr}")
+        require(exact.stdout == "7\n1234\nabcd\n", "exact-cap output changed")
+
+        stdout_over = run(binary, 4, 5_000_000_000, "printf 12345")
+        require(stdout_over.returncode != 0, "stdout cap-plus-one unexpectedly succeeded")
+        stderr_over = run(binary, 4, 5_000_000_000, "printf 12345 >&2")
+        require(stderr_over.returncode != 0, "stderr cap-plus-one unexpectedly succeeded")
+        simultaneous_script = (
+            "i=0; (while [ \"$i\" -lt 1025 ]; do "
+            "printf 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef; "
+            "i=$((i + 1)); done) & "
+            "i=0; (while [ \"$i\" -lt 1025 ]; do "
+            "printf fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 >&2; "
+            "i=$((i + 1)); done) & wait"
+        )
+        simultaneous = run(binary, 65_536, 5_000_000_000, simultaneous_script)
+        require(
+            simultaneous.returncode != 0,
+            "simultaneous overflow unexpectedly succeeded: "
+            f"stdout={simultaneous.stdout[:256]!r} stderr={simultaneous.stderr[:256]!r}",
+        )
+        timed = run(binary, 64, 20_000_000, "exec 1>&- 2>&-; while :; do :; done")
+        require(timed.returncode != 0, "post-EOF timeout unexpectedly succeeded")
+
+        invalid_utf8 = run(binary, 64, 5_000_000_000, "printf '\\377'")
+        require(invalid_utf8.returncode != 0, "invalid UTF-8 capture unexpectedly succeeded")
+
+        repeated = [run(binary, 4, 5_000_000_000, "printf 1234") for _ in range(3)]
+        require(all(item.returncode == 0 and item.stdout == "0\n1234\n\n" for item in repeated), "repeated capture changed")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            concurrent = list(executor.map(lambda _: run(binary, 4, 5_000_000_000, "printf 1234"), range(4)))
+        require(all(item.returncode == 0 and item.stdout == "0\n1234\n\n" for item in concurrent), "independent captures interfered")
+
+        marker = Path(directory) / "grandchild.pid"
+        cleanup_script = (
+            "/bin/sh -c 'while :; do :; done' & child=$!; "
+            f"printf '%s' \"$child\" > {shlex.quote(str(marker))}; "
+            "i=0; while [ \"$i\" -lt 65 ]; do printf x; i=$((i + 1)); done; wait"
+        )
+        overflow = run(binary, 64, 5_000_000_000, cleanup_script)
+        require(overflow.returncode != 0 and marker.is_file(), "process-group overflow fixture did not run")
+        pid = int(marker.read_text())
+        deadline = time.monotonic() + 2
+        while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        require(not Path(f"/proc/{pid}").exists(), "overflow left a grandchild process")
+    print("c6f1 request11 adoption: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError) as error:
+        print(f"c6f1 request11 adoption: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)

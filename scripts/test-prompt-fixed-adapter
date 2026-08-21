@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Focused C6 fixed-adapter identity and contained-runner test."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+ADAPTER = ROOT / "scripts" / "prompt-fixed-adapter.py"
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def canonical_digest(value):
+    if isinstance(value, dict):
+        value = {key: canonical_digest_item(child) for key, child in value.items() if child is not None}
+    return canonical(value)
+
+
+def canonical_digest_item(value):
+    if isinstance(value, dict):
+        return {key: canonical_digest_item(child) for key, child in value.items() if child is not None}
+    if isinstance(value, list):
+        return [canonical_digest_item(child) for child in value]
+    return value
+
+
+def bind(value):
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(canonical_digest(value)).hexdigest()
+
+
+def store(path: Path, value):
+    bind(value)
+    path.write_bytes(canonical(value))
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="prompt-fixed-adapter-") as directory:
+        root = Path(directory)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        variant_path = root / "variant.json"
+        rendered_path = root / "rendered.json"
+        policy_path = root / "generation.json"
+        control_path = root / "control.json"
+        request_path = root / "request.json"
+
+        variant = {
+            "schema_version": 1, "artifact_kind": "PROMPT_VARIANT", "variant_id": "fixture",
+            "base_prompt": {}, "repo_prompt": {}, "learned_prompt_append": "", "context_policy": {},
+            "candidate_id": "fixture", "content_sha256": "",
+        }
+        store(variant_path, variant)
+        rendered = {
+            "schema_version": 1, "artifact_kind": "RENDERED_PROMPT", "task_id": "task",
+            "variant_id": "fixture", "variant_sha256": variant["content_sha256"],
+            "task_prompt_sha256": "1" * 64, "context_sources_sha256": "2" * 64,
+            "text": "deterministic fixture prompt", "content_sha256": "",
+        }
+        store(rendered_path, rendered)
+        control = {
+            "schema_version": 1, "artifact_kind": "EVALUATION_PROVIDER_CONTROL",
+            "provider_control_id": "fixture", "provider_kind": "FIXTURE", "endpoint": "fixture://local",
+            "endpoint_id": "fixture", "model": "inclusive-range-v1", "api_key_env": None,
+            "tokenize_endpoint": None, "timeout_ns": 30_000_000_000, "max_response_bytes": 65_536,
+            "content_sha256": "",
+        }
+        store(control_path, control)
+        policy = {
+            "schema_version": 1, "artifact_kind": "GENERATION_POLICY", "generation_policy_id": "fixture",
+            "evaluation_provider_kind": "FIXTURE", "evaluation_provider_endpoint_id": "fixture",
+            "evaluation_provider_model": "inclusive-range-v1", "provider_control_sha256": control["content_sha256"],
+            "provider_service_revision": "fixture-v1", "max_prompt_bytes": 65_536, "max_tokens": 1_024,
+            "temperature_micros": 0, "seed_mode": "PAIRED_FIXED", "seed_base": 100, "content_sha256": "",
+        }
+        store(policy_path, policy)
+
+        def invoke(variant_name: str, result_name: str, *, tamper: bool = False):
+            result_path = root / result_name
+            request = {
+                "schema_version": 1, "artifact_kind": "TASK_ADAPTER_REQUEST", "evaluation_id": "evaluation",
+                "task_id": "task", "sample_index": 1, "variant": variant_name,
+                "variant_path": str(variant_path), "variant_sha256": variant["content_sha256"],
+                "rendered_prompt_path": str(rendered_path), "rendered_prompt_sha256": rendered["content_sha256"],
+                "generation_policy_path": str(policy_path), "generation_policy_sha256": policy["content_sha256"],
+                "provider_control_path": str(control_path), "provider_control_sha256": control["content_sha256"],
+                "workspace_path": str(workspace), "result_path": str(result_path), "paired_seed": 100,
+                "credential_env_name": None, "environment_policy_sha256": "3" * 64, "content_sha256": "",
+            }
+            bind(request)
+            if tamper:
+                request["paired_seed"] = 101
+            request_path.write_bytes(canonical(request))
+            completed = subprocess.run(
+                [str(ADAPTER), "--prompt-variant", str(variant_path), "--rendered-prompt", str(rendered_path),
+                 "--sample-index", "1", "--paired-seed", "100", "--adapter-request", str(request_path),
+                 "--result", str(result_path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            return completed, json.loads(result_path.read_text()) if result_path.exists() else None
+
+        completed, result = invoke("PARENT", "parent.json")
+        require(completed.returncode == 0 and not completed.stdout and not completed.stderr, "parent adapter was not silent")
+        require(
+            result["status"] == "FAIL" and result["test_status"] == "FAIL",
+            f"parent fixture did not fail: {result!r}",
+        )
+        require(result["seed_attestation"]["result"] == "APPLIED", "parent seed was not applied")
+
+        completed, result = invoke("CANDIDATE", "candidate.json")
+        require(completed.returncode == 0 and not completed.stdout and not completed.stderr, "candidate adapter was not silent")
+        require(
+            result["status"] == "PASS" and result["test_status"] == "PASS",
+            f"candidate fixture did not pass: {result!r}",
+        )
+        require(result["generation_to_passing_patch_ns"] == 80_000_000, "candidate fixture timing changed")
+
+        policy["max_prompt_bytes"] = len(rendered["text"].encode("utf-8")) - 1
+        bind(policy)
+        store(policy_path, policy)
+        completed, result = invoke("CANDIDATE", "policy-violation.json")
+        require(
+            completed.returncode == 0
+            and result["status"] == "POLICY_VIOLATION"
+            and result["failure_kind"] == "POLICY"
+            and result["build_status"] == "NOT_RUN"
+            and result["test_status"] == "NOT_RUN"
+            and result["policy_violation_count"] == 1
+            and result["patch_size_bytes"] == 0,
+            "oversized candidate did not produce the exact pre-run policy violation",
+        )
+        policy["max_prompt_bytes"] = 65_536
+        bind(policy)
+        store(policy_path, policy)
+
+        completed, result = invoke("CANDIDATE", "tampered.json", tamper=True)
+        require(completed.returncode != 0 and result is None, "tampered adapter request was accepted")
+
+        module_spec = importlib.util.spec_from_file_location("prompt_fixed_adapter_descendants", ADAPTER)
+        require(module_spec is not None and module_spec.loader is not None, "fixed adapter module could not be loaded")
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        original_execute_for_precedence = module.execute_fixture
+        module.execute_fixture = lambda variant, timeout: ("ERROR", False, False, b"", b"both failed", 0)
+        try:
+            precedence = module.measurement(
+                {
+                    "variant": "CANDIDATE", "paired_seed": 100,
+                    "environment_policy_sha256": "3" * 64,
+                },
+                rendered, policy, control,
+            )
+        finally:
+            module.execute_fixture = original_execute_for_precedence
+        require(
+            precedence["status"] == "ERROR"
+            and precedence["failure_kind"] == "CONTAINMENT"
+            and not precedence["cleanup_passed"] and not precedence["containment_passed"],
+            "simultaneous containment/cleanup failure lost containment precedence",
+        )
+        original_cleanup = module.cleanup_process_group
+        cleanup_calls = 0
+
+        def counted_cleanup(process, maximum_seconds=2.0):
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+            return original_cleanup(process, maximum_seconds)
+
+        module.cleanup_process_group = counted_cleanup
+        def select_runner(path):
+            module.RUNNER = path
+            module.RUNNER_SHA256 = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        marker = root / "runner-descendant-survived"
+        descendant_runner = root / "descendant-runner.py"
+        child = f"import pathlib,time;time.sleep(0.6);pathlib.Path({str(marker)!r}).write_text('x')"
+        descendant_runner.write_text(
+            "import subprocess,sys\n"
+            f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)\n"
+        )
+        select_runner(descendant_runner)
+        outcome, cleanup_passed, containment_passed, _, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        require(outcome == "ERROR" and cleanup_passed and not containment_passed, "runner descendant was not classified")
+        require(cleanup_calls == 1, "fixed adapter descendant cleanup was not exactly once")
+        time.sleep(0.8)
+        require(not marker.exists(), "fixed adapter left a runner descendant alive")
+
+        bounded_runner = root / "bounded-runner.py"
+        bounded_runner.write_text(
+            "import os\n"
+            f"os.write(1, b'o' * {module.DIAGNOSTIC_LIMIT + 1})\n"
+            f"os.write(2, b'e' * {module.DIAGNOSTIC_LIMIT + 1})\n"
+        )
+        select_runner(bounded_runner)
+        outcome, cleanup_passed, containment_passed, stdout, stderr, _ = module.execute_fixture(
+            "CANDIDATE", 2_000_000_000,
+        )
+        require(
+            outcome == "PASS" and cleanup_passed and containment_passed
+            and len(stdout) == module.DIAGNOSTIC_LIMIT and len(stderr) == module.DIAGNOSTIC_LIMIT
+            and stdout.endswith(module.TRUNCATION_MARKER) and stderr.endswith(module.TRUNCATION_MARKER),
+            "simultaneous cap+1 diagnostics were not bounded",
+        )
+
+        exact_runner = root / "exact-runner.py"
+        exact_runner.write_text(
+            "import os\n"
+            f"os.write(1, b'x' * {module.DIAGNOSTIC_LIMIT})\n"
+            f"os.write(2, b'y' * {module.DIAGNOSTIC_LIMIT})\n"
+        )
+        select_runner(exact_runner)
+        outcome, _, _, stdout, stderr, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        require(
+            outcome == "PASS" and len(stdout) == module.DIAGNOSTIC_LIMIT
+            and len(stderr) == module.DIAGNOSTIC_LIMIT
+            and not stdout.endswith(module.TRUNCATION_MARKER)
+            and not stderr.endswith(module.TRUNCATION_MARKER),
+            "exact-cap diagnostics were changed",
+        )
+
+        operational_runner = root / "operational-runner.py"
+        operational_runner.write_text("raise SystemExit(1)\n")
+        select_runner(operational_runner)
+        outcome, _, _, _, _, _ = module.execute_fixture("CANDIDATE", 2_000_000_000)
+        require(outcome == "ERROR", "runner operational failure became a test failure")
+        original_execute = module.execute_fixture
+        module.execute_fixture = lambda _variant, _timeout: ("ERROR", True, True, b"", b"runner failed", 0)
+        operational_request = {
+            "variant": "CANDIDATE", "paired_seed": 100,
+            "environment_policy_sha256": "3" * 64,
+        }
+        operational_measurement = module.measurement(operational_request, rendered, policy, control)
+        module.execute_fixture = original_execute
+        require(
+            operational_measurement["status"] == "ERROR"
+            and operational_measurement["failure_kind"] == "ADAPTER"
+            and operational_measurement["test_status"] == "ERROR"
+            and operational_measurement["generation_to_passing_patch_ns"] is None,
+            "runner operational failure produced a scoreable measurement",
+        )
+        expected_failure_runner = root / "expected-failure-runner.py"
+        expected_failure_runner.write_text("raise SystemExit(4)\n")
+        select_runner(expected_failure_runner)
+        outcome, _, _, _, _, _ = module.execute_fixture("PARENT", 2_000_000_000)
+        require(outcome == "TEST_FAIL", "declared candidate validation failure lost its distinct outcome")
+
+        retained_marker = root / "replacement-runner-ran"
+        retained_runner = root / "retained-runner.py"
+        retained_task = root / "retained-task.json"
+        retained_patch = root / "retained.patch"
+        retained_runner.write_text(
+            "from pathlib import Path\n"
+            "import sys\n"
+            "valid = Path(sys.argv[2]).read_text() == 'admitted task' and "
+            "Path(sys.argv[3]).read_text() == 'admitted patch'\n"
+            "raise SystemExit(0 if valid else 9)\n"
+        )
+        retained_task.write_text("admitted task")
+        retained_patch.write_text("admitted patch")
+        select_runner(retained_runner)
+        module.TASK = retained_task
+        module.TASK_SHA256 = hashlib.sha256(retained_task.read_bytes()).hexdigest()
+        module.PATCHES["CANDIDATE"] = retained_patch
+        module.PATCH_SHA256["CANDIDATE"] = hashlib.sha256(retained_patch.read_bytes()).hexdigest()
+        original_popen = module.subprocess.Popen
+
+        def replace_after_admission(*args, **kwargs):
+            retained_runner.write_text(
+                "from pathlib import Path\n"
+                f"Path({str(retained_marker)!r}).write_text('replacement ran')\n"
+                "raise SystemExit(99)\n"
+            )
+            retained_task.write_text("replacement task")
+            retained_patch.write_text("replacement patch")
+            return original_popen(*args, **kwargs)
+
+        module.subprocess.Popen = replace_after_admission
+        try:
+            outcome, cleanup_passed, containment_passed, _, _, patch_byte_count = module.execute_fixture(
+                "CANDIDATE", 2_000_000_000,
+            )
+        finally:
+            module.subprocess.Popen = original_popen
+        require(
+            outcome == "PASS" and cleanup_passed and containment_passed
+            and patch_byte_count == len("admitted patch") and not retained_marker.exists(),
+            "replacement runner/task/patch crossed the retained adapter boundary",
+        )
+
+    print("prompt fixed adapter: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        print(f"prompt fixed adapter: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)

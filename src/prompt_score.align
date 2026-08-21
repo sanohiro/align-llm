@@ -1,6 +1,8 @@
 module prompt_score
 
 import prompt_artifacts
+import std.crypto
+import std.encoding
 
 // C6c1 is a provider-independent, allocation-free scoring kernel. The public input rows are
 // borrowed Copy records. Output records are exposed as caller-owned scalar columns because the
@@ -1657,6 +1659,25 @@ fn verifier_valid_digest(value: str) -> bool {
   return true
 }
 
+// Git repositories in the supported source boundary may use SHA-1 or SHA-256 object
+// formats. Artifact content digests remain exactly SHA-256.
+fn verifier_valid_source_revision(value: str) -> bool {
+  if value.len() != 40 && value.len() != 64 {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() { break }
+    byte := bytes[index]
+    if !((byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
 fn verifier_valid_text(value: str, maximum: i64) -> bool {
   if value.len() <= 0 || value.len() > maximum {
     return false
@@ -1774,7 +1795,7 @@ fn verifier_trust_observations_valid(borrow trust: prompt_artifacts.PromptVerifi
   align_llm_valid := match trust.align_llm_observed_head {
     None => trust.align_llm_reachability == "UNVERIFIED",
     Some(observed) => {
-      if !verifier_valid_digest(observed) {
+      if !verifier_valid_source_revision(observed) {
         false
       } else if trust.align_llm_reachability == "VERIFIED" {
         observed == trust.expected_align_llm_commit
@@ -1790,7 +1811,7 @@ fn verifier_trust_observations_valid(borrow trust: prompt_artifacts.PromptVerifi
   align_valid := match trust.align_observed_revision {
     None => trust.align_reachability == "UNVERIFIED",
     Some(observed) => {
-      if !verifier_valid_digest(observed) {
+      if !verifier_valid_source_revision(observed) {
         false
       } else if trust.align_reachability == "VERIFIED" {
         observed == trust.expected_align_revision
@@ -1806,7 +1827,12 @@ fn verifier_trust_observations_valid(borrow trust: prompt_artifacts.PromptVerifi
   corpus_valid := match trust.corpus_observed_source_sha256 {
     None => trust.corpus_reachability == "UNVERIFIED",
     Some(observed) => {
-      if !verifier_valid_digest(observed) {
+      observed_valid := if trust.expected_corpus_source_kind == "GIT_COMMIT" {
+        verifier_valid_source_revision(observed)
+      } else {
+        verifier_valid_digest(observed)
+      }
+      if !observed_valid {
         false
       } else if trust.corpus_reachability == "VERIFIED" {
         observed == trust.expected_corpus_source_sha256
@@ -1824,13 +1850,18 @@ fn verifier_trust_valid(borrow trust: prompt_artifacts.PromptVerifierTrust) -> b
   } else {
     trust.expected_corpus_source_kind == "FILE_SET" && trust.expected_corpus_source_repository_id.len() == 0
   }
+  corpus_source_valid := if trust.expected_corpus_source_kind == "GIT_COMMIT" {
+    verifier_valid_source_revision(trust.expected_corpus_source_sha256)
+  } else {
+    verifier_valid_digest(trust.expected_corpus_source_sha256)
+  }
   if trust.schema_version != 1 ||
   trust.artifact_kind != "PROMPT_VERIFIER_TRUST" ||
-  !verifier_valid_digest(trust.expected_align_llm_commit) ||
-  !verifier_valid_digest(trust.expected_align_revision) ||
+  !verifier_valid_source_revision(trust.expected_align_llm_commit) ||
+  !verifier_valid_source_revision(trust.expected_align_revision) ||
   !(trust.expected_corpus_source_kind == "GIT_COMMIT" || trust.expected_corpus_source_kind == "FILE_SET") ||
   !corpus_repository_valid ||
-  !verifier_valid_digest(trust.expected_corpus_source_sha256) ||
+  !corpus_source_valid ||
   !verifier_valid_digest(trust.content_sha256) {
     return false
   }
@@ -1983,10 +2014,15 @@ fn verifier_corpus_revision_valid(borrow revision: prompt_artifacts.CorpusRevisi
   } else {
     revision.source_kind == "FILE_SET" && revision.source_repository_id.len() == 0
   }
+  source_valid := if revision.source_kind == "GIT_COMMIT" {
+    verifier_valid_source_revision(revision.source_sha256)
+  } else {
+    verifier_valid_digest(revision.source_sha256)
+  }
   return revision.schema_version == 1 &&
   revision.artifact_kind == "CORPUS_REVISION" &&
   repository_valid &&
-  verifier_valid_digest(revision.source_sha256) &&
+  source_valid &&
   verifier_valid_digest(revision.content_sha256)
 }
 
@@ -1999,7 +2035,7 @@ fn verifier_scope_valid(borrow scope: prompt_artifacts.PromptScope) -> bool {
   scope.artifact_kind == "PROMPT_SCOPE" &&
   verifier_valid_ascii_identifier(scope.repo_id, 128) &&
   verifier_valid_text(scope.repo_profile_revision, 256) &&
-  verifier_valid_digest(scope.align_revision) &&
+  verifier_valid_source_revision(scope.align_revision) &&
   verifier_valid_ascii_identifier(scope.corpus_id, 128) &&
   verifier_corpus_revision_valid(scope.corpus_revision) &&
   provider_kind_valid &&
@@ -2489,7 +2525,7 @@ fn verifier_task_valid(borrow task: prompt_artifacts.PromptEvaluationTask) -> bo
   task.artifact_kind == "PROMPT_EVALUATION_TASK" &&
   verifier_valid_ascii_identifier(task.task_id, 128) &&
   verifier_valid_ascii_identifier(task.repo_id, 128) &&
-  verifier_valid_digest(task.repo_revision) &&
+  verifier_valid_source_revision(task.repo_revision) &&
   verifier_valid_text(task.repo_path, 4_096) &&
   verifier_valid_text(task.cmd, 4_096) &&
   verifier_valid_text(task.snapshot_cmd, 4_096) &&
@@ -2860,8 +2896,8 @@ fn verifier_environment_core_valid(borrow core: prompt_artifacts.EnvironmentIden
   verifier_valid_text(core.cpu, 256) &&
   cpu_valid &&
   verifier_valid_text(core.gpu, 256) &&
-  verifier_valid_digest(core.align_llm_commit) &&
-  verifier_valid_digest(core.align_revision) &&
+  verifier_valid_source_revision(core.align_llm_commit) &&
+  verifier_valid_source_revision(core.align_revision) &&
   verifier_valid_text(core.measurement_adapter_runtime, 256) &&
   verifier_valid_text(core.snapshot_helper_runtime, 256) &&
   verifier_valid_text(core.source_verifier_runtime, 256) &&
@@ -3006,6 +3042,23 @@ fn verifier_artifact_digest_equal(
   left.sha256 == right.sha256
 }
 
+fn verifier_file_expectation_matches(
+  borrow expectation: prompt_artifacts.ArtifactExpectation,
+  borrow digest: prompt_artifacts.ArtifactDigest,
+) -> bool {
+  mut canonical := buffer(0)
+  canonical.append(digest.mode.bytes())
+  canonical.append(" ".bytes())
+  canonical.append(digest.path.bytes())
+  canonical.append("\0F ".bytes())
+  canonical.append(digest.sha256.bytes())
+  canonical.append("\n".bytes())
+  text := canonical.bytes().as_str() else { return false }
+  hashed := crypto.sha256(text)
+  observed := encoding.hex_encode(hashed[0..hashed.len()])
+  return observed == expectation.expected_sha256
+}
+
 fn verifier_path_is_tree_descendant(path: str, root: str) -> bool {
   path_bytes := path.bytes()
   root_bytes := root.bytes()
@@ -3031,8 +3084,16 @@ fn verifier_snapshot_artifact_closure(
     snapshot.artifact_digests[digest_index].path != request.static_expectations[expectation_index].path {
       return false
     }
-    if snapshot.artifact_digests[digest_index].sha256 !=
-    request.static_expectations[expectation_index].expected_sha256 {
+    digest_matches := if request.static_expectations[expectation_index].kind == "FILE" {
+      verifier_file_expectation_matches(
+        request.static_expectations[expectation_index],
+        snapshot.artifact_digests[digest_index],
+      )
+    } else {
+      snapshot.artifact_digests[digest_index].sha256 ==
+      request.static_expectations[expectation_index].expected_sha256
+    }
+    if !digest_matches {
       return false
     }
     if request.static_expectations[expectation_index].kind == "FILE" {
@@ -3108,7 +3169,7 @@ fn verifier_snapshot_result_valid(borrow snapshot: prompt_artifacts.SnapshotResu
     verifier_valid_text(snapshot.error, 4_096) &&
     if snapshot.error_code == "ENVIRONMENT" {
       match snapshot.environment_probe { None => true, Some(_) => false }
-    } else if snapshot.error_code == "INTERNAL" {
+    } else if snapshot.error_code == "INTERNAL" || snapshot.error_code == "CLEANUP" {
       match snapshot.environment_probe {
         None => false,
         Some(probe) => verifier_environment_probe_valid(probe),
@@ -3156,6 +3217,22 @@ fn verifier_snapshot_result_matches(
   snapshot.task_id == task_id
 }
 
+fn verifier_attestation_reports_environment_drift(
+  borrow attestation: prompt_artifacts.RunSnapshotAttestation,
+  snapshot_sha256: str,
+) -> bool {
+  if attestation.error_code != "ENVIRONMENT_DRIFT" {
+    return false
+  }
+  if attestation.before_snapshot_result_sha256 == snapshot_sha256 {
+    return true
+  }
+  return match attestation.after_snapshot_result_sha256 {
+    None => false,
+    Some(value) => value == snapshot_sha256,
+  }
+}
+
 fn verifier_snapshot_result_environment_valid(
   borrow snapshot: prompt_artifacts.SnapshotResult,
   borrow result: prompt_artifacts.PromptEvaluationResult,
@@ -3171,7 +3248,26 @@ fn verifier_snapshot_result_environment_valid(
       } else {
         match result.environment {
           None => verifier_environment_probe_valid(probe),
-          Some(environment) => verifier_probe_matches_environment(probe, environment),
+          Some(environment) => {
+            if verifier_probe_matches_environment(probe, environment) {
+              true
+            } else {
+              mut index := 0
+              mut attested := false
+              loop {
+                if index >= result.snapshot_attestations.len() { break }
+                if verifier_attestation_reports_environment_drift(
+                  result.snapshot_attestations[index],
+                  snapshot.content_sha256,
+                ) {
+                  attested = true
+                  break
+                }
+                index = index + 1
+              }
+              attested
+            }
+          },
         }
       }
     },
@@ -3535,30 +3631,12 @@ fn verifier_input_digest_is_baseline(
   mut index := 0
   loop {
     if index >= result.input_snapshots.len() { break }
-    if verifier_input_snapshot_is_task_baseline(result.input_snapshots[index], digest, task_id) {
-      return true
-    }
-    if verifier_input_snapshot_has_task(result.input_snapshots[index], task_id) {
-      return false
+    if result.input_snapshots[index].task_id == task_id {
+      return result.input_snapshots[index].content_sha256 == digest
     }
     index = index + 1
   }
   return false
-}
-
-fn verifier_input_snapshot_is_task_baseline(
-  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
-  digest: str,
-  task_id: str,
-) -> bool {
-  return snapshot.task_id == task_id && snapshot.content_sha256 == digest
-}
-
-fn verifier_input_snapshot_has_task(
-  borrow snapshot: prompt_artifacts.TaskInputSnapshot,
-  task_id: str,
-) -> bool {
-  return snapshot.task_id == task_id
 }
 
 fn verifier_complete_status(value: str) -> bool {
@@ -3720,9 +3798,16 @@ fn verifier_workspace_result_trace_valid(
       preflight.error_code == "ESCAPE" ||
       preflight.error_code == "NOT_EMPTY"
     } else {
-      preflight.error_code == "ENVIRONMENT" || preflight.error_code == "INTERNAL"
+      preflight.error_code == "ENVIRONMENT" || preflight.error_code == "INTERNAL" ||
+      preflight.error_code == "CLEANUP"
     }
-    result_code := if preflight.status == "UNSAFE" { "WORKSPACE_UNSAFE" } else { "SNAPSHOT_ERROR" }
+    result_code := if preflight.status == "UNSAFE" {
+      "WORKSPACE_UNSAFE"
+    } else if preflight.error_code == "CLEANUP" {
+      "CLEANUP_FAILED"
+    } else {
+      "SNAPSHOT_ERROR"
+    }
     paths_valid := verifier_valid_bounded_text(preflight.physical_project_root, 4_096) &&
     verifier_valid_bounded_text(preflight.physical_workspace_path, 4_096) &&
     (preflight.physical_project_root.len() == 0 || preflight.physical_workspace_path.len() == 0)
@@ -4239,7 +4324,8 @@ fn verifier_rows_and_attestations_valid(borrow result: prompt_artifacts.PromptEv
     expected := task_samples.checked_mul(2) else { return false }
     if result.rows.len() != expected ||
     result.snapshot_attestations.len() != expected ||
-    result.input_snapshots.len() != result.tasks.len() ||
+    result.input_snapshots.len() < result.tasks.len() ||
+    result.input_snapshots.len() > expected ||
     !verifier_preflight_is_safe(result) {
       return false
     }

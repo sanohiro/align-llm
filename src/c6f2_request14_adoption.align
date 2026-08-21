@@ -1,0 +1,53 @@
+module c6f2_request14_adoption
+
+import prompt_artifact_io
+
+fn large_evidence() -> string {
+  output := builder()
+  mut index := 0
+  loop {
+    if index >= 8_388_608 { break }
+    output.write("e")
+    index = index + 1
+  }
+  return output.to_string()
+}
+
+fn label(value: prompt_artifact_io.PairWriteStatus) -> str {
+  return match value {
+    Published => "PUBLISHED",
+    OutputWrite => "OUTPUT_WRITE",
+    CleanupFailed => "OUTPUT_PAIR_CLEANUP_FAILED",
+  }
+}
+
+fn print_orphan(borrow value: string) {
+  view: str := value
+  print(view)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 {
+    return Err(Error.Invalid)
+  }
+  result := if args[3] == "__result_only__" {
+    result_bytes := if args[5] == "__large__" { large_evidence() } else { args[5].clone() }
+    prompt_artifact_io.publish_prompt_result_bytes_detailed(args[1], args[2], result_bytes)
+  } else {
+    evidence := if args[6] == "__large__" { large_evidence() } else { args[6].clone() }
+    prompt_artifact_io.publish_prompt_pair_bytes_detailed(
+      args[1], args[2], args[3], args[4], args[5], evidence,
+    )
+  }
+  print(label(result.status))
+  mut index := 0
+  loop {
+    if index >= result.surviving_owned_paths.len() { break }
+    print_orphan(result.surviving_owned_paths[index])
+    index = index + 1
+  }
+  if args[7] != label(result.status) {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}

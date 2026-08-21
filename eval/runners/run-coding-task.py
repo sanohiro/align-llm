@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import ctypes
+import fcntl
 import hashlib
 import json
 import os
@@ -84,6 +85,10 @@ CHILD_SUBREAPER_ENABLED = enable_child_subreaper()
 
 class TaskError(Exception):
     pass
+
+
+class CandidateValidationFailed(TaskError):
+    """The candidate reached its declared validation command but did not pass it."""
 
 
 class CommandTimedOut(TaskError):
@@ -424,6 +429,23 @@ def resolve_inside(root: Path, relative: str, label: str) -> Path:
     if not any(candidate == parent or candidate.is_relative_to(parent) for parent in allowed):
         raise TaskError(f"{label} escapes the project and temporary roots")
     return candidate
+
+
+def retained_input_path(value: str, label: str) -> Path:
+    prefix = "/proc/self/fd/"
+    raw = value[len(prefix):] if value.startswith(prefix) else ""
+    if not raw.isascii() or not raw.isdigit() or str(int(raw)) != raw:
+        raise TaskError(f"{label} retained descriptor is invalid")
+    descriptor = int(raw)
+    try:
+        metadata = os.fstat(descriptor)
+        seals = fcntl.fcntl(descriptor, fcntl.F_GET_SEALS)
+    except OSError:
+        raise TaskError(f"{label} retained descriptor is unavailable") from None
+    required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+    if not stat.S_ISREG(metadata.st_mode) or seals != required:
+        raise TaskError(f"{label} retained descriptor is not sealed")
+    return Path(value)
 
 
 def run(
@@ -777,6 +799,9 @@ def validation_sandbox_command(
             _require_sandbox_capability(sandbox_probe_command(namespace_prefix))
             return [
                 *namespace_prefix,
+                "--bind",
+                str(checkout),
+                str(checkout),
                 "--ro-bind",
                 str(checkout / ".git"),
                 str(checkout / ".git"),
@@ -1652,7 +1677,7 @@ def _validate_candidate(
     if index_snapshot(checkout) != candidate_index:
         raise TaskError("validation changed the candidate Git index after repair")
     if after.returncode != 0:
-        raise TaskError("candidate patch did not pass validation")
+        raise CandidateValidationFailed("candidate patch did not pass validation")
 
 
 def validate_candidate(
@@ -1678,14 +1703,22 @@ def validate_candidate(
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: run-coding-task.py TASK_JSON CANDIDATE_PATCH", file=sys.stderr)
+    retained = len(sys.argv) == 4 and sys.argv[1] == "--retained-inputs"
+    if len(sys.argv) != (4 if retained else 3):
+        print("usage: run-coding-task.py [--retained-inputs] TASK_JSON CANDIDATE_PATCH", file=sys.stderr)
         return 2
 
     project_root = Path(__file__).resolve().parents[2]
     try:
-        task_path = resolve_inside(project_root, sys.argv[1], "task descriptor")
-        patch_path = resolve_inside(project_root, sys.argv[2], "candidate patch")
+        offset = 2 if retained else 1
+        task_path = (
+            retained_input_path(sys.argv[offset], "task descriptor")
+            if retained else resolve_inside(project_root, sys.argv[offset], "task descriptor")
+        )
+        patch_path = (
+            retained_input_path(sys.argv[offset + 1], "candidate patch")
+            if retained else resolve_inside(project_root, sys.argv[offset + 1], "candidate patch")
+        )
         task = load_task(task_path)
         source = resolve_inside(project_root, task["source_dir"], "fixture source")
         if not source.is_dir():
@@ -1697,16 +1730,36 @@ def main() -> int:
         # not path components, and may contain separators or be unusually long.
         with tempfile.TemporaryDirectory(prefix="align-llm-coding-task-") as temporary:
             checkout = Path(temporary) / "repository"
+            admitted_patch = patch_path
+            if retained:
+                raw_patch = patch_path.read_bytes()
+                if len(raw_patch) > 2_097_152:
+                    raise TaskError("retained candidate patch exceeds its byte limit")
+                admitted_patch = Path(temporary) / "candidate.patch"
+                descriptor = os.open(
+                    admitted_patch,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    0o600,
+                )
+                try:
+                    written = 0
+                    while written < len(raw_patch):
+                        written += os.write(descriptor, raw_patch[written:])
+                finally:
+                    os.close(descriptor)
             create_pinned_checkout(source, checkout, task["source_revision"])
             print(f"fixture revision: {task['source_revision']}")
             validate_candidate(
                 checkout,
-                patch_path,
+                admitted_patch,
                 task["allowed_edits"],
                 task["validation_argv"],
                 task["validation_timeout_seconds"],
                 task["source_revision"],
             )
+    except CandidateValidationFailed as error:
+        print(f"task error: {error}", file=sys.stderr)
+        return 4
     except TaskError as error:
         print(f"task error: {error}", file=sys.stderr)
         return 1

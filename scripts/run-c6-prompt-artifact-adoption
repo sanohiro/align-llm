@@ -12,6 +12,8 @@ check_output="${temporary_dir}/check.txt"
 "${compiler}" check-per-unit "${project_root}/src/prompt_artifact_io_smoke.align" >"${check_output}"
 
 python3 - "${project_root}/src/prompt_artifacts.align" "${check_output}" <<'PY'
+import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -49,6 +51,7 @@ expected_records = [
     "SeedCapabilityAttestation",
     "CandidateProposal",
     "PromptExperimentResult",
+    "PromptEvaluateRequest",
     "PromptSourceVerifierRequest",
     "PromptSourceVerifierResult",
     "PromptEvaluationCorpus",
@@ -83,7 +86,7 @@ for match in re.finditer(r"^pub ([A-Z][A-Za-z0-9_]*) \{\n(.*?)^\}", source, re.M
     )
 if records != expected_records:
     raise SystemExit(f"artifact graph declaration order mismatch: {records!r}")
-if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (52, 558, 52, 52):
+if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) != (53, 585, 53, 53):
     raise SystemExit(
         "artifact graph shape mismatch: "
         f"records={len(records)} fields={fields} "
@@ -91,7 +94,42 @@ if (len(records), fields, len(decode_functions), len(bounded_encode_functions)) 
     )
 if "ok: checked 3 unit(s) per-unit" not in Path(sys.argv[2]).read_text(encoding="utf-8"):
     raise SystemExit("artifact graph owner did not compile the graph consumer")
+
+policy_preimage = {
+    "schema_version": 1,
+    "artifact_kind": "PROMPT_SOURCE_VERIFIER_POLICY",
+    "policy_id": "policy",
+    "helper_path": "helper.py",
+    "helper_sha256": "helper",
+    "helper_runtime": "CPYTHON:python:helper",
+    "interpreter_sha256": "python",
+    "git_executable_sha256": "git",
+    "content_sha256": "",
+}
+expected_digests = {
+    "base": "0dd53d1036d04149fe85af24cf288f5899e1b5bae18afe377540147dccd9bba8",
+    "helper_sha256": "7e10e0a60f70cd3f41cbeff5cbeef7bb6625ba4cc59af5b45db90cafe1927da4",
+    "helper_runtime": "e6616bd4905eb688e07cfbfaa589328bda92979608c5b33e7825737554a0eefc",
+    "interpreter_sha256": "6bbeb077f37a2f4428e17fe81890a1c97fb686e021d2943e67fbbb765343fd27",
+    "git_executable_sha256": "7c30995397e7504df0a4bce0b90564d4c473eaa5e6e1fb266b050de9669489c5",
+}
+def canonical_digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+if canonical_digest(policy_preimage) != expected_digests["base"]:
+    raise SystemExit("source-verifier policy base digest golden changed")
+for field, replacement in (
+    ("helper_sha256", "helper-2"),
+    ("helper_runtime", "CPYTHON:python-2:helper"),
+    ("interpreter_sha256", "python-2"),
+    ("git_executable_sha256", "git-2"),
+):
+    mutated = dict(policy_preimage)
+    mutated[field] = replacement
+    if canonical_digest(mutated) != expected_digests[field]:
+        raise SystemExit(f"source-verifier policy {field} digest golden changed")
 PY
+
+"${compiler}" run "${project_root}/src/prompt_runtime_schema_smoke.align"
 
 variant_output="${temporary_dir}/variant.json"
 "${compiler}" run "${project_root}/src/prompt_artifact_io_smoke.align" "${variant_fixture}" >"${variant_output}"

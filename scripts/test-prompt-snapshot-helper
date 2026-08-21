@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""Focused C6f1 workspace and snapshot helper owner tests."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import shlex
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+HELPER = ROOT / "scripts" / "prompt-snapshot-helper.py"
+GIT = Path(os.environ.get("ALIGN_LLM_TOOL_ROOT", "/usr/bin")) / "git"
+
+
+def git_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_GRAFT_FILE"):
+        environment.pop(name, None)
+    return environment
+
+
+def fixture_git(*arguments: str, **options):
+    return subprocess.run(
+        [str(GIT), *arguments], check=True, env=git_environment(), **options
+    )
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def canonical_digest_item(value):
+    if isinstance(value, dict):
+        return {key: canonical_digest_item(child) for key, child in value.items() if child is not None}
+    if isinstance(value, list):
+        return [canonical_digest_item(child) for child in value]
+    return value
+
+
+def bind(value):
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(canonical(canonical_digest_item(value))).hexdigest()
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def tree_digest(project: Path, relative: str) -> str:
+    root = project / relative
+    entries = [(relative, root, "D")]
+    for directory, names, files in os.walk(root):
+        names.sort(key=os.fsencode)
+        files.sort(key=os.fsencode)
+        parent = Path(directory).relative_to(project).as_posix()
+        entries.extend((f"{parent}/{name}", Path(directory) / name, "D") for name in names)
+        entries.extend((f"{parent}/{name}", Path(directory) / name, "F") for name in files)
+    output = bytearray()
+    for name, path, kind in sorted(entries):
+        metadata = path.stat()
+        mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}"
+        output.extend(f"{mode} {name}".encode() + b"\0" + kind.encode())
+        if kind == "F":
+            output.extend(b" " + hashlib.sha256(path.read_bytes()).hexdigest().encode())
+        output.extend(b"\n")
+    return hashlib.sha256(output).hexdigest()
+
+
+def file_digest(project: Path, relative: str) -> str:
+    path = project / relative
+    metadata = path.stat()
+    mode = f"{stat.S_IFMT(metadata.st_mode) | stat.S_IMODE(metadata.st_mode):06o}"
+    content = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(f"{mode} {relative}\0F {content}\n".encode()).hexdigest()
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="prompt-snapshot-") as directory:
+        root = Path(directory)
+        project = root / "project"
+        project.mkdir()
+        workspace = project / "workspace"
+        workspace.mkdir()
+        (project / "input.txt").write_text("input")
+
+        preflight = {
+            "schema_version": 1, "artifact_kind": "WORKSPACE_PREFLIGHT_REQUEST",
+            "evaluation_id": "eval", "project_root": str(project),
+            "workspace_path": str(workspace), "content_sha256": "",
+        }
+        bind(preflight)
+        preflight_path = root / "preflight.json"
+        preflight_path.write_bytes(canonical(preflight))
+        completed = subprocess.run(
+            [str(HELPER), "--workspace-preflight-request", str(preflight_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(completed.stdout)
+        require(completed.returncode == 0 and result["status"] == "SAFE", "empty workspace was not safe")
+
+        digest = file_digest(project, "input.txt")
+        snapshot = {
+            "schema_version": 1, "artifact_kind": "SNAPSHOT_REQUEST", "task_id": "task",
+            "project_root": str(project), "repo_path": str(project), "repo_revision": "0" * 40,
+            "require_clean_repo": False,
+            "static_expectations": [{"path": "input.txt", "kind": "FILE", "expected_sha256": digest}],
+            "additional_files": [], "workspace_path": str(workspace), "allowed_workspace_entries": [],
+            "content_sha256": "",
+        }
+        bind(snapshot)
+        snapshot_path = root / "snapshot.json"
+        result_path = root / "result.json"
+        snapshot_path.write_bytes(canonical(snapshot))
+        completed = subprocess.run(
+            [str(HELPER), "--snapshot-request", str(snapshot_path), "--result", str(result_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(result_path.read_text())
+        require(completed.returncode == 0 and result["status"] == "MATCH", "valid snapshot did not match")
+        require(
+            result["artifact_digests"][0]["sha256"]
+            == hashlib.sha256((project / "input.txt").read_bytes()).hexdigest(),
+            "snapshot digest changed",
+        )
+
+        tree = project / "tree"
+        tree.mkdir()
+        (tree / "empty").mkdir()
+        (tree / "value.txt").write_text("tree value")
+        snapshot["static_expectations"] = [
+            {"path": "tree", "kind": "TREE", "expected_sha256": tree_digest(project, "tree")}
+        ]
+        bind(snapshot)
+        snapshot_path.write_bytes(canonical(snapshot))
+        result_path.unlink()
+        completed = subprocess.run(
+            [str(HELPER), "--snapshot-request", str(snapshot_path), "--result", str(result_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(result_path.read_text())
+        require(completed.returncode == 0 and result["status"] == "MATCH", "valid tree snapshot did not match")
+        require(result["artifact_digests"][0]["path"] == "tree", "tree root was not first")
+        require(any(item["path"] == "tree/empty" for item in result["artifact_digests"]), "empty tree directory was omitted")
+
+        (workspace / "intruder").write_text("x")
+        result_path.unlink()
+        completed = subprocess.run(
+            [str(HELPER), "--snapshot-request", str(snapshot_path), "--result", str(result_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(result_path.read_text())
+        require(
+            completed.returncode == 0 and result["status"] == "MISMATCH" and result["error_code"] == "PATH",
+            "undeclared workspace entry matched",
+        )
+
+        preflight["evaluation_id"] = "tampered"
+        preflight_path.write_bytes(canonical(preflight))
+        completed = subprocess.run(
+            [str(HELPER), "--workspace-preflight-request", str(preflight_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(completed.returncode != 0 and not completed.stdout, "tampered preflight request was accepted")
+
+        module_spec = importlib.util.spec_from_file_location("prompt_snapshot_descendants", HELPER)
+        require(module_spec is not None and module_spec.loader is not None, "snapshot helper module could not be loaded")
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+
+        mismatch = dict(snapshot)
+        mismatch["allowed_workspace_entries"] = ["intruder"]
+        mismatch["static_expectations"] = [{
+            "path": "input.txt", "kind": "FILE", "expected_sha256": file_digest(project, "input.txt"),
+        }]
+        original_mode = stat.S_IMODE((project / "input.txt").stat().st_mode)
+        (project / "input.txt").chmod(0o755)
+        require(
+            module.snapshot(mismatch)["error_code"] == "MODE",
+            "FILE mode mismatch did not retain its exact code",
+        )
+        (project / "input.txt").chmod(original_mode)
+        mismatch["static_expectations"][0]["expected_sha256"] = "f" * 64
+        require(
+            module.snapshot(mismatch)["error_code"] == "CONTENT",
+            "FILE content mismatch did not retain its exact code",
+        )
+        mismatch["static_expectations"] = [{
+            "path": "missing.txt", "kind": "FILE", "expected_sha256": "f" * 64,
+        }]
+        require(module.snapshot(mismatch)["error_code"] == "PATH", "missing FILE did not retain PATH")
+        mismatch["static_expectations"] = [{
+            "path": "tree", "kind": "FILE", "expected_sha256": "f" * 64,
+        }]
+        require(module.snapshot(mismatch)["error_code"] == "TYPE", "directory FILE did not retain TYPE")
+        mismatch["static_expectations"] = [{
+            "path": "tree", "kind": "TREE", "expected_sha256": "f" * 64,
+        }]
+        require(module.snapshot(mismatch)["error_code"] == "TREE", "TREE mismatch did not retain TREE")
+
+        repo = project / "repo"
+        repo.mkdir()
+        (repo / "tracked").write_text("tracked")
+        fixture_git("init", "-q", str(repo))
+        fixture_git("-C", str(repo), "add", "tracked")
+        fixture_git(
+            "-C", str(repo), "-c", "user.name=fixture",
+            "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture",
+        )
+        revision = fixture_git(
+            "-C", str(repo), "rev-parse", "HEAD", text=True, stdout=subprocess.PIPE,
+        ).stdout.strip()
+        mismatch["repo_path"] = str(repo)
+        mismatch["require_clean_repo"] = True
+        mismatch["repo_revision"] = "0" * 40
+        mismatch["static_expectations"] = [{
+            "path": "input.txt", "kind": "FILE", "expected_sha256": file_digest(project, "input.txt"),
+        }]
+        def external_snapshot(value):
+            bind(value)
+            snapshot_path.write_bytes(canonical(value))
+            result_path.unlink(missing_ok=True)
+            completed = subprocess.run(
+                [str(HELPER), "--snapshot-request", str(snapshot_path), "--result", str(result_path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            require(completed.returncode == 0, "repository mismatch helper process failed")
+            return json.loads(result_path.read_text())
+
+        repository_mismatch = external_snapshot(mismatch)
+        require(
+            repository_mismatch["error_code"] == "REPO_REVISION",
+            f"repository revision mismatch did not retain its exact code: {repository_mismatch!r}",
+        )
+        mismatch["repo_revision"] = revision
+        (repo / "dirty").write_text("dirty")
+        require(
+            external_snapshot(mismatch)["error_code"] == "DIRTY_REPO",
+            "dirty repository mismatch did not retain its exact code",
+        )
+
+        bounded_tree = project / "bounded-tree"
+        bounded_tree.mkdir()
+        for index in range(127):
+            (bounded_tree / f"f{index:03d}").write_bytes(b"")
+        snapshot["static_expectations"] = [{
+            "path": "bounded-tree", "kind": "TREE",
+            "expected_sha256": tree_digest(project, "bounded-tree"),
+        }]
+        snapshot["additional_files"] = []
+        snapshot["allowed_workspace_entries"] = ["intruder"]
+        bounded = module.snapshot(snapshot)
+        require(bounded["status"] == "MATCH", "exactly 128 expanded tree entries were rejected")
+        (bounded_tree / "f127").write_bytes(b"")
+        snapshot["static_expectations"][0]["expected_sha256"] = tree_digest(project, "bounded-tree")
+        bind(snapshot)
+        require(module.snapshot(snapshot)["status"] == "ERROR", "129 expanded tree entries were accepted")
+        (bounded_tree / "f127").unlink()
+
+        byte_file = project / "byte-cap"
+        byte_file.write_bytes(b"1234")
+        snapshot["static_expectations"] = [{
+            "path": "byte-cap", "kind": "FILE",
+            "expected_sha256": file_digest(project, "byte-cap"),
+        }]
+        bind(snapshot)
+        original_byte_cap = module.MAX_ARTIFACT_BYTES
+        module.MAX_ARTIFACT_BYTES = 4
+        require(module.snapshot(snapshot)["status"] == "MATCH", "exact aggregate byte cap was rejected")
+        byte_file.write_bytes(b"12345")
+        snapshot["static_expectations"][0]["expected_sha256"] = file_digest(project, "byte-cap")
+        bind(snapshot)
+        require(module.snapshot(snapshot)["status"] == "ERROR", "aggregate byte cap plus one was accepted")
+        module.MAX_ARTIFACT_BYTES = original_byte_cap
+
+        repository = root / "repository"
+        fixture_git("init", "-q", str(repository))
+        fixture_git("-C", str(repository), "config", "user.email", "snapshot@example.invalid")
+        fixture_git("-C", str(repository), "config", "user.name", "Snapshot Test")
+        (repository / "tracked").write_text("tracked")
+        fixture_git("-C", str(repository), "add", "tracked")
+        fixture_git("-C", str(repository), "commit", "-qm", "initial")
+        repository_head = fixture_git(
+            "-C", str(repository), "rev-parse", "HEAD", stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        fsmonitor_marker = root / "fsmonitor-ran"
+        fsmonitor = root / "fsmonitor"
+        fsmonitor.write_text(f"#!/bin/sh\nprintf x > {shlex.quote(str(fsmonitor_marker))}\n")
+        fsmonitor.chmod(0o755)
+        fixture_git("-C", str(repository), "config", "core.fsmonitor", str(fsmonitor))
+        try:
+            module.git_identity(repository, repository_head, True)
+            raise RuntimeError("command-bearing local Git config was accepted")
+        except module.SnapshotError:
+            pass
+        require(not fsmonitor_marker.exists(), "local core.fsmonitor executed before rejection")
+        fixture_git("-C", str(repository), "config", "--unset", "core.fsmonitor")
+        module.reject_git_extensions(repository)
+        included_config = root / "included-git-config"
+        included_config.write_text("[core]\n\tfsmonitor = /bin/false\n")
+        fixture_git("-C", str(repository), "config", "include.path", str(included_config))
+        try:
+            module.git_identity(repository, repository_head, True)
+            raise RuntimeError("local Git include configuration was accepted")
+        except module.SnapshotError:
+            pass
+
+        original_cleanup = module.cleanup_process_group
+        original_reject_git_extensions = module.reject_git_extensions
+        cleanup_calls = 0
+
+        def counted_cleanup(process, maximum_seconds=2.0):
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+            return original_cleanup(process, maximum_seconds)
+
+        module.cleanup_process_group = counted_cleanup
+        module.reject_git_extensions = lambda repository: None
+        marker = root / "snapshot-git-descendant-survived"
+        descendant_git = root / "descendant-git"
+        descendant_git.write_text(
+            "#!/bin/sh\n"
+            f"setsid sh -c 'exec >/dev/null 2>&1; sleep 0.6; printf x > {shlex.quote(str(marker))}' &\n"
+            "exit 1\n"
+        )
+        descendant_git.chmod(0o755)
+        try:
+            module.git_identity(project, "0" * 40, True, descendant_git)
+            raise RuntimeError("snapshot Git descendant was accepted")
+        except module.SnapshotError:
+            pass
+        require(cleanup_calls == 1, "snapshot Git descendant cleanup was not exactly once")
+        time.sleep(0.8)
+        require(not marker.exists(), "snapshot helper left a Git descendant alive")
+        module.reject_git_extensions = original_reject_git_extensions
+
+    print("prompt snapshot helper: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        print(f"prompt snapshot helper: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)

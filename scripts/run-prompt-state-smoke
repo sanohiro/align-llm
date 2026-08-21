@@ -48,6 +48,30 @@ def bind_scope(value, variant):
 
 
 def canonicalize_evaluation(value):
+    digests_by_path = {
+        digest["path"]: digest
+        for snapshot in value["snapshot_results"]
+        for digest in snapshot["artifact_digests"]
+    }
+    tree_roots = set()
+    for request in value["snapshot_requests"]:
+        for expectation in request["static_expectations"]:
+            if expectation["kind"] == "TREE":
+                tree_roots.add(expectation["path"])
+            else:
+                observed = digests_by_path[expectation["path"]]
+                canonical = (
+                    f"{observed['mode']} {observed['path']}\0F {observed['sha256']}\n"
+                ).encode("utf-8")
+                expectation["expected_sha256"] = hashlib.sha256(canonical).hexdigest()
+        next(
+            task for task in value["tasks"] if task["task_id"] == request["task_id"]
+        )["artifacts"] = copy.deepcopy(request["static_expectations"])
+    for owner in value["snapshot_results"] + value["input_snapshots"]:
+        for digest in owner["artifact_digests"]:
+            if digest["path"] in tree_roots:
+                digest["mode"] = "040755"
+                digest["byte_count"] = 0
     bind_variant(value["parent_variant"])
     bind_variant(value["candidate_variant"])
     bind_scope(value["scope"], value["parent_variant"])
