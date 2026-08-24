@@ -5,7 +5,33 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-24)
 
-- No capability is actively in implementation. C6-EVALUATION merged as align-llm PR #100
+- C6-MEASURED (C6e/C6g1/C6g2) is implemented on branch `agent/c6-measured`, head
+  `1d9daedc1ca5459507234ae3edafffefb5235780`, and is not yet published. The measured gate is real
+  and green: `scripts/prompt-gate-validator.py` exits 0 against the checked-in `eval/prompt/gate/`
+  bundle with all five explicit inputs.
+- The frozen `eval/prompt/canonical-v1/` scope now names a real provider: `LOCAL_OPENAI` on
+  `http://127.0.0.1:18080/v1/chat/completions`, model `qwen2.5-coder-7b-instruct-q4_k_m`,
+  `api_key_env: null`. `provider_service_revision` carries llama.cpp `b10610` /
+  `a14dba686aaafba3a2d6b5eb8820b0df5c5d2d92`, the `llama-server` digest, and the model digest.
+- Measured result (`c6g2-measure`): `IMPROVED`, `gate_eligible: true`, zero serious regressions,
+  completion gain 2. `duration-half-away-from-zero` moves 0/2 -> 2/2 under a model-proposed
+  candidate that enables the context sections; the other two tasks fail in both variants. A
+  parent-vs-parent null replicate over the same corpus flipped no cell.
+- The gate run found and repaired five shipped defects no fixture reaches: three canonical
+  `Option::None`-omission mismatches (experiment-result decode, aggregate optional set, and the
+  activation-lineage identity the gate validator compared against the envelope instead of the
+  nested activation), a stale `c6-prompt-state` fixture that left `prompt-state-smoke` red on the
+  hosted lane at `52aefeb` and `19c6bed`, an overlapping automatic snapshot path set, and a 2 MiB
+  sealed-input cap that could never admit the derived generation child. Repairing the measurement
+  adapter rebound the frozen digest chain; only digest bindings moved.
+- Next actions, in order: (1) one comprehensive review of the branch; (2) publish the pull request
+  with the measured claim, the per-cell matrix, and the validator transcript; (3) wire the
+  `C6_GATE_*` values into a real `make ci` gate target, which is still `@exit 1`.
+- The measurement environment is a privileged `linux/arm64` container (`c6g2-measure:latest`) with
+  `bubblewrap` installed at run time; the image does not ship it and the validation runner requires
+  it. Docker's default seccomp/AppArmor blocks the runner's user namespaces, so the container needs
+  `--privileged`. Both are environment facts, not repository state.
+- C6-EVALUATION merged as align-llm PR #100
   (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head
   `049172f5be57002c2426f012fe23038f570f5069` in pull-request CI run 32490981785, including both
   installed native profiles; main push run 32493880784 reused that exact evidence on the merge
