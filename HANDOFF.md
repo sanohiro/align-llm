@@ -19,7 +19,7 @@ file records durable project state.
   consumers (C6e/C6g1 provider timeouts and the C7 owned-JSON consumer); both surfaces are already
   contained in the current pin, so no pin bump is required to adopt them. Every open Align request
   now has a merged Align-side surface; no request is `PROPOSED`, `ACCEPTED`, or `IMPLEMENTING`.
-- The C6-EVALUATION candidate drives the deterministic two-task corpus through source/workspace verification,
+- The merged C6-EVALUATION capability drives the deterministic two-task corpus through source/workspace verification,
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
   result-only; operational failures retain the exact valid trace prefix and paired evidence. Its
@@ -27,7 +27,7 @@ file records durable project state.
   nested deadline hierarchy, pre-allocation result binding, validation precedence, and capable-gate
   execution as one runtime-containment axis. The final ownership review additionally reopened exact
   per-invocation workspace admission, cleanup-before-pair construction, immediate publication-owner
-  retirement, and bounded FILE_SET decimal decoding on that same axis. The revised candidate binds
+  retirement, and bounded FILE_SET decimal decoding on that same axis. The merged implementation binds
   and descriptor-launches the exact CPython/helper/Git bytes, gives nested owners cleanup/report
   margins, streams canonical result binding, proves private process-group absence, admits only the
   current invocation's four workspace names, constructs terminal evidence after owned cleanup,
@@ -120,7 +120,7 @@ file records durable project state.
 
 ## Latest durable verification
 
-- C6-EVALUATION candidate owners `gmake --no-print-directory c6-evaluation-adoption`,
+- Pre-merge C6-EVALUATION owners `gmake --no-print-directory c6-evaluation-adoption`,
   `gmake --no-print-directory c6-prompt-artifact-adoption`, `gmake --no-print-directory check`, and
   `gmake --no-print-directory format-check`: PASS at Align
   `19c3db144c462bf7d6784f88d64cc124229b7ec2` after the reopened
@@ -156,9 +156,9 @@ file records durable project state.
   snapshot-result bounds. Source `06e5e28b2892`, oracle `b8f6e0ece59b`, and finalization
   `d40cab8bdbf4` form its passing replacement identity-bound baseline chain. Subsequent gate
   integration made the request fixtures portable, bound fresh tools and the authenticated Git view,
-  and preserved the aggregate's output-only overlay contract. Preflight and the final capable gate
-  remain pending; the one full-diff review is the §10.1k finding ledger and no further discovery
-  review is planned. Focused evidence covers Request 11 exact-cap,
+  and preserved the aggregate's output-only overlay contract. Exact-head preflight and the final
+  capable gate passed at head `049172f5be57` (CI run 32490981785) before the PR #100 merge; the one
+  full-diff review is the §10.1k finding ledger. Focused evidence covers Request 11 exact-cap,
   over-cap, timeout, post-EOF, concurrent, and descendant cleanup; Request 14 collision, competing
   creator, special-file, reverse-cleanup, and exact owned-orphan recovery; source identity and local
   Git isolation; workspace/snapshot mismatch and drift; adapter failure prefixes; result-only

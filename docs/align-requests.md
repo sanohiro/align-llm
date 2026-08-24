@@ -4131,9 +4131,9 @@ running after every checkpoint. Adoption does not silently inherit another consu
 Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
-Blocked gate or slice: C7's named `C7-PERSISTED-RESULT` consumer capability remains blocked only on the sibling pin/adoption wave; the reviewed consumer design is `docs/specs/c7-persisted-result.md`; C6 remains independent
-Independent work that may continue: application designs, C6 work, other Align requests, and any consumer that does not require the unpinned direct-owned JSON shape
-Resume condition: after the applicable FRESH-WORKER/FRESH-IMAGE/platform profiles have merged, the C7-PERSISTED-RESULT branch rebuilds the sibling release compiler/runtime and pins it with any other merged prerequisites, runs the named C7 adoption fixture before product code consumes the surface, implements the consumer on the same branch, and closes with the original C7 lifetime/artifact qualification plus one final `make ci`.
+Blocked gate or slice: C7's named `C7-PERSISTED-RESULT` consumer capability remains blocked only on its own adoption gate; the reviewed consumer design is `docs/specs/c7-persisted-result.md`; C6 remains independent
+Independent work that may continue: application designs, C6 work, other Align requests, and any consumer that does not require the direct-owned JSON shape
+Resume condition: the C7-PERSISTED-RESULT branch runs the named C7 adoption fixture against the existing pin `19c3db144c462bf7d6784f88d64cc124229b7ec2`, which already contains implementation PR #852, before product code consumes the surface; it implements the consumer on the same branch and closes with the original C7 lifetime/artifact qualification plus one final `make ci`. No sibling rebuild or pin bump is required unless a later prerequisite joins the wave.
 Align commit or pull request: accepted Align plan `../align/docs/impl/24-owned-json-plan.md`; design PR #851 merged as `7f435ae9b228fc9a4ce047e9d64d5b99feeea60c`; implementation PR #852 merged as `2bb93a93a2f30da1daabd5b65d83863dab617560`
 align-llm verification: pending
 ```
@@ -4158,10 +4158,10 @@ scanner, and fixed-array routes remain separate. Nested records, record arrays, 
 this owned route; Request 13 owns any later recursive C6 graph widening.
 
 The Align-side release build completed on merged `main` with exactly
-`cargo build --release --workspace`. Request 9 remains pending only
-for the sibling repository's exact compiler/runtime pin, `C7-PERSISTED-RESULT` adoption fixture,
-consumer lifetime/artifact qualification, and final `make ci`; those steps own advancement to
-`ALIGN_LLM_VERIFIED` and `CLOSED`.
+`cargo build --release --workspace`. The shipped surface is contained in the current pin
+`19c3db144c462bf7d6784f88d64cc124229b7ec2`; Request 9 remains pending only for the
+`C7-PERSISTED-RESULT` adoption fixture, consumer lifetime/artifact qualification, and final
+`make ci`; those steps own advancement to `ALIGN_LLM_VERIFIED` and `CLOSED`.
 
 ### Motivation
 
