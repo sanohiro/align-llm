@@ -5796,7 +5796,7 @@ Code generation owns effectively all of that: the produced program prints one li
 
 The compiler's own diagnostics point at the shape it is struggling with. The same `check` emits 345
 `huge struct copy` warnings over exactly two kinds — by-value parameter passing and by-value return
-— across 23 distinct record types, and 100 of the 345 name one 5,056-byte record
+— across 39 distinct record types, and 100 of the 345 name one 5,056-byte record
 (`prompt_artifacts$PromptEvaluationResult`); the remaining sizes run 504, 632, 736, 744, 864, 960,
 and 1,120 bytes. Nothing in the unit is recursive, generic, or reflective: it is a wide, flat graph
 of large by-value aggregates, and the cost appears to be superlinear in the copy count times the

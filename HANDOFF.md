@@ -14,9 +14,10 @@ file records durable project state.
   `e935790` (regenerated gate evidence), and `e14c472` (measurement record). The measured gate is
   real and green at the repaired head: `make prompt-gate-check` with all five explicit `C6_GATE_*`
   values exits 0 (`prompt gate validator: PASS`) against the regenerated `eval/prompt/gate/` bundle.
-- **Open blocker: the supervised fresh-worker `make ci` does not pass.**
+- **Open blocker: the supervised fresh-worker `make ci` still does not pass.** The first cause was
+  found and removed; a second, independent cause remains.
   `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker`
-  reaches `worker-aggregate` and fails with `fresh compiler: ERROR CHILD aggregate` after
+  reached `worker-aggregate` and failed with `fresh compiler: ERROR CHILD aggregate` after
   907,847 ms at `e14c472b11abcbb2368a93d1fd4c97d3554f11e4`, and identically after 981,841 ms at the
   pre-repair reviewed head `535be1087622dfd05481503d5f5d933555c06953`. It is therefore a
   pre-existing C6-MEASURED wave gap, not a review-repair regression: the C6-MEASURED additions to
@@ -26,10 +27,33 @@ file records durable project state.
   temporary-store envelope with `ALIGNC_CACHE=off` (peak `TMPDIR` use 19.5 MB, in
   `prompt-gate-validator-smoke`), and a full owner run leaves the workspace clean apart from
   `./main`, so neither the per-target behavior, the temporary-store bounds, nor the overlay
-  single-entry rule explains it. The supervisor emits only the canonical
-  `fresh compiler: ERROR <category> <phase>` line, so the failing target inside the bwrap sandbox is
-  not observable from outside; diagnosing it needs a bounded diagnostic seam in
-  `scripts/fresh-align-compiler` or `image/fresh/control/`, which is its own capability.
+  single-entry rule explains it.
+- **Cause 1, removed: resource pressure from `prompt-verifier-smoke`.** A high-fidelity
+  reproduction of the exact aggregate environment ran `make capable-checks` to `exit=0` in 890 s
+  with a clean workspace-upper (only `./main`), of which roughly 780 s was that one smoke. The
+  pinned compiler needs about 720 s and a 1,525,732 KiB peak resident set to code-generate
+  `src/prompt_verifier_smoke.align`, against 0.494 s for `alignc check` of the same unit. The
+  member was demoted to a named focused qualification (see the lane entry below), and the aggregate
+  cost came back inside its historical band.
+- **Cause 2, open and not yet identified.** At head `55282a8` the same qualification still fails at
+  `worker-aggregate`, now after 191,760 ms in that phase and 537,636 ms for the whole installed
+  profile (previously 907,847 ms). Historical green worker-aggregate phases were 172,039 ms and
+  179,830 ms, so the demotion restored the cost band but did not make the aggregate pass. Roughly
+  130-150 s of the 192 s is private staging plus the fresh Cargo compiler build, so `capable-checks`
+  ran for on the order of a minute before failing — that is partway through the graph, not at its
+  start and not at its end. The failing target is still not named by any observable output.
+- **Why the new diagnostic seam did not name it.** `scripts/fresh-align-compiler` now emits the
+  bounded tail of the aggregate child's already-captured streams when
+  `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1` is present, and `run-fresh-worker-unit-smoke` proves it. The
+  opt-in cannot currently reach the worker, and the worker's stderr cannot currently reach the
+  caller, for two image-owned reasons: `image/fresh/control/fresh_image_control.py` launches the
+  worker with the fixed `WORKER_ENVIRONMENT` dict and the worker rejects anything but
+  `EXPECTED_ENVIRONMENT` exactly (`fresh-align-compiler`, `worker()`); and that same controller
+  discards the worker's streams on failure — `if result.returncode != 0 or result.stderr or ...`
+  raises `ControlError("CHILD", "aggregate", ...)`, and `_emit_error` prints only the canonical
+  line. Closing that path means changing image-owned worker-environment construction and controller
+  error propagation, which is its own capability, exactly as previously scoped. The worker-side half
+  is now in place and is inert until it lands.
 - Slice E landed the final integration wiring. The section 11.3 owner targets are now
   `HOSTED_CHECK_TARGETS` members — `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`,
   `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
@@ -57,11 +81,28 @@ file records durable project state.
   replacement chain is source `6f937fb4bb4a596afd0540b5b37415d65d5dbb3c`, oracle
   `182fa3c9a537884f59cf9257d91c884d3732d1ca`, and finalization
   `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`; it was appended, not rewritten. Adding
-  `prompt-render-parity-smoke` to the lane changed the `Makefile` again, so the current chain is
+  `prompt-render-parity-smoke` to the lane changed the `Makefile` again, so the next chain was
   source `ba47abdb01776d10f041c0d3e3f36edc67034993`, oracle
   `656a5bf9609762b899c4e841de7529bfde2ec5c2`, and finalization
-  `8ddea8a03b817404e68a23e8ce1f39534b7abd13`; it was appended the same way and
+  `8ddea8a03b817404e68a23e8ce1f39534b7abd13`; it was appended the same way. Removing
+  `prompt-verifier-smoke` from the lane changed the `Makefile` once more, so the **current** chain
+  is source `ebcc8d5c384c9a6c30619637018c7c9d07270192`, oracle
+  `f5158d5741bc912dbc0324f5138eb7e8c216a6dd`, and finalization
+  `55282a8` — appended, never amended — recorded on native Linux `aarch64` in the privileged
+  `c6g2-measure:latest` container with `bubblewrap` installed, non-root, `umask 022`,
+  `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the source commit. Both deterministic-reference
+  samples pass: 134,471,000-140,342,375 ns, median 137,406,687 ns.
   `scripts/check-baseline-chain` passes on it.
+- **`prompt-verifier-smoke` is no longer a hosted-lane member.** It stays a `.PHONY` public target
+  and the direct C6c2 owner with unchanged coverage, and is now a **named focused qualification**
+  owned by the section 10 verifier boundary in `src/prompt_score.align`: run
+  `make prompt-verifier-smoke` when that boundary changes and before publishing such a change. It
+  is not reached by `hosted-checks`, `capable-checks`, or `ci`. The same change refreshed the
+  `Makefile` list, `scripts/check-gate-topology`'s `EXPECTED` bytes and `exact_environment()`
+  self-test copy, the `docs/specs/check-gate-topology.md` `hosted=` oracle and prose, section 11.3
+  of `docs/specs/c6-prompt-context-optimizer.md`, and the baseline chain. The compiler-side gap is
+  recorded as `docs/align-requests.md` Request 19 (`PROPOSED`, non-blocking); the member rejoins the
+  lane when it closes.
 - **Closed: `prompt-render-parity-smoke` is no longer an orphan.** It is now a
   `HOSTED_CHECK_TARGETS` member beside `prompt-model-smoke`, section 11.3 names it as the
   renderer-parity owner, and the same change refreshed the `EXPECTED` lane bytes, the
@@ -135,8 +176,10 @@ file records durable project state.
   gate advanced Requests 11 and 14, and C6-MEASURED Slice E advanced Request 2 once
   `c6e-request2-adoption` and the wave's final capable gate both passed. Only Request 9 remains
   `ALIGN_MERGED`, for its later named C7 owned-JSON consumer; that surface is already contained in
-  the current pin, so no pin bump is required to adopt it. Every open Align request now has a merged
-  Align-side surface; no request is `PROPOSED`, `ACCEPTED`, or `IMPLEMENTING`.
+  the current pin, so no pin bump is required to adopt it. C6-MEASURED then added Request 19, a
+  compiler code-generation performance gap, as the register's only `PROPOSED` entry; it is
+  non-blocking because its consumer was demoted out of the hosted lane. Every other open Align
+  request has a merged Align-side surface, and none is `ACCEPTED` or `IMPLEMENTING`.
 - The merged C6-EVALUATION capability drives the deterministic two-task corpus through source/workspace verification,
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
@@ -238,6 +281,30 @@ file records durable project state.
 
 ## Latest durable verification
 
+- C6-MEASURED aggregate-cost repair at head `55282a8` (2026-08-25). Host (macOS, managed pinned
+  toolchain): `gmake check` (22 units per-unit), `gmake gate-topology-check`, `gmake format-check`,
+  `gmake prompt-seed-attestation-smoke` (now 0 bytes on stderr), `git diff --check`, and
+  `python3 scripts/check-baseline-chain` (`baseline chain: PASS`): PASS. A direct probe also proves
+  `scripts/check-gate-topology`'s `exact_environment()` self-test copy still reproduces `EXPECTED`
+  byte-for-byte after the lane change.
+- Native Linux `aarch64` inside the privileged `c6g2-measure:latest` container, non-root with
+  `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of `ebcc8d5`:
+  `make gate-topology-check`, `python3 scripts/run-fresh-worker-unit-smoke` (includes the new
+  aggregate-diagnostic seam case), and `python3 scripts/test-development-preflight`: PASS.
+  `make prompt-verifier-smoke` also PASS as a direct invocation, in 719 s with a 1,525,732 KiB peak
+  resident set — the measurement behind its demotion.
+- `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker
+  --align-repo /Users/hiro/Projects/align` at head `55282a8`: **FAIL**. Phases:
+  `docker-daemon` 540 ms, `image-build` 20,497 ms, `image-attestation` 3,684 ms,
+  `profile-lifecycle` 2,657 ms, `profile-self-test` 14,642 ms, `trust-mutations` 12,299 ms,
+  `runtime-replacements` 21,970 ms, `boundary-profile` 266,754 ms, **`worker-aggregate` fail after
+  191,760 ms**, `cleanup` 1,751 ms; whole installed profile 537,636 ms. Only output:
+  `fresh compiler: ERROR CHILD aggregate`. See the two causes in the active checkpoint.
+- `python3 scripts/check-gate-topology --self-test` fails in the `c6g2-measure:latest` container
+  with `hanging child cleanup failed: ... lifecycle_errors=('process-group-remains',)`. It
+  reproduces identically at the pre-change head `cffdda66c6307d3b6abdbee4c27f3fbd14750690`, so it is
+  a pre-existing property of that container, not a regression. The image's own fresh profile runs
+  the self-test successfully.
 - C6-MEASURED review repair at head `e14c472b11abcbb2368a93d1fd4c97d3554f11e4` (2026-08-25).
   Host (macOS, managed pinned toolchain): `gmake check` (22 units per-unit), `gmake format-check`,
   `gmake gate-topology-check`, `gmake prompt-render-parity-smoke` (58 vectors byte-equal),
@@ -528,10 +595,19 @@ file records durable project state.
 
 ## Next actions
 
-1. Diagnose and repair the fresh-worker `capable-checks` aggregate failure recorded in the active
-   checkpoint. It blocks every `make ci` claim for this branch and reproduces at the pre-repair
-   reviewed head, so it is a wave gap rather than a repair regression. The first step is a bounded
-   diagnostic seam that surfaces the failing target from inside the supervisor.
+1. Diagnose and repair the remaining fresh-worker `capable-checks` aggregate failure (cause 2 in the
+   active checkpoint). It still blocks every `make ci` claim for this branch. Cause 1 — the
+   `prompt-verifier-smoke` code-generation cost — is removed, and the aggregate phase is back in its
+   historical 172-192 s band, but `worker-aggregate` still fails. The next step is to make the
+   failing target observable end to end: `scripts/fresh-align-compiler` already emits the bounded
+   child-stream tail under `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`, so what remains is the image-owned
+   half — pass that one variable through
+   `image/fresh/control/fresh_image_control.py`'s `WORKER_ENVIRONMENT` and the worker's
+   `EXPECTED_ENVIRONMENT`, and forward the worker's stderr instead of discarding it in the
+   controller's non-canonical-result path. That is its own capability because it touches image-owned
+   worker-environment construction and controller error propagation. Failing that, reproduce the
+   exact aggregate environment outside the supervisor at the current head, the way the 890 s
+   reproduction was built, and bisect the graph.
 2. Publish C6-MEASURED from `agent/c6-measured` at its current head. The measured-gate transcript
    and the complete owner run were recorded at `e14c472b11abcbb2368a93d1fd4c97d3554f11e4`. The pull
    request must carry the narrowed measured claim, the per-cell matrix, the validator transcript,
