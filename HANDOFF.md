@@ -5,11 +5,31 @@ file records durable project state.
 
 ## Active checkpoint (2026-08-25)
 
-- C6-MEASURED (C6e/C6g1/C6g2) is implemented on branch `agent/c6-measured`, head
-  `8ddea8a03b817404e68a23e8ce1f39534b7abd13`, and is not yet published. The measured gate is real
-  and green: `scripts/prompt-gate-validator.py` exits 0 against the checked-in `eval/prompt/gate/`
-  bundle with all five explicit inputs, recorded at `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`
-  before the two publication closures below moved the head.
+- C6-MEASURED (C6e/C6g1/C6g2) is implemented on branch `agent/c6-measured` and is not yet
+  published. One comprehensive adversarial review returned request-changes at
+  `535be1087622dfd05481503d5f5d933555c06953`; every finding was accepted and repaired, and the
+  consolidated repair is `baf8c24` (validator bindings, adapter deadline and redaction order),
+  `3ca42d8` (claim narrowing and lane/post-freeze records), `1d27b5f` (frozen-chain rebind),
+  `99a6ba7` (Align evaluator wrapper digest), `c737adc` (a second credential-code expectation),
+  `e935790` (regenerated gate evidence), and `e14c472` (measurement record). The measured gate is
+  real and green at the repaired head: `make prompt-gate-check` with all five explicit `C6_GATE_*`
+  values exits 0 (`prompt gate validator: PASS`) against the regenerated `eval/prompt/gate/` bundle.
+- **Open blocker: the supervised fresh-worker `make ci` does not pass.**
+  `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker`
+  reaches `worker-aggregate` and fails with `fresh compiler: ERROR CHILD aggregate` after
+  907,847 ms at `e14c472b11abcbb2368a93d1fd4c97d3554f11e4`, and identically after 981,841 ms at the
+  pre-repair reviewed head `535be1087622dfd05481503d5f5d933555c06953`. It is therefore a
+  pre-existing C6-MEASURED wave gap, not a review-repair regression: the C6-MEASURED additions to
+  `HOSTED_CHECK_TARGETS` had never been exercised by the supervised aggregate, whose last green run
+  predates them. Every individual member of the capable graph passes on native Linux `aarch64`
+  under a cleared, fixed environment and under the aggregate's exact 256 MiB / 65,536-inode
+  temporary-store envelope with `ALIGNC_CACHE=off` (peak `TMPDIR` use 19.5 MB, in
+  `prompt-gate-validator-smoke`), and a full owner run leaves the workspace clean apart from
+  `./main`, so neither the per-target behavior, the temporary-store bounds, nor the overlay
+  single-entry rule explains it. The supervisor emits only the canonical
+  `fresh compiler: ERROR <category> <phase>` line, so the failing target inside the bwrap sandbox is
+  not observable from outside; diagnosing it needs a bounded diagnostic seam in
+  `scripts/fresh-align-compiler` or `image/fresh/control/`, which is its own capability.
 - Slice E landed the final integration wiring. The section 11.3 owner targets are now
   `HOSTED_CHECK_TARGETS` members — `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`,
   `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
@@ -92,9 +112,11 @@ file records durable project state.
   hosted lane at `52aefeb` and `19c6bed`, an overlapping automatic snapshot path set, and a 2 MiB
   sealed-input cap that could never admit the derived generation child. Repairing the measurement
   adapter rebound the frozen digest chain; only digest bindings moved.
-- Next actions, in order: (1) one comprehensive review of the branch; (2) publish the pull request
-  with the measured claim, the per-cell matrix, the validator transcript, and the named-qualification
-  status of `prompt-gate-check` recorded above.
+- Next actions, in order: (1) diagnose and repair the fresh-worker `capable-checks` aggregate
+  failure recorded above — publication cannot produce `make ci` evidence until it is green;
+  (2) publish the pull request with the narrowed measured claim, the per-cell matrix, the validator
+  transcript, the named-qualification status of `prompt-gate-check`, and the open `make ci` blocker
+  disclosed rather than omitted.
 - The measurement environment is a privileged `linux/arm64` container (`c6g2-measure:latest`) with
   `bubblewrap` installed at run time; the image does not ship it and the validation runner requires
   it. Docker's default seccomp/AppArmor blocks the runner's user namespaces, so the container needs
@@ -216,6 +238,53 @@ file records durable project state.
 
 ## Latest durable verification
 
+- C6-MEASURED review repair at head `e14c472b11abcbb2368a93d1fd4c97d3554f11e4` (2026-08-25).
+  Host (macOS, managed pinned toolchain): `gmake check` (22 units per-unit), `gmake format-check`,
+  `gmake gate-topology-check`, `gmake prompt-render-parity-smoke` (58 vectors byte-equal),
+  `gmake prompt-generate-smoke`, `gmake prompt-experiment-smoke`,
+  `gmake prompt-seed-attestation-smoke`, `gmake prompt-credential-lifetime-smoke`,
+  `python3 scripts/run-prompt-measurement-adapter-smoke` (48 rows; the Linux launch rows SKIP),
+  the six host-capable `prompt-gate-*-smoke` families, `python3 scripts/check-baseline-chain`, and
+  `git diff --check`: PASS. `prompt-evaluate-smoke`, `prompt-fixed-adapter-smoke`,
+  `prompt-source-verifier-smoke`, and `prompt-snapshot-helper-smoke` are Linux-only owners and fail
+  on macOS for platform reasons alone (`child-subreaper containment is unavailable`); they are run
+  in the container below.
+- Native Linux `aarch64` inside the privileged `c6g2-measure:latest` container, non-root with
+  `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of
+  `e14c472b11abcbb2368a93d1fd4c97d3554f11e4`: all 24 owner targets PASS — `check`, `format-check`,
+  `gate-topology-check`, `prompt-render-parity-smoke`, `prompt-experiment-smoke`,
+  `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
+  `prompt-seed-attestation-smoke`, `prompt-evaluate-smoke`, `prompt-fixed-adapter-smoke`,
+  `prompt-source-verifier-smoke`, `prompt-snapshot-helper-smoke`, `prompt-state-smoke`,
+  `provider-smoke`, and all nine `prompt-gate-*-smoke` families. `eval-coding` and
+  `c6-evaluation-adoption` also PASS. The gate then passed:
+
+  ```text
+  make prompt-gate-check \
+    C6_GATE_SOURCE_BUNDLE_ROOT=/work/bundle \
+    C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 \
+    C6_GATE_GIT_EXECUTABLE_PATH=/usr/bin/git \
+    C6_GATE_GENERATION_CHILD_PATH=/work/align-llm/main \
+    C6_GATE_GENERATION_CHILD_SHA256=c2f5be632c8c3c09fa2d47102a844dd78a85aeebe7fc637296381e85b50c7bb9
+  ```
+
+  `prompt gate validator: PASS`. The generation child was built in-run by `make build` and its
+  SHA-256 reproduces the locator's frozen
+  `c2f5be632c8c3c09fa2d47102a844dd78a85aeebe7fc637296381e85b50c7bb9` exactly. The verifier reported
+  `align_llm_observed_head` equal to the derived CI head, `align_reachability: VERIFIED`, and
+  `corpus_reachability: VERIFIED`. The same command was re-run at the final documentation head
+  `07320e47f243e2a8abc7277f785e2d3a76a7a8d3` and exits 0 there with the same generation-child
+  digest, so the transcript holds at the branch tip.
+- Container environment fact discovered by the regeneration: the source verifier runs Git with
+  `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so a `safe.directory` exception cannot
+  apply. The pinned Align checkout at `/opt/align/<revision>` must therefore be owned by the
+  non-root runner, or every Git observation of it fails with dubious ownership and
+  `align_reachability` is `UNVERIFIED`. `chown -R runner:runner /opt/align` is environment
+  preparation, not repository state.
+- The regenerated measurement was produced at `c737adcf905cb4662472bc86e8345bbcd9bc1346`: measure
+  819.2 s, replicate 444.1 s, experiment 145.8 s. The re-run experiment used the identical
+  opportunity artifact and at `temperature_micros: 0` reproduced the same candidate variant
+  `78611fbc8f6f3f895a0ed715ef01800d5335cb5cba61ee2bd43aedc03166dc63`.
 - Publication closures at head `8ddea8a03b817404e68a23e8ce1f39534b7abd13` (2026-08-25). Host
   (macOS, managed pinned toolchain): `gmake gate-topology-check`, `gmake check` (22 units
   per-unit), `gmake prompt-render-parity-smoke` (58 vectors byte-equal), `gmake format-check`,
@@ -458,17 +527,21 @@ file records durable project state.
 
 ## Next actions
 
-1. Review and publish C6-MEASURED from `agent/c6-measured` at its current head. The measured-gate
-   transcript was recorded at `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`; the two publication
-   closures and the replacement baseline chain land on top of it. The pull request must carry the
-   measured claim, the per-cell matrix, the validator transcript, the exact capable-gate commands
-   and results recorded above, and the named-qualification status of `prompt-gate-check`.
-2. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+1. Diagnose and repair the fresh-worker `capable-checks` aggregate failure recorded in the active
+   checkpoint. It blocks every `make ci` claim for this branch and reproduces at the pre-repair
+   reviewed head, so it is a wave gap rather than a repair regression. The first step is a bounded
+   diagnostic seam that surfaces the failing target from inside the supervisor.
+2. Publish C6-MEASURED from `agent/c6-measured` at its current head. The measured-gate transcript
+   and the complete owner run were recorded at `e14c472b11abcbb2368a93d1fd4c97d3554f11e4`. The pull
+   request must carry the narrowed measured claim, the per-cell matrix, the validator transcript,
+   the exact capable-gate commands and results recorded above, the named-qualification status of
+   `prompt-gate-check`, and the open `make ci` blocker.
+3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
-3. Merged historical item: the register/HANDOFF reconciliation branch
+4. Merged historical item: the register/HANDOFF reconciliation branch
    `agent/reconcile-request-register` recorded the passed C6-EVALUATION capable gate and advanced
    Requests 11 and 14.
-4. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
+5. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
    provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
    policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
    linked rollback. The triggered design gate is satisfied: §11.3 of
@@ -480,11 +553,13 @@ file records durable project state.
    adoption target, C6g asset paths, and the gate-validator identity).
    Implementation may start immediately against that ledger; no further design pull request is
    required.
-5. Request 2 (plaintext/TLS provider timeouts) is adopted and advanced to `ALIGN_LLM_VERIFIED`:
-   its named `c6e-request2-adoption` owner and the wave's final capable gate both pass at the pin
-   `2f33ac5c33a898a7894af58322852632ce6ffe42`. Do not infer a provider-quality claim beyond this
-   wave's measured gate.
-6. After C6-MEASURED, begin C7-PERSISTED-RESULT per `docs/specs/c7-persisted-result.md` and adopt
+6. Request 2 (plaintext/TLS provider timeouts) is adopted and recorded `ALIGN_LLM_VERIFIED`: its
+   named `c6e-request2-adoption` owner and the wave's capable gate both pass at the pin
+   `2f33ac5c33a898a7894af58322852632ce6ffe42` and at the review-repaired head. Its final `make ci`
+   leg is open while the fresh-worker aggregate blocker above stands, and the register records that
+   openly. Do not infer a provider-quality claim beyond this wave's measured gate; §11.3's
+   "What the measured claim is and is not" is the delivered result.
+7. After C6-MEASURED, begin C7-PERSISTED-RESULT per `docs/specs/c7-persisted-result.md` and adopt
    Request 9 through the named C7 adoption fixture before product code consumes the owned-JSON
    surface.
 

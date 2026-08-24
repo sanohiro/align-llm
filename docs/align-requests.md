@@ -298,7 +298,7 @@ Blocked gate or slice: none; the C6-MEASURED provider consumer in `src/provider_
 Independent work that may continue: all work
 Resume condition: complete
 Align commit or pull request: #633 98b1712, #634 1b21cdb
-align-llm verification: the named focused owner `c6e-request2-adoption` (`scripts/run-http-timeout-adoption-smoke`, `src/c6e_request2_adoption.align`) passes at Align `2f33ac5c33a898a7894af58322852632ce6ffe42`, proving the plaintext read-stall and the TLS handshake-stall both return `Error.Timeout` inside a `timeout_ns` of 250,000,000 (observed 258,576,584 ns and 296,394,625 ns) with a responsive control request at 1,529,083 ns; the target is now a `HOSTED_CHECK_TARGETS` member, so it runs in every hosted and capable check graph, and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2` on native Linux `aarch64`. The supervised fresh-worker `make ci` for this head runs as publication CI evidence.
+align-llm verification: the named focused owner `c6e-request2-adoption` (`scripts/run-http-timeout-adoption-smoke`, `src/c6e_request2_adoption.align`) passes at Align `2f33ac5c33a898a7894af58322852632ce6ffe42`, proving the plaintext read-stall and the TLS handshake-stall both return `Error.Timeout` inside a `timeout_ns` of 250,000,000 (observed 258,576,584 ns and 296,394,625 ns) with a responsive control request at 1,529,083 ns; the target is a `HOSTED_CHECK_TARGETS` member, so it runs in every hosted and capable check graph. At the C6-MEASURED review-repaired head `e14c472b11abcbb2368a93d1fd4c97d3554f11e4` on native Linux `aarch64`, `c6e-request2-adoption` passes together with every other `HOSTED_CHECK_TARGETS` member and with `eval-coding` and `c6-evaluation-adoption`, and the wired `make prompt-gate-check` with all five explicit `C6_GATE_*` values exits 0 (`prompt gate validator: PASS`). **The supervised fresh-worker `make ci` does not currently pass and is therefore not available as this head's publication evidence**: `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` reaches `worker-aggregate` and fails after 907,847 ms with `fresh compiler: ERROR CHILD aggregate`. The same failure reproduces at the pre-repair reviewed head `535be1087622dfd05481503d5f5d933555c06953` (`worker-aggregate` fail after 981,841 ms), so it is a pre-existing C6-MEASURED wave gap rather than a review-repair regression; `HANDOFF.md` records the reproduction and the diagnostic gap. Until that gate is green, this request's `make ci` leg is unmet.
 ```
 
 ### Motivation
@@ -386,6 +386,12 @@ run's wall clock and rechecks each reported per-row timing.
 hosted and capable check graphs rather than a target that must be remembered separately. `CLOSED`
 remains reserved until the shipped surface, ownership, and limits are recorded against merged
 publication evidence.
+
+The C6-MEASURED review repair ran the supervised publication route named by the review at the
+repaired head and it failed inside the fresh worker's `capable-checks` aggregate. The failure is not
+attributable to this request's surface — it reproduces unchanged at the pre-repair reviewed head —
+but until it is diagnosed and repaired no merged publication evidence can exist, so the
+`ALIGN_LLM_VERIFIED` claim's final `make ci` leg is open.
 
 ---
 
