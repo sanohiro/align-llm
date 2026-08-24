@@ -274,6 +274,18 @@ pub TaskAdapterRequest {
   paired_seed: i64,
   credential_env_name: Option<string>,
   environment_policy_sha256: string,
+  // The task-parameterization fields: every identity the shipped fixed adapter hard-codes becomes a
+  // declared input. `patch_path`/`patch_sha256` are `None` for a provider-backed task whose patch
+  // comes from the generation response and `Some` only for a deterministic fixture-style task.
+  validation_runner_path: string,
+  validation_runner_sha256: string,
+  task_definition_path: string,
+  task_definition_sha256: string,
+  validation_argv: array<string>,
+  patch_path: Option<string>,
+  patch_sha256: Option<string>,
+  generation_child_path: string,
+  generation_child_sha256: string,
   content_sha256: string,
 }
 
@@ -412,6 +424,46 @@ pub PromptExperimentResult {
   content_sha256: string,
 }
 
+// The C6-MEASURED measurement-path records. The generation child owns exactly one bounded provider
+// generation: the adapter writes the request, the child writes the response, and the adapter copies
+// the provider identity, request digest, and seed attestation out of the response verbatim.
+pub PromptGenerationRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  request_id: string,
+  provider_kind: string,
+  endpoint: string,
+  provider_model: string,
+  api_key_env: Option<string>,
+  rendered_prompt_path: string,
+  rendered_prompt_sha256: string,
+  max_tokens: i64,
+  temperature_micros: i64,
+  paired_seed: i64,
+  timeout_ns: i64,
+  max_response_bytes: i64,
+  content_sha256: string,
+}
+
+pub PromptGenerationResponse {
+  schema_version: i64,
+  artifact_kind: string,
+  request_id: string,
+  status: string,
+  error_code: string,
+  error: string,
+  provider_kind: string,
+  provider_model: string,
+  provider_request_sha256: string,
+  seed_result: string,
+  applied_seed: Option<i64>,
+  http_status: Option<i64>,
+  content: Option<string>,
+  dispatch_start_ns: i64,
+  dispatch_end_ns: i64,
+  content_sha256: string,
+}
+
 pub PromptEvaluateRequest {
   schema_version: i64,
   artifact_kind: string,
@@ -438,6 +490,11 @@ pub PromptEvaluateRequest {
   verifier_python_executable_path: string,
   verifier_git_executable_path: string,
   evaluation_evidence_path: string,
+  // The derived generation child is built, not committed, so it cannot be a corpus member. Its
+  // per-run absolute path and declared digest travel in this request and in the recorded check
+  // evidence; they are never frozen into the canonical asset set.
+  generation_child_path: string,
+  generation_child_sha256: string,
 }
 
 pub PromptSourceVerifierRequest {
@@ -504,6 +561,13 @@ pub PromptEvaluationTask {
   generation_policy_path: string,
   provider_control_path: string,
   environment_policy_path: string,
+  validation_runner_path: string,
+  validation_runner_sha256: string,
+  task_definition_path: string,
+  task_definition_sha256: string,
+  validation_argv: array<string>,
+  patch_path: Option<string>,
+  patch_sha256: Option<string>,
   artifacts: array<ArtifactExpectation>,
   regression_limits: RegressionLimits,
   content_sha256: string,
@@ -1438,6 +1502,114 @@ pub fn verify_prompt_experiment_request(borrow value: PromptExperimentRequest) -
   return api_key_valid && tokenize_valid
 }
 
+fn clone_prompt_generation_request(borrow value: PromptGenerationRequest) -> PromptGenerationRequest {
+  return PromptGenerationRequest {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    request_id: value.request_id.clone(),
+    provider_kind: value.provider_kind.clone(),
+    endpoint: value.endpoint.clone(),
+    provider_model: value.provider_model.clone(),
+    api_key_env: match value.api_key_env {
+      None => None,
+      Some(name) => Some(name.clone()),
+    },
+    rendered_prompt_path: value.rendered_prompt_path.clone(),
+    rendered_prompt_sha256: value.rendered_prompt_sha256.clone(),
+    max_tokens: value.max_tokens,
+    temperature_micros: value.temperature_micros,
+    paired_seed: value.paired_seed,
+    timeout_ns: value.timeout_ns,
+    max_response_bytes: value.max_response_bytes,
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+pub fn prompt_generation_request_content_digest(borrow value: PromptGenerationRequest) -> Result<string, Error> {
+  mut normalized := clone_prompt_generation_request(value)
+  normalized.content_sha256 = "".clone()
+  canonical := json.encode_bounded(normalized, 65536)?
+  return Ok(digest_text(canonical))
+}
+
+// Section 5 universal record order: `schema_version`, `artifact_kind`, then the scalar fields in
+// declaration order with the section 1.2 identifier, path, endpoint, digest, and numeric bounds. The
+// optional credential name is decided last because its rule depends on `provider_kind`. `FIXTURE` is
+// not a dispatchable kind, so it is rejected here rather than reaching provider dispatch.
+pub fn verify_prompt_generation_request(borrow value: PromptGenerationRequest) -> bool {
+  if value.schema_version != 1 ||
+  value.artifact_kind != "PROMPT_GENERATION_REQUEST" ||
+  !valid_ascii_identifier(value.request_id, 96) ||
+  !valid_proposal_provider_kind(value.provider_kind) ||
+  !valid_provider_endpoint(value.endpoint, value.provider_kind == "CLOUD_OPENAI") ||
+  !valid_nonempty_text(value.provider_model, 256) ||
+  !valid_nonempty_text(value.rendered_prompt_path, 4096) ||
+  !valid_content_digest(value.rendered_prompt_sha256) ||
+  value.max_tokens <= 0 || value.max_tokens > 1_048_576 ||
+  value.temperature_micros < 0 || value.temperature_micros > 1_000_000 ||
+  value.timeout_ns <= 0 || value.timeout_ns > 7_200_000_000_000 ||
+  value.max_response_bytes <= 0 || value.max_response_bytes > 1_048_576 ||
+  !valid_content_digest(value.content_sha256) {
+    return false
+  }
+  api_key_valid := match value.api_key_env {
+    None => value.provider_kind != "CLOUD_OPENAI",
+    Some(name) => (value.provider_kind == "CLOUD_OPENAI" ||
+      value.provider_kind == "LOCAL_OPENAI") && valid_environment_name(name),
+  }
+  if !api_key_valid {
+    return false
+  }
+  expected := prompt_generation_request_content_digest(value) else {
+    return false
+  }
+  return expected == value.content_sha256
+}
+
+pub fn clone_prompt_generation_response(borrow value: PromptGenerationResponse) -> PromptGenerationResponse {
+  return PromptGenerationResponse {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    request_id: value.request_id.clone(),
+    status: value.status.clone(),
+    error_code: value.error_code.clone(),
+    error: value.error.clone(),
+    provider_kind: value.provider_kind.clone(),
+    provider_model: value.provider_model.clone(),
+    provider_request_sha256: value.provider_request_sha256.clone(),
+    seed_result: value.seed_result.clone(),
+    applied_seed: value.applied_seed,
+    http_status: value.http_status,
+    content: match value.content {
+      None => None,
+      Some(text) => Some(text.clone()),
+    },
+    dispatch_start_ns: value.dispatch_start_ns,
+    dispatch_end_ns: value.dispatch_end_ns,
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+pub fn prompt_generation_response_content_digest(borrow value: PromptGenerationResponse) -> Result<string, Error> {
+  mut normalized := clone_prompt_generation_response(value)
+  normalized.content_sha256 = "".clone()
+  canonical := json.encode_bounded(normalized, 2097152)?
+  return Ok(digest_text(canonical))
+}
+
+pub fn verify_prompt_generation_response_content(borrow value: PromptGenerationResponse) -> bool {
+  if value.schema_version != 1 ||
+  value.artifact_kind != "PROMPT_GENERATION_RESPONSE" ||
+  !valid_ascii_identifier(value.request_id, 96) ||
+  !valid_content_digest(value.content_sha256) {
+    return false
+  }
+  expected := prompt_generation_response_content_digest(value) else {
+    return false
+  }
+  return expected == value.content_sha256
+}
+
 pub fn decode_prompt_variant(value: str) -> Result<PromptVariant, Error> {
   decoded: PromptVariant := json.decode(value)?
   return Ok(decoded)
@@ -1884,6 +2056,55 @@ pub fn encode_prompt_experiment_result(value: PromptExperimentResult) -> string 
 }
 
 pub fn encode_prompt_experiment_result_bounded(value: PromptExperimentResult, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+// The canonical input form for the one optional generation-request field: the canonical encoder
+// omits a `None`, and an explicit `null` immediately before `rendered_prompt_path` normalizes to
+// the same `None`.
+pub fn decode_prompt_generation_request(value: str) -> Result<PromptGenerationRequest, Error> {
+  decoded: PromptGenerationRequest := json.decode(value)?
+  canonical_value: PromptGenerationRequest := json.decode(value)?
+  canonical: string := json.encode(canonical_value).clone()
+  canonical_view: str := canonical
+  if canonical_view != value {
+    shape: PromptGenerationRequest := json.decode(value)?
+    absent := match shape.api_key_env { None => true, Some(_) => false }
+    if !absent { return Err(Error.Invalid) }
+    explicit: string := canonical_with_explicit_null(
+      canonical_view,
+      "\"rendered_prompt_path\":",
+      "api_key_env",
+    )?
+    explicit_view: str := explicit
+    if explicit_view != value { return Err(Error.Invalid) }
+  }
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_generation_request(value: PromptGenerationRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_generation_request_bounded(value: PromptGenerationRequest, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+// The response carries three optional fields and a `content` text that always escapes for a real
+// completion body, so decoding it is the ordinary root decode without a canonical-form comparison:
+// the adapter binds the persisted bytes through the content digest instead.
+pub fn decode_prompt_generation_response(value: str) -> Result<PromptGenerationResponse, Error> {
+  arena {
+    decoded: PromptGenerationResponse := json.decode(value)?
+    return Ok(clone_prompt_generation_response(decoded))
+  }
+}
+
+pub fn encode_prompt_generation_response(value: PromptGenerationResponse) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_generation_response_bounded(value: PromptGenerationResponse, max_bytes: i64) -> Result<string, Error> {
   return json.encode_bounded(value, max_bytes)
 }
 

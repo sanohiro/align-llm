@@ -1,0 +1,677 @@
+#!/usr/bin/env python3
+"""Owner smoke for `scripts/prompt-measurement-adapter.py`: admission, handoff, parameterization.
+
+The adapter's sealed-input machinery is Linux-only — it needs `memfd_create`, `F_ADD_SEALS`,
+`/proc/self/fd`, and `PR_SET_CHILD_SUBREAPER`. On a host without them this smoke verifies every row
+that does not require a launch and prints a documented SKIP for the rest, exactly as the shipped
+`prompt-evaluate-smoke` degrades. A full-fidelity run is a Linux run.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+ADAPTER = ROOT / "scripts" / "prompt-measurement-adapter.py"
+LINUX = sys.platform.startswith("linux")
+
+PATCH_TEXT = "the generated patch\n"
+RENDERED_TEXT = "Repair round_to_minutes so an exact half minute rounds away from zero."
+
+
+def canonical(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def digest_bytes(value: Any) -> bytes:
+    def omit_none(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {key: omit_none(child) for key, child in item.items() if child is not None}
+        if isinstance(item, list):
+            return [omit_none(child) for child in item]
+        return item
+
+    return canonical(omit_none(value))
+
+
+def bind(value: dict) -> dict:
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(digest_bytes(value)).hexdigest()
+    return value
+
+
+def store(path: Path, value: dict) -> dict:
+    bind(value)
+    path.write_bytes(canonical(value))
+    return value
+
+
+def raw_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def load_adapter():
+    spec = importlib.util.spec_from_file_location("prompt_measurement_adapter", ADAPTER)
+    require(spec is not None and spec.loader is not None, "measurement adapter could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Fixture:
+    """One complete adapter invocation: declared artifacts, a synthetic child, and a runner."""
+
+    def __init__(self, root: Path, name: str) -> None:
+        self.name = name
+        self.root = root / name
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir(parents=True)
+        self.variant_path = self.root / "variant.json"
+        self.rendered_path = self.root / "rendered.json"
+        self.policy_path = self.root / "generation.json"
+        self.control_path = self.root / "control.json"
+        self.request_path = self.root / "adapter-request.json"
+        self.result_path = self.workspace / "measurement.json"
+        self.child_path = self.root / "generation-child"
+        self.runner_path = self.root / "validation-runner.py"
+        self.task_path = self.root / "task-definition.json"
+        self.marker = self.root / "replacement-ran"
+
+        self.variant = store(self.variant_path, {
+            "schema_version": 1, "artifact_kind": "PROMPT_VARIANT", "variant_id": "baseline-v1",
+            "base_prompt": {}, "repo_prompt": {}, "learned_prompt_append": "",
+            "context_policy": {}, "candidate_id": "baseline-v1", "content_sha256": "",
+        })
+        self.rendered = store(self.rendered_path, {
+            "schema_version": 1, "artifact_kind": "RENDERED_PROMPT", "task_id": "task",
+            "variant_id": "baseline-v1", "variant_sha256": self.variant["content_sha256"],
+            "task_prompt_sha256": "1" * 64, "context_sources_sha256": "2" * 64,
+            "text": RENDERED_TEXT, "content_sha256": "",
+        })
+        self.control = store(self.control_path, {
+            "schema_version": 1, "artifact_kind": "EVALUATION_PROVIDER_CONTROL",
+            "provider_control_id": "control", "provider_kind": "LOCAL_OPENAI",
+            "endpoint": "http://127.0.0.1:8000/v1/chat/completions", "endpoint_id": "fixture",
+            "model": "fixture-model", "api_key_env": None, "tokenize_endpoint": None,
+            "timeout_ns": 20_000_000_000, "max_response_bytes": 262_144, "content_sha256": "",
+        })
+        self.policy = store(self.policy_path, {
+            "schema_version": 1, "artifact_kind": "GENERATION_POLICY",
+            "generation_policy_id": "policy", "evaluation_provider_kind": "LOCAL_OPENAI",
+            "evaluation_provider_endpoint_id": "fixture", "evaluation_provider_model": "fixture-model",
+            "provider_control_sha256": self.control["content_sha256"],
+            "provider_service_revision": "fixture-v1", "max_prompt_bytes": 65_536,
+            "max_tokens": 512, "temperature_micros": 0, "seed_mode": "PAIRED_FIXED",
+            "seed_base": 100, "content_sha256": "",
+        })
+        self.task_path.write_text('{"validation": "declared"}', encoding="utf-8")
+        self.write_child()
+        self.write_runner()
+
+    def write_child(self, *, exit_code: int = 0, body: str | None = None, sleep: float = 0.0) -> None:
+        """A synthetic generation child with exactly the `./main prompt generate` boundary.
+
+        The real child is `src/prompt_generate.align`, whose own end-to-end behaviour is owned by
+        `prompt-generate-smoke`. This synthetic child exists so the handoff failure rows —
+        truncation, nonzero exit, timeout — are deterministic and platform-independent.
+        """
+        response = (
+            body if body is not None
+            else "json.dumps(response, ensure_ascii=False, separators=(',', ':'))"
+        )
+        self.child_path.write_text(
+            "#!/usr/bin/env python3\n"
+            "import hashlib, json, sys, time\n"
+            f"time.sleep({sleep!r})\n"
+            "request = json.loads(open(sys.argv[3], encoding='utf-8').read())\n"
+            "response = {\n"
+            "  'schema_version': 1, 'artifact_kind': 'PROMPT_GENERATION_RESPONSE',\n"
+            "  'request_id': request['request_id'], 'status': 'GENERATED', 'error_code': 'NONE',\n"
+            "  'error': '', 'provider_kind': request['provider_kind'],\n"
+            "  'provider_model': request['provider_model'],\n"
+            "  'provider_request_sha256': hashlib.sha256(b'dispatched-bytes').hexdigest(),\n"
+            "  'seed_result': 'APPLIED', 'applied_seed': request['paired_seed'],\n"
+            "  'http_status': 200, 'content': " + repr(PATCH_TEXT) + ",\n"
+            "  'dispatch_start_ns': 1, 'dispatch_end_ns': 2, 'content_sha256': '',\n"
+            "}\n"
+            "response['content_sha256'] = hashlib.sha256(\n"
+            "  json.dumps(response, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()\n"
+            f"open(sys.argv[4], 'w', encoding='utf-8').write({response})\n"
+            f"raise SystemExit({exit_code})\n",
+            encoding="utf-8",
+        )
+        self.child_path.chmod(0o755)
+
+    def write_runner(self, *, expect_patch: str = PATCH_TEXT, exit_code: int | None = None) -> None:
+        """A validation runner that proves the sealed task definition and patch reached it."""
+        if exit_code is not None:
+            self.runner_path.write_text(f"raise SystemExit({exit_code})\n", encoding="utf-8")
+            return
+        self.runner_path.write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "task = Path(sys.argv[2]).read_text()\n"
+            "patch = Path(sys.argv[3]).read_text()\n"
+            "valid = task == '{\"validation\": \"declared\"}' and patch == "
+            + repr(expect_patch) + "\n"
+            "raise SystemExit(0 if valid else 4)\n",
+            encoding="utf-8",
+        )
+
+    def request(self, **overrides: Any) -> dict:
+        value = {
+            "schema_version": 1, "artifact_kind": "TASK_ADAPTER_REQUEST",
+            "evaluation_id": "evaluation", "task_id": "task", "sample_index": 1,
+            "variant": "CANDIDATE", "variant_path": str(self.variant_path),
+            "variant_sha256": self.variant["content_sha256"],
+            "rendered_prompt_path": str(self.rendered_path),
+            "rendered_prompt_sha256": self.rendered["content_sha256"],
+            "generation_policy_path": str(self.policy_path),
+            "generation_policy_sha256": self.policy["content_sha256"],
+            "provider_control_path": str(self.control_path),
+            "provider_control_sha256": self.control["content_sha256"],
+            "workspace_path": str(self.workspace), "result_path": str(self.result_path),
+            "paired_seed": 100, "credential_env_name": None,
+            "environment_policy_sha256": "3" * 64,
+            "validation_runner_path": str(self.runner_path),
+            "validation_runner_sha256": raw_digest(self.runner_path),
+            "task_definition_path": str(self.task_path),
+            "task_definition_sha256": raw_digest(self.task_path),
+            "validation_argv": ["--retained-inputs", "%TASK%", "%PATCH%"],
+            "patch_path": None, "patch_sha256": None,
+            "generation_child_path": str(self.child_path),
+            "generation_child_sha256": raw_digest(self.child_path),
+            "content_sha256": "",
+        }
+        value.update(overrides)
+        bind(value)
+        self.request_path.write_bytes(canonical(value))
+        return value
+
+    def invoke(self, timeout: int = 120) -> tuple[subprocess.CompletedProcess[bytes], dict | None]:
+        completed = subprocess.run(
+            [
+                sys.executable, str(ADAPTER),
+                "--prompt-variant", str(self.variant_path),
+                "--rendered-prompt", str(self.rendered_path),
+                "--sample-index", "1", "--paired-seed", "100",
+                "--adapter-request", str(self.request_path),
+                "--result", str(self.result_path),
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout,
+        )
+        result = (
+            json.loads(self.result_path.read_text(encoding="utf-8"))
+            if self.result_path.exists() else None
+        )
+        return completed, result
+
+
+def assert_not_scoreable(name: str, result: dict | None, failure_kind: str) -> None:
+    require(result is not None, f"{name}: no measurement document was written")
+    require(
+        result["status"] == "ERROR" and result["failure_kind"] == failure_kind,
+        f"{name}: expected ERROR/{failure_kind}, got {result['status']}/{result['failure_kind']}"
+        f" ({result['diagnostic_summary']!r})",
+    )
+    require(
+        result["generation_to_passing_patch_ns"] is None
+        and result["benchmark_regression_ppm"] is None,
+        f"{name}: an ERROR row carried a scoreable time",
+    )
+    require(
+        result["build_status"] == "ERROR" and result["test_status"] == "ERROR",
+        f"{name}: an ERROR row carried a non-error stage state",
+    )
+    claimed = result["content_sha256"]
+    recomputed = dict(result)
+    recomputed["content_sha256"] = ""
+    require(
+        hashlib.sha256(digest_bytes(recomputed)).hexdigest() == claimed,
+        f"{name}: measurement content digest does not bind the record",
+    )
+
+
+def unit_rows(module) -> list[str]:
+    """Rows that need no launch: request admission, field order, and the response contract."""
+    covered: list[str] = []
+    require(
+        module.REQUEST_FIELDS[23:] == (
+            "validation_argv", "patch_path", "patch_sha256", "generation_child_path",
+            "generation_child_sha256", "content_sha256",
+        ),
+        "the task-parameterization fields are not appended before content_sha256",
+    )
+    require(
+        module.REQUEST_FIELDS[18:24] == (
+            "environment_policy_sha256", "validation_runner_path", "validation_runner_sha256",
+            "task_definition_path", "task_definition_sha256", "validation_argv",
+        ),
+        "the extended adapter request field order changed",
+    )
+    covered.append("request-field-order")
+
+    # The `EvaluationInputIdentity.adapter_request_sha256` preimage is the canonical request with an
+    # empty digest field, so the golden below is the exact preimage both owners must agree on.
+    golden = {name: None for name in module.REQUEST_FIELDS}
+    golden.update({
+        "schema_version": 1, "artifact_kind": "TASK_ADAPTER_REQUEST", "evaluation_id": "e",
+        "task_id": "t", "sample_index": 1, "variant": "CANDIDATE", "variant_path": "/v",
+        "variant_sha256": "a" * 64, "rendered_prompt_path": "/r", "rendered_prompt_sha256": "b" * 64,
+        "generation_policy_path": "/g", "generation_policy_sha256": "c" * 64,
+        "provider_control_path": "/p", "provider_control_sha256": "d" * 64,
+        "workspace_path": "/w", "result_path": "/m", "paired_seed": 1,
+        "credential_env_name": None, "environment_policy_sha256": "e" * 64,
+        "validation_runner_path": "/runner", "validation_runner_sha256": "f" * 64,
+        "task_definition_path": "/task", "task_definition_sha256": "0" * 64,
+        "validation_argv": ["--retained-inputs", "%TASK%", "%PATCH%"],
+        "patch_path": None, "patch_sha256": None, "generation_child_path": "/child",
+        "generation_child_sha256": "1" * 64, "content_sha256": "",
+    })
+    expected_preimage = (
+        '{"schema_version":1,"artifact_kind":"TASK_ADAPTER_REQUEST","evaluation_id":"e",'
+        '"task_id":"t","sample_index":1,"variant":"CANDIDATE","variant_path":"/v",'
+        '"variant_sha256":"' + "a" * 64 + '","rendered_prompt_path":"/r",'
+        '"rendered_prompt_sha256":"' + "b" * 64 + '","generation_policy_path":"/g",'
+        '"generation_policy_sha256":"' + "c" * 64 + '","provider_control_path":"/p",'
+        '"provider_control_sha256":"' + "d" * 64 + '","workspace_path":"/w","result_path":"/m",'
+        '"paired_seed":1,"environment_policy_sha256":"' + "e" * 64 + '",'
+        '"validation_runner_path":"/runner","validation_runner_sha256":"' + "f" * 64 + '",'
+        '"task_definition_path":"/task","task_definition_sha256":"' + "0" * 64 + '",'
+        '"validation_argv":["--retained-inputs","%TASK%","%PATCH%"],'
+        '"generation_child_path":"/child","generation_child_sha256":"' + "1" * 64 + '",'
+        '"content_sha256":""}'
+    )
+    require(
+        module.canonical_digest_bytes(golden).decode("utf-8") == expected_preimage,
+        "the extended adapter request digest preimage changed:\n"
+        f"  {module.canonical_digest_bytes(golden).decode('utf-8')}",
+    )
+    covered.append("adapter-request-preimage")
+
+    # The two-process handoff contract: every malformed response shape is a failed handoff.
+    with tempfile.TemporaryDirectory(prefix="prompt-measurement-unit-") as directory:
+        scratch = Path(directory).resolve()
+        good = {
+            "schema_version": 1, "artifact_kind": "PROMPT_GENERATION_RESPONSE", "request_id": "r",
+            "status": "GENERATED", "error_code": "NONE", "error": "", "provider_kind": "LOCAL_OPENAI",
+            "provider_model": "m", "provider_request_sha256": "a" * 64, "seed_result": "APPLIED",
+            "applied_seed": 100, "http_status": 200, "content": PATCH_TEXT,
+            "dispatch_start_ns": 1, "dispatch_end_ns": 2, "content_sha256": "",
+        }
+        bind(good)
+        accepted = scratch / "good.json"
+        accepted.write_bytes(canonical(good))
+        module.validated_generation_response(accepted, 100)
+        covered.append("handoff-accepts-valid-response")
+
+        rows = (
+            ("handoff-absent-response", None),
+            ("handoff-truncated-response", canonical(good)[: len(canonical(good)) // 2]),
+            ("handoff-tampered-digest", canonical({**good, "applied_seed": 101})),
+            ("handoff-reordered-fields", canonical(
+                {"artifact_kind": "PROMPT_GENERATION_RESPONSE", **good}
+            )),
+            ("handoff-non-generated-status", canonical(bind({
+                **good, "status": "PROVIDER_ERROR", "error_code": "PROVIDER_TIMEOUT",
+            }))),
+            ("handoff-missing-content", canonical(bind(
+                {key: child for key, child in good.items() if key != "content"}
+            ))),
+            ("handoff-wrong-seed", canonical(bind({**good, "applied_seed": 101}))),
+            ("handoff-applied-seed-on-unsupported", canonical(bind({
+                **good, "seed_result": "UNSUPPORTED",
+            }))),
+            ("handoff-unknown-seed-result", canonical(bind({**good, "seed_result": "MAYBE"}))),
+            ("handoff-bad-request-digest", canonical(bind({
+                **good, "provider_request_sha256": "not-a-digest",
+            }))),
+        )
+        for name, payload in rows:
+            path = scratch / f"{name}.json"
+            if payload is not None:
+                path.write_bytes(payload)
+            try:
+                module.validated_generation_response(path, 100)
+            except module.GenerationFailure:
+                covered.append(name)
+                continue
+            raise RuntimeError(f"{name}: a failed handoff was accepted")
+
+    # A `FIXTURE` control never dispatches a model provider, so this adapter never admits it.
+    require("FIXTURE" in ADAPTER.read_text(encoding="utf-8"), "the FIXTURE rejection was removed")
+    covered.append("fixture-control-rejected")
+    return covered
+
+
+def launch_rows(root: Path) -> list[str]:
+    """Rows that require the Linux sealed-input and containment machinery."""
+    covered: list[str] = []
+
+    fixture = Fixture(root, "sealed-success")
+    fixture.request()
+    completed, result = fixture.invoke()
+    require(
+        completed.returncode == 0 and not completed.stdout and not completed.stderr,
+        f"sealed-success: the adapter was not silent: {completed.stderr!r}",
+    )
+    require(result is not None, "sealed-success: no measurement document was written")
+    require(
+        result["status"] == "PASS" and result["failure_kind"] == "NONE"
+        and result["build_status"] == "PASS" and result["test_status"] == "PASS"
+        and result["cleanup_passed"] and result["containment_passed"],
+        f"sealed-success: the admitted launch did not pass: {result!r}",
+    )
+    require(
+        isinstance(result["generation_to_passing_patch_ns"], int)
+        and result["generation_to_passing_patch_ns"] > 0,
+        "sealed-success: a passing row carries a positive measured time",
+    )
+    require(
+        result["patch_size_bytes"] == len(PATCH_TEXT.encode("utf-8")),
+        "sealed-success: the produced patch bytes were not the generated content",
+    )
+    # The provider identity, request digest, and seed attestation are copied verbatim.
+    expected_provider_sha = hashlib.sha256(b"dispatched-bytes").hexdigest()
+    require(
+        result["seed_attestation"]["provider_request_sha256"] == expected_provider_sha
+        and result["generation_request"]["provider_request_sha256"] == expected_provider_sha
+        and result["seed_attestation"]["result"] == "APPLIED"
+        and result["seed_attestation"]["applied_seed"] == 100
+        and result["seed_attestation"]["requested_seed"] == 100
+        and result["seed_attestation"]["provider_kind"] == "LOCAL_OPENAI"
+        and result["seed_attestation"]["provider_model"] == "fixture-model",
+        f"sealed-success: the response identities were not copied verbatim: {result!r}",
+    )
+    require(
+        result["environment_probe"]["producer"] == "MEASUREMENT_ADAPTER"
+        and result["environment_probe"]["runtime_identity"] == "PYTHON:" + raw_digest(ADAPTER),
+        "sealed-success: the environment probe does not declare this adapter's runtime",
+    )
+    require(
+        not any(entry.name.startswith("generation-") for entry in os.scandir(fixture.workspace)),
+        "sealed-success: a handoff document survived in the evaluator workspace",
+    )
+    covered.append("sealed-success")
+
+    # A declared digest mismatch is rejected before launch: no runner marker can exist.
+    for name, field, target in (
+        ("child-digest-mismatch", "generation_child_sha256", "child"),
+        ("runner-digest-mismatch", "validation_runner_sha256", "runner"),
+        ("task-digest-mismatch", "task_definition_sha256", "task"),
+    ):
+        fixture = Fixture(root, name)
+        marker = fixture.root / "launched"
+        fixture.write_runner(exit_code=0)
+        fixture.runner_path.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('ran')\n",
+            encoding="utf-8",
+        )
+        request = fixture.request()
+        request[field] = "9" * 64
+        bind(request)
+        fixture.request_path.write_bytes(canonical(request))
+        completed, result = fixture.invoke()
+        assert_not_scoreable(name, result, "ADAPTER")
+        require(not marker.exists(), f"{name}: a rejected row still launched the runner")
+        covered.append(name)
+
+    # A post-admission replacement of the public pathname never runs: only the retained descriptor
+    # is launched, and the retained input verifies unchanged after the child returns.
+    fixture = Fixture(root, "post-admission-replacement")
+    fixture.request()
+    module = load_adapter()
+    original_popen = module.subprocess.Popen
+
+    def replace_after_admission(*arguments, **keywords):
+        fixture.child_path.write_text(
+            "#!/usr/bin/env python3\n"
+            "from pathlib import Path\n"
+            f"Path({str(fixture.marker)!r}).write_text('replacement ran')\n"
+            "raise SystemExit(99)\n",
+            encoding="utf-8",
+        )
+        fixture.child_path.chmod(0o755)
+        fixture.runner_path.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(fixture.marker)!r}).write_text('replacement ran')\n"
+            "raise SystemExit(99)\n",
+            encoding="utf-8",
+        )
+        return original_popen(*arguments, **keywords)
+
+    module.subprocess.Popen = replace_after_admission
+    try:
+        code = module.main([
+            "--prompt-variant", str(fixture.variant_path),
+            "--rendered-prompt", str(fixture.rendered_path),
+            "--sample-index", "1", "--paired-seed", "100",
+            "--adapter-request", str(fixture.request_path),
+            "--result", str(fixture.result_path),
+        ])
+    finally:
+        module.subprocess.Popen = original_popen
+    result = json.loads(fixture.result_path.read_text(encoding="utf-8"))
+    require(
+        code == 0 and result["status"] == "PASS" and not fixture.marker.exists(),
+        f"post-admission-replacement: the replacement crossed the retained boundary: {result!r}",
+    )
+    covered.append("post-admission-replacement")
+
+    # The two-process handoff failure rows.
+    fixture = Fixture(root, "child-nonzero-exit")
+    fixture.write_child(exit_code=3)
+    fixture.request()
+    _, result = fixture.invoke()
+    assert_not_scoreable("child-nonzero-exit", result, "ADAPTER")
+    covered.append("child-nonzero-exit")
+
+    fixture = Fixture(root, "child-truncated-response")
+    fixture.write_child(body="json.dumps(response)[:12]")
+    fixture.request()
+    _, result = fixture.invoke()
+    assert_not_scoreable("child-truncated-response", result, "ADAPTER")
+    covered.append("child-truncated-response")
+
+    fixture = Fixture(root, "child-absent-response")
+    fixture.write_child(body="''")
+    fixture.request()
+    _, result = fixture.invoke()
+    assert_not_scoreable("child-absent-response", result, "ADAPTER")
+    covered.append("child-absent-response")
+
+    fixture = Fixture(root, "child-timeout")
+    fixture.write_child(sleep=5.0)
+    request = fixture.request()
+    control = dict(fixture.control)
+    control["timeout_ns"] = 300_000_000
+    store(fixture.control_path, control)
+    fixture.request(provider_control_sha256=control["content_sha256"])
+    policy = dict(fixture.policy)
+    policy["provider_control_sha256"] = control["content_sha256"]
+    store(fixture.policy_path, policy)
+    fixture.request(
+        provider_control_sha256=control["content_sha256"],
+        generation_policy_sha256=policy["content_sha256"],
+    )
+    started = time.monotonic()
+    _, result = fixture.invoke()
+    require(time.monotonic() - started < 30, "child-timeout: the adapter did not bound the child")
+    assert_not_scoreable("child-timeout", result, "ADAPTER")
+    covered.append("child-timeout")
+
+    # Task parameterization: the manifest-driven runner and task definition are what execute, and a
+    # different declared task definition changes the measured outcome without touching the adapter.
+    fixture = Fixture(root, "task-parameterization")
+    fixture.task_path.write_text('{"validation": "other"}', encoding="utf-8")
+    fixture.request()
+    _, result = fixture.invoke()
+    require(
+        result is not None and result["status"] == "FAIL" and result["failure_kind"] == "TEST"
+        and result["test_status"] == "FAIL",
+        f"task-parameterization: a different declared task did not change the outcome: {result!r}",
+    )
+    covered.append("task-parameterization")
+
+    # A declared fixture-style patch pair replaces the generated content.
+    fixture = Fixture(root, "declared-patch")
+    declared = fixture.root / "declared.patch"
+    declared.write_text("the declared patch\n", encoding="utf-8")
+    fixture.write_runner(expect_patch="the declared patch\n")
+    fixture.request(
+        validation_runner_sha256=raw_digest(fixture.runner_path),
+        patch_path=str(declared),
+        patch_sha256=raw_digest(declared),
+    )
+    _, result = fixture.invoke()
+    require(
+        result is not None and result["status"] == "PASS"
+        and result["patch_size_bytes"] == len("the declared patch\n"),
+        f"declared-patch: the declared patch was not the admitted one: {result!r}",
+    )
+    covered.append("declared-patch")
+
+    # An oversized rendered prompt is a pre-run policy violation with no dispatch at all.
+    fixture = Fixture(root, "policy-violation")
+    policy = dict(fixture.policy)
+    policy["max_prompt_bytes"] = len(RENDERED_TEXT.encode("utf-8")) - 1
+    store(fixture.policy_path, policy)
+    fixture.write_child(exit_code=97)
+    fixture.request(
+        generation_policy_sha256=policy["content_sha256"],
+        generation_child_sha256=raw_digest(fixture.child_path),
+    )
+    _, result = fixture.invoke()
+    require(
+        result is not None and result["status"] == "POLICY_VIOLATION"
+        and result["failure_kind"] == "POLICY" and result["policy_violation_count"] == 1
+        and result["build_status"] == "NOT_RUN" and result["test_status"] == "NOT_RUN"
+        and result["generation_to_passing_patch_ns"] is None
+        and result["seed_attestation"]["provider_request_sha256"] == "0" * 64,
+        f"policy-violation: the pre-run policy violation dispatched work: {result!r}",
+    )
+    covered.append("policy-violation")
+
+    # The credential value reaches the generation child and nothing else, and no persisted byte of
+    # it survives.
+    fixture = Fixture(root, "credential-handoff")
+    secret = "sk-measurement-.*+?[a-z]$-SECRET"
+    fixture.child_path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import hashlib, json, os, sys\n"
+        "assert os.environ['ALIGN_LLM_MEASUREMENT_KEY'] == " + repr(secret) + "\n"
+        "request = json.loads(open(sys.argv[3], encoding='utf-8').read())\n"
+        "response = {\n"
+        "  'schema_version': 1, 'artifact_kind': 'PROMPT_GENERATION_RESPONSE',\n"
+        "  'request_id': request['request_id'], 'status': 'GENERATED', 'error_code': 'NONE',\n"
+        "  'error': '', 'provider_kind': request['provider_kind'],\n"
+        "  'provider_model': request['provider_model'],\n"
+        "  'provider_request_sha256': hashlib.sha256(b'dispatched-bytes').hexdigest(),\n"
+        "  'seed_result': 'APPLIED', 'applied_seed': request['paired_seed'],\n"
+        "  'http_status': 200, 'content': " + repr(PATCH_TEXT) + ",\n"
+        "  'dispatch_start_ns': 1, 'dispatch_end_ns': 2, 'content_sha256': '',\n"
+        "}\n"
+        "response['content_sha256'] = hashlib.sha256(\n"
+        "  json.dumps(response, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()\n"
+        "open(sys.argv[4], 'w', encoding='utf-8').write(\n"
+        "  json.dumps(response, ensure_ascii=False, separators=(',', ':')))\n",
+        encoding="utf-8",
+    )
+    fixture.child_path.chmod(0o755)
+    fixture.runner_path.write_text(
+        "import os, sys\n"
+        "raise SystemExit(0 if 'ALIGN_LLM_MEASUREMENT_KEY' not in os.environ else 7)\n",
+        encoding="utf-8",
+    )
+    control = dict(fixture.control)
+    control["api_key_env"] = "ALIGN_LLM_MEASUREMENT_KEY"
+    store(fixture.control_path, control)
+    policy = dict(fixture.policy)
+    policy["provider_control_sha256"] = control["content_sha256"]
+    store(fixture.policy_path, policy)
+    fixture.request(
+        credential_env_name="ALIGN_LLM_MEASUREMENT_KEY",
+        provider_control_sha256=control["content_sha256"],
+        generation_policy_sha256=policy["content_sha256"],
+        generation_child_sha256=raw_digest(fixture.child_path),
+        validation_runner_sha256=raw_digest(fixture.runner_path),
+    )
+    environment = dict(os.environ)
+    environment["ALIGN_LLM_MEASUREMENT_KEY"] = secret
+    completed = subprocess.run(
+        [
+            sys.executable, str(ADAPTER),
+            "--prompt-variant", str(fixture.variant_path),
+            "--rendered-prompt", str(fixture.rendered_path),
+            "--sample-index", "1", "--paired-seed", "100",
+            "--adapter-request", str(fixture.request_path),
+            "--result", str(fixture.result_path),
+        ],
+        env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120,
+    )
+    result = json.loads(fixture.result_path.read_text(encoding="utf-8"))
+    require(
+        completed.returncode == 0 and result["status"] == "PASS",
+        f"credential-handoff: the credentialed run did not pass: {result!r} {completed.stderr!r}",
+    )
+    require(
+        secret.encode("utf-8") not in fixture.result_path.read_bytes()
+        and secret not in completed.stdout.decode("utf-8", "replace")
+        and secret not in completed.stderr.decode("utf-8", "replace"),
+        "credential-handoff: a credential byte survived into the persisted measurement",
+    )
+    covered.append("credential-handoff")
+    return covered
+
+
+def main() -> int:
+    require(ADAPTER.is_file(), "the measurement adapter is missing")
+    module = load_adapter()
+    covered = unit_rows(module)
+    if LINUX and module.CHILD_SUBREAPER_ENABLED:
+        with tempfile.TemporaryDirectory(prefix="prompt-measurement-adapter-") as directory:
+            covered += launch_rows(Path(directory).resolve())
+    else:
+        print(
+            "prompt measurement adapter: SKIP: the sealed-input and containment rows need Linux "
+            f"(memfd_create, F_ADD_SEALS, /proc/self/fd, PR_SET_CHILD_SUBREAPER); host is "
+            f"{sys.platform}"
+        )
+        # The unavailable-containment path must still refuse to produce a scoreable row.
+        with tempfile.TemporaryDirectory(prefix="prompt-measurement-adapter-") as directory:
+            fixture = Fixture(Path(directory).resolve(), "containment-unavailable")
+            fixture.request()
+            _, result = fixture.invoke()
+            assert_not_scoreable("containment-unavailable", result, "ADAPTER")
+            require(
+                "containment is unavailable" in result["diagnostic_summary"],
+                f"containment-unavailable: wrong diagnostic: {result['diagnostic_summary']!r}",
+            )
+            covered.append("containment-unavailable")
+    require(len(covered) == len(set(covered)), "a smoke row name was reused")
+    print(f"prompt measurement adapter rows: {len(covered)}")
+    print("prompt measurement adapter: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+        print(f"prompt measurement adapter: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)

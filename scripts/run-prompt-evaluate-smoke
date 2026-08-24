@@ -235,7 +235,11 @@ def verify_descendant_cleanup_boundary() -> None:
         and module.SNAPSHOT_HELPER_OUTER_TIMEOUT_NS >= 2 * 12_000_000_000 + module.CHILD_CLEANUP_MARGIN_NS
         and module.SOURCE_VERIFIER_OUTER_TIMEOUT_NS >= 9 * 12_000_000_000 + module.CHILD_CLEANUP_MARGIN_NS
         and source.count("nested_owner_timeout(task[\"timeout_ns\"])") == 1
-        and "nested_owner_timeout(max(task[\"timeout_ns\"], provider_timeout_ns))" in source
+        # Section 10.1e as amended by section 11.3: the adapter now runs two sequential contained
+        # children, so its outer deadline is the sum of the provider-control and task deadlines plus
+        # the existing bounded cleanup and report margin rather than their maximum.
+        and "nested_owner_timeout(task[\"timeout_ns\"] + provider_timeout_ns)" in source
+        and "nested_owner_timeout(max(task[\"timeout_ns\"], provider_timeout_ns))" not in source
         and "SOURCE_VERIFIER_OUTER_TIMEOUT_NS" in source,
         "nested child owners lost their cleanup/report deadline margin",
     )
@@ -1257,7 +1261,16 @@ def main() -> int:
                 "cwd": ".", "timeout_ns": 30_000_000_000, "task_prompt_path": prompt_path,
                 "context_sources_path": context_path, "generation_policy_path": "artifacts/generation-policy.json",
                 "provider_control_path": "artifacts/provider-control.json",
-                "environment_policy_path": "artifacts/environment.json", "artifacts": expectations,
+                "environment_policy_path": "artifacts/environment.json",
+                "validation_runner_path": "eval/runners/run-coding-task.py",
+                "validation_runner_sha256": raw_digest(project / "eval/runners/run-coding-task.py"),
+                "task_definition_path": "eval/tasks/coding-v1/python-inclusive-range/task.json",
+                "task_definition_sha256": raw_digest(
+                    project / "eval/tasks/coding-v1/python-inclusive-range/task.json"
+                ),
+                "validation_argv": ["--retained-inputs", "%TASK%", "%PATCH%"],
+                "patch_path": None, "patch_sha256": None,
+                "artifacts": expectations,
                 "regression_limits": {
                     "maximum_unrelated_diff_count": 0, "maximum_patch_size_bytes": 16_384,
                     "maximum_public_api_change_count": 0, "maximum_repair_loops": 2,
@@ -1279,6 +1292,14 @@ def main() -> int:
             "content_sha256": "",
         })
         store(project, "artifacts/preflight.json", preflight)
+        build_root = root / "build"
+        build_root.mkdir()
+        built = subprocess.run(
+            [str(ALIGNC), "build", str(SOURCE / "src/main.align")], cwd=build_root,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(built.returncode == 0, f"evaluator command did not compile: {built.stderr.decode()[-4096:]}")
+
         request = {
             "schema_version": 1, "artifact_kind": "PROMPT_EVALUATE_REQUEST", "evaluation_id": "evaluation-v1",
             "project_root": str(project), "experiment_path": "artifacts/experiment.json",
@@ -1295,18 +1316,15 @@ def main() -> int:
             "verifier_source_policy_sha256": source_policy["content_sha256"],
             "verifier_python_executable_path": str(PYTHON),
             "verifier_git_executable_path": str(GIT), "evaluation_evidence_path": "evidence.json",
+            # The derived generation child is built, not committed: its per-run path and digest
+            # travel in the request rather than in any frozen asset.
+            "generation_child_path": str(build_root / "main"),
+            "generation_child_sha256": raw_digest(build_root / "main"),
         }
         request_path = project / "evaluate-request.json"
         request_path.write_bytes(canonical(request))
         result_path = project / "result.json"
         evidence_path = project / "evidence.json"
-        build_root = root / "build"
-        build_root.mkdir()
-        built = subprocess.run(
-            [str(ALIGNC), "build", str(SOURCE / "src/main.align")], cwd=build_root,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        require(built.returncode == 0, f"evaluator command did not compile: {built.stderr.decode()[-4096:]}")
 
         source_child_marker = project / "source-child-ran"
         marker_helper = project / "scripts/source-verifier-marker.py"

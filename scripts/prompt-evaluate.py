@@ -67,7 +67,8 @@ EVALUATE_REQUEST_FIELDS = (
     "verifier_corpus_file_set_manifest_path", "verifier_corpus_source_repository_id",
     "verifier_corpus_source_sha256", "verifier_source_policy_path",
     "verifier_source_policy_sha256", "verifier_python_executable_path",
-    "verifier_git_executable_path", "evaluation_evidence_path",
+    "verifier_git_executable_path", "evaluation_evidence_path", "generation_child_path",
+    "generation_child_sha256",
 )
 EVALUATE_REQUEST_FIELDS_OMITTED = tuple(
     name for name in EVALUATE_REQUEST_FIELDS if name != "verifier_corpus_file_set_manifest_path"
@@ -159,7 +160,9 @@ PROMPT_TASK_FIELDS = (
     "require_clean_repo", "cmd", "argv", "snapshot_cmd", "snapshot_argv",
     "measurement_adapter_runtime", "snapshot_helper_runtime", "cwd", "timeout_ns",
     "task_prompt_path", "context_sources_path", "generation_policy_path", "provider_control_path",
-    "environment_policy_path", "artifacts", "regression_limits", "content_sha256",
+    "environment_policy_path", "validation_runner_path", "validation_runner_sha256",
+    "task_definition_path", "task_definition_sha256", "validation_argv", "patch_path",
+    "patch_sha256", "artifacts", "regression_limits", "content_sha256",
 )
 ACCEPTANCE_POLICY_FIELDS = (
     "schema_version", "artifact_kind", "policy_id", "minimum_task_count",
@@ -678,6 +681,25 @@ def validate_input_artifact_shape(kind: str, value: Mapping[str, Any]) -> None:
                 "measurement_adapter_runtime", "snapshot_helper_runtime",
             ))
             and bounded_integer(value.get("timeout_ns"), 1, 7_200_000_000_000)
+            and all(bounded_text(value.get(name), 4096) for name in (
+                "validation_runner_path", "task_definition_path",
+            ))
+            and all(valid_hex(value.get(name)) for name in (
+                "validation_runner_sha256", "task_definition_sha256",
+            ))
+            and isinstance(value.get("validation_argv"), list)
+            and bool(value.get("validation_argv"))
+            and all(
+                isinstance(item, str) and 0 < len(item.encode("utf-8")) <= 4096
+                for item in value.get("validation_argv")
+            )
+            # The `Option` pair is `None` for a provider-backed task whose patch comes from the
+            # generation response and `Some` only for a deterministic fixture-style task.
+            and (value.get("patch_path") is None) == (value.get("patch_sha256") is None)
+            and (
+                value.get("patch_path") is None
+                or (bounded_text(value.get("patch_path"), 4096) and valid_hex(value.get("patch_sha256")))
+            )
             and artifact_expectations_valid(value.get("artifacts"))
             and exact_record(limits, REGRESSION_LIMIT_FIELDS)
             and bounded_integer(limits.get("maximum_unrelated_diff_count"), 0, 1_048_576)
@@ -792,6 +814,12 @@ def validate_request_source_declaration(request: Mapping[str, Any]) -> None:
         raise EvaluationError("Align source identity is invalid")
     if not valid_hex(request.get("verifier_source_policy_sha256")):
         raise EvaluationError("source verifier policy digest is invalid")
+    # The derived generation child is built, not committed, so it is not a corpus member: its
+    # per-run absolute path and declared digest travel in this request and in the recorded check
+    # evidence. There is no environment or sibling-checkout fallback.
+    validate_absolute_path_syntax(request.get("generation_child_path"), "generation child")
+    if not valid_hex(request.get("generation_child_sha256")):
+        raise EvaluationError("generation child digest is invalid")
 
 
 def read_bounded(path: Path, maximum: int) -> bytes:
@@ -1851,7 +1879,7 @@ def invoke_adapter(
             argv,
             project / task["cwd"],
             environment,
-            nested_owner_timeout(max(task["timeout_ns"], provider_timeout_ns)),
+            nested_owner_timeout(task["timeout_ns"] + provider_timeout_ns),
             0,
             (descriptor, helper.descriptor),
         )
@@ -2886,6 +2914,43 @@ def resolved_credential(name: str | None) -> str | None:
     return value
 
 
+def validated_generation_child(request: Mapping[str, Any]) -> Path:
+    """Retain the declared generation child as an absolute regular executable with its exact bytes.
+
+    The binary is built, not committed, so it cannot be a corpus member; its reviewed `src/` tree and
+    `.align-revision` carry the reviewed-source proof and its per-run identity is this path/digest
+    pair. The declared digest must equal the same-descriptor bytes, so neither a stale claim nor an
+    unverified local build can be admitted.
+    """
+    child = Path(request["generation_child_path"])
+    try:
+        descriptor = os.open(child, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        raise EvaluationError("generation child is unreadable") from None
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise EvaluationError("generation child is not a regular file")
+        if not metadata.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            raise EvaluationError("generation child is not executable")
+        hasher = hashlib.sha256()
+        offset = 0
+        while offset < metadata.st_size:
+            chunk = os.pread(descriptor, min(65_536, metadata.st_size - offset), offset)
+            if not chunk:
+                raise EvaluationError("generation child changed while reading")
+            hasher.update(chunk)
+            offset += len(chunk)
+        after = os.fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino, metadata.st_size) != (after.st_dev, after.st_ino, after.st_size):
+            raise EvaluationError("generation child identity disagrees")
+        if hasher.hexdigest() != request["generation_child_sha256"]:
+            raise EvaluationError("generation child digest disagrees")
+    finally:
+        os.close(descriptor)
+    return child
+
+
 def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> dict[str, Any]:
     if request["sample_count"] < 2 or request["sample_count"] > 16:
         raise EvaluationError("sample count is invalid")
@@ -2916,6 +2981,7 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         raise EvaluationError("provider control timeout is invalid")
     credential_env_name = validated_credential_name(control, environment_policy)
     credential_value = resolved_credential(credential_env_name)
+    generation_child = validated_generation_child(request)
     validate_source_boundary(request, source_policy, project)
     task_inputs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     task_snapshot_files: list[list[str]] = []
@@ -2955,6 +3021,20 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
             raise EvaluationError("task executable is not the fixed reviewed adapter boundary")
         relative_path(project, task["argv"][1])
         relative_path(project, task["snapshot_argv"][1])
+        # Every declared measurement input except the generation child is a corpus member and keeps
+        # the existing membership, digest, and admission checks unchanged.
+        declared_inputs = [
+            (task["validation_runner_path"], task["validation_runner_sha256"]),
+            (task["task_definition_path"], task["task_definition_sha256"]),
+        ]
+        if task["patch_path"] is not None:
+            declared_inputs.append((task["patch_path"], task["patch_sha256"]))
+        for declared_path, declared_sha in declared_inputs:
+            if declared_path not in artifact_paths:
+                raise EvaluationError("a declared measurement input is not a corpus member")
+            resolved = relative_path(project, declared_path)
+            if hashlib.sha256(read_bounded(resolved, SNAPSHOT_ARTIFACT_LIMIT)).hexdigest() != declared_sha:
+                raise EvaluationError("a declared measurement input digest disagrees")
         task_generation = load_bound(relative_path(project, task["generation_policy_path"]), "GENERATION_POLICY")
         task_control = load_bound(relative_path(project, task["provider_control_path"]), "EVALUATION_PROVIDER_CONTROL")
         task_environment = load_bound(relative_path(project, task["environment_policy_path"]), "ENVIRONMENT_POLICY")
@@ -2996,6 +3076,7 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         "tasks": tasks, "first_task": first_task, "generation": generation, "control": control,
         "environment_policy": environment_policy, "environment_values": environment_values,
         "credential_env_name": credential_env_name, "credential_value": credential_value,
+        "generation_child": generation_child,
         "task_inputs": task_inputs, "task_snapshot_files": task_snapshot_files,
         "scope": scope, "candidate": candidate,
         "parent_variant": parent_variant, "task_files": task_files,
@@ -3065,6 +3146,7 @@ def evaluate(
     # the measurement-adapter child environment, and neither the snapshot helper nor any persisted
     # record ever observes the value.
     credential_env_name = inputs["credential_env_name"]
+    generation_child = inputs["generation_child"]
     adapter_environment = adapter_child_environment(
         environment_values, credential_env_name, inputs.pop("credential_value"),
     )
@@ -3288,6 +3370,18 @@ def evaluate(
                         "result_path": str(measurement_path), "paired_seed": generation["seed_base"] + sample - 1,
                         "credential_env_name": credential_env_name,
                         "environment_policy_sha256": environment_policy["content_sha256"],
+                        "validation_runner_path": str(relative_path(project, task["validation_runner_path"])),
+                        "validation_runner_sha256": task["validation_runner_sha256"],
+                        "task_definition_path": str(relative_path(project, task["task_definition_path"])),
+                        "task_definition_sha256": task["task_definition_sha256"],
+                        "validation_argv": list(task["validation_argv"]),
+                        "patch_path": (
+                            None if task["patch_path"] is None
+                            else str(relative_path(project, task["patch_path"]))
+                        ),
+                        "patch_sha256": task["patch_sha256"],
+                        "generation_child_path": str(generation_child),
+                        "generation_child_sha256": request["generation_child_sha256"],
                         "content_sha256": "",
                     })
                     adapter_request_path = temporary_json(

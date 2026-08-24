@@ -1,0 +1,665 @@
+module prompt_generate
+
+import model
+import prompt_artifact_io
+import prompt_artifacts
+import provider
+import provider_http
+import provider_llama
+import provider_openai
+import std.crypto
+import std.encoding
+import std.env
+import std.fs
+import std.path
+import std.time
+
+// C6-MEASURED owns `prompt generate`: the derived generation child that performs exactly one
+// bounded provider generation for the measurement adapter. The module follows the shipped
+// `prompt_evaluate.evaluate_file` and `prompt_experiment.experiment_file` shape — a terminal status
+// enum plus a label/success pair — and section 5's universal precedence is implemented literally:
+// the response output path is preflighted by exclusively creating and retaining its writer before
+// any request field is inspected, every decoded-request failure writes a response and performs no
+// provider call, and the first failing check fixes the status and error code.
+//
+// The child is the single producer of provider request bytes for the measurement path. The same
+// bytes go on the wire and are the SHA-256 preimage of `provider_request_sha256`; the adapter copies
+// that digest, the seed attestation, and the provider identity out of the response verbatim and
+// never re-serializes them, so the section 5.2 non-circularity rule holds with the child as the
+// provider boundary.
+
+// Section 5.1 diagnostic bound, reused for the child's bounded error text.
+BOUNDED_OUTPUT_MAX_BYTES := 16_384
+EMPTY_DIGEST := "0000000000000000000000000000000000000000000000000000000000000000"
+
+pub PromptGenerateStatus { Generated, InvalidInput, ProviderError, OutputWrite }
+
+pub fn status_label(value: PromptGenerateStatus) -> str = match value {
+  Generated => "GENERATED",
+  InvalidInput => "INVALID_INPUT",
+  ProviderError => "PROVIDER_ERROR",
+  OutputWrite => "OUTPUT_WRITE",
+}
+
+pub fn status_success(value: PromptGenerateStatus) -> bool = match value {
+  Generated => true,
+  _ => false,
+}
+
+// The exact section 1.2 replacement pass, identical to the proposal path's: one left-to-right scan
+// replacing every non-overlapping exact UTF-8 occurrence of `credential` with `[REDACTED]`. An empty
+// pattern returns the input unchanged, which is the ordinary path for every `api_key_env: None`
+// provider run. `find` is byte-oriented and UTF-8 is self-synchronizing, so a match offset is always
+// a scalar boundary and the slices below cannot split a multi-byte character.
+pub fn redact_credential(borrow text: str, borrow credential: str) -> string {
+  if credential.len() == 0 {
+    return text.clone()
+  }
+  output := builder()
+  mut cursor := 0
+  loop {
+    if cursor >= text.len() {
+      break
+    }
+    tail := text[cursor..text.len()]
+    match tail.find(credential) {
+      Some(offset) => {
+        output.write(text[cursor..cursor + offset])
+        output.write("[REDACTED]")
+        cursor = cursor + offset + credential.len()
+      },
+      None => {
+        output.write(tail)
+        cursor = text.len()
+      },
+    }
+  }
+  return output.to_string()
+}
+
+fn valid_path_component(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 255 {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] == 0 || bytes[index] == 0x2f {
+      return false
+    }
+    index = index + 1
+  }
+  return value != "." && value != ".."
+}
+
+fn valid_relative_path(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 4096 || value.bytes()[0] == 0x2f {
+    return false
+  }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index > value.len() {
+      break
+    }
+    if index == value.len() || value.bytes()[index] == 0x2f {
+      if !valid_path_component(value[start..index]) {
+        return false
+      }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_absolute_path(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 4096 || value.bytes()[0] != 0x2f {
+    return false
+  }
+  if value.len() == 1 {
+    return true
+  }
+  mut start := 1
+  mut index := 1
+  loop {
+    if index >= value.len() {
+      return valid_path_component(value[start..index])
+    }
+    if value.bytes()[index] == 0x2f {
+      if !valid_path_component(value[start..index]) {
+        return false
+      }
+      start = index + 1
+    }
+    index = index + 1
+  }
+}
+
+fn valid_output_path(value: str) -> bool {
+  if value.len() <= 0 {
+    return false
+  }
+  valid := if value.bytes()[0] == 0x2f { valid_absolute_path(value) } else { valid_relative_path(value) }
+  return valid && valid_path_component(path.base(value))
+}
+
+fn file_root(value: str) -> str {
+  root := path.dir(value)
+  return if root.len() == 0 { "." } else { root }
+}
+
+fn file_leaf(value: str) -> str {
+  return path.base(value)
+}
+
+// The longest UTF-8-safe prefix within `maximum` bytes. `s[a..b]` aborts on a non-boundary index,
+// so the end is walked back over continuation bytes before the slice is taken.
+fn utf8_prefix(value: str, maximum: i64) -> str {
+  if value.len() <= maximum {
+    return value
+  }
+  bytes := value.bytes()
+  mut end := maximum
+  loop {
+    if end <= 0 {
+      break
+    }
+    if (bytes[end] & 0xc0) != 0x80 {
+      break
+    }
+    end = end - 1
+  }
+  return value[0..end]
+}
+
+fn bounded_diagnostic(value: str) -> string {
+  return utf8_prefix(value, BOUNDED_OUTPUT_MAX_BYTES).clone()
+}
+
+fn owned_text_length(borrow value: string) -> i64 {
+  return value.len()
+}
+
+fn digest_text(value: str) -> string {
+  digest := crypto.sha256(value)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn source_loaded(status: prompt_artifact_io.InputSourceStatus) -> bool {
+  return match status { Loaded => true, _ => false }
+}
+
+fn source_error_code(status: prompt_artifact_io.InputSourceStatus) -> str = match status {
+  NotFound => "INPUT_NOT_FOUND",
+  InputType => "INPUT_TYPE",
+  _ => "INPUT_READ",
+}
+
+// `model.ProviderKind` gains no `FIXTURE` variant: `FIXTURE` is an evaluator-level control that
+// never reaches provider dispatch, so it is `INVALID_INPUT` here.
+fn provider_kind_of(value: str) -> Result<model.ProviderKind, Error> {
+  if value == "CLOUD_OPENAI" {
+    return Ok(model.ProviderKind.CloudOpenAI)
+  }
+  if value == "LOCAL_OPENAI" {
+    return Ok(model.ProviderKind.LocalOpenAI)
+  }
+  if value == "LLAMA_CPP" {
+    return Ok(model.ProviderKind.LlamaCpp)
+  }
+  return Err(Error.Invalid)
+}
+
+fn provider_request_bytes(
+  kind: model.ProviderKind,
+  model_name: str,
+  request: model.GenerationRequest,
+) -> string = match kind {
+  CloudOpenAI => provider_openai.request_bytes(model_name, request, false),
+  LocalOpenAI => provider_openai.request_bytes(model_name, request, false),
+  LlamaCpp => provider_llama.request_bytes(request, false),
+}
+
+fn provider_decode_content(kind: model.ProviderKind, response: str) -> Result<string, Error> = match kind {
+  CloudOpenAI => provider_openai.decode_content(response),
+  LocalOpenAI => provider_openai.decode_content(response),
+  LlamaCpp => provider_llama.decode_content(response),
+}
+
+fn transport_error_code(failure: Error) -> str = match failure {
+  Timeout => "PROVIDER_TIMEOUT",
+  Code(code) => if code == -1 { "PROVIDER_RESPONSE_TOO_LARGE" } else { "PROVIDER_TRANSPORT" },
+  _ => "PROVIDER_TRANSPORT",
+}
+
+CredentialLoad {
+  present: bool,
+  value: string,
+}
+
+// The single environment read. A `None` name performs no read at all and yields the empty `api_key`
+// an uncredentialed provider expects; a `Some` name is read exactly once from the child's own
+// constructed startup environment, and a missing or empty value is `MISSING_CREDENTIAL` before the
+// first external call.
+fn load_credential(borrow name: Option<string>) -> CredentialLoad {
+  return match name {
+    None => CredentialLoad { present: true, value: "".clone() },
+    Some(variable) => match env.get(variable) {
+      None => CredentialLoad { present: false, value: "".clone() },
+      Some(value) => if owned_text_length(value) == 0 {
+        CredentialLoad { present: false, value: "".clone() }
+      } else {
+        CredentialLoad { present: true, value: value }
+      },
+    },
+  }
+}
+
+GenerationOutcome {
+  ok: bool,
+  terminal: PromptGenerateStatus,
+  status: string,
+  error_code: string,
+  error: string,
+  provider_request_sha256: string,
+  seed_result: string,
+  applied_seed: Option<i64>,
+  http_status: Option<i64>,
+  content: string,
+  dispatch_start_ns: i64,
+  dispatch_end_ns: i64,
+}
+
+// A terminal outcome that never reached provider dispatch: no request bytes exist, so the digest is
+// the empty-preimage sentinel, no seed was applied, and both dispatch instants stay zero.
+fn undispatched_failure(
+  terminal: PromptGenerateStatus,
+  status: str,
+  error_code: str,
+  detail: str,
+) -> GenerationOutcome {
+  return GenerationOutcome {
+    ok: false,
+    terminal: terminal,
+    status: status.clone(),
+    error_code: error_code.clone(),
+    error: detail.clone(),
+    provider_request_sha256: EMPTY_DIGEST.clone(),
+    seed_result: "UNSUPPORTED".clone(),
+    applied_seed: None,
+    http_status: None,
+    content: "".clone(),
+    dispatch_start_ns: 0,
+    dispatch_end_ns: 0,
+  }
+}
+
+fn dispatched_failure(
+  error_code: str,
+  detail: string,
+  request_sha256: string,
+  seed_result: string,
+  applied_seed: Option<i64>,
+  http_status: Option<i64>,
+  started: i64,
+  ended: i64,
+) -> GenerationOutcome {
+  return GenerationOutcome {
+    ok: false,
+    terminal: PromptGenerateStatus.ProviderError,
+    status: "PROVIDER_ERROR".clone(),
+    error_code: error_code.clone(),
+    error: detail,
+    provider_request_sha256: request_sha256,
+    seed_result: seed_result,
+    applied_seed: applied_seed,
+    http_status: http_status,
+    content: "".clone(),
+    dispatch_start_ns: started,
+    dispatch_end_ns: ended,
+  }
+}
+
+// A received non-2xx response refuses the paired seed when its bounded body names the `seed`
+// control. Only a genuinely received HTTP response can reach this predicate: a transport `Err` never
+// does, so a connection errno can never be reported as a seed rejection.
+fn refuses_seed(body: str) -> bool {
+  return match body.find("seed") { Some(_) => true, None => false }
+}
+
+// The one function that owns the credential. Everything from the single `env.get` to the redacted,
+// bounded provider text happens here, so the credential is dropped with this frame — before any
+// response record is constructed — on the success path and on every early return below.
+fn run_generation(
+  borrow request: prompt_artifacts.PromptGenerationRequest,
+  borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+) -> GenerationOutcome {
+  credential_owner := load_credential(request.api_key_env)
+  if !credential_owner.present {
+    return undispatched_failure(
+      PromptGenerateStatus.InvalidInput,
+      "INVALID_INPUT",
+      "MISSING_CREDENTIAL",
+      "generation credential environment variable is missing or empty",
+    )
+  }
+  credential: str := credential_owner.value
+
+  kind := provider_kind_of(request.provider_kind) else {
+    return undispatched_failure(
+      PromptGenerateStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_LABEL",
+      "unsupported generation provider kind",
+    )
+  }
+
+  // Section 4.5's normative request mapping: the system text is empty and the user text is exactly
+  // `RenderedPromptArtifact.text`; maximum tokens, temperature, and the seed come only from the
+  // declared policy values this request carries.
+  prompt_view: str := rendered.text
+  model_view: str := request.provider_model
+  endpoint: str := request.endpoint
+  seeded_request := model.GenerationRequest {
+    system: "",
+    user: prompt_view,
+    max_tokens: request.max_tokens,
+    temperature: (request.temperature_micros as f64) / 1_000_000.0,
+    seed: Some(request.paired_seed),
+  }
+  unseeded_request := model.GenerationRequest {
+    system: "",
+    user: prompt_view,
+    max_tokens: request.max_tokens,
+    temperature: (request.temperature_micros as f64) / 1_000_000.0,
+    seed: None,
+  }
+  capability_config := model.ProviderConfig {
+    kind: kind,
+    endpoint: endpoint,
+    model: model_view,
+    api_key: "",
+    timeout_ns: request.timeout_ns,
+    tokenize_endpoint: "",
+    max_response_bytes: request.max_response_bytes,
+  }
+  info := provider.model_info(capability_config)
+  seeded_body := provider_request_bytes(kind, model_view, seeded_request)
+  unseeded_body := provider_request_bytes(kind, model_view, unseeded_request)
+  seeded_view: str := seeded_body
+  unseeded_view: str := unseeded_body
+  // `APPLIED` requires both halves of the section 11.3 rule: the selected adapter reports
+  // `supports_seed`, and its seeded twin record actually carried the paired seed. An adapter whose
+  // seeded encoding is byte-identical to the unseeded one did not carry the seed.
+  carries_seed := info.supports_seed && seeded_view != unseeded_view
+  body_view: str := if carries_seed { seeded_view } else { unseeded_view }
+
+  // The digest preimage is exactly the dispatched bytes, computed immediately before dispatch.
+  request_digest := digest_text(body_view)
+
+  started := time.instant()
+  response := provider_http.post_json_response(
+    endpoint,
+    credential,
+    body_view,
+    request.timeout_ns,
+    request.max_response_bytes,
+  )
+  ended := time.instant()
+
+  applied: Option<i64> := if carries_seed { Some(request.paired_seed) } else { None }
+  dispatched_label: str := if carries_seed { "APPLIED" } else { "UNSUPPORTED" }
+  no_status: Option<i64> := None
+
+  received := match response {
+    Err(failure) => {
+      // A transport `Err` is matched as `Error.Timeout`, then the receive-side `Error.Code(-1)`
+      // limit sentinel, then everything else. A received HTTP status never reaches this arm, so an
+      // errno can never masquerade as `PROVIDER_HTTP_STATUS`.
+      return dispatched_failure(
+        transport_error_code(failure),
+        "generation provider transport failure".clone(),
+        request_digest,
+        dispatched_label.clone(),
+        applied,
+        no_status,
+        started,
+        ended,
+      )
+    },
+    Ok(value) => value,
+  }
+
+  // Redaction happens once, on the whole received body, before any truncation, decoding, digesting,
+  // or persistence. Every later value in this flow is derived from these already-redacted bytes.
+  raw_body: str := received.body
+  redacted := redact_credential(raw_body, credential)
+  redacted_view: str := redacted
+  bounded := bounded_diagnostic(redacted_view)
+  bounded_view: str := bounded
+
+  // A refusal is only observable on a received non-2xx status: a 2xx response that produced content
+  // accepted the request, so completion text mentioning the word `seed` can never be read as a
+  // refusal. The predicate errs toward `REJECTED`, which makes the row non-gate-eligible rather than
+  // falsely eligible, so an ambiguous refusal body fails closed.
+  refused := received.status < 200 || received.status >= 300
+  seed_label: str := if !carries_seed {
+    "UNSUPPORTED"
+  } else if refused && refuses_seed(bounded_view) {
+    "REJECTED"
+  } else {
+    "APPLIED"
+  }
+  seed_applied: Option<i64> := if seed_label == "APPLIED" { applied } else { None }
+
+  if received.status < 200 || received.status >= 300 {
+    return dispatched_failure(
+      "PROVIDER_HTTP_STATUS",
+      bounded,
+      request_digest,
+      seed_label.clone(),
+      seed_applied,
+      Some(received.status),
+      started,
+      ended,
+    )
+  }
+
+  extracted := provider_decode_content(kind, redacted_view) else {
+    return dispatched_failure(
+      "PROVIDER_RESPONSE_SCHEMA",
+      bounded,
+      request_digest,
+      seed_label.clone(),
+      seed_applied,
+      Some(received.status),
+      started,
+      ended,
+    )
+  }
+  return GenerationOutcome {
+    ok: true,
+    terminal: PromptGenerateStatus.Generated,
+    status: "GENERATED".clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    provider_request_sha256: request_digest,
+    seed_result: seed_label.clone(),
+    applied_seed: seed_applied,
+    http_status: Some(received.status),
+    content: extracted,
+    dispatch_start_ns: started,
+    dispatch_end_ns: ended,
+  }
+}
+
+fn build_response(
+  request_id: string,
+  provider_kind: string,
+  provider_model: string,
+  outcome: GenerationOutcome,
+) -> prompt_artifacts.PromptGenerationResponse {
+  return prompt_artifacts.PromptGenerationResponse {
+    schema_version: 1,
+    artifact_kind: "PROMPT_GENERATION_RESPONSE".clone(),
+    request_id: request_id,
+    status: outcome.status,
+    error_code: outcome.error_code,
+    error: outcome.error,
+    provider_kind: provider_kind,
+    provider_model: provider_model,
+    provider_request_sha256: outcome.provider_request_sha256,
+    seed_result: outcome.seed_result,
+    applied_seed: outcome.applied_seed,
+    http_status: outcome.http_status,
+    content: if outcome.ok { Some(outcome.content) } else { None },
+    dispatch_start_ns: outcome.dispatch_start_ns,
+    dispatch_end_ns: outcome.dispatch_end_ns,
+    // The publisher computes the canonical digest over the complete record.
+    content_sha256: "".clone(),
+  }
+}
+
+fn publish(
+  output: writer,
+  value: prompt_artifacts.PromptGenerationResponse,
+  terminal: PromptGenerateStatus,
+) -> PromptGenerateStatus {
+  prompt_artifact_io.write_prompt_generation_response(output, value) else {
+    return PromptGenerateStatus.OutputWrite
+  }
+  return terminal
+}
+
+pub fn generate_file(request_path: str, result_path: str) -> PromptGenerateStatus {
+  // Step 1: CLI arity is the caller's; decode the declared request. A failure here has no trusted
+  // response envelope and therefore produces no response artifact.
+  if !valid_output_path(request_path) {
+    return PromptGenerateStatus.InvalidInput
+  }
+  request := prompt_artifact_io.load_prompt_generation_request(request_path) else {
+    return PromptGenerateStatus.InvalidInput
+  }
+
+  // Step 2, first: the response output-path preflight is exactly the retained exclusive creation. An
+  // occupied or unwritable path fails here, before any request field is validated and before any
+  // external work, and produces no response artifact. `OUTPUT_WRITE` is therefore a command status
+  // only: a failed response write persists no response document at all.
+  if !valid_output_path(result_path) {
+    return PromptGenerateStatus.InvalidInput
+  }
+  output := fs.create_exclusive_beneath(file_root(result_path), file_leaf(result_path)) else {
+    return PromptGenerateStatus.InvalidInput
+  }
+
+  request_id := request.request_id.clone()
+  provider_kind := request.provider_kind.clone()
+  provider_model := request.provider_model.clone()
+
+  // Step 2, operation precedence: request bounds, kind admission, and the declared content digest.
+  if !prompt_artifacts.verify_prompt_generation_request(request) {
+    return publish(
+      output,
+      build_response(
+        request_id,
+        provider_kind,
+        provider_model,
+        undispatched_failure(
+          PromptGenerateStatus.InvalidInput,
+          "INVALID_INPUT",
+          "INVALID_BOUNDS",
+          "invalid prompt generation request",
+        ),
+      ),
+      PromptGenerateStatus.InvalidInput,
+    )
+  }
+
+  // Step 2: the declared rendered prompt. Its `RenderedPromptArtifact.content_sha256` must equal
+  // `rendered_prompt_sha256`, so the section 4.5 request mapping stays normative and no intermediate
+  // owner can prepend, append, or split the rendered bytes.
+  rendered_source := prompt_artifact_io.read_rendered_prompt_source(request.rendered_prompt_path)
+  if !source_loaded(rendered_source.status) {
+    return publish(
+      output,
+      build_response(
+        request_id,
+        provider_kind,
+        provider_model,
+        undispatched_failure(
+          PromptGenerateStatus.InvalidInput,
+          "INVALID_INPUT",
+          source_error_code(rendered_source.status),
+          "cannot read the declared rendered prompt",
+        ),
+      ),
+      PromptGenerateStatus.InvalidInput,
+    )
+  }
+  rendered_view: str := rendered_source.source
+  rendered := prompt_artifacts.decode_rendered_prompt_artifact(rendered_view) else {
+    return publish(
+      output,
+      build_response(
+        request_id,
+        provider_kind,
+        provider_model,
+        undispatched_failure(
+          PromptGenerateStatus.InvalidInput,
+          "INVALID_INPUT",
+          "INVALID_SCHEMA",
+          "rendered prompt artifact did not decode",
+        ),
+      ),
+      PromptGenerateStatus.InvalidInput,
+    )
+  }
+  if rendered.schema_version != 1 || rendered.artifact_kind != "RENDERED_PROMPT" {
+    return publish(
+      output,
+      build_response(
+        request_id,
+        provider_kind,
+        provider_model,
+        undispatched_failure(
+          PromptGenerateStatus.InvalidInput,
+          "INVALID_INPUT",
+          "INVALID_KIND",
+          "rendered prompt artifact header is invalid",
+        ),
+      ),
+      PromptGenerateStatus.InvalidInput,
+    )
+  }
+  if rendered.content_sha256 != request.rendered_prompt_sha256 {
+    return publish(
+      output,
+      build_response(
+        request_id,
+        provider_kind,
+        provider_model,
+        undispatched_failure(
+          PromptGenerateStatus.InvalidInput,
+          "INVALID_INPUT",
+          "INVALID_DIGEST",
+          "rendered prompt digest does not match the declared value",
+        ),
+      ),
+      PromptGenerateStatus.InvalidInput,
+    )
+  }
+
+  // Steps 2 (environment-key presence) through 4: the credential-owning stage performs the single
+  // provider call and returns only credential-free, redacted, bounded data.
+  outcome := run_generation(request, rendered)
+  terminal := outcome.terminal
+  return publish(
+    output,
+    build_response(request_id, provider_kind, provider_model, outcome),
+    terminal,
+  )
+}

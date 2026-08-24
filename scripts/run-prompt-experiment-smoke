@@ -480,7 +480,7 @@ def cli_rows(root: pathlib.Path, server) -> None:
 
     usage = invoke([])
     require(usage.returncode == 0, "usage: expected success")
-    require("main prompt <experiment|evaluate|accept|rollback> <request.json> <result.json>"
+    require("main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>"
             in usage.stdout, f"usage line was not updated: {usage.stdout!r}")
 
     completed = case.run()

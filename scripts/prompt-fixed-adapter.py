@@ -295,12 +295,20 @@ def decoded_artifact(path: Path, maximum: int, kind: str) -> dict[str, Any]:
     return value
 
 
+# The section 11.3 task-parameterization fields are appended after `environment_policy_sha256` and
+# before `content_sha256`, so every field this fixture adapter already relied on keeps its position.
+# This adapter keeps its hard-coded runner, task, and patch identities and remains the deterministic
+# non-gate fixture owner; it changes only to keep the exact field-order check and the
+# `EvaluationInputIdentity.adapter_request_sha256` preimage in agreement with the evaluator.
 REQUEST_FIELDS = (
     "schema_version", "artifact_kind", "evaluation_id", "task_id", "sample_index", "variant",
     "variant_path", "variant_sha256", "rendered_prompt_path", "rendered_prompt_sha256",
     "generation_policy_path", "generation_policy_sha256", "provider_control_path",
     "provider_control_sha256", "workspace_path", "result_path", "paired_seed",
-    "credential_env_name", "environment_policy_sha256", "content_sha256",
+    "credential_env_name", "environment_policy_sha256", "validation_runner_path",
+    "validation_runner_sha256", "task_definition_path", "task_definition_sha256",
+    "validation_argv", "patch_path", "patch_sha256", "generation_child_path",
+    "generation_child_sha256", "content_sha256",
 )
 
 
@@ -314,7 +322,8 @@ def load_request(path: Path) -> dict[str, Any]:
         raise AdapterError("fixture adapter seed or credential identity is invalid")
     for name in (
         "variant_sha256", "rendered_prompt_sha256", "generation_policy_sha256",
-        "provider_control_sha256", "environment_policy_sha256",
+        "provider_control_sha256", "environment_policy_sha256", "validation_runner_sha256",
+        "task_definition_sha256", "generation_child_sha256",
     ):
         if not valid_digest(value[name]):
             raise AdapterError("adapter request contains an invalid digest")

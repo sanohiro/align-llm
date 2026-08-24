@@ -88,6 +88,27 @@ fn failed_source(status: InputSourceStatus) -> InputSource {
   return InputSource { status: status, source: "".clone() }
 }
 
+// The pathname reader for the generation child: its declared inputs arrive as complete paths in the
+// request rather than as a project root plus a relative path, so the child cannot use the
+// `open_beneath` pair. The caller still owns kind, identity, bound, and digest validation.
+fn read_path_source(path_value: str, maximum: i64) -> InputSource {
+  reader := match fs.open(path_value) {
+    Ok(value) => value,
+    Err(failure) => {
+      status := match failure {
+        NotFound => InputSourceStatus.NotFound,
+        Invalid => InputSourceStatus.InputType,
+        _ => InputSourceStatus.InputRead,
+      }
+      return failed_source(status)
+    },
+  }
+  source := read_bounded_reader(reader, maximum) else {
+    return failed_source(InputSourceStatus.InputRead)
+  }
+  return InputSource { status: InputSourceStatus.Loaded, source: source }
+}
+
 fn read_beneath_source(root: str, relative: str, maximum: i64) -> InputSource {
   reader := match fs.open_beneath(root, relative) {
     Ok(value) => value,
@@ -146,6 +167,37 @@ pub fn load_prompt_experiment_request(path: str) -> Result<prompt_artifacts.Prom
 // error code for the first failing check.
 pub fn read_prompt_text_artifact_source(root: str, relative: str) -> InputSource {
   return read_beneath_source(root, relative, ARTIFACT_MAX_BYTES)
+}
+
+pub fn load_prompt_generation_request(path: str) -> Result<prompt_artifacts.PromptGenerationRequest, Error> {
+  source := read_bounded(path, REQUEST_MAX_BYTES)?
+  view: str := source
+  return prompt_artifacts.decode_prompt_generation_request(view)
+}
+
+// The declared rendered-prompt input of the generation child. `rendered_prompt_sha256` binds the
+// artifact's own `content_sha256`, so the caller compares the decoded digest rather than a raw
+// byte digest of the file.
+pub fn read_rendered_prompt_source(path: str) -> InputSource {
+  return read_path_source(path, ARTIFACT_MAX_BYTES)
+}
+
+// The generation child's single output. The caller supplies a complete response with an empty
+// digest field; the canonical digest is taken over the record with that field empty, exactly as
+// every other content-bound artifact binds its own.
+pub fn write_prompt_generation_response(
+  output: writer,
+  value: prompt_artifacts.PromptGenerationResponse,
+) -> Result<(), Error> {
+  if value.content_sha256.len() != 0 {
+    return Err(Error.Invalid)
+  }
+  digest := prompt_artifacts.prompt_generation_response_content_digest(value)?
+  mut finalized := prompt_artifacts.clone_prompt_generation_response(value)
+  finalized.content_sha256 = digest
+  encoded := prompt_artifacts.encode_prompt_generation_response_bounded(finalized, ARTIFACT_MAX_BYTES)?
+  output.write(encoded)?
+  return output.flush()
 }
 
 pub fn load_prompt_evaluate_request(path: str) -> Result<prompt_artifacts.PromptEvaluateRequest, Error> {
