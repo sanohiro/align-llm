@@ -120,6 +120,13 @@ file records durable project state.
 
 ## Latest durable verification
 
+- `make provider-smoke` at the exact pin `19c3db144c462bf7d6784f88d64cc124229b7ec2` on native
+  Linux `x86_64` (WSL2, 2026-08-24): PASS, including adapters, chunked SSE, framing failures, the
+  bounded-response matrix with the `Error.Code(-1)` limit sentinel, HTTP 413, status diagnostics,
+  exact prompt count, and the common result format. This re-verifies the adopted Request 5
+  transport at the current pin for the C6-MEASURED ledger. `make check` at the same pin: PASS,
+  20 units per-unit.
+
 - Pre-merge C6-EVALUATION owners `gmake --no-print-directory c6-evaluation-adoption`,
   `gmake --no-print-directory c6-prompt-artifact-adoption`, `gmake --no-print-directory check`, and
   `gmake --no-print-directory format-check`: PASS at Align
@@ -312,8 +319,15 @@ file records durable project state.
 2. Begin C6-MEASURED (C6e, C6g1, C6g2) as the next consumer capability on a fresh branch: bounded
    provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
    policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
-   linked rollback. Verify the §11 ledgers for C6e/C6g are settled before coding; no new design
-   pull request is required for an already-settled contract.
+   linked rollback. The triggered design gate is satisfied: §11.3 of
+   `docs/specs/c6-prompt-context-optimizer.md` is the settled public-contract ledger and closure
+   matrix (new `prompt_experiment` surface and `PromptExperimentStatus`, the
+   `PromptExperimentRequest` record, reuse of the settled kind-`OPPORTUNITY` text artifact,
+   credential/redaction surface, provider error mapping with the `Error.Code(-1)` limit sentinel,
+   shared seed extension and `pub` serializer exports, parameterized transport cap, Request 2
+   adoption target, C6g asset paths, and the gate-validator identity).
+   Implementation may start immediately against that ledger; no further design pull request is
+   required.
 3. Inside C6-MEASURED, adopt Request 2 (plaintext/TLS provider timeouts) through its named
    C6e/C6g1 owners against the existing pin `19c3db144c46...`; no pin bump is required. Advance
    Request 2 only after its named owners and the wave's final capable gate pass. Do not infer a
