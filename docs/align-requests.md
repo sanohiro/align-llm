@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-21): Requests 1, 3–6 are CLOSED; Requests 7, 8, 10, 12, 13, and 15–18 are ALIGN_LLM_VERIFIED; Requests 2, 9, 11, and 14 remain ALIGN_MERGED.** C6-EVALUATION's reopened runtime-containment matrix and focused Request 11 and 14 owners pass; their status advances only after the final capable integration gate passes. Request 2's timeout adoption remains with C6e/C6g1, Request 9's adoption remains with C7, and Request 18 remains adopted by the C6d offline lifecycle owner at the exact Align merge recorded below.
+> **Status (2026-08-24): Requests 1, 3–6 are CLOSED; Requests 7, 8, and 10–18 are ALIGN_LLM_VERIFIED; Requests 2 and 9 remain ALIGN_MERGED.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. Every open request now has a merged Align surface: Request 2's timeout adoption remains with C6e/C6g1 and Request 9's adoption remains with C7, both already contained in the pinned Align merge recorded below.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -4961,14 +4961,14 @@ evidence.
 ## Request 11 — `std.process`: bounded child output capture
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
-Blocked gate or slice: C6f1 trusted snapshot/workspace boundary, C6f2 paired evaluator, and C6g1 real-consumer process boundaries
-Independent work that may continue: C6a1 through C6d2 pure codecs, rendering, scoring, activation, and any work without an external child process
-Resume condition: the reopened C6-EVALUATION runtime-containment matrix and focused helper/adapter qualification pass; the wave's final `make ci` remains
+Blocking: no
+Blocked gate or slice: none; the merged C6-EVALUATION contained evaluator consumes the shipped bounded capture
+Independent work that may continue: all work
+Resume condition: complete
 Align commit or pull request: Align design PR #806, merged as `30ff5830ce556e949edf31500a154ca7de4b1b7c`; implementation PR #808, merged as `82da9f580cc005fbb78f67af6847c7b4ce6626c4`
-align-llm verification: focused `c6f1-request11-adoption` and the reopened evaluator runtime-containment owner pass at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exact-cap, cap-plus-one, simultaneous streams, timeout, post-EOF, repeated/concurrent invocation, retained executable identity, and descendant cleanup; final capable integration remains pending
+align-llm verification: focused `c6f1-request11-adoption` and the reopened evaluator runtime-containment owner pass at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exact-cap, cap-plus-one, simultaneous streams, timeout, post-EOF, repeated/concurrent invocation, retained executable identity, and descendant cleanup; the final capable integration gate passed at PR #100 head `049172f5be57002c2426f012fe23038f570f5069` (CI run 32490981785, both installed native profiles) and merged as `282062bf00416f5e0df678b8bd885709084b4e16`
 ```
 
 ### Motivation and current-state evidence
@@ -5201,17 +5201,17 @@ The Align design and implementation must prove:
 ## Request 14 — `std.fs`: exclusive creation and no-replace publication
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
-Blocked gate or slice: C6f2 deterministic paired evaluator result/evidence publication and any later C6 command that promises no-replace artifact finalization
-Independent work that may continue: C6c1p and C6c2 pure verification, prompt rendering, scoring, design work, and any implementation that does not publish a pair with exclusive creation and no-replace rename
-Resume condition: the reopened C6-EVALUATION runtime-containment matrix and `c6f2-request14-adoption` pass; the wave's final `make ci` remains
+Blocking: no
+Blocked gate or slice: none; the merged C6-EVALUATION pair publication consumes the shipped exclusive operations
+Independent work that may continue: all work
+Resume condition: complete
 Align commit or pull request: design PR #859, merged as `a21eb8416f2088df68026f10c63a38cd0bd65538`; implementation PR #861, merged as `3c2edd2f399c9e2c9551b4227c61b36d6a041e20`
-align-llm verification: focused `c6f2-request14-adoption` passes at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exclusive staging, fixed result-then-evidence no-replace finalization, occupied regular/directory/symlink/FIFO targets, competing creators, reverse cleanup, and exact evaluator-owned orphan reporting; final capable integration remains pending
+align-llm verification: focused `c6f2-request14-adoption` passes at Align `19c3db144c462bf7d6784f88d64cc124229b7ec2`, including exclusive staging, fixed result-then-evidence no-replace finalization, occupied regular/directory/symlink/FIFO targets, competing creators, reverse cleanup, and exact evaluator-owned orphan reporting; the final capable integration gate passed at PR #100 head `049172f5be57002c2426f012fe23038f570f5069` (CI run 32490981785, both installed native profiles) and merged as `282062bf00416f5e0df678b8bd885709084b4e16`
 ```
 
-### Align response (2026-08-21 — shipped; final adoption pending)
+### Align response (2026-08-21 — shipped; verified 2026-08-24)
 
 Align ships `fs.create_exclusive(path: str) -> Result<writer, Error>` and
 `fs.rename_no_replace(source: str, destination: str) -> Result<(), Error>`. The implementation
@@ -5405,7 +5405,7 @@ Blocking: no
 Blocked gate or slice: none; the C6c2 decoded verifier now consumes the shipped surface
 Independent work that may continue: all work; Request 17 separately closes the dynamic-array extension used by the same verifier
 Resume condition: complete
-Align commit or pull request: design PR #856; implementation PR #857, merged as `8557c1525aefd9a4afef02d1ec5c2f88e16db4e`
+Align commit or pull request: design PR #856; implementation PR #857, merged as `8557c1525aefd9a4afef02d1ec5c2f88e16db4e4`
 align-llm verification: `.align-revision` pins `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`; `c6-borrowed-option-adoption`, `c6-borrowed-array-adoption`, and `prompt-verifier-smoke` PASS
 ```
 

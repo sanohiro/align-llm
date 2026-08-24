@@ -3,17 +3,22 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-21)
+## Active checkpoint (2026-08-24)
 
-- The current capability is C6-EVALUATION deterministic contained comparison on
-  `agent/c6-evaluation`. `.align-revision` remains pinned to Align merge
-  `19c3db144c462bf7d6784f88d64cc124229b7ec2`, which contains the Request 11 bounded process and
-  Request 14 exclusive publication surfaces consumed by this wave.
+- No capability is actively in implementation. C6-EVALUATION merged as align-llm PR #100
+  (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head
+  `049172f5be57002c2426f012fe23038f570f5069` in pull-request CI run 32490981785, including both
+  installed native profiles; main push run 32493880784 reused that exact evidence on the merge
+  commit. `.align-revision` remains pinned to Align
+  merge `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The next eligible roadmap capability is
+  C6-MEASURED (C6e, C6g1, C6g2).
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
-- The register records Requests 7, 8, 10, 12, 13, and 15–18 as `ALIGN_LLM_VERIFIED`. Requests 11 and
-  14 remain `ALIGN_MERGED` until the C6-EVALUATION candidate passes its final capable gate;
-  Requests 2 and 9 remain `ALIGN_MERGED` for their later named consumers.
+- The register records Requests 7, 8, and 10–18 as `ALIGN_LLM_VERIFIED`; the merged C6-EVALUATION
+  gate advanced Requests 11 and 14. Requests 2 and 9 remain `ALIGN_MERGED` for their later named
+  consumers (C6e/C6g1 provider timeouts and the C7 owned-JSON consumer); both surfaces are already
+  contained in the current pin, so no pin bump is required to adopt them. Every open Align request
+  now has a merged Align-side surface; no request is `PROPOSED`, `ACCEPTED`, or `IMPLEMENTING`.
 - The C6-EVALUATION candidate drives the deterministic two-task corpus through source/workspace verification,
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
@@ -56,9 +61,9 @@ file records durable project state.
   shipped Request 10 as `3ec710656c7ce7412da14a5c929529cb3e89caa3`. Align PR #800 shipped
   Request 4 as `f04672bce6f8689c9b219d0a20e770571e2d638b`, PR #808 shipped Request 11 as
   `82da9f580cc005fbb78f67af6847c7b4ce6626c4`, and PR #807 shipped Request 12 as
-  `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are `CLOSED`; Requests 8, 10, and
-  12 are `ALIGN_LLM_VERIFIED` for the C6 consumer capability; Request 11 remains `ALIGN_MERGED`
-  until the revised C6-EVALUATION owner and final capable gate pass.
+  `c37d79a180612c345551e259091b0b5acf2cb9cd`. Requests 4 and 5 are `CLOSED`; Requests 8, 10, 11,
+  and 12 are `ALIGN_LLM_VERIFIED`; Request 11 advanced when the merged C6-EVALUATION gate passed
+  in PR #100.
 - FRESH-IMAGE, FRESH-WORKER, and FRESH-IMAGE-REQUEST6-BOUNDARY are merged. The migrated profile
   preserves current authenticated cgroup cleanup, phase tracking, multistage image construction,
   and the `25b1201b...` pin while adding the ordinary adoption dispatcher, namespace helper,
@@ -302,11 +307,20 @@ file records durable project state.
 
 ## Next actions
 
-1. Complete the required redesigned exact-head review of the §10.1h candidate, resolve any valid
-   findings as one class, then run exact-head preflight and final capable `make ci` before merging
-   and beginning C6-MEASURED.
-2. Keep Request 2's plaintext/TLS provider-timeout adoption with C6e/C6g1 and Request 9 with C7;
-   do not infer a provider-quality claim from the deterministic fixture comparison.
+1. Merge the register/HANDOFF reconciliation branch `agent/reconcile-request-register`, which
+   records the passed C6-EVALUATION capable gate and advances Requests 11 and 14.
+2. Begin C6-MEASURED (C6e, C6g1, C6g2) as the next consumer capability on a fresh branch: bounded
+   provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
+   policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
+   linked rollback. Verify the §11 ledgers for C6e/C6g are settled before coding; no new design
+   pull request is required for an already-settled contract.
+3. Inside C6-MEASURED, adopt Request 2 (plaintext/TLS provider timeouts) through its named
+   C6e/C6g1 owners against the existing pin `19c3db144c46...`; no pin bump is required. Advance
+   Request 2 only after its named owners and the wave's final capable gate pass. Do not infer a
+   provider-quality claim before this wave's measured gate.
+4. After C6-MEASURED, begin C7-PERSISTED-RESULT per `docs/specs/c7-persisted-result.md` and adopt
+   Request 9 through the named C7 adoption fixture before product code consumes the owned-JSON
+   surface.
 
 ## Recovery and preservation
 
@@ -319,5 +333,10 @@ file records durable project state.
 - The named stash `codex-preserve-local-doc-fixes-before-pull-2026-08-16` is a temporary safety copy
   of the pre-refresh local documents. Drop it only after this checkpoint is merged and its final
   diff is confirmed.
+- The named stash `stale-request14-16-17-responses-superseded-by-origin-2026-08-24` holds a
+  2026-08-19 local register draft whose Request 14/16/17 responses were superseded by the merged
+  register; its only unmerged fact, the complete 40-character Request 16 merge hash
+  `8557c1525aefd9a4afef02d1ec5c2f88e16db4e4`, is carried by this reconciliation. Drop the stash
+  after this checkpoint merges.
 - Do not use destructive checkout/reset or broad cleanup. Keep code, documentation, commits, pull
   request metadata, review records, and diagnostics in English.
