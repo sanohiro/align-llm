@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+"""Prove the evaluator's Python renderer is a byte-faithful port of the owning Align renderer.
+
+Both renderers consume one shared vector set: `src/prompt_render_parity_smoke.align` drives
+`prompt_model.render` and prints one JSON row per vector, and this runner drives
+`scripts/prompt-evaluate.py` over the same vectors. Every status, rendered text, and digest must be
+byte-equal. Each vector's text payloads are written as raw files that both sides read verbatim, so
+no rendered byte depends on how the vector transport escapes it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import itertools
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+sys.dont_write_bytecode = True
+SOURCE = Path(__file__).resolve().parent.parent
+ALIGNC = Path(os.environ.get("ALIGNC") or SOURCE / "scripts" / "alignc")
+CONTEXT_MARKER = "\n[context truncated]"
+OUTPUT_MARKER = "\n[output truncated]"
+MEMORY_TEXT_FIELDS = (
+    "root", "attempted_patch", "final_status", "failure_stage", "failed_test", "failure_status",
+    "root_cause", "repair_result", "successful_strategy", "unsuccessful_strategy",
+    "recommended_tests", "risky_symbols",
+)
+
+
+def require(condition: Any, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def evaluator_module():
+    spec = importlib.util.spec_from_file_location(
+        "prompt_evaluate_render_parity", SOURCE / "scripts" / "prompt-evaluate.py",
+    )
+    require(spec is not None and spec.loader is not None, "evaluator helper could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def memory_line(task_id: str, marker: str, schema_version: int = 1, **extra: Any) -> str:
+    event: dict[str, Any] = {"schema_version": schema_version, "task_id": task_id}
+    event.update({name: marker for name in MEMORY_TEXT_FIELDS})
+    event.update({"iteration_count": 1, "repair_count": 1, "risk_score": 1})
+    event.update(extra)
+    return json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+
+
+def vector(case_name: str, **changes: Any) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "case_name": case_name,
+        "base_prompt": "BASE",
+        "repo_prompt": "REPO",
+        "task_prompt": "TASK",
+        "learned_prompt_append": "",
+        "task_id": "task-alpha",
+        "failure_memory_jsonl": "",
+        "patch_evaluation": "",
+        "diagnostic_stdout": "",
+        "diagnostic_stderr": "",
+        "include_patch_evaluation": False,
+        "include_failure_memory": False,
+        "include_diagnostics": False,
+        "max_patch_evaluation_bytes": 0,
+        "max_failure_events": 0,
+        "max_failure_context_bytes": 0,
+        "max_diagnostic_bytes_per_stream": 0,
+    }
+    unknown = set(changes) - set(value)
+    require(not unknown, f"vector {case_name} declares unknown fields: {sorted(unknown)}")
+    value.update(changes)
+    return value
+
+
+def section(text: str, heading: str) -> str:
+    """Return one rendered section body, which the parity vectors assert directly."""
+    marker = f"\n\n--- {heading} ---\n"
+    start = text.index(marker) + len(marker)
+    remainder = text[start:]
+    following = remainder.find("\n\n--- ")
+    return remainder if following < 0 else remainder[:following]
+
+
+ALPHA_LINES = (
+    memory_line("task-alpha", "oldest"),
+    memory_line("task-beta", "ignored"),
+    memory_line("task-alpha", "middle"),
+    memory_line("task-alpha", "newest"),
+)
+UNKNOWN_KEY_LINE = memory_line("task-alpha", "extra", undeclared_field={"nested": [1, 2]})
+DUPLICATE_KEY_LINE = memory_line("task-alpha", "duplicate")[:-1] + ',"task_id":"task-alpha"}'
+MEMORY_DOCUMENT = "\n".join(ALPHA_LINES)
+PATCH_BODY = "0123456789abcdefghijklmnopqrstuvwxyz"
+MULTIBYTE_BODY = "éé🙂éé🙂abcdefghij"
+
+
+def parity_vectors() -> list[dict[str, Any]]:
+    vectors: list[dict[str, Any]] = []
+
+    # Every enable/disable combination of the three optional sections.
+    for patch, memory, diagnostics in itertools.product((False, True), repeat=3):
+        vectors.append(vector(
+            f"combo-{int(patch)}{int(memory)}{int(diagnostics)}",
+            learned_prompt_append="learned append",
+            failure_memory_jsonl=MEMORY_DOCUMENT,
+            patch_evaluation=PATCH_BODY,
+            diagnostic_stdout="stdout body 0123456789",
+            diagnostic_stderr="stderr body 0123456789abcdef",
+            include_patch_evaluation=patch,
+            include_failure_memory=memory,
+            include_diagnostics=diagnostics,
+            max_patch_evaluation_bytes=32 if patch else 0,
+            max_failure_events=2 if memory else 0,
+            max_failure_context_bytes=4096 if memory else 0,
+            max_diagnostic_bytes_per_stream=24 if diagnostics else 0,
+        ))
+
+    # Patch-evaluation truncation boundaries: the exact cap, one byte over it, a budget that only
+    # fits the marker, a budget smaller than the marker, and a multi-byte boundary.
+    vectors.append(vector(
+        "patch-exact-cap", patch_evaluation=PATCH_BODY, include_patch_evaluation=True,
+        max_patch_evaluation_bytes=len(PATCH_BODY.encode("utf-8")),
+    ))
+    vectors.append(vector(
+        "patch-over-cap", patch_evaluation=PATCH_BODY, include_patch_evaluation=True,
+        max_patch_evaluation_bytes=len(PATCH_BODY.encode("utf-8")) - 1,
+    ))
+    vectors.append(vector(
+        "patch-marker-exact", patch_evaluation=PATCH_BODY, include_patch_evaluation=True,
+        max_patch_evaluation_bytes=len(CONTEXT_MARKER.encode("utf-8")),
+    ))
+    vectors.append(vector(
+        "patch-marker-over", patch_evaluation=PATCH_BODY, include_patch_evaluation=True,
+        max_patch_evaluation_bytes=len(CONTEXT_MARKER.encode("utf-8")) - 1,
+    ))
+    for offset in range(0, 4):
+        vectors.append(vector(
+            f"patch-multibyte-{offset}", patch_evaluation=MULTIBYTE_BODY,
+            include_patch_evaluation=True,
+            max_patch_evaluation_bytes=len(CONTEXT_MARKER.encode("utf-8")) + 2 + offset,
+        ))
+
+    # Diagnostic streams are bounded independently and always render both labels.
+    vectors.append(vector(
+        "diagnostics-exact-cap", diagnostic_stdout="stdout-0123", diagnostic_stderr="stderr-0123456789",
+        include_diagnostics=True, max_diagnostic_bytes_per_stream=len("stdout-0123".encode("utf-8")),
+    ))
+    vectors.append(vector(
+        "diagnostics-over-cap", diagnostic_stdout="stdout-0123", diagnostic_stderr="stderr-0123456789",
+        include_diagnostics=True, max_diagnostic_bytes_per_stream=len("stdout-0123".encode("utf-8")) - 1,
+    ))
+    vectors.append(vector(
+        "diagnostics-empty-streams", include_diagnostics=True, max_diagnostic_bytes_per_stream=64,
+    ))
+    vectors.append(vector(
+        "diagnostics-multibyte", diagnostic_stdout=MULTIBYTE_BODY, diagnostic_stderr=MULTIBYTE_BODY,
+        include_diagnostics=True,
+        max_diagnostic_bytes_per_stream=len(OUTPUT_MARKER.encode("utf-8")) + 3,
+    ))
+
+    # Failure-memory selection keys on `task_id` only.
+    selection_document = MEMORY_DOCUMENT + "\n"
+    vectors.append(vector(
+        "memory-task-selection", failure_memory_jsonl=selection_document,
+        include_failure_memory=True, max_failure_events=2, max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "memory-unmatched-task", failure_memory_jsonl=MEMORY_DOCUMENT, task_id="task-gamma",
+        include_failure_memory=True, max_failure_events=4, max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "memory-empty-task-id", failure_memory_jsonl=MEMORY_DOCUMENT, task_id="",
+        include_failure_memory=True, max_failure_events=4, max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "memory-event-cap", failure_memory_jsonl=MEMORY_DOCUMENT,
+        include_failure_memory=True, max_failure_events=1, max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "memory-byte-budget-exact", failure_memory_jsonl=MEMORY_DOCUMENT,
+        include_failure_memory=True, max_failure_events=3,
+        max_failure_context_bytes=len(ALPHA_LINES[3].encode("utf-8")) + 1 + len(ALPHA_LINES[2].encode("utf-8")),
+    ))
+    vectors.append(vector(
+        "memory-byte-budget-skip", failure_memory_jsonl=MEMORY_DOCUMENT,
+        include_failure_memory=True, max_failure_events=3,
+        max_failure_context_bytes=len(ALPHA_LINES[3].encode("utf-8")) + len(ALPHA_LINES[2].encode("utf-8")),
+    ))
+    vectors.append(vector(
+        "memory-blank-lines", failure_memory_jsonl="\n" + ALPHA_LINES[0] + "\n\n" + ALPHA_LINES[2] + "\n",
+        include_failure_memory=True, max_failure_events=4, max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "memory-unknown-key", failure_memory_jsonl=UNKNOWN_KEY_LINE,
+        include_failure_memory=True, max_failure_events=1, max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "memory-disabled-but-valid", failure_memory_jsonl=MEMORY_DOCUMENT,
+    ))
+
+    # `INVALID_FAILURE_MEMORY`: the complete profile is validated even for a disabled section.
+    vectors.append(vector("memory-malformed-line", failure_memory_jsonl="not-json"))
+    vectors.append(vector(
+        "memory-unknown-schema", failure_memory_jsonl=memory_line("task-alpha", "old", 2),
+    ))
+    vectors.append(vector(
+        "memory-missing-field", failure_memory_jsonl='{"schema_version":1,"task_id":"task-alpha"}',
+    ))
+    vectors.append(vector("memory-duplicate-field", failure_memory_jsonl=DUPLICATE_KEY_LINE))
+    vectors.append(vector(
+        "memory-trailing-input", failure_memory_jsonl=ALPHA_LINES[0] + " trailing",
+    ))
+    vectors.append(vector(
+        "memory-wrong-type",
+        failure_memory_jsonl=memory_line("task-alpha", "old").replace('"risk_score":1', '"risk_score":"1"'),
+    ))
+    for name, replacement in (
+        ("float", '"risk_score":1.5'),
+        ("exponent", '"risk_score":1e3'),
+        ("overflow", f'"risk_score":{2 ** 63}'),
+        ("null", '"risk_score":null'),
+    ):
+        vectors.append(vector(
+            f"memory-{name}",
+            failure_memory_jsonl=memory_line("task-alpha", "old").replace('"risk_score":1', replacement),
+        ))
+    vectors.append(vector(
+        "memory-lone-surrogate",
+        failure_memory_jsonl=memory_line("task-alpha", "old").replace('"root":"old"', r'"root":"\ud800"'),
+    ))
+    vectors.append(vector(
+        "memory-raw-control",
+        failure_memory_jsonl=memory_line("task-alpha", "old").replace('"root":"old"', '"root":"o\x01d"'),
+    ))
+
+    # Decoder shapes that must agree even though they are not rejections.
+    vectors.append(vector(
+        "memory-surrounding-whitespace",
+        failure_memory_jsonl="  " + memory_line("task-alpha", "old") + " \t",
+        include_failure_memory=True, max_failure_events=1, max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "memory-escaped-value",
+        failure_memory_jsonl=memory_line("task-alpha", 'quoted"marker'),
+        include_failure_memory=True, max_failure_events=1, max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "memory-escaped-task-id",
+        failure_memory_jsonl=memory_line("task-alpha", "old").replace(
+            '"task_id":"task-alpha"', '"task_id":"task\\u002dalpha"',
+        ),
+        include_failure_memory=True, max_failure_events=1, max_failure_context_bytes=4096,
+    ))
+
+    # `INVALID_INPUT`: every flag/limit mismatch and every source bound.
+    vectors.append(vector("policy-patch-flag", include_patch_evaluation=True))
+    vectors.append(vector("policy-patch-limit", max_patch_evaluation_bytes=32))
+    vectors.append(vector(
+        "policy-memory-events", include_failure_memory=True, max_failure_events=0,
+        max_failure_context_bytes=32,
+    ))
+    vectors.append(vector("policy-memory-orphan-events", max_failure_events=2))
+    vectors.append(vector("policy-diagnostic-flag", include_diagnostics=True))
+    vectors.append(vector(
+        "policy-patch-cap", include_patch_evaluation=True, max_patch_evaluation_bytes=65_537,
+    ))
+    vectors.append(vector(
+        "policy-memory-cap", include_failure_memory=True, max_failure_events=1,
+        max_failure_context_bytes=65_537,
+    ))
+    vectors.append(vector(
+        "policy-memory-event-cap", include_failure_memory=True, max_failure_events=65,
+        max_failure_context_bytes=4096,
+    ))
+    vectors.append(vector(
+        "policy-diagnostic-cap", include_diagnostics=True, max_diagnostic_bytes_per_stream=65_537,
+    ))
+    vectors.append(vector("source-oversized-base", base_prompt="x" * 65_537))
+    vectors.append(vector("source-oversized-learned", learned_prompt_append="x" * 8_193))
+    vectors.append(vector("source-exact-learned", learned_prompt_append="x" * 8_192))
+    vectors.append(vector("source-oversized-patch", patch_evaluation="x" * 65_537))
+    vectors.append(vector("source-oversized-stderr", diagnostic_stderr="x" * 65_537))
+    return vectors
+
+
+def structural_expectations(rows: dict[str, dict[str, str]]) -> None:
+    """Guard the parity assertion against two renderers agreeing on nonsense."""
+    combo = rows["combo-111"]
+    require(combo["status"] == "VALID", "the fully enabled combination did not render")
+    patch_body = section(combo["text"], "patch evaluation context")
+    require(
+        patch_body.endswith(CONTEXT_MARKER) and len(patch_body.encode("utf-8")) == 32,
+        f"the enabled patch section ignored its byte budget: {patch_body!r}",
+    )
+    require(
+        section(combo["text"], "failure memory context") == "\n".join(ALPHA_LINES[2:]),
+        "the enabled failure-memory section lost its chronological task-keyed selection",
+    )
+    diagnostics = section(combo["text"], "current failure diagnostics")
+    require(
+        diagnostics.startswith("stdout:\n") and "\nstderr:\n" in diagnostics,
+        f"the enabled diagnostic body changed shape: {diagnostics!r}",
+    )
+    for name in ("patch evaluation context", "failure memory context", "current failure diagnostics"):
+        require(
+            section(rows["combo-000"]["text"], name) == "(omitted)",
+            f"the disabled section {name!r} lost its placeholder",
+        )
+    require(
+        section(rows["patch-exact-cap"]["text"], "patch evaluation context") == PATCH_BODY
+        and section(rows["patch-over-cap"]["text"], "patch evaluation context").endswith(CONTEXT_MARKER)
+        and section(rows["patch-marker-exact"]["text"], "patch evaluation context") == CONTEXT_MARKER
+        and section(rows["patch-marker-over"]["text"], "patch evaluation context") == "",
+        "the patch-evaluation truncation boundaries changed",
+    )
+    require(
+        section(rows["memory-task-selection"]["text"], "failure memory context")
+        == "\n".join(ALPHA_LINES[2:])
+        and section(rows["memory-unmatched-task"]["text"], "failure memory context") == ""
+        and section(rows["memory-event-cap"]["text"], "failure memory context") == ALPHA_LINES[3]
+        and section(rows["memory-byte-budget-exact"]["text"], "failure memory context")
+        == "\n".join(ALPHA_LINES[2:])
+        and section(rows["memory-byte-budget-skip"]["text"], "failure memory context")
+        == ALPHA_LINES[3]
+        and section(rows["memory-blank-lines"]["text"], "failure memory context")
+        == f"{ALPHA_LINES[0]}\n{ALPHA_LINES[2]}",
+        "failure-memory selection changed",
+    )
+    for name in (
+        "memory-malformed-line", "memory-unknown-schema", "memory-missing-field",
+        "memory-duplicate-field", "memory-trailing-input", "memory-wrong-type", "memory-float",
+        "memory-exponent", "memory-overflow", "memory-null", "memory-lone-surrogate",
+        "memory-raw-control", "memory-escaped-value", "memory-escaped-task-id",
+    ):
+        require(
+            rows[name]["status"] == "INVALID_FAILURE_MEMORY" and not rows[name]["text"]
+            and not rows[name]["sha256"],
+            f"vector {name} did not reject the failure-memory profile",
+        )
+    require(
+        rows["memory-unknown-key"]["status"] == "VALID"
+        and section(rows["memory-unknown-key"]["text"], "failure memory context") == UNKNOWN_KEY_LINE,
+        "an undeclared memory-event key was not skipped",
+    )
+    for name, row in rows.items():
+        if name.startswith(("policy-", "source-oversized-")):
+            require(
+                row["status"] == "INVALID_INPUT" and not row["text"] and not row["sha256"],
+                f"vector {name} did not reject its policy or source bounds",
+            )
+    require(rows["source-exact-learned"]["status"] == "VALID", "the exact learned bound was rejected")
+
+
+def main() -> int:
+    module = evaluator_module()
+    vectors = parity_vectors()
+    names = [item["case_name"] for item in vectors]
+    require(len(set(names)) == len(names), "parity vectors declare a duplicate case name")
+    with tempfile.TemporaryDirectory(prefix="prompt-render-parity-") as directory:
+        root = Path(directory).resolve()
+        payloads = root / "payloads"
+        payloads.mkdir()
+
+        def payload_path(value: str) -> str:
+            """Write one deduplicated raw payload file; both renderers read these exact bytes."""
+            raw = value.encode("utf-8")
+            path = payloads / hashlib.sha256(raw).hexdigest()
+            if not path.exists():
+                path.write_bytes(raw)
+            return str(path)
+
+        indexed = [
+            {
+                "case_name": item["case_name"],
+                "task_id": item["task_id"],
+                **{
+                    f"{name}_path": payload_path(item[name]) for name in (
+                        "base_prompt", "repo_prompt", "task_prompt", "learned_prompt_append",
+                        "failure_memory_jsonl", "patch_evaluation", "diagnostic_stdout",
+                        "diagnostic_stderr",
+                    )
+                },
+                **{
+                    name: item[name] for name in (
+                        "include_patch_evaluation", "include_failure_memory", "include_diagnostics",
+                        "max_patch_evaluation_bytes", "max_failure_events",
+                        "max_failure_context_bytes", "max_diagnostic_bytes_per_stream",
+                    )
+                },
+            }
+            for item in vectors
+        ]
+        vector_path = root / "vectors.json"
+        vector_path.write_bytes(
+            json.dumps({"vectors": indexed}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        completed = subprocess.run(
+            [str(ALIGNC), "run", str(SOURCE / "src/prompt_render_parity_smoke.align"), str(vector_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+    require(
+        completed.returncode == 0,
+        f"Align renderer driver failed: {completed.stderr.decode(errors='replace')[-4096:]}",
+    )
+    actual = [json.loads(line) for line in completed.stdout.decode("utf-8").splitlines()]
+    require(
+        [row["case_name"] for row in actual] == names,
+        f"Align renderer emitted unexpected vectors: {[row['case_name'] for row in actual]!r}",
+    )
+
+    for item, row in zip(vectors, actual):
+        policy = {
+            name: item[name] for name in (
+                "include_patch_evaluation", "include_failure_memory", "include_diagnostics",
+                "max_patch_evaluation_bytes", "max_failure_events", "max_failure_context_bytes",
+                "max_diagnostic_bytes_per_stream",
+            )
+        }
+        status, text, sha256 = module.render_prompt(
+            item["base_prompt"], item["repo_prompt"], item["task_prompt"],
+            item["learned_prompt_append"], item["task_id"], item["failure_memory_jsonl"], policy,
+            item["patch_evaluation"], item["diagnostic_stdout"], item["diagnostic_stderr"],
+        )
+        require(
+            status == row["status"],
+            f"vector {item['case_name']}: Python status {status!r} != Align status {row['status']!r}",
+        )
+        require(
+            text.encode("utf-8") == row["text"].encode("utf-8"),
+            f"vector {item['case_name']} rendered different bytes:\n"
+            f"python={text.encode('utf-8')!r}\nalign={row['text'].encode('utf-8')!r}",
+        )
+        require(
+            sha256 == row["sha256"],
+            f"vector {item['case_name']}: Python digest {sha256!r} != Align digest {row['sha256']!r}",
+        )
+        require(
+            not text or sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            f"vector {item['case_name']} published a digest that is not its raw text digest",
+        )
+
+    rows = {row["case_name"]: row for row in actual}
+    structural_expectations(rows)
+
+    # The evaluator's artifact-level entry point must agree with the shared port and must map the
+    # renderer's two rejection statuses onto the settled invalid-input codes.
+    def artifacts(item: dict[str, Any]):
+        def bound(kind: str, identifier: str, value: str) -> dict[str, Any]:
+            record = {
+                "schema_version": 1, "artifact_kind": kind, "artifact_id": identifier,
+                "text": value, "content_sha256": "",
+            }
+            record["content_sha256"] = module.canonical_digest(record)
+            return record
+
+        variant = {
+            "base_prompt": bound("BASE_PROMPT", "base-v1", item["base_prompt"]),
+            "repo_prompt": bound("REPO_PROMPT", "repo-v1", item["repo_prompt"]),
+            "learned_prompt_append": item["learned_prompt_append"],
+            "context_policy": {
+                name: item[name] for name in (
+                    "include_patch_evaluation", "include_failure_memory", "include_diagnostics",
+                    "max_patch_evaluation_bytes", "max_failure_events", "max_failure_context_bytes",
+                    "max_diagnostic_bytes_per_stream",
+                )
+            },
+        }
+        context = {
+            "task_id": item["task_id"],
+            "patch_evaluation": bound("PATCH_EVALUATION", "patch-v1", item["patch_evaluation"]),
+            "failure_memory_jsonl": bound("FAILURE_MEMORY_JSONL", "memory-v1", item["failure_memory_jsonl"]),
+            "diagnostic_stdout": bound("DIAGNOSTIC_STDOUT", "stdout-v1", item["diagnostic_stdout"]),
+            "diagnostic_stderr": bound("DIAGNOSTIC_STDERR", "stderr-v1", item["diagnostic_stderr"]),
+        }
+        return variant, context, bound("TASK_PROMPT", "task-v1", item["task_prompt"])
+
+    for item in vectors:
+        variant, context, task_prompt = artifacts(item)
+        row = rows[item["case_name"]]
+        try:
+            text, sha256 = module.render(variant, task_prompt, context)
+        except module.EvaluationError as failure:
+            code = module.validation_error_code(failure)
+            expected = "INVALID_SCHEMA" if row["status"] == "INVALID_FAILURE_MEMORY" else "INVALID_BOUNDS"
+            require(
+                row["status"] != "VALID" and code == expected,
+                f"vector {item['case_name']}: render() rejected a {row['status']} render as {code}",
+            )
+            continue
+        require(
+            row["status"] == "VALID" and text == row["text"] and sha256 == row["sha256"],
+            f"vector {item['case_name']}: render() disagreed with the Align renderer",
+        )
+
+    print(
+        f"prompt render parity: {len(vectors)} vectors byte-equal across the Align and Python "
+        "renderers: PASS"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"prompt render parity: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)
