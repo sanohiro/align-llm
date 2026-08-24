@@ -13,11 +13,11 @@
     "source_sha256": "7e6cc468e50951f9e7d8b1d4faf820ee3c1f51766fe241ea3e4078779413c508",
     "content_sha256": "78fa7af3b7f0c0c5bd1a2483f22d457be747b3a0f42daf4c83225ab7a29d4296"
   },
-  "evaluation_provider_kind": "FIXTURE",
-  "evaluation_provider_model": "pending-provider-decision",
-  "generation_policy_sha256": "2429bbf591fa2315ac031eb5eb55f1d986becbe9fdce04c21e0d50fca8a987e3",
+  "evaluation_provider_kind": "LOCAL_OPENAI",
+  "evaluation_provider_model": "qwen2.5-coder-7b-instruct-q4_k_m",
+  "generation_policy_sha256": "e5887c233dbb21bacad79923c2b9f43eba250c8b0fa2550354f6ffbf8960133e",
   "acceptance_policy_sha256": "7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3",
   "base_prompt_sha256": "a9c23b5ab11aa3b03514db43d4b994ad2f79dbc0040376231f4931e41ff9da0a",
   "repo_prompt_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21",
-  "content_sha256": "ad57d6778fb380155b02c61701b88b97da1bb3227571932e0b45a7681aa7b825"
+  "content_sha256": "f75e001e9674bdcff839cfd7bd3a866bb8cf2b11d47b3ef322b5441ae761bc65"
 }
