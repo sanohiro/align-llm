@@ -14,20 +14,13 @@ file records durable project state.
   `e935790` (regenerated gate evidence), and `e14c472` (measurement record). The measured gate is
   real and green at the repaired head: `make prompt-gate-check` with all five explicit `C6_GATE_*`
   values exits 0 (`prompt gate validator: PASS`) against the regenerated `eval/prompt/gate/` bundle.
-- **Open blocker: the supervised fresh-worker `make ci` still does not pass.** The first cause was
-  found and removed; a second, independent cause remains.
-  `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker`
-  reached `worker-aggregate` and failed with `fresh compiler: ERROR CHILD aggregate` after
-  907,847 ms at `e14c472b11abcbb2368a93d1fd4c97d3554f11e4`, and identically after 981,841 ms at the
-  pre-repair reviewed head `535be1087622dfd05481503d5f5d933555c06953`. It is therefore a
-  pre-existing C6-MEASURED wave gap, not a review-repair regression: the C6-MEASURED additions to
-  `HOSTED_CHECK_TARGETS` had never been exercised by the supervised aggregate, whose last green run
-  predates them. Every individual member of the capable graph passes on native Linux `aarch64`
-  under a cleared, fixed environment and under the aggregate's exact 256 MiB / 65,536-inode
-  temporary-store envelope with `ALIGNC_CACHE=off` (peak `TMPDIR` use 19.5 MB, in
-  `prompt-gate-validator-smoke`), and a full owner run leaves the workspace clean apart from
-  `./main`, so neither the per-target behavior, the temporary-store bounds, nor the overlay
-  single-entry rule explains it.
+- **Resolved: the supervised fresh-worker `make ci` passes.** At head
+  `3768ad8af68bb50ee3129ff392f6ba86ac89e071`,
+  `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker
+  --align-repo /Users/hiro/Projects/align` exits 0 with `fresh worker qualification: PASS
+  (installed profile only)`. The blocker had two independent causes, both C6-MEASURED lane
+  additions that the supervised aggregate had never exercised — its last green run predates them —
+  so both were pre-existing wave gaps rather than review-repair regressions.
 - **Cause 1, removed: resource pressure from `prompt-verifier-smoke`.** A high-fidelity
   reproduction of the exact aggregate environment ran `make capable-checks` to `exit=0` in 890 s
   with a clean workspace-upper (only `./main`), of which roughly 780 s was that one smoke. The
@@ -35,25 +28,33 @@ file records durable project state.
   `src/prompt_verifier_smoke.align`, against 0.494 s for `alignc check` of the same unit. The
   member was demoted to a named focused qualification (see the lane entry below), and the aggregate
   cost came back inside its historical band.
-- **Cause 2, open and not yet identified.** At head `55282a8` the same qualification still fails at
-  `worker-aggregate`, now after 191,760 ms in that phase and 537,636 ms for the whole installed
-  profile (previously 907,847 ms). Historical green worker-aggregate phases were 172,039 ms and
-  179,830 ms, so the demotion restored the cost band but did not make the aggregate pass. Roughly
-  130-150 s of the 192 s is private staging plus the fresh Cargo compiler build, so `capable-checks`
-  ran for on the order of a minute before failing — that is partway through the graph, not at its
-  start and not at its end. The failing target is still not named by any observable output.
-- **Why the new diagnostic seam did not name it.** `scripts/fresh-align-compiler` now emits the
-  bounded tail of the aggregate child's already-captured streams when
-  `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1` is present, and `run-fresh-worker-unit-smoke` proves it. The
-  opt-in cannot currently reach the worker, and the worker's stderr cannot currently reach the
-  caller, for two image-owned reasons: `image/fresh/control/fresh_image_control.py` launches the
-  worker with the fixed `WORKER_ENVIRONMENT` dict and the worker rejects anything but
-  `EXPECTED_ENVIRONMENT` exactly (`fresh-align-compiler`, `worker()`); and that same controller
-  discards the worker's streams on failure — `if result.returncode != 0 or result.stderr or ...`
-  raises `ControlError("CHILD", "aggregate", ...)`, and `_emit_error` prints only the canonical
-  line. Closing that path means changing image-owned worker-environment construction and controller
-  error propagation, which is its own capability, exactly as previously scoped. The worker-side half
-  is now in place and is inert until it lands.
+- **Cause 2, removed: `prompt-measurement-adapter-smoke` could not find `git`.** Its patch row
+  builds a pinned checkout and runs `git apply` over the adapter's synthesized bytes, and it
+  launched that fixture with a hard-coded child `PATH=/usr/bin:/bin` plus a bare `git` argv. Python
+  resolves a bare program name against the *child* environment's PATH, and the fresh aggregate puts
+  only its staged tool root on PATH, so the row died with
+  `prompt measurement adapter: FAIL: [Errno 2] No such file or directory: 'git'` and took
+  `capable-checks` down with `make[1]: *** [Makefile:129: prompt-measurement-adapter-smoke] Error 1`.
+  `3768ad8` resolves that fixture PATH from `ALIGN_LLM_TOOL_ROOT`, exactly as
+  `scripts/check-baseline-chain` already does, with the previous fixed host directories as the
+  default. The whole class was audited across the aggregate's goal list: every other bare-name child
+  launch in the lane either inherits the aggregate environment or already derives its PATH from the
+  tool root, and the remaining hard-coded `/usr/bin:/bin` occurrences launch absolute paths the
+  aggregate provides.
+- **The aggregate diagnostic seam is now reachable end to end (`e4c7e45`).** One optional entry,
+  `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`, is forwarded — never synthesized — across every launch
+  boundary that previously rebuilt the environment from fixed literals: `fresh-supervise.c` beside
+  its five-variable allowlist, `fresh-bootstrap.c` beside its five fixed entries,
+  `fresh_image_control.py`'s bootstrap and worker environments, and the worker's
+  `EXPECTED_ENVIRONMENT` admission via `environment_admitted()`. On failure the worker emits the
+  bounded tail of the aggregate child's streams and the controller emits the bounded tail of the
+  worker's stderr, both before the canonical `fresh compiler: ERROR <category> <phase>` line and
+  both capped at 8,192 bytes. With the entry absent every environment, stream, status, and byte of
+  output is exactly what it was before. This is what named cause 2: the diagnostic run printed the
+  failing target and its error verbatim. `run-fresh-image-control-smoke` and
+  `run-fresh-worker-unit-smoke` pin both halves, and
+  `docs/specs/check-gate-topology.md` records the contract. Use it by exporting the variable before
+  the qualification; it costs one extra qualification run and nothing else.
 - Slice E landed the final integration wiring. The section 11.3 owner targets are now
   `HOSTED_CHECK_TARGETS` members — `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`,
   `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
@@ -281,6 +282,38 @@ file records durable project state.
 
 ## Latest durable verification
 
+- **C6-MEASURED supervised gate, green, at head `3768ad8af68bb50ee3129ff392f6ba86ac89e071`
+  (2026-08-25).** `python3 scripts/run-fresh-worker-qualification --installed-profile-only
+  --require-docker --align-repo /Users/hiro/Projects/align`: **PASS**, exit 0,
+  `fresh image profile smoke: PASS` then `fresh worker qualification: PASS (installed profile
+  only)`. Phases: `docker-daemon` 675 ms, `image-build` 21,883 ms, `image-attestation` 3,822 ms,
+  `profile-lifecycle` 3,188 ms, `profile-self-test` 14,331 ms, `trust-mutations` 13,151 ms,
+  `runtime-replacements` 22,893 ms, **`worker-aggregate` pass after 354,739 ms**,
+  `boundary-profile` 270,909 ms, `cleanup` 1,883 ms; whole installed profile 708,521 ms. The
+  aggregate is legitimately above the 172-192 s historical band because that band predates the
+  C6-MEASURED lane members, which this run is the first supervised run to complete. Run with the
+  default environment and no diagnostic opt-in.
+- The immediately preceding diagnostic run, same command with `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`
+  exported, at head `e4c7e45`: FAIL at `worker-aggregate` after 178,853 ms, and it named the cause
+  verbatim — `prompt measurement adapter: FAIL: [Errno 2] No such file or directory: 'git'`,
+  `make[1]: *** [Makefile:129: prompt-measurement-adapter-smoke] Error 1`,
+  `make: *** [/workspace/Makefile:234: capable-checks] Error 2`. The controller forwarded 8,192 of
+  11,037 captured worker stderr bytes and the worker forwarded all 2,669 aggregate-child stderr
+  bytes.
+- Host (macOS, managed pinned toolchain) at `3768ad8`: `gmake check` (22 units per-unit),
+  `gmake gate-topology-check` (`check gate topology: PASS`), `gmake format-check`,
+  `git diff --check`, and `python3 scripts/check-baseline-chain` (`baseline chain: PASS`): PASS.
+  The `Makefile` is unchanged by this work, so the baseline chain needed no re-finalization.
+- Debian bookworm `aarch64` container, privileged, with `clang` and `unzip` installed and
+  `PYTHONDONTWRITEBYTECODE=1`, at `e4c7e45`: `python3 scripts/run-fresh-worker-qualification`
+  (all ten focused owners including `run-fresh-image-control-smoke` 4,745 ms with the new
+  controller-diagnostic case, `run-fresh-worker-unit-smoke` 5,206 ms with the new worker-admission
+  case, and `check-gate-topology --self-test`) and `python3 scripts/test-development-preflight`:
+  PASS. That focused run also builds both changed native launchers twice and compares them.
+- `python3 scripts/run-prompt-measurement-adapter-smoke` at `3768ad8`: PASS on the host (48 rows,
+  unchanged documented Linux-only SKIP) and PASS in the container with a tool root that contains
+  only `git` and is the whole child PATH (`ALIGN_LLM_TOOL_ROOT=/toolsim`, 64 rows) — the fresh
+  aggregate's shape, reproduced outside it.
 - C6-MEASURED aggregate-cost repair at head `55282a8` (2026-08-25). Host (macOS, managed pinned
   toolchain): `gmake check` (22 units per-unit), `gmake gate-topology-check`, `gmake format-check`,
   `gmake prompt-seed-attestation-smoke` (now 0 bytes on stderr), `git diff --check`, and
@@ -595,30 +628,23 @@ file records durable project state.
 
 ## Next actions
 
-1. Diagnose and repair the remaining fresh-worker `capable-checks` aggregate failure (cause 2 in the
-   active checkpoint). It still blocks every `make ci` claim for this branch. Cause 1 — the
-   `prompt-verifier-smoke` code-generation cost — is removed, and the aggregate phase is back in its
-   historical 172-192 s band, but `worker-aggregate` still fails. The next step is to make the
-   failing target observable end to end: `scripts/fresh-align-compiler` already emits the bounded
-   child-stream tail under `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`, so what remains is the image-owned
-   half — pass that one variable through
-   `image/fresh/control/fresh_image_control.py`'s `WORKER_ENVIRONMENT` and the worker's
-   `EXPECTED_ENVIRONMENT`, and forward the worker's stderr instead of discarding it in the
-   controller's non-canonical-result path. That is its own capability because it touches image-owned
-   worker-environment construction and controller error propagation. Failing that, reproduce the
-   exact aggregate environment outside the supervisor at the current head, the way the 890 s
-   reproduction was built, and bisect the graph.
-2. Publish C6-MEASURED from `agent/c6-measured` at its current head. The measured-gate transcript
-   and the complete owner run were recorded at `e14c472b11abcbb2368a93d1fd4c97d3554f11e4`. The pull
-   request must carry the narrowed measured claim, the per-cell matrix, the validator transcript,
-   the exact capable-gate commands and results recorded above, the named-qualification status of
-   `prompt-gate-check`, and the open `make ci` blocker.
-3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+1. **Publish C6-MEASURED from `agent/c6-measured` at head `3768ad8`.** Nothing blocks it any more:
+   the supervised `make ci` gate is green at that exact head and the host checks pass there too.
+   The branch now carries three kinds of change, and the review must cover all of them: the
+   C6-MEASURED wave itself, the image-owned diagnostic seam (`e4c7e45` — native launchers, the
+   control plane, the worker's environment admission, two owner smokes, and the
+   `docs/specs/check-gate-topology.md` contract), and the measurement-adapter tool-root repair
+   (`3768ad8`). Run one fresh comprehensive review of the whole diff, then publish an English pull
+   request carrying the narrowed measured claim, the per-cell matrix, the validator transcript, the
+   named-qualification status of `prompt-gate-check` and `prompt-verifier-smoke`, and the exact
+   supervised-gate phase table recorded above. The seam touches an authoritative specification, so
+   it is a governance-relevant part of the diff, not an incidental one.
+2. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
-4. Merged historical item: the register/HANDOFF reconciliation branch
+3. Merged historical item: the register/HANDOFF reconciliation branch
    `agent/reconcile-request-register` recorded the passed C6-EVALUATION capable gate and advanced
    Requests 11 and 14.
-5. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
+4. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
    provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
    policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
    linked rollback. The triggered design gate is satisfied: §11.3 of
