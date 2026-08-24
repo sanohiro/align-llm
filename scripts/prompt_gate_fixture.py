@@ -265,8 +265,10 @@ class GateBundle:
         accepted["activation"]["activation_id"] = "accept-v1/activation"
         accepted["activation"]["operation"] = "ACCEPT"
         accepted["activation"]["effective_variant"] = copy.deepcopy(result["candidate_variant"])
-        accepted["activation"]["parent_activation_id"] = baseline["decision_id"]
-        accepted["activation"]["parent_activation_sha256"] = baseline["content_sha256"]
+        # Section 4.4 lineage: the nested activation ID and digest, exactly as
+        # `src/prompt_state.align` links a real accepted activation.
+        accepted["activation"]["parent_activation_id"] = baseline["activation"]["activation_id"]
+        accepted["activation"]["parent_activation_sha256"] = baseline["activation"]["content_sha256"]
         accepted["activation"]["accepted_evaluation_id"] = result["evaluation_id"]
         accepted["activation"]["accepted_evaluation_sha256"] = result["content_sha256"]
         bind_activation(accepted)
@@ -277,10 +279,12 @@ class GateBundle:
         rollback["activation"]["activation_id"] = "rollback-v1/activation"
         rollback["activation"]["operation"] = "ROLLBACK"
         rollback["activation"]["effective_variant"] = copy.deepcopy(result["parent_variant"])
-        rollback["activation"]["parent_activation_id"] = accepted["decision_id"]
-        rollback["activation"]["parent_activation_sha256"] = accepted["content_sha256"]
-        rollback["activation"]["rollback_target_activation_id"] = baseline["decision_id"]
-        rollback["activation"]["rollback_target_activation_sha256"] = baseline["content_sha256"]
+        rollback["activation"]["parent_activation_id"] = accepted["activation"]["activation_id"]
+        rollback["activation"]["parent_activation_sha256"] = accepted["activation"]["content_sha256"]
+        rollback["activation"]["rollback_target_activation_id"] = baseline["activation"]["activation_id"]
+        rollback["activation"]["rollback_target_activation_sha256"] = (
+            baseline["activation"]["content_sha256"]
+        )
         rollback["activation"]["decision_reason"] = "gate evidence rollback"
         bind_activation(rollback)
 

@@ -262,6 +262,17 @@ TASK_AGGREGATE_FIELDS = (
     "time_improvement_ppm",
     "time_regression_ppm",
 )
+AGGREGATE_OPTIONAL = frozenset(
+    {
+        # A task or corpus with no paired pass has no median and therefore no ppm pair. The
+        # canonical encoding omits each `Option::None`, so a completion-gain acceptance — the
+        # only path that does not require a paired pass — reaches this boundary without them.
+        "parent_paired_median_time_ns",
+        "candidate_paired_median_time_ns",
+        "time_improvement_ppm",
+        "time_regression_ppm",
+    }
+)
 CORPUS_AGGREGATE_FIELDS = (
     "task_count",
     "sample_count",
@@ -504,6 +515,11 @@ def exact_record(
     if cursor != len(actual):
         raise GateError(f"{label} has the wrong fields or order")
     return value
+
+
+def completed_record(value: Mapping[str, Any], fields: Sequence[str]) -> dict[str, Any]:
+    """Restore each canonically omitted `Option::None` so a comparison sees one shape."""
+    return {name: value.get(name) for name in fields}
 
 
 def require_text(value: Any, label: str, *, maximum: int = PATH_LIMIT, empty: bool = False) -> str:
@@ -1628,12 +1644,12 @@ def validate_evaluation_pair(
     if not isinstance(persisted_aggregates, list) or len(persisted_aggregates) != len(aggregates):
         raise GateError("persisted task aggregates do not cover every task")
     for persisted, computed in zip(persisted_aggregates, aggregates):
-        exact_record(persisted, TASK_AGGREGATE_FIELDS, "task aggregate")
-        if persisted != computed:
+        exact_record(persisted, TASK_AGGREGATE_FIELDS, "task aggregate", AGGREGATE_OPTIONAL)
+        if completed_record(persisted, TASK_AGGREGATE_FIELDS) != computed:
             raise GateError("persisted task aggregate disagrees with the recomputed value")
     persisted_corpus = result.get("corpus_aggregate")
-    exact_record(persisted_corpus, CORPUS_AGGREGATE_FIELDS, "corpus aggregate")
-    if persisted_corpus != corpus:
+    exact_record(persisted_corpus, CORPUS_AGGREGATE_FIELDS, "corpus aggregate", AGGREGATE_OPTIONAL)
+    if completed_record(persisted_corpus, CORPUS_AGGREGATE_FIELDS) != corpus:
         raise GateError("persisted corpus aggregate disagrees with the recomputed value")
 
     provider_control = result.get("provider_control")
@@ -1674,9 +1690,13 @@ def validate_chain(
         raise GateError("accepted activation does not carry the evaluated candidate variant")
     if rollback_activation["effective_variant"]["content_sha256"] != parent_digest:
         raise GateError("rollback activation does not restore the proven baseline variant")
+    # Section 4.4: an envelope-level `ArtifactReference` uses the envelope `decision_id` and
+    # envelope digest, while lineage inside `PromptActivation` uses the nested activation ID and
+    # digest. `src/prompt_state.align` links the nested identity, so the gate compares that.
     if (
-        accepted_activation["parent_activation_id"] != baseline["decision_id"]
-        or accepted_activation["parent_activation_sha256"] != baseline["content_sha256"]
+        accepted_activation["parent_activation_id"] != baseline_activation["activation_id"]
+        or accepted_activation["parent_activation_sha256"]
+        != baseline_activation["content_sha256"]
     ):
         raise GateError("accepted activation parent is not the evaluated baseline")
     if (
@@ -1685,13 +1705,16 @@ def validate_chain(
     ):
         raise GateError("accepted activation does not name the improved evaluation")
     if (
-        rollback_activation["parent_activation_id"] != accepted["decision_id"]
-        or rollback_activation["parent_activation_sha256"] != accepted["content_sha256"]
+        rollback_activation["parent_activation_id"] != accepted_activation["activation_id"]
+        or rollback_activation["parent_activation_sha256"]
+        != accepted_activation["content_sha256"]
     ):
         raise GateError("rollback activation parent is not the accepted activation")
     if (
-        rollback_activation["rollback_target_activation_id"] != baseline["decision_id"]
-        or rollback_activation["rollback_target_activation_sha256"] != baseline["content_sha256"]
+        rollback_activation["rollback_target_activation_id"]
+        != baseline_activation["activation_id"]
+        or rollback_activation["rollback_target_activation_sha256"]
+        != baseline_activation["content_sha256"]
     ):
         raise GateError("rollback activation target is not the proven baseline activation")
     if len({baseline["decision_id"], accepted["decision_id"], rollback["decision_id"]}) != 3:

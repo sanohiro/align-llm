@@ -206,6 +206,13 @@ INPUT_ARTIFACT_FIELDS = {
     "CONTEXT_SOURCES": CONTEXT_SOURCES_FIELDS,
     "PROMPT_SOURCE_VERIFIER_POLICY": SOURCE_POLICY_FIELDS,
 }
+# The canonical encoding omits an `Option::None`, exactly as the evaluate request's own
+# `EVALUATE_REQUEST_FIELDS_OMITTED` already allows. A `PROPOSED` experiment result therefore
+# never carries `proposal_status_code`, which is `Some` only for `PROVIDER_HTTP_STATUS`, so the
+# input boundary must accept both the canonical omitted form and an explicit `null`.
+INPUT_ARTIFACT_OPTIONAL = {
+    "PROMPT_EXPERIMENT_RESULT": frozenset({"proposal_status_code"}),
+}
 
 
 def enable_child_subreaper() -> bool:
@@ -615,11 +622,31 @@ def artifact_expectations_valid(value: Any) -> bool:
     )
 
 
+def declared_shape(value: Any, fields: tuple[str, ...], optional: frozenset[str]) -> bool:
+    """Fields in declared order, minus canonically omitted `Option::None` members."""
+    if not isinstance(value, dict):
+        return False
+    actual = tuple(value)
+    cursor = 0
+    for name in fields:
+        if cursor < len(actual) and actual[cursor] == name:
+            cursor += 1
+        elif name not in optional:
+            return False
+    return cursor == len(actual)
+
+
 def validate_input_artifact_shape(kind: str, value: Mapping[str, Any]) -> None:
     fields = INPUT_ARTIFACT_FIELDS.get(kind)
     if fields is None:
         return
-    if not exact_record(value, fields, kind) or not record_digest_valid(value):
+    optional = INPUT_ARTIFACT_OPTIONAL.get(kind, frozenset())
+    shaped = (
+        exact_record(value, fields, kind) if not optional
+        else declared_shape(value, fields, optional)
+        and value.get("schema_version") == 1 and value.get("artifact_kind") == kind
+    )
+    if not shaped or not record_digest_valid(value):
         raise EvaluationError(f"{kind} schema is invalid")
     valid = True
     if kind == "PROMPT_EXPERIMENT_RESULT":
