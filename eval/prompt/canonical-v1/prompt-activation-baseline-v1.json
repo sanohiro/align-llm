@@ -22,16 +22,16 @@
         "artifact_kind": "CORPUS_REVISION",
         "source_kind": "FILE_SET",
         "source_repository_id": "",
-        "source_sha256": "2206cfa59db6c6fa807fc1efc52d6de20c93ac3e2361cb7d01e54efcb3081bd3",
-        "content_sha256": "0e1f9b5ef11ad116bcdd9b1b67ff8db9dec7dc4017054c72beb0ae34375256fc"
+        "source_sha256": "7e6cc468e50951f9e7d8b1d4faf820ee3c1f51766fe241ea3e4078779413c508",
+        "content_sha256": "78fa7af3b7f0c0c5bd1a2483f22d457be747b3a0f42daf4c83225ab7a29d4296"
       },
       "evaluation_provider_kind": "FIXTURE",
       "evaluation_provider_model": "pending-provider-decision",
       "generation_policy_sha256": "2429bbf591fa2315ac031eb5eb55f1d986becbe9fdce04c21e0d50fca8a987e3",
       "acceptance_policy_sha256": "7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3",
-      "base_prompt_sha256": "dbb55e44b44fd2933d3aa1357f542ff247b645efaddd552df3c7b37f40811b39",
+      "base_prompt_sha256": "a9c23b5ab11aa3b03514db43d4b994ad2f79dbc0040376231f4931e41ff9da0a",
       "repo_prompt_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21",
-      "content_sha256": "cfeb9aafaa0caa2f1146a33139d6ef2c84dbaaab712464df647652d4f3b7a828"
+      "content_sha256": "ad57d6778fb380155b02c61701b88b97da1bb3227571932e0b45a7681aa7b825"
     },
     "parent_activation_id": "",
     "parent_activation_sha256": "",
@@ -43,8 +43,8 @@
         "schema_version": 1,
         "artifact_kind": "BASE_PROMPT",
         "artifact_id": "base-v1",
-        "text": "You are align-llm's repository coding agent.\n\nWork only from the supplied repository context. Produce the smallest change that\nmakes the declared validation command exit zero.\n\nRules:\n- Return one unified diff against the pinned revision and nothing else.\n- Change only the files that the task prompt declares editable.\n- Never change, weaken, delete, or skip a test.\n- Never add a dependency; the Python standard library is the only dependency.\n- Keep the observable behaviour of every symbol the task does not name.\n- When a requirement states an exact boundary, reason about that boundary\n  exactly instead of relying on a default numeric helper.\n",
-        "content_sha256": "dbb55e44b44fd2933d3aa1357f542ff247b645efaddd552df3c7b37f40811b39"
+        "text": "You are align-llm's repository coding agent.\n\nWork only from the supplied repository context. Produce the smallest change that\nmakes the declared validation command exit zero.\n\nRules:\n- Return whole-file blocks, never a diff. For every file you change, emit\n  one `FILE: <repo-relative-path>` line followed by a fenced block holding\n  that file's complete new content. Text outside those blocks is ignored.\n- Change only the files that the task prompt declares editable; a block\n  naming any other path is rejected before the tests run.\n- Never change, weaken, delete, or skip a test.\n- Never add a dependency; the Python standard library is the only dependency.\n- Keep the observable behaviour of every symbol the task does not name.\n- When a requirement states an exact boundary, reason about that boundary\n  exactly instead of relying on a default numeric helper.\n",
+        "content_sha256": "a9c23b5ab11aa3b03514db43d4b994ad2f79dbc0040376231f4931e41ff9da0a"
       },
       "repo_prompt": {
         "schema_version": 1,
@@ -64,14 +64,14 @@
         "max_diagnostic_bytes_per_stream": 0
       },
       "candidate_id": "BASELINE",
-      "content_sha256": "dbc051f74f09ae181cc66071c113dda5554f88a3aedd3f0ac125654da34250ca"
+      "content_sha256": "b668cbcdbe7980b968758da020c9d6e203c804ae94cd1a23181ecd3f74368c4c"
     },
     "accepted_evaluation_id": "",
     "accepted_evaluation_sha256": "",
     "rollback_target_activation_id": "",
     "rollback_target_activation_sha256": "",
     "decision_reason": "",
-    "content_sha256": "472d172b228e33ab1ea3db79b18157c68d6d77324833fef84749a4980d753162"
+    "content_sha256": "568d819df299bf69c3a43cc80c8ed9ab8c3794ade2174dd0c288586f4f888d91"
   },
-  "content_sha256": "6b32bbfe5df5a77a0c8310862c76baa6609c53251b52272ccb04cd19ff5302ce"
+  "content_sha256": "d134f5087b9bb33bf34735c4f5c0a67ba31fc143eb672ba448e98322a4f05e57"
 }

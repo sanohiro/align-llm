@@ -308,6 +308,9 @@ class GateBundle:
                 "source_verifier_runtime": self.runtime,
                 "source_verifier_interpreter_sha256": self.interpreter_sha256,
                 "git_executable_sha256": self.git_sha256,
+                # The evidence-recorded derived-child identity: the accept path records the real
+                # per-run digest, so a rejection family only has to mutate this one field.
+                "generation_child_sha256": self.generation_child_sha256,
                 "content_sha256": "",
             }
         )

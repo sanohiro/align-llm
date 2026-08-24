@@ -23,7 +23,7 @@ a patch, and the patch is rejected for a reason that a learned prompt append or 
 ### `layer-precedence-frozen-module`
 
 Fixture `eval/fixtures/prompt-v1-layer-precedence/repository`, revision
-`4f49874e779caf18f77fefb15b23cebea6a57fc2`, allowlist `src/settings.py`.
+`45c279855bc9cd7b7d9e51e5e8a800d1e353b7b9`, allowlist `src/settings.py`.
 
 `resolve_settings` delegates layer precedence to `merge_layers` in `src/legacy.py`, and
 `merge_layers` applies the layers in the historical order, so defaults win over file values and
@@ -36,7 +36,7 @@ context section, which already records one rejected out-of-allowlist attempt.
 ### `duration-half-away-from-zero`
 
 Fixture `eval/fixtures/prompt-v1-duration-rounding/repository`, revision
-`b2c284a0ad7be017596af9e24a9d74e58d62974f`, allowlist `src/duration.py`.
+`b6bae7e3872680fc847f4603484a07cbd18932c0`, allowlist `src/duration.py`.
 
 `round_to_minutes` uses the built-in rounding helper, so an exact half minute rounds to even instead
 of away from zero. The obvious replacement, `math.floor(seconds / 60 + 0.5)`, fixes the positive
@@ -72,7 +72,7 @@ reproduce the recorded SHA; the runner asserts it.
 
 ## Bindings that are not final
 
-These manifests are the reviewed C6g1 candidate. Three bindings are deliberately not final, and
+These manifests are the reviewed C6g1 candidate. Two bindings are deliberately not final, and
 each one fails closed rather than silently degrading:
 
 - `provider_control_path` names `eval/prompt/canonical-v1/evaluation-provider-control.json`, which
@@ -80,12 +80,19 @@ each one fails closed rather than silently degrading:
   pending.
 - `environment_policy_path` names `eval/prompt/gate/environment-policy.json`. Section 11.3 keeps the
   environment policy out of the frozen scope set; it travels with the C6g2 gate evidence.
-- `cmd`/`argv` and `measurement_adapter_runtime` bind `scripts/prompt-fixed-adapter.py`, the only
-  measurement adapter that exists today. The shipped evaluator additionally requires that adapter
-  and `scripts/prompt-snapshot-helper.py` to appear in the declared task source, so they are listed
-  in every task's `artifacts` array. That adapter accepts only a `FIXTURE` provider control, and
-  section 8 makes a `FIXTURE` provider gate-ineligible, so no accepted gate result can be produced
-  before a provider-backed gate adapter replaces it.
-
-Replacing any of those bindings changes the task bytes, and therefore the corpus `FILE_SET` digest,
+Replacing either binding changes the task bytes, and therefore the corpus `FILE_SET` digest,
 the scope digest, and the `baseline-v1` envelope digest. Regenerate all of them together.
+
+## Settled measurement bindings
+
+`cmd`/`argv` and `measurement_adapter_runtime` bind `scripts/prompt-measurement-adapter.py`, the
+provider-backed measurement adapter. The shipped evaluator additionally requires
+`scripts/prompt-fixed-adapter.py` and `scripts/prompt-snapshot-helper.py` to appear in the declared
+task source, so all three are listed in every task's `artifacts` array and are corpus members; the
+fixed adapter is retained source only and is no longer any task's adapter.
+
+The section 11.3 task-parameterized inputs are declared: `validation_runner_path`/`_sha256` name
+`eval/runners/run-coding-task.py`, `task_definition_path`/`_sha256` name that task's `task.json`
+runner descriptor, `validation_argv` is `["--retained-inputs", "%TASK%", "%PATCH%"]`, and the
+`patch_path`/`patch_sha256` pair is `null` because the patch comes from the generation response
+rather than from a checked-in fixture patch.

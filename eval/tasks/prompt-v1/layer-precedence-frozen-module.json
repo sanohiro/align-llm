@@ -9,14 +9,14 @@
   "cmd": "/usr/bin/python3",
   "argv": [
     "/usr/bin/python3",
-    "scripts/prompt-fixed-adapter.py"
+    "scripts/prompt-measurement-adapter.py"
   ],
   "snapshot_cmd": "/usr/bin/python3",
   "snapshot_argv": [
     "/usr/bin/python3",
     "scripts/prompt-snapshot-helper.py"
   ],
-  "measurement_adapter_runtime": "PYTHON:7dd45fe88d299b2c24ceacd9336f81663da34456582c1c1ce67102dce2b983d8",
+  "measurement_adapter_runtime": "PYTHON:167e3ee5d0802a16c8000f60eb80b01e9084451dd885aa1e4cde4c4815a72fae",
   "snapshot_helper_runtime": "PYTHON:f3c47a49a7a3573b90c08a294df1a707fe2b8166750013c252d7eaf4383504d5",
   "cwd": ".",
   "timeout_ns": 30000000000,
@@ -25,6 +25,17 @@
   "generation_policy_path": "eval/prompt/canonical-v1/generation-policy.json",
   "provider_control_path": "eval/prompt/canonical-v1/evaluation-provider-control.json",
   "environment_policy_path": "eval/prompt/gate/environment-policy.json",
+  "validation_runner_path": "eval/runners/run-coding-task.py",
+  "validation_runner_sha256": "6d6c203be044e993f04a2261e3b03c19aca06ae369e25743d8bed174e7879bcd",
+  "task_definition_path": "eval/tasks/prompt-v1/layer-precedence-frozen-module/task.json",
+  "task_definition_sha256": "9189d12d2fceba3a9fb8925fb889b437f0724b0dfddc155f1450c1395b2177dc",
+  "validation_argv": [
+    "--retained-inputs",
+    "%TASK%",
+    "%PATCH%"
+  ],
+  "patch_path": null,
+  "patch_sha256": null,
   "artifacts": [
     {
       "path": "eval/fixtures/prompt-v1-layer-precedence/repository",
@@ -57,6 +68,11 @@
       "expected_sha256": "7830431aa108135b4aa4a0861b7decf60821cb29d797014cddd0eeb6a515bc2f"
     },
     {
+      "path": "scripts/prompt-measurement-adapter.py",
+      "kind": "FILE",
+      "expected_sha256": "78e363a9c5388b6c8268c70a527d8335be2f901447b06d76e898735fef3ae66d"
+    },
+    {
       "path": "scripts/prompt-snapshot-helper.py",
       "kind": "FILE",
       "expected_sha256": "3a6c3fc91f577b308358c7b8126cc2af4ff2f4c427a9833e2a0504db3c465d7a"
@@ -69,5 +85,5 @@
     "maximum_repair_loops": 0,
     "maximum_benchmark_regression_ppm": null
   },
-  "content_sha256": "5bf6a4e4bf3129cc74fc8043e2006bf315eaefebf3a2274fc9c140e585c3c763"
+  "content_sha256": "b3a99aef13c6a592f0eda5050e1ec065c8a63f4a483e07ee6c0f121a3fb5dd30"
 }

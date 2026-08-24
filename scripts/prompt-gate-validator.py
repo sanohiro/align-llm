@@ -20,7 +20,10 @@ The generation child is the section 11.3 derived-child relaxation: the binary is
 committed, so it is never a corpus member and neither its absolute path nor a machine-specific
 spelling is frozen into ``eval/prompt/canonical-v1/``. Its per-run pair is validated before any
 evidence identity is read, and the retained same-descriptor bytes must equal the declared digest,
-so an unverified local build cannot satisfy the gate.
+so an unverified local build cannot satisfy the gate. The declared digest is then bound to the
+locator's ``generation_child_sha256`` during source-bundle revalidation, so the same three-way
+equality the evidence claims — retained bytes, declared input, recorded evidence identity — must
+hold before any source identity is observed.
 
 ``--gate-manifest`` defaults to ``eval/prompt/gate/prompt-gate-manifest.json`` beneath the
 current working directory, which is the actual CI checkout the gate head is derived from.
@@ -97,6 +100,7 @@ LOCATOR_FIELDS = (
     "source_verifier_runtime",
     "source_verifier_interpreter_sha256",
     "git_executable_sha256",
+    "generation_child_sha256",
     "content_sha256",
 )
 LOCATOR_OPTIONAL = frozenset({"corpus_file_set_manifest_relative_path"})
@@ -1088,6 +1092,7 @@ def validate_locator(value: Any) -> dict[str, Any]:
         "source_verifier_sha256",
         "source_verifier_interpreter_sha256",
         "git_executable_sha256",
+        "generation_child_sha256",
     ):
         require_digest(locator[name], f"gate locator {name}")
     expected_runtime = (
@@ -1793,6 +1798,7 @@ def observe_source_bundle(
     python: RetainedExecutable,
     git_tool: GitTool,
     checkout: Path,
+    generation_child_sha256: str,
 ) -> None:
     """Revalidate every locator target, then re-observe source identity through the helper."""
     align_llm_root = physical_directory(
@@ -1832,6 +1838,11 @@ def observe_source_bundle(
         raise GateError("explicit Python executable digest does not match the gate locator")
     if git_tool.executable.sha256() != locator["git_executable_sha256"]:
         raise GateError("explicit Git executable digest does not match the gate locator")
+    # The third leg of the derived-child identity: the retained bytes were already proven equal to
+    # the declared input, so binding that input to the checked-in locator rejects a gate run whose
+    # child is a different binary than the reviewed evidence records.
+    if generation_child_sha256 != locator["generation_child_sha256"]:
+        raise GateError("explicit generation child digest does not match the gate locator")
 
     # Every Git checkout is raw-scanned before the first Git child runs anywhere.
     scans: list[tuple[Path, Path, str]] = []
@@ -2029,6 +2040,7 @@ def validate(values: argparse.Namespace) -> None:
                 python,
                 GitTool(git_executable),
                 checkout,
+                child_digest,
             )
         finally:
             git_executable.close()

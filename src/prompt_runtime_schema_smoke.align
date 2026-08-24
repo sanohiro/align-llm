@@ -240,15 +240,17 @@ fn locator_value(manifest: Option<string>) -> prompt_artifacts.PromptGateSourceL
     source_verifier_runtime: "CPYTHON:python:helper".clone(),
     source_verifier_interpreter_sha256: "python".clone(),
     git_executable_sha256: "git".clone(),
+    generation_child_sha256: "child".clone(),
     content_sha256: "locator".clone(),
   }
 }
 
 fn locator_golden() -> Result<(), Error> {
-  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"locator\"}"
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"generation_child_sha256\":\"child\",\"content_sha256\":\"locator\"}"
   decoded := prompt_artifacts.decode_prompt_gate_source_locator(expected)?
   if decoded.source_bundle_id != "bundle" || decoded.source_verifier_sha256 != "helper" ||
   decoded.source_verifier_interpreter_sha256 != "python" || decoded.git_executable_sha256 != "git" ||
+  decoded.generation_child_sha256 != "child" ||
   match decoded.corpus_file_set_manifest_relative_path { Some(_) => true, None => false } {
     return Err(Error.Invalid)
   }
@@ -275,7 +277,7 @@ fn locator_golden() -> Result<(), Error> {
     return Err(Error.Invalid)
   }
 
-  some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"corpus_file_set_manifest_relative_path\":\"manifest\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"locator\"}"
+  some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"corpus_file_set_manifest_relative_path\":\"manifest\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"generation_child_sha256\":\"child\",\"content_sha256\":\"locator\"}"
   if prompt_artifacts.encode_prompt_gate_source_locator(locator_value(Some("manifest".clone()))) != some_expected {
     return Err(Error.Invalid)
   }

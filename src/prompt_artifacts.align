@@ -842,6 +842,10 @@ pub PromptGateSourceLocator {
   source_verifier_runtime: string,
   source_verifier_interpreter_sha256: string,
   git_executable_sha256: string,
+  // The third explicit-input leg: the derived generation child is never a corpus member, so the
+  // locator records the digest the gate must observe and the validator binds the supplied
+  // `--generation-child-sha256` to it.
+  generation_child_sha256: string,
   content_sha256: string,
 }
 

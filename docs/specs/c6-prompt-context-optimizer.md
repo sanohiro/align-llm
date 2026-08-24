@@ -2972,6 +2972,7 @@ PromptGateSourceLocator:
   source_verifier_runtime
   source_verifier_interpreter_sha256
   git_executable_sha256
+  generation_child_sha256
   content_sha256
 ```
 
@@ -2988,8 +2989,11 @@ validator checks those equalities before launching the helper.
 `source_verifier_relative_path`, `source_verifier_runtime` must be the canonical
 `CPYTHON:<source_verifier_interpreter_sha256>:<source_verifier_sha256>` identity,
 `source_verifier_interpreter_sha256` is the lowercase digest required for the explicit gate Python
-input, and `git_executable_sha256` is the lowercase digest required for the explicit gate Git-tool
-input.
+input, `git_executable_sha256` is the lowercase digest required for the explicit gate Git-tool
+input, and `generation_child_sha256` is the lowercase digest required for the explicit gate
+generation-child input. The generation child is not a locator path: it is built rather than
+committed, so the locator records its identity alone and the validator binds the explicit
+`--generation-child-sha256` value to that field during source-bundle revalidation.
 The locator does not persist a tested head: the validator derives the actual CI checkout head at
 invocation time, which avoids a self-reference when the manifest is in that checkout.
 `corpus_file_set_manifest_relative_path` is `Some` exactly when the evidence trust record says
@@ -4298,10 +4302,11 @@ gate supplies the same pair as a fourth explicit `C6_GATE_*` input alongside the
 mapped to `--generation-child-path` and `--generation-child-sha256` with the same missing, empty,
 relative, unsafe, and unreadable rejection and no environment or sibling-checkout fallback. The
 validator retains the path as an absolute regular executable and requires its same-descriptor bytes,
-the declared digest input, and the digest recorded in the evidence to be equal, so neither a stale
-evidence claim nor an unverified local build can satisfy the gate. Neither the absolute path nor a
-machine-specific spelling is ever frozen into `eval/prompt/canonical-v1/`; the pair belongs to the
-per-run request and the recorded check evidence. The adapter admits the child as a sealed immutable
+the declared digest input, and the evidence-recorded
+`PromptGateSourceLocator.generation_child_sha256` to be equal, so neither a stale evidence claim nor
+an unverified local build can satisfy the gate. Neither the absolute path nor a machine-specific
+spelling is ever frozen into `eval/prompt/canonical-v1/`; the pair belongs to the per-run request
+and the recorded check evidence. The adapter admits the child as a sealed immutable
 input following the section 10.1j inner-retained precedent: it opens a no-follow bounded owner,
 verifies the declared digest before launch, launches only the retained descriptor without reopening
 the public pathname, and verifies the retained input unchanged after the child returns. The child is

@@ -438,6 +438,15 @@ def family_source_revalidation(root: Path) -> None:
 
     rejected(case(root, "git-digest", git_digest), "Git executable digest")
 
+    def generation_child_digest(bundle) -> None:
+        """The supplied per-run digest disagrees with the evidence-recorded identity."""
+        with_locator(bundle, lambda locator: locator.update(generation_child_sha256="4" * 64))
+
+    rejected(
+        case(root, "generation-child-digest", generation_child_digest),
+        "evidence-recorded generation child identity",
+    )
+
     def helper_bytes(bundle) -> None:
         target = bundle.bundle_root / fixture.VERIFIER_RELATIVE
         target.write_bytes(target.read_bytes() + b"# tampered\n")
