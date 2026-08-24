@@ -99,8 +99,9 @@ These files did not reach their current bytes in a single freeze commit. The exa
 
 `1d27b5f` is the last commit that touched these files, and the checked-in C6g2 measurement was
 produced against `c737adcf905cb4662472bc86e8345bbcd9bc1346`, which contains it.
-`git diff 1d27b5f HEAD -- eval/prompt/canonical-v1 eval/tasks/prompt-v1` is empty: nothing under the
-frozen scope set or the gate corpus was mutated after measuring against it. A rebind is always a
+`git diff 1d27b5f HEAD -- eval/prompt/canonical-v1 eval/tasks/prompt-v1 ':!*/README.md'` is empty:
+no frozen record or gate-corpus file was mutated after measuring against it, and this document is
+the only thing in the directory that moved. A rebind is always a
 separate commit whose measurement is then re-run against the rebound bytes; the section 11.3 rule is
 that C6g2 must not mutate the frozen set *after* measuring, not that the set was never rebound
 before a measurement.

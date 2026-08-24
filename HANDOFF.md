@@ -75,11 +75,16 @@ file records durable project state.
 
   The request is built by the replicate driver, which copies the parent effective variant into the
   candidate slot under `c6g2-replicate/variant` and `c6g2-replicate/candidate` and otherwise reuses
-  the measure request verbatim. Result digest (SHA-256 of the exact `run/result-replicate.json`
-  bytes) at the pre-repair measuring commit `6da28d88327797649bbf229f14be9be1e6dd2d96`:
-  `e111201e8096ac5a64fb7c5522c0dae2c3b70f81645c4cffe8a5afb85c790eca`; its evidence sidecar is
-  `0aafe8d62e9622c02b5d3baaaa94faf07084daa1bcd14e234235f5c8225a07c5`, wall time 520.2 s. The
-  replicate artifacts are diagnostics, not repository state, and are not checked in.
+  the measure request verbatim. At the review-repaired measuring commit
+  `c737adcf905cb4662472bc86e8345bbcd9bc1346` the replicate result digest (SHA-256 of the exact
+  `run/result-replicate.json` bytes) is
+  `b1d68148c5bfc3e86c2a022620d10dc95a79b3f685da8a5ceca4d1341898420d`, its evidence sidecar is
+  `c2854e7546e9b31b03f99337ee935f07e99efe7dbbe7aea8aa72c28bc0b69f03`, and wall time is 444.1 s. The
+  superseded pre-repair replicate at `6da28d88327797649bbf229f14be9be1e6dd2d96` was
+  `e111201e8096ac5a64fb7c5522c0dae2c3b70f81645c4cffe8a5afb85c790eca` with sidecar
+  `0aafe8d62e9622c02b5d3baaaa94faf07084daa1bcd14e234235f5c8225a07c5` and wall time 520.2 s, and
+  reported the same null result. The replicate artifacts are diagnostics, not repository state, and
+  are not checked in.
 - The gate run found and repaired five shipped defects no fixture reaches: three canonical
   `Option::None`-omission mismatches (experiment-result decode, aggregate optional set, and the
   activation-lineage identity the gate validator compared against the envelope instead of the
