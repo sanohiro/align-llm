@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+"""Owner smokes for `scripts/prompt-gate-validator.py`.
+
+One family runs per invocation so each Makefile target named by sections 10 and 10.1 owns
+an independent, narrow regression:
+
+    validator             gate manifest, chain, and acceptance-policy rejection families
+    source-bundle         the three explicit build inputs, with no ambient fallback
+    source-revalidation   locator, policy, helper, interpreter, and Git identity
+    git-replacement-graft raw replacement, graft, and alternate metadata rejection
+    local-git-config      repository-local command-bearing configuration rejection
+    ordinary-clone-config the inert ordinary-clone remote and branch metadata allowlist
+    replacement-namespace `refs/replace/` enumeration through the pinned Git ref backend
+    ancestry              evaluated-commit ancestry from the derived CI head
+    merge-head-ancestry   a normal-merge fixture whose CI head differs from the evaluated commit
+
+Families whose assertion needs a Git child or the source-verifier helper require the Linux
+process-containment floor and report SKIP elsewhere. Every other family asserts a rejection
+that happens before the first child, so it runs on any host.
+"""
+
+from __future__ import annotations
+
+import copy
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+
+ROOT = Path(__file__).resolve().parent.parent
+VALIDATOR = ROOT / "scripts" / "prompt-gate-validator.py"
+LINUX = sys.platform.startswith("linux")
+
+
+def load_fixture_module():
+    specification = importlib.util.spec_from_file_location(
+        "prompt_gate_fixture", ROOT / "scripts" / "prompt_gate_fixture.py"
+    )
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+fixture = load_fixture_module()
+
+
+class SmokeFailure(RuntimeError):
+    """One smoke case did not observe the required validator behavior."""
+
+
+def require(condition: Any, message: str) -> None:
+    if not condition:
+        raise SmokeFailure(message)
+
+
+def invoke(bundle, *, arguments: list[str] | None = None, environment: Mapping[str, str] | None = None):
+    values = bundle.arguments() if arguments is None else arguments
+    child_environment = dict(os.environ)
+    child_environment.update(environment or {})
+    completed = subprocess.run(
+        [sys.executable, str(VALIDATOR), *values],
+        cwd=bundle.checkout,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=child_environment,
+    )
+    return completed.returncode, completed.stdout + completed.stderr
+
+
+def accepted_code() -> int:
+    """A fully valid bundle exits 0 on the Linux floor and 3 without process containment."""
+    return 0 if LINUX else 3
+
+
+def build(root: Path, name: str, **keywords):
+    directory = root / name
+    directory.mkdir()
+    return fixture.GateBundle(directory, **keywords)
+
+
+def case(root: Path, name: str, mutate: Callable[[Any], None] | None = None, **keywords):
+    bundle = build(root, name, **keywords)
+    if mutate is not None:
+        mutate(bundle)
+    return bundle.finalize()
+
+
+def rejected(bundle, label: str, *, arguments: list[str] | None = None, environment=None, code: int = 2):
+    observed, output = invoke(bundle, arguments=arguments, environment=environment)
+    require(observed == code, f"{label}: expected exit {code}, observed {observed}: {output.strip()}")
+
+
+def read(bundle, name: str) -> dict[str, Any]:
+    return json.loads((bundle.gate_directory / name).read_text("utf-8"))
+
+
+def store(bundle, name: str, value: Mapping[str, Any]) -> None:
+    (bundle.gate_directory / name).write_bytes(fixture.canonical_bytes(value))
+
+
+# --- family: validator ---------------------------------------------------------------
+
+
+def family_validator(root: Path) -> None:
+    valid = case(root, "valid")
+    observed, output = invoke(valid)
+    require(
+        observed == accepted_code(),
+        f"valid gate bundle: expected exit {accepted_code()}, observed {observed}: {output.strip()}",
+    )
+    if not LINUX:
+        require(
+            "containment is unavailable" in output,
+            f"valid gate bundle did not reach source observation: {output.strip()}",
+        )
+
+    def tamper_manifest_field(bundle) -> None:
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["gate_id"] = "tampered-gate"
+        store(bundle, fixture.MANIFEST_NAME, manifest)
+
+    rejected(case(root, "manifest-tamper", tamper_manifest_field), "manifest field tamper")
+
+    def tamper_reference_digest(bundle) -> None:
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["improved_evaluation"]["content_sha256"] = "0" * 64
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(case(root, "digest-mismatch", tamper_reference_digest), "reference digest mismatch")
+
+    def tamper_artifact_bytes(bundle) -> None:
+        evaluation = read(bundle, fixture.EVALUATION_NAME)
+        evaluation["sample_count"] = 3
+        store(bundle, fixture.EVALUATION_NAME, evaluation)
+
+    rejected(case(root, "artifact-tamper", tamper_artifact_bytes), "artifact byte tamper")
+
+    def remove_referenced(bundle) -> None:
+        (bundle.gate_directory / fixture.EVIDENCE_NAME).unlink()
+
+    rejected(case(root, "missing-file", remove_referenced), "missing referenced file")
+
+    def wrong_reference_kind(bundle) -> None:
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["baseline_activation"]["artifact_kind"] = "PROMPT_EVALUATION_RESULT"
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(case(root, "reference-kind", wrong_reference_kind), "wrong reference kind")
+
+    def unknown_manifest_field(bundle) -> None:
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["extra"] = 1
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(case(root, "manifest-field", unknown_manifest_field), "unknown manifest field")
+
+    def unpaired_evidence(bundle) -> None:
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["improved_evaluation_evidence"]["artifact_id"] = "another-evaluation"
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(case(root, "evidence-identity", unpaired_evidence), "evidence reference identity")
+
+    def foreign_activation_identity(bundle) -> None:
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["baseline_activation"]["artifact_id"] = "another-decision"
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(
+        case(root, "activation-identity", foreign_activation_identity),
+        "baseline activation reference identity",
+    )
+
+    def pass_to_fail(bundle) -> None:
+        """A candidate row regresses where its paired parent passed."""
+        evaluation = read(bundle, fixture.EVALUATION_NAME)
+        for row in evaluation["rows"]:
+            if row["variant"] == "CANDIDATE" and row["sample_index"] == 2:
+                row["measurement"]["status"] = "FAIL"
+                row["measurement"]["build_status"] = "FAIL"
+                row["measurement"].pop("generation_to_passing_patch_ns", None)
+                row.pop("time_to_passing_patch_ns", None)
+                fixture.bind(row["measurement"])
+                fixture.bind(row)
+        rebind_chain(bundle, evaluation)
+
+    rejected(case(root, "pass-to-fail", pass_to_fail), "acceptance policy PASS to FAIL")
+
+    def unpaired_variant(bundle) -> None:
+        evaluation = read(bundle, fixture.EVALUATION_NAME)
+        for row in evaluation["rows"]:
+            if row["variant"] == "CANDIDATE" and row["sample_index"] == 1:
+                row["variant"] = "PARENT"
+                fixture.bind(row)
+        rebind_chain(bundle, evaluation)
+
+    rejected(case(root, "unpaired-variant", unpaired_variant), "unpaired parent/candidate schedule")
+
+    def aggregate_tamper(bundle) -> None:
+        evaluation = read(bundle, fixture.EVALUATION_NAME)
+        evaluation["corpus_aggregate"]["completion_gain_count"] = 7
+        rebind_chain(bundle, evaluation)
+
+    rejected(case(root, "aggregate-tamper", aggregate_tamper), "persisted corpus aggregate tamper")
+
+    def broken_lineage(bundle) -> None:
+        accepted = read(bundle, fixture.ACCEPTED_NAME)
+        accepted["activation"]["parent_activation_sha256"] = "0" * 64
+        fixture.bind(accepted["activation"])
+        fixture.bind(accepted)
+        store(bundle, fixture.ACCEPTED_NAME, accepted)
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["accepted_activation"]["content_sha256"] = accepted["content_sha256"]
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+        rollback = read(bundle, fixture.ROLLBACK_NAME)
+        rollback["activation"]["parent_activation_sha256"] = accepted["content_sha256"]
+        fixture.bind(rollback["activation"])
+        fixture.bind(rollback)
+        store(bundle, fixture.ROLLBACK_NAME, rollback)
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["rollback_activation"]["content_sha256"] = rollback["content_sha256"]
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(case(root, "broken-lineage", broken_lineage), "accepted activation parent lineage")
+
+    def foreign_rollback_variant(bundle) -> None:
+        rollback = read(bundle, fixture.ROLLBACK_NAME)
+        accepted = read(bundle, fixture.ACCEPTED_NAME)
+        rollback["activation"]["effective_variant"] = copy.deepcopy(
+            accepted["activation"]["effective_variant"]
+        )
+        fixture.bind(rollback["activation"])
+        fixture.bind(rollback)
+        store(bundle, fixture.ROLLBACK_NAME, rollback)
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["rollback_activation"]["content_sha256"] = rollback["content_sha256"]
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(
+        case(root, "rollback-variant", foreign_rollback_variant),
+        "rollback activation does not restore the baseline variant",
+    )
+
+
+def rebind_chain(bundle, evaluation: dict[str, Any]) -> None:
+    """Rewrite an edited evaluation and every artifact whose identity depends on it."""
+    fixture.bind(evaluation)
+    store(bundle, fixture.EVALUATION_NAME, evaluation)
+    evidence = read(bundle, fixture.EVIDENCE_NAME)
+    evidence["evaluation_result_sha256"] = evaluation["content_sha256"]
+    store(bundle, fixture.EVIDENCE_NAME, fixture.bind(evidence))
+    accepted = read(bundle, fixture.ACCEPTED_NAME)
+    accepted["activation"]["accepted_evaluation_sha256"] = evaluation["content_sha256"]
+    fixture.bind(accepted["activation"])
+    fixture.bind(accepted)
+    store(bundle, fixture.ACCEPTED_NAME, accepted)
+    rollback = read(bundle, fixture.ROLLBACK_NAME)
+    rollback["activation"]["parent_activation_sha256"] = accepted["content_sha256"]
+    fixture.bind(rollback["activation"])
+    fixture.bind(rollback)
+    store(bundle, fixture.ROLLBACK_NAME, rollback)
+    manifest = read(bundle, fixture.MANIFEST_NAME)
+    manifest["improved_evaluation"]["content_sha256"] = evaluation["content_sha256"]
+    manifest["improved_evaluation_evidence"]["content_sha256"] = evidence["content_sha256"]
+    manifest["accepted_activation"]["content_sha256"] = accepted["content_sha256"]
+    manifest["rollback_activation"]["content_sha256"] = rollback["content_sha256"]
+    store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+
+# --- family: source-bundle -----------------------------------------------------------
+
+
+def family_source_bundle(root: Path) -> None:
+    bundle = case(root, "explicit-inputs")
+    complete = bundle.arguments()
+
+    def without(flag: str) -> list[str]:
+        index = complete.index(flag)
+        return complete[:index] + complete[index + 2 :]
+
+    def replaced(flag: str, value: str) -> list[str]:
+        values = list(complete)
+        values[values.index(flag) + 1] = value
+        return values
+
+    for flag, ambient in (
+        ("--source-bundle-root", "C6_GATE_SOURCE_BUNDLE_ROOT"),
+        ("--python-executable-path", "C6_GATE_PYTHON_EXECUTABLE_PATH"),
+        ("--git-executable-path", "C6_GATE_GIT_EXECUTABLE_PATH"),
+    ):
+        rejected(bundle, f"missing {flag}", arguments=without(flag), code=1)
+        rejected(
+            bundle,
+            f"ambient {ambient} is not a fallback for {flag}",
+            arguments=without(flag),
+            environment={ambient: complete[complete.index(flag) + 1]},
+            code=1,
+        )
+        rejected(bundle, f"empty {flag}", arguments=replaced(flag, ""), code=1)
+        rejected(bundle, f"relative {flag}", arguments=replaced(flag, "relative/path"), code=1)
+        rejected(
+            bundle,
+            f"unsafe {flag}",
+            arguments=replaced(flag, f"{bundle.bundle_root}/../source-bundle"),
+            code=1,
+        )
+        rejected(
+            bundle,
+            f"unreadable {flag}",
+            arguments=replaced(flag, str(root / "absent" / "path")),
+            code=1,
+        )
+
+    directory = root / "not-an-executable"
+    directory.mkdir()
+    rejected(
+        bundle,
+        "directory Python executable",
+        arguments=replaced("--python-executable-path", str(directory)),
+        code=1,
+    )
+    plain = root / "plain-file"
+    plain.write_text("not executable\n")
+    rejected(
+        bundle,
+        "non-executable Git tool",
+        arguments=replaced("--git-executable-path", str(plain)),
+        code=1,
+    )
+    link = root / "python-symlink"
+    link.symlink_to(bundle.python_executable)
+    rejected(
+        bundle,
+        "symlink Python executable",
+        arguments=replaced("--python-executable-path", str(link)),
+        code=1,
+    )
+
+
+# --- family: source-revalidation -----------------------------------------------------
+
+
+def with_locator(bundle, mutate: Callable[[dict[str, Any]], None]) -> None:
+    manifest = read(bundle, fixture.MANIFEST_NAME)
+    mutate(manifest["source_locator"])
+    fixture.bind(manifest["source_locator"])
+    store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+
+def family_source_revalidation(root: Path) -> None:
+    def policy_digest(bundle) -> None:
+        with_locator(bundle, lambda locator: locator.update(source_verifier_policy_sha256="0" * 64))
+
+    rejected(case(root, "policy-digest", policy_digest), "source verifier policy digest")
+
+    def helper_digest(bundle) -> None:
+        def mutate(locator: dict[str, Any]) -> None:
+            locator["source_verifier_sha256"] = "1" * 64
+            locator["source_verifier_runtime"] = (
+                f"CPYTHON:{locator['source_verifier_interpreter_sha256']}:{'1' * 64}"
+            )
+
+        with_locator(bundle, mutate)
+
+    rejected(case(root, "helper-digest", helper_digest), "source verifier helper digest")
+
+    def runtime_identity(bundle) -> None:
+        with_locator(bundle, lambda locator: locator.update(source_verifier_runtime="CPYTHON:x:y"))
+
+    rejected(case(root, "runtime-identity", runtime_identity), "source verifier runtime identity")
+
+    def interpreter_digest(bundle) -> None:
+        with_locator(
+            bundle, lambda locator: locator.update(source_verifier_interpreter_sha256="2" * 64)
+        )
+
+    rejected(case(root, "interpreter-digest", interpreter_digest), "interpreter digest")
+
+    def git_digest(bundle) -> None:
+        with_locator(bundle, lambda locator: locator.update(git_executable_sha256="3" * 64))
+
+    rejected(case(root, "git-digest", git_digest), "Git executable digest")
+
+    def helper_bytes(bundle) -> None:
+        target = bundle.bundle_root / fixture.VERIFIER_RELATIVE
+        target.write_bytes(target.read_bytes() + b"# tampered\n")
+
+    rejected(case(root, "helper-bytes", helper_bytes), "tampered source verifier bytes")
+
+    def absolute_locator_path(bundle) -> None:
+        with_locator(bundle, lambda locator: locator.update(align_llm_source_relative_path="/etc"))
+
+    rejected(case(root, "absolute-path", absolute_locator_path), "absolute locator path")
+
+    def parent_locator_path(bundle) -> None:
+        with_locator(
+            bundle, lambda locator: locator.update(corpus_source_relative_path="../corpus")
+        )
+
+    rejected(case(root, "parent-path", parent_locator_path), "parent component locator path")
+
+    def source_is_a_file(bundle) -> None:
+        with_locator(
+            bundle,
+            lambda locator: locator.update(align_source_relative_path=fixture.POLICY_RELATIVE),
+        )
+
+    rejected(case(root, "expected-type", source_is_a_file), "locator directory expected type")
+
+    def policy_is_a_symlink(bundle) -> None:
+        target = bundle.bundle_root / fixture.POLICY_RELATIVE
+        moved = bundle.bundle_root / "policy-real.json"
+        target.rename(moved)
+        target.symlink_to(moved)
+
+    rejected(case(root, "policy-symlink", policy_is_a_symlink), "source verifier policy symlink")
+
+    def policy_helper_disagrees(bundle) -> None:
+        path = bundle.bundle_root / fixture.POLICY_RELATIVE
+        policy = json.loads(path.read_text("utf-8"))
+        policy["helper_path"] = "other-verifier.py"
+        path.write_bytes(fixture.canonical_bytes(fixture.bind(policy)))
+        with_locator(
+            bundle,
+            lambda locator: locator.update(source_verifier_policy_sha256=policy["content_sha256"]),
+        )
+
+    rejected(case(root, "policy-helper", policy_helper_disagrees), "policy helper path disagrees")
+
+    def file_set_pairing(bundle) -> None:
+        with_locator(
+            bundle,
+            lambda locator: locator.update(
+                corpus_file_set_manifest_relative_path=fixture.POLICY_RELATIVE
+            ),
+        )
+
+    rejected(case(root, "file-set-pairing", file_set_pairing), "file-set manifest pairing")
+
+
+# --- families: raw Git metadata ------------------------------------------------------
+
+
+def git_directory(repository: Path) -> Path:
+    return repository / ".git"
+
+
+def family_git_replacement_graft(root: Path) -> None:
+    entries = (
+        Path("refs") / "replace",
+        Path("info") / "grafts",
+        Path("objects") / "info" / "alternates",
+    )
+    for index, entry in enumerate(entries):
+        for scope in ("ci", "bundle"):
+
+            def plant(bundle, entry=entry, scope=scope) -> None:
+                repository = bundle.checkout if scope == "ci" else bundle.bundle_root / "align-llm"
+                target = git_directory(repository) / entry
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if entry.name == "replace":
+                    target.mkdir(exist_ok=True)
+                    (target / ("0" * 40)).write_text("")
+                else:
+                    target.write_text("")
+
+            bundle = build(root, f"graft-{scope}-{index}")
+            bundle.finalize()
+            plant(bundle)
+            rejected(bundle, f"{scope} {entry} metadata")
+
+
+def family_local_git_config(root: Path) -> None:
+    hostile = (
+        ("hooks-path", "[core]\n\thooksPath = /tmp/hooks\n"),
+        ("include", "[include]\n\tpath = /tmp/other-config\n"),
+        ("alias", '[alias]\n\tboom = "!sh -c true"\n'),
+        ("filter", '[filter "x"]\n\tclean = /bin/false\n'),
+        ("fsmonitor", "[core]\n\tfsmonitor = /tmp/monitor\n"),
+        ("malformed", "not a section\n"),
+    )
+    for name, text in hostile:
+        for scope in ("ci", "bundle"):
+            bundle = build(root, f"config-{scope}-{name}").finalize()
+            repository = bundle.checkout if scope == "ci" else bundle.bundle_root / "align-llm"
+            config = git_directory(repository) / "config"
+            config.write_text(config.read_text("utf-8") + text)
+            rejected(bundle, f"{scope} local Git config {name}")
+
+    bundle = build(root, "config-worktree").finalize()
+    (git_directory(bundle.checkout) / "config.worktree").write_text("[core]\n\tpager = /bin/false\n")
+    rejected(bundle, "worktree Git config command-bearing key")
+
+
+def family_ordinary_clone_config(root: Path) -> None:
+    bundle = build(root, "ordinary-clone").finalize()
+    config = git_directory(bundle.checkout) / "config"
+    config.write_text(
+        config.read_text("utf-8")
+        + '[remote "origin"]\n'
+        + "\turl = https://example.invalid/align-llm.git\n"
+        + "\tpushurl = https://example.invalid/align-llm.git\n"
+        + "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+        + '[branch "main"]\n'
+        + "\tremote = origin\n"
+        + "\tmerge = refs/heads/main\n"
+    )
+    observed, output = invoke(bundle)
+    require(
+        observed == accepted_code(),
+        f"inert ordinary-clone metadata was rejected: exit {observed}: {output.strip()}",
+    )
+
+
+# --- families requiring the Linux process-containment floor ---------------------------
+
+
+def family_replacement_namespace(root: Path) -> None:
+    bundle = build(root, "replacement-namespace").finalize()
+    head = bundle.tested_head
+    fixture.git(bundle.checkout, "replace", "--graft", head)
+    fixture.git(bundle.checkout, "pack-refs", "--all")
+    loose = git_directory(bundle.checkout) / "refs" / "replace"
+    if loose.exists():
+        shutil.rmtree(loose)
+    rejected(bundle, "packed replacement reference")
+
+    control = build(root, "replacement-control").finalize()
+    observed, output = invoke(control)
+    require(
+        observed == 0,
+        f"replacement-free control bundle was rejected: exit {observed}: {output.strip()}",
+    )
+
+
+def family_ancestry(root: Path) -> None:
+    foreign = case(root, "foreign-commit", evaluated_is_ancestor=False)
+    rejected(foreign, "evaluated commit is not reachable from the derived CI head")
+
+    control = build(root, "ancestry-control").finalize()
+    observed, output = invoke(control)
+    require(
+        observed == 0, f"ancestry control bundle was rejected: exit {observed}: {output.strip()}"
+    )
+
+
+def family_merge_head_ancestry(root: Path) -> None:
+    bundle = build(root, "merge-head").finalize()
+    require(
+        bundle.tested_head != bundle.evaluated_commit,
+        "merge-head fixture does not separate the CI head from the evaluated commit",
+    )
+    observed, output = invoke(bundle)
+    require(
+        observed == 0,
+        f"differing head and evaluated commit were rejected: exit {observed}: {output.strip()}",
+    )
+
+    dirty = build(root, "merge-head-dirty").finalize()
+    (dirty.checkout / "untracked.txt").write_text("dirty\n")
+    rejected(dirty, "dirty CI checkout")
+
+
+FAMILIES: dict[str, tuple[Callable[[Path], None], bool]] = {
+    "validator": (family_validator, False),
+    "source-bundle": (family_source_bundle, False),
+    "source-revalidation": (family_source_revalidation, False),
+    "git-replacement-graft": (family_git_replacement_graft, False),
+    "local-git-config": (family_local_git_config, False),
+    "ordinary-clone-config": (family_ordinary_clone_config, False),
+    "replacement-namespace": (family_replacement_namespace, True),
+    "ancestry": (family_ancestry, True),
+    "merge-head-ancestry": (family_merge_head_ancestry, True),
+}
+
+
+def main(arguments: list[str]) -> int:
+    if len(arguments) != 1 or arguments[0] not in FAMILIES:
+        print(
+            f"usage: run-prompt-gate-validator-smoke {'|'.join(FAMILIES)}",
+            file=sys.stderr,
+        )
+        return 2
+    name = arguments[0]
+    runner, needs_linux = FAMILIES[name]
+    if needs_linux and not LINUX:
+        print(f"prompt gate {name}: SKIP (requires the Linux process-containment floor)")
+        return 0
+    with tempfile.TemporaryDirectory(prefix="prompt-gate-smoke-") as directory:
+        runner(Path(directory).resolve(strict=True))
+    print(f"prompt gate {name}: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except (OSError, SmokeFailure, subprocess.CalledProcessError) as error:
+        print(f"prompt gate smoke: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)
