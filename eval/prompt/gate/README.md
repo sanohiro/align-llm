@@ -8,7 +8,7 @@ provider-backed run against the frozen `eval/prompt/canonical-v1/` scope assets.
 | File | Record | Producer |
 | --- | --- | --- |
 | `prompt-gate-manifest.json` | `PromptGateManifest` with its embedded `PromptGateSourceLocator` | human-owned; no command emits it |
-| `environment-policy.json` | `EnvironmentPolicy`, `prompt-v1-gate-environment-v1` | human-owned; travels with the gate evidence, not with the frozen scope set |
+| `environment-policy.json` | `EnvironmentPolicy`, `prompt-v1-gate-environment-v1` | human-owned; travels with the gate evidence, not with the frozen scope set, and is bound by the manifest's `environment_policy` reference |
 | `prompt-activation-baseline-v1.json` | `PromptActivationResult`, `baseline-v1` | a copy of the canonical baseline envelope in `eval/prompt/canonical-v1/` |
 | `prompt-evaluation-improved.json` | `PromptEvaluationResult`, `c6g2-measure` | `./main prompt evaluate` |
 | `prompt-evaluation-improved-evidence.json` | `PromptEvaluationEvidence`, `c6g2-measure` | the same `prompt evaluate` run's independent sidecar |
@@ -21,7 +21,9 @@ variant and names the baseline as its target. Lineage inside each `PromptActivat
 nested activation ID and digest, per section 4.4.
 
 `environment-policy.json` is not a corpus member: the frozen task manifests bind it by path, and the
-`FILE_SET` corpus manifest does not list it.
+`FILE_SET` corpus manifest does not list it. It is nonetheless a bound gate input: the manifest's
+appended `environment_policy` `ArtifactReference` carries its digest, and the validator requires the
+evaluation's `EnvironmentIdentityCore.environment_policy_sha256` to equal it.
 
 ## What the locator does and does not pin
 

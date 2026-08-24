@@ -95,11 +95,13 @@ These files did not reach their current bytes in a single freeze commit. The exa
 | `52aefeb445afe9145eee60ec5f23bf43e5595070` | parameterized the frozen gate manifests and bound the generation-child evidence identity |
 | `4d85ccb64aff853c4dd8fe25fcbb9033ffdab606` | replaced the fail-closed `FIXTURE` placeholder with the real `LOCAL_OPENAI` provider decision, rewriting `generation-policy.json`, `scope.json`, and `prompt-activation-baseline-v1.json` |
 | `6da28d88327797649bbf229f14be9be1e6dd2d96` | repaired the shipped measurement adapter, which capped every sealed input at 2 MiB and so could never admit the derived generation child; the adapter is a corpus member, a declared task artifact, and each task's `measurement_adapter_runtime`, so only those digest bindings moved |
+| `1d27b5f4c5ab3459e1b532859030c0e06df9a53a` | rebound the same three bindings again after the C6-MEASURED review repair changed both adapters' bytes; only each task's two adapter expectations, its `measurement_adapter_runtime`, the `FILE_SET` manifest, `corpus.json`, `scope.json`, and the baseline envelope moved |
 
-`6da28d8` is the commit the checked-in C6g2 measurement was produced against, and
-`git diff 6da28d8 HEAD -- eval/prompt/canonical-v1 eval/tasks/prompt-v1` is empty: nothing under the
-frozen scope set or the gate corpus was mutated after measuring against it. Any later rebind is a
-separate commit that re-runs the measurement against the rebound bytes; the section 11.3 rule is
+`1d27b5f` is the last commit that touched these files, and the checked-in C6g2 measurement was
+produced against `c737adcf905cb4662472bc86e8345bbcd9bc1346`, which contains it.
+`git diff 1d27b5f HEAD -- eval/prompt/canonical-v1 eval/tasks/prompt-v1` is empty: nothing under the
+frozen scope set or the gate corpus was mutated after measuring against it. A rebind is always a
+separate commit whose measurement is then re-run against the rebound bytes; the section 11.3 rule is
 that C6g2 must not mutate the frozen set *after* measuring, not that the set was never rebound
 before a measurement.
 
