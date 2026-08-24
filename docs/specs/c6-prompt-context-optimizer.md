@@ -3961,7 +3961,10 @@ error-code families, validation precedence, credential and redaction behavior, s
 semantics, frozen-asset schemas, acceptance-policy values, the `baseline-v1` identifiers, and the
 gate manifest/validator behavior are already settled in sections 1.2, 4.4, 4.5, 5, 5.1, 7, 8, and 9
 and are not restated here. This ledger fixes the remaining public surfaces so implementation starts
-against a settled contract. Requests 11, 14, and 18 record their focused verification at the
+against a settled contract. It also fixes the provider-backed gate measurement surface: the wave's
+implementation found that this ledger contracted the gate's measurement semantics without naming a
+measurement-adapter surface, while the shipped fixed adapter is `FIXTURE`-only and hard-bound to one
+`coding-v1` task. Requests 11, 14, and 18 record their focused verification at the
 pinned Align revision. Request 5's transport owner is re-verified at the current pin: the complete
 `make provider-smoke`, including the bounded-response matrix and the `Error.Code(-1)` limit
 sentinel, passes at `19c3db144c462bf7d6784f88d64cc124229b7ec2` (recorded in `HANDOFF.md`).
@@ -3980,6 +3983,15 @@ prompt_experiment.status_label(value: PromptExperimentStatus) -> str
 prompt_experiment.status_success(value: PromptExperimentStatus) -> bool
 
 ./main prompt experiment <request.json> <result.json>  // new dispatch arm in src/main.align
+
+PromptGenerateStatus: Generated | InvalidInput | ProviderError | OutputWrite   // Copy
+
+prompt_generate.generate_file(request_path: str, result_path: str)
+  -> PromptGenerateStatus                              // new module src/prompt_generate.align
+prompt_generate.status_label(value: PromptGenerateStatus) -> str
+prompt_generate.status_success(value: PromptGenerateStatus) -> bool
+
+./main prompt generate <request.json> <response.json>  // new dispatch arm in src/main.align
 
 model.GenerationRequest gains seed: Option<i64>        // shared-record extension
 model.ModelInfo gains supports_seed: bool              // shared-record extension
@@ -4022,9 +4034,9 @@ bytes. `post_json_response` exists because the shipped `post_json` folds HTTP st
 transport errnos into one `Error.Code` constructor: the proposal path needs a received non-2xx
 status as data with its bounded body, while a transport `Err` stays unambiguous.
 
-`src/prompt_artifacts.align` gains one declared record with the existing decode/encode/
-bounded-encode function trio, canonical content digest, and golden semantic-to-byte plus
-byte-to-semantic vectors: `PromptExperimentRequest` carries exactly the section 5.1 fields with
+`src/prompt_artifacts.align` gains one declared proposal-path record with the existing
+decode/encode/bounded-encode function trio, canonical content digest, and golden semantic-to-byte
+plus byte-to-semantic vectors: `PromptExperimentRequest` carries exactly the section 5.1 fields with
 `schema_version` 1 and `artifact_kind: PROMPT_EXPERIMENT_REQUEST`. Validation follows the
 universal section 5 record order and the section 5.1 bounds. The record has no credential-value
 field; `api_key_env` is a validated name only.
@@ -4126,6 +4138,193 @@ wall-clock multiple of the configured sub-second `timeout_ns`, and a control req
 responsive listener succeeds under the same configuration. Passing this target plus the wave's
 final capable gate advances Request 2 in `docs/align-requests.md`.
 
+**Provider-backed gate measurement.** This ledger already settles the gate's measurement semantics:
+the adapter owns the generation call, the evaluator supplies the frozen provider-control
+`max_response_bytes`, and each provider's `pub` `request_bytes` export is the single source of
+provider request bytes. It named no measurement-adapter surface, and the shipped
+`scripts/prompt-fixed-adapter.py` is a `FIXTURE`-only adapter hard-bound to one `coding-v1` task,
+its runner, and its two checked-in patches, so no gate-eligible row can be produced by it. The
+settled surface splits that work across two owners without weakening the reviewed-source,
+credential, or identity rules beyond the one explicit relaxation recorded below.
+`scripts/prompt-measurement-adapter.py` is a task-parameterized sibling of the fixed adapter: a
+byte-equal corpus member carrying a `PYTHON:<sha>` runtime label that satisfies the unchanged outer
+admission rules, so the evaluator's task-command owner still admits exactly
+`<interpreter> <one helper>` argv, still resolves the helper from the validated project root, and
+still requires its declared `measurement_adapter_runtime` digest and reviewed corpus membership. It
+owns workspace orchestration, sealed input admission, contained execution of the validation runner,
+`TaskMeasurement` assembly, and redaction, and it performs no provider wire serialization. The
+single provider generation call is delegated to a derived Align generation child so that provider
+request bytes keep exactly one producer. The fixed adapter keeps its hard-coded runner, task, and
+patch identities, remains the deterministic non-gate fixture owner, and is unchanged except for the
+adapter-request field-order additions below.
+
+**Evaluator provider admission and credential threading.** The evaluator admits the section 4.5
+provider kinds with their exact `api_key_env` pairing — required for `CLOUD_OPENAI`, optional for
+`LOCAL_OPENAI`, and `None` for `LLAMA_CPP` and `FIXTURE` — and keeps every other provider-control
+check unchanged. The shipped `FIXTURE`-only admission in `scripts/prompt-evaluate.py` was an
+implementation restriction introduced by the C6-EVALUATION wave rather than a contract; C6-MEASURED
+lifts it, because section 5.2's `gate_eligible` rule already forbids a `FIXTURE` provider and no
+gate-eligible row can exist while the restriction stands. The evaluator resolves the named
+credential exactly once from its startup environment before any snapshot, helper, or adapter call,
+copies the validated name — never the value — into `TaskAdapterRequest.credential_env_name` for
+every measurement-adapter invocation, and injects the value with the section 1.2 construction order.
+A `None` name performs no environment read and writes `None`. Every existing rule about the snapshot
+helper, the source verifier, digests, diagnostics, and persistence is unchanged.
+
+**Generation child contract.** `src/prompt_generate.align` owns exactly one bounded provider
+generation. `generate_file` follows the same shipped pattern as `prompt_evaluate.evaluate_file` and
+`prompt_experiment.experiment_file`: `status_success` is true only for `Generated`, `OutputWrite`
+carries the post-dispatch persistence failure, and the `./main prompt generate` arm has arity 5 and
+prints the operation, status label, and output path, mapping non-success to `Error.Invalid` exactly
+like the shipped evaluate and experiment arms. `src/prompt_artifacts.align` gains two declared
+measurement-path records with the same decode/encode/bounded-encode trio, canonical content digest,
+and semantic-to-byte plus byte-to-semantic goldens as every other record in that module:
+
+```text
+PromptGenerationRequest:
+  schema_version
+  artifact_kind: PROMPT_GENERATION_REQUEST
+  request_id
+  provider_kind
+  endpoint
+  provider_model
+  api_key_env: Option<str>
+  rendered_prompt_path
+  rendered_prompt_sha256
+  max_tokens
+  temperature_micros
+  paired_seed
+  timeout_ns
+  max_response_bytes
+  content_sha256
+
+PromptGenerationResponse:
+  schema_version
+  artifact_kind: PROMPT_GENERATION_RESPONSE
+  request_id
+  status: GENERATED | INVALID_INPUT | PROVIDER_ERROR
+  error_code
+  error
+  provider_kind
+  provider_model
+  provider_request_sha256
+  seed_result: APPLIED | UNSUPPORTED | REJECTED
+  applied_seed: Option<i64>
+  http_status: Option<i64>
+  content: Option<string>
+  dispatch_start_ns
+  dispatch_end_ns
+  content_sha256
+```
+
+Both records use `schema_version` 1 and follow the universal section 5 record order and the section
+1.2 identifier, path, endpoint, and digest bounds. `api_key_env` is a validated name only; no
+declared record carries a credential value. `provider_kind` admits only a dispatchable kind:
+`FIXTURE` is `INVALID_INPUT` here because `model.ProviderKind` gains no `FIXTURE` variant and that
+control never reaches provider dispatch. The child reads the rendered prompt through the declared
+path and requires its `RenderedPromptArtifact` digest to equal `rendered_prompt_sha256`, so the
+section 4.5 request mapping stays normative and no intermediate owner can prepend, append, or split
+the rendered bytes. `dispatch_start_ns` and `dispatch_end_ns` are child-observed diagnostics for the
+measurement-risk record; they never define a scored duration. `OUTPUT_WRITE` is a command status
+only: a failed response write persists no response artifact, and the adapter classifies the missing
+document exactly like any other failed handoff below.
+
+The child's deterministic order is: decode and validate the request; read and verify the rendered
+prompt; build `model.GenerationRequest` with the empty `system`, the rendered text as `user`, the
+policy `max_tokens` and `temperature_micros`, and `seed: Some(paired_seed)`; obtain the wire bytes
+from the selected provider's `pub` `request_bytes` export; compute `provider_request_sha256` over
+exactly those bytes immediately before dispatch; perform exactly one
+`provider_http.post_json_response` with the request `timeout_ns` and the frozen provider-control
+`max_response_bytes`; and write the response. The adapter launches the child exactly once per
+invocation, so one bound provider generation call per sample satisfies the section 9 gate-corpus
+rule at the initial gate tasks' `maximum_repair_loops: 0`. `seed_result` is the sections 4.5 and 5.2
+attestation semantics
+observed at this boundary: `APPLIED` with `applied_seed: Some(paired_seed)` when the selected
+adapter reports `supports_seed` and the seeded twin bytes carry the paired seed, `UNSUPPORTED` with
+`applied_seed: None` when the adapter does not support a seed, and `REJECTED` with
+`applied_seed: None` when a seed-supporting provider returns a received response refusing it. The
+transport, status, and decode error mapping is exactly the section 11.3 proposal table above:
+`Error.Timeout`, the `Error.Code(-1)` receive-side limit sentinel, any other transport `Err`, a
+received non-2xx status as `Ok` data with its bounded body, and a 2xx envelope or content-extraction
+failure. Every persisted diagnostic is redacted before truncation, hashing, or persistence.
+
+The adapter copies `provider_request_sha256`, `seed_result`, `applied_seed`, and the provider
+identity verbatim from the response into `GenerationRequestIdentity` and
+`SeedCapabilityAttestation`; it never re-serializes provider bytes and never derives that digest
+from any other preimage. The section 5.2 non-circularity rule is therefore preserved with the child
+as the provider boundary: the digest comes from the dispatched wire bytes alone, independently of
+the attestation, and the evaluator still requires the two persisted values to be equal.
+
+**Derived-child admission and credential handoff.** The generation child is the one explicit
+relaxation of the reviewed-source execution boundary, and its exact shape is fixed here. The child
+binary is built, not committed, so it cannot be a corpus member; its reviewed `src/` TREE and
+`.align-revision` remain corpus members and carry the reviewed-source proof. The binary's path and
+digest are supplied per run: `PromptEvaluateRequest` gains `generation_child_path` and
+`generation_child_sha256`, the evaluator copies both into `TaskAdapterRequest`, and the checked-in
+gate supplies the same pair as a fourth explicit `C6_GATE_*` input alongside the existing three,
+mapped to `--generation-child-path` and `--generation-child-sha256` with the same missing, empty,
+relative, unsafe, and unreadable rejection and no environment or sibling-checkout fallback. The
+validator retains the path as an absolute regular executable and requires its same-descriptor bytes,
+the declared digest input, and the digest recorded in the evidence to be equal, so neither a stale
+evidence claim nor an unverified local build can satisfy the gate. Neither the absolute path nor a
+machine-specific spelling is ever frozen into `eval/prompt/canonical-v1/`; the pair belongs to the
+per-run request and the recorded check evidence. The adapter admits the child as a sealed immutable
+input following the section 10.1j inner-retained precedent: it opens a no-follow bounded owner,
+verifies the declared digest before launch, launches only the retained descriptor without reopening
+the public pathname, and verifies the retained input unchanged after the child returns. The child is
+one more contained direct child of the adapter and inherits the section 10.1c and 10.1d descendant
+ownership, private session/group, kill, reap, absence-proof, and exactly-once cleanup rules already
+owned by that boundary. It produces no `EnvironmentProbe`: section 1.2's two probe carriers and
+`EnvironmentIdentityCore`'s three runtime-identity fields are unchanged, and the child's identity
+binds through the declared per-run digest and the adapter's pre-launch and post-return verification
+rather than through the environment identity.
+
+The credential value continues to reach only the allowlisted measurement-adapter child, and the
+handoff to the generation child is licensed by the section 1.2 rule that a provider call receives
+the same one-shot value as an explicit boundary argument and, when its implementation uses a child
+process, uses the same construction order, and by the section 4.5 rule that a provider
+implementation may use the value in-process or through the child environment provided it receives
+the same explicit one-shot value and rereads no ambient environment state. The adapter therefore
+constructs the generation child's environment as `env_clear()`, the policy's ordered
+`allowed_variables`, then exactly one credential entry under the same name it received, and the
+child reads that name exactly once from its own constructed startup environment. The value reaches
+exactly two processes — the adapter and its generation child — and never the snapshot helper,
+the source verifier, or the validation runner, whose environment stays the cleared policy
+environment with no credential entry. A missing or empty value for a `Some` name is a
+pre-dispatch failure before the first external call. Redaction runs in both owners: the child
+redacts its own diagnostics before writing the response, and the adapter redacts everything it
+persists into `TaskMeasurement`.
+
+**Task parameterization of the measurement adapter.** The identities that
+`scripts/prompt-fixed-adapter.py` hard-codes become declared inputs. `PromptEvaluationTask` gains
+`validation_runner_path`, `validation_runner_sha256`, `task_definition_path`,
+`task_definition_sha256`, and `validation_argv`, plus the `Option` pair `patch_path` and
+`patch_sha256` that is `None` for a provider-backed task whose patch comes from the generation
+response and `Some` only for a deterministic fixture-style task. `TaskAdapterRequest` gains exactly
+those fields plus `generation_child_path` and `generation_child_sha256`, appended after
+`environment_policy_sha256` and before `content_sha256` so every existing field keeps its position.
+Every referenced file except the generation child is a corpus member and inherits the existing
+membership, digest, and admission checks unchanged; the adapter verifies each declared digest before
+launch and admits each as a sealed immutable input. These are outright pre-release schema-version-1
+changes for both records, following the section 4.5 `PromptSourceVerifierPolicy` precedent: an older
+version-1 record without the new fields is invalid, receives no compatibility default, and is never
+migrated. The exact-field-order check and the `EvaluationInputIdentity.adapter_request_sha256`
+preimage in the shipped fixed adapter and evaluator change in the same commit; the fixed adapter
+continues to reject a non-`None` `credential_env_name` and remains non-gate-eligible.
+
+**Measured timing boundary.** `generation_to_passing_patch_ns` starts in the adapter immediately
+before it launches the generation child, so child spawn and initialization cost is inside the
+measured window; the child's own clock never defines the boundary. This is the settled section 5.2
+reading of "immediately before the first provider generation call" for a two-process implementation,
+and the exclusions are unchanged: evaluator snapshots, checkout preparation, input decoding, result
+encoding, and post-run cleanup stay outside. The overhead is symmetric across parent and candidate,
+so it cannot bias the paired comparison, but its magnitude is measurement risk and the generation
+smoke must record it. Because the adapter now runs two sequential contained children, the section
+10.1e adapter outer deadline is the sum of the provider-control and task deadlines plus the existing
+bounded cleanup and report margin rather than their maximum; the constants remain evaluator-owned
+and asserted by `prompt-evaluate-smoke`, and every inner deadline remains strictly smaller than the
+evaluator deadline that started earlier.
+
 **Repository identity of the C6g assets and gate validator.**
 
 - Gate corpus tasks: `eval/tasks/prompt-v1/` (at least two tasks per section 9).
@@ -4141,16 +4340,27 @@ final capable gate advances Request 2 in `docs/align-requests.md`.
   artifacts. The evaluate request's environment policy is not part of the frozen scope set; it
   travels with the checked-in gate evidence under `eval/prompt/gate/`. The C6g1 freeze review
   fixes the frozen contents; C6g2 must not mutate them after measuring against them.
+- Measurement adapter: `scripts/prompt-measurement-adapter.py`, the task-parameterized sibling of
+  `scripts/prompt-fixed-adapter.py`. It is a byte-equal corpus member declared by each gate task
+  with a `PYTHON:<sha>` `measurement_adapter_runtime` label, satisfies the unchanged
+  `<interpreter> <one helper>` outer admission rules, and owns workspace orchestration, sealed input
+  admission, contained validation-runner execution, `TaskMeasurement` assembly, and redaction. It
+  performs no provider wire serialization; the single generation call belongs to the derived
+  `./main prompt generate` child, whose per-run path and digest travel in the evaluate request and
+  the recorded check evidence and are never frozen here.
 - Checked-in gate evidence: `eval/prompt/gate/` holding `prompt-gate-manifest.json` and the
   referenced evaluation result, evidence, and activation artifacts.
 - Gate validator: `scripts/prompt-gate-validator.py` under CPython 3.12, invoked only by the
-  `make ci` gate target with the three explicit `C6_GATE_*` values mapped to
-  `--source-bundle-root`, `--python-executable-path`, and `--git-executable-path`. Its behavior
+  `make ci` gate target with the explicit `C6_GATE_*` values mapped to `--source-bundle-root`,
+  `--python-executable-path`, `--git-executable-path`, `--generation-child-path`, and
+  `--generation-child-sha256`. The first three are settled by section 9; the generation-child pair
+  is the fourth input described above and is checked before any evidence identity. Its behavior
   matrix is settled by section 9 and the section 10/10.1 gate rows, whose named
   `prompt-gate-*-smoke` targets are owned by this wave's validator implementation.
 
 **Owner targets and lanes.** `prompt-experiment-smoke`, `prompt-credential-lifetime-smoke`,
-`prompt-seed-attestation-smoke`, and `c6e-request2-adoption` join the hosted check lane as new
+`prompt-seed-attestation-smoke`, `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, and
+`c6e-request2-adoption` join the hosted check lane as new
 additions; the named `prompt-gate-*-smoke` fixtures are likewise new hosted additions (today's
 gate/evaluator fixtures run only inside the capable-only `c6-evaluation-adoption`), and the real
 `make ci C6_GATE_...` evidence chain remains the capable integration gate. Every hosted-lane
@@ -4178,19 +4388,28 @@ The C6-MEASURED closure matrix is:
 | Request 2 timeouts | `src/provider_http.align`, `c6e-request2-adoption` | plaintext read-stall and TLS handshake-stall within the bounded wall clock plus the responsive control request |
 | frozen canonical assets and `baseline-v1` | `eval/prompt/canonical-v1/`, C6g1 freeze review | digest-bound goldens; C6g2 evidence chain binds exactly these artifacts |
 | gate validator | `scripts/prompt-gate-validator.py`, `Makefile` | the named `prompt-gate-*-smoke` fixtures plus one real capable `make ci C6_GATE_...` run |
+| generation child dispatch | `src/prompt_generate.align`, `src/provider.align`, `src/provider_openai.align`, `src/provider_llama.align`, `src/provider_http.align` | `prompt-generate-smoke`: golden request bytes per provider kind, `provider_request_sha256` equal to the exact dispatched bytes, `APPLIED`/`UNSUPPORTED`/`REJECTED` seed rows with their required `applied_seed` shape, the complete transport/status/decode error mapping, no credential byte in the response or any diagnostic, and the recorded child spawn-overhead measurement |
+| derived-child admission | `scripts/prompt-measurement-adapter.py` | `prompt-measurement-adapter-smoke`: a declared digest mismatch and a post-admission binary replacement each produce no scoreable row, and a sealed launch of the admitted bytes succeeds and verifies the retained input unchanged |
+| two-process handoff | `scripts/prompt-measurement-adapter.py`, `src/prompt_generate.align` | `prompt-measurement-adapter-smoke`: mutated or absent response digest, truncated response, nonzero child exit, and child timeout each yield `ERROR` with the section 5.2 and 10.1k precedence — `CONTAINMENT`, then `CLEANUP`, then `ADAPTER` — both time fields `None`, and never a scoreable row |
+| task parameterization | `scripts/prompt-measurement-adapter.py`, `scripts/prompt-evaluate.py` | `prompt-measurement-adapter-smoke`: manifest-driven runner and task-definition digests admit and execute; a wrong declared digest is rejected before launch with no runner marker; the extended `TaskAdapterRequest` field order and its `EvaluationInputIdentity` preimage are golden-bound |
+| renderer parity | `scripts/prompt-evaluate.py`, `src/prompt_model.align` | shared golden rendered-prompt vectors over all eight section 4.3 enable/disable combinations, each section's truncation boundary, and `task_id` failure-memory selection, asserted byte-equal across both implementations; this row records the already-settled section 4.3 contract, and the Python renderer's disabled-section-only restriction was an implementation defect |
 | measured claim | gate pull request | reproducible before/after from a named clean commit, exact command and provider environment without credentials, and the time-to-passing-patch measurement against the checked-in baseline |
 
-Ledger field completion: persisted and cache identity are `N/A` for `redact_credential`,
-`status_label`, and `status_success` (pure functions with no persisted output); schema versioning
-is `N/A` for the in-memory `model` record extensions (the persisted identities are the wire
-records and the section 4 artifacts, which carry their own versions); and ownership/allocation for
+Ledger field completion: persisted and cache identity are `N/A` for `redact_credential` and for both
+modules' `status_label` and `status_success` (pure functions with no persisted output); schema
+versioning is `N/A` for the in-memory `model` record extensions (the persisted identities are the
+wire records and the section 4 artifacts, which carry their own versions); persisted canonical
+identity is `N/A` for the generation child's per-run path and digest, which are validated request
+and gate inputs recorded in check evidence rather than frozen assets; and ownership/allocation for
 the settled section 5.1 record fields is owned by the existing codec rows and is not restated
 here.
 
 The implementation checkpoint is one consumer-complete capability: `src/prompt_experiment.align`
-with its smoke owners, the shared seed extension, the Request 2 adoption target, the frozen C6g1
-assets, and the C6g2 evidence chain and validator belong to the same wave because the gate
-evidence is the only real consumer of the proposal surface. The C6e metric is proposal-command
+and `src/prompt_generate.align` with their smoke owners, the shared seed extension, the Request 2
+adoption target, `scripts/prompt-measurement-adapter.py` with the evaluator provider admission and
+task parameterization it requires, the frozen C6g1 assets, and the C6g2 evidence chain and validator
+belong to the same wave because the gate evidence is the only real consumer of the proposal and
+measurement surfaces. The C6e metric is proposal-command
 correctness with zero credential leakage across every terminal path. The C6-MEASURED metric is the
 section 11 wave claim: the gate pull request owns the reproducible baseline and time-to-passing-
 patch measurement, and no other capability may claim provider quality.
