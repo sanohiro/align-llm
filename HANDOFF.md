@@ -6,9 +6,10 @@ file records durable project state.
 ## Active checkpoint (2026-08-25)
 
 - C6-MEASURED (C6e/C6g1/C6g2) is implemented on branch `agent/c6-measured`, head
-  `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, and is not yet published. The measured gate is real
+  `8ddea8a03b817404e68a23e8ce1f39534b7abd13`, and is not yet published. The measured gate is real
   and green: `scripts/prompt-gate-validator.py` exits 0 against the checked-in `eval/prompt/gate/`
-  bundle with all five explicit inputs.
+  bundle with all five explicit inputs, recorded at `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`
+  before the two publication closures below moved the head.
 - Slice E landed the final integration wiring. The section 11.3 owner targets are now
   `HOSTED_CHECK_TARGETS` members — `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`,
   `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
@@ -35,7 +36,11 @@ file records durable project state.
   `19c5d5c` because earlier C6-MEASURED commits changed the Makefile without re-finalizing. The
   replacement chain is source `6f937fb4bb4a596afd0540b5b37415d65d5dbb3c`, oracle
   `182fa3c9a537884f59cf9257d91c884d3732d1ca`, and finalization
-  `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`; it was appended, not rewritten, and
+  `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`; it was appended, not rewritten. Adding
+  `prompt-render-parity-smoke` to the lane changed the `Makefile` again, so the current chain is
+  source `ba47abdb01776d10f041c0d3e3f36edc67034993`, oracle
+  `656a5bf9609762b899c4e841de7529bfde2ec5c2`, and finalization
+  `8ddea8a03b817404e68a23e8ce1f39534b7abd13`; it was appended the same way and
   `scripts/check-baseline-chain` passes on it.
 - **Closed: `prompt-render-parity-smoke` is no longer an orphan.** It is now a
   `HOSTED_CHECK_TARGETS` member beside `prompt-model-smoke`, section 11.3 names it as the
@@ -63,9 +68,8 @@ file records durable project state.
   sealed-input cap that could never admit the derived generation child. Repairing the measurement
   adapter rebound the frozen digest chain; only digest bindings moved.
 - Next actions, in order: (1) one comprehensive review of the branch; (2) publish the pull request
-  with the measured claim, the per-cell matrix, the validator transcript, and the recorded
-  capable-lane blocker above; (3) reconcile the section 9/11.3 `make ci C6_GATE_...` contract with
-  the FRESH-WORKER no-assignment caller contract so `prompt-gate-check` can join the capable lane.
+  with the measured claim, the per-cell matrix, the validator transcript, and the named-qualification
+  status of `prompt-gate-check` recorded above.
 - The measurement environment is a privileged `linux/arm64` container (`c6g2-measure:latest`) with
   `bubblewrap` installed at run time; the image does not ship it and the validation runner requires
   it. Docker's default seccomp/AppArmor blocks the runner's user namespaces, so the container needs
@@ -187,6 +191,17 @@ file records durable project state.
 
 ## Latest durable verification
 
+- Publication closures at head `8ddea8a03b817404e68a23e8ce1f39534b7abd13` (2026-08-25). Host
+  (macOS, managed pinned toolchain): `gmake gate-topology-check`, `gmake check` (22 units
+  per-unit), `gmake prompt-render-parity-smoke` (58 vectors byte-equal), `gmake format-check`,
+  `git diff --check`, and `python3 scripts/check-baseline-chain`: PASS. Native Linux `aarch64`
+  inside the privileged `c6g2-measure:latest` container, non-root with `umask 022` and
+  `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of source commit
+  `ba47abdb01776d10f041c0d3e3f36edc67034993`: `python3 scripts/check-gate-topology --self-test`,
+  `make gate-topology-check`, and `make prompt-render-parity-smoke`: PASS, then
+  `eval/runners/record-baseline.py` recorded both deterministic-reference samples as `PASS`
+  (121,396,125-128,282,751 ns, median 124,839,438 ns). The self-test is the proof that the
+  `EXPECTED` bytes and the `exact_environment()` copy moved together.
 - C6-MEASURED Slice E final capable gate at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`
   (2026-08-25): PASS. The complete capable check graph — every `HOSTED_CHECK_TARGETS` member in lane
   order, then `eval-coding`, `baseline-check`, and `c6-evaluation-adoption`, serially at `-j1`, the
@@ -418,10 +433,11 @@ file records durable project state.
 
 ## Next actions
 
-1. Review and publish C6-MEASURED from `agent/c6-measured` at head
-   `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`. The pull request must carry the measured claim, the
-   per-cell matrix, the validator transcript, the exact capable-gate commands and results recorded
-   above, and the named-qualification status of `prompt-gate-check`.
+1. Review and publish C6-MEASURED from `agent/c6-measured` at its current head. The measured-gate
+   transcript was recorded at `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`; the two publication
+   closures and the replacement baseline chain land on top of it. The pull request must carry the
+   measured claim, the per-cell matrix, the validator transcript, the exact capable-gate commands
+   and results recorded above, and the named-qualification status of `prompt-gate-check`.
 2. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
 3. Merged historical item: the register/HANDOFF reconciliation branch
