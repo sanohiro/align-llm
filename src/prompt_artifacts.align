@@ -372,6 +372,25 @@ pub CandidateProposal {
   context_policy: ContextPolicy,
 }
 
+pub PromptExperimentRequest {
+  schema_version: i64,
+  artifact_kind: string,
+  experiment_id: string,
+  project_root: string,
+  parent_activation_path: string,
+  opportunity_path: string,
+  proposal_provider_kind: string,
+  proposal_provider_endpoint: string,
+  proposal_provider_endpoint_id: string,
+  proposal_provider_model: string,
+  api_key_env: Option<string>,
+  tokenize_endpoint: Option<string>,
+  timeout_ns: i64,
+  max_prompt_bytes: i64,
+  max_tokens: i64,
+  temperature_micros: i64,
+}
+
 pub PromptExperimentResult {
   schema_version: i64,
   artifact_kind: string,
@@ -850,6 +869,89 @@ fn valid_prompt_text_kind(value: str) -> bool {
   value == "DIAGNOSTIC_STDERR"
 }
 
+fn valid_environment_name(value: str) -> bool {
+  if !valid_ascii_identifier(value, 256) {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    b := bytes[index]
+    letter := (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a)
+    if index == 0 {
+      if !letter && b != 0x5f {
+        return false
+      }
+    } else {
+      digit := b >= 0x30 && b <= 0x39
+      if !letter && !digit && b != 0x5f {
+        return false
+      }
+    }
+    index = index + 1
+  }
+  return true
+}
+
+// Section 1.2/5.1 endpoint rule: 4,096 bytes, the provider's accepted scheme and host form, no URL
+// userinfo, and no credential query or fragment. A credential-bearing query parameter cannot be
+// decided from its name, so this owner rejects every query and fragment component rather than
+// guessing which parameter carries a secret. `require_tls` is the cloud provider's `https://`-only
+// scheme rule already enforced by `provider_openai.validate_request_config`.
+fn valid_provider_endpoint(value: str, require_tls: bool) -> bool {
+  if !valid_nonempty_text(value, 4096) {
+    return false
+  }
+  scheme_length := if value.starts_with("https://") {
+    8
+  } else if !require_tls && value.starts_with("http://") {
+    7
+  } else {
+    0
+  }
+  if scheme_length == 0 {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := scheme_length
+  mut authority_length := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    b := bytes[index]
+    if b == 0x2f {
+      break
+    }
+    if b == 0x40 || b == 0x3f || b == 0x23 || b > 0x7f {
+      return false
+    }
+    authority_length = authority_length + 1
+    index = index + 1
+  }
+  if authority_length <= 0 {
+    return false
+  }
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    b := bytes[index]
+    if b == 0x3f || b == 0x23 || b > 0x7f {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_proposal_provider_kind(value: str) -> bool {
+  return value == "CLOUD_OPENAI" || value == "LOCAL_OPENAI" || value == "LLAMA_CPP"
+}
+
 fn valid_section_limit(enabled: bool, limit: i64, maximum: i64) -> bool {
   if limit < 0 || limit > maximum {
     return false
@@ -1264,6 +1366,78 @@ pub fn verify_prompt_activation_result_content(borrow value: PromptActivationRes
   return expected == value.content_sha256
 }
 
+fn clone_prompt_experiment_request(borrow value: PromptExperimentRequest) -> PromptExperimentRequest {
+  return PromptExperimentRequest {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    experiment_id: value.experiment_id.clone(),
+    project_root: value.project_root.clone(),
+    parent_activation_path: value.parent_activation_path.clone(),
+    opportunity_path: value.opportunity_path.clone(),
+    proposal_provider_kind: value.proposal_provider_kind.clone(),
+    proposal_provider_endpoint: value.proposal_provider_endpoint.clone(),
+    proposal_provider_endpoint_id: value.proposal_provider_endpoint_id.clone(),
+    proposal_provider_model: value.proposal_provider_model.clone(),
+    api_key_env: match value.api_key_env {
+      None => None,
+      Some(name) => Some(name.clone()),
+    },
+    tokenize_endpoint: match value.tokenize_endpoint {
+      None => None,
+      Some(endpoint) => Some(endpoint.clone()),
+    },
+    timeout_ns: value.timeout_ns,
+    max_prompt_bytes: value.max_prompt_bytes,
+    max_tokens: value.max_tokens,
+    temperature_micros: value.temperature_micros,
+  }
+}
+
+// The section 5.1 request carries no `content_sha256` field, so its canonical identity is the
+// digest of the complete canonical encoding under the section 5 operation-request raw-byte cap.
+pub fn prompt_experiment_request_content_digest(borrow value: PromptExperimentRequest) -> Result<string, Error> {
+  normalized := clone_prompt_experiment_request(value)
+  canonical := json.encode_bounded(normalized, 65536)?
+  return Ok(digest_text(canonical))
+}
+
+// Section 5 universal record order: `schema_version`, `artifact_kind`, scalar fields in declaration
+// order, then local bounds and field-specific labels. The two optional fields are decided last
+// because they depend on `proposal_provider_kind`, exactly as the shipped provider-control
+// verifier orders its own credential and tokenizer pairing.
+pub fn verify_prompt_experiment_request(borrow value: PromptExperimentRequest) -> bool {
+  if value.schema_version != 1 ||
+  value.artifact_kind != "PROMPT_EXPERIMENT_REQUEST" ||
+  !valid_ascii_identifier(value.experiment_id, 96) ||
+  !valid_nonempty_text(value.project_root, 4096) ||
+  !valid_nonempty_text(value.parent_activation_path, 4096) ||
+  !valid_nonempty_text(value.opportunity_path, 4096) ||
+  !valid_proposal_provider_kind(value.proposal_provider_kind) ||
+  !valid_provider_endpoint(
+    value.proposal_provider_endpoint,
+    value.proposal_provider_kind == "CLOUD_OPENAI",
+  ) ||
+  !valid_nonempty_text(value.proposal_provider_endpoint_id, 256) ||
+  !valid_nonempty_text(value.proposal_provider_model, 256) ||
+  value.timeout_ns <= 0 || value.timeout_ns > 7_200_000_000_000 ||
+  value.max_prompt_bytes <= 0 || value.max_prompt_bytes > 262_144 ||
+  value.max_tokens <= 0 || value.max_tokens > 8_192 ||
+  value.temperature_micros < 0 || value.temperature_micros > 1_000_000 {
+    return false
+  }
+  api_key_valid := match value.api_key_env {
+    None => value.proposal_provider_kind != "CLOUD_OPENAI",
+    Some(name) => (value.proposal_provider_kind == "CLOUD_OPENAI" ||
+      value.proposal_provider_kind == "LOCAL_OPENAI") && valid_environment_name(name),
+  }
+  tokenize_valid := match value.tokenize_endpoint {
+    None => true,
+    Some(endpoint) => value.proposal_provider_kind == "LLAMA_CPP" &&
+    valid_provider_endpoint(endpoint, false),
+  }
+  return api_key_valid && tokenize_valid
+}
+
 pub fn decode_prompt_variant(value: str) -> Result<PromptVariant, Error> {
   decoded: PromptVariant := json.decode(value)?
   return Ok(decoded)
@@ -1632,6 +1806,71 @@ pub fn encode_candidate_proposal(value: CandidateProposal) -> string {
 }
 
 pub fn encode_candidate_proposal_bounded(value: CandidateProposal, max_bytes: i64) -> Result<string, Error> {
+  return json.encode_bounded(value, max_bytes)
+}
+
+// Canonical input form for the two optional fields: the canonical encoder omits a `None`, and an
+// explicit `null` at the input boundary normalizes to the same `None`. Both fields are adjacent and
+// precede `timeout_ns`, so each accepted form is one insertion in declaration order.
+fn experiment_request_input_accepted(
+  canonical: str,
+  value: str,
+  borrow request: PromptExperimentRequest,
+) -> Result<bool, Error> {
+  if canonical == value {
+    return Ok(true)
+  }
+  api_key_absent := match request.api_key_env { None => true, Some(_) => false }
+  tokenize_absent := match request.tokenize_endpoint { None => true, Some(_) => false }
+  if tokenize_absent {
+    tokenize_null: string := canonical_with_explicit_null(
+      canonical,
+      "\"timeout_ns\":",
+      "tokenize_endpoint",
+    )?
+    tokenize_null_view: str := tokenize_null
+    if tokenize_null_view == value {
+      return Ok(true)
+    }
+    if api_key_absent {
+      both_null: string := canonical_with_explicit_null(
+        tokenize_null_view,
+        "\"tokenize_endpoint\":",
+        "api_key_env",
+      )?
+      both_null_view: str := both_null
+      if both_null_view == value {
+        return Ok(true)
+      }
+    }
+  }
+  if api_key_absent {
+    anchor := if tokenize_absent { "\"timeout_ns\":" } else { "\"tokenize_endpoint\":" }
+    api_key_null: string := canonical_with_explicit_null(canonical, anchor, "api_key_env")?
+    api_key_null_view: str := api_key_null
+    if api_key_null_view == value {
+      return Ok(true)
+    }
+  }
+  return Ok(false)
+}
+
+pub fn decode_prompt_experiment_request(value: str) -> Result<PromptExperimentRequest, Error> {
+  decoded: PromptExperimentRequest := json.decode(value)?
+  canonical_value: PromptExperimentRequest := json.decode(value)?
+  canonical: string := json.encode(canonical_value).clone()
+  canonical_view: str := canonical
+  if !experiment_request_input_accepted(canonical_view, value, decoded)? {
+    return Err(Error.Invalid)
+  }
+  return Ok(decoded)
+}
+
+pub fn encode_prompt_experiment_request(value: PromptExperimentRequest) -> string {
+  return json.encode(value).clone()
+}
+
+pub fn encode_prompt_experiment_request_bounded(value: PromptExperimentRequest, max_bytes: i64) -> Result<string, Error> {
   return json.encode_bounded(value, max_bytes)
 }
 

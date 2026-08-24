@@ -50,6 +50,43 @@ fn expect_locator_invalid(value: str) -> Result<(), Error> {
   }
 }
 
+fn expect_experiment_request_invalid(value: str) -> Result<(), Error> {
+  return match prompt_artifacts.decode_prompt_experiment_request(value) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn expect_experiment_request_bounded_rejected(
+  value: prompt_artifacts.PromptExperimentRequest,
+  max_bytes: i64,
+) -> Result<(), Error> {
+  return match prompt_artifacts.encode_prompt_experiment_request_bounded(value, max_bytes) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn repeat_ascii(count: i64) -> string {
+  output := builder()
+  mut index := 0
+  loop {
+    if index >= count { break }
+    output.write("a")
+    index = index + 1
+  }
+  return output.to_string()
+}
+
+fn oversized_endpoint() -> string {
+  output := builder()
+  output.write("https://")
+  filler: string := repeat_ascii(4089)
+  filler_view: str := filler
+  output.write(filler_view)
+  return output.to_string()
+}
+
 fn policy_value(helper: str, runtime: str, interpreter: str, git: str) -> prompt_artifacts.PromptSourceVerifierPolicy {
   return prompt_artifacts.PromptSourceVerifierPolicy {
     schema_version: 1,
@@ -236,11 +273,273 @@ fn locator_golden() -> Result<(), Error> {
   }
 }
 
+EXPERIMENT_REQUEST_INVALID_CASE_COUNT := 34
+EXPERIMENT_REQUEST_ACCEPTED_CASE_COUNT := 11
+
+fn experiment_request_value(
+  kind: str,
+  endpoint: str,
+  api_key_env: Option<string>,
+  tokenize_endpoint: Option<string>,
+) -> prompt_artifacts.PromptExperimentRequest {
+  return prompt_artifacts.PromptExperimentRequest {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EXPERIMENT_REQUEST".clone(),
+    experiment_id: "experiment".clone(),
+    project_root: "/project".clone(),
+    parent_activation_path: "parent.json".clone(),
+    opportunity_path: "opportunity.json".clone(),
+    proposal_provider_kind: kind.clone(),
+    proposal_provider_endpoint: endpoint.clone(),
+    proposal_provider_endpoint_id: "endpoint".clone(),
+    proposal_provider_model: "model".clone(),
+    api_key_env: api_key_env,
+    tokenize_endpoint: tokenize_endpoint,
+    timeout_ns: 60_000_000_000,
+    max_prompt_bytes: 262_144,
+    max_tokens: 8_192,
+    temperature_micros: 0,
+  }
+}
+
+fn cloud_experiment_request() -> prompt_artifacts.PromptExperimentRequest {
+  return experiment_request_value(
+    "CLOUD_OPENAI",
+    "https://provider.invalid/v1/chat/completions",
+    Some("ALIGN_LLM_API_KEY".clone()),
+    None,
+  )
+}
+
+fn local_experiment_request() -> prompt_artifacts.PromptExperimentRequest {
+  return experiment_request_value(
+    "LOCAL_OPENAI",
+    "http://127.0.0.1:8000/v1/chat/completions",
+    None,
+    None,
+  )
+}
+
+fn llama_experiment_request() -> prompt_artifacts.PromptExperimentRequest {
+  return experiment_request_value(
+    "LLAMA_CPP",
+    "http://127.0.0.1:8080/completion",
+    None,
+    Some("http://127.0.0.1:8080/tokenize".clone()),
+  )
+}
+
+fn experiment_request_options_match(
+  borrow request: prompt_artifacts.PromptExperimentRequest,
+  api_key_env: str,
+  tokenize_endpoint: str,
+) -> bool {
+  api_key_valid := match request.api_key_env {
+    None => api_key_env.len() == 0,
+    Some(name) => name == api_key_env,
+  }
+  tokenize_valid := match request.tokenize_endpoint {
+    None => tokenize_endpoint.len() == 0,
+    Some(endpoint) => endpoint == tokenize_endpoint,
+  }
+  return api_key_valid && tokenize_valid
+}
+
+// One row per section 5.1 bound plus the schema-version and artifact-kind checks. Each row mutates
+// exactly one field of an otherwise valid request, so a rejected row proves that specific check.
+fn experiment_request_invalid_case(index: i64) -> prompt_artifacts.PromptExperimentRequest {
+  if index == 33 {
+    mut llama := llama_experiment_request()
+    llama.tokenize_endpoint = Some("ftp://127.0.0.1:8080/tokenize".clone())
+    return llama
+  }
+  mut request := cloud_experiment_request()
+  if index == 0 { request.schema_version = 2 }
+  if index == 1 { request.artifact_kind = "PROMPT_EXPERIMENT_RESULT".clone() }
+  if index == 2 { request.experiment_id = "".clone() }
+  if index == 3 { request.experiment_id = repeat_ascii(97) }
+  if index == 4 { request.project_root = "".clone() }
+  if index == 5 { request.project_root = repeat_ascii(4097) }
+  if index == 6 { request.parent_activation_path = "".clone() }
+  if index == 7 { request.opportunity_path = "".clone() }
+  if index == 8 { request.proposal_provider_kind = "FIXTURE".clone() }
+  if index == 9 { request.proposal_provider_kind = "cloud_openai".clone() }
+  if index == 10 { request.proposal_provider_endpoint = "http://provider.invalid/v1/chat/completions".clone() }
+  if index == 11 { request.proposal_provider_endpoint = "https://user:secret@provider.invalid/v1".clone() }
+  if index == 12 { request.proposal_provider_endpoint = "https://provider.invalid/v1?api_key=secret".clone() }
+  if index == 13 { request.proposal_provider_endpoint = "https://provider.invalid/v1#fragment".clone() }
+  if index == 14 { request.proposal_provider_endpoint = "provider.invalid/v1".clone() }
+  if index == 15 { request.proposal_provider_endpoint = "https:///v1".clone() }
+  if index == 16 { request.proposal_provider_endpoint = oversized_endpoint() }
+  if index == 17 { request.proposal_provider_endpoint_id = "".clone() }
+  if index == 18 { request.proposal_provider_endpoint_id = repeat_ascii(257) }
+  if index == 19 { request.proposal_provider_model = "".clone() }
+  if index == 20 { request.proposal_provider_model = repeat_ascii(257) }
+  if index == 21 { request.api_key_env = None }
+  if index == 22 { request.api_key_env = Some("1BAD_NAME".clone()) }
+  if index == 23 { request.api_key_env = Some("BAD-NAME".clone()) }
+  if index == 24 { request.tokenize_endpoint = Some("https://provider.invalid/tokenize".clone()) }
+  if index == 25 { request.timeout_ns = 0 }
+  if index == 26 { request.timeout_ns = 7_200_000_000_001 }
+  if index == 27 { request.max_prompt_bytes = 0 }
+  if index == 28 { request.max_prompt_bytes = 262_145 }
+  if index == 29 { request.max_tokens = 0 }
+  if index == 30 { request.max_tokens = 8_193 }
+  if index == 31 { request.temperature_micros = -1 }
+  if index == 32 { request.temperature_micros = 1_000_001 }
+  return request
+}
+
+// The inclusive edge of every section 5.1 bound must stay accepted.
+fn experiment_request_accepted_case(index: i64) -> prompt_artifacts.PromptExperimentRequest {
+  mut request := cloud_experiment_request()
+  if index == 0 { request.timeout_ns = 1 }
+  if index == 1 { request.timeout_ns = 7_200_000_000_000 }
+  if index == 2 { request.max_prompt_bytes = 1 }
+  if index == 3 { request.max_prompt_bytes = 262_144 }
+  if index == 4 { request.max_tokens = 1 }
+  if index == 5 { request.max_tokens = 8_192 }
+  if index == 6 { request.temperature_micros = 0 }
+  if index == 7 { request.temperature_micros = 1_000_000 }
+  if index == 8 { request.experiment_id = repeat_ascii(96) }
+  if index == 9 { request.proposal_provider_endpoint_id = repeat_ascii(256) }
+  if index == 10 { request.proposal_provider_model = repeat_ascii(256) }
+  return request
+}
+
+fn experiment_request_validation_rows() -> Result<(), Error> {
+  mut index := 0
+  loop {
+    if index >= EXPERIMENT_REQUEST_INVALID_CASE_COUNT { break }
+    invalid_row := experiment_request_invalid_case(index)
+    if prompt_artifacts.verify_prompt_experiment_request(invalid_row) {
+      print("experiment request invalid row accepted:")
+      print(index)
+      return Err(Error.Invalid)
+    }
+    index = index + 1
+  }
+  mut accepted := 0
+  loop {
+    if accepted >= EXPERIMENT_REQUEST_ACCEPTED_CASE_COUNT { break }
+    accepted_row := experiment_request_accepted_case(accepted)
+    if !prompt_artifacts.verify_prompt_experiment_request(accepted_row) {
+      print("experiment request accepted row rejected:")
+      print(accepted)
+      return Err(Error.Invalid)
+    }
+    accepted = accepted + 1
+  }
+  cloud := cloud_experiment_request()
+  local := local_experiment_request()
+  llama := llama_experiment_request()
+  if !prompt_artifacts.verify_prompt_experiment_request(cloud) ||
+  !prompt_artifacts.verify_prompt_experiment_request(local) ||
+  !prompt_artifacts.verify_prompt_experiment_request(llama) {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn experiment_request_golden() -> Result<(), Error> {
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"CLOUD_OPENAI\",\"proposal_provider_endpoint\":\"https://provider.invalid/v1/chat/completions\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"api_key_env\":\"ALIGN_LLM_API_KEY\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
+  if prompt_artifacts.encode_prompt_experiment_request(cloud_experiment_request()) != expected {
+    return Err(Error.Invalid)
+  }
+  decoded := prompt_artifacts.decode_prompt_experiment_request(expected)?
+  if decoded.schema_version != 1 || decoded.artifact_kind != "PROMPT_EXPERIMENT_REQUEST" ||
+  decoded.experiment_id != "experiment" || decoded.project_root != "/project" ||
+  decoded.parent_activation_path != "parent.json" ||
+  decoded.opportunity_path != "opportunity.json" ||
+  decoded.proposal_provider_kind != "CLOUD_OPENAI" ||
+  decoded.proposal_provider_endpoint != "https://provider.invalid/v1/chat/completions" ||
+  decoded.proposal_provider_endpoint_id != "endpoint" ||
+  decoded.proposal_provider_model != "model" ||
+  decoded.timeout_ns != 60_000_000_000 || decoded.max_prompt_bytes != 262_144 ||
+  decoded.max_tokens != 8_192 || decoded.temperature_micros != 0 ||
+  !experiment_request_options_match(decoded, "ALIGN_LLM_API_KEY", "") ||
+  !prompt_artifacts.verify_prompt_experiment_request(decoded) {
+    return Err(Error.Invalid)
+  }
+  if prompt_artifacts.encode_prompt_experiment_request(decoded) != expected {
+    return Err(Error.Invalid)
+  }
+
+  bounded := prompt_artifacts.encode_prompt_experiment_request_bounded(cloud_experiment_request(), 65_536)?
+  bounded_view: str := bounded
+  if bounded_view != expected { return Err(Error.Invalid) }
+  expect_experiment_request_bounded_rejected(cloud_experiment_request(), 16)?
+
+  llama_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"LLAMA_CPP\",\"proposal_provider_endpoint\":\"http://127.0.0.1:8080/completion\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"tokenize_endpoint\":\"http://127.0.0.1:8080/tokenize\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
+  if prompt_artifacts.encode_prompt_experiment_request(llama_experiment_request()) != llama_expected {
+    return Err(Error.Invalid)
+  }
+  llama_decoded := prompt_artifacts.decode_prompt_experiment_request(llama_expected)?
+  if !experiment_request_options_match(llama_decoded, "", "http://127.0.0.1:8080/tokenize") ||
+  !prompt_artifacts.verify_prompt_experiment_request(llama_decoded) {
+    return Err(Error.Invalid)
+  }
+  if prompt_artifacts.encode_prompt_experiment_request(llama_decoded) != llama_expected {
+    return Err(Error.Invalid)
+  }
+
+  local_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"LOCAL_OPENAI\",\"proposal_provider_endpoint\":\"http://127.0.0.1:8000/v1/chat/completions\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
+  if prompt_artifacts.encode_prompt_experiment_request(local_experiment_request()) != local_expected {
+    return Err(Error.Invalid)
+  }
+  local_decoded := prompt_artifacts.decode_prompt_experiment_request(local_expected)?
+  if !experiment_request_options_match(local_decoded, "", "") ||
+  !prompt_artifacts.verify_prompt_experiment_request(local_decoded) {
+    return Err(Error.Invalid)
+  }
+
+  legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\"}"
+  expect_experiment_request_invalid(legacy)?
+  duplicate: string := duplicate_first_field(expected)
+  duplicate_view: str := duplicate
+  expect_experiment_request_invalid(duplicate_view)?
+  normal_prefix := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\","
+  reordered: string := reorder_first_fields(expected, normal_prefix, "PROMPT_EXPERIMENT_REQUEST")
+  reordered_view: str := reordered
+  expect_experiment_request_invalid(reordered_view)?
+
+  // A decoded explicit `null` normalizes to the same `None` for either optional field, in any
+  // combination, but only in declaration order.
+  tokenize_null: string := insert_null_field(local_expected, "\"timeout_ns\":", "tokenize_endpoint")?
+  tokenize_null_view: str := tokenize_null
+  tokenize_null_decoded := prompt_artifacts.decode_prompt_experiment_request(tokenize_null_view)?
+  if !experiment_request_options_match(tokenize_null_decoded, "", "") { return Err(Error.Invalid) }
+  api_key_null: string := insert_null_field(local_expected, "\"timeout_ns\":", "api_key_env")?
+  api_key_null_view: str := api_key_null
+  api_key_null_decoded := prompt_artifacts.decode_prompt_experiment_request(api_key_null_view)?
+  if !experiment_request_options_match(api_key_null_decoded, "", "") { return Err(Error.Invalid) }
+  both_null: string := insert_null_field(tokenize_null_view, "\"tokenize_endpoint\":", "api_key_env")?
+  both_null_view: str := both_null
+  both_null_decoded := prompt_artifacts.decode_prompt_experiment_request(both_null_view)?
+  if !experiment_request_options_match(both_null_decoded, "", "") { return Err(Error.Invalid) }
+  swapped: string := insert_null_field(tokenize_null_view, "\"timeout_ns\":", "api_key_env")?
+  swapped_view: str := swapped
+  expect_experiment_request_invalid(swapped_view)?
+
+  cloud_request := cloud_experiment_request()
+  llama_request := llama_experiment_request()
+  digest := prompt_artifacts.prompt_experiment_request_content_digest(cloud_request)?
+  digest_view: str := digest
+  llama_digest := prompt_artifacts.prompt_experiment_request_content_digest(llama_request)?
+  llama_digest_view: str := llama_digest
+  if digest_view.len() != 64 || digest_view == llama_digest_view { return Err(Error.Invalid) }
+  repeat_digest := prompt_artifacts.prompt_experiment_request_content_digest(cloud_request)?
+  repeat_digest_view: str := repeat_digest
+  if repeat_digest_view != digest_view { return Err(Error.Invalid) }
+  return experiment_request_validation_rows()
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 1 { return Err(Error.Invalid) }
   policy_golden()?
   request_golden()?
   locator_golden()?
+  experiment_request_golden()?
   print("prompt runtime schema v1: PASS")
   return Ok(())
 }
