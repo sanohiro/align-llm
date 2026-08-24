@@ -3063,8 +3063,10 @@ is accepted on its own claim:
   each `COMPLETE`, each with equal before/after digests, and each naming persisted records;
 - `EnvironmentIdentityCore.source_verifier_runtime` and `source_verifier_policy_sha256` must equal
   the locator's values, and `environment_policy_sha256` must equal the manifest-referenced
-  environment policy. The gate pull request records the exact command and provider
-environment used to create the measured artifact without recording credentials.
+  environment policy.
+
+The gate pull request records the exact command and provider environment used to create the
+measured artifact without recording credentials.
 
 When a canonical C6 gate manifest is present, the complete command is
 `make prompt-gate-check C6_GATE_SOURCE_BUNDLE_ROOT=/absolute/source-bundle-root C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 C6_GATE_GIT_EXECUTABLE_PATH=/absolute/git`,

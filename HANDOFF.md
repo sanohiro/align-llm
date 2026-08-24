@@ -17,7 +17,7 @@ file records durable project state.
 - **Resolved: the supervised fresh-worker `make ci` passes.** At head
   `3768ad8af68bb50ee3129ff392f6ba86ac89e071`,
   `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker
-  --align-repo /Users/hiro/Projects/align` exits 0 with `fresh worker qualification: PASS
+  --align-repo <path-to-sibling-align-checkout>` exits 0 with `fresh worker qualification: PASS
   (installed profile only)`. The blocker had two independent causes, both C6-MEASURED lane
   additions that the supervised aggregate had never exercised — its last green run predates them —
   so both were pre-existing wave gaps rather than review-repair regressions.
@@ -55,6 +55,9 @@ file records durable project state.
   `run-fresh-worker-unit-smoke` pin both halves, and
   `docs/specs/check-gate-topology.md` records the contract. Use it by exporting the variable before
   the qualification; it costs one extra qualification run and nothing else.
+  `run-fresh-worker-qualification` forwards it only to the installed-profile owner
+  (`run-fresh-image-profile-smoke`), the one phase that reaches the worker aggregate; the focused
+  owners keep their unchanged qualified environments.
 - Slice E landed the final integration wiring. The section 11.3 owner targets are now
   `HOSTED_CHECK_TARGETS` members — `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`,
   `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
@@ -154,11 +157,12 @@ file records durable project state.
   hosted lane at `52aefeb` and `19c6bed`, an overlapping automatic snapshot path set, and a 2 MiB
   sealed-input cap that could never admit the derived generation child. Repairing the measurement
   adapter rebound the frozen digest chain; only digest bindings moved.
-- Next actions, in order: (1) diagnose and repair the fresh-worker `capable-checks` aggregate
-  failure recorded above — publication cannot produce `make ci` evidence until it is green;
-  (2) publish the pull request with the narrowed measured claim, the per-cell matrix, the validator
-  transcript, the named-qualification status of `prompt-gate-check`, and the open `make ci` blocker
-  disclosed rather than omitted.
+- Next actions, in order: (1) publish the C6-MEASURED pull request with the narrowed measured
+  claim, the per-cell matrix, the validator transcript, the named-qualification status of
+  `prompt-gate-check`, and the green supervised fresh-worker qualification recorded above — the
+  earlier `capable-checks` aggregate blocker is resolved, so `make ci` evidence is available;
+  (2) after merge, start `C7-PersistedResult` (`docs/specs/roadmap.md` §C7), the owned-result
+  verification consumer that adopts Request 9's owned-JSON surface from the current pin.
 - The measurement environment is a privileged `linux/arm64` container (`c6g2-measure:latest`) with
   `bubblewrap` installed at run time; the image does not ship it and the validation runner requires
   it. Docker's default seccomp/AppArmor blocks the runner's user namespaces, so the container needs
@@ -284,12 +288,12 @@ file records durable project state.
 
 - **C6-MEASURED supervised gate, green, at head `3768ad8af68bb50ee3129ff392f6ba86ac89e071`
   (2026-08-25).** `python3 scripts/run-fresh-worker-qualification --installed-profile-only
-  --require-docker --align-repo /Users/hiro/Projects/align`: **PASS**, exit 0,
+  --require-docker --align-repo <path-to-sibling-align-checkout>`: **PASS**, exit 0,
   `fresh image profile smoke: PASS` then `fresh worker qualification: PASS (installed profile
   only)`. Phases: `docker-daemon` 675 ms, `image-build` 21,883 ms, `image-attestation` 3,822 ms,
   `profile-lifecycle` 3,188 ms, `profile-self-test` 14,331 ms, `trust-mutations` 13,151 ms,
-  `runtime-replacements` 22,893 ms, **`worker-aggregate` pass after 354,739 ms**,
-  `boundary-profile` 270,909 ms, `cleanup` 1,883 ms; whole installed profile 708,521 ms. The
+  `runtime-replacements` 22,893 ms, `boundary-profile` 270,909 ms, **`worker-aggregate` pass after
+  354,739 ms**, `cleanup` 1,883 ms; whole installed profile 708,521 ms. The
   aggregate is legitimately above the 172-192 s historical band because that band predates the
   C6-MEASURED lane members, which this run is the first supervised run to complete. Run with the
   default environment and no diagnostic opt-in.
@@ -327,7 +331,7 @@ file records durable project state.
   `make prompt-verifier-smoke` also PASS as a direct invocation, in 719 s with a 1,525,732 KiB peak
   resident set — the measurement behind its demotion.
 - `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker
-  --align-repo /Users/hiro/Projects/align` at head `55282a8`: **FAIL**. Phases:
+  --align-repo <path-to-sibling-align-checkout>` at head `55282a8`: **FAIL**. Phases:
   `docker-daemon` 540 ms, `image-build` 20,497 ms, `image-attestation` 3,684 ms,
   `profile-lifecycle` 2,657 ms, `profile-self-test` 14,642 ms, `trust-mutations` 12,299 ms,
   `runtime-replacements` 21,970 ms, `boundary-profile` 266,754 ms, **`worker-aggregate` fail after
@@ -533,7 +537,7 @@ file records durable project state.
   at `0987a2271034881fd1ac27101aa695e94c7729e5` passed the `fresh-image` lane, including the native
   Linux `aarch64` installed profile in 533,103 ms and worker aggregate in 179,830 ms. GitHub's
   pinned checks passed in 2m06s, native `x86_64` in 17m16s, and native `aarch64` in 18m16s.
-- `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo /Users/hiro/Projects/align`:
+- `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo <path-to-sibling-align-checkout>`:
   PASS at `0f9e08eee427` on native Linux `aarch64`.
   The installed profile, Request 6 boundary, fresh compiler, worker aggregate, canonical baseline,
   complete `make ci`, resource owners, and cleanup pass; the worker aggregate took 172,039 ms and

@@ -118,7 +118,10 @@ def qualification_environment(owner: str) -> dict[str, str]:
         "HOME": "/nonexistent",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
-    if os.environ.get(AGGREGATE_DIAGNOSTIC_VARIABLE) == "1":
+    # Only the installed-profile owner reaches the worker aggregate, so only it needs the aggregate
+    # diagnostic opt-in. Forwarding the variable to every focused owner would widen the qualified
+    # environment of targets that cannot consume it.
+    if owner == INSTALLED_OWNER and os.environ.get(AGGREGATE_DIAGNOSTIC_VARIABLE) == "1":
         environment[AGGREGATE_DIAGNOSTIC_VARIABLE] = "1"
     return environment
 

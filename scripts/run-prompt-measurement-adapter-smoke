@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -24,11 +25,37 @@ ROOT = Path(__file__).resolve().parent.parent
 ADAPTER = ROOT / "scripts" / "prompt-measurement-adapter.py"
 LINUX = sys.platform.startswith("linux")
 
-# The fresh aggregate stages its authenticated tools under one root and puts only that root on
-# PATH, so a hard-coded host PATH leaves `git` unresolvable inside it. This is the same tool-root
-# resolution `scripts/check-baseline-chain` already uses; outside the aggregate the fixed host
-# directories stay exactly what they were.
-FIXTURE_TOOL_PATH = os.environ.get("ALIGN_LLM_TOOL_ROOT", "/usr/bin:/bin")
+# The Git fixture's child PATH is selected by a coherent profile, never interpolated from the
+# environment. The fresh aggregate stages its authenticated tools under one root and puts only that
+# root on PATH, so a hard-coded host PATH leaves `git` unresolvable inside it; but a caller-supplied
+# PATH string would let any environment redirect the fixture's `git`. `scripts/check-baseline-chain`
+# resolves its own Git child PATH exactly this way: the complete fresh marker set selects the
+# literal staged tool root, an environment carrying none of those variables selects the fixed host
+# directories, and any partial or unexpected combination is refused rather than trusted.
+FRESH_MARKER = "ALIGN_LLM_FRESH_COMPILER"
+TOOL_ROOT = "ALIGN_LLM_TOOL_ROOT"
+FRESH_TOOL_PATH = "/tools"
+HOST_TOOL_PATH = "/usr/bin:/bin"
+
+
+class FixtureProfileError(RuntimeError):
+    """The fresh tool-root profile for the Git fixture is neither absent nor complete."""
+
+
+def fixture_tool_path(values: Mapping[str, str] | None = None) -> str:
+    """Select the Git fixture's child PATH from the fresh profile, without interpolating it."""
+    values = os.environ if values is None else values
+    marker = values.get(FRESH_MARKER)
+    tool_root = values.get(TOOL_ROOT)
+    if marker is None and tool_root is None:
+        return HOST_TOOL_PATH
+    if marker == "1" and tool_root == FRESH_TOOL_PATH:
+        return FRESH_TOOL_PATH
+    raise FixtureProfileError(
+        "the fresh tool-root profile for the Git fixture is incomplete: "
+        f"{FRESH_MARKER}={marker!r}, {TOOL_ROOT}={tool_root!r}"
+    )
+
 
 RENDERED_TEXT = "Repair round_to_minutes so an exact half minute rounds away from zero."
 
@@ -420,6 +447,38 @@ def unit_rows(module) -> list[str]:
     covered += edit_format_rows(module)
     covered += redaction_order_rows(module)
     covered += deadline_rows(module)
+    covered += fixture_path_rows()
+    return covered
+
+
+def fixture_path_rows() -> list[str]:
+    """The Git fixture's child PATH comes from a coherent profile in both directions."""
+    covered: list[str] = []
+    require(fixture_tool_path({}) == HOST_TOOL_PATH, "an absent profile lost the host PATH")
+    require(
+        fixture_tool_path({"HOME": "/somewhere", "PATH": "/injected"}) == HOST_TOOL_PATH,
+        "an unrelated environment stopped selecting the host PATH",
+    )
+    covered.append("fixture-path-absent-profile")
+    require(
+        fixture_tool_path({FRESH_MARKER: "1", TOOL_ROOT: FRESH_TOOL_PATH}) == FRESH_TOOL_PATH,
+        "the complete fresh profile lost the staged tool root",
+    )
+    covered.append("fixture-path-fresh-profile")
+    partials = (
+        ("fixture-path-marker-only", {FRESH_MARKER: "1"}),
+        ("fixture-path-root-only", {TOOL_ROOT: FRESH_TOOL_PATH}),
+        ("fixture-path-wrong-marker", {FRESH_MARKER: "0", TOOL_ROOT: FRESH_TOOL_PATH}),
+        # The environment may never supply the PATH string itself, only match the pinned profile.
+        ("fixture-path-untrusted-root", {FRESH_MARKER: "1", TOOL_ROOT: "/attacker:/usr/bin"}),
+    )
+    for name, values in partials:
+        try:
+            selected = fixture_tool_path(values)
+        except FixtureProfileError:
+            covered.append(name)
+            continue
+        raise RuntimeError(f"{name}: an incoherent profile selected {selected!r}")
     return covered
 
 
@@ -608,7 +667,7 @@ def edit_format_rows(module) -> list[str]:
         covered.append("diff-golden")
 
         environment = {
-            "HOME": str(scratch), "PATH": FIXTURE_TOOL_PATH, "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": str(scratch), "PATH": fixture_tool_path(), "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C",
             "GIT_AUTHOR_NAME": "smoke", "GIT_AUTHOR_EMAIL": "smoke@invalid",
             "GIT_COMMITTER_NAME": "smoke", "GIT_COMMITTER_EMAIL": "smoke@invalid",
