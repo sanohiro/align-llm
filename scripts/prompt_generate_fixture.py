@@ -179,6 +179,10 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(404, canonical({"error": "no such model"}))
         elif path == "/openai/bad-envelope":
             self.respond(200, canonical({"choices": []}))
+        elif path == "/openai/empty-content":
+            # A well-formed 2xx envelope whose completion text is empty: the child must classify it
+            # exactly like a malformed envelope instead of publishing an empty `GENERATED` content.
+            self.respond(200, openai_envelope(""))
         elif path == "/openai/bad-content":
             self.respond(200, b"not a provider envelope at all")
         elif path == "/openai/over-cap":

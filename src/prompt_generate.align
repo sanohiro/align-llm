@@ -481,6 +481,22 @@ fn run_generation(
       ended,
     )
   }
+  // A 2xx envelope whose completion text decodes to zero bytes carries no generation at all. It is
+  // classified exactly like a malformed envelope rather than published as a `GENERATED` response
+  // with empty content, so no consumer has to distinguish an empty success from a real one.
+  extracted_view: str := extracted
+  if extracted_view.len() == 0 {
+    return dispatched_failure(
+      "PROVIDER_RESPONSE_SCHEMA",
+      bounded,
+      request_digest,
+      seed_label.clone(),
+      seed_applied,
+      Some(received.status),
+      started,
+      ended,
+    )
+  }
   return GenerationOutcome {
     ok: true,
     terminal: PromptGenerateStatus.Generated,

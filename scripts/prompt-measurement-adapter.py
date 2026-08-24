@@ -17,6 +17,13 @@ Every identity the fixed adapter hard-codes is a declared input here: the valida
 task definition, the optional fixture patch, the validation argv, and the generation child all
 arrive in the `TaskAdapterRequest` with their digests. Each declared file is verified and sealed
 before launch and re-verified after the child returns.
+
+The generation response is not a patch. It carries the settled whole-file edit format described in
+section 11.3: one `FILE: <repo-relative-path>` header per edited file followed by a fenced block
+holding that file's complete new content. This adapter parses those blocks, requires every declared
+path to be inside the task definition's `allowed_edits`, and turns the edit set into the
+whole-file-replacement unified diff the validation runner applies. The runner's own allowlist,
+pristine-checkout, and mode checks are unchanged and remain the authoritative second gate.
 """
 
 from __future__ import annotations
@@ -70,6 +77,10 @@ GENERATION_REQUEST_FIELDS = (
     "content_sha256",
 )
 SEED_RESULTS = ("APPLIED", "UNSUPPORTED", "REJECTED")
+# The settled section 11.3 measurement response edit format.
+FILE_MARKER = "FILE:"
+MAXIMUM_FILE_BLOCKS = 32
+MAXIMUM_EDIT_BYTES = 262_144
 
 
 def enable_child_subreaper() -> bool:
@@ -88,6 +99,22 @@ CHILD_SUBREAPER_ENABLED = enable_child_subreaper()
 
 class AdapterError(ValueError):
     """The adapter request or a declared input is invalid."""
+
+
+class EditFormatError(AdapterError):
+    """The generation response carries no parsable whole-file edit set.
+
+    This is the patch-absent outcome, not an adapter defect: the provider answered, and the answer
+    did not contain a usable edit. The row is `FAIL`/`PATCH` with both stages `NOT_RUN`.
+    """
+
+
+class PolicyViolation(AdapterError):
+    """The response asked to edit a path outside the task definition's `allowed_edits`.
+
+    The edit set is refused before the validation runner is launched, so no out-of-allowlist byte
+    ever reaches a checkout. The row is `POLICY_VIOLATION`/`POLICY` with both stages `NOT_RUN`.
+    """
 
 
 class ImmutableInput:
@@ -147,6 +174,16 @@ class ImmutableInput:
     def process_path(self) -> str:
         return f"/proc/self/fd/{self.descriptor}"
 
+    def read_sealed(self) -> bytes:
+        """The exact verified bytes, read back out of the sealed descriptor rather than the path."""
+        raw = bytearray()
+        while len(raw) < self.byte_count:
+            chunk = os.pread(self.descriptor, min(65_536, self.byte_count - len(raw)), len(raw))
+            if not chunk:
+                raise AdapterError(f"retained {self.label} is short")
+            raw.extend(chunk)
+        return bytes(raw)
+
     def verify_sealed(self) -> None:
         if fcntl.fcntl(self.descriptor, fcntl.F_GET_SEALS) != self.seals:
             raise AdapterError(f"retained {self.label} lost its seals")
@@ -187,6 +224,203 @@ class ProducedInput(ImmutableInput):
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
+
+
+def response_lines(content: str) -> list[str]:
+    """Split a response into lines on LF only, tolerating CRLF.
+
+    `str.splitlines` also breaks on form feed and the Unicode line separators, which would silently
+    corrupt a file whose content contains them, so the split is explicit.
+    """
+    return [line[:-1] if line.endswith("\r") else line for line in content.split("\n")]
+
+
+def fence_run(line: str) -> int:
+    """The opening backtick-run length of a fence line, or 0 when the line is not a fence."""
+    stripped = line.strip()
+    run = len(stripped) - len(stripped.lstrip("`"))
+    return run if run >= 3 else 0
+
+
+def closing_fence(line: str, opening: int) -> bool:
+    """A closing fence is only backticks and is at least as long as the opening run.
+
+    A longer outer fence therefore carries shorter nested fences as ordinary content, which is the
+    documented way for a response to emit a file that itself contains fenced text.
+    """
+    stripped = line.strip()
+    return bool(stripped) and set(stripped) == {"`"} and len(stripped) >= opening
+
+
+def parse_file_blocks(content: str) -> list[tuple[str, str]]:
+    """Parse the settled whole-file response format out of one generation response.
+
+    Prose before, between, and after the blocks is ignored. The opening fence may carry a language
+    tag. A `FILE:` header with no terminated block is a format failure rather than a silently
+    dropped edit, so a truncated response can never apply a partial file.
+    """
+    lines = response_lines(content)
+    blocks: list[tuple[str, str]] = []
+    index = 0
+    while index < len(lines):
+        header = lines[index].strip().strip("*").strip()
+        index += 1
+        if not header.startswith(FILE_MARKER):
+            continue
+        declared = header[len(FILE_MARKER):].strip().strip("`").strip().strip('"').strip("'")
+        while index < len(lines) and not fence_run(lines[index]):
+            if lines[index].strip().strip("*").strip().startswith(FILE_MARKER):
+                raise EditFormatError("a FILE header carries no fenced block")
+            index += 1
+        if index >= len(lines):
+            raise EditFormatError("a FILE header carries no fenced block")
+        opening = fence_run(lines[index])
+        index += 1
+        body: list[str] = []
+        terminated = False
+        while index < len(lines):
+            if closing_fence(lines[index], opening):
+                terminated = True
+                index += 1
+                break
+            body.append(lines[index])
+            index += 1
+        if not terminated:
+            raise EditFormatError("a fenced file block is not terminated")
+        if len(blocks) >= MAXIMUM_FILE_BLOCKS:
+            raise EditFormatError("the response declares too many file blocks")
+        blocks.append((declared, "".join(line + "\n" for line in body)))
+    return blocks
+
+
+def validated_edit_set(content: str, allowed_edits: Sequence[str]) -> list[tuple[str, str]]:
+    """The parsed edit set, refused unless every declared path is inside `allowed_edits`.
+
+    An unsafe spelling — absolute, escaping, or otherwise not a declared editable path — cannot be
+    a member of the allowlist, so it takes the same policy-violation exit as any other out-of-set
+    path instead of a separate rejection.
+    """
+    blocks = parse_file_blocks(content)
+    if not blocks:
+        raise EditFormatError("the response declares no file block")
+    edits: dict[str, str] = {}
+    for declared, body in blocks:
+        path = declared[2:] if declared.startswith("./") else declared
+        if path not in allowed_edits:
+            raise PolicyViolation(f"the response edits a file outside the editable set: {path}")
+        if path in edits:
+            raise EditFormatError(f"the response declares {path} twice")
+        if len(body.encode("utf-8")) > MAXIMUM_EDIT_BYTES:
+            raise EditFormatError(f"the emitted content for {path} exceeds its bound")
+        edits[path] = body
+    return sorted(edits.items())
+
+
+def split_diff_lines(text: str) -> tuple[list[str], bool]:
+    """The diff line list plus whether the text ends with a newline."""
+    if not text:
+        return [], True
+    complete = text.endswith("\n")
+    lines = text.split("\n")
+    if complete:
+        lines.pop()
+    return lines, complete
+
+
+def whole_file_hunk(path: str, old: str | None, new: str) -> str:
+    """One whole-file replacement hunk: every old line removed, every new line added.
+
+    No context line is emitted, so the hunk needs nothing but the pinned file's exact bytes and
+    applies with plain `git apply`. An identical file contributes nothing.
+    """
+    new_lines, new_complete = split_diff_lines(new)
+    if old is None:
+        header = f"diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"
+        old_lines, old_complete = [], True
+    else:
+        old_lines, old_complete = split_diff_lines(old)
+        if (old_lines, old_complete) == (new_lines, new_complete):
+            return ""
+        header = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+    parts = [header, f"@@ -{1 if old_lines else 0},{len(old_lines)} +{1 if new_lines else 0},{len(new_lines)} @@\n"]
+    parts.extend(f"-{line}\n" for line in old_lines)
+    if old_lines and not old_complete:
+        parts.append("\\ No newline at end of file\n")
+    parts.extend(f"+{line}\n" for line in new_lines)
+    if new_lines and not new_complete:
+        parts.append("\\ No newline at end of file\n")
+    return "".join(parts)
+
+
+def task_edit_policy(task_definition: ImmutableInput, project: Path) -> tuple[Path, tuple[str, ...]]:
+    """The pinned source root and the editable set, read from the sealed task definition."""
+    try:
+        value = json.loads(task_definition.read_sealed().decode("utf-8", "strict"))
+    except (UnicodeError, json.JSONDecodeError):
+        raise AdapterError("task definition is not canonical JSON") from None
+    if not isinstance(value, dict):
+        raise AdapterError("task definition is not a record")
+    allowed = value.get("allowed_edits")
+    source_dir = value.get("source_dir")
+    if (
+        not isinstance(allowed, list) or not allowed or len(allowed) > MAXIMUM_FILE_BLOCKS
+        or not all(isinstance(item, str) and item for item in allowed)
+        or not isinstance(source_dir, str) or not source_dir
+    ):
+        raise AdapterError("task definition declares no usable editable set")
+    root = (project / source_dir).resolve()
+    try:
+        root.relative_to(project)
+    except ValueError:
+        raise AdapterError("task definition source directory escapes the project") from None
+    if not root.is_dir():
+        raise AdapterError("task definition source directory is unavailable")
+    return root, tuple(allowed)
+
+
+def pinned_source(root: Path, relative: str) -> str | None:
+    """The pinned bytes of one editable file, or `None` when the edit creates it.
+
+    The pinned tree is the evaluator's already-attested task artifact, and nothing read here is
+    trusted: the synthesized hunk only applies when the runner's own checkout holds these exact
+    bytes, and the runner re-checks the allowlist after applying.
+    """
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise PolicyViolation(f"the editable path escapes the pinned source: {relative}") from None
+    try:
+        descriptor = os.open(target, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise AdapterError(f"pinned source is unavailable: {relative}") from None
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAXIMUM_EDIT_BYTES:
+            raise AdapterError(f"pinned source type or size is invalid: {relative}")
+        raw = bytearray()
+        while len(raw) < metadata.st_size:
+            chunk = os.pread(descriptor, min(65_536, metadata.st_size - len(raw)), len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+    finally:
+        os.close(descriptor)
+    try:
+        return bytes(raw).decode("utf-8", "strict")
+    except UnicodeError:
+        raise AdapterError(f"pinned source is not UTF-8: {relative}") from None
+
+
+def synthesized_patch(edits: Sequence[tuple[str, str]], root: Path) -> bytes:
+    """The whole-file-replacement unified diff for one validated edit set."""
+    parts = [whole_file_hunk(path, pinned_source(root, path), body) for path, body in edits]
+    raw = "".join(parts).encode("utf-8")
+    if not raw:
+        raise EditFormatError("the response reproduced the pinned files unchanged")
+    return raw
 
 
 def process_group_exists(group: int) -> bool:
@@ -813,6 +1047,7 @@ def measurement(
     stderr = b""
     patch_byte_count = 0
     generation_ns: int | None = None
+    applied_edits: list[str] = []
     summary = "provider-backed measurement failed"
 
     if len(rendered["text"].encode("utf-8")) > policy["max_prompt_bytes"]:
@@ -864,10 +1099,18 @@ def measurement(
         response = run_generation_child(
             child, document, scratch, provider_timeout, generation_environment, project,
         )
-        patch = declared_patch if declared_patch is not None else ProducedInput(
-            response["content"].encode("utf-8"), "generated-patch",
-        )
-        if declared_patch is None:
+        if declared_patch is not None:
+            # A deterministic fixture-style task declares its own patch; nothing is parsed from the
+            # provider response, and the fixed adapter's contract is reproduced exactly.
+            patch = declared_patch
+        else:
+            # The settled section 11.3 measurement response format: whole-file blocks, validated
+            # against the task's editable set before anything is applied, then turned into the
+            # whole-file-replacement diff the validation runner applies.
+            source_root, allowed_edits = task_edit_policy(task_definition, project)
+            edits = validated_edit_set(response["content"], allowed_edits)
+            applied_edits = [path for path, _ in edits]
+            patch = ProducedInput(synthesized_patch(edits, source_root), "generated-patch")
             retained.append(patch)
         patch_byte_count = patch.byte_count
         outcome, cleanup_passed, containment_passed, stdout, stderr = execute_validation(
@@ -882,6 +1125,17 @@ def measurement(
             summary = "provider-backed candidate patch failed validation"
         else:
             summary = "contained validation runner failed"
+        summary = f"{summary}; applied edits: {', '.join(applied_edits) or 'declared patch'}"
+    except PolicyViolation as failure:
+        # The provider answered and its seed attestation is real, so the response identity is kept:
+        # a policy violation is a scored outcome, not a failed handoff.
+        outcome, generation_ns = "POLICY", None
+        summary = str(failure)
+        stderr = str(failure).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+    except EditFormatError as failure:
+        outcome, generation_ns = "PATCH", None
+        summary = str(failure)
+        stderr = str(failure).encode("utf-8")[:DIAGNOSTIC_LIMIT]
     except GenerationFailure as failure:
         outcome, response, generation_ns = "ERROR", None, None
         cleanup_passed = failure.cleanup_passed
@@ -924,8 +1178,12 @@ def assemble(
     passed = outcome == "PASS"
     expected_failure = outcome == "TEST_FAIL"
     policy_violation = outcome == "POLICY"
+    # The response answered but carried no usable edit set: a scored `FAIL`/`PATCH` with both
+    # stages `NOT_RUN`, never an adapter error.
+    patch_absent = outcome == "PATCH"
+    not_run = policy_violation or patch_absent
     status = (
-        "PASS" if passed else "FAIL" if expected_failure
+        "PASS" if passed else "FAIL" if expected_failure or patch_absent
         else "POLICY_VIOLATION" if policy_violation else "ERROR"
     )
     value = {
@@ -938,11 +1196,12 @@ def assemble(
             else "NONE" if passed
             else "TEST" if expected_failure
             else "POLICY" if policy_violation
+            else "PATCH" if patch_absent
             else "ADAPTER"
         ),
-        "build_status": "NOT_RUN" if policy_violation else "PASS" if outcome != "ERROR" else "ERROR",
+        "build_status": "NOT_RUN" if not_run else "PASS" if outcome != "ERROR" else "ERROR",
         "test_status": (
-            "NOT_RUN" if policy_violation else "PASS" if passed
+            "NOT_RUN" if not_run else "PASS" if passed
             else "FAIL" if expected_failure else "ERROR"
         ),
         "repair_loop_count": 0,

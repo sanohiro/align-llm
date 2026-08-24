@@ -8,4 +8,8 @@ def resolve_settings(defaults, file_values, env_values):
 
     Precedence is environment values over file values over defaults.
     """
-    return merge_layers(defaults, file_values, env_values)
+    return merge_layers({
+        "defaults": defaults,
+        "file": file_values,
+        "environment": env_values,
+    })

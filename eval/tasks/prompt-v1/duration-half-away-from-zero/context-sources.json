@@ -20,8 +20,8 @@
     "schema_version": 1,
     "artifact_kind": "DIAGNOSTIC_STDOUT",
     "artifact_id": "duration-half-away-from-zero/diagnostic-stdout",
-    "text": "fixture revision: b2c284a0ad7be017596af9e24a9d74e58d62974f\nvalidation exit code: 1\n",
-    "content_sha256": "8e5365e426c3607a5d38eee34f766c703b39f1a7d19141ad3759a1461ea32c5f"
+    "text": "fixture revision: b6bae7e3872680fc847f4603484a07cbd18932c0\nvalidation exit code: 1\n",
+    "content_sha256": "e5f940902bf8264c3be44e5594ae7ff6fe1c4ea83cb2fe24bc9ec4eae9c0519d"
   },
   "diagnostic_stderr": {
     "schema_version": 1,
@@ -30,5 +30,5 @@
     "text": "test_exact_half_minute_rounds_away_from_zero (__main__.RoundToMinutesTests) ... FAIL\ntest_just_below_half_minute_rounds_toward_zero (__main__.RoundToMinutesTests) ... ok\ntest_one_and_a_half_minutes_rounds_away_from_zero (__main__.RoundToMinutesTests) ... ok\ntest_result_is_an_integer (__main__.RoundToMinutesTests) ... ok\ntest_two_and_a_half_minutes_rounds_away_from_zero (__main__.RoundToMinutesTests) ... FAIL\ntest_whole_minutes_are_unchanged (__main__.RoundToMinutesTests) ... ok\n\n======================================================================\nFAIL: test_exact_half_minute_rounds_away_from_zero (__main__.RoundToMinutesTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/checkout/tests/test_duration.py\", line 13, in test_exact_half_minute_rounds_away_from_zero\n    self.assertEqual(round_to_minutes(30), 1)\nAssertionError: 0 != 1\n\n======================================================================\nFAIL: test_two_and_a_half_minutes_rounds_away_from_zero (__main__.RoundToMinutesTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/checkout/tests/test_duration.py\", line 29, in test_two_and_a_half_minutes_rounds_away_from_zero\n    self.assertEqual(round_to_minutes(150), 3)\nAssertionError: 2 != 3\n\n----------------------------------------------------------------------\nRan 6 tests in 0.001s\n\nFAILED (failures=2)\n",
     "content_sha256": "a24b2af85d9bc5e485e7e4c145963dc1560842bc1a12d9b3079367e0d5ee0aa2"
   },
-  "content_sha256": "d694208d10bbc97ff7642f1c6affdf67c0061c839ed796f75470ecee034149a5"
+  "content_sha256": "79229501a4f694c804a93833ed7637599483667b2c841037454cab679f1785e9"
 }

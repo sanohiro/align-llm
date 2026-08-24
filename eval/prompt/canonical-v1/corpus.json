@@ -7,13 +7,13 @@
     "artifact_kind": "CORPUS_REVISION",
     "source_kind": "FILE_SET",
     "source_repository_id": "",
-    "source_sha256": "8504a640d35316ea78b4ffa687b7a6b07853d3f8b27d689815003cec7926fc7a",
-    "content_sha256": "3463261c72605d6d4d1f225b95aec7df147def04388fce9edb6f329be338ff5d"
+    "source_sha256": "2206cfa59db6c6fa807fc1efc52d6de20c93ac3e2361cb7d01e54efcb3081bd3",
+    "content_sha256": "0e1f9b5ef11ad116bcdd9b1b67ff8db9dec7dc4017054c72beb0ae34375256fc"
   },
   "task_files": [
     "eval/tasks/prompt-v1/duration-half-away-from-zero.json",
     "eval/tasks/prompt-v1/layer-precedence-frozen-module.json",
     "eval/tasks/prompt-v1/record-codec-round-trip.json"
   ],
-  "content_sha256": "9d93e82a77ce9ee440b6ecae1942ccc7af2e8eff3fe3e8e2177ee4863297a8a6"
+  "content_sha256": "7b1f8bbd7f07d9af341a00714502fc3a72faed61ea66d1d3fc23d99b17e76191"
 }

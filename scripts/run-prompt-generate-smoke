@@ -313,6 +313,9 @@ def mapping_rows(root: pathlib.Path, server) -> list[str]:
         ("status-404", f"{server.base}/openai/status-404", "PROVIDER_ERROR", "PROVIDER_HTTP_STATUS", 404),
         ("decode-empty-choices", f"{server.base}/openai/bad-envelope", "PROVIDER_ERROR", "PROVIDER_RESPONSE_SCHEMA", 200),
         ("decode-not-json", f"{server.base}/openai/bad-content", "PROVIDER_ERROR", "PROVIDER_RESPONSE_SCHEMA", 200),
+        # Empty decoded completion text is a response-schema failure, never a `GENERATED` response
+        # with zero-length content: the measurement adapter must never receive an empty generation.
+        ("decode-empty-content", f"{server.base}/openai/empty-content", "PROVIDER_ERROR", "PROVIDER_RESPONSE_SCHEMA", 200),
         ("over-cap", f"{server.base}/openai/over-cap", "PROVIDER_ERROR", "PROVIDER_RESPONSE_TOO_LARGE", None),
         ("non-utf8-body", f"{server.base}/openai/non-utf8", "PROVIDER_ERROR", "PROVIDER_TRANSPORT", None),
     )

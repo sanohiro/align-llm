@@ -3,7 +3,7 @@
   "artifact_kind": "PROMPT_EVALUATION_TASK",
   "task_id": "layer-precedence-frozen-module",
   "repo_id": "prompt-v1-fixture",
-  "repo_revision": "4f49874e779caf18f77fefb15b23cebea6a57fc2",
+  "repo_revision": "45c279855bc9cd7b7d9e51e5e8a800d1e353b7b9",
   "repo_path": "eval/fixtures/prompt-v1-layer-precedence/repository",
   "require_clean_repo": false,
   "cmd": "/usr/bin/python3",
@@ -29,22 +29,22 @@
     {
       "path": "eval/fixtures/prompt-v1-layer-precedence/repository",
       "kind": "TREE",
-      "expected_sha256": "39198cd041511c8adf46e12b8b3c57696dce2105db41693e2acbc8858d5c918b"
+      "expected_sha256": "ca3516398472bf1a93fda9355a2c8b21dc48ad2534d0b1774e81ab49cb0b63d2"
     },
     {
       "path": "eval/tasks/prompt-v1/layer-precedence-frozen-module/task.json",
       "kind": "FILE",
-      "expected_sha256": "fb11b938eed575a3031d665093da80b2987b9a9e0c46913d506c7690fbebb60b"
+      "expected_sha256": "04d0ef504ae1086a92ccb4979899c8402b5eca0878a5997654061a02da0aeac6"
     },
     {
       "path": "eval/tasks/prompt-v1/layer-precedence-frozen-module/task-prompt.json",
       "kind": "FILE",
-      "expected_sha256": "724923beb3b21155196f0a6b2c0892faf8d5e47d30e8b7a219b97c5ec9525337"
+      "expected_sha256": "5098aed520d833299e788e3d04d56bb0dcc26e15a557f84eaded0145fcd12462"
     },
     {
       "path": "eval/tasks/prompt-v1/layer-precedence-frozen-module/context-sources.json",
       "kind": "FILE",
-      "expected_sha256": "59cca490a8ce47d9faafa97bc25f4bca687e6fd9d515330b4d328d5e32c8fc95"
+      "expected_sha256": "b6eadfeee3d63698ce5f0dba9b971ea8b11d5f8f64d61c881d622006dde4c7c5"
     },
     {
       "path": "eval/runners/run-coding-task.py",
@@ -54,7 +54,7 @@
     {
       "path": "scripts/prompt-fixed-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "49aeabb492faafb0d5550624d919e5d259985edcb7258aca6d6dfeafe02cc05e"
+      "expected_sha256": "7830431aa108135b4aa4a0861b7decf60821cb29d797014cddd0eeb6a515bc2f"
     },
     {
       "path": "scripts/prompt-snapshot-helper.py",
@@ -69,5 +69,5 @@
     "maximum_repair_loops": 0,
     "maximum_benchmark_regression_ppm": null
   },
-  "content_sha256": "91e6fcf2fe3505906c2a8d886e919b8575e7a4a8a02e8e0dc1b4a726dbf240cc"
+  "content_sha256": "5bf6a4e4bf3129cc74fc8043e2006bf315eaefebf3a2274fc9c140e585c3c763"
 }

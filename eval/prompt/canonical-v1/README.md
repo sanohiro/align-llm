@@ -27,10 +27,10 @@ base-prompt.json                     dbb55e44b44fd2933d3aa1357f542ff247b645efadd
 repo-prompt.json                     1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21
 prompt-acceptance-policy.json        7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3
 generation-policy.json               2429bbf591fa2315ac031eb5eb55f1d986becbe9fdce04c21e0d50fca8a987e3
-corpus-file-set.manifest (raw bytes) 8504a640d35316ea78b4ffa687b7a6b07853d3f8b27d689815003cec7926fc7a
-corpus.json                          9d93e82a77ce9ee440b6ecae1942ccc7af2e8eff3fe3e8e2177ee4863297a8a6
-scope.json                           d9cd720a5c8bedc351ce1547ce642d0a07e8b4b7f4366de0ebe89f9a84fb5c21
-prompt-activation-baseline-v1.json   0fb9192c5fe6563993bc1270557845ca34b66366b490d8f507286fa3c041fabb
+corpus-file-set.manifest (raw bytes) 2206cfa59db6c6fa807fc1efc52d6de20c93ac3e2361cb7d01e54efcb3081bd3
+corpus.json                          7b1f8bbd7f07d9af341a00714502fc3a72faed61ea66d1d3fc23d99b17e76191
+scope.json                           cfeb9aafaa0caa2f1146a33139d6ef2c84dbaaab712464df647652d4f3b7a828
+prompt-activation-baseline-v1.json   6b32bbfe5df5a77a0c8310862c76baa6609c53251b52272ccb04cd19ff5302ce
 ```
 
 The corpus revision is `FILE_SET`, not `GIT_COMMIT`: the task files are checked into this repository,

@@ -3,7 +3,7 @@
   "artifact_kind": "PROMPT_EVALUATION_TASK",
   "task_id": "duration-half-away-from-zero",
   "repo_id": "prompt-v1-fixture",
-  "repo_revision": "b2c284a0ad7be017596af9e24a9d74e58d62974f",
+  "repo_revision": "b6bae7e3872680fc847f4603484a07cbd18932c0",
   "repo_path": "eval/fixtures/prompt-v1-duration-rounding/repository",
   "require_clean_repo": false,
   "cmd": "/usr/bin/python3",
@@ -29,22 +29,22 @@
     {
       "path": "eval/fixtures/prompt-v1-duration-rounding/repository",
       "kind": "TREE",
-      "expected_sha256": "a3bd7895827e2583ad532a42fbb291f5c1c85db0eca466ad748d5db30ed394e2"
+      "expected_sha256": "54cba2d6f9f4bd49033123f309492cf35bac57e71ab7cf3d80a4299b2a9cdbcb"
     },
     {
       "path": "eval/tasks/prompt-v1/duration-half-away-from-zero/task.json",
       "kind": "FILE",
-      "expected_sha256": "d6567276159cbbeb7fa64ecf9265cd152562ad2a84403faea04ccc4361c4ec35"
+      "expected_sha256": "ecc10d518df38abf7642ebad02e24262a9b89e7d4f47bc55f4fabca0193b7c68"
     },
     {
       "path": "eval/tasks/prompt-v1/duration-half-away-from-zero/task-prompt.json",
       "kind": "FILE",
-      "expected_sha256": "dc42278d3ff119fa433bda2a60b5c896a875e5cb0b3c374ce7f53b18a9da8816"
+      "expected_sha256": "1c368bbed9d1b87a04fd5cbcab2aeb8d06d1acf1da2cb18acebf8cd43cdddf12"
     },
     {
       "path": "eval/tasks/prompt-v1/duration-half-away-from-zero/context-sources.json",
       "kind": "FILE",
-      "expected_sha256": "ce05875f09d464899bb9f69a66f72e2891a025ed23920ee18df8d823ae5a721a"
+      "expected_sha256": "dcf51798a65a5689e9e58613bca281ba00caff10c678cd5fbded40f0e79e2684"
     },
     {
       "path": "eval/runners/run-coding-task.py",
@@ -54,7 +54,7 @@
     {
       "path": "scripts/prompt-fixed-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "49aeabb492faafb0d5550624d919e5d259985edcb7258aca6d6dfeafe02cc05e"
+      "expected_sha256": "7830431aa108135b4aa4a0861b7decf60821cb29d797014cddd0eeb6a515bc2f"
     },
     {
       "path": "scripts/prompt-snapshot-helper.py",
@@ -69,5 +69,5 @@
     "maximum_repair_loops": 0,
     "maximum_benchmark_regression_ppm": null
   },
-  "content_sha256": "441c252fcb53ca80fb46d0a017d9fcf8005055068ed15863b13690e03e9a29ba"
+  "content_sha256": "94c5d4b6d0c8d4932eaafbf44fdaea60a3fd5e268c637cc04605299c94b7fd24"
 }

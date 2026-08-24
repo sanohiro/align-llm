@@ -24,8 +24,58 @@ ROOT = Path(__file__).resolve().parent.parent
 ADAPTER = ROOT / "scripts" / "prompt-measurement-adapter.py"
 LINUX = sys.platform.startswith("linux")
 
-PATCH_TEXT = "the generated patch\n"
 RENDERED_TEXT = "Repair round_to_minutes so an exact half minute rounds away from zero."
+
+# The launch rows drive the adapter against a real pinned corpus fixture, because the settled
+# response format is whole-file content and the synthesized patch is only meaningful against the
+# exact pinned bytes the validation runner will check out.
+FIXTURE_SOURCE_DIR = "eval/fixtures/prompt-v1-duration-rounding/repository"
+FIXTURE_EDIT_PATH = "src/duration.py"
+EDITED_CONTENT = (
+    '"""Billable duration helpers."""\n'
+    "\n"
+    "import math\n"
+    "\n"
+    "\n"
+    "def round_to_minutes(seconds: int) -> int:\n"
+    '    """Round a whole-second duration to whole minutes."""\n'
+    "    return math.trunc(seconds / 60 + math.copysign(0.5, seconds))\n"
+)
+# One complete generation response in the settled format, with prose on both sides.
+RESPONSE_TEXT = (
+    "Here is the repair.\n\n"
+    f"FILE: {FIXTURE_EDIT_PATH}\n"
+    "```python\n"
+    f"{EDITED_CONTENT}"
+    "```\n\n"
+    "That makes the tie round away from zero.\n"
+)
+
+
+def task_definition(identity: str) -> dict:
+    return {
+        "schema_version": 1,
+        "id": identity,
+        "source_dir": FIXTURE_SOURCE_DIR,
+        "allowed_edits": [FIXTURE_EDIT_PATH],
+        "validation_argv": ["python3", "tests/test_duration.py", "-v"],
+        "validation_timeout_seconds": 10,
+    }
+
+
+def expected_patch() -> str:
+    """The whole-file-replacement hunk, rebuilt here independently of the adapter."""
+    old = (ROOT / FIXTURE_SOURCE_DIR / FIXTURE_EDIT_PATH).read_text(encoding="utf-8")
+    old_lines = old.split("\n")[:-1] if old.endswith("\n") else old.split("\n")
+    new_lines = EDITED_CONTENT.split("\n")[:-1]
+    return (
+        f"diff --git a/{FIXTURE_EDIT_PATH} b/{FIXTURE_EDIT_PATH}\n"
+        f"--- a/{FIXTURE_EDIT_PATH}\n"
+        f"+++ b/{FIXTURE_EDIT_PATH}\n"
+        f"@@ -1,{len(old_lines)} +1,{len(new_lines)} @@\n"
+        + "".join(f"-{line}\n" for line in old_lines)
+        + "".join(f"+{line}\n" for line in new_lines)
+    )
 
 
 def canonical(value: Any) -> bytes:
@@ -118,11 +168,14 @@ class Fixture:
             "max_tokens": 512, "temperature_micros": 0, "seed_mode": "PAIRED_FIXED",
             "seed_base": 100, "content_sha256": "",
         })
-        self.task_path.write_text('{"validation": "declared"}', encoding="utf-8")
+        self.task_path.write_bytes(canonical(task_definition("task")))
         self.write_child()
         self.write_runner()
 
-    def write_child(self, *, exit_code: int = 0, body: str | None = None, sleep: float = 0.0) -> None:
+    def write_child(
+        self, *, exit_code: int = 0, body: str | None = None, sleep: float = 0.0,
+        content: str | None = None,
+    ) -> None:
         """A synthetic generation child with exactly the `./main prompt generate` boundary.
 
         The real child is `src/prompt_generate.align`, whose own end-to-end behaviour is owned by
@@ -145,7 +198,7 @@ class Fixture:
             "  'provider_model': request['provider_model'],\n"
             "  'provider_request_sha256': hashlib.sha256(b'dispatched-bytes').hexdigest(),\n"
             "  'seed_result': 'APPLIED', 'applied_seed': request['paired_seed'],\n"
-            "  'http_status': 200, 'content': " + repr(PATCH_TEXT) + ",\n"
+            "  'http_status': 200, 'content': " + repr(content if content is not None else RESPONSE_TEXT) + ",\n"
             "  'dispatch_start_ns': 1, 'dispatch_end_ns': 2, 'content_sha256': '',\n"
             "}\n"
             "response['content_sha256'] = hashlib.sha256(\n"
@@ -156,7 +209,7 @@ class Fixture:
         )
         self.child_path.chmod(0o755)
 
-    def write_runner(self, *, expect_patch: str = PATCH_TEXT, exit_code: int | None = None) -> None:
+    def write_runner(self, *, expect_patch: str | None = None, exit_code: int | None = None) -> None:
         """A validation runner that proves the sealed task definition and patch reached it."""
         if exit_code is not None:
             self.runner_path.write_text(f"raise SystemExit({exit_code})\n", encoding="utf-8")
@@ -166,8 +219,9 @@ class Fixture:
             "from pathlib import Path\n"
             "task = Path(sys.argv[2]).read_text()\n"
             "patch = Path(sys.argv[3]).read_text()\n"
-            "valid = task == '{\"validation\": \"declared\"}' and patch == "
-            + repr(expect_patch) + "\n"
+            "valid = task == " + repr(canonical(task_definition("task")).decode("utf-8"))
+            + " and patch == "
+            + repr(expect_patch if expect_patch is not None else expected_patch()) + "\n"
             "raise SystemExit(0 if valid else 4)\n",
             encoding="utf-8",
         )
@@ -310,7 +364,7 @@ def unit_rows(module) -> list[str]:
             "schema_version": 1, "artifact_kind": "PROMPT_GENERATION_RESPONSE", "request_id": "r",
             "status": "GENERATED", "error_code": "NONE", "error": "", "provider_kind": "LOCAL_OPENAI",
             "provider_model": "m", "provider_request_sha256": "a" * 64, "seed_result": "APPLIED",
-            "applied_seed": 100, "http_status": 200, "content": PATCH_TEXT,
+            "applied_seed": 100, "http_status": 200, "content": RESPONSE_TEXT,
             "dispatch_start_ns": 1, "dispatch_end_ns": 2, "content_sha256": "",
         }
         bind(good)
@@ -355,6 +409,148 @@ def unit_rows(module) -> list[str]:
     # A `FIXTURE` control never dispatches a model provider, so this adapter never admits it.
     require("FIXTURE" in ADAPTER.read_text(encoding="utf-8"), "the FIXTURE rejection was removed")
     covered.append("fixture-control-rejected")
+    covered += edit_format_rows(module)
+    return covered
+
+
+def edit_format_rows(module) -> list[str]:
+    """The settled section 11.3 whole-file response format: parse, allowlist, and synthesized diff.
+
+    These rows need no launch, so the response contract is fully covered on every host.
+    """
+    covered: list[str] = []
+    allowed = ("src/one.py", "src/two.py")
+
+    accepted = (
+        (
+            "blocks-single",
+            "FILE: src/one.py\n```\nalpha\n```\n",
+            [("src/one.py", "alpha\n")],
+        ),
+        (
+            "blocks-multiple",
+            "FILE: src/one.py\n```\nalpha\n```\nFILE: src/two.py\n```\nbeta\ngamma\n```\n",
+            [("src/one.py", "alpha\n"), ("src/two.py", "beta\ngamma\n")],
+        ),
+        (
+            "blocks-language-tag",
+            "FILE: src/one.py\n```python\nalpha\n```\n",
+            [("src/one.py", "alpha\n")],
+        ),
+        (
+            "blocks-surrounding-prose",
+            "Sure! Here is the change you asked for.\n\nFILE: src/one.py\n\nHere it is:\n\n"
+            "```python\nalpha\n```\n\nLet me know if you want anything else.\n",
+            [("src/one.py", "alpha\n")],
+        ),
+        (
+            "blocks-nested-fence",
+            "FILE: src/one.py\n````python\nDOC = '''\n```\nnested\n```\n'''\n````\n",
+            [("src/one.py", "DOC = '''\n```\nnested\n```\n'''\n")],
+        ),
+        (
+            "blocks-crlf-and-decorated-header",
+            "**FILE: `src/one.py`**\r\n```python\r\nalpha\r\n```\r\n",
+            [("src/one.py", "alpha\n")],
+        ),
+        (
+            "blocks-dot-slash-path",
+            "FILE: ./src/one.py\n```\nalpha\n```\n",
+            [("src/one.py", "alpha\n")],
+        ),
+        (
+            "blocks-empty-body",
+            "FILE: src/one.py\n```\n```\n",
+            [("src/one.py", "")],
+        ),
+    )
+    for name, response, expected in accepted:
+        observed = module.validated_edit_set(response, allowed)
+        require(observed == expected, f"{name}: parsed {observed!r}, expected {expected!r}")
+        covered.append(name)
+
+    refused = (
+        ("blocks-absent", "I cannot help with that.\n", module.EditFormatError),
+        ("blocks-prose-only-fence", "```python\nalpha\n```\n", module.EditFormatError),
+        ("blocks-unterminated", "FILE: src/one.py\n```python\nalpha\n", module.EditFormatError),
+        ("blocks-header-without-block", "FILE: src/one.py\nFILE: src/two.py\n```\nbeta\n```\n",
+         module.EditFormatError),
+        ("blocks-duplicate-path", "FILE: src/one.py\n```\na\n```\nFILE: src/one.py\n```\nb\n```\n",
+         module.EditFormatError),
+        ("blocks-outside-allowlist", "FILE: src/legacy.py\n```\nalpha\n```\n", module.PolicyViolation),
+        ("blocks-absolute-path", "FILE: /etc/passwd\n```\nalpha\n```\n", module.PolicyViolation),
+        ("blocks-escaping-path", "FILE: ../outside.py\n```\nalpha\n```\n", module.PolicyViolation),
+    )
+    for name, response, expected_error in refused:
+        try:
+            module.validated_edit_set(response, allowed)
+        except expected_error:
+            covered.append(name)
+            continue
+        raise RuntimeError(f"{name}: an invalid edit set was accepted")
+
+    # The synthesized hunk is a plain whole-file replacement, and it really applies: the row builds
+    # a pinned checkout with the exact fixture recipe and runs `git apply` over the adapter's bytes.
+    with tempfile.TemporaryDirectory(prefix="prompt-measurement-diff-") as directory:
+        scratch = Path(directory).resolve()
+        source = scratch / "source"
+        (source / "src").mkdir(parents=True)
+        (source / "src" / "one.py").write_text("alpha\nbeta\n", encoding="utf-8")
+        golden = (
+            "diff --git a/src/one.py b/src/one.py\n"
+            "--- a/src/one.py\n"
+            "+++ b/src/one.py\n"
+            "@@ -1,2 +1,1 @@\n"
+            "-alpha\n"
+            "-beta\n"
+            "+gamma\n"
+        )
+        raw = module.synthesized_patch([("src/one.py", "gamma\n")], source)
+        require(raw.decode("utf-8") == golden, f"diff-golden: {raw.decode('utf-8')!r}")
+        covered.append("diff-golden")
+
+        environment = {
+            "HOME": str(scratch), "PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C",
+            "GIT_AUTHOR_NAME": "smoke", "GIT_AUTHOR_EMAIL": "smoke@invalid",
+            "GIT_COMMITTER_NAME": "smoke", "GIT_COMMITTER_EMAIL": "smoke@invalid",
+        }
+        for argv in (
+            ["git", "init", "-q", "--initial-branch=main"],
+            ["git", "add", "--all"],
+            ["git", "commit", "-q", "-m", "fixture"],
+        ):
+            subprocess.run(argv, cwd=source, env=environment, check=True, capture_output=True)
+        patch_path = scratch / "candidate.patch"
+        patch_path.write_bytes(raw)
+        applied = subprocess.run(
+            ["git", "apply", str(patch_path)], cwd=source, env=environment, capture_output=True,
+        )
+        require(
+            applied.returncode == 0
+            and (source / "src" / "one.py").read_text(encoding="utf-8") == "gamma\n",
+            f"diff-applies: git apply refused the synthesized patch: {applied.stderr!r}",
+        )
+        covered.append("diff-applies")
+
+        # A response that reproduces the pinned bytes changes nothing and is not a patch.
+        (source / "src" / "one.py").write_text("alpha\nbeta\n", encoding="utf-8")
+        try:
+            module.synthesized_patch([("src/one.py", "alpha\nbeta\n")], source)
+        except module.EditFormatError:
+            covered.append("diff-unchanged")
+        else:
+            raise RuntimeError("diff-unchanged: an empty patch was produced")
+
+        # A file the pinned tree does not carry is created rather than diffed against nothing.
+        created = module.synthesized_patch([("src/new.py", "delta\n")], source).decode("utf-8")
+        require(
+            created.startswith(
+                "diff --git a/src/new.py b/src/new.py\nnew file mode 100644\n--- /dev/null\n"
+            ) and created.endswith("@@ -0,0 +1,1 @@\n+delta\n"),
+            f"diff-created-file: {created!r}",
+        )
+        covered.append("diff-created-file")
     return covered
 
 
@@ -382,8 +578,8 @@ def launch_rows(root: Path) -> list[str]:
         "sealed-success: a passing row carries a positive measured time",
     )
     require(
-        result["patch_size_bytes"] == len(PATCH_TEXT.encode("utf-8")),
-        "sealed-success: the produced patch bytes were not the generated content",
+        result["patch_size_bytes"] == len(expected_patch().encode("utf-8")),
+        "sealed-success: the produced patch bytes were not the synthesized whole-file diff",
     )
     # The provider identity, request digest, and seed attestation are copied verbatim.
     expected_provider_sha = hashlib.sha256(b"dispatched-bytes").hexdigest()
@@ -515,10 +711,61 @@ def launch_rows(root: Path) -> list[str]:
     assert_not_scoreable("child-timeout", result, "ADAPTER")
     covered.append("child-timeout")
 
+    # A response whose file block names a path outside the declared editable set is refused before
+    # the validation runner is launched, and the row stays a scored policy violation whose seed
+    # attestation still names the real dispatched request.
+    fixture = Fixture(root, "edit-outside-allowlist")
+    marker = fixture.root / "launched"
+    fixture.write_child(content="FILE: src/legacy.py\n```python\nrewritten\n```\n")
+    fixture.runner_path.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n", encoding="utf-8",
+    )
+    fixture.request(
+        generation_child_sha256=raw_digest(fixture.child_path),
+        validation_runner_sha256=raw_digest(fixture.runner_path),
+    )
+    _, result = fixture.invoke()
+    require(
+        result is not None and result["status"] == "POLICY_VIOLATION"
+        and result["failure_kind"] == "POLICY" and result["policy_violation_count"] == 1
+        and result["build_status"] == "NOT_RUN" and result["test_status"] == "NOT_RUN"
+        and result["generation_to_passing_patch_ns"] is None
+        and result["seed_attestation"]["result"] == "APPLIED"
+        and result["seed_attestation"]["provider_request_sha256"]
+        == hashlib.sha256(b"dispatched-bytes").hexdigest(),
+        f"edit-outside-allowlist: wrong classification: {result!r}",
+    )
+    require(not marker.exists(), "edit-outside-allowlist: the validation runner was launched")
+    covered.append("edit-outside-allowlist")
+
+    # A response carrying no file block at all is the patch-absent outcome: a scored `FAIL`/`PATCH`
+    # with both stages `NOT_RUN`, not an adapter error.
+    fixture = Fixture(root, "edit-absent")
+    marker = fixture.root / "launched"
+    fixture.write_child(content="I would rather explain the bug than patch it.\n")
+    fixture.runner_path.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n", encoding="utf-8",
+    )
+    fixture.request(
+        generation_child_sha256=raw_digest(fixture.child_path),
+        validation_runner_sha256=raw_digest(fixture.runner_path),
+    )
+    _, result = fixture.invoke()
+    require(
+        result is not None and result["status"] == "FAIL" and result["failure_kind"] == "PATCH"
+        and result["build_status"] == "NOT_RUN" and result["test_status"] == "NOT_RUN"
+        and result["policy_violation_count"] == 0
+        and result["generation_to_passing_patch_ns"] is None
+        and result["seed_attestation"]["result"] == "APPLIED",
+        f"edit-absent: wrong classification: {result!r}",
+    )
+    require(not marker.exists(), "edit-absent: the validation runner was launched")
+    covered.append("edit-absent")
+
     # Task parameterization: the manifest-driven runner and task definition are what execute, and a
     # different declared task definition changes the measured outcome without touching the adapter.
     fixture = Fixture(root, "task-parameterization")
-    fixture.task_path.write_text('{"validation": "other"}', encoding="utf-8")
+    fixture.task_path.write_bytes(canonical(task_definition("other")))
     fixture.request()
     _, result = fixture.invoke()
     require(
@@ -583,7 +830,7 @@ def launch_rows(root: Path) -> list[str]:
         "  'provider_model': request['provider_model'],\n"
         "  'provider_request_sha256': hashlib.sha256(b'dispatched-bytes').hexdigest(),\n"
         "  'seed_result': 'APPLIED', 'applied_seed': request['paired_seed'],\n"
-        "  'http_status': 200, 'content': " + repr(PATCH_TEXT) + ",\n"
+        "  'http_status': 200, 'content': " + repr(RESPONSE_TEXT) + ",\n"
         "  'dispatch_start_ns': 1, 'dispatch_end_ns': 2, 'content_sha256': '',\n"
         "}\n"
         "response['content_sha256'] = hashlib.sha256(\n"

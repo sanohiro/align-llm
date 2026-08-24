@@ -10,8 +10,8 @@
     "artifact_kind": "CORPUS_REVISION",
     "source_kind": "FILE_SET",
     "source_repository_id": "",
-    "source_sha256": "8504a640d35316ea78b4ffa687b7a6b07853d3f8b27d689815003cec7926fc7a",
-    "content_sha256": "3463261c72605d6d4d1f225b95aec7df147def04388fce9edb6f329be338ff5d"
+    "source_sha256": "2206cfa59db6c6fa807fc1efc52d6de20c93ac3e2361cb7d01e54efcb3081bd3",
+    "content_sha256": "0e1f9b5ef11ad116bcdd9b1b67ff8db9dec7dc4017054c72beb0ae34375256fc"
   },
   "evaluation_provider_kind": "FIXTURE",
   "evaluation_provider_model": "pending-provider-decision",
@@ -19,5 +19,5 @@
   "acceptance_policy_sha256": "7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3",
   "base_prompt_sha256": "dbb55e44b44fd2933d3aa1357f542ff247b645efaddd552df3c7b37f40811b39",
   "repo_prompt_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21",
-  "content_sha256": "d9cd720a5c8bedc351ce1547ce642d0a07e8b4b7f4366de0ebe89f9a84fb5c21"
+  "content_sha256": "cfeb9aafaa0caa2f1146a33139d6ef2c84dbaaab712464df647652d4f3b7a828"
 }

@@ -4246,7 +4246,40 @@ adapter reports `supports_seed` and the seeded twin bytes carry the paired seed,
 transport, status, and decode error mapping is exactly the section 11.3 proposal table above:
 `Error.Timeout`, the `Error.Code(-1)` receive-side limit sentinel, any other transport `Err`, a
 received non-2xx status as `Ok` data with its bounded body, and a 2xx envelope or content-extraction
-failure. Every persisted diagnostic is redacted before truncation, hashing, or persistence.
+failure. A 2xx envelope whose completion text decodes to zero bytes is a content-extraction failure:
+it is `PROVIDER_ERROR` / `PROVIDER_RESPONSE_SCHEMA` exactly like a malformed envelope, never a
+`GENERATED` response carrying empty content, so `content: Some` always names at least one byte and
+no consumer distinguishes an empty success from a real one. This is the generate-side analogue of
+the proposal path's `INVALID_PROPOSAL` / `PROPOSAL_SCHEMA` row for an unusable 2xx body. Every
+persisted diagnostic is redacted before truncation, hashing, or persistence.
+
+**Measurement response edit format.** The rendered task prompt instructs the model to emit, for each
+edited file, a block of the exact form:
+
+```text
+FILE: <repo-relative-path>
+```<the complete new file content>```
+```
+
+The measurement adapter parses these blocks, tolerating a language tag after the opening fence and
+prose before, between, and after them; a closing fence is a line of backticks at least as long as the
+opening run, so a longer outer fence carries nested fences as content. Whole-file content, not a
+diff, is the settled response shape: the pinned corpus files are small, and a whole file removes the
+context-matching failure mode that makes an unusable model diff indistinguishable from a wrong
+repair. The adapter requires every declared path to be inside the task definition's `allowed_edits`
+and refuses the edit set before it launches the validation runner — any out-of-allowlist path,
+including an absolute or escaping spelling, is `POLICY_VIOLATION` / `POLICY` with both stages
+`NOT_RUN`. It requires at least one complete block; a response with no block, an unterminated block,
+a `FILE:` header with no block, or a duplicated path is the patch-absent outcome `FAIL` / `PATCH`
+with both stages `NOT_RUN`, which is a scored task failure rather than an adapter error. Both
+outcomes retain the generation response's provider identity, request digest, and seed attestation,
+because the provider did answer. The adapter then writes the validated edit set as the whole-file
+replacement hunks the declared validation runner applies, and records the applied edit set in the
+bounded diagnostic summary; `patch_size_bytes` is the size of those bytes. The runner's own
+allowlist, pristine-checkout, and mode checks are unchanged and remain the authoritative second
+gate. A task that declares the `Some` `patch_path`/`patch_sha256` pair is unaffected: its fixture
+patch is admitted verbatim and nothing is parsed from a response. This paragraph settles the format
+only; section 5.2's adapter contract, output cap, containment, and redaction rules are unchanged.
 
 The adapter copies `provider_request_sha256`, `seed_result`, `applied_seed`, and the provider
 identity verbatim from the response into `GenerationRequestIdentity` and
@@ -4391,6 +4424,7 @@ The C6-MEASURED closure matrix is:
 | generation child dispatch | `src/prompt_generate.align`, `src/provider.align`, `src/provider_openai.align`, `src/provider_llama.align`, `src/provider_http.align` | `prompt-generate-smoke`: golden request bytes per provider kind, `provider_request_sha256` equal to the exact dispatched bytes, `APPLIED`/`UNSUPPORTED`/`REJECTED` seed rows with their required `applied_seed` shape, the complete transport/status/decode error mapping, no credential byte in the response or any diagnostic, and the recorded child spawn-overhead measurement |
 | derived-child admission | `scripts/prompt-measurement-adapter.py` | `prompt-measurement-adapter-smoke`: a declared digest mismatch and a post-admission binary replacement each produce no scoreable row, and a sealed launch of the admitted bytes succeeds and verifies the retained input unchanged |
 | two-process handoff | `scripts/prompt-measurement-adapter.py`, `src/prompt_generate.align` | `prompt-measurement-adapter-smoke`: mutated or absent response digest, truncated response, nonzero child exit, and child timeout each yield `ERROR` with the section 5.2 and 10.1k precedence — `CONTAINMENT`, then `CLEANUP`, then `ADAPTER` — both time fields `None`, and never a scoreable row |
+| measurement response edit format | `scripts/prompt-measurement-adapter.py`, `eval/tasks/prompt-v1/*/task-prompt.json` | `prompt-measurement-adapter-smoke`: parse rows for single and multiple blocks, a language-tagged fence, surrounding and trailing prose, a nested fence under a longer outer fence, and CRLF; refusal rows for no block, an unterminated block, a header without a block, and a duplicate path as `FAIL`/`PATCH`, and out-of-allowlist, absolute, and escaping paths as `POLICY_VIOLATION`/`POLICY` with no runner launch; a golden whole-file hunk that `git apply` really applies, an unchanged-content refusal, and a created-file hunk; plus `prompt-generate-smoke`'s empty-2xx-content row proving the child never publishes empty `GENERATED` content |
 | task parameterization | `scripts/prompt-measurement-adapter.py`, `scripts/prompt-evaluate.py` | `prompt-measurement-adapter-smoke`: manifest-driven runner and task-definition digests admit and execute; a wrong declared digest is rejected before launch with no runner marker; the extended `TaskAdapterRequest` field order and its `EvaluationInputIdentity` preimage are golden-bound |
 | renderer parity | `scripts/prompt-evaluate.py`, `src/prompt_model.align` | shared golden rendered-prompt vectors over all eight section 4.3 enable/disable combinations, each section's truncation boundary, and `task_id` failure-memory selection, asserted byte-equal across both implementations; this row records the already-settled section 4.3 contract, and the Python renderer's disabled-section-only restriction was an implementation defect |
 | measured claim | gate pull request | reproducible before/after from a named clean commit, exact command and provider environment without credentials, and the time-to-passing-patch measurement against the checked-in baseline |

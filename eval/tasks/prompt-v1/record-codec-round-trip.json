@@ -39,7 +39,7 @@
     {
       "path": "eval/tasks/prompt-v1/record-codec-round-trip/task-prompt.json",
       "kind": "FILE",
-      "expected_sha256": "7abafe0fa957cc230bd973870ef2885e39c787233b4552d5cd7980f84c03c88f"
+      "expected_sha256": "fe7a6fc90eee4d79287e7fc079b6ad2df3b94dcdd10d2ffd272c3c165f731bbc"
     },
     {
       "path": "eval/tasks/prompt-v1/record-codec-round-trip/context-sources.json",
@@ -54,7 +54,7 @@
     {
       "path": "scripts/prompt-fixed-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "49aeabb492faafb0d5550624d919e5d259985edcb7258aca6d6dfeafe02cc05e"
+      "expected_sha256": "7830431aa108135b4aa4a0861b7decf60821cb29d797014cddd0eeb6a515bc2f"
     },
     {
       "path": "scripts/prompt-snapshot-helper.py",
@@ -69,5 +69,5 @@
     "maximum_repair_loops": 0,
     "maximum_benchmark_regression_ppm": null
   },
-  "content_sha256": "2f0ce52c4c6df3f9bf889a2d6e133034e80c154ad38248846aea5d17f96bc150"
+  "content_sha256": "3c69ab7429151901640a86ebad997106db5adb422436ac860f999431b4e46d86"
 }
