@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-24): Requests 1, 3–6 are CLOSED; Requests 7, 8, and 10–18 are ALIGN_LLM_VERIFIED; Requests 2 and 9 remain ALIGN_MERGED.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. Every open request now has a merged Align surface: Request 2's timeout adoption remains with C6e/C6g1 and Request 9's adoption remains with C7, both already contained in the pinned Align merge recorded below.
+> **Status (2026-08-25): Requests 1, 3–6 are CLOSED; Requests 2, 7, 8, and 10–18 are ALIGN_LLM_VERIFIED; only Request 9 remains ALIGN_MERGED.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, advancing Request 2. Request 9's adoption remains with C7 and is already contained in the pinned Align merge recorded below.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -291,14 +291,14 @@ Two smaller Align idioms worth recording (not requests): an owned `string` does 
 ## Request 2 — `std.http` / `std.net`: I/O timeouts
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: no
-Blocked gate or slice: provider HTTP client acceptance gate (not reached yet)
-Independent work that may continue: C0 evaluation and provider-independent loop work
-Resume condition: plaintext and TLS timeout gates pass in align-llm
+Blocked gate or slice: none; the C6-MEASURED provider consumer in `src/provider_http.align` consumes the shipped per-operation deadline
+Independent work that may continue: all work
+Resume condition: complete
 Align commit or pull request: #633 98b1712, #634 1b21cdb
-align-llm verification: pending plaintext and TLS timeout fixtures in the provider HTTP client
+align-llm verification: the named focused owner `c6e-request2-adoption` (`scripts/run-http-timeout-adoption-smoke`, `src/c6e_request2_adoption.align`) passes at Align `2f33ac5c33a898a7894af58322852632ce6ffe42`, proving the plaintext read-stall and the TLS handshake-stall both return `Error.Timeout` inside a `timeout_ns` of 250,000,000 (observed 258,576,584 ns and 296,394,625 ns) with a responsive control request at 1,529,083 ns; the target is now a `HOSTED_CHECK_TARGETS` member, so it runs in every hosted and capable check graph, and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2` on native Linux `aarch64`. The supervised fresh-worker `make ci` for this head runs as publication CI evidence.
 ```
 
 ### Motivation
@@ -371,12 +371,21 @@ path too, same fd). `ns == 0` preserves today's blocking behavior exactly.
 **Gate.** A peer that accepts then never responds returns `Err(Timeout)` within the bound; a
 black-holed (never-accepting) address returns `Err(Timeout)` within the bound.
 
-### align-llm verification status
+### align-llm verification (2026-08-25 — ALIGN_LLM_VERIFIED)
 
-The Align capability is merged and pinned, but align-llm does not yet have the provider HTTP client
-that consumes it. Therefore this request remains `ALIGN_MERGED`, is non-blocking for the current C0
-and provider-independent loop work, and must not advance to `ALIGN_LLM_VERIFIED` or `CLOSED` until
-`make ci` runs both the plaintext and TLS timeout fixtures named in the original acceptance gate.
+C6-MEASURED shipped the consuming provider transport, so the original acceptance gate is now
+exercised by a real client. `src/provider_http.align` applies the configured `timeout_ns` to every
+blocking operation, and `src/c6e_request2_adoption.align` drives it against three loopback
+listeners: a plaintext listener that accepts and never answers, a listener that accepts and never
+answers the TLS ClientHello, and a responsive control. Both stalls classify as `Error.Timeout`
+inside the configured bound, the control exchange is untouched, and the client still works after two
+timed-out connections. `scripts/run-http-timeout-adoption-smoke` independently bounds the whole
+run's wall clock and rechecks each reported per-row timing.
+
+`c6e-request2-adoption` is now a member of `HOSTED_CHECK_TARGETS`, so it is a permanent part of the
+hosted and capable check graphs rather than a target that must be remembered separately. `CLOSED`
+remains reserved until the shipped surface, ownership, and limits are recorded against merged
+publication evidence.
 
 ---
 

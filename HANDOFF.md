@@ -3,12 +3,49 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-24)
+## Active checkpoint (2026-08-25)
 
 - C6-MEASURED (C6e/C6g1/C6g2) is implemented on branch `agent/c6-measured`, head
-  `1d9daedc1ca5459507234ae3edafffefb5235780`, and is not yet published. The measured gate is real
+  `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, and is not yet published. The measured gate is real
   and green: `scripts/prompt-gate-validator.py` exits 0 against the checked-in `eval/prompt/gate/`
   bundle with all five explicit inputs.
+- Slice E landed the final integration wiring. The section 11.3 owner targets are now
+  `HOSTED_CHECK_TARGETS` members — `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`,
+  `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
+  the nine `prompt-gate-*-smoke` fixtures, and `c6e-request2-adoption` — and
+  `scripts/check-gate-topology`'s literal `EXPECTED` lane bytes were refreshed in the same commit
+  `6f937fb4bb4a596afd0540b5b37415d65d5dbb3c`, per the section 11.1 precedent.
+- `prompt-gate-check` is the C6-MEASURED gate target. It takes the five explicit `C6_GATE_*`
+  command-line values, fails closed before the validator starts when any is missing or empty, and
+  maps them to `--source-bundle-root`, `--python-executable-path`, `--git-executable-path`,
+  `--generation-child-path`, and `--generation-child-sha256`. The declared interpreter is also the
+  launcher, so the target never reaches the validator through an ambient Python or Git.
+- **Blocker for capable-lane membership.** `prompt-gate-check` is intentionally not in
+  `CAPABLE_ONLY_CHECK_TARGETS`. Section 9 and section 11.3 of
+  `docs/specs/c6-prompt-context-optimizer.md` require the gate to run as
+  `make ci C6_GATE_...=...`, but the settled FRESH-WORKER caller contract in
+  `docs/specs/check-gate-topology.md` admits exactly `make --no-print-directory ci` **with no
+  variable assignments**, and the worker runs the `capable-checks` graph inside bwrap under a
+  cleared, fixed environment. The five explicit values therefore cannot cross that boundary today,
+  and putting the target in the capable lane would make the supervised `make ci` fail closed
+  forever. Reconcile the two specifications before adding lane membership; that reconciliation is a
+  design-gate change, not integration wiring.
+- The Makefile change invalidated the identity-bound canonical baseline chain, which requires the
+  working-tree `Makefile` to equal its source commit's blob. The chain was already red at
+  `19c5d5c` because earlier C6-MEASURED commits changed the Makefile without re-finalizing. The
+  replacement chain is source `6f937fb4bb4a596afd0540b5b37415d65d5dbb3c`, oracle
+  `182fa3c9a537884f59cf9257d91c884d3732d1ca`, and finalization
+  `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`; it was appended, not rewritten, and
+  `scripts/check-baseline-chain` passes on it.
+- `prompt-render-parity-smoke` is an orphan target: it is declared in `.PHONY` and has a recipe, but
+  belongs to no lane and no adoption aggregate, so nothing runs it. Section 11.3 does not name it as
+  a hosted addition, so Slice E left it alone; decide its owner before publication.
+- `c6f2-request14-adoption` is timing-flaky on a fast, quiet host. Its publication-race fixtures poll
+  for a staged temporary file inside a five-second window; when the fixture binary completes before
+  the poll observes staging, the run reports "publication race did not reach evidence staging" or
+  "result-only cleanup fixture did not reach staging". It passed on retry in the final capable gate
+  and it is a pre-existing C6-EVALUATION owner, not a Slice E regression, but the fixture needs a
+  deterministic seam rather than a poll.
 - The frozen `eval/prompt/canonical-v1/` scope now names a real provider: `LOCAL_OPENAI` on
   `http://127.0.0.1:18080/v1/chat/completions`, model `qwen2.5-coder-7b-instruct-q4_k_m`,
   `api_key_env: null`. `provider_service_revision` carries llama.cpp `b10610` /
@@ -25,8 +62,9 @@ file records durable project state.
   sealed-input cap that could never admit the derived generation child. Repairing the measurement
   adapter rebound the frozen digest chain; only digest bindings moved.
 - Next actions, in order: (1) one comprehensive review of the branch; (2) publish the pull request
-  with the measured claim, the per-cell matrix, and the validator transcript; (3) wire the
-  `C6_GATE_*` values into a real `make ci` gate target, which is still `@exit 1`.
+  with the measured claim, the per-cell matrix, the validator transcript, and the recorded
+  capable-lane blocker above; (3) reconcile the section 9/11.3 `make ci C6_GATE_...` contract with
+  the FRESH-WORKER no-assignment caller contract so `prompt-gate-check` can join the capable lane.
 - The measurement environment is a privileged `linux/arm64` container (`c6g2-measure:latest`) with
   `bubblewrap` installed at run time; the image does not ship it and the validation runner requires
   it. Docker's default seccomp/AppArmor blocks the runner's user namespaces, so the container needs
@@ -36,15 +74,17 @@ file records durable project state.
   `049172f5be57002c2426f012fe23038f570f5069` in pull-request CI run 32490981785, including both
   installed native profiles; main push run 32493880784 reused that exact evidence on the merge
   commit. `.align-revision` remains pinned to Align
-  merge `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The next eligible roadmap capability is
-  C6-MEASURED (C6e, C6g1, C6g2).
+  merge `19c3db144c462bf7d6784f88d64cc124229b7ec2` at that time; C6-MEASURED then bumped it to
+  Align merge `2f33ac5c33a898a7894af58322852632ce6ffe42` in commit `f344ea9`, which is the pin every
+  Slice E result below was produced against.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
-- The register records Requests 7, 8, and 10–18 as `ALIGN_LLM_VERIFIED`; the merged C6-EVALUATION
-  gate advanced Requests 11 and 14. Requests 2 and 9 remain `ALIGN_MERGED` for their later named
-  consumers (C6e/C6g1 provider timeouts and the C7 owned-JSON consumer); both surfaces are already
-  contained in the current pin, so no pin bump is required to adopt them. Every open Align request
-  now has a merged Align-side surface; no request is `PROPOSED`, `ACCEPTED`, or `IMPLEMENTING`.
+- The register records Requests 2, 7, 8, and 10–18 as `ALIGN_LLM_VERIFIED`; the merged C6-EVALUATION
+  gate advanced Requests 11 and 14, and C6-MEASURED Slice E advanced Request 2 once
+  `c6e-request2-adoption` and the wave's final capable gate both passed. Only Request 9 remains
+  `ALIGN_MERGED`, for its later named C7 owned-JSON consumer; that surface is already contained in
+  the current pin, so no pin bump is required to adopt it. Every open Align request now has a merged
+  Align-side surface; no request is `PROPOSED`, `ACCEPTED`, or `IMPLEMENTING`.
 - The merged C6-EVALUATION capability drives the deterministic two-task corpus through source/workspace verification,
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
@@ -145,6 +185,43 @@ file records durable project state.
   default parallelism as qualified by the 128 GiB owner.
 
 ## Latest durable verification
+
+- C6-MEASURED Slice E final capable gate at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`
+  (2026-08-25): PASS. The complete capable check graph — every `HOSTED_CHECK_TARGETS` member in lane
+  order, then `eval-coding`, `baseline-check`, and `c6-evaluation-adoption`, serially at `-j1`, the
+  same list and order `capable-checks` runs — completed in 59 s, and `baseline chain: PASS`. The
+  wired gate then passed:
+
+  ```text
+  make prompt-gate-check \
+    C6_GATE_SOURCE_BUNDLE_ROOT=/work/bundle \
+    C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 \
+    C6_GATE_GIT_EXECUTABLE_PATH=/usr/bin/git \
+    C6_GATE_GENERATION_CHILD_PATH=/work/align-llm/main \
+    C6_GATE_GENERATION_CHILD_SHA256=93e590658253507dc1518275743fd4e30a7f6c234a9a1e3ac4cf096e29474603
+  ```
+
+  `prompt gate validator: PASS`. The generation child was built in-run by `make build` and its
+  SHA-256 was computed then; it reproduces the locator's frozen
+  `93e590658253507dc1518275743fd4e30a7f6c234a9a1e3ac4cf096e29474603` exactly. The source bundle is a
+  clean clone of the tested head plus a clean Align checkout at `.align-revision`; the verifier
+  reported `align_llm_observed_head` equal to the derived CI head, `align_reachability: VERIFIED`,
+  and `corpus_reachability: VERIFIED`.
+- Slice E capable host: the privileged `linux/arm64` `c6g2-measure:latest` container with
+  `bubblewrap` installed at run time, running as a non-root user with `umask 022` and
+  `PYTHONDONTWRITEBYTECODE=1`. All three matter and are environment facts, not repository state.
+  Root ignores directory mode bits, so the `c6f2` permission fixtures cannot fail as designed;
+  Ubuntu's default `umask 002` produces `0664` checkouts, which the `FILE_SET` corpus manifest
+  correctly rejects with `file-set entry type or mode disagrees`; and stray `__pycache__` output
+  makes the CI checkout unclean, which the gate validator correctly rejects. This is not a
+  `make ci` substitute: the supervised fresh-worker path builds a fresh compiler and runs the graph
+  in its own sandbox, and remains publication CI evidence.
+- Host checks at the same head: `gmake gate-topology-check`, `gmake format-check`, `gmake check`
+  (22 units per-unit), `python3 scripts/check-baseline-chain`, and `git diff --check`: PASS.
+  `gmake prompt-gate-check` with no `C6_GATE_*` values fails closed with
+  `prompt gate: ERROR explicit C6_GATE_* input`.
+- `python3 scripts/check-gate-topology --self-test` is Linux-only; it fails on macOS in the
+  reader-start cleanup case with `sigkill-PermissionError`. Run it on a capable profile.
 
 - `make provider-smoke` at the exact pin `19c3db144c462bf7d6784f88d64cc124229b7ec2` on native
   Linux `x86_64` (WSL2, 2026-08-24): PASS, including adapters, chunked SSE, framing failures, the
@@ -340,9 +417,19 @@ file records durable project state.
 
 ## Next actions
 
-1. Merge the register/HANDOFF reconciliation branch `agent/reconcile-request-register`, which
-   records the passed C6-EVALUATION capable gate and advances Requests 11 and 14.
-2. Begin C6-MEASURED (C6e, C6g1, C6g2) as the next consumer capability on a fresh branch: bounded
+1. Review and publish C6-MEASURED from `agent/c6-measured` at head
+   `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`. The pull request must carry the measured claim, the
+   per-cell matrix, the validator transcript, the exact capable-gate commands and results recorded
+   above, and the capable-lane blocker for `prompt-gate-check`.
+2. Reconcile the section 9/11.3 `make ci C6_GATE_...=...` gate-command contract with the settled
+   FRESH-WORKER no-assignment caller contract in `docs/specs/check-gate-topology.md`, then give
+   `prompt-gate-check` its capable-lane membership and refresh the `EXPECTED` capable-only bytes and
+   the baseline chain in that same change. Decide `prompt-render-parity-smoke`'s owner and give
+   `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam in the same pass.
+3. Merged historical item: the register/HANDOFF reconciliation branch
+   `agent/reconcile-request-register` recorded the passed C6-EVALUATION capable gate and advanced
+   Requests 11 and 14.
+4. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
    provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
    policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
    linked rollback. The triggered design gate is satisfied: §11.3 of
@@ -354,11 +441,11 @@ file records durable project state.
    adoption target, C6g asset paths, and the gate-validator identity).
    Implementation may start immediately against that ledger; no further design pull request is
    required.
-3. Inside C6-MEASURED, adopt Request 2 (plaintext/TLS provider timeouts) through its named
-   C6e/C6g1 owners against the existing pin `19c3db144c46...`; no pin bump is required. Advance
-   Request 2 only after its named owners and the wave's final capable gate pass. Do not infer a
-   provider-quality claim before this wave's measured gate.
-4. After C6-MEASURED, begin C7-PERSISTED-RESULT per `docs/specs/c7-persisted-result.md` and adopt
+5. Request 2 (plaintext/TLS provider timeouts) is adopted and advanced to `ALIGN_LLM_VERIFIED`:
+   its named `c6e-request2-adoption` owner and the wave's final capable gate both pass at the pin
+   `2f33ac5c33a898a7894af58322852632ce6ffe42`. Do not infer a provider-quality claim beyond this
+   wave's measured gate.
+6. After C6-MEASURED, begin C7-PERSISTED-RESULT per `docs/specs/c7-persisted-result.md` and adopt
    Request 9 through the named C7 adoption fixture before product code consumes the owned-JSON
    surface.
 
