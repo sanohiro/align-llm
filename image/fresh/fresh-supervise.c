@@ -45,6 +45,7 @@
 #define ORDINARY_STREAM_LIMIT 65536U
 #define ORDINARY_PREFLIGHT_SECONDS 5
 #define ORDINARY_WORKER_SECONDS 5040
+#define AGGREGATE_DIAGNOSTIC_ENTRY "ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1"
 
 #ifndef AT_EMPTY_PATH
 #define AT_EMPTY_PATH 0x1000
@@ -99,6 +100,7 @@ static int sanitize_environment(char **child_env, int strict_boundary) {
         "MALLOC_TRACE", "MALLOC_CHECK_", "MALLOC_PERTURB_",
     };
     char *align_repo = NULL;
+    char *diagnostic = NULL;
     int index;
     int output = 0;
 
@@ -116,6 +118,10 @@ static int sanitize_environment(char **child_env, int strict_boundary) {
                 return -1;
             }
             align_repo = entry;
+            continue;
+        }
+        if (strcmp(entry, AGGREGATE_DIAGNOSTIC_ENTRY) == 0) {
+            diagnostic = entry;
             continue;
         }
         if (matches_prefix(entry, "LD_") || matches_prefix(entry, "GLIBC_") ||
@@ -141,6 +147,9 @@ static int sanitize_environment(char **child_env, int strict_boundary) {
     child_env[output++] = temporary;
     if (align_repo != NULL) {
         child_env[output++] = align_repo;
+    }
+    if (diagnostic != NULL) {
+        child_env[output++] = diagnostic;
     }
     child_env[output] = NULL;
     return 0;
@@ -1288,7 +1297,7 @@ cleanup:
 
 int main(int argc, char **argv) {
     char *child_argv[16];
-    char *child_env[7];
+    char *child_env[8];
     char *align_entry = NULL;
     int self_fd;
     int index;

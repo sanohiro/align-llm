@@ -36,6 +36,11 @@ ALIGN_REPOSITORY = "https://github.com/sanohiro/align.git"
 TEST_UID = 12345
 WORKER_INVOCATION_TIMEOUT = 5_100
 PREPARED_IMAGE_PATTERN = re.compile(r"align-llm-fresh-test:[0-9a-f]{32}\Z")
+AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
+
+
+def aggregate_diagnostic_requested() -> bool:
+    return os.environ.get(AGGREGATE_DIAGNOSTIC_VARIABLE) == "1"
 
 
 class PhaseTracker:
@@ -534,6 +539,7 @@ def worker_profile_run(
     source_volume: str,
     cgroup_driver: str,
 ) -> subprocess.CompletedProcess[bytes]:
+    diagnostic = aggregate_diagnostic_requested()
     arguments = [
         "docker",
         "run",
@@ -544,6 +550,8 @@ def worker_profile_run(
         "--workdir",
         "/work/project",
     ]
+    if diagnostic:
+        arguments.extend(("--env", f"{AGGREGATE_DIAGNOSTIC_VARIABLE}=1"))
     command = [image, "make", "--no-print-directory", "ci"]
     if cgroup_driver == "cgroupfs":
         arguments.extend(
@@ -555,6 +563,9 @@ def worker_profile_run(
             ]
         )
     elif cgroup_driver == "systemd":
+        launcher_environment = (
+            repr({AGGREGATE_DIAGNOSTIC_VARIABLE: "1"}) if diagnostic else "{}"
+        )
         launcher = f"""\
 import os
 parent = '/sys/fs/cgroup/align-llm-fresh/{TEST_UID}'
@@ -570,7 +581,8 @@ if child == 0:
         os.setuid({TEST_UID})
         os.chdir('/work/project')
         os.execve('/usr/local/libexec/align-llm/fresh-supervise',
-                  ['fresh-supervise', 'make', '--no-print-directory', 'ci'], {{}})
+                  ['fresh-supervise', 'make', '--no-print-directory', 'ci'],
+                  {launcher_environment})
     except BaseException:
         os._exit(127)
 try:

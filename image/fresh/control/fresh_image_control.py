@@ -69,6 +69,8 @@ EXPECTED_IMAGE_NAME = "oci://ghcr.io/sanohiro/align-llm-fresh"
 SUPERVISOR_VERSION = "1.0.0"
 WORKER_INVOCATION_TIMEOUT = 5_000
 CONTROL_STREAM_LIMIT = 65_536
+AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
+MAX_WORKER_DIAGNOSTIC_BYTES = 8_192
 CONTROL_CGROUP_PREFIX = "align-llm-control-"
 PR_SET_CHILD_SUBREAPER = 36
 PR_GET_CHILD_SUBREAPER = 37
@@ -1078,6 +1080,47 @@ def _mode_from_arguments(arguments: Sequence[str]) -> str:
     raise ControlError("ARGUMENT", "input", "request vector is not accepted")
 
 
+def _aggregate_diagnostic_requested() -> bool:
+    return os.environ.get(AGGREGATE_DIAGNOSTIC_VARIABLE) == "1"
+
+
+def _diagnostic_environment(base: Mapping[str, str]) -> dict[str, str]:
+    """Extend a fixed launch environment with the aggregate diagnostic opt-in.
+
+    The opt-in is forwarded only when this process itself carries it with the
+    exact value "1", so the default launch environment is byte-identical to the
+    fixed dictionary and no other inherited name is ever propagated.
+    """
+    environment = dict(base)
+    if _aggregate_diagnostic_requested():
+        environment[AGGREGATE_DIAGNOSTIC_VARIABLE] = "1"
+    return environment
+
+
+def _emit_worker_diagnostic(captured: bytes) -> None:
+    """Write the bounded tail of a failed worker's stderr before the error line.
+
+    The canonical controller error carries no detail, so a worker failure is
+    otherwise indistinguishable from every other worker failure. This seam is
+    inert unless the invoking environment carries the explicit opt-in, so the
+    default failure output remains exactly the canonical line. It reports only
+    bytes this process already captured under the existing stream bound.
+    """
+    if not _aggregate_diagnostic_requested():
+        return
+    tail = captured[-MAX_WORKER_DIAGNOSTIC_BYTES:]
+    header = (
+        f"fresh compiler: DIAGNOSTIC worker stderr "
+        f"captured={len(captured)} shown={len(tail)}\n"
+    ).encode("ascii")
+    try:
+        os.write(2, header)
+        if tail:
+            os.write(2, tail if tail.endswith(b"\n") else tail + b"\n")
+    except OSError:
+        return
+
+
 def _reject_environment(environment: Mapping[str, str], *, mode: str) -> str:
     for name in FORBIDDEN_ENVIRONMENT:
         if name in environment:
@@ -1732,7 +1775,11 @@ def supervise(
     os.set_inheritable(6, True)
     os.chdir("/proc/self/fd/4")
     _close_descriptors_except({0, 1, 2, 4, 5, 6})
-    os.execve(paths.bootstrap, [paths.bootstrap, "--mode", mode], CHILD_ENVIRONMENT)
+    os.execve(
+        paths.bootstrap,
+        [paths.bootstrap, "--mode", mode],
+        _diagnostic_environment(CHILD_ENVIRONMENT),
+    )
 
 
 def _bootstrap_verify(
@@ -2423,7 +2470,7 @@ def bootstrap(
     try:
         result = _run_controlled_child(
             arguments,
-            environment=WORKER_ENVIRONMENT,
+            environment=_diagnostic_environment(WORKER_ENVIRONMENT),
             pass_fds=(4, 7, 8, 9),
             timeout=30 if mode == "self-test" else WORKER_INVOCATION_TIMEOUT,
         )
@@ -2435,6 +2482,7 @@ def bootstrap(
         "self-test": b"fresh compiler self-test: PASS\n",
     }[mode]
     if result.returncode != 0 or result.stderr or result.stdout != expected:
+        _emit_worker_diagnostic(result.stderr)
         raise ControlError("CHILD", "aggregate", "worker result is not canonical")
     os.write(1, expected)
     return 0

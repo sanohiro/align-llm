@@ -673,6 +673,42 @@ def aggregate_diagnostic_seam_case(module, temporary: Path) -> None:
         "aggregate diagnostic did not bound an oversized capture to its tail",
     )
     require(observed == expected, "aggregate diagnostic tail is not the bounded capture")
+    require(
+        module.environment_admitted(module.EXPECTED_ENVIRONMENT),
+        "the fixed worker environment is no longer admitted",
+    )
+    require(
+        module.environment_admitted(
+            {**module.EXPECTED_ENVIRONMENT, module.AGGREGATE_DIAGNOSTIC_VARIABLE: "1"}
+        ),
+        "the diagnostic opt-in is not admitted beside the fixed worker environment",
+    )
+    for value in ("", "0", "true", "11"):
+        require(
+            not module.environment_admitted(
+                {
+                    **module.EXPECTED_ENVIRONMENT,
+                    module.AGGREGATE_DIAGNOSTIC_VARIABLE: value,
+                }
+            ),
+            f"a non-opt-in diagnostic value was admitted: {value!r}",
+        )
+    require(
+        not module.environment_admitted(
+            {**module.EXPECTED_ENVIRONMENT, "ALIGN_LLM_OTHER": "1"}
+        )
+        and not module.environment_admitted(
+            {
+                name: value
+                for name, value in module.EXPECTED_ENVIRONMENT.items()
+                if name != "TMPDIR"
+            }
+        )
+        and not module.environment_admitted(
+            {**module.EXPECTED_ENVIRONMENT, "PATH": "/usr/bin"}
+        ),
+        "worker environment admission accepted an inexact environment",
+    )
 
 
 def build_linker_case(module) -> None:

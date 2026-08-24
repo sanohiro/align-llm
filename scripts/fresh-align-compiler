@@ -309,6 +309,20 @@ def emit_aggregate_diagnostic(phase: str, captures: Mapping[str, bytearray]) -> 
             return
 
 
+def environment_admitted(environment: Mapping[str, str]) -> bool:
+    """Report whether the inherited worker environment is exactly admissible.
+
+    The image-owned launcher chain always supplies EXPECTED_ENVIRONMENT. The one
+    permitted addition is the aggregate diagnostic opt-in, and only with the
+    exact value "1"; every other name, and every other value of that name, stays
+    inadmissible.
+    """
+    observed = dict(environment)
+    if observed.pop(AGGREGATE_DIAGNOSTIC_VARIABLE, "1") != "1":
+        return False
+    return observed == EXPECTED_ENVIRONMENT
+
+
 def cancellation_handler(signum: int, _frame: Any) -> None:
     global CANCELLED_SIGNAL
     if CANCELLED_SIGNAL is None:
@@ -5649,7 +5663,7 @@ def worker(mode: str, project_fd: int, manifest_fd: int, run_fd: int) -> None:
     global PHASE_DEADLINE
     if mode not in ("ci", "build") or (project_fd, manifest_fd, run_fd) != (4, 8, 9):
         fail("ARGUMENT", "input")
-    if dict(os.environ) != EXPECTED_ENVIRONMENT:
+    if not environment_admitted(os.environ):
         fail("ARGUMENT", "input")
     expected_descriptor_set()
     install_signal_handlers()
