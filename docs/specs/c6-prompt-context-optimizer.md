@@ -2952,8 +2952,19 @@ PromptGateManifest:
   improved_evaluation_evidence: ArtifactReference
   accepted_activation: ArtifactReference
   rollback_activation: ArtifactReference
+  environment_policy: ArtifactReference
   content_sha256
 ```
+
+`environment_policy` names the `EnvironmentPolicy` that travels with the gate evidence rather than
+with the frozen scope set. It is appended after the settled references and before `content_sha256`,
+following the `generation_child_sha256` precedent, so every existing field keeps its position; an
+older version-1 manifest without it is invalid and receives no compatibility default. The reference
+names kind `ENVIRONMENT_POLICY`, its `artifact_id` is the policy's `policy_id`, and its digest is
+the policy's canonical content digest. The validator loads it through the same bounded, physical,
+digest-checked reference path as every other manifest member and requires the evaluation's
+`EnvironmentIdentityCore.environment_policy_sha256` to equal it, so the policy the measurement ran
+under is a bound gate input rather than a path-only file in the evidence directory.
 
 `PromptGateSourceLocator` is the checked-in, content-bound locator used by the independent gate
 validator:
@@ -3028,7 +3039,31 @@ eligible IMPROVED evaluation + matching PromptEvaluationEvidence
 ```
 
 An absent artifact, a fixture-only artifact, a changed source asset, or any ID/digest/scope/variant
-link mismatch fails the measured gate. The gate pull request records the exact command and provider
+link mismatch fails the measured gate.
+
+The validator recomputes every link the evaluation result declares, so no persisted cross-reference
+is accepted on its own claim:
+
+- the scope's `acceptance_policy_sha256`, `generation_policy_sha256`, `base_prompt_sha256`, and
+  `repo_prompt_sha256` must equal the embedded acceptance policy, generation policy, and each
+  variant's nested base and repo prompt digests, exactly as `valid_activation_shape` requires of an
+  activation;
+- every `*_source` `ArtifactReference` — experiment, parent activation, corpus, acceptance policy,
+  generation policy, provider control, and workspace preflight — must name the kind, identity, and
+  content digest of the document the same result embeds;
+- the generation policy must bind the evaluated provider control by digest and repeat its kind,
+  endpoint ID, and model, and the scope must repeat the same provider kind and model;
+- the corpus must carry the scope's corpus ID and revision, and its `task_files` must be exactly
+  the evaluated task list: one distinct declared file per task, each observed as the task file of
+  that task's own automatic input snapshot, with no snapshot naming an undeclared task;
+- the workspace preflight request and result must carry the evaluation ID, and the result must be
+  `SAFE` with no error;
+- the snapshot request, result, input-snapshot, and attestation streams must all be present, every
+  snapshot result must be `MATCH`, and the attestations must cover every row once in row order,
+  each `COMPLETE`, each with equal before/after digests, and each naming persisted records;
+- `EnvironmentIdentityCore.source_verifier_runtime` and `source_verifier_policy_sha256` must equal
+  the locator's values, and `environment_policy_sha256` must equal the manifest-referenced
+  environment policy. The gate pull request records the exact command and provider
 environment used to create the measured artifact without recording credentials.
 
 When a canonical C6 gate manifest is present, the complete command is
@@ -4404,7 +4439,9 @@ evaluator deadline that started earlier.
   `./main prompt generate` child, whose per-run path and digest travel in the evaluate request and
   the recorded check evidence and are never frozen here.
 - Checked-in gate evidence: `eval/prompt/gate/` holding `prompt-gate-manifest.json` and the
-  referenced evaluation result, evidence, and activation artifacts.
+  referenced evaluation result, evidence, activation, and environment-policy artifacts. The gate
+  environment policy is a manifest `ArtifactReference` per the section 9 field list, not a
+  path-only sibling.
 - Gate validator: `scripts/prompt-gate-validator.py` under CPython 3.12, invoked only by the
   `make prompt-gate-check` gate target with the explicit `C6_GATE_*` values mapped to `--source-bundle-root`,
   `--python-executable-path`, `--git-executable-path`, `--generation-child-path`, and

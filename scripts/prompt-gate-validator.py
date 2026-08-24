@@ -83,6 +83,10 @@ MANIFEST_FIELDS = (
     "improved_evaluation_evidence",
     "accepted_activation",
     "rollback_activation",
+    # Appended after the settled references, following the `generation_child_sha256` precedent:
+    # the environment policy travels with the gate evidence, so the manifest binds it by digest
+    # instead of leaving it a path-only member of this directory.
+    "environment_policy",
     "content_sha256",
 )
 LOCATOR_FIELDS = (
@@ -313,6 +317,94 @@ SOURCE_RESULT_FIELDS = (
     "corpus_reachability",
     "corpus_observed_source_sha256",
     "content_sha256",
+)
+CORPUS_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "corpus_id",
+    "corpus_revision",
+    "task_files",
+    "content_sha256",
+)
+WORKSPACE_PREFLIGHT_REQUEST_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "evaluation_id",
+    "project_root",
+    "workspace_path",
+    "content_sha256",
+)
+WORKSPACE_PREFLIGHT_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "evaluation_id",
+    "status",
+    "error_code",
+    "error",
+    "physical_project_root",
+    "physical_workspace_path",
+    "environment_probe",
+    "content_sha256",
+)
+INPUT_SNAPSHOT_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "task_id",
+    "task_manifest_sha256",
+    "artifact_digests",
+    "environment_sha256",
+    "content_sha256",
+)
+SNAPSHOT_RESULT_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "task_id",
+    "status",
+    "error_code",
+    "error",
+    "environment_probe",
+    "artifact_digests",
+    "content_sha256",
+)
+SNAPSHOT_ATTESTATION_FIELDS = (
+    "schema_version",
+    "artifact_kind",
+    "task_id",
+    "sample_index",
+    "variant",
+    "status",
+    "error_code",
+    "error",
+    "snapshot_request_sha256",
+    "before_snapshot_result_sha256",
+    "after_snapshot_result_sha256",
+    "before_input_snapshot_sha256",
+    "after_input_snapshot_sha256",
+    "content_sha256",
+)
+ENVIRONMENT_POLICY_IDENTITY = "policy_id"
+# Every declared `ArtifactReference` the evaluation result carries, with the kind it must name and
+# the identity field of the artifact the same result embeds. Section 4.5 requires the reference and
+# the embedded artifact to be the same document, so the gate binds both halves rather than trusting
+# a reference nobody re-derives.
+EMBEDDED_REFERENCES = (
+    ("experiment", "experiment_artifact", "PROMPT_EXPERIMENT_RESULT", "experiment_id"),
+    ("parent_activation", "parent_activation_artifact", "PROMPT_ACTIVATION_RESULT", "decision_id"),
+    ("corpus_source", "corpus", "PROMPT_EVALUATION_CORPUS", "corpus_id"),
+    ("acceptance_policy_source", "acceptance_policy", "PROMPT_ACCEPTANCE_POLICY", "policy_id"),
+    ("generation_policy_source", "generation_policy", "GENERATION_POLICY", "generation_policy_id"),
+    (
+        "provider_control_source",
+        "provider_control",
+        "EVALUATION_PROVIDER_CONTROL",
+        "provider_control_id",
+    ),
+    (
+        "workspace_preflight_source",
+        "workspace_preflight",
+        "WORKSPACE_PREFLIGHT_RESULT",
+        "evaluation_id",
+    ),
 )
 
 ALLOWED_LOCAL_KEYS = (
@@ -1077,6 +1169,7 @@ def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
         "improved_evaluation_evidence": "PROMPT_EVALUATION_EVIDENCE",
         "accepted_activation": "PROMPT_ACTIVATION_RESULT",
         "rollback_activation": "PROMPT_ACTIVATION_RESULT",
+        "environment_policy": "ENVIRONMENT_POLICY",
     }
     seen: set[str] = set()
     for name, kind in references.items():
@@ -1164,6 +1257,14 @@ def validate_scope_digests(scope: Any, label: str) -> str:
     return require_own_digest(scope, label)
 
 
+def bind_scope_prompts(scope: Mapping[str, Any], variant: Mapping[str, Any], label: str) -> None:
+    """Require the scope's declared prompt digests to be the variant's nested prompt digests."""
+    for scope_name, nested in (("base_prompt_sha256", "base_prompt"), ("repo_prompt_sha256", "repo_prompt")):
+        declared = require_digest(scope.get(scope_name), f"{label} scope {scope_name}")
+        if declared != variant[nested]["content_sha256"]:
+            raise GateError(f"{label} scope {scope_name} is not the variant's {nested} digest")
+
+
 def validate_activation(artifact: dict[str, Any], status: str, label: str) -> dict[str, Any]:
     exact_record(artifact, ACTIVATION_RESULT_FIELDS, label, ACTIVATION_RESULT_OPTIONAL)
     if artifact["schema_version"] != 1 or artifact["artifact_kind"] != "PROMPT_ACTIVATION_RESULT":
@@ -1184,6 +1285,10 @@ def validate_activation(artifact: dict[str, Any], status: str, label: str) -> di
         raise GateError(f"{label} operation does not match its status")
     validate_scope_digests(activation["scope"], f"{label} scope")
     validate_variant_digests(activation["effective_variant"], f"{label} effective variant")
+    # `valid_activation_shape` in `src/prompt_artifacts.align` requires the effective variant's
+    # nested prompt digests to be the scope's declared prompt digests. The gate recomputes both, so
+    # it must compare them too; otherwise a rebound scope could name prompts the variant never used.
+    bind_scope_prompts(activation["scope"], activation["effective_variant"], f"{label} activation")
     require_own_digest(activation, f"{label} activation")
 
     def pair(prefix: str) -> tuple[bool, bool]:
@@ -1500,6 +1605,195 @@ def validate_acceptance_policy(value: Any) -> dict[str, Any]:
     return policy
 
 
+def validate_embedded_references(result: Mapping[str, Any]) -> None:
+    """Bind every declared `ArtifactReference` to the artifact the same result embeds.
+
+    Each `*_source` field is a reference the evaluator wrote beside the decoded document it read.
+    The gate recomputes the embedded document's own digest elsewhere; here it requires the reference
+    to name that exact kind, identity, and digest, so a rewritten reference cannot survive.
+    """
+    for source_name, artifact_name, kind, identity in EMBEDDED_REFERENCES:
+        label = f"evaluation {source_name}"
+        reference = validate_reference(result.get(source_name), kind, label)
+        artifact = result.get(artifact_name)
+        if not isinstance(artifact, dict):
+            raise GateError(f"evaluation {artifact_name} is not an object")
+        if require_own_digest(artifact, f"evaluation {artifact_name}") != reference["content_sha256"]:
+            raise GateError(f"{label} digest does not match the embedded {artifact_name}")
+        if reference["artifact_id"] != artifact.get(identity):
+            raise GateError(f"{label} names another {artifact_name}")
+        if artifact.get("artifact_kind") != kind:
+            raise GateError(f"evaluation {artifact_name} is not a {kind}")
+
+
+def validate_corpus_coverage(result: Mapping[str, Any], scope: Mapping[str, Any]) -> None:
+    """Require the frozen corpus manifest and the evaluated task list to be the same task set.
+
+    The evaluator loads `tasks[i]` from `corpus.task_files[i]` and passes that same relative path
+    into task `i`'s automatic snapshot, so the persisted evidence carries the positional link. The
+    gate re-derives it: every declared task file is the snapshotted manifest of the task at its
+    ordinal, and no snapshot names a task the corpus does not declare.
+    """
+    corpus = exact_record(result.get("corpus"), CORPUS_FIELDS, "evaluation corpus")
+    if corpus["schema_version"] != 1 or corpus["artifact_kind"] != "PROMPT_EVALUATION_CORPUS":
+        raise GateError("evaluation corpus header is invalid")
+    if corpus["corpus_id"] != scope["corpus_id"]:
+        raise GateError("evaluation corpus id disagrees with its scope")
+    if corpus["corpus_revision"] != scope["corpus_revision"]:
+        raise GateError("evaluation corpus revision disagrees with its scope")
+    task_files = corpus["task_files"]
+    tasks = result["tasks"]
+    if not isinstance(task_files, list) or not task_files:
+        raise GateError("evaluation corpus declares no task files")
+    for ordinal, relative in enumerate(task_files):
+        require_bundle_relative(relative, f"evaluation corpus task file {ordinal}")
+    if len(set(task_files)) != len(task_files):
+        raise GateError("evaluation corpus declares one task file twice")
+    if len(task_files) != len(tasks):
+        raise GateError("evaluation corpus task files do not cover the evaluated tasks exactly")
+    task_ids = [task["task_id"] for task in tasks]
+    if len(set(task_ids)) != len(task_ids):
+        raise GateError("evaluation tasks repeat one task id")
+    declared = set(task_files)
+    snapshots = result["input_snapshots"]
+    covered: set[str] = set()
+    for ordinal, task in enumerate(tasks):
+        group = [item for item in snapshots if item["task_id"] == task["task_id"]]
+        if not group:
+            raise GateError("an evaluated task carries no input snapshot")
+        for snapshot in group:
+            if snapshot["task_manifest_sha256"] != task["content_sha256"]:
+                raise GateError("an input snapshot names another task manifest")
+            named = {entry["path"] for entry in snapshot["artifact_digests"]} & declared
+            if named != {task_files[ordinal]}:
+                raise GateError("an input snapshot does not observe its declared task file")
+        covered.add(task["task_id"])
+    if {item["task_id"] for item in snapshots} != covered:
+        raise GateError("the input snapshots cover a task the corpus does not declare")
+
+
+def validate_snapshot_closure(result: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> None:
+    """Require complete, matching before/after snapshot observation for every scored row."""
+    pools: dict[str, set[str]] = {}
+    for name, fields, kind, label in (
+        ("snapshot_requests", None, "SNAPSHOT_REQUEST", "snapshot request"),
+        ("snapshot_results", SNAPSHOT_RESULT_FIELDS, "SNAPSHOT_RESULT", "snapshot result"),
+        ("input_snapshots", INPUT_SNAPSHOT_FIELDS, "TASK_INPUT_SNAPSHOT", "input snapshot"),
+        (
+            "snapshot_attestations",
+            SNAPSHOT_ATTESTATION_FIELDS,
+            "RUN_SNAPSHOT_ATTESTATION",
+            "snapshot attestation",
+        ),
+    ):
+        stream = result.get(name)
+        if not isinstance(stream, list) or not stream:
+            raise GateError(f"gate evaluation carries no {label} stream")
+        digests: set[str] = set()
+        for item in stream:
+            if not isinstance(item, dict):
+                raise GateError(f"a {label} is not an object")
+            if fields is not None:
+                exact_record(item, fields, label)
+            if item.get("schema_version") != 1 or item.get("artifact_kind") != kind:
+                raise GateError(f"a {label} header is invalid")
+            digests.add(require_own_digest(item, label))
+        pools[name] = digests
+
+    for item in result["snapshot_results"]:
+        if item["status"] != "MATCH" or item["error_code"] != "NONE" or item["error"] != "":
+            raise GateError("a snapshot result is not MATCH")
+
+    attestations = result["snapshot_attestations"]
+    if len(attestations) != len(rows):
+        raise GateError("the snapshot attestations do not cover every row exactly once")
+    for attestation, row in zip(attestations, rows):
+        if (attestation["task_id"], attestation["sample_index"], attestation["variant"]) != (
+            row["task_id"],
+            row["sample_index"],
+            row["variant"],
+        ):
+            raise GateError("a snapshot attestation is out of row order")
+        if (
+            attestation["status"] != "COMPLETE"
+            or attestation["error_code"] != "NONE"
+            or attestation["error"] != ""
+        ):
+            raise GateError("a snapshot attestation is not COMPLETE")
+        if (
+            attestation["before_snapshot_result_sha256"]
+            != attestation["after_snapshot_result_sha256"]
+            or attestation["before_input_snapshot_sha256"]
+            != attestation["after_input_snapshot_sha256"]
+        ):
+            raise GateError("a snapshot attestation records observed drift")
+        for field, pool in (
+            ("snapshot_request_sha256", "snapshot_requests"),
+            ("before_snapshot_result_sha256", "snapshot_results"),
+            ("after_snapshot_result_sha256", "snapshot_results"),
+            ("before_input_snapshot_sha256", "input_snapshots"),
+            ("after_input_snapshot_sha256", "input_snapshots"),
+        ):
+            if require_digest(attestation[field], f"attestation {field}") not in pools[pool]:
+                raise GateError(f"a snapshot attestation {field} names no persisted record")
+
+
+def validate_workspace_preflight(result: Mapping[str, Any], evaluation_id: str) -> None:
+    """The workspace admission this evaluation actually ran under must be SAFE."""
+    request = exact_record(
+        result.get("workspace_preflight_request"),
+        WORKSPACE_PREFLIGHT_REQUEST_FIELDS,
+        "workspace preflight request",
+    )
+    if (
+        request["schema_version"] != 1
+        or request["artifact_kind"] != "WORKSPACE_PREFLIGHT_REQUEST"
+        or request["evaluation_id"] != evaluation_id
+    ):
+        raise GateError("workspace preflight request header or identity is invalid")
+    require_own_digest(request, "workspace preflight request")
+    preflight = exact_record(
+        result.get("workspace_preflight"), WORKSPACE_PREFLIGHT_FIELDS, "workspace preflight"
+    )
+    if (
+        preflight["schema_version"] != 1
+        or preflight["artifact_kind"] != "WORKSPACE_PREFLIGHT_RESULT"
+        or preflight["evaluation_id"] != evaluation_id
+    ):
+        raise GateError("workspace preflight header or identity is invalid")
+    if (
+        preflight["status"] != "SAFE"
+        or preflight["error_code"] != "NONE"
+        or preflight["error"] != ""
+    ):
+        raise GateError("gate evaluation workspace preflight is not SAFE")
+
+
+def validate_provider_binding(result: Mapping[str, Any], scope: Mapping[str, Any]) -> None:
+    """Bind the executable provider control to the scope and the generation policy that named it."""
+    control = result.get("provider_control")
+    policy = result.get("generation_policy")
+    if not isinstance(control, dict) or not isinstance(policy, dict):
+        raise GateError("gate evaluation has no provider control or generation policy")
+    if control.get("provider_kind") == "FIXTURE":
+        raise GateError("gate evaluation used the FIXTURE provider")
+    if policy["provider_control_sha256"] != control["content_sha256"]:
+        raise GateError("generation policy does not bind the evaluated provider control")
+    for policy_name, control_name in (
+        ("evaluation_provider_kind", "provider_kind"),
+        ("evaluation_provider_endpoint_id", "endpoint_id"),
+        ("evaluation_provider_model", "model"),
+    ):
+        if policy[policy_name] != control[control_name]:
+            raise GateError(f"generation policy {policy_name} disagrees with the provider control")
+    for scope_name, control_name in (
+        ("evaluation_provider_kind", "provider_kind"),
+        ("evaluation_provider_model", "model"),
+    ):
+        if scope[scope_name] != control[control_name]:
+            raise GateError(f"evaluation scope {scope_name} disagrees with the provider control")
+
+
 def validate_evaluation_pair(
     result: dict[str, Any], evidence: dict[str, Any]
 ) -> tuple[str, str, dict[str, Any]]:
@@ -1589,10 +1883,26 @@ def validate_evaluation_pair(
     candidate_digest = validate_variant_digests(result.get("candidate_variant"), "candidate variant")
     if parent_digest == candidate_digest:
         raise GateError("gate evaluation parent and candidate variants are identical")
+    # Section 4.2: the scope's prompt digests are the evaluated hierarchy, so both variants must
+    # carry exactly those nested prompts. This mirrors `valid_activation_shape`.
+    bind_scope_prompts(scope, result["parent_variant"], "gate evaluation parent")
+    bind_scope_prompts(scope, result["candidate_variant"], "gate evaluation candidate")
+
+    # Every reference the result declares is bound to the artifact the same result embeds, and the
+    # embedded policies are bound back to the scope digests that name them.
+    validate_embedded_references(result)
+    if scope["acceptance_policy_sha256"] != result["acceptance_policy"]["content_sha256"]:
+        raise GateError("evaluation scope acceptance policy digest is not the evaluated policy")
+    if scope["generation_policy_sha256"] != result["generation_policy"]["content_sha256"]:
+        raise GateError("evaluation scope generation policy digest is not the evaluated policy")
+    validate_provider_binding(result, scope)
+    validate_workspace_preflight(result, evaluation_id)
+    validate_corpus_coverage(result, scope)
 
     rows = result["rows"]
     if not isinstance(rows, list) or not rows:
         raise GateError("gate evaluation has no rows")
+    validate_snapshot_closure(result, rows)
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise GateError("evaluation row is not an object")
@@ -1652,11 +1962,6 @@ def validate_evaluation_pair(
     if completed_record(persisted_corpus, CORPUS_AGGREGATE_FIELDS) != corpus:
         raise GateError("persisted corpus aggregate disagrees with the recomputed value")
 
-    provider_control = result.get("provider_control")
-    if not isinstance(provider_control, dict):
-        raise GateError("gate evaluation has no provider control")
-    if provider_control.get("provider_kind") == "FIXTURE":
-        raise GateError("gate evaluation used the FIXTURE provider")
     if len(result["tasks"]) < policy["minimum_task_count"]:
         raise GateError("gate evaluation task count is below the acceptance policy minimum")
     if result["sample_count"] < policy["minimum_samples_per_variant"]:
@@ -1944,6 +2249,26 @@ def observe_source_bundle(
 # --- entry point ---------------------------------------------------------------------
 
 
+def bind_environment_identity(
+    core: Mapping[str, Any], locator: Mapping[str, Any], environment_policy: Mapping[str, Any]
+) -> None:
+    """Bind the producer-owned environment identity to the checked-in gate inputs.
+
+    `EnvironmentIdentityCore` records the source-verifier runtime and policy digest the measurement
+    ran under and the environment policy the adapters were launched with. All three are checked-in
+    gate inputs, so the gate requires the recorded identity to be the reviewed one rather than an
+    unverified claim.
+    """
+    for core_name, locator_name in (
+        ("source_verifier_runtime", "source_verifier_runtime"),
+        ("source_verifier_policy_sha256", "source_verifier_policy_sha256"),
+    ):
+        if core.get(core_name) != locator[locator_name]:
+            raise GateError(f"evaluation environment {core_name} disagrees with the gate locator")
+    if core.get("environment_policy_sha256") != environment_policy["content_sha256"]:
+        raise GateError("evaluation environment policy digest is not the checked-in gate policy")
+
+
 def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=True, description="Validate the C6 gate bundle.")
     parser.add_argument("--source-bundle-root", required=True)
@@ -2022,6 +2347,18 @@ def validate(values: argparse.Namespace) -> None:
             rollback = load_referenced(
                 directory, manifest["rollback_activation"], ACTIVATION_LIMIT, "rollback activation"
             )
+            environment_policy = load_referenced(
+                directory, manifest["environment_policy"], POLICY_LIMIT, "gate environment policy"
+            )
+            if (
+                environment_policy.get("schema_version") != 1
+                or environment_policy.get("artifact_kind") != "ENVIRONMENT_POLICY"
+            ):
+                raise GateError("gate environment policy header is invalid")
+            if manifest["environment_policy"]["artifact_id"] != environment_policy.get(
+                ENVIRONMENT_POLICY_IDENTITY
+            ):
+                raise GateError("gate manifest environment policy reference names another policy")
             if manifest["improved_evaluation_evidence"]["artifact_id"] != manifest[
                 "improved_evaluation"
             ]["artifact_id"]:
@@ -2055,6 +2392,9 @@ def validate(values: argparse.Namespace) -> None:
                 parent_digest,
                 candidate_digest,
                 scope_digest,
+            )
+            bind_environment_identity(
+                result["environment"]["core"], manifest["source_locator"], environment_policy
             )
             observe_source_bundle(
                 manifest["source_locator"],

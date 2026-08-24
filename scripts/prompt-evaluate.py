@@ -2435,7 +2435,11 @@ def source_trust(
 def validation_error_code(error: BaseException) -> str:
     detail = str(error).lower()
     if "credential" in detail:
-        return "MISSING_CREDENTIAL"
+        # `MISSING_CREDENTIAL` is the section 5 code for an absent or empty credential, not for
+        # every message that happens to mention one. A declared name that conflicts with the
+        # environment policy is an invalid declaration and takes the same `INVALID_SCHEMA` code as
+        # a malformed or oversized name, so a first-substring match cannot mislabel it.
+        return "MISSING_CREDENTIAL" if "missing" in detail or "empty" in detail else "INVALID_SCHEMA"
     if "identifier" in detail:
         return "INVALID_ID"
     if "unavailable" in detail or "not found" in detail:
@@ -3435,6 +3439,10 @@ def evaluate(
                         "patch_sha256": task["patch_sha256"],
                         "generation_child_path": str(generation_child),
                         "generation_child_sha256": request["generation_child_sha256"],
+                        # The task's own deadline bounds the adapter's contained validation runner.
+                        # The generation child keeps the provider-control deadline, so the two
+                        # sequential inner children stay strictly inside the outer sum below.
+                        "task_deadline_ns": task["timeout_ns"],
                         "content_sha256": "",
                     })
                     adapter_request_path = temporary_json(

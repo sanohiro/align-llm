@@ -345,7 +345,12 @@ def whole_file_hunk(path: str, old: str | None, new: str) -> str:
         old_lines, old_complete = [], True
     else:
         old_lines, old_complete = split_diff_lines(old)
-        if (old_lines, old_complete) == (new_lines, new_complete):
+        # A fenced block always ends with a line break before its closing fence, so the parser
+        # reconstructs every body with a final newline and the format cannot express its absence.
+        # A pinned file that ends without one is therefore reproduced exactly when the line
+        # sequences agree, and the unchanged-content refusal must still fire; otherwise every such
+        # file would yield a spurious whole-file hunk that only adds a newline.
+        if old_lines == new_lines and (old_complete == new_complete or not old_complete):
             return ""
         header = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
     parts = [header, f"@@ -{1 if old_lines else 0},{len(old_lines)} +{1 if new_lines else 0},{len(new_lines)} @@\n"]
@@ -608,7 +613,7 @@ REQUEST_FIELDS = (
     "credential_env_name", "environment_policy_sha256", "validation_runner_path",
     "validation_runner_sha256", "task_definition_path", "task_definition_sha256",
     "validation_argv", "patch_path", "patch_sha256", "generation_child_path",
-    "generation_child_sha256", "content_sha256",
+    "generation_child_sha256", "task_deadline_ns", "content_sha256",
 )
 
 
@@ -622,6 +627,9 @@ def load_request(path: Path) -> dict[str, Any]:
         raise AdapterError("adapter request sample identity is invalid")
     if value["sample_index"] < 1 or not isinstance(value["paired_seed"], int):
         raise AdapterError("adapter request sample identity is invalid")
+    deadline = value["task_deadline_ns"]
+    if not isinstance(deadline, int) or isinstance(deadline, bool) or deadline <= 0:
+        raise AdapterError("adapter request task deadline is invalid")
     if value["credential_env_name"] is not None and not isinstance(value["credential_env_name"], str):
         raise AdapterError("adapter request credential identity is invalid")
     for name in (
@@ -680,6 +688,18 @@ def redact(text: str, credential: str | None) -> str:
     return text.replace(credential, "[REDACTED]")
 
 
+def redacted_bytes(raw: bytes, credential: str | None) -> bytes:
+    """The section 1.2 pass over raw bytes, so it can run before any byte-level truncation."""
+    if not credential:
+        return raw
+    return raw.replace(credential.encode("utf-8"), b"[REDACTED]")
+
+
+def bounded_diagnostic(text: str, credential: str | None) -> bytes:
+    """Redact a diagnostic string first, then bound it. Never the other way round."""
+    return redacted_bytes(text.encode("utf-8"), credential)[:DIAGNOSTIC_LIMIT]
+
+
 def bounded_text(raw: bytes, limit: int, credential: str | None) -> str:
     text = redact(raw.decode("utf-8", "replace"), credential)
     encoded = text.encode("utf-8")
@@ -690,29 +710,66 @@ def bounded_text(raw: bytes, limit: int, credential: str | None) -> str:
 
 
 class BoundedCapture:
-    def __init__(self) -> None:
+    """A bounded capture that redacts before it truncates.
+
+    The section 1.2 pass must run on the complete stream: truncating first can split a credential
+    across the boundary, leaving a prefix of the secret inside the retained bytes that no later
+    replacement can find. Each chunk is therefore appended to a small pending tail, everything that
+    can no longer begin a credential occurrence is redacted and only then admitted against the
+    bound, and the residual tail is redacted at close.
+    """
+
+    def __init__(self, credential: str | None = None) -> None:
         self.data = bytearray()
         self.truncated = False
+        self.pending = bytearray()
+        self.credential = (credential or "").encode("utf-8")
+
+    def _admit(self, raw: bytes) -> None:
+        if self.truncated or not raw:
+            return
+        remaining = DIAGNOSTIC_LIMIT - len(self.data)
+        if len(raw) > remaining:
+            self.data.extend(raw[:remaining])
+            self.truncated = True
+        else:
+            self.data.extend(raw)
+
+    def _redacted(self, raw: bytes) -> bytes:
+        return raw.replace(self.credential, b"[REDACTED]") if self.credential else raw
 
     def append(self, chunk: bytes) -> None:
         if self.truncated:
             return
-        remaining = DIAGNOSTIC_LIMIT - len(self.data)
-        if len(chunk) > remaining:
-            self.data.extend(chunk[:remaining])
-            self.truncated = True
-        else:
-            self.data.extend(chunk)
+        if not self.credential:
+            self._admit(chunk)
+            return
+        self.pending.extend(chunk)
+        # The whole pending window is redacted, then everything except its last
+        # `len(credential) - 1` bytes is admitted: only those trailing bytes can still begin an
+        # occurrence that the next chunk completes, so nothing that could be part of a credential
+        # is ever admitted before the pass has seen its complete bytes.
+        redacted = self._redacted(bytes(self.pending))
+        keep = len(self.credential) - 1
+        if len(redacted) > keep:
+            self._admit(redacted[: len(redacted) - keep] if keep else redacted)
+            self.pending = bytearray(redacted[len(redacted) - keep :]) if keep else bytearray()
 
     def bytes(self) -> bytes:
+        if self.pending:
+            raw = bytes(self.pending)
+            self.pending.clear()
+            self._admit(self._redacted(raw))
         if not self.truncated:
             return bytes(self.data)
         prefix = max(0, DIAGNOSTIC_LIMIT - len(TRUNCATION_MARKER))
         return bytes(self.data[:prefix]) + TRUNCATION_MARKER
 
 
-def capture_output(process: subprocess.Popen[bytes], timeout: float) -> tuple[bytes, bytes]:
-    captures = {"stdout": BoundedCapture(), "stderr": BoundedCapture()}
+def capture_output(
+    process: subprocess.Popen[bytes], timeout: float, credential: str | None = None,
+) -> tuple[bytes, bytes]:
+    captures = {"stdout": BoundedCapture(credential), "stderr": BoundedCapture(credential)}
     selector = selectors.DefaultSelector()
     deadline = time.monotonic() + timeout
     try:
@@ -866,6 +923,7 @@ def run_generation_child(
     timeout: float,
     environment: Mapping[str, str],
     project: Path,
+    credential: str | None,
 ) -> dict[str, Any]:
     """Launch the sealed generation child exactly once and return its validated response.
 
@@ -899,7 +957,7 @@ def run_generation_child(
             start_new_session=True,
             pass_fds=(child.descriptor,),
         )
-        stdout, stderr = capture_output(process, timeout)
+        stdout, stderr = capture_output(process, timeout, credential)
         # The retained input must be unchanged after the child returns.
         child.verify_sealed()
         if process_group_exists(process.pid) or owned_descendant_ids(process):
@@ -908,10 +966,10 @@ def run_generation_child(
                 "generation child left a descendant", cleanup_passed, False,
             )
         if process.returncode != 0:
-            raise GenerationFailure(
-                f"generation child exited {process.returncode}: "
-                f"{stderr.decode('utf-8', 'replace')[:256]}"
-            )
+            # `stderr` left `BoundedCapture` already redacted; the slice below is a second
+            # truncation, so the bytes are redacted before it and never after.
+            detail = redacted_bytes(stderr, credential)[:256].decode("utf-8", "replace")
+            raise GenerationFailure(f"generation child exited {process.returncode}: {detail}")
         return validated_generation_response(response_path, document["paired_seed"])
     except subprocess.TimeoutExpired:
         assert process is not None
@@ -931,6 +989,7 @@ def execute_validation(
     timeout_ns: int,
     environment: Mapping[str, str],
     project: Path,
+    credential: str | None,
 ) -> tuple[str, bool, bool, bytes, bytes]:
     """Run the declared validation runner contained, exactly as the fixed adapter does."""
     timeout = max(0.001, timeout_ns / 1_000_000_000)
@@ -956,7 +1015,7 @@ def execute_validation(
             start_new_session=True,
             pass_fds=(runner.descriptor, task_definition.descriptor, patch.descriptor),
         )
-        stdout, stderr = capture_output(process, timeout)
+        stdout, stderr = capture_output(process, timeout, credential)
         for item in (runner, task_definition, patch):
             item.verify_sealed()
         if process_group_exists(process.pid) or owned_descendant_ids(process):
@@ -971,10 +1030,10 @@ def execute_validation(
     except subprocess.TimeoutExpired as error:
         assert process is not None
         cleanup_passed = cleanup_process_group(process)
-        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        return "ERROR", cleanup_passed, cleanup_passed, b"", bounded_diagnostic(str(error), credential)
     except (OSError, AdapterError) as error:
         cleanup_passed = True if process is None else cleanup_process_group(process)
-        return "ERROR", cleanup_passed, cleanup_passed, b"", str(error).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        return "ERROR", cleanup_passed, cleanup_passed, b"", bounded_diagnostic(str(error), credential)
 
 
 def provider_identities(
@@ -1104,6 +1163,7 @@ def measurement(
         started = time.monotonic_ns()
         response = run_generation_child(
             child, document, scratch, provider_timeout, generation_environment, project,
+            credential_value,
         )
         if declared_patch is not None:
             # A deterministic fixture-style task declares its own patch; nothing is parsed from the
@@ -1119,9 +1179,13 @@ def measurement(
             patch = ProducedInput(synthesized_patch(edits, source_root), "generated-patch")
             retained.append(patch)
         patch_byte_count = patch.byte_count
+        # The validation runner is bounded by the task's own declared deadline, not by the
+        # provider-control deadline that bounds the generation child. Two sequential children each
+        # bounded by the provider deadline could exceed the evaluator's outer sum; bounded by the
+        # provider and task deadlines respectively they cannot.
         outcome, cleanup_passed, containment_passed, stdout, stderr = execute_validation(
-            request, runner, task_definition, patch, control["timeout_ns"], policy_environment,
-            project,
+            request, runner, task_definition, patch, request["task_deadline_ns"],
+            policy_environment, project, credential_value,
         )
         if outcome == "PASS":
             # Stopped immediately after the first full required validation command passes.
@@ -1137,21 +1201,21 @@ def measurement(
         # a policy violation is a scored outcome, not a failed handoff.
         outcome, generation_ns = "POLICY", None
         summary = str(failure)
-        stderr = str(failure).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        stderr = bounded_diagnostic(str(failure), credential_value)
     except EditFormatError as failure:
         outcome, generation_ns = "PATCH", None
         summary = str(failure)
-        stderr = str(failure).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        stderr = bounded_diagnostic(str(failure), credential_value)
     except GenerationFailure as failure:
         outcome, response, generation_ns = "ERROR", None, None
         cleanup_passed = failure.cleanup_passed
         containment_passed = failure.containment_passed
         summary = str(failure)
-        stderr = str(failure).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        stderr = bounded_diagnostic(str(failure), credential_value)
     except (AdapterError, OSError, TypeError, ValueError, KeyError) as failure:
         outcome, response, generation_ns = "ERROR", None, None
         summary = str(failure)
-        stderr = str(failure).encode("utf-8")[:DIAGNOSTIC_LIMIT]
+        stderr = bounded_diagnostic(str(failure), credential_value)
     finally:
         for item in retained:
             try:

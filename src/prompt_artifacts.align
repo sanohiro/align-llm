@@ -286,6 +286,10 @@ pub TaskAdapterRequest {
   patch_sha256: Option<string>,
   generation_child_path: string,
   generation_child_sha256: string,
+  // The task's own declared deadline. The generation child is bounded by the provider-control
+  // deadline and the validation runner by this one, so the two contained children together stay
+  // strictly inside the evaluator's outer sum.
+  task_deadline_ns: i64,
   content_sha256: string,
 }
 

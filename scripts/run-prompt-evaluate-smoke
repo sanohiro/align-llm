@@ -243,6 +243,28 @@ def verify_descendant_cleanup_boundary() -> None:
         and "SOURCE_VERIFIER_OUTER_TIMEOUT_NS" in source,
         "nested child owners lost their cleanup/report deadline margin",
     )
+    # Both inner deadlines the adapter applies must be strictly smaller than that outer sum: the
+    # generation child keeps the provider-control deadline and the validation runner is bounded by
+    # the task deadline the request now carries, so neither child, nor both in sequence, can reach
+    # the evaluator deadline that started earlier.
+    adapter_source = (SOURCE / "scripts" / "prompt-measurement-adapter.py").read_text()
+    require(
+        'request["task_deadline_ns"]' in adapter_source
+        and 'control["timeout_ns"] / 1_000_000_000' in adapter_source
+        and 'execute_validation(\n            request, runner, task_definition, patch, control["timeout_ns"]'
+        not in adapter_source,
+        "the adapter no longer bounds its validation runner by the declared task deadline",
+    )
+    require(
+        source.count('"task_deadline_ns": task["timeout_ns"]') == 1,
+        "the evaluator no longer declares the task deadline in its adapter request",
+    )
+    for task_ns, provider_ns in ((30_000_000_000, 1_800_000_000_000), (1, 1), (7_200_000_000_000, 1)):
+        outer = module.nested_owner_timeout(task_ns + provider_ns)
+        require(
+            task_ns < outer and provider_ns < outer and task_ns + provider_ns < outer,
+            f"an inner adapter deadline is not strictly smaller than the outer sum {outer}",
+        )
     original_cleanup = module.cleanup_process_group
     cleanup_calls = 0
 
@@ -996,7 +1018,9 @@ def verify_provider_admission_boundary() -> None:
             f"{provider_kind} with a credential name was not admitted",
         )
     rejected("CLOUD_OPENAI", None, "MISSING_CREDENTIAL", "a cloud provider without a credential name")
-    rejected("LOCAL_OPENAI", "PATH", "MISSING_CREDENTIAL", "a credential name inside the policy")
+    # A name that conflicts with the environment policy is an invalid declaration, not a missing
+    # credential: the substring "credential" alone must not select `MISSING_CREDENTIAL`.
+    rejected("LOCAL_OPENAI", "PATH", "INVALID_SCHEMA", "a credential name inside the policy")
     rejected("LLAMA_CPP", "PROVIDER_KEY", "INVALID_SCHEMA", "an uncredentialed llama.cpp credential name")
     rejected("FIXTURE", "PROVIDER_KEY", "INVALID_SCHEMA", "a fixture credential name")
     rejected("LIVE", None, "INVALID_SCHEMA", "an undeclared provider kind")
@@ -1039,8 +1063,8 @@ def verify_provider_admission_boundary() -> None:
         module.adapter_child_environment(policy_values, "PATH", "probe-value")
     except module.EvaluationError as failure:
         require(
-            module.validation_error_code(failure) == "MISSING_CREDENTIAL",
-            "a conflicting credential name was not MISSING_CREDENTIAL",
+            module.validation_error_code(failure) == "INVALID_SCHEMA",
+            "a conflicting credential name was not INVALID_SCHEMA",
         )
     else:
         raise RuntimeError("a credential name conflicting with the policy was injected")

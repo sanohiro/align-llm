@@ -308,7 +308,7 @@ REQUEST_FIELDS = (
     "credential_env_name", "environment_policy_sha256", "validation_runner_path",
     "validation_runner_sha256", "task_definition_path", "task_definition_sha256",
     "validation_argv", "patch_path", "patch_sha256", "generation_child_path",
-    "generation_child_sha256", "content_sha256",
+    "generation_child_sha256", "task_deadline_ns", "content_sha256",
 )
 
 
@@ -320,6 +320,9 @@ def load_request(path: Path) -> dict[str, Any]:
         raise AdapterError("adapter request sample identity is invalid")
     if not isinstance(value["paired_seed"], int) or value["credential_env_name"] is not None:
         raise AdapterError("fixture adapter seed or credential identity is invalid")
+    deadline = value["task_deadline_ns"]
+    if not isinstance(deadline, int) or isinstance(deadline, bool) or deadline <= 0:
+        raise AdapterError("adapter request task deadline is invalid")
     for name in (
         "variant_sha256", "rendered_prompt_sha256", "generation_policy_sha256",
         "provider_control_sha256", "environment_policy_sha256", "validation_runner_sha256",

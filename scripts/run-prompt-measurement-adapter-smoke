@@ -249,6 +249,7 @@ class Fixture:
             "patch_path": None, "patch_sha256": None,
             "generation_child_path": str(self.child_path),
             "generation_child_sha256": raw_digest(self.child_path),
+            "task_deadline_ns": 30_000_000_000,
             "content_sha256": "",
         }
         value.update(overrides)
@@ -306,7 +307,7 @@ def unit_rows(module) -> list[str]:
     require(
         module.REQUEST_FIELDS[23:] == (
             "validation_argv", "patch_path", "patch_sha256", "generation_child_path",
-            "generation_child_sha256", "content_sha256",
+            "generation_child_sha256", "task_deadline_ns", "content_sha256",
         ),
         "the task-parameterization fields are not appended before content_sha256",
     )
@@ -334,7 +335,8 @@ def unit_rows(module) -> list[str]:
         "task_definition_path": "/task", "task_definition_sha256": "0" * 64,
         "validation_argv": ["--retained-inputs", "%TASK%", "%PATCH%"],
         "patch_path": None, "patch_sha256": None, "generation_child_path": "/child",
-        "generation_child_sha256": "1" * 64, "content_sha256": "",
+        "generation_child_sha256": "1" * 64, "task_deadline_ns": 30_000_000_000,
+        "content_sha256": "",
     })
     expected_preimage = (
         '{"schema_version":1,"artifact_kind":"TASK_ADAPTER_REQUEST","evaluation_id":"e",'
@@ -348,7 +350,7 @@ def unit_rows(module) -> list[str]:
         '"task_definition_path":"/task","task_definition_sha256":"' + "0" * 64 + '",'
         '"validation_argv":["--retained-inputs","%TASK%","%PATCH%"],'
         '"generation_child_path":"/child","generation_child_sha256":"' + "1" * 64 + '",'
-        '"content_sha256":""}'
+        '"task_deadline_ns":30000000000,"content_sha256":""}'
     )
     require(
         module.canonical_digest_bytes(golden).decode("utf-8") == expected_preimage,
@@ -410,6 +412,96 @@ def unit_rows(module) -> list[str]:
     require("FIXTURE" in ADAPTER.read_text(encoding="utf-8"), "the FIXTURE rejection was removed")
     covered.append("fixture-control-rejected")
     covered += edit_format_rows(module)
+    covered += redaction_order_rows(module)
+    covered += deadline_rows(module)
+    return covered
+
+
+def deadline_rows(module) -> list[str]:
+    """The task deadline is a declared request field and is validated before any launch."""
+    covered: list[str] = []
+    require(
+        module.REQUEST_FIELDS.index("task_deadline_ns") == len(module.REQUEST_FIELDS) - 2,
+        "the task deadline is not appended immediately before content_sha256",
+    )
+    covered.append("task-deadline-field-order")
+    with tempfile.TemporaryDirectory(prefix="prompt-measurement-deadline-") as directory:
+        scratch = Path(directory).resolve()
+        fixture = Fixture(scratch, "deadline-admission")
+        for label, value in (("zero", 0), ("negative", -1), ("non-integer", "30"), ("boolean", True)):
+            request = fixture.request()
+            request["task_deadline_ns"] = value
+            bind(request)
+            fixture.request_path.write_bytes(canonical(request))
+            try:
+                module.load_request(fixture.request_path)
+            except module.AdapterError:
+                covered.append(f"task-deadline-{label}")
+                continue
+            raise RuntimeError(f"task-deadline-{label}: an invalid task deadline was admitted")
+        request = fixture.request()
+        require(
+            module.load_request(fixture.request_path)["task_deadline_ns"]
+            == request["task_deadline_ns"],
+            "task-deadline-admitted: a valid task deadline was not decoded",
+        )
+        covered.append("task-deadline-admitted")
+    return covered
+
+
+def redaction_order_rows(module) -> list[str]:
+    """Redaction runs before every truncation, including the ones a boundary can split."""
+    covered: list[str] = []
+    secret = "sk-.*+?[a-z]$-SECRET"
+    raw = secret.encode("utf-8")
+
+    # A credential split across two reads must still be redacted: the capture holds back the bytes
+    # that can still begin an occurrence instead of admitting a prefix that nothing can match later.
+    capture = module.BoundedCapture(secret)
+    capture.append(b"before " + raw[:5])
+    capture.append(raw[5:] + b" after")
+    observed = capture.bytes()
+    require(
+        raw not in observed and observed == b"before [REDACTED] after",
+        f"boundary-split credential survived the capture: {observed!r}",
+    )
+    covered.append("redact-split-chunk")
+
+    # A credential straddling the diagnostic bound must be redacted before the bound applies, so no
+    # prefix of it can be retained by the truncation.
+    capture = module.BoundedCapture(secret)
+    filler = b"x" * (module.DIAGNOSTIC_LIMIT - len(raw) // 2)
+    capture.append(filler + raw + b"tail")
+    observed = capture.bytes()
+    require(
+        raw not in observed and not any(
+            observed.endswith(raw[:index]) for index in range(1, len(raw))
+        ),
+        "a credential straddling the diagnostic bound was truncated before redaction",
+    )
+    require(observed.endswith(module.TRUNCATION_MARKER), "the bounded capture lost its marker")
+    covered.append("redact-before-truncation-bound")
+
+    # An empty credential is the ordinary `api_key_env: None` path and changes nothing.
+    plain = module.BoundedCapture(None)
+    plain.append(b"ordinary output\n")
+    require(plain.bytes() == b"ordinary output\n", "the uncredentialed capture altered its bytes")
+    covered.append("redact-empty-pattern")
+
+    # Every diagnostic string is redacted before it is sliced to the diagnostic bound.
+    detail = "failed: " + secret * 4_000
+    bounded = module.bounded_diagnostic(detail, secret)
+    require(
+        raw not in bounded and len(bounded) <= module.DIAGNOSTIC_LIMIT,
+        "a diagnostic string was truncated before redaction",
+    )
+    covered.append("redact-bounded-diagnostic")
+
+    # The same order holds for the byte helper the nonzero-exit detail slice uses.
+    prefix = b"y" * 250
+    reduced = module.redacted_bytes(prefix + raw, secret)[:256]
+    require(raw not in reduced, "the child-exit detail was sliced before redaction")
+    covered.append("redact-child-exit-detail")
     return covered
 
 
@@ -541,6 +633,27 @@ def edit_format_rows(module) -> list[str]:
             covered.append("diff-unchanged")
         else:
             raise RuntimeError("diff-unchanged: an empty patch was produced")
+
+        # The fenced block format always reconstructs a final newline, so a pinned file that has
+        # none is reproduced exactly when the line sequences agree. That must still be the
+        # unchanged-content refusal, not a spurious newline-only hunk.
+        (source / "src" / "one.py").write_text("alpha\nbeta", encoding="utf-8")
+        try:
+            module.synthesized_patch([("src/one.py", "alpha\nbeta\n")], source)
+        except module.EditFormatError:
+            covered.append("diff-unchanged-without-trailing-newline")
+        else:
+            raise RuntimeError(
+                "diff-unchanged-without-trailing-newline: a newline-only patch was produced"
+            )
+        # A real edit to the same file is still a real hunk.
+        changed = module.synthesized_patch([("src/one.py", "alpha\ngamma\n")], source).decode("utf-8")
+        require(
+            "+gamma\n" in changed and "-beta\n" in changed,
+            f"diff-changed-without-trailing-newline: {changed!r}",
+        )
+        covered.append("diff-changed-without-trailing-newline")
+        (source / "src" / "one.py").write_text("alpha\nbeta\n", encoding="utf-8")
 
         # A file the pinned tree does not carry is created rather than diffed against nothing.
         created = module.synthesized_patch([("src/new.py", "delta\n")], source).decode("utf-8")
@@ -710,6 +823,70 @@ def launch_rows(root: Path) -> list[str]:
     require(time.monotonic() - started < 30, "child-timeout: the adapter did not bound the child")
     assert_not_scoreable("child-timeout", result, "ADAPTER")
     covered.append("child-timeout")
+
+    # The contained validation runner is bounded by the declared task deadline, not by the much
+    # larger provider-control deadline that bounds the generation child. A runner that outlives the
+    # task deadline is stopped well before the provider deadline could expire.
+    fixture = Fixture(root, "task-deadline-bounds-runner")
+    fixture.runner_path.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    fixture.request(
+        validation_runner_sha256=raw_digest(fixture.runner_path),
+        task_deadline_ns=300_000_000,
+    )
+    started = time.monotonic()
+    _, result = fixture.invoke()
+    elapsed = time.monotonic() - started
+    require(
+        elapsed < 15,
+        f"task-deadline-bounds-runner: the runner was not bounded by the task deadline ({elapsed:.1f}s)",
+    )
+    assert_not_scoreable("task-deadline-bounds-runner", result, "ADAPTER")
+    covered.append("task-deadline-bounds-runner")
+
+    # A credential that reaches the generation child's stderr must not survive the nonzero-exit
+    # detail slice, which is a truncation that runs after redaction.
+    fixture = Fixture(root, "credential-child-exit-detail")
+    secret = "sk-child-exit-.*+?[a-z]$-SECRET"
+    fixture.child_path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stderr.write('x' * 250 + " + repr(secret) + " + 'tail')\n"
+        "raise SystemExit(9)\n",
+        encoding="utf-8",
+    )
+    fixture.child_path.chmod(0o755)
+    control = dict(fixture.control)
+    control["api_key_env"] = "ALIGN_LLM_MEASUREMENT_KEY"
+    store(fixture.control_path, control)
+    policy = dict(fixture.policy)
+    policy["provider_control_sha256"] = control["content_sha256"]
+    store(fixture.policy_path, policy)
+    fixture.request(
+        credential_env_name="ALIGN_LLM_MEASUREMENT_KEY",
+        provider_control_sha256=control["content_sha256"],
+        generation_policy_sha256=policy["content_sha256"],
+        generation_child_sha256=raw_digest(fixture.child_path),
+    )
+    environment = dict(os.environ)
+    environment["ALIGN_LLM_MEASUREMENT_KEY"] = secret
+    subprocess.run(
+        [
+            sys.executable, str(ADAPTER),
+            "--prompt-variant", str(fixture.variant_path),
+            "--rendered-prompt", str(fixture.rendered_path),
+            "--sample-index", "1", "--paired-seed", "100",
+            "--adapter-request", str(fixture.request_path),
+            "--result", str(fixture.result_path),
+        ],
+        env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120,
+    )
+    result = json.loads(fixture.result_path.read_text(encoding="utf-8"))
+    assert_not_scoreable("credential-child-exit-detail", result, "ADAPTER")
+    require(
+        secret.encode("utf-8") not in fixture.result_path.read_bytes(),
+        "credential-child-exit-detail: a credential survived the child-exit detail slice",
+    )
+    covered.append("credential-child-exit-detail")
 
     # A response whose file block names a path outside the declared editable set is refused before
     # the validation runner is launched, and the row stays a scored policy violation whose seed

@@ -31,6 +31,7 @@ EVALUATION_NAME = "prompt-evaluation-improved.json"
 EVIDENCE_NAME = "prompt-evaluation-improved-evidence.json"
 ACCEPTED_NAME = "prompt-activation-accepted.json"
 ROLLBACK_NAME = "prompt-activation-rolled-back.json"
+ENVIRONMENT_POLICY_NAME = "environment-policy.json"
 POLICY_RELATIVE = "source-verifier-policy.json"
 VERIFIER_RELATIVE = "prompt-source-verifier.py"
 GENERATION_CHILD_RELATIVE = "build/main"
@@ -76,6 +77,59 @@ def bind_activation(value: dict[str, Any]) -> dict[str, Any]:
     bind_scope(activation["scope"], activation["effective_variant"])
     bind(activation)
     return bind(value)
+
+
+def bind_declared_inputs(result: dict[str, Any]) -> None:
+    """Bind the corpus, task, snapshot, and preflight documents the gate now cross-checks.
+
+    The shipped evaluator emits one consistent set of declared inputs: the corpus names the task
+    files, each task's automatic snapshot observes its own task file, every attestation names the
+    exact snapshot documents it observed, and each `*_source` reference carries the digest of the
+    document the same result embeds. The fixture reproduces those links so a rejection family only
+    has to break the one it owns.
+    """
+    for task in result["tasks"]:
+        bind(task)
+    task_files = result["corpus"]["task_files"]
+    bind(result["corpus"])
+    for ordinal, snapshot in enumerate(result["input_snapshots"]):
+        task = result["tasks"][min(ordinal, len(result["tasks"]) - 1)]
+        snapshot["task_id"] = task["task_id"]
+        snapshot["task_manifest_sha256"] = task["content_sha256"]
+        declared = task_files[min(ordinal, len(task_files) - 1)]
+        if all(entry["path"] != declared for entry in snapshot["artifact_digests"]):
+            snapshot["artifact_digests"].append(
+                {
+                    "path": declared,
+                    "mode": "100644",
+                    "byte_count": 1,
+                    "sha256": task["content_sha256"],
+                }
+            )
+        bind(snapshot)
+    for stream in ("snapshot_requests", "snapshot_results"):
+        for item in result[stream]:
+            bind(item)
+    request_digest = result["snapshot_requests"][0]["content_sha256"]
+    snapshot_digest = result["snapshot_results"][0]["content_sha256"]
+    input_digest = result["input_snapshots"][0]["content_sha256"]
+    for attestation in result["snapshot_attestations"]:
+        attestation["snapshot_request_sha256"] = request_digest
+        attestation["before_snapshot_result_sha256"] = snapshot_digest
+        attestation["after_snapshot_result_sha256"] = snapshot_digest
+        attestation["before_input_snapshot_sha256"] = input_digest
+        attestation["after_input_snapshot_sha256"] = input_digest
+        bind(attestation)
+    bind(result["workspace_preflight_request"])
+    bind(result["workspace_preflight"])
+    for source_name, artifact_name in (
+        ("corpus_source", "corpus"),
+        ("acceptance_policy_source", "acceptance_policy"),
+        ("generation_policy_source", "generation_policy"),
+        ("provider_control_source", "provider_control"),
+        ("workspace_preflight_source", "workspace_preflight"),
+    ):
+        result[source_name]["content_sha256"] = result[artifact_name]["content_sha256"]
 
 
 def sha256_bytes(path: Path) -> str:
@@ -201,13 +255,50 @@ class GateBundle:
         documents = [json.loads(line) for line in TEMPLATES.read_text("utf-8").splitlines()]
         result, _ineligible, evidence, baseline = (copy.deepcopy(item) for item in documents)
 
+        # The environment policy travels with the gate evidence and is bound by the manifest.
+        self.environment_policy = bind(
+            {
+                "schema_version": 1,
+                "artifact_kind": "ENVIRONMENT_POLICY",
+                "policy_id": "gate-environment-v1",
+                "allowed_variables": [
+                    {
+                        "name": name,
+                        "non_secret_value": value,
+                        "source": "EXPLICIT_POLICY",
+                        "precedence": precedence,
+                    }
+                    for precedence, (name, value) in enumerate(
+                        (("LANG", "C"), ("LC_ALL", "C"), ("PATH", "/usr/bin:/bin"))
+                    )
+                ],
+                "executable_paths": ["/usr/bin/python3"],
+                "locale": "C",
+                "content_sha256": "",
+            }
+        )
+
         # Bind the fixture to the real fixture source identities.
         result["scope"]["align_revision"] = self.align_revision
         result["scope"]["corpus_revision"]["source_sha256"] = self.corpus_revision
-        result["environment"]["core"]["align_llm_commit"] = self.evaluated_commit
-        result["environment"]["core"]["align_revision"] = self.align_revision
+        core = result["environment"]["core"]
+        core["align_llm_commit"] = self.evaluated_commit
+        core["align_revision"] = self.align_revision
+        # The producer-owned environment identity names the checked-in gate inputs.
+        core["source_verifier_runtime"] = self.runtime
+        core["source_verifier_policy_sha256"] = self.policy["content_sha256"]
+        core["environment_policy_sha256"] = self.environment_policy["content_sha256"]
         bind_variant(result["parent_variant"])
         bind_variant(result["candidate_variant"])
+        # The declared policies are bound before the scope, because the scope names their digests.
+        bind(result["provider_control"])
+        result["generation_policy"]["provider_control_sha256"] = result["provider_control"][
+            "content_sha256"
+        ]
+        bind(result["generation_policy"])
+        bind(result["acceptance_policy"])
+        result["scope"]["acceptance_policy_sha256"] = result["acceptance_policy"]["content_sha256"]
+        result["scope"]["generation_policy_sha256"] = result["generation_policy"]["content_sha256"]
         bind_scope(result["scope"], result["parent_variant"])
         bind(result["environment"])
         result["corpus"]["corpus_revision"] = copy.deepcopy(result["scope"]["corpus_revision"])
@@ -246,6 +337,7 @@ class GateBundle:
         )
         bind(result["experiment_artifact"])
         result["experiment"]["content_sha256"] = result["experiment_artifact"]["content_sha256"]
+        bind_declared_inputs(result)
         bind(result)
 
         evidence["evaluation_result_sha256"] = result["content_sha256"]
@@ -349,6 +441,12 @@ class GateBundle:
                 "rollback_activation": reference(
                     "PROMPT_ACTIVATION_RESULT", ROLLBACK_NAME, self.rollback, "decision_id"
                 ),
+                "environment_policy": reference(
+                    "ENVIRONMENT_POLICY",
+                    ENVIRONMENT_POLICY_NAME,
+                    self.environment_policy,
+                    "policy_id",
+                ),
                 "content_sha256": "",
             }
         )
@@ -360,6 +458,7 @@ class GateBundle:
             (EVIDENCE_NAME, self.evidence),
             (ACCEPTED_NAME, self.accepted),
             (ROLLBACK_NAME, self.rollback),
+            (ENVIRONMENT_POLICY_NAME, self.environment_policy),
         ):
             (self.gate_directory / name).write_bytes(canonical_bytes(value))
         (self.gate_directory / MANIFEST_NAME).write_bytes(canonical_bytes(self.manifest()))

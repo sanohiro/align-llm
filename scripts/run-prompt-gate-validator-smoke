@@ -92,9 +92,22 @@ def case(root: Path, name: str, mutate: Callable[[Any], None] | None = None, **k
     return bundle.finalize()
 
 
-def rejected(bundle, label: str, *, arguments: list[str] | None = None, environment=None, code: int = 2):
+def rejected(
+    bundle,
+    label: str,
+    *,
+    arguments: list[str] | None = None,
+    environment=None,
+    code: int = 2,
+    contains: str | None = None,
+):
     observed, output = invoke(bundle, arguments=arguments, environment=environment)
     require(observed == code, f"{label}: expected exit {code}, observed {observed}: {output.strip()}")
+    if contains is not None:
+        require(
+            contains in output,
+            f"{label}: rejected for another reason, expected {contains!r}: {output.strip()}",
+        )
 
 
 def read(bundle, name: str) -> dict[str, Any]:
@@ -247,6 +260,7 @@ def family_validator(root: Path) -> None:
         case(root, "rollback-variant", foreign_rollback_variant),
         "rollback activation does not restore the baseline variant",
     )
+    binding_rows(root)
 
 
 def rebind_chain(bundle, evaluation: dict[str, Any]) -> None:
@@ -262,7 +276,8 @@ def rebind_chain(bundle, evaluation: dict[str, Any]) -> None:
     fixture.bind(accepted)
     store(bundle, fixture.ACCEPTED_NAME, accepted)
     rollback = read(bundle, fixture.ROLLBACK_NAME)
-    rollback["activation"]["parent_activation_sha256"] = accepted["content_sha256"]
+    # Section 4.4 lineage is the nested activation digest, exactly as the fixture builds it.
+    rollback["activation"]["parent_activation_sha256"] = accepted["activation"]["content_sha256"]
     fixture.bind(rollback["activation"])
     fixture.bind(rollback)
     store(bundle, fixture.ROLLBACK_NAME, rollback)
@@ -272,6 +287,366 @@ def rebind_chain(bundle, evaluation: dict[str, Any]) -> None:
     manifest["accepted_activation"]["content_sha256"] = accepted["content_sha256"]
     manifest["rollback_activation"]["content_sha256"] = rollback["content_sha256"]
     store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+
+def rebind_scope_cascade(bundle, evaluation: dict[str, Any]) -> None:
+    """Rewrite an edited scope into every artifact that carries it, then rebind the chain.
+
+    The scope is shared by the evaluation, the experiment artifact, and all three activations, so a
+    scope edit that only rebinds the evaluation would be rejected by the lineage rules rather than
+    by the binding under test. This cascade keeps the whole chain internally consistent so the row
+    proves exactly the link it names.
+    """
+    fixture.bind(evaluation["scope"])
+    scope = evaluation["scope"]
+    baseline = read(bundle, fixture.BASELINE_NAME)
+    baseline["activation"]["scope"] = copy.deepcopy(scope)
+    fixture.bind(baseline["activation"])
+    fixture.bind(baseline)
+    store(bundle, fixture.BASELINE_NAME, baseline)
+    accepted = read(bundle, fixture.ACCEPTED_NAME)
+    accepted["activation"]["scope"] = copy.deepcopy(scope)
+    accepted["activation"]["parent_activation_sha256"] = baseline["activation"]["content_sha256"]
+    fixture.bind(accepted["activation"])
+    fixture.bind(accepted)
+    store(bundle, fixture.ACCEPTED_NAME, accepted)
+    rollback = read(bundle, fixture.ROLLBACK_NAME)
+    rollback["activation"]["scope"] = copy.deepcopy(scope)
+    rollback["activation"]["rollback_target_activation_sha256"] = baseline["activation"][
+        "content_sha256"
+    ]
+    fixture.bind(rollback["activation"])
+    fixture.bind(rollback)
+    store(bundle, fixture.ROLLBACK_NAME, rollback)
+    manifest = read(bundle, fixture.MANIFEST_NAME)
+    manifest["baseline_activation"]["content_sha256"] = baseline["content_sha256"]
+    store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+    evaluation["experiment_artifact"]["scope"] = copy.deepcopy(scope)
+    fixture.bind(evaluation["experiment_artifact"])
+    evaluation["experiment"]["content_sha256"] = evaluation["experiment_artifact"]["content_sha256"]
+    rebind_chain(bundle, evaluation)
+
+
+def evaluation_case(root: Path, name: str, mutate, *, cascade: bool = False):
+    """One rejection row that edits the evaluation result and rebinds every dependent digest."""
+
+    def apply(bundle) -> None:
+        evaluation = read(bundle, fixture.EVALUATION_NAME)
+        mutate(evaluation)
+        if cascade:
+            rebind_scope_cascade(bundle, evaluation)
+        else:
+            rebind_chain(bundle, evaluation)
+
+    return case(root, name, apply)
+
+
+def binding_rows(root: Path) -> None:
+    """One rejection row per cross-artifact link the gate now recomputes.
+
+    Every row mutates one document, rebinds every digest that document's identity feeds, and
+    requires the validator to reject for that link's own reason. A row that merely exits 2 would be
+    satisfied by an unrelated earlier check, so each asserts its exact diagnostic.
+    """
+
+    # --- the scope binds the evaluated policies and the evaluated prompt hierarchy ---------------
+
+    def acceptance_policy_unbound(evaluation) -> None:
+        evaluation["acceptance_policy"]["policy_id"] = "another-policy"
+        fixture.bind(evaluation["acceptance_policy"])
+        evaluation["acceptance_policy_source"]["artifact_id"] = "another-policy"
+        evaluation["acceptance_policy_source"]["content_sha256"] = evaluation["acceptance_policy"][
+            "content_sha256"
+        ]
+
+    rejected(
+        evaluation_case(root, "scope-acceptance-binding", acceptance_policy_unbound),
+        "scope acceptance policy binding",
+        contains="scope acceptance policy digest is not the evaluated policy",
+    )
+
+    def generation_policy_unbound(evaluation) -> None:
+        evaluation["generation_policy"]["max_tokens"] += 1
+        fixture.bind(evaluation["generation_policy"])
+        evaluation["generation_policy_source"]["content_sha256"] = evaluation["generation_policy"][
+            "content_sha256"
+        ]
+
+    rejected(
+        evaluation_case(root, "scope-generation-binding", generation_policy_unbound),
+        "scope generation policy binding",
+        contains="scope generation policy digest is not the evaluated policy",
+    )
+
+    def scope_prompt_digest(evaluation) -> None:
+        evaluation["scope"]["base_prompt_sha256"] = "0" * 64
+
+    rejected(
+        evaluation_case(root, "scope-prompt-binding", scope_prompt_digest, cascade=True),
+        "evaluation scope prompt binding",
+        contains="scope base_prompt_sha256 is not the variant's base_prompt digest",
+    )
+
+    def activation_scope_prompt_digest(bundle) -> None:
+        accepted = read(bundle, fixture.ACCEPTED_NAME)
+        accepted["activation"]["scope"]["repo_prompt_sha256"] = "0" * 64
+        fixture.bind(accepted["activation"]["scope"])
+        fixture.bind(accepted["activation"])
+        fixture.bind(accepted)
+        store(bundle, fixture.ACCEPTED_NAME, accepted)
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["accepted_activation"]["content_sha256"] = accepted["content_sha256"]
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(
+        case(root, "activation-scope-prompt-binding", activation_scope_prompt_digest),
+        "activation scope prompt binding",
+        contains="scope repo_prompt_sha256 is not the variant's repo_prompt digest",
+    )
+
+    # --- the frozen corpus and the evaluated task list are the same task set ---------------------
+
+    def corpus_extra_task_file(evaluation) -> None:
+        evaluation["corpus"]["task_files"].append("another-task.json")
+        fixture.bind(evaluation["corpus"])
+        evaluation["corpus_source"]["content_sha256"] = evaluation["corpus"]["content_sha256"]
+
+    rejected(
+        evaluation_case(root, "corpus-task-file-extra", corpus_extra_task_file),
+        "corpus declares a task the evaluation did not run",
+        contains="task files do not cover the evaluated tasks exactly",
+    )
+
+    def corpus_foreign_task_file(evaluation) -> None:
+        evaluation["corpus"]["task_files"][0] = "eval/tasks/another-task.json"
+        fixture.bind(evaluation["corpus"])
+        evaluation["corpus_source"]["content_sha256"] = evaluation["corpus"]["content_sha256"]
+
+    rejected(
+        evaluation_case(root, "corpus-task-file-foreign", corpus_foreign_task_file),
+        "corpus names a task file no snapshot observed",
+        contains="input snapshot does not observe its declared task file",
+    )
+
+    def corpus_identity(evaluation) -> None:
+        evaluation["corpus"]["corpus_id"] = "another-corpus"
+        fixture.bind(evaluation["corpus"])
+        evaluation["corpus_source"]["artifact_id"] = "another-corpus"
+        evaluation["corpus_source"]["content_sha256"] = evaluation["corpus"]["content_sha256"]
+
+    rejected(
+        evaluation_case(root, "corpus-identity", corpus_identity),
+        "corpus identity disagrees with its scope",
+        contains="evaluation corpus id disagrees with its scope",
+    )
+
+    def foreign_task_manifest(evaluation) -> None:
+        for snapshot in evaluation["input_snapshots"]:
+            snapshot["task_manifest_sha256"] = "0" * 64
+            fixture.bind(snapshot)
+        for attestation in evaluation["snapshot_attestations"]:
+            attestation["before_input_snapshot_sha256"] = evaluation["input_snapshots"][0][
+                "content_sha256"
+            ]
+            attestation["after_input_snapshot_sha256"] = evaluation["input_snapshots"][0][
+                "content_sha256"
+            ]
+            fixture.bind(attestation)
+
+    rejected(
+        evaluation_case(root, "input-snapshot-task-manifest", foreign_task_manifest),
+        "an input snapshot names another task manifest",
+        contains="input snapshot names another task manifest",
+    )
+
+    # --- workspace admission ---------------------------------------------------------------------
+
+    def unsafe_preflight(evaluation) -> None:
+        evaluation["workspace_preflight"]["status"] = "UNSAFE"
+        fixture.bind(evaluation["workspace_preflight"])
+        evaluation["workspace_preflight_source"]["content_sha256"] = evaluation[
+            "workspace_preflight"
+        ]["content_sha256"]
+
+    rejected(
+        evaluation_case(root, "workspace-preflight-unsafe", unsafe_preflight),
+        "workspace preflight is not SAFE",
+        contains="workspace preflight is not SAFE",
+    )
+
+    # --- snapshot observation closure -------------------------------------------------------------
+
+    def absent_snapshot_stream(evaluation) -> None:
+        evaluation["snapshot_attestations"] = []
+
+    rejected(
+        evaluation_case(root, "snapshot-stream-absent", absent_snapshot_stream),
+        "an absent snapshot stream",
+        contains="carries no snapshot attestation stream",
+    )
+
+    def mismatched_snapshot(evaluation) -> None:
+        evaluation["snapshot_results"][0]["status"] = "MISMATCH"
+        fixture.bind(evaluation["snapshot_results"][0])
+        for attestation in evaluation["snapshot_attestations"]:
+            attestation["before_snapshot_result_sha256"] = evaluation["snapshot_results"][0][
+                "content_sha256"
+            ]
+            attestation["after_snapshot_result_sha256"] = evaluation["snapshot_results"][0][
+                "content_sha256"
+            ]
+            fixture.bind(attestation)
+
+    rejected(
+        evaluation_case(root, "snapshot-result-mismatch", mismatched_snapshot),
+        "a non-matching snapshot result",
+        contains="snapshot result is not MATCH",
+    )
+
+    def snapshot_drift(evaluation) -> None:
+        attestation = evaluation["snapshot_attestations"][0]
+        attestation["after_input_snapshot_sha256"] = "0" * 64
+        fixture.bind(attestation)
+
+    rejected(
+        evaluation_case(root, "snapshot-attestation-drift", snapshot_drift),
+        "observed snapshot drift",
+        contains="snapshot attestation records observed drift",
+    )
+
+    def foreign_snapshot_record(evaluation) -> None:
+        attestation = evaluation["snapshot_attestations"][0]
+        attestation["before_snapshot_result_sha256"] = "0" * 64
+        attestation["after_snapshot_result_sha256"] = "0" * 64
+        fixture.bind(attestation)
+
+    rejected(
+        evaluation_case(root, "snapshot-attestation-foreign-record", foreign_snapshot_record),
+        "an attestation naming no persisted snapshot record",
+        contains="names no persisted record",
+    )
+
+    # --- provider control -------------------------------------------------------------------------
+
+    def provider_control_unbound(evaluation) -> None:
+        evaluation["provider_control"]["endpoint"] = "http://127.0.0.1:9/v1/chat/completions"
+        fixture.bind(evaluation["provider_control"])
+        evaluation["provider_control_source"]["content_sha256"] = evaluation["provider_control"][
+            "content_sha256"
+        ]
+
+    rejected(
+        evaluation_case(root, "provider-control-unbound", provider_control_unbound),
+        "the generation policy does not bind the evaluated provider control",
+        contains="generation policy does not bind the evaluated provider control",
+    )
+
+    def provider_model_disagrees(evaluation) -> None:
+        evaluation["provider_control"]["model"] = "another-model"
+        fixture.bind(evaluation["provider_control"])
+        evaluation["provider_control_source"]["content_sha256"] = evaluation["provider_control"][
+            "content_sha256"
+        ]
+        evaluation["generation_policy"]["provider_control_sha256"] = evaluation["provider_control"][
+            "content_sha256"
+        ]
+        fixture.bind(evaluation["generation_policy"])
+        evaluation["generation_policy_source"]["content_sha256"] = evaluation["generation_policy"][
+            "content_sha256"
+        ]
+        evaluation["scope"]["generation_policy_sha256"] = evaluation["generation_policy"][
+            "content_sha256"
+        ]
+
+    rejected(
+        evaluation_case(root, "provider-model-disagrees", provider_model_disagrees, cascade=True),
+        "the generation policy model disagrees with the provider control",
+        contains="generation policy evaluation_provider_model disagrees with the provider control",
+    )
+
+    # --- declared `ArtifactReference` bindings -----------------------------------------------------
+
+    def foreign_source_digest(evaluation) -> None:
+        evaluation["provider_control_source"]["content_sha256"] = "0" * 64
+
+    rejected(
+        evaluation_case(root, "source-reference-digest", foreign_source_digest),
+        "a declared source reference digest",
+        contains="digest does not match the embedded provider_control",
+    )
+
+    def foreign_source_identity(evaluation) -> None:
+        evaluation["corpus_source"]["artifact_id"] = "another-corpus"
+
+    rejected(
+        evaluation_case(root, "source-reference-identity", foreign_source_identity),
+        "a declared source reference identity",
+        contains="names another corpus",
+    )
+
+    # --- producer-owned environment identity and the checked-in environment policy -----------------
+
+    def environment_verifier_runtime(evaluation) -> None:
+        evaluation["environment"]["core"]["source_verifier_runtime"] = "CPYTHON:x:y"
+        fixture.bind(evaluation["environment"])
+
+    rejected(
+        evaluation_case(root, "environment-verifier-runtime", environment_verifier_runtime),
+        "the recorded source-verifier runtime",
+        contains="environment source_verifier_runtime disagrees with the gate locator",
+    )
+
+    def environment_verifier_policy(evaluation) -> None:
+        evaluation["environment"]["core"]["source_verifier_policy_sha256"] = "0" * 64
+        fixture.bind(evaluation["environment"])
+
+    rejected(
+        evaluation_case(root, "environment-verifier-policy", environment_verifier_policy),
+        "the recorded source-verifier policy digest",
+        contains="environment source_verifier_policy_sha256 disagrees with the gate locator",
+    )
+
+    def environment_policy_digest(evaluation) -> None:
+        evaluation["environment"]["core"]["environment_policy_sha256"] = "0" * 64
+        fixture.bind(evaluation["environment"])
+
+    rejected(
+        evaluation_case(root, "environment-policy-binding", environment_policy_digest),
+        "the recorded environment policy digest",
+        contains="environment policy digest is not the checked-in gate policy",
+    )
+
+    def environment_policy_bytes(bundle) -> None:
+        """The manifest now binds the environment policy by digest, not by path alone."""
+        policy = read(bundle, fixture.ENVIRONMENT_POLICY_NAME)
+        policy["locale"] = "en_US.UTF-8"
+        store(bundle, fixture.ENVIRONMENT_POLICY_NAME, fixture.bind(policy))
+
+    rejected(
+        case(root, "environment-policy-bytes", environment_policy_bytes),
+        "tampered environment policy bytes",
+        contains="gate environment policy digest does not match its manifest reference",
+    )
+
+    def environment_policy_absent(bundle) -> None:
+        (bundle.gate_directory / fixture.ENVIRONMENT_POLICY_NAME).unlink()
+
+    rejected(
+        case(root, "environment-policy-absent", environment_policy_absent),
+        "an absent environment policy",
+        contains="gate environment policy is unavailable",
+    )
+
+    def environment_policy_identity(bundle) -> None:
+        manifest = read(bundle, fixture.MANIFEST_NAME)
+        manifest["environment_policy"]["artifact_id"] = "another-environment-policy"
+        store(bundle, fixture.MANIFEST_NAME, fixture.bind(manifest))
+
+    rejected(
+        case(root, "environment-policy-identity", environment_policy_identity),
+        "the environment policy reference identity",
+        contains="environment policy reference names another policy",
+    )
 
 
 # --- family: source-bundle -----------------------------------------------------------
