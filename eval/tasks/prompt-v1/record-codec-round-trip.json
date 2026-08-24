@@ -16,7 +16,7 @@
     "/usr/bin/python3",
     "scripts/prompt-snapshot-helper.py"
   ],
-  "measurement_adapter_runtime": "PYTHON:f971ef901fc39985ef73618ac277e72c47db837e217b6ff0413142851eeabfbc",
+  "measurement_adapter_runtime": "PYTHON:8dd58f739552a59de02a12943a2b1fd72dd096adaa43ce84d261fbb3d6d6192c",
   "snapshot_helper_runtime": "PYTHON:f3c47a49a7a3573b90c08a294df1a707fe2b8166750013c252d7eaf4383504d5",
   "cwd": ".",
   "timeout_ns": 30000000000,
@@ -65,12 +65,12 @@
     {
       "path": "scripts/prompt-fixed-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "7830431aa108135b4aa4a0861b7decf60821cb29d797014cddd0eeb6a515bc2f"
+      "expected_sha256": "75ab1df93eb90e131233326f4e7b41c0e30c2fafe08f745303f9b17fd67b15c8"
     },
     {
       "path": "scripts/prompt-measurement-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "4f276e25224eefcc23a3a562943d1e24b768ffb0b54f87c11dcade62551640a4"
+      "expected_sha256": "6abc0144f4ca3ac5cf039b1e14750760f9d34baf307134bb66c12ae297b6fa74"
     },
     {
       "path": "scripts/prompt-snapshot-helper.py",
@@ -85,5 +85,5 @@
     "maximum_repair_loops": 0,
     "maximum_benchmark_regression_ppm": null
   },
-  "content_sha256": "a9105ecc69817a33bcd35f0c8a34fd3064bf3e90065f1f0ec5268fd4dad8176d"
+  "content_sha256": "c3305e60c7c9a33fd13b97f6ed00f4624a56d48813ad7c5fd91cdf357c01d1fb"
 }
