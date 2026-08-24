@@ -2405,8 +2405,10 @@ def main() -> int:
         require_control_invalid(
             "control-cloud-missing-name.json", "MISSING_CREDENTIAL", provider_kind="CLOUD_OPENAI",
         )
+        # A declared name that conflicts with the environment policy is an invalid declaration,
+        # not a missing credential.
         require_control_invalid(
-            "control-policy-conflict.json", "MISSING_CREDENTIAL",
+            "control-policy-conflict.json", "INVALID_SCHEMA",
             provider_kind="LOCAL_OPENAI", api_key_env="PATH",
         )
         require_control_invalid(
