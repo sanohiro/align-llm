@@ -20,16 +20,16 @@ file records durable project state.
   maps them to `--source-bundle-root`, `--python-executable-path`, `--git-executable-path`,
   `--generation-child-path`, and `--generation-child-sha256`. The declared interpreter is also the
   launcher, so the target never reaches the validator through an ambient Python or Git.
-- **Blocker for capable-lane membership.** `prompt-gate-check` is intentionally not in
+- **Closed: the gate is a named capable qualification.** `prompt-gate-check` stays out of
   `CAPABLE_ONLY_CHECK_TARGETS`. Section 9 and section 11.3 of
-  `docs/specs/c6-prompt-context-optimizer.md` require the gate to run as
+  `docs/specs/c6-prompt-context-optimizer.md` previously required the gate to run as
   `make ci C6_GATE_...=...`, but the settled FRESH-WORKER caller contract in
   `docs/specs/check-gate-topology.md` admits exactly `make --no-print-directory ci` **with no
   variable assignments**, and the worker runs the `capable-checks` graph inside bwrap under a
-  cleared, fixed environment. The five explicit values therefore cannot cross that boundary today,
-  and putting the target in the capable lane would make the supervised `make ci` fail closed
-  forever. Reconcile the two specifications before adding lane membership; that reconciliation is a
-  design-gate change, not integration wiring.
+  cleared, fixed environment, so the five explicit values cannot cross that boundary. Both sections
+  now name `make prompt-gate-check` with the five explicit `C6_GATE_*` values as the measured
+  gate's named capable qualification — a focused qualification the supervised aggregate does not
+  reach — leaving the FRESH-WORKER contract and the `make ci` goals unchanged.
 - The Makefile change invalidated the identity-bound canonical baseline chain, which requires the
   working-tree `Makefile` to equal its source commit's blob. The chain was already red at
   `19c5d5c` because earlier C6-MEASURED commits changed the Makefile without re-finalizing. The
@@ -37,9 +37,10 @@ file records durable project state.
   `182fa3c9a537884f59cf9257d91c884d3732d1ca`, and finalization
   `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`; it was appended, not rewritten, and
   `scripts/check-baseline-chain` passes on it.
-- `prompt-render-parity-smoke` is an orphan target: it is declared in `.PHONY` and has a recipe, but
-  belongs to no lane and no adoption aggregate, so nothing runs it. Section 11.3 does not name it as
-  a hosted addition, so Slice E left it alone; decide its owner before publication.
+- **Closed: `prompt-render-parity-smoke` is no longer an orphan.** It is now a
+  `HOSTED_CHECK_TARGETS` member beside `prompt-model-smoke`, section 11.3 names it as the
+  renderer-parity owner, and the same change refreshed the `EXPECTED` lane bytes, the
+  `exact_environment()` self-test copy, and the baseline chain.
 - `c6f2-request14-adoption` is timing-flaky on a fast, quiet host. Its publication-race fixtures poll
   for a staged temporary file inside a five-second window; when the fixture binary completes before
   the poll observes staging, the run reports "publication race did not reach evidence staging" or
@@ -420,12 +421,9 @@ file records durable project state.
 1. Review and publish C6-MEASURED from `agent/c6-measured` at head
    `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`. The pull request must carry the measured claim, the
    per-cell matrix, the validator transcript, the exact capable-gate commands and results recorded
-   above, and the capable-lane blocker for `prompt-gate-check`.
-2. Reconcile the section 9/11.3 `make ci C6_GATE_...=...` gate-command contract with the settled
-   FRESH-WORKER no-assignment caller contract in `docs/specs/check-gate-topology.md`, then give
-   `prompt-gate-check` its capable-lane membership and refresh the `EXPECTED` capable-only bytes and
-   the baseline chain in that same change. Decide `prompt-render-parity-smoke`'s owner and give
-   `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam in the same pass.
+   above, and the named-qualification status of `prompt-gate-check`.
+2. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+   poll.
 3. Merged historical item: the register/HANDOFF reconciliation branch
    `agent/reconcile-request-register` recorded the passed C6-EVALUATION capable gate and advanced
    Requests 11 and 14.

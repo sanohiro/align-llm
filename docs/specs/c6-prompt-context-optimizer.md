@@ -36,7 +36,9 @@ The C6 gate is complete only when all of the following are true:
    lifecycle fixture.
 7. A rollback creates a new activation that restores a previously accepted effective variant
    without deleting or rewriting history.
-8. The measured gate and all regression checks pass through `make ci` on the pinned Align revision.
+8. All regression checks pass through `make ci` on the pinned Align revision, and the measured gate
+   passes through its named capable qualification `make prompt-gate-check` with the explicit
+   `C6_GATE_*` values on that same revision.
 
 A deterministic lifecycle smoke proves state transitions, validation, and scoring, but does not by
 itself satisfy item 6.
@@ -3008,14 +3010,14 @@ explicit machine inputs and are never inferred from those locator paths.
 The source bundle root is not
 read from the environment or inferred from an evidence path.
 
-`make ci` does not call a credentialed external provider. It validates the checked-in gate result's
+The measured gate does not call a credentialed external provider. It validates the checked-in gate result's
 schema, content identities, named source commit, task coverage, aggregates, acceptance decision,
 and zero-regression claim, then runs deterministic lifecycle and evaluator regressions. The
 canonical checked-in evidence set is named by one human-owned `PromptGateManifest` containing
 references to the frozen baseline activation, the real `IMPROVED` evaluation and its independently
 produced evidence sidecar, the `ACCEPTED` activation, and the subsequent `ROLLED_BACK` activation.
 The evidence reference must have the same evaluation ID and result digest as the evaluation
-reference. The CI validator recomputes every nested digest and requires this exact chain:
+reference. The gate validator recomputes every nested digest and requires this exact chain:
 
 ```text
 eligible IMPROVED evaluation + matching PromptEvaluationEvidence
@@ -3026,14 +3028,29 @@ eligible IMPROVED evaluation + matching PromptEvaluationEvidence
 ```
 
 An absent artifact, a fixture-only artifact, a changed source asset, or any ID/digest/scope/variant
-link mismatch fails `make ci`. The gate pull request records the exact command and provider
+link mismatch fails the measured gate. The gate pull request records the exact command and provider
 environment used to create the measured artifact without recording credentials.
 
 When a canonical C6 gate manifest is present, the complete command is
-`make ci C6_GATE_SOURCE_BUNDLE_ROOT=/absolute/source-bundle-root C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 C6_GATE_GIT_EXECUTABLE_PATH=/absolute/git`.
+`make prompt-gate-check C6_GATE_SOURCE_BUNDLE_ROOT=/absolute/source-bundle-root C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 C6_GATE_GIT_EXECUTABLE_PATH=/absolute/git`,
+which section 11.3 extends with the generation-child pair.
 The Make target passes these explicit command-line values to the gate validator as
 `--source-bundle-root`, `--python-executable-path`, and `--git-executable-path`; it rejects a missing, empty, relative, unsafe,
 or unreadable value and has no environment or sibling-checkout fallback.
+
+`make prompt-gate-check` with those explicit `C6_GATE_*` command-line values is the named capable
+gate qualification for the measured gate; it is a member of no lane and no aggregate. The
+supervised `make ci` admits exactly `make --no-print-directory ci` with no variable assignments and
+runs its graph under a cleared, fixed environment (`docs/specs/check-gate-topology.md`), so the
+explicit values cannot reach a supervised aggregate target. That caller contract is unchanged and
+`make ci` keeps its existing goals; the measured gate is instead documented, per the repository
+verification policy, as a focused qualification not reached by the supervised aggregate. It runs
+when the gate validator, the checked-in `eval/prompt/gate/` evidence, or the frozen
+`eval/prompt/canonical-v1/` assets change, and at the C6-MEASURED publication gate. Its passing
+evidence is `scripts/prompt-gate-validator.py` exiting 0 under this target with all five explicit
+values against a clean capable checkout whose generation child was built in the same run, recorded
+with the exact command and provider environment and without credentials.
+
 Before deriving the head, the validator retains `C6_GATE_PYTHON_EXECUTABLE_PATH` and
 `C6_GATE_GIT_EXECUTABLE_PATH` as explicit absolute regular executables and checks their same-descriptor bytes against
 the locator/policy interpreter and Git digests. Ubuntu 24.04 gate evidence uses exactly
@@ -3102,7 +3119,7 @@ explicitly reviewed deferral.
 | Contract | Intended owner | Planned acceptance evidence |
 | --- | --- | --- |
 | Four CLI operations and exact arguments | `src/main.align` | CLI smoke covers valid and invalid arity for every operation |
-| Gate source-bundle validation input | `Makefile`, gate validator | `make ci C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_PYTHON_EXECUTABLE_PATH=<absolute-python> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git> C6_GATE_GENERATION_CHILD_PATH=<absolute-child> C6_GATE_GENERATION_CHILD_SHA256=<digest>` passes all five explicit values as `--source-bundle-root`, `--python-executable-path`, `--git-executable-path`, `--generation-child-path`, and `--generation-child-sha256` — the section 11.3 generation-child pair is the fourth input and is checked before any evidence identity — rejects missing/relative/unsafe roots or tools before source reads, resolves the Git common directory, rejects replacement/graft/alternate mechanisms, scans local Git configuration while allowing only inert ordinary-clone remote/branch metadata, uses fixed no-replace/no-graft/no-pager/command overrides for every Git command, checks the derived clean CI head and evaluated-commit ancestry as separate proofs, validates the source-verifier policy/helper/interpreter/tool identities, and revalidates every locator and exact source identity |
+| Gate source-bundle validation input | `Makefile`, gate validator | the named capable qualification `make prompt-gate-check C6_GATE_SOURCE_BUNDLE_ROOT=<absolute-root> C6_GATE_PYTHON_EXECUTABLE_PATH=<absolute-python> C6_GATE_GIT_EXECUTABLE_PATH=<absolute-git> C6_GATE_GENERATION_CHILD_PATH=<absolute-child> C6_GATE_GENERATION_CHILD_SHA256=<digest>` passes all five explicit values as `--source-bundle-root`, `--python-executable-path`, `--git-executable-path`, `--generation-child-path`, and `--generation-child-sha256` — the section 11.3 generation-child pair is the fourth input and is checked before any evidence identity — rejects missing/relative/unsafe roots or tools before source reads, resolves the Git common directory, rejects replacement/graft/alternate mechanisms, scans local Git configuration while allowing only inert ordinary-clone remote/branch metadata, uses fixed no-replace/no-graft/no-pager/command overrides for every Git command, checks the derived clean CI head and evaluated-commit ancestry as separate proofs, validates the source-verifier policy/helper/interpreter/tool identities, and revalidates every locator and exact source identity |
 | Source-verifier request/result boundary | C6f1 source verifier, `src/prompt_evaluate.align`, gate validator | request/result kind, mode-specific EVALUATION/GATE observed-head semantics, separate evaluated-commit ancestry, exact argv/env/cwd, common-directory and replacement/graft/alternate rejection, bounded local-config scan, fixed Git overrides, helper/interpreter/Git digests, timeout/capture caps, raw-byte FILE_SET fixtures, `COMPLETE`/`UNAVAILABLE` field shapes, observed-identity equality for `VERIFIED`, and gate rejection of unavailable proof |
 | Mode-specific gate head and ancestry identity | C6f1 source verifier, gate validator | EVALUATION exact-head equality; GATE observed-head equality to derived CI head plus independent expected-commit ancestry; normal-merge fixture where the two SHAs differ; `prompt-source-verifier-mode-identity-smoke` and `prompt-gate-merge-head-ancestry-smoke` |
 | Repository-local Git configuration isolation | C6f1 source verifier, gate validator | raw `.git`/`gitdir`/`commondir` and local/worktree config scan before any Git child, include rejection, command-bearing-key rejection, ordinary-clone inert remote/branch metadata allowlist, fixed `--no-pager`/`-c` overrides, fsmonitor sentinel non-execution, and gate rejection before identity observation; `prompt-source-verifier-local-git-config-smoke` and `prompt-gate-local-git-config-smoke` |
@@ -4389,7 +4406,7 @@ evaluator deadline that started earlier.
 - Checked-in gate evidence: `eval/prompt/gate/` holding `prompt-gate-manifest.json` and the
   referenced evaluation result, evidence, and activation artifacts.
 - Gate validator: `scripts/prompt-gate-validator.py` under CPython 3.12, invoked only by the
-  `make ci` gate target with the explicit `C6_GATE_*` values mapped to `--source-bundle-root`,
+  `make prompt-gate-check` gate target with the explicit `C6_GATE_*` values mapped to `--source-bundle-root`,
   `--python-executable-path`, `--git-executable-path`, `--generation-child-path`, and
   `--generation-child-sha256`. The first three are settled by section 9; the generation-child pair
   is the fourth input described above and is checked before any evidence identity. Its behavior
@@ -4397,11 +4414,14 @@ evaluator deadline that started earlier.
   `prompt-gate-*-smoke` targets are owned by this wave's validator implementation.
 
 **Owner targets and lanes.** `prompt-experiment-smoke`, `prompt-credential-lifetime-smoke`,
-`prompt-seed-attestation-smoke`, `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, and
+`prompt-seed-attestation-smoke`, `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`,
+`prompt-render-parity-smoke` (the owner of the renderer-parity row below, placed beside
+`prompt-model-smoke` in the lane's declaration order), and
 `c6e-request2-adoption` join the hosted check lane as new
 additions; the named `prompt-gate-*-smoke` fixtures are likewise new hosted additions (today's
 gate/evaluator fixtures run only inside the capable-only `c6-evaluation-adoption`), and the real
-`make ci C6_GATE_...` evidence chain remains the capable integration gate. Every hosted-lane
+`make prompt-gate-check C6_GATE_...` run remains the named capable gate qualification for the
+measured gate, outside every lane and aggregate. Every hosted-lane
 addition changes the literal lane bytes owned by `scripts/check-gate-topology`, so the same
 change refreshes its `EXPECTED` sequence and the check-baseline chain, following the section 11.1
 precedent.
@@ -4425,13 +4445,13 @@ The C6-MEASURED closure matrix is:
 | CLI dispatch | `src/main.align` | CLI smoke covers valid and invalid arity and the updated usage line |
 | Request 2 timeouts | `src/provider_http.align`, `c6e-request2-adoption` | plaintext read-stall and TLS handshake-stall within the bounded wall clock plus the responsive control request |
 | frozen canonical assets and `baseline-v1` | `eval/prompt/canonical-v1/`, C6g1 freeze review | digest-bound goldens; C6g2 evidence chain binds exactly these artifacts |
-| gate validator | `scripts/prompt-gate-validator.py`, `Makefile` | the named `prompt-gate-*-smoke` fixtures plus one real capable `make ci C6_GATE_...` run |
+| gate validator | `scripts/prompt-gate-validator.py`, `Makefile` | the named `prompt-gate-*-smoke` fixtures plus one real capable `make prompt-gate-check C6_GATE_...` run |
 | generation child dispatch | `src/prompt_generate.align`, `src/provider.align`, `src/provider_openai.align`, `src/provider_llama.align`, `src/provider_http.align` | `prompt-generate-smoke`: golden request bytes per provider kind, `provider_request_sha256` equal to the exact dispatched bytes, `APPLIED`/`UNSUPPORTED`/`REJECTED` seed rows with their required `applied_seed` shape, the complete transport/status/decode error mapping, no credential byte in the response or any diagnostic, and the recorded child spawn-overhead measurement |
 | derived-child admission | `scripts/prompt-measurement-adapter.py` | `prompt-measurement-adapter-smoke`: a declared digest mismatch and a post-admission binary replacement each produce no scoreable row, and a sealed launch of the admitted bytes succeeds and verifies the retained input unchanged |
 | two-process handoff | `scripts/prompt-measurement-adapter.py`, `src/prompt_generate.align` | `prompt-measurement-adapter-smoke`: mutated or absent response digest, truncated response, nonzero child exit, and child timeout each yield `ERROR` with the section 5.2 and 10.1k precedence — `CONTAINMENT`, then `CLEANUP`, then `ADAPTER` — both time fields `None`, and never a scoreable row |
 | measurement response edit format | `scripts/prompt-measurement-adapter.py`, `eval/tasks/prompt-v1/*/task-prompt.json` | `prompt-measurement-adapter-smoke`: parse rows for single and multiple blocks, a language-tagged fence, surrounding and trailing prose, a nested fence under a longer outer fence, and CRLF; refusal rows for no block, an unterminated block, a header without a block, and a duplicate path as `FAIL`/`PATCH`, and out-of-allowlist, absolute, and escaping paths as `POLICY_VIOLATION`/`POLICY` with no runner launch; a golden whole-file hunk that `git apply` really applies, an unchanged-content refusal, and a created-file hunk; plus `prompt-generate-smoke`'s empty-2xx-content row proving the child never publishes empty `GENERATED` content |
 | task parameterization | `scripts/prompt-measurement-adapter.py`, `scripts/prompt-evaluate.py` | `prompt-measurement-adapter-smoke`: manifest-driven runner and task-definition digests admit and execute; a wrong declared digest is rejected before launch with no runner marker; the extended `TaskAdapterRequest` field order and its `EvaluationInputIdentity` preimage are golden-bound |
-| renderer parity | `scripts/prompt-evaluate.py`, `src/prompt_model.align` | shared golden rendered-prompt vectors over all eight section 4.3 enable/disable combinations, each section's truncation boundary, and `task_id` failure-memory selection, asserted byte-equal across both implementations; this row records the already-settled section 4.3 contract, and the Python renderer's disabled-section-only restriction was an implementation defect |
+| renderer parity | `scripts/prompt-evaluate.py`, `src/prompt_model.align` | `prompt-render-parity-smoke`: shared golden rendered-prompt vectors over all eight section 4.3 enable/disable combinations, each section's truncation boundary, and `task_id` failure-memory selection, asserted byte-equal across both implementations; this row records the already-settled section 4.3 contract, and the Python renderer's disabled-section-only restriction was an implementation defect |
 | measured claim | gate pull request | reproducible before/after from a named clean commit, exact command and provider environment without credentials, and the time-to-passing-patch measurement against the checked-in baseline |
 
 Ledger field completion: persisted and cache identity are `N/A` for `redact_credential` and for both
