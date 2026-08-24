@@ -213,12 +213,15 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
     api_key: api_key_view,
     timeout_ns: timeout_ns,
     tokenize_endpoint: tokenize_endpoint,
+    // The pre-C6e demo keeps the shipped 256 KiB proposal-response allowance explicitly.
+    max_response_bytes: 262_144,
   }
   request := model.GenerationRequest {
     system: "You are a coding assistant. Return a concise patch-oriented answer.",
     user: args[6],
     max_tokens: 256,
     temperature: 0.0,
+    seed: None,
   }
   info := provider.model_info(config)
   started := time.instant()

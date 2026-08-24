@@ -1,0 +1,112 @@
+module c6e_response_cap_adoption
+
+import provider_http
+
+// C6e adoption of the parameterized transport cap. The receive-side bound is no longer a literal
+// inside `provider_http`: every caller states it, so this fixture drives the real transport at two
+// configured values — the 262,144-byte allowance the pre-C6e callers fix, and a smaller
+// provider-control value — with an exact-cap and a cap-plus-one row for each. It also proves that
+// `post_json_response` returns a received non-2xx status as data while `post_json` keeps folding it
+// into `Error.Code`, and that the receive-side limit still wins over a received status.
+
+fn endpoint(base: str, path: str) -> string {
+  b := builder()
+  b.write(base)
+  b.write(path)
+  return b.to_string()
+}
+
+fn expect_body(base: str, path: str, cap: i64, expected_len: i64) -> Result<(), Error> {
+  target := endpoint(base, path)
+  target_view: str := target
+  body := provider_http.post_json(target_view, "", "{}", 0, cap)?
+  if body.len() != expected_len {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn expect_limit(base: str, path: str, cap: i64) -> Result<(), Error> {
+  target := endpoint(base, path)
+  target_view: str := target
+  match provider_http.post_json(target_view, "", "{}", 0, cap) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(e) => match e {
+      Code(code) => if code != -1 { return Err(Error.Invalid) },
+      _ => { return Err(Error.Invalid) },
+    },
+  }
+  return Ok(())
+}
+
+fn expect_status_error(base: str, path: str, cap: i64, expected: i32) -> Result<(), Error> {
+  target := endpoint(base, path)
+  target_view: str := target
+  match provider_http.post_json(target_view, "", "{}", 0, cap) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(e) => match e {
+      Code(code) => if code != expected { return Err(Error.Invalid) },
+      _ => { return Err(Error.Invalid) },
+    },
+  }
+  return Ok(())
+}
+
+fn expect_received(
+  base: str,
+  path: str,
+  cap: i64,
+  expected_status: i64,
+  expected_len: i64,
+) -> Result<(), Error> {
+  target := endpoint(base, path)
+  target_view: str := target
+  response := provider_http.post_json_response(target_view, "", "{}", 0, cap)?
+  if response.status != expected_status || response.body.len() != expected_len {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn expect_received_limit(base: str, path: str, cap: i64) -> Result<(), Error> {
+  target := endpoint(base, path)
+  target_view: str := target
+  match provider_http.post_json_response(target_view, "", "{}", 0, cap) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(e) => match e {
+      Code(code) => if code != -1 { return Err(Error.Invalid) },
+      _ => { return Err(Error.Invalid) },
+    },
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 {
+    return Err(Error.Invalid)
+  }
+  base := args[1]
+
+  // The pre-C6e allowance every shipped construction site now states explicitly.
+  expect_body(base, "/cap/default-exact", 262_144, 262_144)?
+  expect_limit(base, "/cap/default-over", 262_144)?
+  expect_body(base, "/cap/recovery", 262_144, 2)?
+
+  // A non-default provider-control value: the same peer bytes that pass under the default cap must
+  // fail under the smaller configured one, so the cap is genuinely the caller's argument.
+  expect_body(base, "/cap/control-exact", 4_096, 4_096)?
+  expect_limit(base, "/cap/control-over", 4_096)?
+  expect_limit(base, "/cap/default-exact", 4_096)?
+  expect_body(base, "/cap/recovery", 4_096, 2)?
+
+  // A received HTTP status is data for `post_json_response` and an `Error.Code` for `post_json`.
+  expect_received(base, "/cap/status-received", 4_096, 503, 20)?
+  expect_status_error(base, "/cap/status-received", 4_096, 503)?
+  expect_received(base, "/cap/status-exact", 4_096, 429, 4_096)?
+  // The receive-side limit sentinel still wins over a received status.
+  expect_received_limit(base, "/cap/status-over", 4_096)?
+  expect_body(base, "/cap/recovery", 262_144, 2)?
+
+  print("http response cap adoption: PASS")
+  return Ok(())
+}

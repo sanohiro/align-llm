@@ -5,15 +5,48 @@ import std.http
 // The common transport boundary for all model adapters. The adapters own JSON schema and response
 // interpretation; this module owns HTTP headers, timeout policy, status handling, and UTF-8 body
 // ownership.
-pub fn post_json(endpoint: str, api_key: str, body: str, timeout_ns: i64) -> Result<string, Error> {
+
+// One received HTTP response with its bounded, owned, UTF-8 body. A caller that must distinguish a
+// received status from a transport failure reads this record instead of an `Error.Code`.
+pub HttpPostResponse {
+  status: i64,
+  body: string,
+}
+
+// Status-folding convenience over the one transport path below: a non-2xx status becomes
+// `Err(Error.Code(status))`, so existing adapters keep their shipped error surface.
+pub fn post_json(
+  endpoint: str,
+  api_key: str,
+  body: str,
+  timeout_ns: i64,
+  max_response_bytes: i64,
+) -> Result<string, Error> {
+  response := post_json_response(endpoint, api_key, body, timeout_ns, max_response_bytes)?
+  if response.status < 200 || response.status >= 300 {
+    return Err(Error.Code(response.status as i32))
+  }
+  return Ok(response.body)
+}
+
+// The single transport path. `Ok` for every received HTTP response, including non-2xx; `Err` only
+// for transport failure: timeout, the receive-side over-cap sentinel `Error.Code(-1)`, connect,
+// TLS, DNS, and non-UTF-8 body errors.
+pub fn post_json_response(
+  endpoint: str,
+  api_key: str,
+  body: str,
+  timeout_ns: i64,
+  max_response_bytes: i64,
+) -> Result<HttpPostResponse, Error> {
   client := http.client()
   if timeout_ns > 0 {
     client.timeout(timeout_ns)
   }
   request := http.request("POST", endpoint)
   // Provider responses are whole-body values. Bound them at the transport before JSON/SSE
-  // decoding so a peer cannot allocate past C6's declared proposal-response allowance.
-  request.max_response_body_bytes(262_144)
+  // decoding so a peer cannot allocate past the cap the caller declared.
+  request.max_response_body_bytes(max_response_bytes)
   request.header("Content-Type", "application/json")
   if api_key.len() > 0 {
     auth := bearer(api_key)
@@ -22,12 +55,9 @@ pub fn post_json(endpoint: str, api_key: str, body: str, timeout_ns: i64) -> Res
   request.body(body.bytes())
   response := client.request(request)?
   status := response.status()
-  if status < 200 || status >= 300 {
-    return Err(Error.Code(status as i32))
-  }
   bytes := response.body()
   text := bytes.as_str()?
-  return Ok(text.clone())
+  return Ok(HttpPostResponse { status: status, body: text.clone() })
 }
 
 fn bearer(api_key: str) -> string {

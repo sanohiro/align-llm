@@ -12,6 +12,9 @@ pub ProviderConfig {
   api_key: str,
   timeout_ns: i64,
   tokenize_endpoint: str,
+  // The caller's bounded-response allowance, carried to the transport. There is no implicit
+  // default: every construction site states the cap it is willing to receive.
+  max_response_bytes: i64,
 }
 
 pub GenerationRequest {
@@ -19,6 +22,8 @@ pub GenerationRequest {
   user: str,
   max_tokens: i64,
   temperature: f64,
+  // None keeps the legacy unseeded wire record; Some selects each adapter's seeded twin record.
+  seed: Option<i64>,
 }
 
 pub TokenCount { count: i64, exact: bool }
@@ -28,5 +33,6 @@ pub ModelInfo {
   model: str,
   endpoint: str,
   supports_stream: bool,
+  supports_seed: bool,
   token_count_exact: bool,
 }

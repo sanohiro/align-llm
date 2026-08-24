@@ -1,0 +1,189 @@
+module prompt_seed_attestation_smoke
+
+import core.json
+import std.crypto
+import std.encoding
+import model
+import prompt_artifacts
+import provider
+import provider_llama
+import provider_openai
+
+// Owner smoke for the C6-MEASURED shared seed extension. It proves that the unseeded wire bytes
+// are unchanged by the extension, that the seeded twin record adds exactly one field, that the
+// SHA-256 of the exported `request_bytes` is the value recorded as `provider_request_sha256`, and
+// that `model_info` reports `supports_seed` truthfully per adapter kind.
+
+SmokeRow {
+  case_name: string,
+  provider: string,
+  supports_seed: bool,
+  request_bytes: string,
+  request_sha256: string,
+  attestation: string,
+}
+
+fn digest_text(value: str) -> string {
+  digest := crypto.sha256(value)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn placeholder_digest() -> string =
+"0000000000000000000000000000000000000000000000000000000000000000".clone()
+
+fn config(kind: model.ProviderKind, endpoint: str, model_name: str, tokenize_endpoint: str) -> model.ProviderConfig {
+  return model.ProviderConfig {
+    kind: kind,
+    endpoint: endpoint,
+    model: model_name,
+    api_key: "",
+    timeout_ns: 0,
+    tokenize_endpoint: tokenize_endpoint,
+    max_response_bytes: 262_144,
+  }
+}
+
+fn request(seed: Option<i64>) -> model.GenerationRequest {
+  return model.GenerationRequest {
+    system: "SYSTEM",
+    user: "USER",
+    max_tokens: 256,
+    temperature: 0.5,
+    seed: seed,
+  }
+}
+
+fn emit_bytes(case_name: str, bytes: str) {
+  digest := digest_text(bytes)
+  digest_view: str := digest
+  row := SmokeRow {
+    case_name: case_name.clone(),
+    provider: "".clone(),
+    supports_seed: false,
+    request_bytes: bytes.clone(),
+    request_sha256: digest_view.clone(),
+    attestation: "".clone(),
+  }
+  print(json.encode(row))
+}
+
+fn emit_info(case_name: str, info: model.ModelInfo) {
+  row := SmokeRow {
+    case_name: case_name.clone(),
+    provider: info.provider.clone(),
+    supports_seed: info.supports_seed,
+    request_bytes: "".clone(),
+    request_sha256: "".clone(),
+    attestation: "".clone(),
+  }
+  print(json.encode(row))
+}
+
+fn emit_attestation(
+  case_name: str,
+  provider_kind: str,
+  provider_model: str,
+  requested_seed: i64,
+  result: str,
+  applied_seed: Option<i64>,
+  request_bytes: str,
+) {
+  digest := digest_text(request_bytes)
+  digest_view: str := digest
+  attestation := prompt_artifacts.SeedCapabilityAttestation {
+    schema_version: 1,
+    artifact_kind: "SEED_CAPABILITY_ATTESTATION".clone(),
+    provider_kind: provider_kind.clone(),
+    provider_model: provider_model.clone(),
+    requested_seed: requested_seed,
+    result: result.clone(),
+    applied_seed: applied_seed,
+    // The canonical content digest belongs to the C6d artifact codec rows; this smoke owns the
+    // provider request binding, so the content digest stays an explicit placeholder here.
+    provider_request_sha256: digest_view.clone(),
+    content_sha256: placeholder_digest(),
+  }
+  encoded := prompt_artifacts.encode_seed_capability_attestation(attestation)
+  encoded_view: str := encoded
+  row := SmokeRow {
+    case_name: case_name.clone(),
+    provider: provider_kind.clone(),
+    supports_seed: true,
+    request_bytes: "".clone(),
+    request_sha256: digest_view.clone(),
+    attestation: encoded_view.clone(),
+  }
+  print(json.encode(row))
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+
+  openai_unseeded := provider_openai.request_bytes("smoke-openai", request(None), false)
+  openai_unseeded_view: str := openai_unseeded
+  emit_bytes("openai-unseeded", openai_unseeded_view)
+
+  openai_unseeded_stream := provider_openai.request_bytes("smoke-openai", request(None), true)
+  openai_unseeded_stream_view: str := openai_unseeded_stream
+  emit_bytes("openai-unseeded-stream", openai_unseeded_stream_view)
+
+  openai_seeded := provider_openai.request_bytes("smoke-openai", request(Some(42)), false)
+  openai_seeded_view: str := openai_seeded
+  emit_bytes("openai-seeded", openai_seeded_view)
+
+  llama_unseeded := provider_llama.request_bytes(request(None), false)
+  llama_unseeded_view: str := llama_unseeded
+  emit_bytes("llama-unseeded", llama_unseeded_view)
+
+  llama_unseeded_stream := provider_llama.request_bytes(request(None), true)
+  llama_unseeded_stream_view: str := llama_unseeded_stream
+  emit_bytes("llama-unseeded-stream", llama_unseeded_stream_view)
+
+  llama_seeded := provider_llama.request_bytes(request(Some(42)), false)
+  llama_seeded_view: str := llama_seeded
+  emit_bytes("llama-seeded", llama_seeded_view)
+
+  emit_info(
+    "info-cloud-openai",
+    provider.model_info(config(model.ProviderKind.CloudOpenAI, "https://example.invalid/v1/chat/completions", "smoke-openai", "")),
+  )
+  emit_info(
+    "info-openai-local",
+    provider.model_info(config(model.ProviderKind.LocalOpenAI, "http://127.0.0.1/v1/chat/completions", "smoke-openai", "")),
+  )
+  emit_info(
+    "info-llama-cpp",
+    provider.model_info(config(model.ProviderKind.LlamaCpp, "http://127.0.0.1/completion", "smoke-llama", "http://127.0.0.1/tokenize")),
+  )
+
+  emit_attestation(
+    "attestation-applied",
+    "LOCAL_OPENAI",
+    "smoke-openai",
+    42,
+    "APPLIED",
+    Some(42),
+    openai_seeded_view,
+  )
+  emit_attestation(
+    "attestation-unsupported",
+    "LOCAL_OPENAI",
+    "smoke-openai",
+    42,
+    "UNSUPPORTED",
+    None,
+    openai_unseeded_view,
+  )
+  emit_attestation(
+    "attestation-rejected",
+    "LLAMA_CPP",
+    "smoke-llama",
+    42,
+    "REJECTED",
+    None,
+    llama_seeded_view,
+  )
+  return Ok(())
+}

@@ -14,6 +14,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 REPOSITORY = pathlib.Path(__file__).resolve().parent.parent
 BODY_LIMIT = 262_144
 TRAILER_LIMIT = 256 * 1024
+# The non-default provider-control cap driven through `provider_http.post_json`. It is inside the
+# section 1.2 range (1 through 1,048,576) and deliberately smaller than the 262,144-byte allowance
+# the pre-C6e construction sites fix, so the same peer bytes pass one cap and trip the other.
+CONTROL_LIMIT = 4_096
+STATUS_BODY = b'{"error":"received"}'
 
 
 class TrackingServer(HTTPServer):
@@ -22,6 +27,7 @@ class TrackingServer(HTTPServer):
         self._next_connection = 0
         self.connection_ids: dict[int, int] = {}
         self.observed: list[tuple[str, int]] = []
+        self.cap_observed: list[str] = []
         self.handler_errors: list[str] = []
 
     def get_request(self) -> tuple[socket.socket, tuple[str, int]]:
@@ -129,6 +135,33 @@ class Handler(BaseHTTPRequestHandler):
             # Limit and malformed-framing failures deliberately close the connection early.
             pass
 
+    def do_POST(self) -> None:
+        # The parameterized-cap phase drives `provider_http.post_json`, so every row is a POST with
+        # a request body that must be drained before the response keeps the connection usable.
+        length = int(self.headers.get("Content-Length", "0"))
+        if length:
+            self.rfile.read(length)
+        self.server.cap_observed.append(self.path)  # type: ignore[attr-defined]
+        bodies = {
+            "/cap/default-exact": (200, b"x" * BODY_LIMIT),
+            "/cap/default-over": (200, b"x" * (BODY_LIMIT + 1)),
+            "/cap/control-exact": (200, b"x" * CONTROL_LIMIT),
+            "/cap/control-over": (200, b"x" * (CONTROL_LIMIT + 1)),
+            "/cap/recovery": (200, b"ok"),
+            "/cap/status-received": (503, STATUS_BODY),
+            "/cap/status-exact": (429, b"x" * CONTROL_LIMIT),
+            "/cap/status-over": (503, b"x" * (CONTROL_LIMIT + 1)),
+        }
+        if self.path not in bodies:
+            self.send_error(404)
+            return
+        status, body = bodies[self.path]
+        try:
+            self.send_length(status, body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Over-cap rows deliberately abandon the connection once the limit trips.
+            pass
+
     def log_message(self, *_arguments: object) -> None:
         return
 
@@ -177,25 +210,30 @@ def assert_connection_contract(observed: list[tuple[str, int]]) -> None:
     assert connections["/small-after-trailer-limit"] != connections["/trailer-over"], observed
 
 
+def run_fixture(server: TrackingServer, entry: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        (
+            str(REPOSITORY / "scripts" / "alignc"),
+            "run",
+            entry,
+            f"http://127.0.0.1:{server.server_port}",
+        ),
+        cwd=REPOSITORY,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+
+
 def main() -> None:
     server = TrackingServer()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        result = subprocess.run(
-            (
-                str(REPOSITORY / "scripts" / "alignc"),
-                "run",
-                "eval/fixtures/http-bounded-adoption.align",
-                f"http://127.0.0.1:{server.server_port}",
-            ),
-            cwd=REPOSITORY,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=90,
-            check=False,
-        )
+        result = run_fixture(server, "eval/fixtures/http-bounded-adoption.align")
+        cap_result = run_fixture(server, "src/c6e_response_cap_adoption.align")
     finally:
         server.shutdown()
         server.server_close()
@@ -206,9 +244,31 @@ def main() -> None:
     assert result.stderr == "", result.stderr
     assert server.handler_errors == [], server.handler_errors
     assert_connection_contract(server.observed)
+
+    assert cap_result.returncode == 0, cap_result.stderr
+    assert cap_result.stdout == "http response cap adoption: PASS\n", cap_result.stdout
+    assert server.cap_observed == [
+        "/cap/default-exact",
+        "/cap/default-over",
+        "/cap/recovery",
+        "/cap/control-exact",
+        "/cap/control-over",
+        "/cap/default-exact",
+        "/cap/recovery",
+        "/cap/status-received",
+        "/cap/status-received",
+        "/cap/status-exact",
+        "/cap/status-over",
+        "/cap/recovery",
+    ], server.cap_observed
     print(
         "http bounded adoption: exact caps, tiny chunks, bodyless/interim framing, "
         "trailer guards, and connection teardown PASS"
+    )
+    print(
+        "http response cap adoption: exact-cap and cap-plus-one rows at 262,144 and the "
+        f"{CONTROL_LIMIT:,}-byte provider-control cap, received non-2xx as data, and limit "
+        "precedence PASS"
     )
 
 
