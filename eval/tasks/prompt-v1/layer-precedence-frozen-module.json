@@ -16,7 +16,7 @@
     "/usr/bin/python3",
     "scripts/prompt-snapshot-helper.py"
   ],
-  "measurement_adapter_runtime": "PYTHON:167e3ee5d0802a16c8000f60eb80b01e9084451dd885aa1e4cde4c4815a72fae",
+  "measurement_adapter_runtime": "PYTHON:f971ef901fc39985ef73618ac277e72c47db837e217b6ff0413142851eeabfbc",
   "snapshot_helper_runtime": "PYTHON:f3c47a49a7a3573b90c08a294df1a707fe2b8166750013c252d7eaf4383504d5",
   "cwd": ".",
   "timeout_ns": 30000000000,
@@ -70,7 +70,7 @@
     {
       "path": "scripts/prompt-measurement-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "78e363a9c5388b6c8268c70a527d8335be2f901447b06d76e898735fef3ae66d"
+      "expected_sha256": "4f276e25224eefcc23a3a562943d1e24b768ffb0b54f87c11dcade62551640a4"
     },
     {
       "path": "scripts/prompt-snapshot-helper.py",
@@ -85,5 +85,5 @@
     "maximum_repair_loops": 0,
     "maximum_benchmark_regression_ppm": null
   },
-  "content_sha256": "b3a99aef13c6a592f0eda5050e1ec065c8a63f4a483e07ee6c0f121a3fb5dd30"
+  "content_sha256": "8fb881c63e3c811614536fbf606a7861bcd2c49d8d4c2f0eb7d6e5a7b16f8307"
 }

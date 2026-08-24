@@ -53,6 +53,9 @@ RESULT_LIMIT = 262_144
 DIAGNOSTIC_LIMIT = 16_384
 SUMMARY_LIMIT = 4_096
 GENERATION_RESPONSE_LIMIT = 2_097_152
+# The derived generation child is a linked Align executable, not a corpus artifact; it uses
+# the same explicit-executable bound as the evaluator and the gate validator.
+EXECUTABLE_LIMIT = 268_435_456
 HEX64 = frozenset("0123456789abcdef")
 PR_SET_CHILD_SUBREAPER = 36
 TRUNCATION_MARKER = b"\n[output truncated]"
@@ -120,13 +123,16 @@ class PolicyViolation(AdapterError):
 class ImmutableInput:
     """A verified pathname snapshot copied into one sealed anonymous regular file."""
 
-    def __init__(self, path: Path, expected_sha256: str, label: str, executable: bool = False) -> None:
+    def __init__(
+        self, path: Path, expected_sha256: str, label: str, executable: bool = False,
+        maximum: int = ARTIFACT_LIMIT,
+    ) -> None:
         source = -1
         descriptor = -1
         try:
             source = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
             before = os.fstat(source)
-            if not stat.S_ISREG(before.st_mode) or before.st_size < 0 or before.st_size > ARTIFACT_LIMIT:
+            if not stat.S_ISREG(before.st_mode) or before.st_size < 0 or before.st_size > maximum:
                 raise AdapterError(f"{label} type or size is invalid")
             if executable and not before.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
                 raise AdapterError(f"{label} is not an executable regular file")
@@ -1071,7 +1077,7 @@ def measurement(
         # is rejected before the generation child or the validation runner can leave any marker.
         child = ImmutableInput(
             Path(request["generation_child_path"]), request["generation_child_sha256"],
-            "generation-child", executable=True,
+            "generation-child", executable=True, maximum=EXECUTABLE_LIMIT,
         )
         retained.append(child)
         runner = ImmutableInput(

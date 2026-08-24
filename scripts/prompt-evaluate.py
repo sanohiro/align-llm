@@ -2699,6 +2699,26 @@ def validated_task_files(value: Any) -> list[str]:
     return value
 
 
+def static_expectation_paths(task: Mapping[str, Any]) -> set[str]:
+    """Every path a declared static expectation already covers, file or tree member."""
+    covered: set[str] = set()
+    for expectation in task.get("artifacts") or []:
+        if not isinstance(expectation, dict) or not isinstance(expectation.get("path"), str):
+            continue
+        covered.add(expectation["path"])
+    return covered
+
+
+def inside_declared_tree(task: Mapping[str, Any], relative: str) -> bool:
+    return any(
+        isinstance(expectation, dict)
+        and expectation.get("kind") == "TREE"
+        and isinstance(expectation.get("path"), str)
+        and relative.startswith(f"{expectation['path']}/")
+        for expectation in task.get("artifacts") or []
+    )
+
+
 def automatic_snapshot_files(
     request: Mapping[str, Any], task_file: str, task: Mapping[str, Any], project: Path,
 ) -> list[str]:
@@ -2709,6 +2729,12 @@ def automatic_snapshot_files(
         task["generation_policy_path"], task["provider_control_path"], task["environment_policy_path"],
         task["task_prompt_path"], task["context_sources_path"],
     }
+    # The manifest's `artifacts` array is mandatory and closed and already covers the task
+    # prompt/context artifacts, so a manifest that declares them would otherwise make the request's
+    # expanded paths overlap, which is invalid. A static expectation wins: it carries the reviewed
+    # digest, and dropping the duplicate keeps exactly one record per path.
+    declared -= static_expectation_paths(task)
+    declared = {item for item in declared if not inside_declared_tree(task, item)}
     paths = sorted(declared, key=os.fsencode)
     for relative in paths:
         RetainedRegularFile(relative_path(project, relative), ARTIFACT_LIMIT).close()

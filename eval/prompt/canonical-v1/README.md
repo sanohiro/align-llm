@@ -29,10 +29,10 @@ repo-prompt.json                     1be40aada3352a4622eed7446820cacd1127b0ffaec
 prompt-acceptance-policy.json        7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3
 evaluation-provider-control.json     f8f9043231d8f4213ceb392bf5a05c600e6c2796015deeb44c96436eb77cb469
 generation-policy.json               e5887c233dbb21bacad79923c2b9f43eba250c8b0fa2550354f6ffbf8960133e
-corpus-file-set.manifest (raw bytes) 7e6cc468e50951f9e7d8b1d4faf820ee3c1f51766fe241ea3e4078779413c508
-corpus.json                          03e83d7c1f94bdcc0af572a1c371435ce0819c8e37a38af350621d2542a6637d
-scope.json                           f75e001e9674bdcff839cfd7bd3a866bb8cf2b11d47b3ef322b5441ae761bc65
-prompt-activation-baseline-v1.json   62e9579bf862c15e54860285c9f8893ee9c64b4dfc38c7c4d6ee4f77fd15dfdb
+corpus-file-set.manifest (raw bytes) 73f7f2ac6590a5227703820f98d096cbd4251c6a457a125c77341b2f602972f2
+corpus.json                          3a625c3eca604796c4db790e82e3163c969b9666e2498b31d41bc64ee396b6c7
+scope.json                           64867d5403b2d7e25f1884b53c00d3869415dc9b5f584b138f82ab7ef997ddd2
+prompt-activation-baseline-v1.json   af444112b90d9189f3b884efdcb6caa8d206f817be24a2b99ec460621bbffca7
 ```
 
 `base-prompt.json` states the section 11.3 measurement response format: whole-file `FILE:` blocks,
@@ -84,6 +84,12 @@ The provider decision is recorded and every digest is real, so the set is a comp
 The endpoint is a loopback address with no userinfo and no credential query, and no timeout,
 digest, or model value is machine-specific. The absolute path of the generation child is
 deliberately *not* here: it is a per-run evaluate-request and gate input.
+
+The digests above were rebound once after the freeze, when the C6g2 gate run found that the shipped
+measurement adapter capped every sealed input at 2 MiB and so could never admit the derived
+generation child. Repairing the adapter changed its bytes, and the adapter is a corpus member, a
+declared task artifact, and each task's `measurement_adapter_runtime`. Only those digest bindings
+moved: no task, prompt, corpus membership, or policy value changed.
 
 Rewriting the provider decision rewrites `generation-policy.json`, and therefore `scope.json` and
 `prompt-activation-baseline-v1.json`. Replacing the measurement adapter additionally rewrites every
