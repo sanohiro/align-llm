@@ -48,8 +48,10 @@ are recorded as separate requests in `docs/align-requests.md`; this design does 
 hypothetical API part of C6:
 
 1. **Request 5 — bounded HTTP response reception.** The HTTP client must enforce a caller-selected
-   response-body cap while receiving, before an owning body can grow past that cap. This request is
-   already recorded and blocks C6e and the real-provider portion of C6g.
+   response-body cap while receiving, before an owning body can grow past that cap. Align shipped
+   this surface, `provider_http.post_json` adopts it with `max_response_body_bytes` at the exact
+   262,144-byte proposal allowance, and the request is `CLOSED` in `docs/align-requests.md`; C6e
+   and the real-provider portion of C6g are no longer blocked on it.
 2. **Request 6 — recursively Copy `json.scan` rows.** The scanner reuses one row slot and currently
    admits schemas with owned arrays or other transitively Move fields. C6 does not consume scanner
    rows; this request is an independent prerequisite for the later JSON escape acceptance matrix.
@@ -1513,12 +1515,11 @@ explicitly to the current internal `ProviderKind`; no other label or case is acc
 Proposal endpoints follow the same no-userinfo/no-credential-query rule as evaluation control.
 
 The 262,144-byte response limit is enforced while receiving, before an owning response body can
-grow past the cap. The current pinned `std.http` client buffers up to its much larger runtime cap
-before `provider_http.post_json` returns, so it cannot implement this promise. C6's
-provider-proposal cell is blocked on Align Request 5 (bounded HTTP response bodies). No C6 code
-may call the current unbounded provider boundary and then pretend that a post-allocation length
-check satisfies this contract. Artifact, renderer, pure scoring, activation, and deterministic
-evaluator work may continue independently.
+grow past the cap. The pinned `std.http` client ships Align Request 5's `max_response_body_bytes`,
+and `provider_http.post_json` already applies exactly this cap before any JSON/SSE decoding; the
+transport surfaces an over-cap response as its deterministic receive-side limit error without
+buffering past the bound. No C6 code may bypass that bounded transport boundary or substitute a
+post-allocation length check for this contract.
 
 The opportunity artifact is human- or system-authored evidence such as a repeated failure,
 unnecessary context, or repair-loop pattern. It contains a stable opportunity ID, English summary,
@@ -3116,7 +3117,7 @@ explicitly reviewed deferral.
 | Normative Align syntax | C6a1 syntax fixture | declarations separate from positional calls, pinned `alignc check`, and explicit no-proposed-API deferral before C6a1 |
 | Measurement state machine and integer math | `src/prompt_score.align` | exhaustive row combinations plus odd/even median, rounding, zero/None, threshold, and overflow fixtures |
 | Incomplete-prefix row validation | C6c1p `src/prompt_score.align` | empty, strict-prefix, terminal-`ERROR`, post-error, complete-prefix, first-invalid-index, and no-output-mutation fixtures |
-| Provider proposal with no secret persistence | `src/prompt_experiment.align`, bounded provider boundary | after Request 5 merges: deterministic provider fixture, transport-size cap, one-shot credential lifetime, pre-truncation redaction, and API-key regression |
+| Provider proposal with no secret persistence | `src/prompt_experiment.align`, bounded provider boundary | deterministic provider fixture over the adopted Request 5 bounded transport, transport-size cap, one-shot credential lifetime, pre-truncation redaction, and API-key regression |
 | Executable provider control and prompt roles | provider control, task adapter | config-field identity fixtures and exact empty-system/rendered-user request bytes |
 | Seed capability attestation | provider adapter, evaluator verifier | requested/applied seed equality, provider request digest, unsupported/rejected ineligibility, and paired-row fixtures |
 | Same adapter and alternating A/B order | `src/prompt_evaluate.align` | invocation-log smoke with odd/even samples |
@@ -3945,6 +3946,182 @@ The C6c2 metric is verifier correctness: every declared state, identity, evidenc
 tamper class reaches the specified status or error with zero false acceptance. Runtime performance
 is secondary and is measured only after a real result/evidence pair exists; it is not a provider
 quality or time-to-passing-patch claim.
+
+### 11.3 C6-MEASURED public-contract ledger
+
+C6-MEASURED delivers C6e, C6g1, and C6g2 as one consumer capability. The request/result schemas,
+error-code families, validation precedence, credential and redaction behavior, seed-attestation
+semantics, frozen-asset schemas, acceptance-policy values, the `baseline-v1` identifiers, and the
+gate manifest/validator behavior are already settled in sections 1.2, 4.4, 4.5, 5, 5.1, 7, 8, and 9
+and are not restated here. This ledger fixes the remaining public surfaces so implementation starts
+against a settled contract. Requests 5, 11, 14, and 18 are adopted at the pinned Align revision;
+Request 2's plaintext/TLS adoption target is owned by this wave, and no `.align-revision` change is
+required unless a new prerequisite is discovered and merged.
+
+The exact new and changed public surface is:
+
+```text
+prompt_experiment.run_file(request_path: str, result_path: str)
+  -> Result<PromptCommandStatus, Error>              // new module src/prompt_experiment.align
+
+./main prompt experiment <request.json> <result.json>  // new dispatch arm in src/main.align
+
+model.GenerationRequest gains seed: Option<i64>        // shared-record extension
+model.ModelInfo gains supports_seed: bool              // shared-record extension
+model.ProviderConfig gains max_response_bytes: i64     // shared-record extension
+
+provider_http.post_json(endpoint: str, api_key: str, body: str, timeout_ns: i64,
+  max_response_bytes: i64) -> Result<string, Error>    // the cap becomes an explicit argument
+```
+
+`src/prompt_artifacts.align` gains two declared records with the existing decode/encode/
+bounded-encode function trio, canonical content digest, and golden semantic-to-byte plus
+byte-to-semantic vectors:
+
+- `PromptExperimentRequest` carries exactly the section 5.1 fields with `schema_version` 1 and
+  `artifact_kind: PROMPT_EXPERIMENT_REQUEST`. Validation follows the universal section 5 record
+  order and the section 5.1 bounds. The record has no credential-value field; `api_key_env` is a
+  validated name only.
+- `PromptOpportunity` settles the opportunity artifact:
+
+```text
+PromptOpportunity:
+  schema_version              (1)
+  artifact_kind: PROMPT_OPPORTUNITY
+  opportunity_id              (the same non-empty bounded ID grammar as the other C6 IDs)
+  summary                     (non-empty UTF-8 English, at most 4,096 bytes)
+  diagnostics: array<string>  (at most 16 entries; each non-empty UTF-8, at most 4,096 bytes)
+  content_sha256
+```
+
+The opportunity digest binds every field except `content_sha256` through the same canonical
+encoding as the other C6 artifacts. `PromptExperimentResult.opportunity` references kind
+`PROMPT_OPPORTUNITY` with `opportunity_id` and this digest. Unknown-version, tampered, oversize,
+and empty-field rejection vectors are owner evidence.
+
+**Proposal prompt construction.** `src/prompt_experiment.align` composes the proposal prompt in
+one fixed labeled-section order: (1) the parent activation's effective hierarchy (base prompt,
+repo prompt, effective learned append), (2) the parent effective `ContextPolicy` in canonical
+field order, (3) the immutable constraint text derived from the section 5.1 "model does not
+choose" list, (4) the opportunity ID, summary, and diagnostics in persisted order, and (5) the
+exact `CandidateProposal` response-schema text. One golden proposal-prompt vector plus an exact
+`max_prompt_bytes` and cap-plus-one pair prove the bound is enforced before any provider call.
+
+**Credential lifetime and redaction surface.** After request validation and before any provider
+call, `run_file` reads the validated `api_key_env` name, when it is `Some`, exactly once with
+`env.get` into one temporary owned `string`; a `None` name performs no environment read and passes
+an empty `api_key`. A missing or empty value for a `Some` name is `MISSING_CREDENTIAL` before the
+first external call. The owner is passed only as the explicit `api_key` argument of the single provider
+call, is never encoded, digested, logged, or copied into a persisted or diagnostic value, and is
+dropped before result construction on every terminal path, including `?` and early returns. The
+redaction surface is:
+
+```text
+prompt_experiment.redact_credential(borrow text: str, borrow credential: str) -> string
+```
+
+It performs the exact section 1.2 pass: one left-to-right replacement of every non-overlapping
+exact UTF-8 occurrence of the credential with `[REDACTED]`, applied to provider output, provider
+status text, error detail, and the proposal summary before truncation, hashing, or persistence.
+An empty credential pattern returns the input unchanged; that case is unreachable behind
+`MISSING_CREDENTIAL` and is still covered by a defensive vector. Golden vectors cover regex
+punctuation, overlapping prefixes, adjacent multi-byte UTF-8, and occurrences crossing the 16 KiB
+truncation boundary.
+
+**Provider call, decode order, and error mapping.** The deterministic order after validation is:
+construct the proposal prompt; enforce `max_prompt_bytes`; build the provider wire request through
+the same serializer as evaluation generation with empty `system`, the proposal prompt as `user`,
+`max_tokens` and `temperature_micros` from the request, and `seed: None` (a proposal call is
+unseeded and records no seed attestation); make exactly one bounded `provider_http.post_json` call
+with the request `timeout_ns` and `max_response_bytes` 262,144; decode the provider envelope with
+the existing adapter decoder; extract the single content text; `decode_candidate_proposal`;
+validate the proposal schema version and bounds; compare the rendered learned append and context
+policy against the parent effective variant. Outcomes map to exactly one code, first failure wins:
+
+| Outcome | Status / `error_code` |
+| --- | --- |
+| `Error.Timeout` from the transport | `PROVIDER_ERROR` / `PROVIDER_TIMEOUT` |
+| the transport's deterministic receive-side limit error | `PROVIDER_ERROR` / `PROVIDER_RESPONSE_TOO_LARGE` |
+| `Error.Code(status)` with `status` in 100..599 | `PROVIDER_ERROR` / `PROVIDER_HTTP_STATUS` with `proposal_status_code: Some(status)` |
+| any other transport `Err` (connect, TLS, DNS, non-UTF-8 body) | `PROVIDER_ERROR` / `PROVIDER_TRANSPORT` |
+| provider envelope decode or content extraction failure | `INVALID_PROPOSAL` / `PROPOSAL_SCHEMA` |
+| `CandidateProposal` decode or schema-version failure | `INVALID_PROPOSAL` / `PROPOSAL_SCHEMA` |
+| summary, learned-append, or context-policy bounds failure | `INVALID_PROPOSAL` / `PROPOSAL_BOUNDS` |
+| equal rendered learned append and context policy | `INVALID_PROPOSAL` / `PROPOSAL_NO_CHANGE` |
+
+`proposal_status_code` is `Some` only for `PROVIDER_HTTP_STATUS`. The result file is published
+through the existing `prompt_artifact_io` exclusive-create bounded write path; an occupied output
+path or write failure follows the section 5 `OUTPUT_WRITE` rule, and `experiment` has no evidence
+sidecar.
+
+**Shared seed extension.** `model.GenerationRequest.seed: Option<i64>` and
+`model.ModelInfo.supports_seed: bool` extend the shared records; every existing caller passes
+`None` and reports `supports_seed` truthfully per adapter. `src/provider_openai.align` and
+`src/provider_llama.align` keep their current wire records for `seed: None` and select a declared
+seeded twin record adding exactly one `seed` field for `Some`, so unseeded request bytes remain
+byte-identical to the pre-extension encoding. The serializer output is the single source of
+provider request bytes: the same bytes are sent on the wire and are the SHA-256 preimage of
+`provider_request_sha256` in `SeedCapabilityAttestation` and the evidence input rows.
+`model.ProviderKind` gains no `FIXTURE` variant; `FIXTURE` remains an evaluator-level control that
+never reaches provider dispatch. `model.ProviderConfig.max_response_bytes` carries the
+provider-control cap (1 through 1,048,576) to the transport; the proposal path fixes 262,144.
+
+**Request 2 adoption.** The named target `c6e-request2-adoption` runs
+`scripts/run-http-timeout-adoption-smoke`: one plaintext fixture listener accepts the TCP
+connection and never writes a response, and one TLS listener accepts and never completes the
+handshake; both `post_json` calls must return the transport timeout error within a bounded
+wall-clock multiple of the configured sub-second `timeout_ns`, and a control request against a
+responsive listener succeeds under the same configuration. Passing this target plus the wave's
+final capable gate advances Request 2 in `docs/align-requests.md`.
+
+**Repository identity of the C6g assets and gate validator.**
+
+- Gate corpus tasks: `eval/tasks/prompt-v1/` (at least two tasks per section 9).
+- Canonical frozen scope assets and the `baseline-v1` envelope: `eval/prompt/canonical-v1/` with
+  one JSON file per section 4 record — `scope.json`, `generation-policy.json`,
+  `evaluation-provider-control.json`, `prompt-acceptance-policy.json`, `environment-policy.json` —
+  plus `prompt-activation-baseline-v1.json`. The C6g1 freeze review fixes their contents; C6g2
+  must not mutate them after measuring against them.
+- Checked-in gate evidence: `eval/prompt/gate/` holding `prompt-gate-manifest.json` and the
+  referenced evaluation result, evidence, and activation artifacts.
+- Gate validator: `scripts/prompt-gate-validator.py` under CPython 3.12, invoked only by the
+  `make ci` gate target with the three explicit `C6_GATE_*` values mapped to
+  `--source-bundle-root`, `--python-executable-path`, and `--git-executable-path`. Its behavior
+  matrix is settled by section 9 and the section 10/10.1 gate rows, whose named
+  `prompt-gate-*-smoke` targets are owned by this wave's validator implementation.
+
+**Owner targets and lanes.** `prompt-experiment-smoke`, `prompt-credential-lifetime-smoke`,
+`prompt-seed-attestation-smoke`, and `c6e-request2-adoption` join the hosted check lane; the named
+`prompt-gate-*-smoke` fixtures join the hosted lane with the other gate fixtures, and the real
+`make ci C6_GATE_...` evidence chain remains the capable integration gate.
+
+The C6-MEASURED closure matrix is:
+
+| Applicable path | Owner | Exact acceptance evidence |
+| --- | --- | --- |
+| request decode, validation order, and no-external-call proof | `src/prompt_experiment.align`, `src/prompt_artifacts.align` | `prompt-experiment-smoke` table-driven first-failure rows for every section 5 `experiment` precedence entry, each proving no listener contact |
+| opportunity artifact | `src/prompt_artifacts.align` | golden semantic/byte vectors, unknown version, tamper, oversize, and empty-field rejection |
+| proposal prompt construction and bounds | `src/prompt_experiment.align` | golden proposal-prompt vector; exact `max_prompt_bytes` and cap-plus-one before any provider call |
+| credential lifetime | `src/prompt_experiment.align` | `prompt-credential-lifetime-smoke`: `MISSING_CREDENTIAL` precedence, single explicit one-shot argument, no credential bytes in any persisted or diagnostic output, drop before result construction on success and on every terminal error path |
+| redaction | `src/prompt_experiment.align` | golden vectors for punctuation, overlapping prefixes, multi-byte adjacency, truncation-boundary crossing, and the defensive empty-pattern case |
+| transport error mapping | `src/prompt_experiment.align`, `src/provider_http.align` | fixture server rows for stall/timeout, over-cap limit, HTTP 4xx/5xx with `Some(status)`, connection reset, and non-UTF-8 body |
+| proposal decode, bounds, and no-change | `src/prompt_experiment.align` | `PROPOSAL_SCHEMA`, `PROPOSAL_BOUNDS`, and `PROPOSAL_NO_CHANGE` rows including summary-only change |
+| result construction and publication | `src/prompt_experiment.align`, `src/prompt_artifact_io.align` | per-status golden results, exact `Option` population, 4 KiB summary and 16 KiB output bounds, exclusive-create collision, and `OUTPUT_WRITE` |
+| shared seed extension | `src/model.align`, `src/provider_openai.align`, `src/provider_llama.align` | `prompt-seed-attestation-smoke`: unseeded byte-identity regression, seeded twin bytes, request-digest equality, and `APPLIED`/`UNSUPPORTED`/`REJECTED` ineligibility rows |
+| parameterized transport cap | `src/provider_http.align` | bounded adoption smoke extended with exact-cap and cap-plus-one per configured value |
+| CLI dispatch | `src/main.align` | CLI smoke covers valid and invalid arity and the updated usage line |
+| Request 2 timeouts | `src/provider_http.align`, `c6e-request2-adoption` | plaintext read-stall and TLS handshake-stall within the bounded wall clock plus the responsive control request |
+| frozen canonical assets and `baseline-v1` | `eval/prompt/canonical-v1/`, C6g1 freeze review | digest-bound goldens; C6g2 evidence chain binds exactly these artifacts |
+| gate validator | `scripts/prompt-gate-validator.py`, `Makefile` | the named `prompt-gate-*-smoke` fixtures plus one real capable `make ci C6_GATE_...` run |
+| measured claim | gate pull request | reproducible before/after from a named clean commit, exact command and provider environment without credentials, and the time-to-passing-patch measurement against the checked-in baseline |
+
+The implementation checkpoint is one consumer-complete capability: `src/prompt_experiment.align`
+with its smoke owners, the shared seed extension, the Request 2 adoption target, the frozen C6g1
+assets, and the C6g2 evidence chain and validator belong to the same wave because the gate
+evidence is the only real consumer of the proposal surface. The C6e metric is proposal-command
+correctness with zero credential leakage across every terminal path. The C6-MEASURED metric is the
+section 11 wave claim: the gate pull request owns the reproducible baseline and time-to-passing-
+patch measurement, and no other capability may claim provider quality.
 
 ## 12. Deferred extensions
 

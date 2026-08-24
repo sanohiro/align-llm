@@ -312,8 +312,13 @@ file records durable project state.
 2. Begin C6-MEASURED (C6e, C6g1, C6g2) as the next consumer capability on a fresh branch: bounded
    provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
    policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
-   linked rollback. Verify the §11 ledgers for C6e/C6g are settled before coding; no new design
-   pull request is required for an already-settled contract.
+   linked rollback. The triggered design gate is satisfied: §11.3 of
+   `docs/specs/c6-prompt-context-optimizer.md` is the settled public-contract ledger and closure
+   matrix (new `prompt_experiment` surface, `PromptExperimentRequest`/`PromptOpportunity` records,
+   credential/redaction surface, provider error mapping, shared seed extension, parameterized
+   transport cap, Request 2 adoption target, C6g asset paths, and the gate-validator identity).
+   Implementation may start immediately against that ledger; no further design pull request is
+   required.
 3. Inside C6-MEASURED, adopt Request 2 (plaintext/TLS provider timeouts) through its named
    C6e/C6g1 owners against the existing pin `19c3db144c46...`; no pin bump is required. Advance
    Request 2 only after its named owners and the wave's final capable gate pass. Do not infer a
