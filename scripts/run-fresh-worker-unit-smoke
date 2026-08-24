@@ -620,6 +620,61 @@ def public_error_cases(module) -> None:
     require(module.ROOT_CHILDREN[-1] == "descriptor", "private-root layout changed")
 
 
+def aggregate_diagnostic_seam_case(module, temporary: Path) -> None:
+    captures = {
+        "stdout": bytearray(b"O" * (module.MAX_AGGREGATE_DIAGNOSTIC_BYTES + 7) + b"TAIL-OUT"),
+        "stderr": bytearray(b"short child diagnostic"),
+    }
+
+    def emitted(phase: str, value: str | None) -> bytes:
+        sink = temporary / "aggregate-diagnostic-sink"
+        original = os.dup(2)
+        previous = os.environ.get(module.AGGREGATE_DIAGNOSTIC_VARIABLE)
+        try:
+            if value is None:
+                os.environ.pop(module.AGGREGATE_DIAGNOSTIC_VARIABLE, None)
+            else:
+                os.environ[module.AGGREGATE_DIAGNOSTIC_VARIABLE] = value
+            descriptor = os.open(sink, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.dup2(descriptor, 2)
+            finally:
+                os.close(descriptor)
+            module.emit_aggregate_diagnostic(phase, captures)
+        finally:
+            os.dup2(original, 2)
+            os.close(original)
+            if previous is None:
+                os.environ.pop(module.AGGREGATE_DIAGNOSTIC_VARIABLE, None)
+            else:
+                os.environ[module.AGGREGATE_DIAGNOSTIC_VARIABLE] = previous
+        return sink.read_bytes()
+
+    require(emitted("aggregate", None) == b"", "unset diagnostic opt-in produced output")
+    require(emitted("aggregate", "") == b"", "empty diagnostic opt-in produced output")
+    require(emitted("aggregate", "0") == b"", "rejected diagnostic opt-in produced output")
+    require(emitted("build", "1") == b"", "diagnostic seam escaped the aggregate phase")
+    observed = emitted("aggregate", "1")
+    stdout_tail = bytes(captures["stdout"])[-module.MAX_AGGREGATE_DIAGNOSTIC_BYTES :]
+    expected = (
+        f"fresh compiler: DIAGNOSTIC aggregate stdout "
+        f"captured={len(captures['stdout'])} shown={len(stdout_tail)}\n".encode("ascii")
+        + stdout_tail
+        + b"\n"
+        + f"fresh compiler: DIAGNOSTIC aggregate stderr "
+        f"captured={len(captures['stderr'])} shown={len(captures['stderr'])}\n".encode("ascii")
+        + bytes(captures["stderr"])
+        + b"\n"
+    )
+    require(
+        len(stdout_tail) == module.MAX_AGGREGATE_DIAGNOSTIC_BYTES
+        and stdout_tail.endswith(b"TAIL-OUT")
+        and len(stdout_tail) < len(captures["stdout"]),
+        "aggregate diagnostic did not bound an oversized capture to its tail",
+    )
+    require(observed == expected, "aggregate diagnostic tail is not the bounded capture")
+
+
 def build_linker_case(module) -> None:
     require(
         module.RUST_LINKER_NAMESPACE_PATH == "/tools/cc",
@@ -2024,6 +2079,7 @@ def main() -> int:
         cleanup_replacement_case(module, temporary)
         cleanup_quarantine_race_case(module, temporary)
         compiler_materialization_case(module, temporary)
+        aggregate_diagnostic_seam_case(module, temporary)
     public_error_cases(module)
     build_linker_case(module)
     print("fresh worker unit smoke: PASS")

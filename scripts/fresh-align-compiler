@@ -185,6 +185,8 @@ MAX_ROOT_BYTES = 68_719_476_736
 MAX_GIT_VIEW_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CANDIDATES = 65_536
 MAX_STREAM_BYTES = 65_536
+MAX_AGGREGATE_DIAGNOSTIC_BYTES = 8_192
+AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
 MAX_OPEN_FDS = 4_096
 MAX_GIT_OBJECTS = 1_000_000
 MAX_GIT_REACHABLE_OUTPUT_BYTES = 256 * 1024 * 1024
@@ -277,6 +279,34 @@ class SourceMutationError(OSError):
 
 def fail(category: str, phase: str) -> None:
     raise WorkerError(category, phase)
+
+
+def emit_aggregate_diagnostic(phase: str, captures: Mapping[str, bytearray]) -> None:
+    """Write the bounded tail of a failed aggregate child's streams to stderr.
+
+    The canonical failure line carries no detail, so an aggregate failure is
+    otherwise indistinguishable from every other aggregate failure. This seam is
+    inert unless the supervising environment carries the explicit opt-in
+    variable, so the default failure output remains exactly the canonical line.
+    It only reports bytes this process already captured under the existing
+    stream bounds; it does not change the sandbox, the child environment, or
+    admission.
+    """
+    if phase != "aggregate" or os.environ.get(AGGREGATE_DIAGNOSTIC_VARIABLE) != "1":
+        return
+    for label in ("stdout", "stderr"):
+        captured = bytes(captures.get(label, b""))
+        tail = captured[-MAX_AGGREGATE_DIAGNOSTIC_BYTES:]
+        header = (
+            f"fresh compiler: DIAGNOSTIC aggregate {label} "
+            f"captured={len(captured)} shown={len(tail)}\n"
+        ).encode("ascii")
+        try:
+            os.write(2, header)
+            if tail:
+                os.write(2, tail if tail.endswith(b"\n") else tail + b"\n")
+        except OSError:
+            return
 
 
 def cancellation_handler(signum: int, _frame: Any) -> None:
@@ -3534,6 +3564,7 @@ def run_owned(
         finally:
             teardown_complete = True
         if resource_failure is not None:
+            emit_aggregate_diagnostic(phase, captures)
             raise resource_failure
         if return_result:
             if timed_out:
@@ -3549,6 +3580,7 @@ def run_owned(
                 bytes(captures["stderr"]),
             )
         if process_unhealthy or process.returncode != 0:
+            emit_aggregate_diagnostic(phase, captures)
             fail(category, phase)
     except BaseException as active_error:
         if process is not None and not teardown_complete:
