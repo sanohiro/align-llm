@@ -135,6 +135,19 @@ pub fn load_prompt_rollback_request(root: str, relative: str) -> Result<prompt_a
   return prompt_artifacts.decode_prompt_rollback_request(view)
 }
 
+pub fn load_prompt_experiment_request(path: str) -> Result<prompt_artifacts.PromptExperimentRequest, Error> {
+  source := read_bounded(path, REQUEST_MAX_BYTES)?
+  view: str := source
+  return prompt_artifacts.decode_prompt_experiment_request(view)
+}
+
+// The bounded reader for a section 4.1 `PromptTextArtifact` input such as the C6e opportunity. The
+// caller owns kind, identity, bound, and digest validation so it can report the exact section 5
+// error code for the first failing check.
+pub fn read_prompt_text_artifact_source(root: str, relative: str) -> InputSource {
+  return read_beneath_source(root, relative, ARTIFACT_MAX_BYTES)
+}
+
 pub fn load_prompt_evaluate_request(path: str) -> Result<prompt_artifacts.PromptEvaluateRequest, Error> {
   source := read_bounded(path, REQUEST_MAX_BYTES)?
   view: str := source
@@ -603,6 +616,25 @@ pub fn decode_prompt_activation_result_source(value: str) -> Result<prompt_artif
     return Err(Error.Invalid)
   }
   return Ok(decoded)
+}
+
+// The C6e direct retained exclusive-create publication path: one artifact, no temporary-plus-rename
+// pair and no evidence sidecar. The caller supplies a complete result with an empty digest field;
+// the canonical digest is taken over the record with that field empty, exactly as the other
+// content-bound artifacts bind theirs.
+pub fn write_prompt_experiment_result(
+  output: writer,
+  value: prompt_artifacts.PromptExperimentResult,
+) -> Result<(), Error> {
+  if value.content_sha256.len() != 0 {
+    return Err(Error.Invalid)
+  }
+  canonical := prompt_artifacts.encode_prompt_experiment_result_bounded(value, ARTIFACT_MAX_BYTES)?
+  mut finalized := prompt_artifacts.decode_prompt_experiment_result(canonical)?
+  finalized.content_sha256 = digest_text(canonical)
+  encoded := prompt_artifacts.encode_prompt_experiment_result_bounded(finalized, ARTIFACT_MAX_BYTES)?
+  output.write(encoded)?
+  return output.flush()
 }
 
 pub fn write_prompt_activation_result(

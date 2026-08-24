@@ -152,13 +152,19 @@ pub fn request_bytes(model_name: str, request: model.GenerationRequest, streamin
   return json.encode(payload).clone()
 }
 
-// The envelope decoder shared by the generate path and every other consumer of a 2xx body.
+// The envelope decoder shared by the generate path and every other consumer of a 2xx body. The
+// enclosing arena is required, not decorative: the shipped Request 7 rule materializes a selected
+// escaped string exactly once in the caller's arena, and a real completion body always escapes
+// (a newline, a quote, or — for the C6e proposal path — a nested JSON object). The extracted text
+// is cloned out, so nothing arena-regioned escapes this function.
 pub fn decode_content(response: str) -> Result<string, Error> {
-  decoded: OpenAIResponse := json.decode(response)?
-  if decoded.choices.len() == 0 {
-    return Err(Error.Invalid)
+  arena {
+    decoded: OpenAIResponse := json.decode(response)?
+    if decoded.choices.len() == 0 {
+      return Err(Error.Invalid)
+    }
+    return Ok(decoded.choices[0].message.content.clone())
   }
-  return Ok(decoded.choices[0].message.content.clone())
 }
 
 fn estimate_tokens(text: str) -> i64 {

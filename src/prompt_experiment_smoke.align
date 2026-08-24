@@ -1,0 +1,98 @@
+module prompt_experiment_smoke
+
+import core.json
+import prompt_experiment
+
+// Owner smoke for the pure C6e surfaces: the section 1.2 credential replacement pass and the
+// terminal status label/success table. Every row is emitted as one JSON line so the runner can
+// compare it against an independently computed expectation; the end-to-end request precedence,
+// provider, publication, and credential-lifetime rows are owned by the two runner scripts, which
+// need a real fixture listener, a real filesystem, and a real process.
+
+RedactionRow {
+  case_name: string,
+  text: string,
+  credential: string,
+  redacted: string,
+  redacted_len: i64,
+}
+
+StatusRow {
+  case_name: string,
+  label: string,
+  success: bool,
+}
+
+fn repeat(unit: str, count: i64) -> string {
+  output := builder()
+  mut index := 0
+  loop {
+    if index >= count {
+      break
+    }
+    output.write(unit)
+    index = index + 1
+  }
+  return output.to_string()
+}
+
+fn emit_redaction(case_name: str, text: str, credential: str) {
+  redacted := prompt_experiment.redact_credential(text, credential)
+  redacted_view: str := redacted
+  row := RedactionRow {
+    case_name: case_name.clone(),
+    text: text.clone(),
+    credential: credential.clone(),
+    redacted: redacted_view.clone(),
+    redacted_len: redacted_view.len(),
+  }
+  print(json.encode(row))
+}
+
+fn emit_status(case_name: str, value: prompt_experiment.PromptExperimentStatus) {
+  row := StatusRow {
+    case_name: case_name.clone(),
+    label: prompt_experiment.status_label(value).clone(),
+    success: prompt_experiment.status_success(value),
+  }
+  print(json.encode(row))
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  // The ordinary `api_key_env: None` path: an empty pattern returns the input unchanged.
+  emit_redaction("empty-pattern", "sk-live-abcdef appears verbatim", "")
+  // Regex punctuation is matched literally; the pass is a byte search, not a pattern language.
+  emit_redaction("punctuation", "before sk-.*+?[a-z]$ after", "sk-.*+?[a-z]$")
+  // A punctuation credential that is not present must not partially match.
+  emit_redaction("punctuation-absent", "before sk-XYZ after", "sk-.*+?[a-z]$")
+  // Overlapping prefixes: replacement is left-to-right and non-overlapping.
+  emit_redaction("overlapping-even", "aaaa", "aa")
+  emit_redaction("overlapping-odd", "aaaaa", "aaa")
+  emit_redaction("overlapping-tail", "abababa", "aba")
+  // Adjacent multi-byte UTF-8 on both sides of an ASCII credential, and a multi-byte credential.
+  emit_redaction("multibyte-adjacent", "あkeyい", "key")
+  emit_redaction("multibyte-credential", "xパスワードy", "パスワード")
+  emit_redaction("multibyte-repeated", "あTOKENあTOKENあ", "TOKEN")
+  // Every occurrence, including at both boundaries of the text.
+  emit_redaction("boundaries", "Sxxx S", "S")
+  emit_redaction("whole-text", "sk-only", "sk-only")
+  emit_redaction("absent", "abcdef", "zzz")
+  // An occurrence crossing the 16 KiB diagnostic truncation boundary. Redaction runs before
+  // truncation, so the replacement is present and no credential byte survives on either side.
+  boundary_prefix := repeat("a", 16_380)
+  boundary_suffix := repeat("b", 64)
+  boundary := builder()
+  boundary.write(boundary_prefix)
+  boundary.write("SECRET-KEY")
+  boundary.write(boundary_suffix)
+  boundary_text := boundary.to_string()
+  boundary_view: str := boundary_text
+  emit_redaction("truncation-boundary", boundary_view, "SECRET-KEY")
+
+  emit_status("status-proposed", prompt_experiment.PromptExperimentStatus.Proposed)
+  emit_status("status-invalid-input", prompt_experiment.PromptExperimentStatus.InvalidInput)
+  emit_status("status-invalid-proposal", prompt_experiment.PromptExperimentStatus.InvalidProposal)
+  emit_status("status-provider-error", prompt_experiment.PromptExperimentStatus.ProviderError)
+  emit_status("status-output-write", prompt_experiment.PromptExperimentStatus.OutputWrite)
+  return Ok(())
+}

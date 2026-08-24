@@ -10,6 +10,7 @@ import provider
 import repo_index
 import patch_eval
 import prompt_evaluate
+import prompt_experiment
 import prompt_state
 import verification_loop
 import result
@@ -23,7 +24,7 @@ fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
   print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --select-tests <repo> <changed-path> <tests.json> [timeout-ns] | --evaluate-patch <repo> <patch.diff> <evaluation.json> [timeout-ns] | --verify-loop <task.json> <result.json> | --eval [corpus] | --loop]")
-  print("       main prompt <evaluate|accept|rollback> <request.json> <result.json>")
+  print("       main prompt <experiment|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
 
@@ -299,6 +300,19 @@ fn prompt_state_demo(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
   operation := args[2]
+  if operation == "experiment" {
+    proposed := prompt_experiment.experiment_file(args[3], args[4])
+    print("prompt operation:")
+    print(operation)
+    print("status:")
+    print(prompt_experiment.status_label(proposed))
+    print("output:")
+    print(args[4])
+    if !prompt_experiment.status_success(proposed) {
+      return Err(Error.Invalid)
+    }
+    return Ok(())
+  }
   if operation == "evaluate" {
     evaluated := prompt_evaluate.evaluate_file(args[3], args[4])
     print("prompt operation:")
