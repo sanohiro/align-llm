@@ -27,7 +27,14 @@ EXPECTED = (
     b"hosted=gate-topology-check format-check check build eval-smoke loop-smoke "
     b"provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
     b"verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke "
-    b"prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke\n"
+    b"prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke "
+    b"prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke "
+    b"prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke "
+    b"prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke "
+    b"prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke "
+    b"prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke "
+    b"prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke "
+    b"c6e-request2-adoption\n"
     b"capable-only=eval-coding baseline-check c6-evaluation-adoption\n"
     b"serialized=hosted-checks capable-checks ci\n"
 )
@@ -84,7 +91,14 @@ def exact_environment() -> dict[str, str]:
             "gate-topology-check format-check check build eval-smoke loop-smoke "
             "provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
             "verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke "
-            "prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke"
+            "prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke "
+            "prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke "
+            "prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke "
+            "prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke "
+            "prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke "
+            "prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke "
+            "prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke "
+            "c6e-request2-adoption"
         ),
         "ALIGN_LLM_CAPABLE_ONLY_CHECK_TARGETS": "eval-coding baseline-check c6-evaluation-adoption",
         "ALIGN_LLM_SERIAL_CHECK_AGGREGATES": "hosted-checks capable-checks ci",
