@@ -5760,6 +5760,100 @@ retains verifier-first acceptance, immutable rollback, tamper, lineage, and CLI 
 
 ---
 
+## Request 19 — compiler: code-generation cost on a graph of large by-value structs
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none — the affected member was demoted out of the hosted lane, so no gate waits on this
+Independent work that may continue: all of it; every other align-llm capability compiles and runs inside its existing budget at the current pin
+Resume condition: at the adopted pin, `alignc build src/prompt_verifier_smoke.align` completes within a small multiple of its `alignc check` cost and inside the supervised aggregate's per-target budget, after which `prompt-verifier-smoke` rejoins `HOSTED_CHECK_TARGETS` and `scripts/check-gate-topology`'s `EXPECTED` bytes
+Align commit or pull request: pending
+align-llm verification: pending — the focused target is `make prompt-verifier-smoke`, and the lane proof is `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` with the member restored
+```
+
+### Motivation and pinned-state evidence
+
+This is a compiler/runtime performance gap, not a missing surface. `align-llm` has one translation
+unit, `src/prompt_verifier_smoke.align` (1,573 lines), whose C6c2 verifier fixtures construct many
+literals of the C6 artifact records declared in `src/prompt_artifacts.align`. Semantic analysis of
+that unit is fast; code generation for the same unit is roughly three orders of magnitude slower and
+allocates over a gigabyte.
+
+Measured at the currently pinned Align revision `2f33ac5c33a898a7894af58322852632ce6ffe42`
+(`alignc 0.5.0`, release build), native `linux/aarch64`, 8 logical CPUs:
+
+```text
+$ alignc check src/prompt_verifier_smoke.align
+0.494 s wall, 76,275 bytes of diagnostics, exit 0
+
+$ make prompt-verifier-smoke          # alignc run: code generation, link, then execute
+719 s wall, peak resident set 1,525,732 KiB, exit 0
+```
+
+Code generation owns effectively all of that: the produced program prints one line and exits.
+
+The compiler's own diagnostics point at the shape it is struggling with. The same `check` emits 345
+`huge struct copy` warnings over exactly two kinds — by-value parameter passing and by-value return
+— across 23 distinct record types, and 100 of the 345 name one 5,056-byte record
+(`prompt_artifacts$PromptEvaluationResult`); the remaining sizes run 504, 632, 736, 744, 864, 960,
+and 1,120 bytes. Nothing in the unit is recursive, generic, or reflective: it is a wide, flat graph
+of large by-value aggregates, and the cost appears to be superlinear in the copy count times the
+copied size rather than in the source size.
+
+The concrete client consequence is measured, not hypothetical. The supervised fresh-worker
+aggregate (`make ci` inside the Section 9 sandbox) ran `make capable-checks` in roughly 110–180 s
+before this unit joined the hosted lane. With it, one reproduction of the exact aggregate
+environment took 890 s for the same graph, of which this single smoke accounted for roughly 780 s
+under aggregate contention, and the qualification's practical budget was exceeded. `align-llm` therefore demoted `prompt-verifier-smoke`
+from `HOSTED_CHECK_TARGETS` to a named focused qualification run on verifier-boundary changes and
+before publication (see `docs/specs/check-gate-topology.md` §2 and
+`docs/specs/c6-prompt-context-optimizer.md` §11.3). Coverage is unchanged; only its lane membership
+is. That is a scheduling decision on the client side, not a fix, and it is exactly the kind of
+non-blocking, workaround-shaped gap this register exists to record.
+
+### Requested behavior
+
+No new public surface. `alignc build` should generate code for a unit of this shape in time and
+memory proportional to what `alignc check` already proves is tractable — concretely, within a small
+constant multiple of the `check` cost and without a peak resident set that scales with the product
+of copy sites and struct size. Diagnostics, generated-program semantics, and the `huge struct copy`
+warning text are unchanged by this request; the warning is useful client advice and should stay.
+
+Align owns the choice of remedy. Plausible directions, listed only as evidence of where the cost
+concentrates and not as a required design:
+
+- lower a large by-value aggregate copy to a memory intrinsic or a single move instead of
+  materializing per-field code at every call and return site;
+- avoid re-expanding an identical aggregate copy sequence once per site when the source and
+  destination layouts are identical;
+- bound the working set held per function during code generation so peak memory tracks the largest
+  single function rather than the whole unit.
+
+### Public-contract ledger
+
+| Surface | Exact result/error and precedence | Ownership, allocation, effects, and identity | First real-client acceptance |
+| --- | --- | --- | --- |
+| `alignc build <unit>` | Unchanged. Same accepted programs, same rejections, same diagnostic text and order, same generated-program behavior. This request changes only the resources the existing contract consumes. | Unchanged for the generated program. Compiler-internal only: the peak resident set during code generation must not scale with (copy sites x copied struct bytes) across the whole unit. | `make prompt-verifier-smoke` at the adopted pin completes within the supervised aggregate's per-target budget, its output line is byte-identical to today's, and `prompt-verifier-smoke` is restored to `HOSTED_CHECK_TARGETS`, to `scripts/check-gate-topology`'s `EXPECTED` bytes, and to the `docs/specs/check-gate-topology.md` hosted oracle, with `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` passing at that head. |
+
+### Acceptance criteria
+
+1. At the adopted pin, `alignc check src/prompt_verifier_smoke.align` and
+   `alignc build src/prompt_verifier_smoke.align` both succeed, the build's wall time is within a
+   small constant multiple of the check's, and its peak resident memory stays well under the
+   1,525,732 KiB measured here.
+2. `make prompt-verifier-smoke` prints exactly
+   `prompt verifier smoke: complete, incomplete, compact, and tamper cases PASS`.
+3. `make check` still reports the same 22 units per-unit and every other align-llm target is
+   unaffected.
+4. `prompt-verifier-smoke` is restored to the hosted lane in `Makefile`,
+   `scripts/check-gate-topology`, and `docs/specs/check-gate-topology.md` in one change, and
+   `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` passes
+   at that head with the aggregate back inside its historical cost.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design
