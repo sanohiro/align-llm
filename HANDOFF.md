@@ -58,8 +58,28 @@ file records durable project state.
   `a14dba686aaafba3a2d6b5eb8820b0df5c5d2d92`, the `llama-server` digest, and the model digest.
 - Measured result (`c6g2-measure`): `IMPROVED`, `gate_eligible: true`, zero serious regressions,
   completion gain 2. `duration-half-away-from-zero` moves 0/2 -> 2/2 under a model-proposed
-  candidate that enables the context sections; the other two tasks fail in both variants. A
-  parent-vs-parent null replicate over the same corpus flipped no cell.
+  candidate that enables the context sections; the other two tasks fail in both variants.
+  `paired_pass_count` is 0 for every task and for the corpus, so the evidence carries **no** paired
+  timing and therefore no time-to-passing-patch comparison; acceptance is the section 8
+  completion-gain path alone. Section 11.3's "What the measured claim is and is not" states the
+  narrowed claim.
+- Reproducible baseline: the parent-vs-parent null replicate `c6g2-replicate`, same frozen corpus,
+  same command and provider environment, distinct variant identifiers over a byte-identical rendered
+  prompt. Result `NO_IMPROVEMENT`, `gate_eligible: false`, every task 0/2 in both variants, corpus
+  `completion_gain_count: 0` — it flipped no cell. Reproducing command, inside the privileged
+  `c6g2-measure:latest` container at project root `/work/align-llm`:
+
+  ```text
+  ./main prompt evaluate run/evaluate-request-replicate.json run/result-replicate.json
+  ```
+
+  The request is built by the replicate driver, which copies the parent effective variant into the
+  candidate slot under `c6g2-replicate/variant` and `c6g2-replicate/candidate` and otherwise reuses
+  the measure request verbatim. Result digest (SHA-256 of the exact `run/result-replicate.json`
+  bytes) at the pre-repair measuring commit `6da28d88327797649bbf229f14be9be1e6dd2d96`:
+  `e111201e8096ac5a64fb7c5522c0dae2c3b70f81645c4cffe8a5afb85c790eca`; its evidence sidecar is
+  `0aafe8d62e9622c02b5d3baaaa94faf07084daa1bcd14e234235f5c8225a07c5`, wall time 520.2 s. The
+  replicate artifacts are diagnostics, not repository state, and are not checked in.
 - The gate run found and repaired five shipped defects no fixture reaches: three canonical
   `Option::None`-omission mismatches (experiment-result decode, aggregate optional set, and the
   activation-lineage identity the gate validator compared against the envelope instead of the

@@ -4280,7 +4280,10 @@ declared record carries a credential value. `provider_kind` admits only a dispat
 control never reaches provider dispatch. The child reads the rendered prompt through the declared
 path and requires its `RenderedPromptArtifact` digest to equal `rendered_prompt_sha256`, so the
 section 4.5 request mapping stays normative and no intermediate owner can prepend, append, or split
-the rendered bytes. `dispatch_start_ns` and `dispatch_end_ns` are child-observed diagnostics for the
+the rendered bytes. Measurement-risk note: the gate binds the rendered prompt by digest only — it
+re-derives no rendered text from the frozen assets, so a rendered prompt whose digest is consistent
+everywhere is accepted without the gate reproducing its content; `prompt-render-parity-smoke` is the
+owner that keeps the two renderers byte-equal. `dispatch_start_ns` and `dispatch_end_ns` are child-observed diagnostics for the
 measurement-risk record; they never define a scored duration. `OUTPUT_WRITE` is a command status
 only: a failed response write persists no response artifact, and the adapter classifies the missing
 document exactly like any other failed handoff below.
@@ -4298,7 +4301,10 @@ attestation semantics
 observed at this boundary: `APPLIED` with `applied_seed: Some(paired_seed)` when the selected
 adapter reports `supports_seed` and the seeded twin bytes carry the paired seed, `UNSUPPORTED` with
 `applied_seed: None` when the adapter does not support a seed, and `REJECTED` with
-`applied_seed: None` when a seed-supporting provider returns a received response refusing it. The
+`applied_seed: None` when a seed-supporting provider returns a received response refusing it.
+Measurement-risk note: `APPLIED` attests that the seeded twin bytes carried the paired seed and the
+provider accepted the request, not that the provider produced a deterministic completion from it;
+the gate evidence therefore proves seed transport, never provider reproducibility. The
 transport, status, and decode error mapping is exactly the section 11.3 proposal table above:
 `Error.Timeout`, the `Error.Code(-1)` receive-side limit sentinel, any other transport `Err`, a
 received non-2xx status as `Ok` data with its bounded body, and a 2xx envelope or content-extraction
@@ -4343,6 +4349,10 @@ identity verbatim from the response into `GenerationRequestIdentity` and
 from any other preimage. The section 5.2 non-circularity rule is therefore preserved with the child
 as the provider boundary: the digest comes from the dispatched wire bytes alone, independently of
 the attestation, and the evaluator still requires the two persisted values to be equal.
+Measurement-risk note: that digest is nonetheless self-attested by the generation child — no owner
+outside the child witnesses the bytes actually written to the socket — so its trust rests on the
+child's reviewed source, its declared per-run digest, and the adapter's pre-launch and post-return
+verification of the sealed binary, not on an independent observation of the wire.
 
 **Derived-child admission and credential handoff.** The generation child is the one explicit
 relaxation of the reviewed-source execution boundary, and its exact shape is fixed here. The child
@@ -4489,7 +4499,7 @@ The C6-MEASURED closure matrix is:
 | measurement response edit format | `scripts/prompt-measurement-adapter.py`, `eval/tasks/prompt-v1/*/task-prompt.json` | `prompt-measurement-adapter-smoke`: parse rows for single and multiple blocks, a language-tagged fence, surrounding and trailing prose, a nested fence under a longer outer fence, and CRLF; refusal rows for no block, an unterminated block, a header without a block, and a duplicate path as `FAIL`/`PATCH`, and out-of-allowlist, absolute, and escaping paths as `POLICY_VIOLATION`/`POLICY` with no runner launch; a golden whole-file hunk that `git apply` really applies, an unchanged-content refusal, and a created-file hunk; plus `prompt-generate-smoke`'s empty-2xx-content row proving the child never publishes empty `GENERATED` content |
 | task parameterization | `scripts/prompt-measurement-adapter.py`, `scripts/prompt-evaluate.py` | `prompt-measurement-adapter-smoke`: manifest-driven runner and task-definition digests admit and execute; a wrong declared digest is rejected before launch with no runner marker; the extended `TaskAdapterRequest` field order and its `EvaluationInputIdentity` preimage are golden-bound |
 | renderer parity | `scripts/prompt-evaluate.py`, `src/prompt_model.align` | `prompt-render-parity-smoke`: shared golden rendered-prompt vectors over all eight section 4.3 enable/disable combinations, each section's truncation boundary, and `task_id` failure-memory selection, asserted byte-equal across both implementations; this row records the already-settled section 4.3 contract, and the Python renderer's disabled-section-only restriction was an implementation defect |
-| measured claim | gate pull request | reproducible before/after from a named clean commit, exact command and provider environment without credentials, and the time-to-passing-patch measurement against the checked-in baseline |
+| measured claim | gate pull request | reproducible before/after from a named clean commit, exact command and provider environment without credentials, and the delivered result stated exactly as measured — see "What the measured claim is and is not" below |
 
 Ledger field completion: persisted and cache identity are `N/A` for `redact_credential` and for both
 modules' `status_label` and `status_success` (pure functions with no persisted output); schema
@@ -4500,6 +4510,27 @@ and gate inputs recorded in check evidence rather than frozen assets; and owners
 the settled section 5.1 record fields is owned by the existing codec rows and is not restated
 here.
 
+**What the measured claim is and is not.** The delivered C6g2 result is a **completion-count gain
+on one task**, not a timing result. The frozen corpus has three tasks and two samples per variant.
+`duration-half-away-from-zero` moves from 0/2 passing under the parent variant to 2/2 under the
+candidate, giving `completion_gain_count: 2`; the other two tasks fail in both variants, so their
+`candidate_pass_count` and `parent_pass_count` are both zero. `paired_pass_count` is therefore **0
+for every task and 0 for the corpus**, `parent_paired_median_time_ns` and
+`candidate_paired_median_time_ns` are absent, and **no time-to-passing-patch comparison exists in
+this evidence at all**. Acceptance is reached solely through the section 8 completion-gain path,
+which is the one path that does not require a paired pass. The lever is a single task, so the result
+is a demonstration that the measurement chain produces a real, gate-eligible improvement end to end,
+not a corpus-level or statistical quality result.
+
+Two caveats belong in the pull request beside the numbers. First, the accepted candidate's learned
+append names the failing task's fix in prose; it was produced by the real `prompt experiment` run
+from an opportunity artifact that describes that task's recurring failure, so the candidate is
+model-authored but the opportunity that seeded it was human-authored and task-specific. Second,
+**no provider-quality claim is made or implied by this wave.** The reproducible baseline is the
+parent-vs-parent null replicate over the same frozen corpus, run with the same command and the same
+provider environment, which flipped no cell; its exact command and result digest are recorded in
+`HANDOFF.md`.
+
 The implementation checkpoint is one consumer-complete capability: `src/prompt_experiment.align`
 and `src/prompt_generate.align` with their smoke owners, the shared seed extension, the Request 2
 adoption target, `scripts/prompt-measurement-adapter.py` with the evaluator provider admission and
@@ -4507,8 +4538,10 @@ task parameterization it requires, the frozen C6g1 assets, and the C6g2 evidence
 belong to the same wave because the gate evidence is the only real consumer of the proposal and
 measurement surfaces. The C6e metric is proposal-command
 correctness with zero credential leakage across every terminal path. The C6-MEASURED metric is the
-section 11 wave claim: the gate pull request owns the reproducible baseline and time-to-passing-
-patch measurement, and no other capability may claim provider quality.
+section 11 wave claim as narrowed above: the gate pull request owns the reproducible null baseline
+and states the delivered completion-count gain exactly as measured. It delivers no paired timing
+evidence, so it makes no time-to-passing-patch claim, and no capability in this wave claims provider
+quality.
 
 ## 12. Deferred extensions
 
