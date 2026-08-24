@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Exercise the pinned std.http I/O deadline (Request 2) through the real provider transport.
+
+Three listeners on loopback drive `provider_http.post_json` under one sub-second `timeout_ns`:
+
+* a plaintext listener that accepts the TCP connection and never writes a response, so the client
+  blocks in the receive path;
+* a listener the client speaks TLS to, which accepts the connection and never answers the
+  ClientHello, so the client blocks inside the handshake;
+* a responsive listener that answers promptly, proving the same configured deadline leaves an
+  ordinary exchange untouched and that the client still works after two timed-out connections.
+
+The adoption entry asserts the `Error.Timeout` classification and its own monotonic bound; this
+driver independently bounds the whole run's wall clock and re-checks the reported per-row timings.
+"""
+
+from __future__ import annotations
+
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = ROOT / "src" / "c6e_request2_adoption.align"
+
+# Mirrors of the constants the adoption entry declares. They are duplicated deliberately: the entry
+# owns the in-process assertion, this driver owns the independent out-of-process one, and a silent
+# divergence between the two must fail rather than weaken the gate.
+TIMEOUT_NS = 250_000_000
+MIN_ELAPSED_NS = TIMEOUT_NS // 2
+MAX_ELAPSED_NS = 10 * TIMEOUT_NS
+# The whole run is two stalls plus one fast control exchange under the same deadline. Twelve
+# deadlines leave room for process startup and loopback scheduling noise while still failing fast
+# if either stall is unbounded.
+MAX_RUN_SECONDS = 12 * TIMEOUT_NS / 1_000_000_000
+# The wall clock at which an unbounded run is killed. It must exceed MAX_RUN_SECONDS so that a
+# missing deadline is reported as an over-bound run rather than as a harness timeout.
+RUN_KILL_SECONDS = 60
+CONTROL_BODY = b"ok"
+STALL_LABELS = ("plaintext-stall-elapsed-ns", "tls-stall-elapsed-ns")
+CONTROL_LABEL = "control-elapsed-ns"
+PASS_LINE = "http timeout adoption: PASS"
+
+
+class StallListener:
+    """A listener that accepts connections and then does nothing with them.
+
+    Accepting is the point: the Request 2 gate distinguishes "accepts then never responds" from
+    "never accepts", and only an accepted connection proves the receive/handshake deadline rather
+    than the connect deadline. Accepted sockets are retained so the kernel neither resets nor closes
+    them while the client waits.
+    """
+
+    def __init__(self) -> None:
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(8)
+        self._listener.settimeout(0.1)
+        self.port = self._listener.getsockname()[1]
+        self.accepted: list[socket.socket] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            try:
+                connection, _address = self._listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            # Never read and never write: the peer bytes stay in the kernel buffer and the client
+            # blocks on its own armed deadline.
+            self.accepted.append(connection)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
+        for connection in self.accepted:
+            connection.close()
+        self._listener.close()
+
+
+class ControlServer:
+    """A minimal HTTP/1.1 listener that answers every request promptly."""
+
+    def __init__(self) -> None:
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(8)
+        self._listener.settimeout(0.1)
+        self.port = self._listener.getsockname()[1]
+        self.requests = 0
+        self.errors: list[str] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            try:
+                connection, _address = self._listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(connection,), daemon=True).start()
+
+    def _handle(self, connection: socket.socket) -> None:
+        connection.settimeout(5)
+        try:
+            with connection:
+                buffered = b""
+                while b"\r\n\r\n" not in buffered:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        return
+                    buffered += chunk
+                head, _separator, rest = buffered.partition(b"\r\n\r\n")
+                length = 0
+                for line in head.split(b"\r\n")[1:]:
+                    name, _colon, value = line.partition(b":")
+                    if name.strip().lower() == b"content-length":
+                        length = int(value.strip())
+                while len(rest) < length:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        return
+                    rest += chunk
+                self.requests += 1
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: " + str(len(CONTROL_BODY)).encode("ascii") + b"\r\n"
+                    b"Connection: close\r\n\r\n" + CONTROL_BODY
+                )
+        except (OSError, ValueError) as error:
+            self.errors.append(repr(error))
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
+        self._listener.close()
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def build(directory: Path) -> Path:
+    completed = subprocess.run(
+        [str(ROOT / "scripts" / "alignc"), "build", str(SOURCE)],
+        cwd=directory,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"fixture build failed: {completed.stderr}")
+    binary = directory / SOURCE.stem
+    if not binary.is_file():
+        raise RuntimeError("fixture build did not create its executable")
+    return binary
+
+
+def parse_rows(stdout: str) -> dict[str, int]:
+    """Read the entry's label/value line pairs and its terminal PASS line."""
+    lines = stdout.splitlines()
+    require(lines and lines[-1] == PASS_LINE, f"adoption entry did not pass: {stdout!r}")
+    rows: dict[str, int] = {}
+    for label, value in zip(lines[:-1:2], lines[1::2]):
+        require(re.fullmatch(r"[0-9]+", value) is not None, f"row {label!r} value is not ns: {value!r}")
+        rows[label] = int(value)
+    return rows
+
+
+def main() -> int:
+    plaintext = StallListener()
+    tls = StallListener()
+    control = ControlServer()
+    try:
+        with tempfile.TemporaryDirectory(prefix="c6e-request2-build-") as directory:
+            binary = build(Path(directory))
+            started = time.monotonic()
+            completed = subprocess.run(
+                [
+                    str(binary),
+                    f"http://127.0.0.1:{plaintext.port}/stall",
+                    # The client selects TLS from the scheme, so an https target served by a socket
+                    # that never answers the ClientHello stalls inside the handshake.
+                    f"https://127.0.0.1:{tls.port}/stall",
+                    f"http://127.0.0.1:{control.port}/control",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=RUN_KILL_SECONDS,
+            )
+            elapsed_seconds = time.monotonic() - started
+    finally:
+        plaintext.close()
+        tls.close()
+        control.close()
+
+    require(completed.returncode == 0, f"adoption entry failed: {completed.stdout}{completed.stderr}")
+    require(completed.stderr == "", f"adoption entry wrote diagnostics: {completed.stderr!r}")
+    rows = parse_rows(completed.stdout)
+
+    require(
+        plaintext.accepted and tls.accepted,
+        "a stall listener never accepted a connection, so the row proves the connect bound only",
+    )
+    require(control.errors == [], f"control listener failed: {control.errors}")
+    require(control.requests == 1, f"control listener saw {control.requests} requests, expected 1")
+
+    for label in STALL_LABELS:
+        require(label in rows, f"missing stall row {label}")
+        observed = rows[label]
+        require(
+            MIN_ELAPSED_NS <= observed <= MAX_ELAPSED_NS,
+            f"{label}={observed} outside [{MIN_ELAPSED_NS}, {MAX_ELAPSED_NS}]",
+        )
+    require(CONTROL_LABEL in rows, f"missing control row {CONTROL_LABEL}")
+    require(
+        rows[CONTROL_LABEL] < MIN_ELAPSED_NS,
+        f"{CONTROL_LABEL}={rows[CONTROL_LABEL]} did not complete well inside the deadline",
+    )
+    require(
+        elapsed_seconds <= MAX_RUN_SECONDS,
+        f"run wall clock {elapsed_seconds:.3f}s exceeded {MAX_RUN_SECONDS:.3f}s",
+    )
+
+    print(
+        f"http timeout adoption: timeout_ns={TIMEOUT_NS:,} "
+        f"plaintext-stall={rows[STALL_LABELS[0]]:,}ns "
+        f"tls-handshake-stall={rows[STALL_LABELS[1]]:,}ns "
+        f"control={rows[CONTROL_LABEL]:,}ns "
+        f"run={elapsed_seconds:.3f}s PASS"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"http timeout adoption: FAIL: {error}", file=sys.stderr)
+        raise SystemExit(1)

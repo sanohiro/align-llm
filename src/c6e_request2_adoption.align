@@ -1,0 +1,107 @@
+module c6e_request2_adoption
+
+import provider_http
+import std.time
+
+// C6e adoption of the Request 2 transport deadline. `provider_http` threads the caller's
+// `timeout_ns` into the pinned `std.http` client, so this fixture drives the two stalls the Request
+// 2 acceptance gate names through the real transport: a plaintext listener that accepts the TCP
+// connection and never writes a response, and a TLS listener that accepts and never completes the
+// handshake. Both must fail as `Error.Timeout` — the deadline variant — and never as the
+// `Error.Code` transport errno, the `Error.Code(-1)` receive-limit sentinel, the `Error.Denied` TLS
+// verification failure, or an `Ok` carrying a received status. Each stall must also fail inside a
+// bounded multiple of the configured sub-second deadline, and a responsive control request under
+// the same configuration must still succeed.
+
+// A sub-second deadline: long enough to survive loopback scheduling noise, short enough that a
+// missing deadline reads as a hang rather than a slow pass.
+TIMEOUT_NS := 250_000_000
+// Below half the deadline the failure cannot be the armed deadline itself — a refused connect, a
+// DNS failure, or an immediate reset lands there — so the lower bound keeps each stall row honest.
+MIN_ELAPSED_NS := 125_000_000
+// The bounded wall-clock multiple: ten deadlines. A real per-operation deadline returns near
+// `TIMEOUT_NS`; an unarmed one blocks until the driver kills the run.
+MAX_ELAPSED_NS := 2_500_000_000
+// The receive-side cap the pre-C6e construction sites fix. It is irrelevant to a stall, which never
+// delivers a body, and is stated only because `post_json` takes the caller's cap explicitly.
+RESPONSE_CAP := 262_144
+// The control listener's response body.
+CONTROL_BODY_LEN := 2
+
+// Distinct observation tags so a regression names the variant it actually saw. The Request 2 gate
+// is exactly that a stall is `Timeout` and not one of the other four categories.
+OBSERVED_OK := 0
+OBSERVED_NOT_FOUND := 1
+OBSERVED_INVALID := 2
+OBSERVED_DENIED := 3
+OBSERVED_TIMEOUT := 4
+OBSERVED_CODE := 5
+
+fn observe(endpoint: str) -> i64 {
+  return match provider_http.post_json(endpoint, "", "{}", TIMEOUT_NS, RESPONSE_CAP) {
+    Ok(_) => OBSERVED_OK,
+    Err(e) => match e {
+      NotFound => OBSERVED_NOT_FOUND,
+      Invalid => OBSERVED_INVALID,
+      Denied => OBSERVED_DENIED,
+      Timeout => OBSERVED_TIMEOUT,
+      Code(_) => OBSERVED_CODE,
+    },
+  }
+}
+
+fn expect_stall(label: str, endpoint: str) -> Result<(), Error> {
+  started := time.instant()
+  observed := observe(endpoint)
+  elapsed := time.instant() - started
+  print(label)
+  print(elapsed)
+  if observed != OBSERVED_TIMEOUT {
+    print("observed-error-tag")
+    print(observed)
+    return Err(Error.Invalid)
+  }
+  if elapsed < MIN_ELAPSED_NS {
+    return Err(Error.Invalid)
+  }
+  if elapsed > MAX_ELAPSED_NS {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn expect_control(endpoint: str) -> Result<(), Error> {
+  started := time.instant()
+  body := provider_http.post_json(endpoint, "", "{}", TIMEOUT_NS, RESPONSE_CAP)?
+  elapsed := time.instant() - started
+  print("control-elapsed-ns")
+  print(elapsed)
+  if body.len() != CONTROL_BODY_LEN {
+    return Err(Error.Invalid)
+  }
+  if elapsed > MAX_ELAPSED_NS {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 4 {
+    return Err(Error.Invalid)
+  }
+  plaintext_stall := args[1]
+  tls_stall := args[2]
+  control := args[3]
+
+  // A peer that accepts the connection and never writes a response: the receive deadline.
+  expect_stall("plaintext-stall-elapsed-ns", plaintext_stall)?
+  // A peer that accepts the connection and never completes the TLS handshake: the same armed
+  // socket deadline reached through `SSL_connect` rather than a plaintext read.
+  expect_stall("tls-stall-elapsed-ns", tls_stall)?
+  // The same configured deadline must leave an ordinary exchange untouched, and the client must
+  // still work after two timed-out connections.
+  expect_control(control)?
+
+  print("http timeout adoption: PASS")
+  return Ok(())
+}
