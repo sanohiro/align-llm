@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "GENERATION_POLICY",
+  "generation_policy_id": "prompt-v1-generation-v1",
+  "evaluation_provider_kind": "FIXTURE",
+  "evaluation_provider_endpoint_id": "pending-provider-decision",
+  "evaluation_provider_model": "pending-provider-decision",
+  "provider_control_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "provider_service_revision": "pending-provider-decision",
+  "max_prompt_bytes": 65536,
+  "max_tokens": 4096,
+  "temperature_micros": 0,
+  "seed_mode": "PAIRED_FIXED",
+  "seed_base": 20260824,
+  "content_sha256": "2429bbf591fa2315ac031eb5eb55f1d986becbe9fdce04c21e0d50fca8a987e3"
+}

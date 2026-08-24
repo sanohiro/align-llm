@@ -1,1 +1,4 @@
 * text=auto eol=lf
+
+# The canonical corpus file-set manifest is byte-identity-bearing framed data.
+eval/prompt/canonical-v1/corpus-file-set.manifest -text

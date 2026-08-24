@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "TASK_PROMPT",
+  "artifact_id": "duration-half-away-from-zero/task-prompt",
+  "text": "Task: prompt-v1-fixture/duration-half-away-from-zero\n\n`python3 tests/test_duration.py -v` fails: round_to_minutes does not round an\nexact half minute away from zero. The contract is symmetric, so 30 seconds must\nround to 1 minute and -30 seconds must round to -1 minute.\n\nEditable files:\n  src/duration.py\n\nMake the validation command exit zero.\n",
+  "content_sha256": "c9c84ab7d199f6f3f0c4605ebc19a75ddf3f490f7eb62d4637638d227ca09070"
+}

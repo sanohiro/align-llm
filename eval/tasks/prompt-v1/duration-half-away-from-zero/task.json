@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "duration-half-away-from-zero",
+  "source_dir": "eval/fixtures/prompt-v1-duration-rounding/repository",
+  "source_revision": "b2c284a0ad7be017596af9e24a9d74e58d62974f",
+  "allowed_edits": [
+    "src/duration.py"
+  ],
+  "validation_argv": [
+    "python3",
+    "tests/test_duration.py",
+    "-v"
+  ],
+  "validation_timeout_seconds": 10
+}

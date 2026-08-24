@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "TASK_PROMPT",
+  "artifact_id": "layer-precedence-frozen-module/task-prompt",
+  "text": "Task: prompt-v1-fixture/layer-precedence-frozen-module\n\n`python3 tests/test_settings.py -v` fails with three assertion errors: file\nvalues do not override defaults, and environment values override neither.\n\nEditable files:\n  src/settings.py\n\nEvery other tracked file, including src/legacy.py and everything under tests/,\nmust be byte-identical after your patch.\n\nMake the validation command exit zero.\n",
+  "content_sha256": "c4ba52ae8f927113daa0222d3871ae384ffb4571fef3dc3f3fb8055a2add7984"
+}

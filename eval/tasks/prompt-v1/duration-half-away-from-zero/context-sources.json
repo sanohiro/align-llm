@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "CONTEXT_SOURCES",
+  "task_id": "duration-half-away-from-zero",
+  "patch_evaluation": {
+    "schema_version": 1,
+    "artifact_kind": "PATCH_EVALUATION",
+    "artifact_id": "duration-half-away-from-zero/patch-evaluation",
+    "text": "patch evaluation: prompt-v1-fixture/duration-half-away-from-zero\n\nverdict: REJECTED\nreason: TEST_FAILURE\nchanged files: src/duration.py\neditable files: src/duration.py\nvalidation: exit code 1\n\nnotes:\n- The attempt stayed inside the editable set and changed one function, and the\n  validation command still exits non-zero.\n- failing tests: test_exact_half_minute_rounds_away_from_zero,\n  test_two_and_a_half_minutes_rounds_away_from_zero\n- unrelated diff count: 0\n- public API change count: 0\n- patch size: 286 bytes\n",
+    "content_sha256": "208a4172755eecc7ee149209bd2f7673e1eeb7ea2f6bba558e81c1d9ec71ed38"
+  },
+  "failure_memory_jsonl": {
+    "schema_version": 1,
+    "artifact_kind": "FAILURE_MEMORY_JSONL",
+    "artifact_id": "duration-half-away-from-zero/failure-memory",
+    "text": "{\"schema_version\":1,\"root\":\"/workspace/checkout\",\"task_id\":\"record-codec-round-trip\",\"attempted_patch\":\"src/encode.py: escape the delimiter twice\",\"final_status\":\"FAIL\",\"failure_stage\":\"tests/test_codec.py\",\"failed_test\":\"tests/test_codec.py\",\"failure_status\":\"FAIL\",\"root_cause\":\"encoder and decoder were changed independently\",\"repair_result\":\"EXHAUSTED\",\"successful_strategy\":\"\",\"unsuccessful_strategy\":\"change only the encoder\",\"iteration_count\":1,\"repair_count\":1,\"risk_score\":40,\"recommended_tests\":\"tests/test_codec.py\",\"risky_symbols\":\"encode_record\"}\n{\"schema_version\":1,\"root\":\"/workspace/checkout\",\"task_id\":\"duration-half-away-from-zero\",\"attempted_patch\":\"src/duration.py: return math.floor(seconds / 60 + 0.5)\",\"final_status\":\"FAIL\",\"failure_stage\":\"tests/test_duration.py\",\"failed_test\":\"tests/test_duration.py\",\"failure_status\":\"FAIL\",\"root_cause\":\"half-up on a signed float rounds negative halves toward zero\",\"repair_result\":\"EXHAUSTED\",\"successful_strategy\":\"\",\"unsuccessful_strategy\":\"adding 0.5 before flooring a signed quotient\",\"iteration_count\":1,\"repair_count\":2,\"risk_score\":60,\"recommended_tests\":\"tests/test_duration.py\",\"risky_symbols\":\"round_to_minutes\"}\n",
+    "content_sha256": "98846e79d8c1ab4a46179426727bfc9809af5ffad319102643400f0a275bf99d"
+  },
+  "diagnostic_stdout": {
+    "schema_version": 1,
+    "artifact_kind": "DIAGNOSTIC_STDOUT",
+    "artifact_id": "duration-half-away-from-zero/diagnostic-stdout",
+    "text": "fixture revision: b2c284a0ad7be017596af9e24a9d74e58d62974f\nvalidation exit code: 1\n",
+    "content_sha256": "8e5365e426c3607a5d38eee34f766c703b39f1a7d19141ad3759a1461ea32c5f"
+  },
+  "diagnostic_stderr": {
+    "schema_version": 1,
+    "artifact_kind": "DIAGNOSTIC_STDERR",
+    "artifact_id": "duration-half-away-from-zero/diagnostic-stderr",
+    "text": "test_exact_half_minute_rounds_away_from_zero (__main__.RoundToMinutesTests) ... FAIL\ntest_just_below_half_minute_rounds_toward_zero (__main__.RoundToMinutesTests) ... ok\ntest_one_and_a_half_minutes_rounds_away_from_zero (__main__.RoundToMinutesTests) ... ok\ntest_result_is_an_integer (__main__.RoundToMinutesTests) ... ok\ntest_two_and_a_half_minutes_rounds_away_from_zero (__main__.RoundToMinutesTests) ... FAIL\ntest_whole_minutes_are_unchanged (__main__.RoundToMinutesTests) ... ok\n\n======================================================================\nFAIL: test_exact_half_minute_rounds_away_from_zero (__main__.RoundToMinutesTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/checkout/tests/test_duration.py\", line 13, in test_exact_half_minute_rounds_away_from_zero\n    self.assertEqual(round_to_minutes(30), 1)\nAssertionError: 0 != 1\n\n======================================================================\nFAIL: test_two_and_a_half_minutes_rounds_away_from_zero (__main__.RoundToMinutesTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/checkout/tests/test_duration.py\", line 29, in test_two_and_a_half_minutes_rounds_away_from_zero\n    self.assertEqual(round_to_minutes(150), 3)\nAssertionError: 2 != 3\n\n----------------------------------------------------------------------\nRan 6 tests in 0.001s\n\nFAILED (failures=2)\n",
+    "content_sha256": "a24b2af85d9bc5e485e7e4c145963dc1560842bc1a12d9b3079367e0d5ee0aa2"
+  },
+  "content_sha256": "d694208d10bbc97ff7642f1c6affdf67c0061c839ed796f75470ecee034149a5"
+}

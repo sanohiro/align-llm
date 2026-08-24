@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "PROMPT_EVALUATION_TASK",
+  "task_id": "record-codec-round-trip",
+  "repo_id": "prompt-v1-fixture",
+  "repo_revision": "4597a448a14a5cfb48521f9c9a796d9686cd510e",
+  "repo_path": "eval/fixtures/prompt-v1-record-codec/repository",
+  "require_clean_repo": false,
+  "cmd": "/usr/bin/python3",
+  "argv": [
+    "/usr/bin/python3",
+    "scripts/prompt-fixed-adapter.py"
+  ],
+  "snapshot_cmd": "/usr/bin/python3",
+  "snapshot_argv": [
+    "/usr/bin/python3",
+    "scripts/prompt-snapshot-helper.py"
+  ],
+  "measurement_adapter_runtime": "PYTHON:7dd45fe88d299b2c24ceacd9336f81663da34456582c1c1ce67102dce2b983d8",
+  "snapshot_helper_runtime": "PYTHON:f3c47a49a7a3573b90c08a294df1a707fe2b8166750013c252d7eaf4383504d5",
+  "cwd": ".",
+  "timeout_ns": 30000000000,
+  "task_prompt_path": "eval/tasks/prompt-v1/record-codec-round-trip/task-prompt.json",
+  "context_sources_path": "eval/tasks/prompt-v1/record-codec-round-trip/context-sources.json",
+  "generation_policy_path": "eval/prompt/canonical-v1/generation-policy.json",
+  "provider_control_path": "eval/prompt/canonical-v1/evaluation-provider-control.json",
+  "environment_policy_path": "eval/prompt/gate/environment-policy.json",
+  "artifacts": [
+    {
+      "path": "eval/fixtures/prompt-v1-record-codec/repository",
+      "kind": "TREE",
+      "expected_sha256": "1fc1d46b7887582e8c08bc28f1ad5001f17bf1c0fd9c4b09e314a2e11bed6b08"
+    },
+    {
+      "path": "eval/tasks/prompt-v1/record-codec-round-trip/task.json",
+      "kind": "FILE",
+      "expected_sha256": "6d6ed652824eee5c7726d1774c3d135db3795a3f1dda96bdbc0d10c2ffaed313"
+    },
+    {
+      "path": "eval/tasks/prompt-v1/record-codec-round-trip/task-prompt.json",
+      "kind": "FILE",
+      "expected_sha256": "7abafe0fa957cc230bd973870ef2885e39c787233b4552d5cd7980f84c03c88f"
+    },
+    {
+      "path": "eval/tasks/prompt-v1/record-codec-round-trip/context-sources.json",
+      "kind": "FILE",
+      "expected_sha256": "2e32403aa93c37bc6c48e8f295460faf35ece48f0fd8e28c612d3ee426a44f14"
+    },
+    {
+      "path": "eval/runners/run-coding-task.py",
+      "kind": "FILE",
+      "expected_sha256": "51164422fcaf855e9a9638548bcb643a3b99824e09e8654d04cb2906d8b9e0cc"
+    },
+    {
+      "path": "scripts/prompt-fixed-adapter.py",
+      "kind": "FILE",
+      "expected_sha256": "49aeabb492faafb0d5550624d919e5d259985edcb7258aca6d6dfeafe02cc05e"
+    },
+    {
+      "path": "scripts/prompt-snapshot-helper.py",
+      "kind": "FILE",
+      "expected_sha256": "3a6c3fc91f577b308358c7b8126cc2af4ff2f4c427a9833e2a0504db3c465d7a"
+    }
+  ],
+  "regression_limits": {
+    "maximum_unrelated_diff_count": 0,
+    "maximum_patch_size_bytes": 16384,
+    "maximum_public_api_change_count": 0,
+    "maximum_repair_loops": 0,
+    "maximum_benchmark_regression_ppm": null
+  },
+  "content_sha256": "2f0ce52c4c6df3f9bf889a2d6e133034e80c154ad38248846aea5d17f96bc150"
+}
