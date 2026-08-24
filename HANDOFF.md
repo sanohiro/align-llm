@@ -272,9 +272,10 @@ file records durable project state.
   SHA-256 reproduces the locator's frozen
   `c2f5be632c8c3c09fa2d47102a844dd78a85aeebe7fc637296381e85b50c7bb9` exactly. The verifier reported
   `align_llm_observed_head` equal to the derived CI head, `align_reachability: VERIFIED`, and
-  `corpus_reachability: VERIFIED`. The same command was re-run at the final documentation head
-  `07320e47f243e2a8abc7277f785e2d3a76a7a8d3` and exits 0 there with the same generation-child
-  digest, so the transcript holds at the branch tip.
+  `corpus_reachability: VERIFIED`. The same command was re-run at
+  `07320e47f243e2a8abc7277f785e2d3a76a7a8d3` — which differs from the branch tip only by this
+  handoff entry — and exits 0 there with the same generation-child digest, so the transcript holds
+  over the documentation commits as well as over the evidence head.
 - Container environment fact discovered by the regeneration: the source verifier runs Git with
   `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so a `safe.directory` exception cannot
   apply. The pinned Align checkout at `/opt/align/<revision>` must therefore be owned by the
