@@ -7,12 +7,20 @@ gate-chain digest is recomputed, the acceptance decision and gate eligibility ar
 from the persisted rows, and the source identity is re-observed through a content-bound
 source verifier launched from explicit build inputs.
 
-The three machine inputs are explicit command-line values with no environment, ambient, or
+The four machine inputs are explicit command-line values with no environment, ambient, or
 sibling-checkout fallback:
 
     --source-bundle-root    absolute root of the CI-created source bundle
     --python-executable-path  absolute physical CPython 3.12 executable
     --git-executable-path   absolute physical Git executable
+    --generation-child-path   absolute physical ``./main`` generation child executable
+    --generation-child-sha256 lowercase SHA-256 of that exact executable
+
+The generation child is the section 11.3 derived-child relaxation: the binary is built, not
+committed, so it is never a corpus member and neither its absolute path nor a machine-specific
+spelling is frozen into ``eval/prompt/canonical-v1/``. Its per-run pair is validated before any
+evidence identity is read, and the retained same-descriptor bytes must equal the declared digest,
+so an unverified local build cannot satisfy the gate.
 
 ``--gate-manifest`` defaults to ``eval/prompt/gate/prompt-gate-manifest.json`` beneath the
 current working directory, which is the actual CI checkout the gate head is derived from.
@@ -558,6 +566,15 @@ def require_explicit_absolute(value: Any, label: str) -> Path:
     if str(path) != value.rstrip("/") and str(path) != value:
         raise InputError(f"{label} is not a normalized absolute path")
     return path
+
+
+def require_explicit_digest(value: Any, label: str) -> str:
+    """Require an explicit lowercase SHA-256 build input with no ambient fallback."""
+    if not isinstance(value, str) or not value:
+        raise InputError(f"{label} is missing or empty")
+    if HEX64.fullmatch(value) is None:
+        raise InputError(f"{label} is not a lowercase SHA-256")
+    return value
 
 
 class RetainedExecutable:
@@ -1898,8 +1915,29 @@ def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--source-bundle-root", required=True)
     parser.add_argument("--python-executable-path", required=True)
     parser.add_argument("--git-executable-path", required=True)
+    parser.add_argument("--generation-child-path", required=True)
+    parser.add_argument("--generation-child-sha256", required=True)
     parser.add_argument("--gate-manifest", default=None)
     return parser.parse_args(arguments)
+
+
+def admit_generation_child(path: Path, declared: str) -> None:
+    """Admit the per-run generation child from its explicit pair alone.
+
+    The child binary is built, not committed, so no corpus membership, locator entry, or frozen
+    canonical asset can vouch for it. The descriptor is opened without following a symlink and the
+    digest is read from that same descriptor, so the compared bytes are the ones the declared pair
+    names; the validator never launches the child, so the descriptor is released once the declared
+    digest is proven equal.
+    """
+    child = RetainedExecutable(path, "explicit generation child")
+    try:
+        if child.sha256() != declared:
+            raise InputError(
+                "explicit generation child bytes do not match --generation-child-sha256"
+            )
+    finally:
+        child.close()
 
 
 def validate(values: argparse.Namespace) -> None:
@@ -1914,6 +1952,12 @@ def validate(values: argparse.Namespace) -> None:
         values.python_executable_path, "--python-executable-path"
     )
     git_path = require_explicit_absolute(values.git_executable_path, "--git-executable-path")
+    child_path = require_explicit_absolute(values.generation_child_path, "--generation-child-path")
+    child_digest = require_explicit_digest(
+        values.generation_child_sha256, "--generation-child-sha256"
+    )
+    # The fourth explicit pair is checked before any gate evidence identity is read.
+    admit_generation_child(child_path, child_digest)
     python = RetainedExecutable(python_path, "explicit Python executable")
     try:
         git_executable = RetainedExecutable(git_path, "explicit Git executable")

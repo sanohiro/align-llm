@@ -33,6 +33,7 @@ ACCEPTED_NAME = "prompt-activation-accepted.json"
 ROLLBACK_NAME = "prompt-activation-rolled-back.json"
 POLICY_RELATIVE = "source-verifier-policy.json"
 VERIFIER_RELATIVE = "prompt-source-verifier.py"
+GENERATION_CHILD_RELATIVE = "build/main"
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -141,6 +142,14 @@ class GateBundle:
             self.evaluated_commit = evaluated
         else:
             self.evaluated_commit = repository(self.root / "unrelated", "unrelated")[0]
+
+        # The generation child is built, never committed, so it is neither a CI-checkout file nor
+        # a source-bundle member: only the explicit per-run pair names it.
+        self.generation_child = self.root / GENERATION_CHILD_RELATIVE
+        self.generation_child.parent.mkdir(parents=True)
+        self.generation_child.write_text("#!/bin/sh\nexit 0\n")
+        self.generation_child.chmod(0o755)
+        self.generation_child_sha256 = sha256_bytes(self.generation_child)
 
         self.bundle_root.mkdir()
         self.align_revision = repository(self.bundle_root / "align", "align")[0]
@@ -363,6 +372,10 @@ class GateBundle:
             str(self.python_executable),
             "--git-executable-path",
             str(self.git_executable),
+            "--generation-child-path",
+            str(self.generation_child),
+            "--generation-child-sha256",
+            self.generation_child_sha256,
             "--gate-manifest",
             str(self.manifest_path),
         ]

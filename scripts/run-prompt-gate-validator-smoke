@@ -5,7 +5,7 @@ One family runs per invocation so each Makefile target named by sections 10 and 
 an independent, narrow regression:
 
     validator             gate manifest, chain, and acceptance-policy rejection families
-    source-bundle         the three explicit build inputs, with no ambient fallback
+    source-bundle         the four explicit build inputs, with no ambient fallback
     source-revalidation   locator, policy, helper, interpreter, and Git identity
     git-replacement-graft raw replacement, graft, and alternate metadata rejection
     local-git-config      repository-local command-bearing configuration rejection
@@ -294,6 +294,7 @@ def family_source_bundle(root: Path) -> None:
         ("--source-bundle-root", "C6_GATE_SOURCE_BUNDLE_ROOT"),
         ("--python-executable-path", "C6_GATE_PYTHON_EXECUTABLE_PATH"),
         ("--git-executable-path", "C6_GATE_GIT_EXECUTABLE_PATH"),
+        ("--generation-child-path", "C6_GATE_GENERATION_CHILD_PATH"),
     ):
         rejected(bundle, f"missing {flag}", arguments=without(flag), code=1)
         rejected(
@@ -317,6 +318,37 @@ def family_source_bundle(root: Path) -> None:
             arguments=replaced(flag, str(root / "absent" / "path")),
             code=1,
         )
+
+    # The declared generation-child digest is the fourth pair's second half: it has no ambient
+    # fallback, must be a lowercase SHA-256, and must equal the retained binary's bytes.
+    digest_flag = "--generation-child-sha256"
+    rejected(bundle, f"missing {digest_flag}", arguments=without(digest_flag), code=1)
+    rejected(
+        bundle,
+        f"ambient C6_GATE_GENERATION_CHILD_SHA256 is not a fallback for {digest_flag}",
+        arguments=without(digest_flag),
+        environment={"C6_GATE_GENERATION_CHILD_SHA256": bundle.generation_child_sha256},
+        code=1,
+    )
+    for label, value in (
+        ("empty", ""),
+        ("non-hexadecimal", "z" * 64),
+        ("uppercase", bundle.generation_child_sha256.upper()),
+        ("short", bundle.generation_child_sha256[:63]),
+        ("long", bundle.generation_child_sha256 + "0"),
+    ):
+        rejected(
+            bundle,
+            f"{label} {digest_flag}",
+            arguments=replaced(digest_flag, value),
+            code=1,
+        )
+    rejected(
+        bundle,
+        "declared generation-child digest does not match the supplied binary",
+        arguments=replaced(digest_flag, "0" * 64),
+        code=1,
+    )
 
     directory = root / "not-an-executable"
     directory.mkdir()
@@ -342,6 +374,24 @@ def family_source_bundle(root: Path) -> None:
         arguments=replaced("--python-executable-path", str(link)),
         code=1,
     )
+
+    child_link = root / "generation-child-symlink"
+    child_link.symlink_to(bundle.generation_child)
+    empty_child = root / "empty-generation-child"
+    empty_child.write_bytes(b"")
+    empty_child.chmod(0o755)
+    for label, value in (
+        ("symlink", str(child_link)),
+        ("non-executable", str(plain)),
+        ("directory", str(directory)),
+        ("empty", str(empty_child)),
+    ):
+        rejected(
+            bundle,
+            f"{label} generation child",
+            arguments=replaced("--generation-child-path", value),
+            code=1,
+        )
 
 
 # --- family: source-revalidation -----------------------------------------------------
