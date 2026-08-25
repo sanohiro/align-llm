@@ -4205,12 +4205,13 @@ script; none is transcribed by a human.
 
 | Identity | Source | Exactly what is recorded |
 | --- | --- | --- |
-| Host | `platform.uname()`, `sw_vers`, `sysctl -n sysctl.proc_translated` | system, kernel release, machine, macOS product and build version, translation flag |
-| Repository | `git rev-parse HEAD`, `git status --porcelain=v1 --untracked-files=all` | the exact head the commands ran at, and whether the working tree was clean |
+| Host | `platform.uname()`, `sw_vers`, `sysctl -n sysctl.proc_translated` | system, kernel release, machine, macOS product and build version, translation flag, and the gate interpreter's Python version |
+| Repository | `git rev-parse HEAD`, `git status --porcelain=v1 --untracked-files=all`, `git --version` | the exact head the commands ran at, the Git version that read it, and a clean working tree — a dirty tree fails, because the gate must bind an exact head |
 | Align pin | `.align-revision` | the 40-hex revision |
 | Managed toolchain | `scripts/align-toolchain attest compiler` | generation, revision, checkout root, `alignc` path/size/SHA-256, `libalign_runtime.a` path/size/SHA-256, and the `alignc --version` line |
 | Homebrew formulae | `brew --prefix`, `brew --prefix <formula>` | for `llvm`, `openssl@3`, and `zstd`: the opt prefix, its realpath below `Cellar`, and the resolved version component |
 | Linker inputs | `LIBRARY_PATH` | the exact ordered value plus, for each declared library, its realpath and SHA-256: `libssl.3.dylib`, `libcrypto.3.dylib`, `libzstd.dylib`, and `libLLVM.dylib` |
+| Make | `gmake --version` or `make --version` | the resolved program path and its GNU Make version line |
 | Commands | the gate itself | ordered label, exact argv, exit status, and wall-clock milliseconds for every acceptance command |
 
 `LIBRARY_PATH` is this target's Align build-gate linker input, so the profile requires it explicitly
@@ -4299,7 +4300,7 @@ line. `--json-only` suppresses the human lines so the block can be captured verb
 | Field | `scripts/check-darwin-profile` / `make darwin-profile-gate` | `scripts/align-toolchain attest compiler` |
 | --- | --- | --- |
 | Exact surface | `python3 scripts/check-darwin-profile [--json-only]`; `make darwin-profile-gate` | `python3 scripts/align-toolchain attest compiler` |
-| Inputs and defaults | Environment only: `LIBRARY_PATH` (required, exact expected value), `PATH`, `HOME`, `TMPDIR`, `PYTHONDONTWRITEBYTECODE`. No positional argument, no Make variable, no path override. The per-child timeout is a fixed 1,800 s and the per-stream capture is a fixed 1 MiB tail | `.align-revision` plus the managed-root selectors `ALIGN_TOOLCHAIN_ROOT`, `XDG_CACHE_HOME`, and `HOME`, exactly as `path`, `ensure`, and `verify` already resolve them |
+| Inputs and defaults | Environment only. Required: `LIBRARY_PATH` at its exact expected value, and `PATH`. Forwarded to children when supplied: `HOME`, `TMPDIR`, `XDG_CACHE_HOME`, `ALIGN_TOOLCHAIN_ROOT`, and `PYTHONDONTWRITEBYTECODE` (default `1`) — the managed-root selectors are forwarded so a child resolves the same toolchain the gate attested. Rejected: `ALIGNC`, `ALIGN_REPO`, and `ALIGN_LLM_FRESH_COMPILER`, because a compiler override would break the attested binding. No positional argument, no Make variable, no path override. The per-child timeout is a fixed 1,800 s and the per-stream capture is a fixed 1 MiB tail | `.align-revision` plus the managed-root selectors `ALIGN_TOOLCHAIN_ROOT`, `XDG_CACHE_HOME`, and `HOME`, exactly as `path`, `ensure`, and `verify` already resolve them |
 | Results and errors | Exit 0 with the identity block and `darwin profile gate: PASS`; exit 1 with one `darwin profile gate: ERROR <phase> <detail>` line on any phase failure. Phases: `host`, `repository`, `toolchain`, `homebrew`, `library-path`, `make`, `command` | Exit 0 with the canonical JSON attestation; exit 1 with the existing `align-toolchain: <error>` line. It never fetches, builds, or mutates the checkout |
 | Ownership and allocation | The script owns only its child processes and its bounded capture buffers, and releases both in the enclosing `finally`. It writes no file, creates no temporary directory, and mutates no repository state; `./main` is owned by the existing `build` target | Read-only over the managed checkout; it owns only its hashing buffers |
 | Owner module | `scripts/check-darwin-profile`; the Make target is owned by `Makefile` | `scripts/align-toolchain`, reusing `read_revision()`, `cache_root()`, and `verify()` |

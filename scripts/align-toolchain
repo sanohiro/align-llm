@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -20,6 +22,10 @@ PROJECT = Path(__file__).resolve().parent.parent
 DEFAULT_REPOSITORY = "https://github.com/sanohiro/align.git"
 GENERATION = "dev-v1"
 REVISION = re.compile(rb"[0-9a-f]{40}\n")
+ATTESTATION_SCHEMA_VERSION = 1
+COMPILER = Path("target/release/alignc")
+RUNTIME = Path("target/release/libalign_runtime.a")
+DIGEST_CHUNK = 1024 * 1024
 
 
 class ToolchainError(RuntimeError):
@@ -101,7 +107,7 @@ def verify(source: Path, revision: str) -> None:
         raise ToolchainError("managed Align checkout revision differs from .align-revision")
     if git(source, "status", "--porcelain=v1", "--untracked-files=all"):
         raise ToolchainError("managed Align checkout is dirty")
-    for relative in (Path("target/release/alignc"), Path("target/release/libalign_runtime.a")):
+    for relative in (COMPILER, RUNTIME):
         path = source / relative
         try:
             output_metadata = path.stat()
@@ -109,7 +115,50 @@ def verify(source: Path, revision: str) -> None:
             raise ToolchainError(f"managed Align output is unavailable: {error}") from error
         if not stat.S_ISREG(output_metadata.st_mode):
             raise ToolchainError(f"managed Align output is not a file: {relative}")
-    run((os.fspath(source / "target/release/alignc"), "--version"), output=True)
+    run((os.fspath(source / COMPILER), "--version"), output=True)
+
+
+def digest_file(path: Path) -> tuple[str, int]:
+    """SHA-256 and byte length of one managed build output."""
+    digest = hashlib.sha256()
+    length = 0
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(DIGEST_CHUNK)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                length += len(chunk)
+    except OSError as error:
+        raise ToolchainError(f"cannot read managed Align output: {error}") from error
+    return digest.hexdigest(), length
+
+
+def attest(source: Path, revision: str) -> dict[str, object]:
+    """The read-only digest identity of the managed compiler and runtime at the pin.
+
+    `verify()` owns every admission rule: the checkout is a directory at the exact revision, it is
+    clean, both build outputs are regular files, and the compiler runs. Only then is a digest
+    meaningful, so this reuses it rather than restating any of it. Nothing is fetched, built, or
+    written; a caller that needs materialization runs `ensure` first.
+    """
+    verify(source, revision)
+    compiler_digest, compiler_bytes = digest_file(source / COMPILER)
+    runtime_digest, runtime_bytes = digest_file(source / RUNTIME)
+    return {
+        "attestation_schema_version": ATTESTATION_SCHEMA_VERSION,
+        "generation": GENERATION,
+        "revision": revision,
+        "root": os.fspath(source),
+        "compiler_path": os.fspath(source / COMPILER),
+        "compiler_sha256": compiler_digest,
+        "compiler_bytes": compiler_bytes,
+        "compiler_version": run((os.fspath(source / COMPILER), "--version"), output=True),
+        "runtime_path": os.fspath(source / RUNTIME),
+        "runtime_sha256": runtime_digest,
+        "runtime_bytes": runtime_bytes,
+    }
 
 
 def prepare(root: Path, revision: str) -> Path:
@@ -170,6 +219,8 @@ def parse(arguments: Sequence[str]) -> argparse.Namespace:
     for command in ("path", "ensure"):
         child = subparsers.add_parser(command)
         child.add_argument("kind", choices=("source", "compiler"))
+    attestation = subparsers.add_parser("attest")
+    attestation.add_argument("kind", choices=("compiler",))
     subparsers.add_parser("verify")
     return parser.parse_args(arguments)
 
@@ -184,6 +235,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             print(selected_path(source, values.kind))
         elif values.command == "ensure":
             print(selected_path(prepare(root, revision), values.kind))
+        elif values.command == "attest":
+            print(json.dumps(attest(source, revision), indent=2, sort_keys=True))
         else:
             verify(source, revision)
             print(revision)
