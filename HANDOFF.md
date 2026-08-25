@@ -5,7 +5,7 @@ file records durable project state.
 
 ## Active capability: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 
-- Work is on `agent/request20-align-pin`, based on align-llm `main` at `0a8b9cf`. Align Request 20
+- Work is on `agent/request20-align-pin-final`, based on align-llm `main` at `0a8b9cf`. Align Request 20
   shipped in Align PR #887 as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; PR #888 then closed
   its upstream handoff. Align `main` is now `dc3214129692e9be36dea4f046ed11373cc355bd`, and
   `.align-revision` adopts that exact latest commit.
@@ -17,10 +17,21 @@ file records durable project state.
   `LLVM_CONFIG=/opt/homebrew/opt/llvm@22/bin/llvm-config`. The first original client fixture passes:
   `gmake --no-print-directory c7-owned-record-source-expiry-adoption` reports 3 parsed fixtures,
   12 example rows, and 45 adoption rows.
-- Pending at this checkpoint: commit the coherent pin/response update so the clean-head profile can
-  bind it, run `darwin-profile-gate`, run one final `gmake ci`, record the emitted evidence, perform
-  the required comprehensive review, and run the exact-head publication preflight before opening
-  the pull request. Request 20 remains `ALIGN_MERGED` until those client gates pass.
+- The Darwin profile passed at clean head `026e3b1847ef73b2482123ab3f95f8b6c59ea3b6`: `check` 4,697
+  ms, `build` 7,626 ms, direct `check-per-unit` 5,069 ms, `persisted-result-smoke` 4,094 ms,
+  and `persisted-result-qualification` 13,703 ms. The attested compiler digest is
+  `35775338a1271d6751d645c8abef94456b3fbe998243185f02cf984ae625772e`; runtime digest is
+  `0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211`.
+- The first supervised aggregate correctly rejected the canonical baseline's old Align pin. A
+  replacement chain was then mistakenly measured on macOS, where the corpus-fixed
+  `/usr/bin/python3` is 3.9 and cannot parse the runner's `float | None` annotation. The recorder
+  deliberately persisted two complete FAIL samples, and the negative smoke exposed their null
+  aggregate timing. That non-passing chain (`026e3b1` -> `7d24042` -> `1a8b026`) is preserved as
+  failed evidence and must not be published as canonical proof.
+- Pending at this checkpoint: record two passing deterministic-reference samples on native Linux
+  aarch64 in the privileged `c6g2-measure:latest` helper, append a new source/oracle/finalization
+  chain, rerun the supervised profile, advance Request 20 to `ALIGN_LLM_VERIFIED`, record the final
+  evidence, review, preflight, and publish.
 
 ## Merged checkpoint: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
 
