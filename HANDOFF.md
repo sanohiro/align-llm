@@ -446,18 +446,40 @@ file records durable project state.
 
 ## Latest durable verification
 
-- **C7-P Darwin platform-profile gate, green, at head `09294dec94924e0363f0443cc671751dd8174186`
+- **C7-P Darwin platform-profile gate, green, at head `41b2f436ffcc79cc3e8275ee73c75d5aa9eef60c`
   (macOS `aarch64-apple-darwin`, 2026-08-25).**
   `LIBRARY_PATH="$(brew --prefix)/lib:$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib"
   make darwin-profile-gate`: **PASS**. Five acceptance commands, all exit 0 — `gmake check`
-  1,298 ms, `gmake build` 254 ms, direct `alignc check-per-unit src/main.align` 1,170 ms,
-  `gmake persisted-result-smoke` 2,536 ms, `gmake persisted-result-qualification` 9,148 ms. Attested
+  1,310 ms, `gmake build` 537 ms, direct `alignc check-per-unit src/main.align` 1,178 ms,
+  `gmake persisted-result-smoke` 3,816 ms, `gmake persisted-result-qualification` 9,240 ms. Attested
   identity: managed compiler `82e6bea0933332291012f5de43a2a65c02e8dda7dfe990602de3cce3e30c0908`,
   runtime archive `0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211`, pin
   `2f33ac5c33a898a7894af58322852632ce6ffe42`, Homebrew `llvm 22.1.8`, `openssl@3 3.6.3`,
   `zstd 1.5.7_1`, macOS 26.5.2 (`25F84`), Darwin 25.5.0 `arm64`, `proc_translated 0`, GNU Make
   4.4.1. The complete emitted block is section 11.3 of `docs/specs/c7-persisted-result.md`.
-- **C7-P target-local aarch64 Linux gate, green, at the same head (2026-08-25).** Native Linux
+- **C7-P publication preflight and fresh-profile evidence (2026-08-25).** At head
+  `4d8aa33f3dff5553043ade5ef8eb87712d5a451c`, `python3 scripts/pre-pr --owner-test
+  darwin-profile-gate -- python3 scripts/check-darwin-profile` classified the wave `fresh-image`
+  (the `Makefile` and `eval/*` artifacts changed) and passed `darwin-profile-gate` (15,388 ms),
+  `managed-align-ensure`, `pinned-align-build`, and `hosted-checks` (50,594 ms). Its `fresh-focused`
+  leg **cannot run on Darwin**: `scripts/run-fresh-source-identity-smoke` reads `/proc/self/fd`, and
+  the identical failure reproduces at the base commit `a52b9ac` in a clean worktree, so it is a
+  pre-existing host limitation rather than a wave regression. Both fresh legs were therefore run
+  where they belong. **Installed profile, host Docker:** `python3
+  scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo
+  <managed-pin-source>`: **PASS**, `fresh image profile smoke: PASS` then `fresh worker
+  qualification: PASS (installed profile only)`. Phases: `docker-daemon` 552 ms, `image-build`
+  23,200 ms, `image-attestation` 3,680 ms, `profile-lifecycle` 2,405 ms, `profile-self-test`
+  14,771 ms, `trust-mutations` 12,064 ms, `runtime-replacements` 21,692 ms, `boundary-profile`
+  246,632 ms, **`worker-aggregate` pass after 363,821 ms**, `cleanup` 1,292 ms. That is this wave's
+  `make ci` evidence. **Focused qualification, native Linux `aarch64`** in the privileged
+  `c6g2-measure:latest` container with `--init`, `bubblewrap`, `clang`, and `unzip`, non-root with
+  `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the same head: `python3
+  scripts/run-fresh-worker-qualification` **PASS** (focused; installed profile deferred; 23 focused
+  rows including `check-gate-topology --self-test`), `python3 scripts/test-development-preflight`
+  PASS, and `python3 scripts/test-align-toolchain` PASS.
+- **C7-P target-local aarch64 Linux gate, green, at head
+  `09294dec94924e0363f0443cc671751dd8174186` (2026-08-25).** Native Linux
   `aarch64` in the privileged `c6g2-measure:latest` container with `--init`, non-root with
   `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the committed head, with the
   image's native pinned build presented through the managed toolchain layout (compiler
@@ -468,7 +490,7 @@ file records durable project state.
   `make persisted-result-qualification` **PASS** (7,179 ms; same corpus counts as the host, with the
   runner's own `target aarch64-linux` observation), and `python3 scripts/check-baseline-chain`
   `baseline chain: PASS`. Section 11.2 holds the full record.
-- **C7-P host publication checks at head `09294de` (macOS, managed pinned toolchain, 2026-08-25).**
+- **C7-P host publication checks at head `41b2f43` (macOS, managed pinned toolchain, 2026-08-25).**
   `gmake check` (23 units per-unit), `gmake gate-topology-check` (`check gate topology: PASS`, the
   `EXPECTED` lane bytes unchanged because `darwin-profile-gate` joins no aggregate), `gmake
   format-check`, `git diff --check`, `python3 scripts/test-align-toolchain` (managed checkout plus

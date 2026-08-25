@@ -907,6 +907,9 @@ The qualification's own `target aarch64-linux` line is the runner's target obser
 generated corpus, the malformed and mutation corpora, and the intentionally mutated source were all
 exercised against a target-local build. Timings are diagnostics, not a performance claim.
 
+Commits after that head change `scripts/check-darwin-profile`'s error paths and documentation only;
+they touch no C7 module, runner, fixture, or Make target, so this record stands for the branch.
+
 **Non-claims.** This record does not claim a Section 9 supervised `make ci` on aarch64 at this head;
 that aggregate is the capability gate's business and its aarch64 owner is the hosted check named
 above. The container is a measurement environment, not repository state, and `bubblewrap`
@@ -914,10 +917,12 @@ availability, the privileged flag, and `--init` are environment facts recorded i
 
 ### 11.3 Discharge record — `aarch64-apple-darwin`
 
-The Section 10 profile gate passed on this development host at the same committed head,
-`09294dec94924e0363f0443cc671751dd8174186`. The record is the block the gate emitted, not a
-transcription of it; `${HOME}` is the emitter's own path redaction, and every digest, version, and
-byte length is verbatim. Any host reproducing these identities satisfies the profile.
+The Section 10 profile gate passed on this development host at head
+`41b2f436ffcc79cc3e8275ee73c75d5aa9eef60c`, the branch's final executable state; the only later
+commits are this record and the handoff update, and neither changes an executable input. The record
+is the block the gate emitted, not a transcription of it; `${HOME}` is the emitter's own path
+redaction, and every digest, version, and byte length is verbatim. Any host reproducing these
+identities satisfies the profile.
 
 ```json
 {
@@ -928,7 +933,7 @@ byte length is verbatim. Any host reproducing these identities satisfies the pro
         "/opt/homebrew/bin/gmake",
         "check"
       ],
-      "duration_ms": 1298,
+      "duration_ms": 1310,
       "label": "/opt/homebrew/bin/gmake check",
       "status": 0
     },
@@ -937,7 +942,7 @@ byte length is verbatim. Any host reproducing these identities satisfies the pro
         "/opt/homebrew/bin/gmake",
         "build"
       ],
-      "duration_ms": 254,
+      "duration_ms": 537,
       "label": "/opt/homebrew/bin/gmake build",
       "status": 0
     },
@@ -947,7 +952,7 @@ byte length is verbatim. Any host reproducing these identities satisfies the pro
         "check-per-unit",
         "src/main.align"
       ],
-      "duration_ms": 1170,
+      "duration_ms": 1178,
       "label": "alignc check-per-unit src/main.align",
       "status": 0
     },
@@ -956,7 +961,7 @@ byte length is verbatim. Any host reproducing these identities satisfies the pro
         "/opt/homebrew/bin/gmake",
         "persisted-result-smoke"
       ],
-      "duration_ms": 2536,
+      "duration_ms": 3816,
       "label": "/opt/homebrew/bin/gmake persisted-result-smoke",
       "status": 0
     },
@@ -965,7 +970,7 @@ byte length is verbatim. Any host reproducing these identities satisfies the pro
         "/opt/homebrew/bin/gmake",
         "persisted-result-qualification"
       ],
-      "duration_ms": 9148,
+      "duration_ms": 9240,
       "label": "/opt/homebrew/bin/gmake persisted-result-qualification",
       "status": 0
     }
@@ -1041,7 +1046,7 @@ byte length is verbatim. Any host reproducing these identities satisfies the pro
   "profile_schema_version": 1,
   "repository": {
     "git_version": "git version 2.50.1 (Apple Git-155)",
-    "head": "09294dec94924e0363f0443cc671751dd8174186",
+    "head": "41b2f436ffcc79cc3e8275ee73c75d5aa9eef60c",
     "worktree": "clean"
   },
   "toolchain": {
