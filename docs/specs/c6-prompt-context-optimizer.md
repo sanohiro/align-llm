@@ -210,11 +210,19 @@ waits the direct child, and polls the group until `killpg(pgid, 0)` proves absen
 owner first enables Linux child-subreaper mode. It enumerates direct and transitive `/proc`
 descendants, kills members that entered nested sessions or process groups, reaps adopted children,
 and proves both private-group and descendant absence before returning. The descendant enumeration
-counts **live** entries only: an entry in `State: Z` has already terminated and holds only a
-process-table slot until it is waited for, so it cannot escape containment and is never a
-descendant-absence failure. It is still traversed, so a live entry parented to one is still
-enumerated, and a `/proc` entry that disappears between the directory scan and the status read is
-skipped. Child-subreaper mode makes this rule load-bearing rather than cosmetic: an orphan that
+counts **live** entries only, and liveness is a property of the whole thread group rather than of
+its leader alone. An entry is omitted only when it has fully terminated: `State: Z` with
+`Threads: 1`, a zombie thread-group leader whose group holds no other task. That entry keeps only a
+process-table slot until it is waited for, can never execute again, and is never a
+descendant-absence failure. A zombie leader whose group still holds a live worker thread **is**
+enumerated: its leader thread exited, but the worker keeps running and can still act, so omitting
+every `State: Z` entry would hide a live descendant. Omitted entries are still traversed, so a live
+entry parented to one is still enumerated. The two parse failures are deliberately asymmetric. A
+`/proc` entry that disappears between the directory scan and the status read, or whose `PPid:` line
+is absent or malformed, is skipped, because without a parent link it cannot be placed in the tree at
+all. An absent or malformed `State:`/`Threads:` line instead fails closed and enumerates the entry,
+because its parent link is already known and only the justification for omitting it is missing.
+Child-subreaper mode makes this rule load-bearing rather than cosmetic: an orphan that
 exited before its parent did is reparented to the owner and stays a zombie until the owner waits
 for it, and counting it would fail containment for a process that no longer runs. The
 private-group proof is a separate contract with different mechanics — a zombie member still keeps
@@ -227,6 +235,17 @@ the same no-live-tree proof. This Linux model is required for gate evidence; a h
 returns the explicit environment failure rather than claiming containment. Nested `setsid` is not
 an escape from an invocation owner; the authenticated fresh-worker cgroup remains the outer owner
 for abrupt termination of the complete evaluator.
+
+The live-entry rule binds the six contained-execution owners listed in §10.1g. A seventh `/proc`
+scan, in `eval/runners/run-coding-task.py`, is **deliberately deferred and does not implement it**.
+That scan serves a different contract: it feeds `kill_owned_processes` and
+`kill_adopted_descendants`, where signalling a terminated entry is a no-op, and
+`validation_process_usage`, which counts entries against `MAX_VALIDATION_PROCESSES`. That is a
+resource budget rather than a containment verdict, so a miscounted zombie inflates a budget instead
+of reporting a false escape — a distinct failure domain. **Owner:** the coding runner.
+**Resume condition:** the next capability that already pays for a frozen-corpus rebind and
+provider-backed re-measurement, because the file is a frozen `FILE_SET` corpus member whose bytes
+cannot move alone, or the next revision of the validation process budget, whichever comes first.
 
 `src/prompt_evaluate.align` arms no second wall-clock deadline around the Python evaluator. Within
 Python, every earlier-starting evaluator clock leaves its nested owner time to clean up and report:
@@ -3314,7 +3333,7 @@ of the same containment gap. This matrix reopens that axis before the implementa
 | Reopened invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
 | Source-verifier runtime identity | `PromptSourceVerifierPolicy`, evaluator, future gate locator | bind the exact helper and explicit CPython executable bytes in `CPYTHON:<interpreter_sha256>:<helper_sha256>`; validate policy, helper, interpreter, and Git digests before launch; never select an interpreter through a shebang or ambient path | evaluator source-policy runtime mismatch, interpreter tamper, helper tamper, and exact-argv fixtures in `prompt-evaluate-smoke`; gate equivalents remain owned by C6-MEASURED |
-| Descendant ownership | evaluator, snapshot helper, source verifier, fixed adapter, their Git/task children | on the required Linux floor enable child-subreaper mode, start every content-bound trusted direct child in a PID-owned private session/group, enumerate and kill transitive or adopted descendants even after nested `setsid`, then apply the specified group signal, direct wait, bounded reap/absence proof, and cleanup-precedence sequence for timeout, output cap where the boundary captures output, nonzero/malformed failure, and successful-parent-with-live-descendant states | marker-bearing nested-session evaluator timeout and successful-parent fixtures plus source-verifier, snapshot-helper, and fixed-adapter nested-session fixtures prove marker, process-group, and descendant absence; their existing timeout/output owners retain the ordinary failure cases; Request 11 owns bounded outer capture while the qualified fresh-worker cgroup owns abrupt whole-tree cancellation |
+| Descendant ownership | evaluator, snapshot helper, source verifier, fixed adapter, their Git/task children | on the required Linux floor enable child-subreaper mode, start every content-bound trusted direct child in a PID-owned private session/group, enumerate and kill transitive or adopted descendants even after nested `setsid` — enumerating live entries under the §1.2 rule, which omits an entry only at `State: Z` with `Threads: 1` and still reports a zombie leader whose group holds a live worker thread — then apply the specified group signal, direct wait, bounded reap/absence proof, and cleanup-precedence sequence for timeout, output cap where the boundary captures output, nonzero/malformed failure, and successful-parent-with-live-descendant states | marker-bearing nested-session evaluator timeout and successful-parent fixtures plus source-verifier, snapshot-helper, and fixed-adapter nested-session fixtures prove marker, process-group, and descendant absence; their existing timeout/output owners retain the ordinary failure cases; Request 11 owns bounded outer capture while the qualified fresh-worker cgroup owns abrupt whole-tree cancellation |
 | FILE_SET physical containment | source verifier | retain separate manifest and source-root descriptors, walk every raw byte component with no-follow directory-relative opens, and obtain type/mode/device/inode/bytes/digest from the same retained final descriptor; reject a symlink ancestor, special final, root escape, and manifest physical alias while accepting valid non-UTF-8 path bytes | source-verifier FILE_SET symlink-ancestor, non-UTF-8 acceptance, special-file, root-escape, manifest-alias, and digest fixtures plus same-descriptor pre/post identity checks |
 
 The runtime change is intentionally structural rather than a nominal-label patch. The interpreter
@@ -3401,7 +3420,7 @@ and unsafe intermediate protocol.
 
 | Reopened invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
-| Complete descendant ownership | evaluator, fixed adapter, snapshot helper, source verifier, coding runner | every Python child owner enables Linux child-subreaper mode, kills the private process group and every direct, transitive, or adopted descendant across nested sessions, reaps owned children, and proves group and descendant absence before returning; a nested `setsid` child cannot survive into the next invocation; the enumeration counts live entries only, so an adopted `State: Z` orphan is never a containment failure while every live descendant still is | evaluator, adapter, snapshot-helper, and source-verifier owners launch a marker-bearing nested-session descendant and prove bounded cleanup plus marker absence; each repaired scan additionally carries a paired regression — a synthetic zombie child that must not be reported and a live session-leading child that must — and the fixed-adapter and measurement-adapter owners drive an adopted zombie end to end through a contained runner and a generation child |
+| Complete descendant ownership | evaluator, fixed adapter, measurement adapter, snapshot helper, source verifier, gate validator; the coding runner owns the group/kill/absence sequence only, and the live-entry rule is deferred there under §1.2 | every Python child owner enables Linux child-subreaper mode, kills the private process group and every direct, transitive, or adopted descendant across nested sessions, reaps owned children, and proves group and descendant absence before returning; a nested `setsid` child cannot survive into the next invocation; the enumeration counts live entries only, and liveness is a property of the thread group: an entry is omitted only at `State: Z` with `Threads: 1`, so an adopted fully terminated orphan is never a containment failure while every live descendant — including a zombie leader whose group still holds a live worker thread — still is | evaluator, adapter, snapshot-helper, and source-verifier owners launch a marker-bearing nested-session descendant and prove bounded cleanup plus marker absence; each repaired scan additionally carries a paired regression in its `descendant_scan_rows` owner — `prompt-evaluate-smoke`, `test-prompt-fixed-adapter`, `test-prompt-snapshot-helper`, `test-prompt-source-verifier`, and `prompt-gate-validator-smoke`'s `validator` family — covering a fully terminated zombie child that must not be reported, a zombie thread-group leader with a live worker thread that must be, and a live session-leading child that must; and the fixed-adapter and measurement-adapter owners drive an adopted zombie end to end through a contained runner and a generation child |
 | Bounded adapter diagnostics | fixed adapter | drain stdout and stderr concurrently into independently bounded prefixes; never call an unbounded `communicate`; cap, cap+1, simultaneous-stream, timeout, and descendant cleanup preserve the declared diagnostic limit | fixed-adapter owner measures retained byte counts and termination for both streams at the boundary |
 | Operational runner outcome | coding runner and fixed adapter | the content-bound runner uses a distinct terminal code for an expected post-repair validation failure; launch, timeout, containment, cleanup, output, and internal runner failures produce `ERROR`/`ADAPTER`, never an ordinary `FAIL`/`TEST` row eligible for improvement scoring | parent expected-failure and candidate-pass rows remain scoreable; timeout, launch, internal-error, and unexpected exit fixtures terminate evaluation as adapter errors |
 | Child output-file ownership | evaluator, snapshot helper, fixed adapter | the evaluator exclusively creates each snapshot/measurement result, records ownership immediately after successful creation, and passes its retained descriptor to the child; a create collision establishes no ownership, while every successful removal retires ownership before later observation | occupied snapshot/measurement names are preserved end to end; descriptor-backed success, failed-child cleanup, and late replacement cases prove exact ownership transitions |

@@ -26,6 +26,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -122,12 +123,80 @@ def store(bundle, name: str, value: Mapping[str, Any]) -> None:
 # --- family: validator ---------------------------------------------------------------
 
 
-def descendant_scan_rows() -> None:
-    """The validator's scan reports every live descendant and never an adopted zombie.
+def status_field(pid: int, field: str) -> str:
+    """Return one `/proc/PID/status` field value."""
+    return next(
+        line for line in Path(f"/proc/{pid}/status").read_text().splitlines()
+        if line.startswith(field)
+    ).split()[1]
 
-    Loading the validator makes this process a subreaper, so an orphan that has already exited is
-    reparented here and stays a zombie until it is waited for. A zombie has terminated and cannot
-    escape containment, so counting it would fail a bounded child for a process that no longer runs.
+
+def fork_zombie_leader() -> int:
+    """Fork a child that becomes a zombie thread-group leader with a live worker thread.
+
+    The child starts a worker thread and then leaves its own leader thread through
+    `pthread_exit`, which the kernel takes as a plain thread exit rather than a group exit.
+    A leader cannot be released while its group still holds a task, so it stays in
+    `State: Z` with `Threads: 2` while the worker keeps executing. That is the reviewer's
+    reproduction of a zombie entry that is still a live process. It is the portable
+    construction: it needs no architecture syscall table and no compiler at test time, and
+    it was verified on `x86_64` and `aarch64` glibc CPython.
+    """
+    child = os.fork()
+    if child == 0:
+        try:
+            import ctypes
+            import threading
+
+            running = threading.Event()
+
+            def worker() -> None:
+                running.set()
+                time.sleep(600)
+
+            threading.Thread(target=worker, daemon=True).start()
+            running.wait(5.0)
+            ctypes.CDLL(None).pthread_exit(None)
+        except BaseException:
+            pass
+        os._exit(97)
+    return child
+
+
+def await_zombie_leader(pid: int) -> None:
+    """Block until `pid` is a zombie leader whose group still holds another task."""
+    deadline = time.monotonic() + 5.0
+    state, tasks = "", ""
+    while time.monotonic() < deadline:
+        try:
+            state = status_field(pid, "State:")
+            tasks = status_field(pid, "Threads:")
+        except (OSError, StopIteration):
+            break
+        if state == "Z" and tasks != "1":
+            return
+        time.sleep(0.01)
+    raise RuntimeError(
+        f"the synthetic zombie leader never reached State Z with a live task: {state!r}/{tasks!r}"
+    )
+
+
+def descendant_scan_rows() -> None:
+    """The scan reports every live descendant and skips only a fully terminated one.
+
+    The first row forks a direct child that exits at once. This process has not waited for
+    it, so it stays a zombie in this process's table: `State: Z` with a single task. It has
+    terminated and cannot escape containment, so counting it would fail containment for a
+    process that no longer runs. In production the same entry also arrives through
+    child-subreaper mode, which reparents an already-exited orphan here as a zombie child;
+    a direct fork reaches the identical `/proc` shape without racing an orphan.
+
+    The second row forks a zombie thread-group *leader* whose worker thread is still
+    running. That entry is `State: Z` too, but it is a live process and must be reported.
+    The row fails if the `Threads:` discriminator is dropped and every zombie is skipped
+    again.
+
+    The third row proves an ordinary live descendant is still reported.
     """
     specification = importlib.util.spec_from_file_location("prompt_gate_descendants", VALIDATOR)
     require(
@@ -143,19 +212,27 @@ def descendant_scan_rows() -> None:
     deadline = time.monotonic() + 5.0
     state = ""
     while time.monotonic() < deadline:
-        state = next(
-            line for line in Path(f"/proc/{zombie}/status").read_text().splitlines()
-            if line.startswith("State:")
-        ).split()[1]
+        state = status_field(zombie, "State:")
         if state == "Z":
             break
         time.sleep(0.01)
-    require(state == "Z", "the synthetic child never reached the zombie state")
+    require(state == "Z", "the synthetic child never reached the terminated zombie state")
     require(
         zombie not in module.owned_descendant_ids(),
-        "an adopted zombie was counted as a live descendant",
+        "a fully terminated zombie child was counted as a live descendant",
     )
     os.waitpid(zombie, 0)
+
+    leader = fork_zombie_leader()
+    try:
+        await_zombie_leader(leader)
+        require(
+            leader in module.owned_descendant_ids(),
+            "a zombie leader with a live worker thread was not reported as a live descendant",
+        )
+    finally:
+        os.kill(leader, signal.SIGKILL)
+        os.waitpid(leader, 0)
 
     live = subprocess.Popen(
         [sys.executable, "-c", "import time\ntime.sleep(30)\n"], start_new_session=True,
