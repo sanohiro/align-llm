@@ -32,11 +32,39 @@ file records durable project state.
   functional evidence; they join no aggregate, so `gate-topology-check` stays green. The section
   4.4 golden vectors reproduce byte-for-byte end to end: `input_sha256` `6de733d4...`,
   `content_sha256` `a0160d36...`, and the external `result_sha256` `8fb29a72...`.
-- **Next action: `scripts/run-persisted-result-qualification`** — the independent Python reference
-  at seed `20260803`, the 256 PASS + 32 FAIL generated differential corpus, the full section 10.3
-  malformed/mutation corpus, and the temporary `else if raw < upper_bound` -> `<=` source mutation.
-  The unique source pattern that mutation replaces exists exactly once in
-  `src/persisted_result.align`.
+- **Landed: the qualification slice and the bounded functional owner.**
+  `scripts/run-persisted-result-qualification` owns its own independent reference (ordered field
+  tables, Request 7 escape grammar, `bounded-bucket-v1`; it imports neither the Align module nor
+  `scripts/c7_persisted_result_fixtures.py`), the section 10.2 boundary table, the seed-`20260803`
+  corpus of 256 PASS + 32 FAIL differential cases, 38 malformed inputs against both a fresh and an
+  existing sentinel destination, 29 artifact mutations including digest-consistent semantic
+  mutations, and the temporary `else if raw < upper_bound` -> `<=` source mutation built in a
+  private copy of the tree. `scripts/run-persisted-result-smoke` drives the six member runners as
+  one bounded functional owner and prints its own cost. Both follow the section 9.4 boundary: the
+  Make recipe resolves the compiler and product at the repository root and passes them explicitly.
+- **Aggregate admission decision: `persisted-result-smoke` is now a hosted member.** Its measured
+  cost is 3.6 s for all six runners at the pinned compiler, so section 12's "small stable
+  integration regression" test is satisfied. `Makefile`, `scripts/check-gate-topology` (oracle plus
+  self-test literals), and `docs/specs/check-gate-topology.md` (prose plus oracle block) changed
+  together, and `docs/specs/c7-persisted-result.md` section 12 records the decision.
+  `persisted-result-qualification` (8.7 s plus one whole-program compile) stays outside every
+  aggregate by design.
+- **The qualification found and repaired one real contract deviation.** Sections 8.1/8.2 row 3 and
+  the section 8.3 matrix require `Err(Invalid)` for a malformed document, but the shipped
+  `core.json` decoder returns its own `Error.Code(_)`, which `decode_input`/`decode_result`
+  propagated unchanged — the CLI exited 1 (`NotFound`-class) instead of 2 (`Invalid`) for every
+  malformed input and artifact. Both helpers now apply the section 6.3 typed `map_err`; section 8.1
+  states the rule explicitly. A genuinely absent file still maps to the row-2 filesystem error
+  (exit 1). Negative control: a temporary rebuild with the mapping reverted fails the qualification
+  at `malformed input empty-file: exit 1 != 2`.
+- **One measured section 9.4 correction.** The 64 KiB per-stream capture bound is unreachable for
+  the mutation build: the pinned compiler writes 105,234 bytes of whole-program advisory warnings to
+  stderr, and the exact build vector admits no suppressing option. Section 9.4 now keeps 64 KiB for
+  product children and sets 1 MiB for a compiler child, with the same overflow -> terminate,
+  kill-if-needed, wait, close -> gate failure behavior.
+- **Next action: the wrap-up slice.** Re-finalize the identity-bound canonical baseline chain on a
+  capable native Linux host now that this capability's `Makefile` is final, then publish the
+  capability pull request with the section 12 evidence.
 - **The section 4.4 golden vectors reproduce exactly.** The decoded C7 input re-encodes
   byte-for-byte to the section 4.4 `input bytes` line, and the Request 9 `OwnedTask` pair
   reproduces its canonical output including `u64::MAX`, embedded NUL, and multibyte text. The
@@ -48,10 +76,10 @@ file records durable project state.
   `docs/specs/check-gate-topology.md` records as a baseline artifact, so
   `python3 scripts/check-baseline-chain` now reports
   `working-tree Makefile differs from the baseline source commit`. It passed at the pre-change tree.
-  Re-finalize the source -> oracle -> finalization chain once this capability's `Makefile` is final
-  (the qualification slice still adds `persisted-result-qualification`), on a capable native Linux
-  host, appended and never rewritten. `gate-topology-check` stays green because the new targets
-  join no aggregate list.
+  The `Makefile` is now final for this capability (`persisted-result-smoke`,
+  `persisted-result-qualification`, and the hosted-list admission all landed), so re-finalize the
+  source -> oracle -> finalization chain on a capable native Linux host, appended and never
+  rewritten. `make gate-topology-check` is green at the admitted lane state.
 - **Platform-profile verdict for planning.** Section 11 and section 12.1 make
   `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` *required* C7 acceptance environments, but
   C7-P requires each one's reviewed platform profile before it may enter C7 adoption or provide C7
@@ -343,6 +371,21 @@ file records durable project state.
 
 ## Latest durable verification
 
+- **C7-PERSISTED-RESULT qualification slice, host (macOS `aarch64-apple-darwin`, managed pinned
+  toolchain `2f33ac5c33a898a7894af58322852632ce6ffe42`, 2026-08-25).** `gmake check` (23 units
+  per-unit), `gmake format-check`, `gmake gate-topology-check` (`check gate topology: PASS` at the
+  admitted lane), `git diff --check`, `gmake persisted-result-smoke` (**PASS**, 3.5-3.6 s for six
+  runners), `gmake persisted-result-qualification` (**PASS**: 11 boundary, 256 generated PASS, 32
+  generated FAIL, 38 malformed inputs, 29 result mutations, 10 golden rows, 0 unexpected
+  divergences, source mutation detected with 5 divergent and 38 agreeing cases, 749 bounded
+  children, 8.7 s), and the regression set `gmake c7-owned-record-source-expiry-adoption` plus all
+  six `c7-persisted-result-*-smoke` targets: PASS. `python3 scripts/check-baseline-chain` remains
+  red by design (`working-tree Makefile differs from the baseline source commit`) until the
+  wrap-up re-finalization. `python3 scripts/check-gate-topology --self-test` fails on this host in
+  its `reader-start cleanup` process-lifecycle case with `sigkill-PermissionError`; the same failure
+  reproduces at the unmodified `HEAD` copy, so it is a pre-existing macOS-host limitation, not a
+  lane-admission regression. Per section 11/12.1 this host has no reviewed C7-P profile, so these
+  runs are development evidence, not C7 acceptance evidence.
 - **C6-MEASURED supervised gate, green, at head `3768ad8af68bb50ee3129ff392f6ba86ac89e071`
   (2026-08-25).** `python3 scripts/run-fresh-worker-qualification --installed-profile-only
   --require-docker --align-repo <path-to-sibling-align-checkout>`: **PASS**, exit 0,
@@ -689,14 +732,14 @@ file records durable project state.
 
 ## Next actions
 
-0. **Continue C7-PERSISTED-RESULT on `agent/c7-persisted-result`.** The Request 9 adoption
-   checkpoint above has landed and passes, so the consumer slice may start: implement
-   `src/persisted_result.align` (records, validation order, `bounded-bucket-v1`, digest identity,
-   `persist_file`/`verify_file`), the two `src/main.align` CLI selectors and the stable summary
-   block, then `scripts/run-persisted-result-smoke` and
-   `scripts/run-persisted-result-qualification`. Re-finalize the canonical baseline chain once that
-   slice's `Makefile` is final, and record the C7-P platform-profile verdict above in the pull
-   request rather than claiming aarch64 acceptance evidence.
+0. **Finish C7-PERSISTED-RESULT on `agent/c7-persisted-result`.** The adoption checkpoint, the
+   consumer, the bounded functional owner, and the qualification have all landed and pass. What
+   remains is the wrap-up: re-finalize the identity-bound canonical baseline chain on a capable
+   native Linux host now that the `Makefile` is final, run the capability gate's aggregate evidence
+   there, then run one fresh comprehensive review and publish the English pull request. Record the
+   C7-P platform-profile verdict above rather than claiming aarch64 acceptance evidence, and carry
+   the qualification-discovered decode-error-class repair and the section 9.4 compiler capture-bound
+   correction as reviewable changes to the plan and the product.
 
 1. **Publish C6-MEASURED from `agent/c6-measured` at head `3768ad8`.** Nothing blocks it any more:
    the supervised `make ci` gate is green at that exact head and the host checks pass there too.

@@ -1,0 +1,1236 @@
+#!/usr/bin/env python3
+
+"""C7-PersistedResult focused qualification.
+
+`docs/specs/c7-persisted-result.md` section 12.1 names this runner the qualification owner:
+independent reference, full generated/boundary/malformed/mutation corpus, target matrix, and any
+later claim-specific stress or benchmark case. Section 12 keeps it outside every routine
+hosted/capable aggregate; it is invoked explicitly through `make persisted-result-qualification`.
+
+Section 10.1 requires the reference below to be independent of the product. Everything in the
+"independent reference" section is transcribed from sections 4.1, 4.2, 4.3, 4.4, and 5.1 and is
+computed with Python's own exact integer arithmetic, `hashlib`, literal ordered field tables, and a
+hand-written Request 7 escape grammar. It never imports `src/persisted_result.align`, never parses
+Align MIR, never imports `scripts/c7_persisted_result_fixtures.py` (the separate bounded-smoke
+fixture owner), never calls Python's generic JSON serializer for the canonical wire, and never
+derives an expected value from a produced artifact.
+
+Section 9.4 owns the process boundary. This harness launches only the selected compiler and the
+product executable, resolves both before any temporary working directory exists, starts every child
+with `close_fds=True, pass_fds=()`, captures stdout and stderr separately with a 64 KiB limit per
+stream, applies a fixed 60,000,000,000 ns timeout per child, and passes an explicit environment map.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import random
+import selectors
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterator, Sequence
+
+
+# --------------------------------------------------------------------------------------------
+# Independent reference (section 10.1)
+# --------------------------------------------------------------------------------------------
+
+SCHEMA_VERSION = 1
+INPUT_KIND = "C7_VERIFICATION_INPUT"
+RESULT_KIND = "C7_PERSISTED_RESULT"
+ALGORITHM = "bounded-bucket-v1"
+STATUS_PASS = "PASS"
+STATUS_FAIL = "FAIL"
+FAIL_DIAGNOSTIC = "expected does not match observed"
+OPERAND_MAX = 1_000_000
+BOUND_MAX = 2_000_000
+BUCKET_MAX = 2
+NOTE_MAX_BYTES = 256
+
+# Section 4.4 minimum text vector: an escaped quote, a literal slash, an escaped backslash, the five
+# literal control spellings, a semantic NUL byte, and a four-byte UTF-8 scalar.
+ESCAPED_NOTE = "quote:\" slash:/ backslash:\\ controls:\\b\\f\\n\\r\\t NUL:\x00 emoji:\U0001F600"
+
+# Section 4.4 normative vectors, transcribed as literal bytes. They are assertions about the wire.
+GOLDEN_INPUT_BYTES = (
+    '{"schema_version":1,"artifact_kind":"C7_VERIFICATION_INPUT","case_id":"upper-equal",'
+    '"algorithm":"bounded-bucket-v1","left":4,"right":5,"lower_bound":0,"upper_bound":9,'
+    '"expected":2,"note":"quote:\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t '
+    'NUL:\\u0000 emoji:\U0001F600"}'
+).encode("utf-8")
+GOLDEN_INPUT_SHA256 = "6de733d453b56f83c4dbe11406e72996cc52a3a236b8d221d383133b77bb89d2"
+GOLDEN_PREIMAGE_BYTES = (
+    '{"schema_version":1,"artifact_kind":"C7_PERSISTED_RESULT","case_id":"upper-equal",'
+    '"algorithm":"bounded-bucket-v1","status":"PASS","left":4,"right":5,"lower_bound":0,'
+    '"upper_bound":9,"expected":2,"observed":2,'
+    '"input_sha256":"6de733d453b56f83c4dbe11406e72996cc52a3a236b8d221d383133b77bb89d2",'
+    '"note":"quote:\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t '
+    'NUL:\\u0000 emoji:\U0001F600","content_sha256":""}'
+).encode("utf-8")
+GOLDEN_CONTENT_SHA256 = "a0160d3677ecac64c1682e3802e01462e178412702a8ca1cdf6c55c5841b379a"
+GOLDEN_RESULT_BYTES = (
+    '{"schema_version":1,"artifact_kind":"C7_PERSISTED_RESULT","case_id":"upper-equal",'
+    '"algorithm":"bounded-bucket-v1","status":"PASS","left":4,"right":5,"lower_bound":0,'
+    '"upper_bound":9,"expected":2,"observed":2,'
+    '"input_sha256":"6de733d453b56f83c4dbe11406e72996cc52a3a236b8d221d383133b77bb89d2",'
+    '"note":"quote:\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t '
+    'NUL:\\u0000 emoji:\U0001F600",'
+    '"content_sha256":"a0160d3677ecac64c1682e3802e01462e178412702a8ca1cdf6c55c5841b379a"}'
+).encode("utf-8")
+GOLDEN_RESULT_SHA256 = "8fb29a7205886c45cff455b3061c605c83afc5e8fd3be58f37c00fa8d997fab5"
+
+# Section 4.1 and section 4.2 declaration order. These literal tables are the canonical field
+# sequence; nothing here is read from the Align declarations.
+INPUT_FIELD_ORDER = (
+    "schema_version",
+    "artifact_kind",
+    "case_id",
+    "algorithm",
+    "left",
+    "right",
+    "lower_bound",
+    "upper_bound",
+    "expected",
+    "note",
+)
+RESULT_FIELD_ORDER = (
+    "schema_version",
+    "artifact_kind",
+    "case_id",
+    "algorithm",
+    "status",
+    "left",
+    "right",
+    "lower_bound",
+    "upper_bound",
+    "expected",
+    "observed",
+    "input_sha256",
+    "note",
+    "diagnostic",
+    "content_sha256",
+)
+INPUT_OPTIONAL_FIELDS = frozenset({"note"})
+RESULT_OPTIONAL_FIELDS = frozenset({"note", "diagnostic"})
+INPUT_TEXT_FIELDS = frozenset({"artifact_kind", "case_id", "algorithm", "note"})
+RESULT_TEXT_FIELDS = frozenset(
+    {
+        "artifact_kind",
+        "case_id",
+        "algorithm",
+        "status",
+        "input_sha256",
+        "note",
+        "diagnostic",
+        "content_sha256",
+    }
+)
+
+# Section 5.1 and section 3.3 fixed process observables. `Error` is an ordinal code in the shipped
+# runtime, so `Error.NotFound` reports exit 1 and `Error.Invalid` reports exit 2.
+EXIT_SUCCESS = 0
+EXIT_NOT_FOUND = 1
+EXIT_INVALID = 2
+
+# Section 10.1 deterministic corpus.
+SEED = 20260803
+GENERATED_PASS_CASES = 256
+GENERATED_FAIL_CASES = 32
+
+
+def quote_string(value: str) -> str:
+    """The Request 7 escape grammar, walked over Unicode scalar values (section 10.1)."""
+    parts = ['"']
+    for character in value:
+        point = ord(character)
+        if character == '"':
+            parts.append('\\"')
+        elif character == "\\":
+            parts.append("\\\\")
+        elif character == "\b":
+            parts.append("\\b")
+        elif character == "\f":
+            parts.append("\\f")
+        elif character == "\n":
+            parts.append("\\n")
+        elif character == "\r":
+            parts.append("\\r")
+        elif character == "\t":
+            parts.append("\\t")
+        elif point < 0x20:
+            parts.append("\\u%04x" % point)
+        elif 0xD800 <= point <= 0xDFFF:
+            raise HarnessError("reference rejected a surrogate code point")
+        else:
+            parts.append(character)
+    parts.append('"')
+    return "".join(parts)
+
+
+def render_integer(value: int) -> str:
+    """Signed decimal notation for a declared `i64` field (section 4.4)."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise HarnessError("reference integer field is not an exact integer")
+    return "%d" % value
+
+
+def encode_object(order: Sequence[str], text_fields: frozenset[str], record: dict) -> bytes:
+    """Append fields from the literal ordered table; omit `None` optionals; add no whitespace."""
+    parts = []
+    for name in order:
+        if name not in record:
+            raise HarnessError(f"reference record is missing {name}")
+        value = record[name]
+        if value is None:
+            continue
+        rendered = quote_string(value) if name in text_fields else render_integer(value)
+        parts.append(f"{quote_string(name)}:{rendered}")
+    return ("{" + ",".join(parts) + "}").encode("utf-8")
+
+
+def encode_input(record: dict) -> bytes:
+    return encode_object(INPUT_FIELD_ORDER, INPUT_TEXT_FIELDS, record)
+
+
+def encode_result(record: dict, blank_content_sha256: bool = False) -> bytes:
+    """Section 10.1: the result encoder has an explicit blank-digest preimage mode."""
+    if blank_content_sha256:
+        record = dict(record)
+        record["content_sha256"] = ""
+    return encode_object(RESULT_FIELD_ORDER, RESULT_TEXT_FIELDS, record)
+
+
+def digest(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def bounded_bucket(left: int, right: int, lower_bound: int, upper_bound: int) -> int:
+    """Section 5.1, written from the specification prose rather than from the Align source."""
+    raw = left + right
+    if raw < lower_bound:
+        return 0
+    if raw < upper_bound:
+        return 1
+    return 2
+
+
+@dataclass(frozen=True)
+class Case:
+    """One valid section 4.1 input in the declared domains."""
+
+    case_id: str
+    left: int
+    right: int
+    lower_bound: int
+    upper_bound: int
+    expected: int
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class Expectation:
+    """The complete independent expectation for one case."""
+
+    case: Case
+    input_bytes: bytes
+    input_sha256: str
+    preimage_bytes: bytes
+    content_sha256: str
+    artifact_bytes: bytes
+    result_sha256: str
+    record: dict
+    observed: int
+    status: str
+    diagnostic: str | None
+    summary: bytes
+    exit_status: int
+
+
+def summary_block(status: str, expected: int, observed: int) -> bytes:
+    """Section 3.3: exactly seven logical lines, one newline per line."""
+    return (
+        "persisted-result:\n"
+        "status:\n"
+        f"{status}\n"
+        "expected:\n"
+        f"{expected}\n"
+        "observed:\n"
+        f"{observed}\n"
+    ).encode("utf-8")
+
+
+def reference(case: Case) -> Expectation:
+    """Build the independent input bytes, digests, artifact bytes, and CLI observables."""
+    if not 0 <= case.left <= OPERAND_MAX or not 0 <= case.right <= OPERAND_MAX:
+        raise HarnessError(f"generated case {case.case_id} left the operand domain")
+    if not 0 <= case.lower_bound <= case.upper_bound <= BOUND_MAX:
+        raise HarnessError(f"generated case {case.case_id} left the bound domain")
+    if not 0 <= case.expected <= BUCKET_MAX:
+        raise HarnessError(f"generated case {case.case_id} left the expected domain")
+    if case.note is not None and len(case.note.encode("utf-8")) > NOTE_MAX_BYTES:
+        raise HarnessError(f"generated case {case.case_id} exceeded the note bound")
+
+    source = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": INPUT_KIND,
+        "case_id": case.case_id,
+        "algorithm": ALGORITHM,
+        "left": case.left,
+        "right": case.right,
+        "lower_bound": case.lower_bound,
+        "upper_bound": case.upper_bound,
+        "expected": case.expected,
+        "note": case.note,
+    }
+    input_bytes = encode_input(source)
+    input_sha256 = digest(input_bytes)
+
+    observed = bounded_bucket(case.left, case.right, case.lower_bound, case.upper_bound)
+    failed = observed != case.expected
+    status = STATUS_FAIL if failed else STATUS_PASS
+    diagnostic = FAIL_DIAGNOSTIC if failed else None
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": RESULT_KIND,
+        "case_id": case.case_id,
+        "algorithm": ALGORITHM,
+        "status": status,
+        "left": case.left,
+        "right": case.right,
+        "lower_bound": case.lower_bound,
+        "upper_bound": case.upper_bound,
+        "expected": case.expected,
+        "observed": observed,
+        "input_sha256": input_sha256,
+        "note": case.note,
+        "diagnostic": diagnostic,
+        "content_sha256": "",
+    }
+    preimage_bytes = encode_result(record, blank_content_sha256=True)
+    content_sha256 = digest(preimage_bytes)
+    record["content_sha256"] = content_sha256
+    artifact_bytes = encode_result(record)
+    return Expectation(
+        case=case,
+        input_bytes=input_bytes,
+        input_sha256=input_sha256,
+        preimage_bytes=preimage_bytes,
+        content_sha256=content_sha256,
+        artifact_bytes=artifact_bytes,
+        # Section 10.1: the external digest over the exact file bytes is a test assertion, never a
+        # persisted field.
+        result_sha256=digest(artifact_bytes),
+        record=record,
+        observed=observed,
+        status=status,
+        diagnostic=diagnostic,
+        summary=summary_block(status, case.expected, observed),
+        exit_status=EXIT_INVALID if failed else EXIT_SUCCESS,
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# Corpora (sections 10.1 and 10.2)
+# --------------------------------------------------------------------------------------------
+
+# Section 10.2 boundary table, transcribed row for row. It is never replaced by generated cases.
+BOUNDARY_TABLE = (
+    ("zero", Case("zero", 0, 0, 0, 1, 1)),
+    ("lower-equal", Case("lower-equal", 2, 3, 5, 9, 1)),
+    ("lower-below", Case("lower-below", 1, 1, 5, 9, 0)),
+    ("interior", Case("interior", 4, 3, 0, 9, 1)),
+    ("upper-equal", Case("upper-equal", 4, 5, 0, 9, 2, ESCAPED_NOTE)),
+    ("upper-above", Case("upper-above", 8, 5, 0, 9, 2)),
+    ("operand-max", Case("operand-max", 1_000_000, 1_000_000, 0, 2_000_000, 2)),
+    ("single-point", Case("single-point", 7, 0, 7, 7, 2)),
+    ("expected-mismatch", Case("expected-mismatch", 2, 3, 0, 9, 2)),
+    # Section 10.2: separate copies cover the absent and empty optional note.
+    ("upper-equal-absent-note", Case("upper-equal", 4, 5, 0, 9, 2, None)),
+    ("upper-equal-empty-note", Case("upper-equal", 4, 5, 0, 9, 2, "")),
+)
+BOUNDARY_EXPECTED_STATUS = {
+    "zero": (1, STATUS_PASS),
+    "lower-equal": (1, STATUS_PASS),
+    "lower-below": (0, STATUS_PASS),
+    "interior": (1, STATUS_PASS),
+    "upper-equal": (2, STATUS_PASS),
+    "upper-above": (2, STATUS_PASS),
+    "operand-max": (2, STATUS_PASS),
+    "single-point": (2, STATUS_PASS),
+    "expected-mismatch": (1, STATUS_FAIL),
+    "upper-equal-absent-note": (2, STATUS_PASS),
+    "upper-equal-empty-note": (2, STATUS_PASS),
+}
+GENERATED_NOTES = (None, "", ESCAPED_NOTE)
+
+
+def generated_corpus() -> tuple[list[Case], list[Case]]:
+    """Section 10.1: seed 20260803, 256 PASS cases and 32 FAIL cases.
+
+    Only `getrandbits` is consumed, so the corpus is byte-identical on every CPython release that
+    implements the standard Mersenne Twister, not only on the interpreter that first recorded it.
+    """
+    stream = random.Random(SEED)
+
+    def below(bound: int) -> int:
+        return stream.getrandbits(32) % bound
+
+    def operands() -> tuple[int, int, int, int]:
+        left = below(OPERAND_MAX + 1)
+        right = below(OPERAND_MAX + 1)
+        lower_bound = below(BOUND_MAX + 1)
+        upper_bound = lower_bound + below(BOUND_MAX + 1 - lower_bound)
+        return left, right, lower_bound, upper_bound
+
+    passing: list[Case] = []
+    for index in range(GENERATED_PASS_CASES):
+        left, right, lower_bound, upper_bound = operands()
+        passing.append(
+            Case(
+                case_id=f"gen-pass-{index:03d}",
+                left=left,
+                right=right,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+                expected=bounded_bucket(left, right, lower_bound, upper_bound),
+                note=GENERATED_NOTES[index % len(GENERATED_NOTES)],
+            )
+        )
+
+    failing: list[Case] = []
+    for index in range(GENERATED_FAIL_CASES):
+        left, right, lower_bound, upper_bound = operands()
+        observed = bounded_bucket(left, right, lower_bound, upper_bound)
+        # Section 10.1: the same generated operands and bounds with `expected` changed to a
+        # different in-range value.
+        expected = (observed + 1 + (index % BUCKET_MAX)) % (BUCKET_MAX + 1)
+        if expected == observed:
+            raise HarnessError("generated FAIL case did not change the expected value")
+        failing.append(
+            Case(
+                case_id=f"gen-fail-{index:02d}",
+                left=left,
+                right=right,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+                expected=expected,
+                note=GENERATED_NOTES[index % len(GENERATED_NOTES)],
+            )
+        )
+    return passing, failing
+
+
+# --------------------------------------------------------------------------------------------
+# Process boundary (section 9.4)
+# --------------------------------------------------------------------------------------------
+
+MAX_STREAM_BYTES = 65_536
+# Section 9.4: the pinned compiler emits one advisory diagnostic per whole-program copy site, and
+# the exact build vector admits no diagnostic-suppressing option, so the compiler child keeps its
+# own explicit and still bounded per-stream limit.
+COMPILER_MAX_STREAM_BYTES = 1_048_576
+CHILD_TIMEOUT_NS = 60_000_000_000
+READ_CHUNK = 8192
+CLEANUP_WAIT_SECONDS = 5
+FORWARDED_TOOLCHAIN_NAMES = (
+    "LIBRARY_PATH",
+    "LD_LIBRARY_PATH",
+    "PKG_CONFIG_PATH",
+    "LLVM_CONFIG",
+    "LLVM_SYS_221_PREFIX",
+)
+COMPILER_HANDOFF_NAMES = (
+    "ALIGN_LLM_FRESH_COMPILER",
+    "ALIGNC",
+    "ALIGNC_CACHE",
+    "ALIGNC_DESCRIPTOR",
+)
+FRESH_LAUNCHER = "/tools/fresh-alignc"
+SOURCE_PATTERN = "else if raw < upper_bound"
+MUTATED_PATTERN = "else if raw <= upper_bound"
+
+
+class HarnessError(RuntimeError):
+    """A harness or gate failure. Every one of them fails the qualification."""
+
+
+def resolved_temporary_root() -> Path:
+    """One `mkdtemp` root, resolved to its physical path before any child uses it as `cwd`."""
+    return Path(tempfile.mkdtemp(prefix="c7-persisted-result-qualification.")).resolve(strict=True)
+
+
+def child_environment() -> dict[str, str]:
+    """Section 9.4: the product-child map; all other inherited variables are cleared."""
+    search_path = os.environ.get("PATH")
+    if not search_path:
+        raise HarnessError("the harness environment supplies no PATH for its children")
+    environment = {"LANG": "C", "LC_ALL": "C", "PATH": search_path}
+    for name in FORWARDED_TOOLCHAIN_NAMES:
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    if platform.system() == "Darwin" and "LIBRARY_PATH" not in environment:
+        # Section 11 names `LIBRARY_PATH` as the macOS Align build gate's linker input, so a
+        # missing value is a harness error before the first child starts.
+        raise HarnessError("the macOS Align build gate did not supply LIBRARY_PATH")
+    return environment
+
+
+def compiler_environment(product_map: dict[str, str]) -> dict[str, str]:
+    """The mutation build additionally receives the compiler handoff values.
+
+    These are build inputs owned by Make and the toolchain gate, never C7 runtime configuration:
+    the section 9 capable profile authenticates its launcher through them. No C7 product child ever
+    sees them.
+    """
+    environment = dict(product_map)
+    for name in COMPILER_HANDOFF_NAMES:
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    return environment
+
+
+def resolve_compiler(argument: str) -> str:
+    """The Make target resolves the selection; this runner only proves what it received."""
+    if os.environ.get("ALIGN_LLM_FRESH_COMPILER") == "1":
+        if argument != FRESH_LAUNCHER:
+            raise HarnessError(
+                f"the fresh profile requires the {FRESH_LAUNCHER} launcher, received {argument}"
+            )
+        return argument
+    return str(require_executable(argument, "compiler"))
+
+
+def require_executable(argument: str, role: str) -> Path:
+    path = Path(argument)
+    if not path.is_absolute():
+        raise HarnessError(f"the {role} path is not absolute: {argument}")
+    resolved = path.resolve(strict=False)
+    if str(resolved) != argument:
+        raise HarnessError(f"the {role} path is not its own real path: {argument} -> {resolved}")
+    if not resolved.is_file():
+        raise HarnessError(f"the {role} path is not a regular file: {argument}")
+    if not os.access(resolved, os.X_OK):
+        raise HarnessError(f"the {role} path is not executable: {argument}")
+    return resolved
+
+
+@dataclass
+class ChildResult:
+    status: int
+    stdout: bytes
+    stderr: bytes
+
+
+def run_child(
+    argv: Sequence[str],
+    cwd: Path,
+    environment: dict[str, str],
+    stream_limit: int = MAX_STREAM_BYTES,
+) -> ChildResult:
+    """Start one compiler or product child under the section 9.4 bounds."""
+    try:
+        process = subprocess.Popen(
+            list(argv),
+            cwd=str(cwd),
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(),
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise HarnessError(f"child launch failed for {argv[0]}: {error}") from error
+
+    assert process.stdout is not None and process.stderr is not None
+    stdout_fd = process.stdout.fileno()
+    stderr_fd = process.stderr.fileno()
+    captures: dict[int, bytearray] = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    streams = selectors.DefaultSelector()
+    for stream in (process.stdout, process.stderr):
+        os.set_blocking(stream.fileno(), False)
+        streams.register(stream, selectors.EVENT_READ)
+
+    def cleanup() -> None:
+        # Terminate, kill if needed, wait, then close: the section 9.4 cleanup order.
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=CLEANUP_WAIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                process.wait(timeout=CLEANUP_WAIT_SECONDS)
+
+    deadline = time.monotonic_ns() + CHILD_TIMEOUT_NS
+    try:
+        while streams.get_map() or process.poll() is None:
+            remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                cleanup()
+                raise HarnessError(f"child timed out: {' '.join(argv)}")
+            if not streams.get_map():
+                time.sleep(min(remaining, 0.05))
+                continue
+            for key, _ in streams.select(min(remaining, 0.25)):
+                try:
+                    block = os.read(key.fd, READ_CHUNK)
+                except BlockingIOError:
+                    continue
+                if not block:
+                    streams.unregister(key.fileobj)
+                    continue
+                capture = captures[key.fd]
+                capture.extend(block)
+                if len(capture) > stream_limit:
+                    cleanup()
+                    raise HarnessError(
+                        f"child output exceeded {stream_limit} bytes: {' '.join(argv)}"
+                    )
+        status = process.wait(timeout=CLEANUP_WAIT_SECONDS)
+    except BaseException:
+        cleanup()
+        raise
+    finally:
+        streams.close()
+        process.stdout.close()
+        process.stderr.close()
+    return ChildResult(status, bytes(captures[stdout_fd]), bytes(captures[stderr_fd]))
+
+
+# --------------------------------------------------------------------------------------------
+# Gate execution
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass
+class Counters:
+    children: int = 0
+    golden_rows: int = 0
+    boundary_cases: int = 0
+    generated_pass: int = 0
+    generated_fail: int = 0
+    malformed_inputs: int = 0
+    result_mutations: int = 0
+    mutation_agreements: int = 0
+    mutation_divergences: int = 0
+    divergences: int = 0
+
+
+class Gate:
+    def __init__(self, compiler: str, product: Path, root: Path) -> None:
+        self.compiler = compiler
+        self.product = product
+        self.root = root
+        self.cases = root / "cases"
+        self.cases.mkdir()
+        self.environment = child_environment()
+        self.compiler_environment = compiler_environment(self.environment)
+        self.counters = Counters()
+
+    # -- child helpers -------------------------------------------------------------------
+
+    def product_child(self, argv: Sequence[str], cwd: Path | None = None) -> ChildResult:
+        self.counters.children += 1
+        return run_child(argv, cwd or self.root, self.environment)
+
+    def compiler_child(self, argv: Sequence[str], cwd: Path) -> ChildResult:
+        self.counters.children += 1
+        return run_child(argv, cwd, self.compiler_environment, COMPILER_MAX_STREAM_BYTES)
+
+    def case_directory(self, label: str) -> Path:
+        directory = self.cases / label
+        if directory.exists():
+            raise HarnessError(f"case directory {label} already exists")
+        directory.mkdir()
+        return directory
+
+    def release(self, directory: Path) -> None:
+        """Section 13 loop-join row: every generated fixture path is cleaned each iteration."""
+        shutil.rmtree(directory)
+
+    @staticmethod
+    def entries(directory: Path) -> set[str]:
+        return {entry.name for entry in directory.iterdir()}
+
+    # -- valid cases ---------------------------------------------------------------------
+
+    def persist_divergences(
+        self, product: Path, directory: Path, expected: Expectation, cwd: Path
+    ) -> list[str]:
+        """Run one `--persist-result` child and return every divergence from the reference."""
+        input_path = directory / "input.json"
+        result_path = directory / "result.json"
+        input_path.write_bytes(expected.input_bytes)
+        self.counters.children += 1
+        observed = run_child(
+            [str(product), "--persist-result", str(input_path), str(result_path)],
+            cwd,
+            self.environment,
+        )
+        divergences: list[str] = []
+        if observed.status != expected.exit_status:
+            divergences.append(f"exit {observed.status} != {expected.exit_status}")
+        if observed.stdout != expected.summary:
+            divergences.append(f"summary {observed.stdout!r} != {expected.summary!r}")
+        if expected.exit_status == EXIT_SUCCESS and observed.stderr:
+            divergences.append(f"unexpected stderr {observed.stderr!r}")
+        if not result_path.is_file():
+            divergences.append("no artifact was published")
+            return divergences
+        artifact = result_path.read_bytes()
+        if artifact != expected.artifact_bytes:
+            divergences.append(f"artifact bytes {artifact!r} != {expected.artifact_bytes!r}")
+            return divergences
+        if digest(artifact) != expected.result_sha256:
+            divergences.append("external result digest mismatch")
+        divergences.extend(self.decoded_divergences(artifact, expected))
+        if self.entries(directory) != {"input.json", "result.json"}:
+            divergences.append(f"unexpected case files {sorted(self.entries(directory))}")
+        return divergences
+
+    def decoded_divergences(self, artifact: bytes, expected: Expectation) -> list[str]:
+        """Compare the decoded fields, status, diagnostic, and both digests (section 10.1)."""
+        divergences: list[str] = []
+        try:
+            decoded = json.loads(artifact.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            return [f"artifact is not decodable JSON: {error}"]
+        if not isinstance(decoded, dict):
+            return ["artifact is not a JSON object"]
+        present = {name: value for name, value in expected.record.items() if value is not None}
+        if decoded != present:
+            divergences.append(f"decoded fields {decoded!r} != {present!r}")
+        if list(decoded) != [name for name in RESULT_FIELD_ORDER if name in decoded]:
+            divergences.append(f"decoded field order {list(decoded)!r}")
+        if decoded.get("input_sha256") != expected.input_sha256:
+            divergences.append("input digest mismatch")
+        if decoded.get("content_sha256") != expected.content_sha256:
+            divergences.append("content digest mismatch")
+        if decoded.get("status") != expected.status:
+            divergences.append("status mismatch")
+        if decoded.get("diagnostic") != expected.diagnostic:
+            divergences.append("diagnostic mismatch")
+        if decoded.get("observed") != expected.observed:
+            divergences.append("observed mismatch")
+        return divergences
+
+    def check_valid_case(self, label: str, case: Case) -> None:
+        """Persist, compare against the reference, remove the input, then verify (section 10.1)."""
+        expected = reference(case)
+        directory = self.case_directory(label)
+        divergences = self.persist_divergences(self.product, directory, expected, self.root)
+        if divergences:
+            self.counters.divergences += 1
+            raise HarnessError(f"case {label} diverged: {'; '.join(divergences)}")
+
+        # Section 6.1: the original input is removed before the standalone verifier runs.
+        (directory / "input.json").unlink()
+        result_path = directory / "result.json"
+        before = result_path.read_bytes()
+        observed = self.product_child([str(self.product), "--verify-result", str(result_path)])
+        failures: list[str] = []
+        if observed.status != expected.exit_status:
+            failures.append(f"verify exit {observed.status} != {expected.exit_status}")
+        if observed.stdout != expected.summary:
+            failures.append(f"verify summary {observed.stdout!r}")
+        if expected.exit_status == EXIT_SUCCESS and observed.stderr:
+            failures.append(f"verify stderr {observed.stderr!r}")
+        if result_path.read_bytes() != before:
+            failures.append("verify changed the artifact")
+        if self.entries(directory) != {"result.json"}:
+            failures.append(f"verify touched the directory {sorted(self.entries(directory))}")
+        if failures:
+            self.counters.divergences += 1
+            raise HarnessError(f"case {label} diverged after source expiry: {'; '.join(failures)}")
+        self.release(directory)
+
+    # -- phases --------------------------------------------------------------------------
+
+    def check_golden_vectors(self) -> None:
+        """Section 4.4 and section 10.1: literal bytes and helper output must agree."""
+        expected = reference(BOUNDARY_TABLE[4][1])
+        rows = (
+            ("input bytes", expected.input_bytes, GOLDEN_INPUT_BYTES),
+            ("input_sha256", expected.input_sha256.encode(), GOLDEN_INPUT_SHA256.encode()),
+            ("preimage bytes", expected.preimage_bytes, GOLDEN_PREIMAGE_BYTES),
+            ("content_sha256", expected.content_sha256.encode(), GOLDEN_CONTENT_SHA256.encode()),
+            ("result bytes", expected.artifact_bytes, GOLDEN_RESULT_BYTES),
+            (
+                "result_sha256",
+                digest(expected.artifact_bytes).encode(),
+                GOLDEN_RESULT_SHA256.encode(),
+            ),
+            ("input digest of literal bytes", digest(GOLDEN_INPUT_BYTES).encode(),
+             GOLDEN_INPUT_SHA256.encode()),
+            ("content digest of literal preimage", digest(GOLDEN_PREIMAGE_BYTES).encode(),
+             GOLDEN_CONTENT_SHA256.encode()),
+            ("external digest of literal result", digest(GOLDEN_RESULT_BYTES).encode(),
+             GOLDEN_RESULT_SHA256.encode()),
+        )
+        for name, produced, literal in rows:
+            if produced != literal:
+                raise HarnessError(
+                    f"golden vector {name} drifted: {produced!r} != {literal!r}"
+                )
+            self.counters.golden_rows += 1
+        if len(ESCAPED_NOTE.encode("utf-8")) != 64:
+            raise HarnessError("the section 4.4 note vector is not 64 bytes")
+        # The known empty-input SHA-256 vector: the reference hashes exact bytes with the standard
+        # algorithm, not a variant or a normalized record.
+        if digest(b"") != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855":
+            raise HarnessError("the reference digest is not SHA-256")
+        self.counters.golden_rows += 1
+
+    def check_boundary_corpus(self) -> None:
+        """Section 10.2: the fixed table, including its documented observed/status pairs."""
+        for label, case in BOUNDARY_TABLE:
+            observed = bounded_bucket(case.left, case.right, case.lower_bound, case.upper_bound)
+            documented_observed, documented_status = BOUNDARY_EXPECTED_STATUS[label]
+            if observed != documented_observed:
+                raise HarnessError(
+                    f"boundary row {label}: reference observed {observed} != "
+                    f"documented {documented_observed}"
+                )
+            status = STATUS_PASS if observed == case.expected else STATUS_FAIL
+            if status != documented_status:
+                raise HarnessError(f"boundary row {label}: reference status {status}")
+            self.check_valid_case(f"boundary-{label}", case)
+            self.counters.boundary_cases += 1
+        # Section 4.4: the golden case's published bytes are the literal artifact bytes.
+        directory = self.case_directory("boundary-golden-bytes")
+        expected = reference(BOUNDARY_TABLE[4][1])
+        divergences = self.persist_divergences(self.product, directory, expected, self.root)
+        if divergences:
+            raise HarnessError(f"golden case diverged: {'; '.join(divergences)}")
+        if (directory / "result.json").read_bytes() != GOLDEN_RESULT_BYTES:
+            raise HarnessError("the published artifact is not the section 4.4 literal bytes")
+        self.release(directory)
+
+    def check_generated_corpus(self) -> None:
+        """Section 10.1: 256 PASS and 32 FAIL differential comparisons at seed 20260803."""
+        passing, failing = generated_corpus()
+        if len(passing) != GENERATED_PASS_CASES or len(failing) != GENERATED_FAIL_CASES:
+            raise HarnessError("the generated corpus cardinality changed")
+        for case in passing:
+            expected = reference(case)
+            if expected.status != STATUS_PASS:
+                raise HarnessError(f"generated PASS case {case.case_id} is not a PASS case")
+            self.check_valid_case(f"generated-{case.case_id}", case)
+            self.counters.generated_pass += 1
+        for case in failing:
+            expected = reference(case)
+            if expected.status != STATUS_FAIL:
+                raise HarnessError(f"generated FAIL case {case.case_id} is not a FAIL case")
+            if expected.diagnostic != FAIL_DIAGNOSTIC:
+                raise HarnessError(f"generated FAIL case {case.case_id} lost its diagnostic")
+            self.check_valid_case(f"generated-{case.case_id}", case)
+            self.counters.generated_fail += 1
+
+    def check_malformed_inputs(self) -> None:
+        """Section 10.3: every malformed input fails before creating or changing a destination."""
+        for label, payload, exit_status in malformed_inputs():
+            for destination in ("fresh", "existing"):
+                directory = self.case_directory(f"malformed-{label}-{destination}")
+                input_path = directory / "input.json"
+                result_path = directory / "result.json"
+                control_path = directory / "control.json"
+                control_path.write_bytes(CONTROL_BYTES)
+                if payload is not None:
+                    input_path.write_bytes(payload)
+                if destination == "existing":
+                    result_path.write_bytes(SENTINEL_BYTES)
+                observed = self.product_child(
+                    [str(self.product), "--persist-result", str(input_path), str(result_path)]
+                )
+                failures: list[str] = []
+                if observed.status != exit_status:
+                    failures.append(f"exit {observed.status} != {exit_status}")
+                if observed.stdout:
+                    failures.append(f"printed a summary {observed.stdout!r}")
+                if destination == "existing":
+                    if result_path.read_bytes() != SENTINEL_BYTES:
+                        failures.append("the existing destination changed")
+                elif result_path.exists():
+                    failures.append("a destination was created")
+                if control_path.read_bytes() != CONTROL_BYTES:
+                    failures.append("the control file changed")
+                if payload is not None and input_path.read_bytes() != payload:
+                    failures.append("the malformed input changed")
+                if failures:
+                    raise HarnessError(f"malformed input {label}: {'; '.join(failures)}")
+                self.release(directory)
+            self.counters.malformed_inputs += 1
+
+    def check_result_mutations(self) -> None:
+        """Section 10.3: every mutated artifact fails read-only, and the control still verifies."""
+        expected = reference(BOUNDARY_TABLE[4][1])
+        control = self.case_directory("result-control")
+        control_path = control / "result.json"
+        control_path.write_bytes(expected.artifact_bytes)
+        observed = self.product_child([str(self.product), "--verify-result", str(control_path)])
+        if observed.status != EXIT_SUCCESS or observed.stdout != expected.summary:
+            raise HarnessError("the unmutated control artifact did not verify")
+        self.release(control)
+
+        for label, payload in result_mutations(expected):
+            if payload == expected.artifact_bytes:
+                raise HarnessError(f"result mutation {label} produced the unmutated artifact")
+            directory = self.case_directory(f"result-{label}")
+            path = directory / "result.json"
+            path.write_bytes(payload)
+            observed = self.product_child([str(self.product), "--verify-result", str(path)])
+            failures = []
+            if observed.status != EXIT_INVALID:
+                failures.append(f"exit {observed.status} != {EXIT_INVALID}")
+            if observed.stdout:
+                failures.append(f"printed a summary {observed.stdout!r}")
+            if path.read_bytes() != payload:
+                failures.append("the verifier changed the artifact")
+            if self.entries(directory) != {"result.json"}:
+                failures.append(f"the verifier wrote {sorted(self.entries(directory))}")
+            if failures:
+                raise HarnessError(f"result mutation {label}: {'; '.join(failures)}")
+            self.release(directory)
+            self.counters.result_mutations += 1
+
+    def check_source_mutation(self, repository: Path) -> None:
+        """Section 10.3: the temporary `<` -> `<=` source mutation must be detected."""
+        check_mutation_helper()
+        mutation_root = resolved_temporary_root()
+        try:
+            source = mutation_root / "src"
+            source.mkdir()
+            for module in sorted(repository.glob("src/*.align")):
+                shutil.copyfile(module, source / module.name)
+            target = source / "persisted_result.align"
+            target.write_text(
+                mutate_source(target.read_text(encoding="utf-8")), encoding="utf-8"
+            )
+            built = self.compiler_child(
+                [self.compiler, "build", str(source / "main.align")], mutation_root
+            )
+            if built.status != 0:
+                raise HarnessError(
+                    f"the mutated temporary program did not build: status={built.status} "
+                    f"stderr={built.stderr[-2048:]!r}"
+                )
+            mutated_product = mutation_root / "main"
+            if not mutated_product.is_file() or not os.access(mutated_product, os.X_OK):
+                raise HarnessError("the mutated build produced no executable")
+
+            cases = [(label, case) for label, case in BOUNDARY_TABLE]
+            cases.extend(
+                (f"generated-{case.case_id}", case) for case in generated_corpus()[0][:32]
+            )
+            mutation_cases = mutation_root / "cases"
+            mutation_cases.mkdir()
+            upper_equal_detected = False
+            for label, case in cases:
+                directory = mutation_cases / label
+                directory.mkdir()
+                divergences = self.persist_divergences(
+                    mutated_product, directory, reference(case), mutation_root
+                )
+                if divergences:
+                    self.counters.mutation_divergences += 1
+                    if label == "upper-equal":
+                        upper_equal_detected = True
+                else:
+                    self.counters.mutation_agreements += 1
+                shutil.rmtree(directory)
+            if not upper_equal_detected:
+                raise HarnessError(
+                    "the mutated upper-bound comparison was not detected by the upper-equal case"
+                )
+            if self.counters.mutation_divergences < 1:
+                raise HarnessError("the differential corpus did not detect the source mutation")
+            if self.counters.mutation_agreements < 1:
+                raise HarnessError(
+                    "every mutated case diverged, so the temporary copy is not a controlled build"
+                )
+        finally:
+            shutil.rmtree(mutation_root, ignore_errors=True)
+
+    def check_stale_fixtures(self) -> None:
+        """Section 13 loop-join row: no generated fixture survives its iteration."""
+        remaining = sorted(self.entries(self.cases))
+        if remaining:
+            raise HarnessError(f"stale qualification fixtures remained: {remaining}")
+
+
+# --------------------------------------------------------------------------------------------
+# Malformed and mutation payloads (section 10.3)
+# --------------------------------------------------------------------------------------------
+
+CONTROL_BYTES = b"C7-CONTROL-FILE-BYTES"
+SENTINEL_BYTES = b"C7-SENTINEL-DESTINATION-BYTES"
+
+
+CANONICAL_INPUT_RENDERING: tuple[tuple[str, str], ...] = (
+    ("schema_version", "1"),
+    ("artifact_kind", quote_string(INPUT_KIND)),
+    ("case_id", quote_string("upper-equal")),
+    ("algorithm", quote_string(ALGORITHM)),
+    ("left", "4"),
+    ("right", "5"),
+    ("lower_bound", "0"),
+    ("upper_bound", "9"),
+    ("expected", "2"),
+)
+
+
+def rendered_input(**overrides: str | None) -> bytes:
+    """Assemble one input document from the literal ordered table with rendered overrides.
+
+    A `None` override drops its field; an unknown name is appended after the declared fields, which
+    is exactly how an unknown key reaches the decoder.
+    """
+    fields: dict[str, str | None] = dict(CANONICAL_INPUT_RENDERING)
+    fields.update(overrides)
+    parts = [
+        f"{quote_string(name)}:{value}" for name, value in fields.items() if value is not None
+    ]
+    return ("{" + ",".join(parts) + "}").encode("utf-8")
+
+
+def malformed_inputs() -> Iterator[tuple[str, bytes | None, int]]:
+    """Every section 10.3 malformed, noncanonical, and out-of-domain input."""
+    valid = rendered_input().decode("utf-8")
+    head, tail = valid[:-1], "}"
+
+    # Lexical and structural failures.
+    yield ("empty-file", b"", EXIT_INVALID)
+    yield ("truncated-object", head.encode("utf-8"), EXIT_INVALID)
+    yield ("top-level-array", b"[]", EXIT_INVALID)
+    yield ("top-level-string", b'"C7_VERIFICATION_INPUT"', EXIT_INVALID)
+    yield ("top-level-number", b"1", EXIT_INVALID)
+    yield (
+        "invalid-utf8",
+        (head + ',"note":"').encode("utf-8") + b"\xff" + ('"' + tail).encode("utf-8"),
+        EXIT_INVALID,
+    )
+    yield ("malformed-escape", (head + ',"note":"\\q"' + tail).encode("utf-8"), EXIT_INVALID)
+    yield ("lone-surrogate", (head + ',"note":"\\ud800"' + tail).encode("utf-8"), EXIT_INVALID)
+    yield (
+        "reversed-surrogate-pair",
+        (head + ',"note":"\\udc00\\ud800"' + tail).encode("utf-8"),
+        EXIT_INVALID,
+    )
+    yield (
+        "duplicate-declared-key",
+        (head + ',"case_id":"upper-equal"' + tail).encode("utf-8"),
+        EXIT_INVALID,
+    )
+    yield ("trailing-non-whitespace", (valid + "x").encode("utf-8"), EXIT_INVALID)
+
+    # Canonical-byte failures that the decoder alone tolerates.
+    yield ("unknown-key", rendered_input(extra="1"), EXIT_INVALID)
+    yield (
+        "reordered-key",
+        (
+            '{"artifact_kind":"C7_VERIFICATION_INPUT","schema_version":1,'
+            '"case_id":"upper-equal","algorithm":"bounded-bucket-v1","left":4,"right":5,'
+            '"lower_bound":0,"upper_bound":9,"expected":2}'
+        ).encode("utf-8"),
+        EXIT_INVALID,
+    )
+    yield ("leading-whitespace", (" " + valid).encode("utf-8"), EXIT_INVALID)
+    yield ("trailing-whitespace", (valid + "\n").encode("utf-8"), EXIT_INVALID)
+    yield ("null-optional-note", rendered_input(note="null"), EXIT_INVALID)
+
+    # Declared-domain failures.
+    yield ("wrong-schema-version", rendered_input(schema_version="2"), EXIT_INVALID)
+    yield (
+        "wrong-artifact-kind",
+        rendered_input(artifact_kind=quote_string(RESULT_KIND)),
+        EXIT_INVALID,
+    )
+    yield ("wrong-algorithm", rendered_input(algorithm='"bounded-bucket-v2"'), EXIT_INVALID)
+    yield ("empty-case-id", rendered_input(case_id='""'), EXIT_INVALID)
+    yield ("uppercase-case-id", rendered_input(case_id='"Upper-Equal"'), EXIT_INVALID)
+    yield ("case-id-leading-dot", rendered_input(case_id='".upper"'), EXIT_INVALID)
+    yield ("oversized-case-id", rendered_input(case_id='"' + "a" * 65 + '"'), EXIT_INVALID)
+    yield ("operand-above-range", rendered_input(left="1000001"), EXIT_INVALID)
+    yield ("operand-negative", rendered_input(right="-1"), EXIT_INVALID)
+    yield ("bound-above-range", rendered_input(upper_bound="2000001"), EXIT_INVALID)
+    yield ("bound-negative", rendered_input(lower_bound="-1"), EXIT_INVALID)
+    yield ("reversed-bounds", rendered_input(lower_bound="9", upper_bound="0"), EXIT_INVALID)
+    yield ("expected-above-range", rendered_input(expected="3"), EXIT_INVALID)
+    yield ("expected-negative", rendered_input(expected="-1"), EXIT_INVALID)
+    yield ("oversized-note", rendered_input(note=quote_string("n" * 257)), EXIT_INVALID)
+    yield ("missing-declared-field", rendered_input(expected=None), EXIT_INVALID)
+
+    # Wrong JSON scalar shapes.
+    yield ("integer-as-string", rendered_input(expected='"2"'), EXIT_INVALID)
+    yield ("integer-as-float", rendered_input(expected="2.0"), EXIT_INVALID)
+    yield ("text-as-integer", rendered_input(case_id="7"), EXIT_INVALID)
+    yield ("integer-as-boolean", rendered_input(expected="true"), EXIT_INVALID)
+    yield ("note-as-integer", rendered_input(note="7"), EXIT_INVALID)
+
+    # Filesystem precedence: the input is absent, so no destination may be produced.
+    yield ("absent-input", None, EXIT_NOT_FOUND)
+
+
+def result_mutations(expected: Expectation) -> Iterator[tuple[str, bytes]]:
+    """Every section 10.3 result mutation, including digest-consistent semantic mutations."""
+    artifact = expected.artifact_bytes
+    text = artifact.decode("utf-8")
+
+    def rebuilt(**changes: object) -> bytes:
+        """A mutation whose own content digest is recomputed, so only an invariant can reject it."""
+        record = dict(expected.record)
+        record.update(changes)
+        record["content_sha256"] = ""
+        record["content_sha256"] = digest(encode_result(record, blank_content_sha256=True))
+        return encode_result(record)
+
+    flipped = "b" if expected.content_sha256[0] != "b" else "c"
+    yield ("content-digest-flipped", text.replace(
+        expected.content_sha256, flipped + expected.content_sha256[1:]).encode("utf-8"))
+    yield ("content-digest-uppercase", text.replace(
+        expected.content_sha256, expected.content_sha256.upper()).encode("utf-8"))
+    yield ("content-digest-truncated", text.replace(
+        expected.content_sha256, expected.content_sha256[:-1]).encode("utf-8"))
+    yield ("content-digest-empty", text.replace(
+        expected.content_sha256, "").encode("utf-8"))
+    input_flipped = "b" if expected.input_sha256[0] != "b" else "c"
+    yield ("input-digest-flipped", text.replace(
+        expected.input_sha256, input_flipped + expected.input_sha256[1:]).encode("utf-8"))
+    yield ("input-digest-uppercase", text.replace(
+        expected.input_sha256, expected.input_sha256.upper()).encode("utf-8"))
+
+    # Semantic mutations that keep a self-consistent content digest: only the recomputed
+    # bounded-bucket, status, and diagnostic invariants can reject them.
+    yield ("observed-rebuilt", rebuilt(observed=1))
+    yield ("expected-rebuilt", rebuilt(expected=1))
+    yield ("status-rebuilt", rebuilt(status=STATUS_FAIL))
+    yield ("diagnostic-present-on-pass", rebuilt(diagnostic=FAIL_DIAGNOSTIC))
+    yield ("operand-rebuilt", rebuilt(left=3))
+    yield ("bound-rebuilt", rebuilt(upper_bound=10))
+    yield ("schema-version-rebuilt", rebuilt(schema_version=2))
+    yield ("artifact-kind-rebuilt", rebuilt(artifact_kind=INPUT_KIND))
+    yield ("algorithm-rebuilt", rebuilt(algorithm="bounded-bucket-v2"))
+    yield ("status-lowercase-rebuilt", rebuilt(status="pass"))
+
+    # Raw byte mutations of the published artifact.
+    yield ("observed-raw", text.replace('"observed":2', '"observed":1').encode("utf-8"))
+    yield ("status-raw", text.replace('"status":"PASS"', '"status":"FAIL"').encode("utf-8"))
+    yield ("schema-version-raw", text.replace('"schema_version":1', '"schema_version":2').encode("utf-8"))
+    yield ("unknown-field", (text[:-1] + ',"extra":1}').encode("utf-8"))
+    yield ("leading-whitespace", (" " + text).encode("utf-8"))
+    yield ("trailing-whitespace", (text + "\n").encode("utf-8"))
+    yield ("inner-whitespace", text.replace('{"schema_version":1', '{ "schema_version":1').encode("utf-8"))
+    yield ("trailing-non-whitespace", (text + "x").encode("utf-8"))
+    yield ("null-optional-note", text.replace(
+        f'"note":{quote_string(ESCAPED_NOTE)}', '"note":null').encode("utf-8"))
+    yield (
+        "diagnostic-null",
+        text.replace(',"content_sha256":', ',"diagnostic":null,"content_sha256":', 1).encode(
+            "utf-8"
+        ),
+    )
+    yield ("truncated-object", text[:-1].encode("utf-8"))
+    yield ("empty-file", b"")
+
+    # Field order: the two adjacent scalars are swapped without changing any value.
+    reordered = text.replace(
+        '"expected":2,"observed":2', '"observed":2,"expected":2'
+    )
+    yield ("field-order-swapped", reordered.encode("utf-8"))
+
+
+def mutate_source(text: str) -> str:
+    """Replace the unique section 10.3 source pattern exactly once."""
+    occurrences = text.count(SOURCE_PATTERN)
+    if occurrences != 1:
+        raise HarnessError(
+            f"the source mutation pattern occurred {occurrences} times, expected exactly one"
+        )
+    mutated = text.replace(SOURCE_PATTERN, MUTATED_PATTERN, 1)
+    if mutated == text or mutated.count(MUTATED_PATTERN) != 1:
+        raise HarnessError("the source mutation did not replace exactly one pattern")
+    return mutated
+
+
+def check_mutation_helper() -> None:
+    """A no-op or multiple replacement is a failed test, not a passing negative case."""
+    for text in ("fn f() {}", SOURCE_PATTERN * 2, MUTATED_PATTERN):
+        try:
+            mutate_source(text)
+        except HarnessError:
+            continue
+        raise HarnessError("the mutation helper accepted a no-op or multiple replacement")
+    if mutate_source(f"a {SOURCE_PATTERN} b") != f"a {MUTATED_PATTERN} b":
+        raise HarnessError("the mutation helper did not produce the exact mutated pattern")
+
+
+# --------------------------------------------------------------------------------------------
+# Entry point
+# --------------------------------------------------------------------------------------------
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 3:
+        raise HarnessError(
+            "usage: run-persisted-result-qualification <selected-compiler> <product-executable>"
+        )
+    repository = Path(__file__).resolve().parent.parent
+    compiler = resolve_compiler(argv[1])
+    product = require_executable(argv[2], "product")
+    started = time.monotonic_ns()
+
+    root = resolved_temporary_root()
+    try:
+        gate = Gate(compiler, product, root)
+        gate.check_golden_vectors()
+        gate.check_boundary_corpus()
+        gate.check_generated_corpus()
+        gate.check_malformed_inputs()
+        gate.check_result_mutations()
+        gate.check_source_mutation(repository)
+        gate.check_stale_fixtures()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    elapsed = (time.monotonic_ns() - started) / 1_000_000_000
+    counters = gate.counters
+    # Section 11 and section 12: the acceptance environment is bound externally to the tested
+    # compiler revision and platform profile; this line only records what was exercised.
+    print(
+        "c7 persisted result qualification: PASS "
+        f"({counters.boundary_cases} boundary, {counters.generated_pass} generated PASS, "
+        f"{counters.generated_fail} generated FAIL, {counters.malformed_inputs} malformed inputs, "
+        f"{counters.result_mutations} result mutations, {counters.golden_rows} golden rows, "
+        f"{counters.divergences} unexpected divergences; source mutation detected with "
+        f"{counters.mutation_divergences} divergent and {counters.mutation_agreements} agreeing "
+        f"cases; {counters.children} bounded children; "
+        f"target {platform.machine()}-{platform.system().lower()}; "
+        f"{elapsed:.1f}s wall clock, a diagnostic and not a performance result)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv))
+    except HarnessError as error:
+        print(f"c7 persisted result qualification: FAILED: {error}", file=sys.stderr)
+        raise SystemExit(1)

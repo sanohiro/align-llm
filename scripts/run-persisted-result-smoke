@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+
+"""C7-PersistedResult bounded functional smoke.
+
+`docs/specs/c7-persisted-result.md` section 12 defines this runner as the bounded functional path:
+valid ownership/lifetime transfer, canonical encode/decode, source deletion, CLI success, semantic
+`FAIL`, and representative malformed input. Section 12.1 names the file. It drives the six checked-in
+`c7-persisted-result-*-smoke` runners as one owner so the capability has a single bounded functional
+target, and it prints its own wall-clock cost because section 12 admits it to the Section 9 capable
+aggregate only after that measured cost shows it remains a small stable integration regression.
+
+Section 9.4 owns the process boundary. The Make target resolves the selected compiler and the
+product executable at the repository root and passes both explicitly; this runner takes no
+user-supplied arguments, starts every child with `close_fds=True, pass_fds=()`, captures stdout and
+stderr separately with a 64 KiB limit per stream, applies a fixed 60,000,000,000 ns timeout per
+child, and passes an explicit environment map. The full generated, boundary, malformed, and source
+mutation corpus belongs to `scripts/run-persisted-result-qualification`, which stays outside every
+aggregate.
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+import selectors
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
+
+
+MAX_STREAM_BYTES = 65_536
+CHILD_TIMEOUT_NS = 60_000_000_000
+READ_CHUNK = 8192
+CLEANUP_WAIT_SECONDS = 5
+FORWARDED_TOOLCHAIN_NAMES = (
+    "LIBRARY_PATH",
+    "LD_LIBRARY_PATH",
+    "PKG_CONFIG_PATH",
+    "LLVM_CONFIG",
+    "LLVM_SYS_221_PREFIX",
+)
+COMPILER_HANDOFF_NAMES = ("ALIGN_LLM_FRESH_COMPILER", "ALIGNC_CACHE", "ALIGNC_DESCRIPTOR")
+FRESH_LAUNCHER = "/tools/fresh-alignc"
+
+# The section 12 bounded functional set, in a fixed order. Each runner owns the section 13 rows named
+# in its own header comment; together they are the capability's functional evidence.
+MEMBERS = (
+    ("cli", "run-c7-persisted-result-cli-smoke"),
+    ("lifetime", "run-c7-persisted-result-lifetime-smoke"),
+    ("owned-move", "run-c7-persisted-result-owned-move-smoke"),
+    ("wire", "run-c7-persisted-result-wire-smoke"),
+    ("noncanonical-input", "run-c7-persisted-result-noncanonical-input-smoke"),
+    ("independent-destinations", "run-c7-persisted-result-independent-destinations-smoke"),
+)
+
+
+class HarnessError(RuntimeError):
+    """A harness or smoke failure. Every one of them fails the target."""
+
+
+def child_environment(compiler: str) -> dict[str, str]:
+    """Section 9.4: an explicit map; all other inherited variables are cleared.
+
+    The member runners select their compiler through `ALIGNC`, so the resolved selection is passed
+    explicitly instead of letting a child rediscover one from `PATH` or a sibling checkout.
+    """
+    search_path = os.environ.get("PATH")
+    if not search_path:
+        raise HarnessError("the harness environment supplies no PATH for its children")
+    environment = {"LANG": "C", "LC_ALL": "C", "PATH": search_path, "ALIGNC": compiler}
+    for name in FORWARDED_TOOLCHAIN_NAMES:
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    if platform.system() == "Darwin" and "LIBRARY_PATH" not in environment:
+        # Section 11 names `LIBRARY_PATH` as the macOS Align build gate's linker input, so a
+        # missing value is a harness error before the first child starts.
+        raise HarnessError("the macOS Align build gate did not supply LIBRARY_PATH")
+    # The member runners invoke the compiler, so the compiler handoff values reach them. They are
+    # build inputs owned by Make and the toolchain gate, never C7 runtime configuration, and the
+    # section 9 capable profile authenticates its launcher through them.
+    for name in COMPILER_HANDOFF_NAMES:
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    return environment
+
+
+def resolve_compiler(argument: str) -> str:
+    """The Make target resolves the selection; this runner only proves what it received."""
+    if os.environ.get("ALIGN_LLM_FRESH_COMPILER") == "1":
+        if argument != FRESH_LAUNCHER:
+            raise HarnessError(
+                f"the fresh profile requires the {FRESH_LAUNCHER} launcher, received {argument}"
+            )
+        return argument
+    return str(require_executable(argument, "compiler"))
+
+
+def require_executable(argument: str, role: str) -> Path:
+    path = Path(argument)
+    if not path.is_absolute():
+        raise HarnessError(f"the {role} path is not absolute: {argument}")
+    resolved = path.resolve(strict=False)
+    if str(resolved) != argument:
+        raise HarnessError(f"the {role} path is not its own real path: {argument} -> {resolved}")
+    if not resolved.is_file():
+        raise HarnessError(f"the {role} path is not a regular file: {argument}")
+    if not os.access(resolved, os.X_OK):
+        raise HarnessError(f"the {role} path is not executable: {argument}")
+    return resolved
+
+
+@dataclass
+class ChildResult:
+    status: int
+    stdout: bytes
+    stderr: bytes
+
+
+def run_child(argv: Sequence[str], cwd: Path, environment: dict[str, str]) -> ChildResult:
+    """Start one member runner under the section 9.4 bounds."""
+    try:
+        process = subprocess.Popen(
+            list(argv),
+            cwd=str(cwd),
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(),
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise HarnessError(f"child launch failed for {argv[0]}: {error}") from error
+
+    assert process.stdout is not None and process.stderr is not None
+    stdout_fd = process.stdout.fileno()
+    stderr_fd = process.stderr.fileno()
+    captures: dict[int, bytearray] = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    streams = selectors.DefaultSelector()
+    for stream in (process.stdout, process.stderr):
+        os.set_blocking(stream.fileno(), False)
+        streams.register(stream, selectors.EVENT_READ)
+
+    def cleanup() -> None:
+        # Terminate, kill if needed, wait, then close: the section 9.4 cleanup order.
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=CLEANUP_WAIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                process.wait(timeout=CLEANUP_WAIT_SECONDS)
+
+    deadline = time.monotonic_ns() + CHILD_TIMEOUT_NS
+    try:
+        while streams.get_map() or process.poll() is None:
+            remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                cleanup()
+                raise HarnessError(f"child timed out: {' '.join(argv)}")
+            if not streams.get_map():
+                time.sleep(min(remaining, 0.05))
+                continue
+            for key, _ in streams.select(min(remaining, 0.25)):
+                try:
+                    block = os.read(key.fd, READ_CHUNK)
+                except BlockingIOError:
+                    continue
+                if not block:
+                    streams.unregister(key.fileobj)
+                    continue
+                capture = captures[key.fd]
+                capture.extend(block)
+                if len(capture) > MAX_STREAM_BYTES:
+                    cleanup()
+                    raise HarnessError(f"child output exceeded 64 KiB: {' '.join(argv)}")
+        status = process.wait(timeout=CLEANUP_WAIT_SECONDS)
+    except BaseException:
+        cleanup()
+        raise
+    finally:
+        streams.close()
+        process.stdout.close()
+        process.stderr.close()
+    return ChildResult(status, bytes(captures[stdout_fd]), bytes(captures[stderr_fd]))
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 3:
+        raise HarnessError(
+            "usage: run-persisted-result-smoke <selected-compiler> <product-executable>"
+        )
+    repository = Path(__file__).resolve().parent.parent
+    compiler = resolve_compiler(argv[1])
+    product = require_executable(argv[2], "product")
+    if product.parent != repository:
+        raise HarnessError(f"the product executable is not the repository build: {product}")
+    environment = child_environment(compiler)
+
+    started = time.monotonic_ns()
+    costs: list[str] = []
+    for label, name in MEMBERS:
+        runner = repository / "scripts" / name
+        if not runner.is_file():
+            raise HarnessError(f"member runner is missing: {runner}")
+        member_started = time.monotonic_ns()
+        observed = run_child([str(runner)], repository, environment)
+        elapsed = (time.monotonic_ns() - member_started) / 1_000_000_000
+        if observed.status != 0:
+            sys.stderr.buffer.write(observed.stdout)
+            sys.stderr.buffer.write(observed.stderr)
+            sys.stderr.buffer.flush()
+            raise HarnessError(f"{name} exited {observed.status}")
+        if not observed.stdout.rstrip(b"\n").endswith(b"PASS"):
+            raise HarnessError(f"{name} did not report its PASS line: {observed.stdout!r}")
+        costs.append(f"{label} {elapsed:.1f}s")
+    total = (time.monotonic_ns() - started) / 1_000_000_000
+
+    # Section 12 aggregate-admission datum. It is a cost measurement for the membership decision,
+    # never a product performance result, and it is not persisted or compared against a threshold.
+    print(
+        f"c7 persisted result smoke: PASS ({len(MEMBERS)} bounded functional runners; "
+        + ", ".join(costs)
+        + f"; {total:.1f}s total wall clock)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv))
+    except HarnessError as error:
+        print(f"c7 persisted result smoke: FAILED: {error}", file=sys.stderr)
+        raise SystemExit(1)

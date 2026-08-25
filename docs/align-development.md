@@ -331,7 +331,7 @@ operating-system failures return an error with no summary block. Publication use
 `std.fs.write_file` boundary, so a failed write may leave the caller-owned destination absent or
 partial; nothing is removed or restored on that path.
 
-The bounded functional smokes are focused targets and deliberately join no aggregate:
+The six bounded functional smokes remain individually invocable:
 
 ```sh
 make c7-persisted-result-cli-smoke
@@ -343,6 +343,30 @@ make c7-persisted-result-independent-destinations-smoke
 ```
 
 Their fixture vectors live in `scripts/c7_persisted_result_fixtures.py`, an independent ordered
-field table, escape grammar, and bucket reference. The generated differential corpus, the full
-artifact-mutation corpus, and the intentionally mutated source case belong to the separate
-`persisted-result-qualification` slice.
+field table, escape grammar, and bucket reference.
+
+`make persisted-result-smoke` is the bounded functional owner: it drives all six runners as one
+target and prints its own wall-clock cost. That measured cost is the section 12 admission datum, and
+at 3.6 s for the six runners it admitted the target to `HOSTED_CHECK_TARGETS`. The six member
+targets themselves stay out of every aggregate, so the aggregate runs the set exactly once.
+
+`make persisted-result-qualification` is the focused qualification and deliberately stays outside
+every routine hosted and capable aggregate. It owns an independent Python reference (its own ordered
+field tables, Request 7 escape grammar, and `bounded-bucket-v1` reimplementation, sharing nothing
+with the smoke fixture module), the section 10.2 boundary table, the seeded generated differential
+corpus at seed `20260803` (256 PASS and 32 FAIL cases), the malformed-input and artifact-mutation
+corpora, and the temporary source mutation that rewrites the single `else if raw < upper_bound`
+comparison to `<=` in a private copy of the tree, rebuilds it with the selected compiler, and
+requires the differential corpus to detect it. It never mutates the working tree. Run it when the
+algorithm, wire, digest, validation order, or verifier boundary changes, and before publishing such
+a change:
+
+```sh
+make persisted-result-qualification
+```
+
+Both targets follow the section 9.4 process boundary: the Make recipe resolves the selected compiler
+and the built product at the repository root and passes both as explicit arguments, so no child
+rediscovers a compiler from a temporary tree, `PATH`, or a sibling checkout, and every child runs
+with an explicit environment map, separate bounded stdout/stderr capture, and a fixed 60-second
+timeout.

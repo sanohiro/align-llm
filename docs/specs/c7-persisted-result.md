@@ -529,6 +529,12 @@ The first applicable row wins. No output write occurs before row 10 completes.
 | 11 | `fs.write_file(output_path, final_bytes)` | mapped filesystem error; destination state follows §7 |
 | 12 | Release the original result owner and reload through `verify_file` | mapped/read/invalid error; destination is retained for inspection |
 
+Row 3 above and row 3 of §8.2 are `Error.Invalid` rows, not pass-through rows. The shipped
+`core.json` decoder reports its own `Error.Code(_)` class for a malformed document, so both decode
+helpers must apply an explicit typed `map_err` and return `Error.Invalid`; the decoder's class is an
+implementation detail and never escapes the C7 public API. A genuinely absent or unreadable file
+remains the mapped filesystem error of row 2.
+
 The application enforces the 4,096-byte canonical record bound after input read and after final
 encode. It must not call that post-read check a memory-safety cap for `fs.read_file`, which is
 deliberately whole-file and unbounded in the current standard-library surface. If an untrusted
@@ -656,9 +662,15 @@ It then invokes the temporary executable with exactly `--persist-result <input> 
 `--verify-result <result>`, one operation per child. The normal corpus invokes the already-built
 absolute product path with the same two exact vectors and `cwd=<temporary-root>`.
 
-The runner captures stdout and stderr separately with a 64 KiB limit per stream and applies a
-fixed 60,000,000,000 ns timeout to each compiler or product child; timeout or capture overflow
-enters terminate, kill-if-needed, wait, and close cleanup in that order and fails the gate. A
+The runner captures stdout and stderr separately with an explicit per-stream limit and applies a
+fixed 60,000,000,000 ns timeout to each compiler or product child. A product child's limit is
+64 KiB per stream, which the stable summary block and normal Align error reporting can never
+approach. A compiler child's limit is 1 MiB per stream because the pinned compiler emits one
+advisory diagnostic per whole-program copy site rather than only the mutated unit: building the
+unmutated temporary tree at `2f33ac5c33a898a7894af58322852632ce6ffe42` writes 105,234 bytes to
+stderr, and the exact section 9.4 build vector admits no diagnostic-suppressing option, so a 64 KiB
+compiler bound would fail the gate on output the mutation case does not control. Timeout or capture
+overflow enters terminate, kill-if-needed, wait, and close cleanup in that order and fails the gate. A
 nonzero compiler status, unexpected product status/output, missing executable, or cleanup error
 also fails the gate. The temporary root and all copied sources are runner-owned and are removed in
 the enclosing `finally`; the repository source tree and checked-in fixtures are never mutated.
@@ -832,6 +844,19 @@ The capability owns two deliberately different test classes:
   stress, or benchmark work. The capability pull request runs it, and its owning boundary runs it
   when changed, but it remains outside routine hosted/capable aggregates. Performance checks run
   only when making a performance claim.
+
+The admission decision is measured and settled: at the pinned compiler
+`2f33ac5c33a898a7894af58322852632ce6ffe42`, `scripts/run-persisted-result-smoke` drives all six
+member runners in 3.6 s of wall clock (0.6 s each) after the aggregate's existing `build` target,
+and it adds no new fixture corpus, network access, container, or host capability. That is a small
+stable integration regression by the rule above, so `persisted-result-smoke` is a
+`HOSTED_CHECK_TARGETS` member, the six member targets stay outside every aggregate so the set runs
+exactly once, and the topology oracle, its self-test literals, and
+`docs/specs/check-gate-topology.md` were updated with the `Makefile` list in the same change. The
+identity-bound canonical baseline chain is re-finalized once this capability's `Makefile` is final.
+`scripts/run-persisted-result-qualification` costs 8.8 s and one extra whole-program compile on the
+same host; it remains outside every aggregate regardless, because its value is boundary coverage at
+a changed algorithm/wire/verifier boundary rather than routine integration signal.
 
 At the named capability gate, run the focused module/per-unit checks, both commands above, the
 applicable platform-profile acceptance, and one full Section 9 supervisor-attested `make ci` after

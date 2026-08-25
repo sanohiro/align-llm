@@ -303,18 +303,28 @@ fn read_document(path: str) -> Result<string, Error> {
   return Ok(document)
 }
 
+// Section 8.1 row 3, section 8.2 row 3, and the section 8.3 matrix: a malformed document is the
+// application's own `Error.Invalid`. The shipped `core.json` decoder reports its own
+// `Error.Code(_)` class, which is a decoder detail and must not escape this public API. The
+// explicit typed `map_err` transfer below is the section 6.3 form.
+fn decode_failure(value: Error) -> Error {
+  return Error.Invalid
+}
+
 // Section 6.1 steps 1-3. The helper clones the caller's view into its own document owner, decodes
 // a free-standing record through the Request 9 owned direct-record path, and returns after that
 // owner has been dropped.
 fn decode_input(source: str) -> Result<C7VerificationInput, Error> {
   document := source.clone()
-  value: C7VerificationInput := json.decode(document)?
+  raw: Result<C7VerificationInput, Error> := json.decode(document)
+  value: C7VerificationInput := raw.map_err(decode_failure)?
   return Ok(value)
 }
 
 fn decode_result(source: str) -> Result<C7PersistedResult, Error> {
   document := source.clone()
-  value: C7PersistedResult := json.decode(document)?
+  raw: Result<C7PersistedResult, Error> := json.decode(document)
+  value: C7PersistedResult := raw.map_err(decode_failure)?
   return Ok(value)
 }
 
