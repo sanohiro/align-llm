@@ -51,8 +51,29 @@ LIBRARY_PATH_FORMULAE = ("openssl@3", "zstd")
 # caller does not allow.
 FORWARDED_NAMES = ("HOME", "TMPDIR", "XDG_CACHE_HOME", "ALIGN_TOOLCHAIN_ROOT")
 # Compiler selectors that would break the attested binding: the profile attests the managed
-# toolchain, so an override must fail closed rather than silently select something else.
-REJECTED_NAMES = ("ALIGNC", "ALIGN_REPO", "ALIGN_LLM_FRESH_COMPILER")
+# toolchain, so an override must fail closed rather than silently select something else. Any value
+# at all is an override, because both name a path.
+REJECTED_NAMES = ("ALIGNC", "ALIGN_REPO")
+# `ALIGN_LLM_FRESH_COMPILER` is not a path: it is the `Makefile`'s own on/off selector, read there
+# as `${ALIGN_LLM_FRESH_COMPILER:-0} = 1`. Only the enabled value selects a different compiler, so
+# an explicit `0` means exactly what "unset" means and must not fail a run that selected nothing.
+FRESH_COMPILER_NAME = "ALIGN_LLM_FRESH_COMPILER"
+FRESH_COMPILER_OFF = ("", "0")
+# The attestation shape `scripts/align-toolchain attest compiler` promises. The gate validates it
+# before reading any field: a shape drift must produce the canonical error line, not a KeyError
+# traceback from deep inside block assembly.
+ATTESTATION_SCHEMA_VERSION = 1
+ATTESTATION_TEXT_FIELDS = (
+    "generation",
+    "revision",
+    "root",
+    "compiler_path",
+    "compiler_sha256",
+    "compiler_version",
+    "runtime_path",
+    "runtime_sha256",
+)
+ATTESTATION_INTEGER_FIELDS = ("compiler_bytes", "runtime_bytes")
 
 
 class ProfileError(RuntimeError):
@@ -83,6 +104,19 @@ def probe(arguments: Sequence[str], phase: str) -> str:
         detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "no diagnostic"
         raise ProfileError(phase, f"{arguments[0]} failed with status {result.returncode}: {detail}")
     return result.stdout.strip()
+
+
+def probe_value(arguments: Sequence[str], phase: str) -> str:
+    """One identity probe whose empty output is itself drift, not an identity.
+
+    Every caller of this helper records the result as a bound identity, so an empty answer would
+    silently bind nothing. Failing here keeps that case on the canonical error line instead of
+    letting a later `splitlines()[0]`, `Path("")`, or JSON decode raise.
+    """
+    value = probe(arguments, phase)
+    if not value:
+        raise ProfileError(phase, f"{arguments[0]} produced no output")
+    return value
 
 
 def digest_file(path: Path, phase: str) -> tuple[str, int]:
@@ -232,8 +266,8 @@ def host_identity() -> dict[str, object]:
         "release": uname.release,
         "machine": uname.machine,
         "proc_translated": int(value),
-        "macos_product_version": probe(("/usr/bin/sw_vers", "-productVersion"), "host"),
-        "macos_build_version": probe(("/usr/bin/sw_vers", "-buildVersion"), "host"),
+        "macos_product_version": probe_value(("/usr/bin/sw_vers", "-productVersion"), "host"),
+        "macos_build_version": probe_value(("/usr/bin/sw_vers", "-buildVersion"), "host"),
         "python_version": platform.python_version(),
     }
 
@@ -242,7 +276,7 @@ def repository_identity() -> dict[str, object]:
     git = shutil.which("git")
     if git is None:
         raise ProfileError("repository", "git is not available on PATH")
-    head = probe((git, "-C", os.fspath(PROJECT), "rev-parse", "HEAD"), "repository")
+    head = probe_value((git, "-C", os.fspath(PROJECT), "rev-parse", "HEAD"), "repository")
     status = probe(
         (git, "-C", os.fspath(PROJECT), "status", "--porcelain=v1", "--untracked-files=all"),
         "repository",
@@ -251,7 +285,48 @@ def repository_identity() -> dict[str, object]:
         raise ProfileError(
             "repository", "the working tree is not clean; the gate must bind an exact head"
         )
-    return {"head": head, "worktree": "clean", "git_version": probe((git, "--version"), "repository")}
+    return {
+        "head": head,
+        "worktree": "clean",
+        "git_version": probe_value((git, "--version"), "repository"),
+    }
+
+
+def validated_attestation(raw: str) -> dict[str, object]:
+    """Admit only the attestation shape this gate knows how to bind.
+
+    The block quotes the attestation verbatim and the gate launches its children with the attested
+    compiler path, so an unexpected shape must fail here — before any child starts and while the
+    phase is still `toolchain` — rather than surfacing as a `KeyError` or an `AttributeError` while
+    the identity block is assembled.
+    """
+    try:
+        attestation = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ProfileError("toolchain", f"the attestation is not JSON: {error}") from error
+    if not isinstance(attestation, dict):
+        raise ProfileError(
+            "toolchain", f"the attestation is a JSON {type(attestation).__name__}, not an object"
+        )
+    version = attestation.get("attestation_schema_version")
+    if version != ATTESTATION_SCHEMA_VERSION:
+        raise ProfileError(
+            "toolchain",
+            f"the attestation schema version is {version!r}, not {ATTESTATION_SCHEMA_VERSION}",
+        )
+    for field in ATTESTATION_TEXT_FIELDS:
+        value = attestation.get(field)
+        if not isinstance(value, str) or not value:
+            raise ProfileError(
+                "toolchain", f"the attestation field {field} is not a non-empty string"
+            )
+    for field in ATTESTATION_INTEGER_FIELDS:
+        value = attestation.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ProfileError(
+                "toolchain", f"the attestation field {field} is not a non-negative integer"
+            )
+    return attestation
 
 
 def toolchain_identity() -> dict[str, object]:
@@ -260,19 +335,26 @@ def toolchain_identity() -> dict[str, object]:
             raise ProfileError(
                 "toolchain", f"{name} is set; this profile attests only the managed toolchain"
             )
+    fresh = os.environ.get(FRESH_COMPILER_NAME)
+    if fresh is not None and fresh.strip() not in FRESH_COMPILER_OFF:
+        raise ProfileError(
+            "toolchain",
+            f"{FRESH_COMPILER_NAME} is {fresh!r}; this profile attests only the managed toolchain",
+        )
     try:
         pin = (PROJECT / ".align-revision").read_text(encoding="ascii").strip()
     except OSError as error:
         raise ProfileError("toolchain", f"cannot read .align-revision: {error}") from error
-    raw = probe(
+    except ValueError as error:
+        # `UnicodeDecodeError` is a `ValueError`, not an `OSError`: a pin file with a non-ASCII
+        # byte is a readable file the gate must still reject on the canonical line.
+        raise ProfileError("toolchain", f".align-revision is not ASCII: {error}") from error
+    raw = probe_value(
         (sys.executable, os.fspath(PROJECT / "scripts" / "align-toolchain"), "attest", "compiler"),
         "toolchain",
     )
-    try:
-        attestation = json.loads(raw)
-    except json.JSONDecodeError as error:
-        raise ProfileError("toolchain", f"the attestation is not JSON: {error}") from error
-    if attestation.get("revision") != pin:
+    attestation = validated_attestation(raw)
+    if attestation["revision"] != pin:
         raise ProfileError("toolchain", "the attested revision differs from .align-revision")
     return attestation
 
@@ -281,11 +363,11 @@ def homebrew_identity() -> tuple[dict[str, object], dict[str, str]]:
     brew = shutil.which("brew")
     if brew is None:
         raise ProfileError("homebrew", "brew is not available on PATH")
-    prefix = probe((brew, "--prefix"), "homebrew")
+    prefix = probe_value((brew, "--prefix"), "homebrew")
     formulae: dict[str, object] = {}
     opt_prefixes: dict[str, str] = {}
     for name in FORMULAE:
-        opt = probe((brew, "--prefix", name), "homebrew")
+        opt = probe_value((brew, "--prefix", name), "homebrew")
         cellar = Path(opt).resolve()
         if not cellar.is_dir():
             raise ProfileError("homebrew", f"{name} resolves to {cellar}, which is not a directory")
@@ -329,14 +411,34 @@ def library_identity(prefix: str, opt_prefixes: dict[str, str]) -> dict[str, obj
 
 
 def make_identity() -> dict[str, str]:
+    """Resolve GNU Make, trying `gmake` before `make`.
+
+    A candidate is *rejected*, never fatal, when it cannot be run, reports a nonzero status, prints
+    nothing, or does not announce GNU Make: on a host where `/usr/bin/make` is GNU Make and `gmake`
+    is a broken shim, the second candidate is the right answer. Only an exhausted list fails, and it
+    fails on the canonical line with the reason each candidate was rejected.
+    """
+    rejected: list[str] = []
     for candidate in ("gmake", "make"):
         resolved = shutil.which(candidate)
         if resolved is None:
+            rejected.append(f"{candidate}: not on PATH")
             continue
-        first = probe((resolved, "--version"), "make").splitlines()[0].strip()
-        if first.startswith("GNU Make"):
-            return {"path": resolved, "version": first}
-    raise ProfileError("make", "no GNU Make was found as gmake or make")
+        try:
+            banner = probe((resolved, "--version"), "make")
+        except ProfileError as error:
+            rejected.append(f"{resolved}: {error.detail}")
+            continue
+        lines = banner.splitlines()
+        if not lines:
+            rejected.append(f"{resolved}: --version printed nothing")
+            continue
+        first = lines[0].strip()
+        if not first.startswith("GNU Make"):
+            rejected.append(f"{resolved}: {first!r} is not GNU Make")
+            continue
+        return {"path": resolved, "version": first}
+    raise ProfileError("make", "no GNU Make was found as gmake or make: " + "; ".join(rejected))
 
 
 def acceptance_commands(make: str, compiler: str) -> tuple[tuple[str, tuple[str, ...]], ...]:

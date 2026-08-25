@@ -1,0 +1,728 @@
+#!/usr/bin/env python3
+"""Focused failure-path owner for the `aarch64-apple-darwin` platform-profile gate.
+
+Section 10.4 of `docs/specs/check-gate-topology.md` promises one canonical
+`darwin profile gate: ERROR <phase> <detail>` prefix line for *every* failure, with the identity
+block emitted only after all five acceptance commands succeed. A passing gate run proves the success
+path and nothing else; this owner proves the other half — that construction, malformed input, early
+exit, and cleanup all leave through that line, never through a traceback and never with a partial
+block on stdout.
+
+It imports `scripts/check-darwin-profile` as a module and substitutes its named seams, so it needs
+no Homebrew, no managed toolchain, and no Darwin host. Following the `scripts/test-align-toolchain`
+precedent it has no Make target; run it directly when the gate's error paths change:
+
+    python3 scripts/test-check-darwin-profile
+"""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Callable, Iterator, Sequence
+
+
+ROOT = Path(__file__).resolve().parent.parent
+CANONICAL = "darwin profile gate: ERROR "
+SELECTORS = ("ALIGNC", "ALIGN_REPO", "ALIGN_LLM_FRESH_COMPILER")
+VALID_ATTESTATION = {
+    "attestation_schema_version": 1,
+    "compiler_bytes": 3,
+    "compiler_path": "/managed/target/release/alignc",
+    "compiler_sha256": "a" * 64,
+    "compiler_version": "alignc 0.5.0",
+    "generation": "dev-v1",
+    "revision": "b" * 40,
+    "root": "/managed",
+    "runtime_bytes": 4,
+    "runtime_path": "/managed/target/release/libalign_runtime.a",
+    "runtime_sha256": "c" * 64,
+}
+GNU_BANNER = "GNU Make 4.4.1\nBuilt for aarch64-apple-darwin\n"
+GNU_MAKE = {"path": "/usr/bin/make", "version": "GNU Make 4.4.1"}
+
+
+def load_gate():
+    """Import the extensionless gate script as a module, without running `main()`."""
+    path = ROOT / "scripts" / "check-darwin-profile"
+    loader = importlib.machinery.SourceFileLoader("check_darwin_profile", os.fspath(path))
+    specification = importlib.util.spec_from_loader(loader.name, loader)
+    if specification is None:
+        raise AssertionError(f"cannot load {path} as a module")
+    module = importlib.util.module_from_spec(specification)
+    loader.exec_module(module)
+    return module
+
+
+profile = load_gate()
+failures: list[str] = []
+
+
+def check(condition: bool, message: str) -> None:
+    if not condition:
+        failures.append(message)
+
+
+class ModuleProxy:
+    """A stand-in module that overrides named attributes and delegates the rest.
+
+    Delegation matters: `host_identity()` catches `subprocess.SubprocessError`, so a proxy that
+    exposed only `run` would turn an injected failure into an `AttributeError` and hide the very
+    behaviour under test.
+    """
+
+    def __init__(self, real: object, **overrides: object) -> None:
+        self._real = real
+        self._overrides = overrides
+
+    def __getattr__(self, name: str) -> object:
+        overrides = self.__dict__["_overrides"]
+        if name in overrides:
+            return overrides[name]
+        return getattr(self.__dict__["_real"], name)
+
+
+@contextlib.contextmanager
+def patched(**attributes: object) -> Iterator[None]:
+    """Temporarily replace named module seams, restoring the originals unconditionally."""
+    saved = {name: getattr(profile, name) for name in attributes}
+    for name, value in attributes.items():
+        setattr(profile, name, value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(profile, name, value)
+
+
+@contextlib.contextmanager
+def environment(**entries: object) -> Iterator[None]:
+    saved = {name: os.environ.get(name) for name in entries}
+    for name, value in entries.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = str(value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def rejects(case: str, phase: str, call: Callable[[], object], *, contains: str = "") -> None:
+    """A rejection must be a `ProfileError` carrying the expected phase, never another exception."""
+    try:
+        call()
+    except profile.ProfileError as error:
+        check(error.phase == phase, f"{case}: phase {error.phase!r} != {phase!r}")
+        check(contains in error.detail, f"{case}: detail {error.detail!r} lacks {contains!r}")
+        return
+    except BaseException as error:  # noqa: BLE001 - the case exists to prove this cannot happen
+        failures.append(f"{case}: raised {type(error).__name__} instead of ProfileError: {error}")
+        return
+    failures.append(f"{case}: unexpectedly succeeded")
+
+
+def accepts(case: str, call: Callable[[], object]) -> object:
+    try:
+        return call()
+    except BaseException as error:  # noqa: BLE001 - an accepted input must not raise at all
+        failures.append(f"{case}: raised {type(error).__name__}: {error}")
+        return None
+
+
+def probe_table(answers: dict[str, object]) -> Callable[[Sequence[str], str], str]:
+    """A `probe` stand-in keyed by the resolved program name, so no real child runs."""
+
+    def replacement(arguments: Sequence[str], phase: str) -> str:
+        key = " ".join(arguments)
+        for candidate, answer in answers.items():
+            if key == candidate or key.startswith(f"{candidate} "):
+                if isinstance(answer, BaseException):
+                    raise answer
+                return str(answer)
+        raise AssertionError(f"unstubbed probe: {key}")
+
+    return replacement
+
+
+def which(available: dict[str, str]) -> ModuleProxy:
+    return ModuleProxy(shutil, which=lambda name: available.get(name))
+
+
+# --- Make resolution: empty output, non-GNU banner, and nonzero `--version` all fall through -----
+
+
+def make_case(gmake: object, make: object, available: dict[str, str] | None = None):
+    resolved = {"gmake": "/opt/bin/gmake", "make": "/usr/bin/make"} if available is None else available
+
+    def call() -> object:
+        answers: dict[str, object] = {}
+        if "gmake" in resolved:
+            answers[f"{resolved['gmake']} --version"] = gmake
+        if "make" in resolved:
+            answers[f"{resolved['make']} --version"] = make
+        with patched(shutil=which(resolved), probe=probe_table(answers)):
+            return profile.make_identity()
+
+    return call
+
+
+def test_make_resolution() -> None:
+    # Empty `gmake --version` stdout: the historical `splitlines()[0]` raised IndexError here.
+    selected = accepts(
+        "make: empty gmake banner falls through", make_case("", GNU_BANNER)
+    )
+    check(selected == GNU_MAKE, f"make: empty gmake banner selected {selected!r}")
+
+    # A banner that is not GNU Make is rejected outright and the next candidate is tried.
+    selected = accepts(
+        "make: non-GNU gmake falls through", make_case("bmake 20240711\n", GNU_BANNER)
+    )
+    check(selected == GNU_MAKE, f"make: non-GNU gmake selected {selected!r}")
+
+    # A nonzero `gmake --version` is a rejected candidate, not a fatal error.
+    selected = accepts(
+        "make: nonzero gmake --version falls through",
+        make_case(profile.ProfileError("make", "gmake failed with status 1: no diagnostic"), GNU_BANNER),
+    )
+    check(selected == GNU_MAKE, f"make: nonzero gmake --version selected {selected!r}")
+
+    # An exhausted candidate list is the only fatal case, and it names every rejection.
+    rejects(
+        "make: no candidate reports GNU Make",
+        "make",
+        make_case("", "bmake 20240711\n"),
+        contains="printed nothing",
+    )
+    rejects(
+        "make: neither candidate is on PATH",
+        "make",
+        make_case("", "", available={}),
+        contains="not on PATH",
+    )
+
+
+# --- Toolchain attestation: shape drift, schema drift, missing fields, and pin mismatch ----------
+
+
+def toolchain_case(pin_bytes: bytes, attestation: object):
+    """Run `toolchain_identity()` against a fixture pin file and one fixed attestation answer."""
+
+    def call() -> object:
+        with tempfile.TemporaryDirectory(prefix="darwin-profile-owner-") as raw:
+            project = Path(raw)
+            (project / ".align-revision").write_bytes(pin_bytes)
+            with patched(PROJECT=project, probe=probe_table({sys.executable: attestation})):
+                return profile.toolchain_identity()
+
+    return call
+
+
+def test_toolchain_attestation() -> None:
+    pin = (str(VALID_ATTESTATION["revision"]) + "\n").encode("ascii")
+    valid = json.dumps(VALID_ATTESTATION)
+    with environment(**{name: None for name in SELECTORS}):
+        accepted = accepts("toolchain: valid attestation", toolchain_case(pin, valid))
+        check(accepted == VALID_ATTESTATION, f"toolchain: valid attestation returned {accepted!r}")
+
+        rejects(
+            "toolchain: attestation is a JSON array",
+            "toolchain",
+            toolchain_case(pin, json.dumps([VALID_ATTESTATION])),
+            contains="JSON list, not an object",
+        )
+        rejects(
+            "toolchain: attestation is a bare JSON string",
+            "toolchain",
+            toolchain_case(pin, json.dumps("attested")),
+            contains="not an object",
+        )
+        rejects(
+            "toolchain: attestation is not JSON at all",
+            "toolchain",
+            toolchain_case(pin, "alignc 0.5.0"),
+            contains="not JSON",
+        )
+        rejects(
+            "toolchain: attestation prints nothing",
+            "toolchain",
+            toolchain_case(pin, ""),
+            contains="produced no output",
+        )
+
+        rejects(
+            "toolchain: attestation schema version drifted",
+            "toolchain",
+            toolchain_case(pin, json.dumps(dict(VALID_ATTESTATION, attestation_schema_version=2))),
+            contains="schema version is 2",
+        )
+        rejects(
+            "toolchain: attestation carries no schema version",
+            "toolchain",
+            toolchain_case(
+                pin,
+                json.dumps(
+                    {
+                        key: value
+                        for key, value in VALID_ATTESTATION.items()
+                        if key != "attestation_schema_version"
+                    }
+                ),
+            ),
+            contains="schema version is None",
+        )
+
+        for field in ("compiler_path", "revision", "compiler_version", "root", "generation"):
+            rejects(
+                f"toolchain: attestation is missing {field}",
+                "toolchain",
+                toolchain_case(
+                    pin,
+                    json.dumps(
+                        {key: value for key, value in VALID_ATTESTATION.items() if key != field}
+                    ),
+                ),
+                contains=f"field {field} is not a non-empty string",
+            )
+        rejects(
+            "toolchain: attestation compiler_path is null",
+            "toolchain",
+            toolchain_case(pin, json.dumps(dict(VALID_ATTESTATION, compiler_path=None))),
+            contains="field compiler_path is not a non-empty string",
+        )
+        rejects(
+            "toolchain: attestation compiler_path is empty",
+            "toolchain",
+            toolchain_case(pin, json.dumps(dict(VALID_ATTESTATION, compiler_path=""))),
+            contains="field compiler_path is not a non-empty string",
+        )
+        rejects(
+            "toolchain: attestation compiler_bytes is a string",
+            "toolchain",
+            toolchain_case(pin, json.dumps(dict(VALID_ATTESTATION, compiler_bytes="3"))),
+            contains="field compiler_bytes is not a non-negative integer",
+        )
+        rejects(
+            "toolchain: attestation compiler_bytes is a bool",
+            "toolchain",
+            toolchain_case(pin, json.dumps(dict(VALID_ATTESTATION, compiler_bytes=True))),
+            contains="field compiler_bytes is not a non-negative integer",
+        )
+
+        rejects(
+            "toolchain: attested revision differs from the pin",
+            "toolchain",
+            toolchain_case(b"d" * 40 + b"\n", valid),
+            contains="differs from .align-revision",
+        )
+
+        # A readable but non-ASCII pin file raises UnicodeDecodeError, which is a ValueError and
+        # never an OSError, so it escaped the original handler as a traceback.
+        rejects(
+            "toolchain: .align-revision is not ASCII",
+            "toolchain",
+            toolchain_case("café\n".encode("utf-8"), valid),
+            contains="not ASCII",
+        )
+
+        def absent_pin() -> object:
+            with tempfile.TemporaryDirectory(prefix="darwin-profile-owner-") as raw:
+                with patched(PROJECT=Path(raw), probe=probe_table({sys.executable: valid})):
+                    return profile.toolchain_identity()
+
+        rejects(
+            "toolchain: .align-revision is absent",
+            "toolchain",
+            absent_pin,
+            contains="cannot read .align-revision",
+        )
+
+
+def test_compiler_selector_rejection() -> None:
+    pin = (str(VALID_ATTESTATION["revision"]) + "\n").encode("ascii")
+    valid = json.dumps(VALID_ATTESTATION)
+    cleared: dict[str, object] = {name: None for name in SELECTORS}
+
+    for name in ("ALIGNC", "ALIGN_REPO"):
+        with environment(**dict(cleared, **{name: "/somewhere/alignc"})):
+            rejects(
+                f"toolchain: {name} override",
+                "toolchain",
+                toolchain_case(pin, valid),
+                contains=f"{name} is set",
+            )
+
+    with environment(**dict(cleared, ALIGN_LLM_FRESH_COMPILER="1")):
+        rejects(
+            "toolchain: ALIGN_LLM_FRESH_COMPILER=1 override",
+            "toolchain",
+            toolchain_case(pin, valid),
+            contains="ALIGN_LLM_FRESH_COMPILER is '1'",
+        )
+
+    # `0` and the empty string mean to this gate exactly what they mean to the `Makefile`: off.
+    # Neither is an override, so neither may fail a run that selected nothing.
+    for value in ("0", "", " 0 "):
+        with environment(**dict(cleared, ALIGN_LLM_FRESH_COMPILER=value)):
+            accepted = accepts(
+                f"toolchain: ALIGN_LLM_FRESH_COMPILER={value!r} is off",
+                toolchain_case(pin, valid),
+            )
+            check(
+                accepted == VALID_ATTESTATION,
+                f"toolchain: ALIGN_LLM_FRESH_COMPILER={value!r} was treated as an override",
+            )
+
+
+# --- Host identity: foreign target and emulation rejection ---------------------------------------
+
+
+class FakeUname:
+    def __init__(self, system: str, machine: str) -> None:
+        self.system = system
+        self.machine = machine
+        self.release = "25.5.0"
+
+
+class FakeCompleted:
+    def __init__(self, returncode: int, stdout: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = ""
+
+
+def host_case(system: str, machine: str, sysctl: object):
+    def call() -> object:
+        def run(*arguments: object, **keywords: object) -> object:
+            if isinstance(sysctl, BaseException):
+                raise sysctl
+            return sysctl
+
+        with patched(
+            platform=ModuleProxy(
+                platform,
+                uname=lambda: FakeUname(system, machine),
+                python_version=lambda: "3.14.6",
+            ),
+            subprocess=ModuleProxy(subprocess, run=run),
+            probe_value=probe_table({"/usr/bin/sw_vers": "26.5.2"}),
+        ):
+            return profile.host_identity()
+
+    return call
+
+
+def test_host_identity() -> None:
+    native = FakeCompleted(0, "0\n")
+    rejects(
+        "host: Linux is not this profile's target",
+        "host",
+        host_case("Linux", "aarch64", native),
+        contains="requires Darwin",
+    )
+    rejects(
+        "host: Intel macOS is not this profile's target",
+        "host",
+        host_case("Darwin", "x86_64", native),
+        contains="requires native arm64",
+    )
+    rejects(
+        "host: a translated interpreter is rejected before the first child",
+        "host",
+        host_case("Darwin", "arm64", FakeCompleted(0, "1\n")),
+        contains="this run is translated",
+    )
+    rejects(
+        "host: an unusable sysctl cannot prove the run is untranslated",
+        "host",
+        host_case("Darwin", "arm64", OSError("no such file")),
+        contains="cannot probe sysctl.proc_translated",
+    )
+    rejects(
+        "host: a hung sysctl cannot prove the run is untranslated",
+        "host",
+        host_case("Darwin", "arm64", subprocess.TimeoutExpired("sysctl", 120)),
+        contains="cannot probe sysctl.proc_translated",
+    )
+    # An absent key is the native answer on a host that predates Rosetta reporting.
+    accepted = accepts(
+        "host: an absent proc_translated key is native",
+        host_case("Darwin", "arm64", FakeCompleted(1, "")),
+    )
+    check(
+        isinstance(accepted, dict) and accepted.get("proc_translated") == 0,
+        f"host: absent proc_translated key returned {accepted!r}",
+    )
+
+
+# --- Early exit: dirty tree, wrong LIBRARY_PATH, and a missing child PATH -------------------------
+
+
+def repository_case(status: str):
+    git = "/usr/bin/git"
+    table = probe_table({f"{git} -C": "e" * 40, f"{git} --version": "git version 2.50.1"})
+
+    def replacement(arguments: Sequence[str], phase: str) -> str:
+        if "status" in arguments:
+            return status
+        return table(arguments, phase)
+
+    def call() -> object:
+        with patched(
+            shutil=which({"git": git}), probe=replacement, probe_value=replacement
+        ):
+            return profile.repository_identity()
+
+    return call
+
+
+def test_repository_early_exit() -> None:
+    rejects(
+        "repository: a dirty worktree cannot bind an exact head",
+        "repository",
+        repository_case("?? scratch.txt\n"),
+        contains="not clean",
+    )
+    accepted = accepts("repository: a clean worktree binds its head", repository_case(""))
+    check(
+        isinstance(accepted, dict) and accepted.get("worktree") == "clean",
+        f"repository: a clean tree returned {accepted!r}",
+    )
+    with patched(shutil=which({})):
+        rejects(
+            "repository: git is unavailable",
+            "repository",
+            profile.repository_identity,
+            contains="git is not available",
+        )
+
+
+def test_library_path_early_exit() -> None:
+    prefixes = {"openssl@3": "/o", "zstd": "/z", "llvm": "/l"}
+    expected = "/opt/homebrew/lib:/o/lib:/z/lib"
+
+    with environment(LIBRARY_PATH=None):
+        rejects(
+            "library-path: an absent LIBRARY_PATH names its exact expected value",
+            "library-path",
+            lambda: profile.library_identity("/opt/homebrew", prefixes),
+            contains=expected,
+        )
+    with environment(LIBRARY_PATH="/opt/homebrew/lib"):
+        rejects(
+            "library-path: a different LIBRARY_PATH is rejected",
+            "library-path",
+            lambda: profile.library_identity("/opt/homebrew", prefixes),
+            contains="observed:",
+        )
+    with environment(LIBRARY_PATH=expected):
+        rejects(
+            "library-path: a declared library that is not a regular file is rejected",
+            "library-path",
+            lambda: profile.library_identity("/opt/homebrew", prefixes),
+            contains="is not a regular file",
+        )
+
+    with environment(PATH=None):
+        rejects(
+            "command: the gate refuses to launch children with no PATH",
+            "command",
+            lambda: profile.child_environment(expected),
+            contains="supplies no PATH",
+        )
+
+
+# --- Children: bounded capture, nonzero exit, and terminate-on-timeout cleanup --------------------
+
+
+def test_child_bounds_and_cleanup() -> None:
+    child = profile.child_environment("/x")
+    check(child.get("LIBRARY_PATH") == "/x", "command: LIBRARY_PATH is not the given value")
+    check(child.get("PYTHONDONTWRITEBYTECODE") == "1", "command: bytecode writing is enabled")
+    for name in SELECTORS:
+        check(name not in child, f"command: {name} reached the child environment")
+
+    record = accepts(
+        "command: a successful child records its argv and status",
+        lambda: profile.run_command("noop", (sys.executable, "-c", "pass"), child),
+    )
+    check(
+        isinstance(record, dict) and record.get("status") == 0 and "duration_ms" in record,
+        f"command: a successful child recorded {record!r}",
+    )
+
+    noisy = "import sys; sys.stdout.write('o'*200000); sys.stderr.write('e'*200000); sys.exit(3)"
+    with patched(CAPTURE_LIMIT=4096, REPORT_LIMIT=512):
+        try:
+            profile.run_command("noisy", (sys.executable, "-c", noisy), child)
+        except profile.ProfileError as error:
+            check(error.phase == "command", f"command: a noisy child reported {error.phase!r}")
+            check("exit 3" in error.detail, "command: a noisy child did not report its status")
+            check(
+                len(error.detail) < 2048,
+                f"command: a noisy child's detail was not bounded ({len(error.detail)} bytes)",
+            )
+        except BaseException as error:  # noqa: BLE001
+            failures.append(f"command: a noisy child raised {type(error).__name__}: {error}")
+        else:
+            failures.append("command: a nonzero child unexpectedly succeeded")
+
+    marker = Path(tempfile.gettempdir()) / f"darwin-profile-owner-{os.getpid()}.pid"
+    slow = (
+        "import os, sys, time\n"
+        "open(sys.argv[1], 'w', encoding='ascii').write(str(os.getpid()))\n"
+        "time.sleep(120)\n"
+    )
+    with patched(CHILD_TIMEOUT_SECONDS=1):
+        try:
+            profile.run_command("slow", (sys.executable, "-c", slow, os.fspath(marker)), child)
+        except profile.ProfileError as error:
+            check(
+                "no completion within" in error.detail,
+                f"command: a timed-out child reported {error.detail!r}",
+            )
+        except BaseException as error:  # noqa: BLE001
+            failures.append(f"command: a timed-out child raised {type(error).__name__}: {error}")
+        else:
+            failures.append("command: a timed-out child unexpectedly succeeded")
+    try:
+        stranded: int | None = int(marker.read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        stranded = None
+    check(stranded is not None, "command: the timeout case never started its child")
+    if stranded is not None:
+        try:
+            os.kill(stranded, 0)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            failures.append("command: the timed-out child survived cleanup")
+        else:
+            failures.append("command: the timed-out child survived cleanup")
+        marker.unlink(missing_ok=True)
+
+
+# --- Emission: redaction, and no partial block on any failure -------------------------------------
+
+
+def test_redaction() -> None:
+    home = "/Users/example"
+    block = {
+        "root": home,
+        "compiler_path": f"{home}/.cache/align-llm/alignc",
+        "libraries": [{"path": f"{home}/lib/x.dylib", "sha256": "f" * 64, "bytes": 7}],
+        "sibling": "/Users/example-other/keep",
+    }
+    redacted = profile.redact(block, home)
+    check(redacted["root"] == "${HOME}", f"redact: the exact home became {redacted['root']!r}")
+    check(
+        redacted["compiler_path"] == "${HOME}/.cache/align-llm/alignc",
+        f"redact: a home prefix became {redacted['compiler_path']!r}",
+    )
+    check(
+        redacted["libraries"][0]["path"] == "${HOME}/lib/x.dylib",
+        "redact: a path nested in a list of objects was not redacted",
+    )
+    check(
+        redacted["libraries"][0]["sha256"] == "f" * 64 and redacted["libraries"][0]["bytes"] == 7,
+        "redact: trust content was modified",
+    )
+    check(
+        redacted["sibling"] == "/Users/example-other/keep",
+        "redact: a merely home-prefixed sibling path was rewritten",
+    )
+
+
+def emission_case(failure: BaseException, expected_phase: str) -> None:
+    """`main()` must return 1 with the canonical prefix line and no stdout at all."""
+
+    def raiser() -> object:
+        raise failure
+
+    out, err = io.StringIO(), io.StringIO()
+    with patched(host_identity=raiser):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                status = profile.main([])
+            except BaseException as error:  # noqa: BLE001
+                failures.append(
+                    f"emission: {type(failure).__name__} escaped main() as {type(error).__name__}"
+                )
+                return
+    case = f"emission/{type(failure).__name__}"
+    check(status == 1, f"{case}: exit status {status} != 1")
+    check(out.getvalue() == "", f"{case}: a partial block reached stdout: {out.getvalue()!r}")
+    lines = err.getvalue().splitlines()
+    check(bool(lines), f"{case}: no diagnostic at all")
+    if lines:
+        check(
+            lines[0].startswith(f"{CANONICAL}{expected_phase} "),
+            f"{case}: first line {lines[0]!r} is not the canonical prefix line",
+        )
+
+
+def test_no_partial_block() -> None:
+    emission_case(profile.ProfileError("host", "this profile requires Darwin, not Linux"), "host")
+    emission_case(OSError("resource temporarily unavailable"), "command")
+    emission_case(subprocess.SubprocessError("child boundary failure"), "command")
+
+    # A child failure's bounded detail is continuation lines under one canonical prefix line.
+    detail = profile.ProfileError("command", "gmake check: exit 2\nstdout: a\nstderr: b")
+
+    def raiser() -> object:
+        raise detail
+
+    out, err = io.StringIO(), io.StringIO()
+    with patched(host_identity=raiser):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = profile.main(["--json-only"])
+    lines = err.getvalue().splitlines()
+    check(status == 1, "emission/continuation: exit status is not 1")
+    check(out.getvalue() == "", "emission/continuation: a partial block reached stdout")
+    check(
+        len(lines) == 3 and lines[0].startswith(f"{CANONICAL}command ") and lines[1] == "stdout: a",
+        f"emission/continuation: unexpected diagnostic {lines!r}",
+    )
+
+
+def main() -> int:
+    for test in (
+        test_make_resolution,
+        test_toolchain_attestation,
+        test_compiler_selector_rejection,
+        test_host_identity,
+        test_repository_early_exit,
+        test_library_path_early_exit,
+        test_child_bounds_and_cleanup,
+        test_redaction,
+        test_no_partial_block,
+    ):
+        try:
+            test()
+        except BaseException as error:  # noqa: BLE001 - a harness fault is itself a failure
+            failures.append(f"{test.__name__}: harness raised {type(error).__name__}: {error}")
+    if failures:
+        for failure in failures:
+            print(f"darwin profile gate owner: FAIL {failure}", file=sys.stderr)
+        return 1
+    print("darwin profile gate owner: construction, malformed input, early exit, and cleanup PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

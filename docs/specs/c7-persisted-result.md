@@ -830,7 +830,10 @@ ownership/layout behavior part of its contract. Before either non-x86 environmen
 adoption or provide C7 evidence, it needs its own reviewed platform profile, including the
 compiler/runtime construction, namespace or process boundary, toolchain inputs, and exact acceptance
 commands. Each native environment must run the C7 focused targets against a compiler and runtime
-rebuilt at the exact pinned revision after its own profile passes. A newer compiler, host, or generic
+**rebuilt or materialized** at the exact pinned revision after its own profile passes — the same
+wording section 12.1 uses, because the requirement is revision identity, not a particular way of
+producing the binary. What each profile owes is a verifiable statement of which it did: the checkout
+revision is verified, and the binary is recorded by digest. A newer compiler, host, or generic
 OpenSSL 3.0 installation is not a substitute for the named build configurations. The C7 artifact
 itself contains no target or ABI field; the adoption result is bound externally to the tested
 compiler revision, platform profile, and environment.
@@ -867,7 +870,16 @@ earlier one.
 
 **Pinned-revision compiler and runtime, native aarch64 Linux.** The target-local gate below ran
 against a native `aarch64-unknown-linux-gnu` build of the exact pinned revision, verified and
-attested by `scripts/align-toolchain attest compiler` through the managed layout:
+attested by `scripts/align-toolchain attest compiler` through the managed layout.
+
+Be exact about what that attestation does and does not establish. The binaries are the measurement
+image's own native pinned build, presented to the helper through the managed toolchain layout at
+`/opt/align-managed/dev-v1/<revision>/`; this record does not claim a fresh `cargo build` performed
+inside the recorded run. What `attest` verifies is the *checkout*: the managed source directory is
+at the exact pinned revision, is clean, and carries both build outputs, and the compiler answers
+`--version`. The *binary* provenance is recorded, not derived — the SHA-256 and byte length below
+are what a reproducing host must match. That is exactly the "rebuilt or materialized" case section
+11 admits, and it is why the digests, and not the phrase "rebuilt", are the trust content:
 
 ```json
 {
@@ -907,8 +919,10 @@ The qualification's own `target aarch64-linux` line is the runner's target obser
 generated corpus, the malformed and mutation corpora, and the intentionally mutated source were all
 exercised against a target-local build. Timings are diagnostics, not a performance claim.
 
-Commits after that head change `scripts/check-darwin-profile`'s error paths and documentation only;
-they touch no C7 module, runner, fixture, or Make target, so this record stands for the branch.
+Commits after that head change `scripts/check-darwin-profile`'s error paths, add its failure-path
+owner `scripts/test-check-darwin-profile`, and update documentation. They touch no C7 module,
+runner, fixture, or Make target — and none of them is an input the classifier owns for the fresh
+image — so this record stands for the branch.
 
 **Non-claims.** This record does not claim a Section 9 supervised `make ci` on aarch64 at this head;
 that aggregate is the capability gate's business and its aarch64 owner is the hosted check named
@@ -1162,6 +1176,7 @@ blocked records.
 | `docs/examples/c7-persisted-result-syntax.align` | Syntax/adoption owner | Declarations and calls separately; parser-only check |
 | `docs/examples/c7-persisted-result-lifetime.align` | Request 9 adoption owner | Direct source-owner expiry before every retained field read/move; parser/runtime adoption fixture |
 | `scripts/check-darwin-profile` | C7-P Darwin profile owner | Host/toolchain/library identity validation, the five acceptance commands as bounded children, and the emitted identity block |
+| `scripts/test-check-darwin-profile` | C7-P Darwin profile failure-path owner | The construction, malformed-input, early-exit, and cleanup cells a passing gate run never reaches; no Make target, per the `scripts/test-align-toolchain` precedent |
 | `scripts/align-toolchain` | Managed-toolchain owner | The `attest compiler` subcommand: the read-only digest identity of the managed compiler and runtime at the pin |
 | `Makefile` | Check-topology owner | Focused commands; aggregate inclusion only after the bounded-smoke admission decision; the focused `darwin-profile-gate` target joins no aggregate |
 | `scripts/check-gate-topology` | Topology oracle owner | Update only if aggregate membership changes |
@@ -1223,6 +1238,8 @@ not a missing owner.
 | Artifact schema/wire identity | C7 plan and module | Field order/types/version/content digest agree | canonical golden vectors, schema mutation |
 | Producer-owned inspection fields | C7 module | Every persisted field is constructed from explicit input or deterministic algorithm; no reflection/source read | producer table below and independent reference comparison |
 | Minimum tool/platform compatibility | adoption Make/CI owner; C7-P profile owners | Pin and test every named native environment; no supplementary host substitutes for a required target | named environments in §11, the §11.1 profile table, the §11.2/§11.3 discharge records, and hosted evidence |
+| Platform-gate failure paths | `scripts/check-darwin-profile` | Every failure — construction, malformed toolchain input, early exit, and cleanup — exits through the one canonical `darwin profile gate: ERROR <phase> <detail>` prefix line with bounded continuation lines and no partial identity block on stdout | `python3 scripts/test-check-darwin-profile`, whose cells are the failure-path closure matrix in §10.6 of `docs/specs/check-gate-topology.md` |
+| Platform-gate toolchain identity | `scripts/align-toolchain attest compiler` | Read-only canonical attestation of the managed compiler and runtime at the pin; a dirty or unverifiable checkout is rejected and prints no block | `python3 scripts/test-align-toolchain` attestation cases |
 | Performance benchmark | N/A for this capability | No threshold or speed claim | Later C7 benchmark design required before a performance claim |
 | Syntax examples | docs/adoption owner | Declaration and positional-call examples parse separately | `alignc fmt docs/examples/c7-persisted-result-syntax.align` |
 | Milestone ordering | C7 design owner | Shipped Request 9 surface and platform profile precede dependent implementation; internal checkpoints remain on the capability branch | capability commits and focused acceptance evidence |
