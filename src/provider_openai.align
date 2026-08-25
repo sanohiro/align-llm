@@ -17,6 +17,18 @@ OpenAIRequest {
   stream: bool,
 }
 
+// The seeded twin of OpenAIRequest: exactly one additional field. Declaring the seed as its own
+// record keeps unseeded request bytes byte-identical to the pre-seed encoding, and its existence
+// is what makes `supports_seed` true for the OpenAI-compatible adapter kinds.
+OpenAISeededRequest {
+  model: str,
+  messages: array<OpenAIMessage>,
+  max_tokens: i64,
+  temperature: f64,
+  stream: bool,
+  seed: i64,
+}
+
 OpenAIChoice { message: OpenAIMessage }
 OpenAIResponse { choices: array<OpenAIChoice> }
 
@@ -24,19 +36,28 @@ StreamParsed { ok: bool, text: string }
 
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_request_config(config)?
-  body := request_body(config.model, request, false)
-  response := provider_http.post_json(config.endpoint, config.api_key, body, config.timeout_ns)?
-  decoded: OpenAIResponse := json.decode(response)?
-  if decoded.choices.len() == 0 {
-    return Err(Error.Invalid)
-  }
-  return Ok(decoded.choices[0].message.content.clone())
+  body := request_bytes(config.model, request, false)
+  response := provider_http.post_json(
+    config.endpoint,
+    config.api_key,
+    body,
+    config.timeout_ns,
+    config.max_response_bytes,
+  )?
+  response_view: str := response
+  return decode_content(response_view)
 }
 
 pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_request_config(config)?
-  body := request_body(config.model, request, true)
-  response := provider_http.post_json(config.endpoint, config.api_key, body, config.timeout_ns)?
+  body := request_bytes(config.model, request, true)
+  response := provider_http.post_json(
+    config.endpoint,
+    config.api_key,
+    body,
+    config.timeout_ns,
+    config.max_response_bytes,
+  )?
   response_view: str := response
   parsed := parse_stream(response_view)
   if !parsed.ok {
@@ -96,7 +117,27 @@ fn validate_request_config(config: model.ProviderConfig) -> Result<(), Error> {
   return Ok(())
 }
 
-fn request_body(model_name: str, request: model.GenerationRequest, streaming: bool) -> string {
+// The single source of OpenAI-compatible request bytes: the same bytes go on the wire and are the
+// SHA-256 preimage of the recorded provider request digest.
+pub fn request_bytes(model_name: str, request: model.GenerationRequest, streaming: bool) -> string {
+  match request.seed {
+    Some(seed) => {
+      seeded_messages := [
+        OpenAIMessage { role: "system", content: request.system },
+        OpenAIMessage { role: "user", content: request.user },
+      ].to_array()
+      seeded_payload := OpenAISeededRequest {
+        model: model_name,
+        messages: seeded_messages,
+        max_tokens: request.max_tokens,
+        temperature: request.temperature,
+        stream: streaming,
+        seed: seed,
+      }
+      return json.encode(seeded_payload).clone()
+    },
+    None => {},
+  }
   messages := [
     OpenAIMessage { role: "system", content: request.system },
     OpenAIMessage { role: "user", content: request.user },
@@ -109,6 +150,21 @@ fn request_body(model_name: str, request: model.GenerationRequest, streaming: bo
     stream: streaming,
   }
   return json.encode(payload).clone()
+}
+
+// The envelope decoder shared by the generate path and every other consumer of a 2xx body. The
+// enclosing arena is required, not decorative: the shipped Request 7 rule materializes a selected
+// escaped string exactly once in the caller's arena, and a real completion body always escapes
+// (a newline, a quote, or — for the C6e proposal path — a nested JSON object). The extracted text
+// is cloned out, so nothing arena-regioned escapes this function.
+pub fn decode_content(response: str) -> Result<string, Error> {
+  arena {
+    decoded: OpenAIResponse := json.decode(response)?
+    if decoded.choices.len() == 0 {
+      return Err(Error.Invalid)
+    }
+    return Ok(decoded.choices[0].message.content.clone())
+  }
 }
 
 fn estimate_tokens(text: str) -> i64 {

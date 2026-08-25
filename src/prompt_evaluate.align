@@ -5,7 +5,7 @@ import prompt_score
 import std.process
 
 EVALUATOR_SOURCE_RELATIVE := "scripts/prompt-evaluate.py"
-EVALUATOR_SOURCE_SHA256 := "cdaa34846ec57b8c2c1d4e3f4ccb1a63f7c18333ef8d4fe1936f900dbebea52b"
+EVALUATOR_SOURCE_SHA256 := "115fab506b8565e3f34a61640c55dbad842d16ab2478818d9e1ba984d6ebba58"
 EVALUATOR_BOOTSTRAP := "import sys;exec(compile(sys.argv.pop(1)+sys.argv.pop(1)+sys.argv.pop(1),'<reviewed-prompt-evaluate>','exec'))"
 EVALUATOR_ARG_CHUNK_BYTES := 65536
 

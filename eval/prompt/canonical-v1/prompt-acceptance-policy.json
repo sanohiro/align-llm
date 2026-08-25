@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "PROMPT_ACCEPTANCE_POLICY",
+  "policy_id": "prompt-acceptance-v1",
+  "minimum_task_count": 2,
+  "minimum_samples_per_variant": 2,
+  "minimum_completion_gain_count": 1,
+  "minimum_time_improvement_ppm": 50000,
+  "maximum_time_regression_ppm": 100000,
+  "maximum_repair_loop_regression_count": 0,
+  "content_sha256": "7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3"
+}

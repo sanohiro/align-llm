@@ -108,6 +108,22 @@ EXPECTED_CASES = {
 
 FIXED_CHILD_PATH = "/usr/bin:/bin"
 INSTALLED_OWNER = "run-fresh-image-profile-smoke"
+AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
+
+
+def qualification_environment(owner: str) -> dict[str, str]:
+    environment = {
+        "PATH": qualification_path(owner),
+        "LC_ALL": "C",
+        "HOME": "/nonexistent",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    # Only the installed-profile owner reaches the worker aggregate, so only it needs the aggregate
+    # diagnostic opt-in. Forwarding the variable to every focused owner would widen the qualified
+    # environment of targets that cannot consume it.
+    if owner == INSTALLED_OWNER and os.environ.get(AGGREGATE_DIAGNOSTIC_VARIABLE) == "1":
+        environment[AGGREGATE_DIAGNOSTIC_VARIABLE] = "1"
+    return environment
 
 
 def emit_phase(owner: str, status: str, duration_ms: int | None = None) -> None:
@@ -151,12 +167,7 @@ def run(owner: str, *arguments: str) -> None:
     result = subprocess.run(
         arguments,
         cwd=REPOSITORY,
-        env={
-            "PATH": qualification_path(owner),
-            "LC_ALL": "C",
-            "HOME": "/nonexistent",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
+        env=qualification_environment(owner),
         check=False,
     )
     duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)

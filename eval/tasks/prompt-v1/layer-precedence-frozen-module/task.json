@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "layer-precedence-frozen-module",
+  "source_dir": "eval/fixtures/prompt-v1-layer-precedence/repository",
+  "source_revision": "45c279855bc9cd7b7d9e51e5e8a800d1e353b7b9",
+  "allowed_edits": [
+    "src/settings.py"
+  ],
+  "validation_argv": [
+    "python3",
+    "tests/test_settings.py",
+    "-v"
+  ],
+  "validation_timeout_seconds": 10
+}

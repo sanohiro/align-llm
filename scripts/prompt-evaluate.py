@@ -31,6 +31,22 @@ CHILD_CLEANUP_MARGIN_NS = 5_000_000_000
 SNAPSHOT_HELPER_OUTER_TIMEOUT_NS = 35_000_000_000
 SOURCE_VERIFIER_OUTER_TIMEOUT_NS = 125_000_000_000
 CANONICAL_STRING_CHUNK = 16_384
+CONTEXT_SECTION_LIMIT = 65_536
+LEARNED_APPEND_LIMIT = 8_192
+MEMORY_JSONL_LIMIT = 1_048_576
+CONTEXT_TRUNCATION_MARKER = b"\n[context truncated]"
+DIAGNOSTIC_TRUNCATION_MARKER = b"\n[output truncated]"
+MEMORY_EVENT_TEXT_FIELDS = (
+    "root", "task_id", "attempted_patch", "final_status", "failure_stage", "failed_test",
+    "failure_status", "root_cause", "repair_result", "successful_strategy",
+    "unsuccessful_strategy", "recommended_tests", "risky_symbols",
+)
+MEMORY_EVENT_INTEGER_FIELDS = (
+    "schema_version", "iteration_count", "repair_count", "risk_score",
+)
+MEMORY_EVENT_FIELDS = frozenset(MEMORY_EVENT_TEXT_FIELDS + MEMORY_EVENT_INTEGER_FIELDS)
+PROVIDER_KINDS = ("CLOUD_OPENAI", "LOCAL_OPENAI", "LLAMA_CPP", "FIXTURE")
+CREDENTIAL_PROVIDER_KINDS = ("CLOUD_OPENAI", "LOCAL_OPENAI")
 HEX = frozenset("0123456789abcdef")
 SOURCE_POLICY_FIELDS = (
     "schema_version", "artifact_kind", "policy_id", "helper_path", "helper_sha256",
@@ -51,7 +67,8 @@ EVALUATE_REQUEST_FIELDS = (
     "verifier_corpus_file_set_manifest_path", "verifier_corpus_source_repository_id",
     "verifier_corpus_source_sha256", "verifier_source_policy_path",
     "verifier_source_policy_sha256", "verifier_python_executable_path",
-    "verifier_git_executable_path", "evaluation_evidence_path",
+    "verifier_git_executable_path", "evaluation_evidence_path", "generation_child_path",
+    "generation_child_sha256",
 )
 EVALUATE_REQUEST_FIELDS_OMITTED = tuple(
     name for name in EVALUATE_REQUEST_FIELDS if name != "verifier_corpus_file_set_manifest_path"
@@ -143,7 +160,9 @@ PROMPT_TASK_FIELDS = (
     "require_clean_repo", "cmd", "argv", "snapshot_cmd", "snapshot_argv",
     "measurement_adapter_runtime", "snapshot_helper_runtime", "cwd", "timeout_ns",
     "task_prompt_path", "context_sources_path", "generation_policy_path", "provider_control_path",
-    "environment_policy_path", "artifacts", "regression_limits", "content_sha256",
+    "environment_policy_path", "validation_runner_path", "validation_runner_sha256",
+    "task_definition_path", "task_definition_sha256", "validation_argv", "patch_path",
+    "patch_sha256", "artifacts", "regression_limits", "content_sha256",
 )
 ACCEPTANCE_POLICY_FIELDS = (
     "schema_version", "artifact_kind", "policy_id", "minimum_task_count",
@@ -186,6 +205,13 @@ INPUT_ARTIFACT_FIELDS = {
     "TASK_PROMPT": PROMPT_TEXT_FIELDS,
     "CONTEXT_SOURCES": CONTEXT_SOURCES_FIELDS,
     "PROMPT_SOURCE_VERIFIER_POLICY": SOURCE_POLICY_FIELDS,
+}
+# The canonical encoding omits an `Option::None`, exactly as the evaluate request's own
+# `EVALUATE_REQUEST_FIELDS_OMITTED` already allows. A `PROPOSED` experiment result therefore
+# never carries `proposal_status_code`, which is `Some` only for `PROVIDER_HTTP_STATUS`, so the
+# input boundary must accept both the canonical omitted form and an explicit `null`.
+INPUT_ARTIFACT_OPTIONAL = {
+    "PROMPT_EXPERIMENT_RESULT": frozenset({"proposal_status_code"}),
 }
 
 
@@ -596,11 +622,31 @@ def artifact_expectations_valid(value: Any) -> bool:
     )
 
 
+def declared_shape(value: Any, fields: tuple[str, ...], optional: frozenset[str]) -> bool:
+    """Fields in declared order, minus canonically omitted `Option::None` members."""
+    if not isinstance(value, dict):
+        return False
+    actual = tuple(value)
+    cursor = 0
+    for name in fields:
+        if cursor < len(actual) and actual[cursor] == name:
+            cursor += 1
+        elif name not in optional:
+            return False
+    return cursor == len(actual)
+
+
 def validate_input_artifact_shape(kind: str, value: Mapping[str, Any]) -> None:
     fields = INPUT_ARTIFACT_FIELDS.get(kind)
     if fields is None:
         return
-    if not exact_record(value, fields, kind) or not record_digest_valid(value):
+    optional = INPUT_ARTIFACT_OPTIONAL.get(kind, frozenset())
+    shaped = (
+        exact_record(value, fields, kind) if not optional
+        else declared_shape(value, fields, optional)
+        and value.get("schema_version") == 1 and value.get("artifact_kind") == kind
+    )
+    if not shaped or not record_digest_valid(value):
         raise EvaluationError(f"{kind} schema is invalid")
     valid = True
     if kind == "PROMPT_EXPERIMENT_RESULT":
@@ -662,6 +708,25 @@ def validate_input_artifact_shape(kind: str, value: Mapping[str, Any]) -> None:
                 "measurement_adapter_runtime", "snapshot_helper_runtime",
             ))
             and bounded_integer(value.get("timeout_ns"), 1, 7_200_000_000_000)
+            and all(bounded_text(value.get(name), 4096) for name in (
+                "validation_runner_path", "task_definition_path",
+            ))
+            and all(valid_hex(value.get(name)) for name in (
+                "validation_runner_sha256", "task_definition_sha256",
+            ))
+            and isinstance(value.get("validation_argv"), list)
+            and bool(value.get("validation_argv"))
+            and all(
+                isinstance(item, str) and 0 < len(item.encode("utf-8")) <= 4096
+                for item in value.get("validation_argv")
+            )
+            # The `Option` pair is `None` for a provider-backed task whose patch comes from the
+            # generation response and `Some` only for a deterministic fixture-style task.
+            and (value.get("patch_path") is None) == (value.get("patch_sha256") is None)
+            and (
+                value.get("patch_path") is None
+                or (bounded_text(value.get("patch_path"), 4096) and valid_hex(value.get("patch_sha256")))
+            )
             and artifact_expectations_valid(value.get("artifacts"))
             and exact_record(limits, REGRESSION_LIMIT_FIELDS)
             and bounded_integer(limits.get("maximum_unrelated_diff_count"), 0, 1_048_576)
@@ -776,6 +841,12 @@ def validate_request_source_declaration(request: Mapping[str, Any]) -> None:
         raise EvaluationError("Align source identity is invalid")
     if not valid_hex(request.get("verifier_source_policy_sha256")):
         raise EvaluationError("source verifier policy digest is invalid")
+    # The derived generation child is built, not committed, so it is not a corpus member: its
+    # per-run absolute path and declared digest travel in this request and in the recorded check
+    # evidence. There is no environment or sibling-checkout fallback.
+    validate_absolute_path_syntax(request.get("generation_child_path"), "generation child")
+    if not valid_hex(request.get("generation_child_sha256")):
+        raise EvaluationError("generation child digest is invalid")
 
 
 def read_bounded(path: Path, maximum: int) -> bytes:
@@ -1074,18 +1145,229 @@ def command(task: Mapping[str, Any], name: str, project: Path) -> tuple[list[str
         raise
 
 
+def utf8_prefix(raw: bytes, max_bytes: int) -> bytes:
+    """Longest UTF-8-safe prefix inside a byte budget; the port of `prompt_model.utf8_prefix`."""
+    boundary = min(max_bytes, len(raw))
+    if boundary <= 0:
+        return b""
+    probe = boundary
+    while probe > 0:
+        last = raw[probe - 1]
+        if 0x80 <= last <= 0xBF:
+            probe -= 1
+            continue
+        expected = 1 if last <= 0x7F else 2 if last <= 0xDF else 3 if last <= 0xEF else 4
+        return raw[:probe - 1] if boundary - (probe - 1) < expected else raw[:boundary]
+    return raw[:boundary]
+
+
+def bounded_body(raw: bytes, limit: int, marker: bytes) -> bytes:
+    """Port of `prompt_model.bounded_text`: the marker lives inside the same byte budget."""
+    if limit <= 0:
+        return b""
+    if len(raw) <= limit:
+        return raw
+    if len(marker) > limit:
+        return b""
+    return utf8_prefix(raw, limit - len(marker)) + marker
+
+
+def decoded_memory_event(line: bytes) -> dict[str, Any] | None:
+    """Port of `failure_memory.decode_memory_event`: one line must be a complete `MemoryEvent`.
+
+    Align's `json.decode` requires every declared field exactly once, rejects a declared duplicate,
+    a type mismatch, an out-of-range integer, trailing input, and a malformed string, and skips
+    undeclared keys. `MemoryEvent` selects borrowed `str` fields, so Align cannot materialize an
+    escaped value and rejects the line; in a valid JSON document every backslash is inside a string
+    token, which makes the scan below exact for every declared field. A line whose only escape sits
+    in an undeclared key or value is the one input this port rejects and Align skips.
+    """
+    if b"\\" in line:
+        return None
+    try:
+        pairs = json.loads(line.decode("utf-8"), object_pairs_hook=lambda items: items)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(pairs, list) or not all(
+        isinstance(item, tuple) and len(item) == 2 for item in pairs
+    ):
+        return None
+    value: dict[str, Any] = {}
+    for name, item in pairs:
+        if name in MEMORY_EVENT_FIELDS and name in value:
+            return None
+        value[name] = item
+    if not all(isinstance(value.get(name), str) for name in MEMORY_EVENT_TEXT_FIELDS):
+        return None
+    return value if all(
+        isinstance(value.get(name), int)
+        and not isinstance(value.get(name), bool)
+        and -(2 ** 63) <= value[name] <= 2 ** 63 - 1
+        for name in MEMORY_EVENT_INTEGER_FIELDS
+    ) else None
+
+
+def valid_memory_jsonl(raw: bytes) -> bool:
+    """Port of `failure_memory.valid_memory_jsonl`: every non-empty line is a schema-1 event."""
+    if len(raw) > MEMORY_JSONL_LIMIT:
+        return False
+    cursor = 0
+    while cursor < len(raw):
+        line_break = raw.find(b"\n", cursor)
+        line_end = len(raw) if line_break < 0 else line_break
+        line = raw[cursor:line_end]
+        if line:
+            event = decoded_memory_event(line)
+            if event is None or event["schema_version"] != 1:
+                return False
+        if line_break < 0:
+            break
+        cursor = line_end + 1
+    return True
+
+
+def selected_failure_context(raw: bytes, task_id: bytes, max_events: int, max_bytes: int) -> bytes | None:
+    """Port of `failure_memory.select_context`; `None` is the invalid selector result."""
+    if max_events < 0 or max_events > 64 or max_bytes < 0 or max_bytes > CONTEXT_SECTION_LIMIT:
+        return None
+    if not valid_memory_jsonl(raw):
+        return None
+    if max_events == 0 or max_bytes == 0 or not task_id:
+        return b""
+    selected: list[bytes] = []
+    cursor = len(raw)
+    remaining = max_bytes
+    while cursor > 0 and len(selected) < max_events:
+        line_break = raw.rfind(b"\n", 0, cursor)
+        line_start = 0 if line_break < 0 else line_break + 1
+        line = raw[line_start:cursor]
+        if line:
+            event = decoded_memory_event(line)
+            if event is not None and event["schema_version"] == 1 and event["task_id"].encode("utf-8") == task_id:
+                cost = len(line) + (1 if selected else 0)
+                if cost <= remaining:
+                    selected.append(line)
+                    remaining -= cost
+        cursor = 0 if line_break < 0 else line_break
+    return b"\n".join(reversed(selected))
+
+
+def valid_section_limit(enabled: bool, limit: int, maximum: int) -> bool:
+    if limit < 0 or limit > maximum:
+        return False
+    return limit > 0 if enabled else limit == 0
+
+
+def valid_render_policy(policy: Mapping[str, Any]) -> bool:
+    """Port of `prompt_model.valid_policy`: each flag binds its own limit."""
+    if not valid_section_limit(
+        policy["include_patch_evaluation"], policy["max_patch_evaluation_bytes"], CONTEXT_SECTION_LIMIT,
+    ):
+        return False
+    if not valid_section_limit(
+        policy["include_failure_memory"], policy["max_failure_context_bytes"], CONTEXT_SECTION_LIMIT,
+    ):
+        return False
+    if policy["max_failure_events"] < 0 or policy["max_failure_events"] > 64:
+        return False
+    if policy["include_failure_memory"] != (policy["max_failure_events"] > 0):
+        return False
+    return valid_section_limit(
+        policy["include_diagnostics"], policy["max_diagnostic_bytes_per_stream"], CONTEXT_SECTION_LIMIT,
+    )
+
+
+def valid_render_sources(
+    base_prompt: bytes, repo_prompt: bytes, task_prompt: bytes, learned_prompt_append: bytes,
+    failure_memory_jsonl: bytes, patch_evaluation: bytes, diagnostic_stdout: bytes, diagnostic_stderr: bytes,
+) -> bool:
+    """Port of `prompt_model.valid_sources`: every context source is bounded before composition."""
+    if any(len(item) > CONTEXT_SECTION_LIMIT for item in (base_prompt, repo_prompt, task_prompt)):
+        return False
+    if len(learned_prompt_append) > LEARNED_APPEND_LIMIT:
+        return False
+    if any(len(item) > CONTEXT_SECTION_LIMIT for item in (
+        patch_evaluation, diagnostic_stdout, diagnostic_stderr,
+    )):
+        return False
+    return len(failure_memory_jsonl) <= MEMORY_JSONL_LIMIT
+
+
+def render_prompt(
+    base_prompt: str, repo_prompt: str, task_prompt: str, learned_prompt_append: str, task_id: str,
+    failure_memory_jsonl: str, policy: Mapping[str, Any], patch_evaluation: str,
+    diagnostic_stdout: str, diagnostic_stderr: str,
+) -> tuple[str, str, str]:
+    """Byte-faithful port of `prompt_model.render`; returns its status, text, and raw text digest."""
+    base_raw = base_prompt.encode("utf-8")
+    repo_raw = repo_prompt.encode("utf-8")
+    task_raw = task_prompt.encode("utf-8")
+    learned_raw = learned_prompt_append.encode("utf-8")
+    memory_raw = failure_memory_jsonl.encode("utf-8")
+    patch_raw = patch_evaluation.encode("utf-8")
+    stdout_raw = diagnostic_stdout.encode("utf-8")
+    stderr_raw = diagnostic_stderr.encode("utf-8")
+    if not valid_render_policy(policy) or not valid_render_sources(
+        base_raw, repo_raw, task_raw, learned_raw, memory_raw, patch_raw, stdout_raw, stderr_raw,
+    ):
+        return "INVALID_INPUT", "", ""
+    memory = selected_failure_context(
+        memory_raw, task_id.encode("utf-8"), policy["max_failure_events"], policy["max_failure_context_bytes"],
+    )
+    if memory is None:
+        return "INVALID_FAILURE_MEMORY", "", ""
+
+    output = bytearray()
+    output += base_raw
+    output += b"\n\n--- repo prompt ---\n"
+    output += repo_raw
+    output += b"\n\n--- task prompt ---\n"
+    output += task_raw
+    output += b"\n\n--- learned prompt append ---\n"
+    output += learned_raw if learned_raw else b"(none)"
+
+    output += b"\n\n--- patch evaluation context ---\n"
+    if policy["include_patch_evaluation"]:
+        output += bounded_body(patch_raw, policy["max_patch_evaluation_bytes"], CONTEXT_TRUNCATION_MARKER)
+    else:
+        output += b"(omitted)"
+
+    output += b"\n\n--- failure memory context ---\n"
+    output += memory if policy["include_failure_memory"] else b"(omitted)"
+
+    output += b"\n\n--- current failure diagnostics ---\n"
+    if policy["include_diagnostics"]:
+        limit = policy["max_diagnostic_bytes_per_stream"]
+        output += b"stdout:\n"
+        output += bounded_body(stdout_raw, limit, DIAGNOSTIC_TRUNCATION_MARKER)
+        output += b"\nstderr:\n"
+        output += bounded_body(stderr_raw, limit, DIAGNOSTIC_TRUNCATION_MARKER)
+    else:
+        output += b"(omitted)"
+
+    raw = bytes(output)
+    return "VALID", raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
+
+
 def render(variant: Mapping[str, Any], task_prompt: Mapping[str, Any], context: Mapping[str, Any]) -> tuple[str, str]:
-    policy = variant["context_policy"]
-    if any(policy[name] for name in ("include_patch_evaluation", "include_failure_memory", "include_diagnostics")):
-        raise EvaluationError("fixed corpus requires disabled context sections")
-    text = "".join((
-        variant["base_prompt"]["text"], "\n\n--- repo prompt ---\n", variant["repo_prompt"]["text"],
-        "\n\n--- task prompt ---\n", task_prompt["text"], "\n\n--- learned prompt append ---\n",
-        variant["learned_prompt_append"] or "(none)", "\n\n--- patch evaluation context ---\n(omitted)",
-        "\n\n--- failure memory context ---\n(omitted)",
-        "\n\n--- current failure diagnostics ---\n(omitted)",
-    ))
-    return text, digest(text)
+    """Render one variant against one task's context sources, or reject the invalid render."""
+    status, text, sha256 = render_prompt(
+        variant["base_prompt"]["text"],
+        variant["repo_prompt"]["text"],
+        task_prompt["text"],
+        variant["learned_prompt_append"],
+        context["task_id"],
+        context["failure_memory_jsonl"]["text"],
+        variant["context_policy"],
+        context["patch_evaluation"]["text"],
+        context["diagnostic_stdout"]["text"],
+        context["diagnostic_stderr"]["text"],
+    )
+    if status == "INVALID_FAILURE_MEMORY":
+        raise EvaluationError("rendered prompt failure memory profile is invalid")
+    if status != "VALID":
+        raise EvaluationError("rendered prompt context policy or source bounds are invalid")
+    return text, sha256
 
 
 def write_exclusive(
@@ -1624,7 +1906,7 @@ def invoke_adapter(
             argv,
             project / task["cwd"],
             environment,
-            nested_owner_timeout(max(task["timeout_ns"], provider_timeout_ns)),
+            nested_owner_timeout(task["timeout_ns"] + provider_timeout_ns),
             0,
             (descriptor, helper.descriptor),
         )
@@ -2152,6 +2434,12 @@ def source_trust(
 
 def validation_error_code(error: BaseException) -> str:
     detail = str(error).lower()
+    if "credential" in detail:
+        # `MISSING_CREDENTIAL` is the section 5 code for an absent or empty credential, not for
+        # every message that happens to mention one. A declared name that conflicts with the
+        # environment policy is an invalid declaration and takes the same `INVALID_SCHEMA` code as
+        # a malformed or oversized name, so a first-substring match cannot mislabel it.
+        return "MISSING_CREDENTIAL" if "missing" in detail or "empty" in detail else "INVALID_SCHEMA"
     if "identifier" in detail:
         return "INVALID_ID"
     if "unavailable" in detail or "not found" in detail:
@@ -2415,6 +2703,26 @@ def validated_task_files(value: Any) -> list[str]:
     return value
 
 
+def static_expectation_paths(task: Mapping[str, Any]) -> set[str]:
+    """Every path a declared static expectation already covers, file or tree member."""
+    covered: set[str] = set()
+    for expectation in task.get("artifacts") or []:
+        if not isinstance(expectation, dict) or not isinstance(expectation.get("path"), str):
+            continue
+        covered.add(expectation["path"])
+    return covered
+
+
+def inside_declared_tree(task: Mapping[str, Any], relative: str) -> bool:
+    return any(
+        isinstance(expectation, dict)
+        and expectation.get("kind") == "TREE"
+        and isinstance(expectation.get("path"), str)
+        and relative.startswith(f"{expectation['path']}/")
+        for expectation in task.get("artifacts") or []
+    )
+
+
 def automatic_snapshot_files(
     request: Mapping[str, Any], task_file: str, task: Mapping[str, Any], project: Path,
 ) -> list[str]:
@@ -2425,6 +2733,12 @@ def automatic_snapshot_files(
         task["generation_policy_path"], task["provider_control_path"], task["environment_policy_path"],
         task["task_prompt_path"], task["context_sources_path"],
     }
+    # The manifest's `artifacts` array is mandatory and closed and already covers the task
+    # prompt/context artifacts, so a manifest that declares them would otherwise make the request's
+    # expanded paths overlap, which is invalid. A static expectation wins: it carries the reviewed
+    # digest, and dropping the duplicate keeps exactly one record per path.
+    declared -= static_expectation_paths(task)
+    declared = {item for item in declared if not inside_declared_tree(task, item)}
     paths = sorted(declared, key=os.fsencode)
     for relative in paths:
         RetainedRegularFile(relative_path(project, relative), ARTIFACT_LIMIT).close()
@@ -2610,6 +2924,90 @@ def complete_score(
     return status, gate, aggregates, corpus, reasons
 
 
+def validated_credential_name(
+    control: Mapping[str, Any], environment_policy: Mapping[str, Any],
+) -> str | None:
+    """Bind the section 5.2 credential-name rule to the declared provider kind."""
+    provider_kind = control["provider_kind"]
+    api_key_env = control["api_key_env"]
+    if provider_kind not in PROVIDER_KINDS:
+        raise EvaluationError("provider control kind is not a declared provider")
+    if api_key_env is None:
+        if provider_kind == "CLOUD_OPENAI":
+            raise EvaluationError("provider credential environment name is missing")
+        return None
+    if provider_kind not in CREDENTIAL_PROVIDER_KINDS:
+        raise EvaluationError("provider control kind must not declare an api key environment name")
+    if (
+        not isinstance(api_key_env, str)
+        or ENVIRONMENT_NAME.fullmatch(api_key_env) is None
+        or len(api_key_env.encode("utf-8")) > 256
+    ):
+        raise EvaluationError("provider control api key environment name is malformed")
+    if any(item.get("name") == api_key_env for item in environment_policy["allowed_variables"]):
+        raise EvaluationError("provider credential environment name duplicates the environment policy")
+    return api_key_env
+
+
+def adapter_child_environment(
+    environment_values: Mapping[str, str], credential_env_name: str | None, credential_value: str | None,
+) -> dict[str, str]:
+    """`env_clear()`, then the ordered policy variables, then exactly one credential entry."""
+    environment = dict(environment_values)
+    if credential_env_name is not None:
+        if credential_env_name in environment:
+            raise EvaluationError("provider credential environment name duplicates the environment policy")
+        environment[credential_env_name] = credential_value
+    return environment
+
+
+def resolved_credential(name: str | None) -> str | None:
+    """Read the named credential exactly once, before the first external call."""
+    if name is None:
+        return None
+    value = os.environ.get(name)
+    if not value:
+        raise EvaluationError("provider credential environment value is missing or empty")
+    return value
+
+
+def validated_generation_child(request: Mapping[str, Any]) -> Path:
+    """Retain the declared generation child as an absolute regular executable with its exact bytes.
+
+    The binary is built, not committed, so it cannot be a corpus member; its reviewed `src/` tree and
+    `.align-revision` carry the reviewed-source proof and its per-run identity is this path/digest
+    pair. The declared digest must equal the same-descriptor bytes, so neither a stale claim nor an
+    unverified local build can be admitted.
+    """
+    child = Path(request["generation_child_path"])
+    try:
+        descriptor = os.open(child, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        raise EvaluationError("generation child is unreadable") from None
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise EvaluationError("generation child is not a regular file")
+        if not metadata.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            raise EvaluationError("generation child is not executable")
+        hasher = hashlib.sha256()
+        offset = 0
+        while offset < metadata.st_size:
+            chunk = os.pread(descriptor, min(65_536, metadata.st_size - offset), offset)
+            if not chunk:
+                raise EvaluationError("generation child changed while reading")
+            hasher.update(chunk)
+            offset += len(chunk)
+        after = os.fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino, metadata.st_size) != (after.st_dev, after.st_ino, after.st_size):
+            raise EvaluationError("generation child identity disagrees")
+        if hasher.hexdigest() != request["generation_child_sha256"]:
+            raise EvaluationError("generation child digest disagrees")
+    finally:
+        os.close(descriptor)
+    return child
+
+
 def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> dict[str, Any]:
     if request["sample_count"] < 2 or request["sample_count"] > 16:
         raise EvaluationError("sample count is invalid")
@@ -2619,7 +3017,6 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         raise EvaluationError("source verifier policy fields are invalid")
     if source_policy["content_sha256"] != request["verifier_source_policy_sha256"]:
         raise EvaluationError("source verifier policy identity disagrees")
-    validate_source_boundary(request, source_policy, project)
     experiment = load_bound(relative_path(project, request["experiment_path"]), "PROMPT_EXPERIMENT_RESULT")
     parent = load_bound(relative_path(project, request["parent_activation_path"]), "PROMPT_ACTIVATION_RESULT")
     corpus = load_bound(relative_path(project, request["corpus_path"]), "PROMPT_EVALUATION_CORPUS")
@@ -2639,8 +3036,10 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         or control["timeout_ns"] > 7_200_000_000_000
     ):
         raise EvaluationError("provider control timeout is invalid")
-    if control["provider_kind"] != "FIXTURE" or control["api_key_env"] is not None:
-        raise EvaluationError("fixed evaluator requires a credential-free fixture provider")
+    credential_env_name = validated_credential_name(control, environment_policy)
+    credential_value = resolved_credential(credential_env_name)
+    generation_child = validated_generation_child(request)
+    validate_source_boundary(request, source_policy, project)
     task_inputs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     task_snapshot_files: list[list[str]] = []
     task_ids: set[str] = set()
@@ -2679,6 +3078,20 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
             raise EvaluationError("task executable is not the fixed reviewed adapter boundary")
         relative_path(project, task["argv"][1])
         relative_path(project, task["snapshot_argv"][1])
+        # Every declared measurement input except the generation child is a corpus member and keeps
+        # the existing membership, digest, and admission checks unchanged.
+        declared_inputs = [
+            (task["validation_runner_path"], task["validation_runner_sha256"]),
+            (task["task_definition_path"], task["task_definition_sha256"]),
+        ]
+        if task["patch_path"] is not None:
+            declared_inputs.append((task["patch_path"], task["patch_sha256"]))
+        for declared_path, declared_sha in declared_inputs:
+            if declared_path not in artifact_paths:
+                raise EvaluationError("a declared measurement input is not a corpus member")
+            resolved = relative_path(project, declared_path)
+            if hashlib.sha256(read_bounded(resolved, SNAPSHOT_ARTIFACT_LIMIT)).hexdigest() != declared_sha:
+                raise EvaluationError("a declared measurement input digest disagrees")
         task_generation = load_bound(relative_path(project, task["generation_policy_path"]), "GENERATION_POLICY")
         task_control = load_bound(relative_path(project, task["provider_control_path"]), "EVALUATION_PROVIDER_CONTROL")
         task_environment = load_bound(relative_path(project, task["environment_policy_path"]), "ENVIRONMENT_POLICY")
@@ -2706,6 +3119,9 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         or any(task["repo_id"] != scope["repo_id"] for task in tasks)
     ):
         raise EvaluationError("evaluation scope identities disagree")
+    for task_prompt, context in task_inputs:
+        for variant in (parent_variant, candidate):
+            render(variant, task_prompt, context)
     workspace = physical_directory(Path(request["workspace_path"]))
     try:
         workspace.relative_to(project)
@@ -2716,6 +3132,8 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         "acceptance": acceptance, "preflight_request": preflight_request, "source_policy": source_policy,
         "tasks": tasks, "first_task": first_task, "generation": generation, "control": control,
         "environment_policy": environment_policy, "environment_values": environment_values,
+        "credential_env_name": credential_env_name, "credential_value": credential_value,
+        "generation_child": generation_child,
         "task_inputs": task_inputs, "task_snapshot_files": task_snapshot_files,
         "scope": scope, "candidate": candidate,
         "parent_variant": parent_variant, "task_files": task_files,
@@ -2781,6 +3199,14 @@ def evaluate(
     control = inputs["control"]
     environment_policy = inputs["environment_policy"]
     environment_values = inputs["environment_values"]
+    # The one-shot credential owner: the name reaches the adapter request, the value reaches only
+    # the measurement-adapter child environment, and neither the snapshot helper nor any persisted
+    # record ever observes the value.
+    credential_env_name = inputs["credential_env_name"]
+    generation_child = inputs["generation_child"]
+    adapter_environment = adapter_child_environment(
+        environment_values, credential_env_name, inputs.pop("credential_value"),
+    )
     task_inputs = inputs["task_inputs"]
     scope = inputs["scope"]
     candidate = inputs["candidate"]
@@ -2999,7 +3425,24 @@ def evaluate(
                         "provider_control_path": str(relative_path(project, task["provider_control_path"])),
                         "provider_control_sha256": control["content_sha256"], "workspace_path": str(workspace),
                         "result_path": str(measurement_path), "paired_seed": generation["seed_base"] + sample - 1,
-                        "credential_env_name": None, "environment_policy_sha256": environment_policy["content_sha256"],
+                        "credential_env_name": credential_env_name,
+                        "environment_policy_sha256": environment_policy["content_sha256"],
+                        "validation_runner_path": str(relative_path(project, task["validation_runner_path"])),
+                        "validation_runner_sha256": task["validation_runner_sha256"],
+                        "task_definition_path": str(relative_path(project, task["task_definition_path"])),
+                        "task_definition_sha256": task["task_definition_sha256"],
+                        "validation_argv": list(task["validation_argv"]),
+                        "patch_path": (
+                            None if task["patch_path"] is None
+                            else str(relative_path(project, task["patch_path"]))
+                        ),
+                        "patch_sha256": task["patch_sha256"],
+                        "generation_child_path": str(generation_child),
+                        "generation_child_sha256": request["generation_child_sha256"],
+                        # The task's own deadline bounds the adapter's contained validation runner.
+                        # The generation child keeps the provider-control deadline, so the two
+                        # sequential inner children stay strictly inside the outer sum below.
+                        "task_deadline_ns": task["timeout_ns"],
                         "content_sha256": "",
                     })
                     adapter_request_path = temporary_json(
@@ -3153,7 +3596,7 @@ def evaluate(
                         measurement = invoke_adapter(
                             task, adapter_request, adapter_request_path, variant_path, rendered_path, measurement_path,
                             project,
-                            environment_values,
+                            adapter_environment,
                             control["timeout_ns"],
                             sample,
                             generation["seed_base"] + sample - 1,

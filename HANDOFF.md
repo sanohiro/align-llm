@@ -3,22 +3,188 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-24)
+## Active checkpoint (2026-08-25)
 
-- No capability is actively in implementation. C6-EVALUATION merged as align-llm PR #100
+- C6-MEASURED (C6e/C6g1/C6g2) is implemented on branch `agent/c6-measured` and is not yet
+  published. One comprehensive adversarial review returned request-changes at
+  `535be1087622dfd05481503d5f5d933555c06953`; every finding was accepted and repaired, and the
+  consolidated repair is `baf8c24` (validator bindings, adapter deadline and redaction order),
+  `3ca42d8` (claim narrowing and lane/post-freeze records), `1d27b5f` (frozen-chain rebind),
+  `99a6ba7` (Align evaluator wrapper digest), `c737adc` (a second credential-code expectation),
+  `e935790` (regenerated gate evidence), and `e14c472` (measurement record). The measured gate is
+  real and green at the repaired head: `make prompt-gate-check` with all five explicit `C6_GATE_*`
+  values exits 0 (`prompt gate validator: PASS`) against the regenerated `eval/prompt/gate/` bundle.
+- **Resolved: the supervised fresh-worker `make ci` passes.** At head
+  `3768ad8af68bb50ee3129ff392f6ba86ac89e071`,
+  `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker
+  --align-repo <path-to-sibling-align-checkout>` exits 0 with `fresh worker qualification: PASS
+  (installed profile only)`. The blocker had two independent causes, both C6-MEASURED lane
+  additions that the supervised aggregate had never exercised — its last green run predates them —
+  so both were pre-existing wave gaps rather than review-repair regressions.
+- **Cause 1, removed: resource pressure from `prompt-verifier-smoke`.** A high-fidelity
+  reproduction of the exact aggregate environment ran `make capable-checks` to `exit=0` in 890 s
+  with a clean workspace-upper (only `./main`), of which roughly 780 s was that one smoke. The
+  pinned compiler needs about 720 s and a 1,525,732 KiB peak resident set to code-generate
+  `src/prompt_verifier_smoke.align`, against 0.494 s for `alignc check` of the same unit. The
+  member was demoted to a named focused qualification (see the lane entry below), and the aggregate
+  cost came back inside its historical band.
+- **Cause 2, removed: `prompt-measurement-adapter-smoke` could not find `git`.** Its patch row
+  builds a pinned checkout and runs `git apply` over the adapter's synthesized bytes, and it
+  launched that fixture with a hard-coded child `PATH=/usr/bin:/bin` plus a bare `git` argv. Python
+  resolves a bare program name against the *child* environment's PATH, and the fresh aggregate puts
+  only its staged tool root on PATH, so the row died with
+  `prompt measurement adapter: FAIL: [Errno 2] No such file or directory: 'git'` and took
+  `capable-checks` down with `make[1]: *** [Makefile:129: prompt-measurement-adapter-smoke] Error 1`.
+  `3768ad8` resolves that fixture PATH from `ALIGN_LLM_TOOL_ROOT`, exactly as
+  `scripts/check-baseline-chain` already does, with the previous fixed host directories as the
+  default. The whole class was audited across the aggregate's goal list: every other bare-name child
+  launch in the lane either inherits the aggregate environment or already derives its PATH from the
+  tool root, and the remaining hard-coded `/usr/bin:/bin` occurrences launch absolute paths the
+  aggregate provides.
+- **The aggregate diagnostic seam is now reachable end to end (`e4c7e45`).** One optional entry,
+  `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`, is forwarded — never synthesized — across every launch
+  boundary that previously rebuilt the environment from fixed literals: `fresh-supervise.c` beside
+  its five-variable allowlist, `fresh-bootstrap.c` beside its five fixed entries,
+  `fresh_image_control.py`'s bootstrap and worker environments, and the worker's
+  `EXPECTED_ENVIRONMENT` admission via `environment_admitted()`. On failure the worker emits the
+  bounded tail of the aggregate child's streams and the controller emits the bounded tail of the
+  worker's stderr, both before the canonical `fresh compiler: ERROR <category> <phase>` line and
+  both capped at 8,192 bytes. With the entry absent every environment, stream, status, and byte of
+  output is exactly what it was before. This is what named cause 2: the diagnostic run printed the
+  failing target and its error verbatim. `run-fresh-image-control-smoke` and
+  `run-fresh-worker-unit-smoke` pin both halves, and
+  `docs/specs/check-gate-topology.md` records the contract. Use it by exporting the variable before
+  the qualification; it costs one extra qualification run and nothing else.
+  `run-fresh-worker-qualification` forwards it only to the installed-profile owner
+  (`run-fresh-image-profile-smoke`), the one phase that reaches the worker aggregate; the focused
+  owners keep their unchanged qualified environments.
+- Slice E landed the final integration wiring. The section 11.3 owner targets are now
+  `HOSTED_CHECK_TARGETS` members — `prompt-seed-attestation-smoke`, `prompt-experiment-smoke`,
+  `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
+  the nine `prompt-gate-*-smoke` fixtures, and `c6e-request2-adoption` — and
+  `scripts/check-gate-topology`'s literal `EXPECTED` lane bytes were refreshed in the same commit
+  `6f937fb4bb4a596afd0540b5b37415d65d5dbb3c`, per the section 11.1 precedent.
+- `prompt-gate-check` is the C6-MEASURED gate target. It takes the five explicit `C6_GATE_*`
+  command-line values, fails closed before the validator starts when any is missing or empty, and
+  maps them to `--source-bundle-root`, `--python-executable-path`, `--git-executable-path`,
+  `--generation-child-path`, and `--generation-child-sha256`. The declared interpreter is also the
+  launcher, so the target never reaches the validator through an ambient Python or Git.
+- **Closed: the gate is a named capable qualification.** `prompt-gate-check` stays out of
+  `CAPABLE_ONLY_CHECK_TARGETS`. Section 9 and section 11.3 of
+  `docs/specs/c6-prompt-context-optimizer.md` previously required the gate to run as
+  `make ci C6_GATE_...=...`, but the settled FRESH-WORKER caller contract in
+  `docs/specs/check-gate-topology.md` admits exactly `make --no-print-directory ci` **with no
+  variable assignments**, and the worker runs the `capable-checks` graph inside bwrap under a
+  cleared, fixed environment, so the five explicit values cannot cross that boundary. Both sections
+  now name `make prompt-gate-check` with the five explicit `C6_GATE_*` values as the measured
+  gate's named capable qualification — a focused qualification the supervised aggregate does not
+  reach — leaving the FRESH-WORKER contract and the `make ci` goals unchanged.
+- The Makefile change invalidated the identity-bound canonical baseline chain, which requires the
+  working-tree `Makefile` to equal its source commit's blob. The chain was already red at
+  `19c5d5c` because earlier C6-MEASURED commits changed the Makefile without re-finalizing. The
+  replacement chain is source `6f937fb4bb4a596afd0540b5b37415d65d5dbb3c`, oracle
+  `182fa3c9a537884f59cf9257d91c884d3732d1ca`, and finalization
+  `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`; it was appended, not rewritten. Adding
+  `prompt-render-parity-smoke` to the lane changed the `Makefile` again, so the next chain was
+  source `ba47abdb01776d10f041c0d3e3f36edc67034993`, oracle
+  `656a5bf9609762b899c4e841de7529bfde2ec5c2`, and finalization
+  `8ddea8a03b817404e68a23e8ce1f39534b7abd13`; it was appended the same way. Removing
+  `prompt-verifier-smoke` from the lane changed the `Makefile` once more, so the **current** chain
+  is source `ebcc8d5c384c9a6c30619637018c7c9d07270192`, oracle
+  `f5158d5741bc912dbc0324f5138eb7e8c216a6dd`, and finalization
+  `55282a8` — appended, never amended — recorded on native Linux `aarch64` in the privileged
+  `c6g2-measure:latest` container with `bubblewrap` installed, non-root, `umask 022`,
+  `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the source commit. Both deterministic-reference
+  samples pass: 134,471,000-140,342,375 ns, median 137,406,687 ns.
+  `scripts/check-baseline-chain` passes on it.
+- **`prompt-verifier-smoke` is no longer a hosted-lane member.** It stays a `.PHONY` public target
+  and the direct C6c2 owner with unchanged coverage, and is now a **named focused qualification**
+  owned by the section 10 verifier boundary in `src/prompt_score.align`: run
+  `make prompt-verifier-smoke` when that boundary changes and before publishing such a change. It
+  is not reached by `hosted-checks`, `capable-checks`, or `ci`. The same change refreshed the
+  `Makefile` list, `scripts/check-gate-topology`'s `EXPECTED` bytes and `exact_environment()`
+  self-test copy, the `docs/specs/check-gate-topology.md` `hosted=` oracle and prose, section 11.3
+  of `docs/specs/c6-prompt-context-optimizer.md`, and the baseline chain. The compiler-side gap is
+  recorded as `docs/align-requests.md` Request 19 (`PROPOSED`, non-blocking); the member rejoins the
+  lane when it closes.
+- **Closed: `prompt-render-parity-smoke` is no longer an orphan.** It is now a
+  `HOSTED_CHECK_TARGETS` member beside `prompt-model-smoke`, section 11.3 names it as the
+  renderer-parity owner, and the same change refreshed the `EXPECTED` lane bytes, the
+  `exact_environment()` self-test copy, and the baseline chain.
+- `c6f2-request14-adoption` is timing-flaky on a fast, quiet host. Its publication-race fixtures poll
+  for a staged temporary file inside a five-second window; when the fixture binary completes before
+  the poll observes staging, the run reports "publication race did not reach evidence staging" or
+  "result-only cleanup fixture did not reach staging". It passed on retry in the final capable gate
+  and it is a pre-existing C6-EVALUATION owner, not a Slice E regression, but the fixture needs a
+  deterministic seam rather than a poll.
+- The frozen `eval/prompt/canonical-v1/` scope now names a real provider: `LOCAL_OPENAI` on
+  `http://127.0.0.1:18080/v1/chat/completions`, model `qwen2.5-coder-7b-instruct-q4_k_m`,
+  `api_key_env: null`. `provider_service_revision` carries llama.cpp `b10610` /
+  `a14dba686aaafba3a2d6b5eb8820b0df5c5d2d92`, the `llama-server` digest, and the model digest.
+- Measured result (`c6g2-measure`): `IMPROVED`, `gate_eligible: true`, zero serious regressions,
+  completion gain 2. `duration-half-away-from-zero` moves 0/2 -> 2/2 under a model-proposed
+  candidate that enables the context sections; the other two tasks fail in both variants.
+  `paired_pass_count` is 0 for every task and for the corpus, so the evidence carries **no** paired
+  timing and therefore no time-to-passing-patch comparison; acceptance is the section 8
+  completion-gain path alone. Section 11.3's "What the measured claim is and is not" states the
+  narrowed claim.
+- Reproducible baseline: the parent-vs-parent null replicate `c6g2-replicate`, same frozen corpus,
+  same command and provider environment, distinct variant identifiers over a byte-identical rendered
+  prompt. Result `NO_IMPROVEMENT`, `gate_eligible: false`, every task 0/2 in both variants, corpus
+  `completion_gain_count: 0` — it flipped no cell. Reproducing command, inside the privileged
+  `c6g2-measure:latest` container at project root `/work/align-llm`:
+
+  ```text
+  ./main prompt evaluate run/evaluate-request-replicate.json run/result-replicate.json
+  ```
+
+  The request is built by the replicate driver, which copies the parent effective variant into the
+  candidate slot under `c6g2-replicate/variant` and `c6g2-replicate/candidate` and otherwise reuses
+  the measure request verbatim. At the review-repaired measuring commit
+  `c737adcf905cb4662472bc86e8345bbcd9bc1346` the replicate result digest (SHA-256 of the exact
+  `run/result-replicate.json` bytes) is
+  `b1d68148c5bfc3e86c2a022620d10dc95a79b3f685da8a5ceca4d1341898420d`, its evidence sidecar is
+  `c2854e7546e9b31b03f99337ee935f07e99efe7dbbe7aea8aa72c28bc0b69f03`, and wall time is 444.1 s. The
+  superseded pre-repair replicate at `6da28d88327797649bbf229f14be9be1e6dd2d96` was
+  `e111201e8096ac5a64fb7c5522c0dae2c3b70f81645c4cffe8a5afb85c790eca` with sidecar
+  `0aafe8d62e9622c02b5d3baaaa94faf07084daa1bcd14e234235f5c8225a07c5` and wall time 520.2 s, and
+  reported the same null result. The replicate artifacts are diagnostics, not repository state, and
+  are not checked in.
+- The gate run found and repaired five shipped defects no fixture reaches: three canonical
+  `Option::None`-omission mismatches (experiment-result decode, aggregate optional set, and the
+  activation-lineage identity the gate validator compared against the envelope instead of the
+  nested activation), a stale `c6-prompt-state` fixture that left `prompt-state-smoke` red on the
+  hosted lane at `52aefeb` and `19c6bed`, an overlapping automatic snapshot path set, and a 2 MiB
+  sealed-input cap that could never admit the derived generation child. Repairing the measurement
+  adapter rebound the frozen digest chain; only digest bindings moved.
+- Next actions, in order: (1) publish the C6-MEASURED pull request with the narrowed measured
+  claim, the per-cell matrix, the validator transcript, the named-qualification status of
+  `prompt-gate-check`, and the green supervised fresh-worker qualification recorded above — the
+  earlier `capable-checks` aggregate blocker is resolved, so `make ci` evidence is available;
+  (2) after merge, start `C7-PersistedResult` (`docs/specs/roadmap.md` §C7), the owned-result
+  verification consumer that adopts Request 9's owned-JSON surface from the current pin.
+- The measurement environment is a privileged `linux/arm64` container (`c6g2-measure:latest`) with
+  `bubblewrap` installed at run time; the image does not ship it and the validation runner requires
+  it. Docker's default seccomp/AppArmor blocks the runner's user namespaces, so the container needs
+  `--privileged`. Both are environment facts, not repository state.
+- C6-EVALUATION merged as align-llm PR #100
   (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head
   `049172f5be57002c2426f012fe23038f570f5069` in pull-request CI run 32490981785, including both
   installed native profiles; main push run 32493880784 reused that exact evidence on the merge
   commit. `.align-revision` remains pinned to Align
-  merge `19c3db144c462bf7d6784f88d64cc124229b7ec2`. The next eligible roadmap capability is
-  C6-MEASURED (C6e, C6g1, C6g2).
+  merge `19c3db144c462bf7d6784f88d64cc124229b7ec2` at that time; C6-MEASURED then bumped it to
+  Align merge `2f33ac5c33a898a7894af58322852632ce6ffe42` in commit `f344ea9`, which is the pin every
+  Slice E result below was produced against.
 - Align-llm PR #94 merged as `ba56ebed5ac1c82ebc5925e6257e7bd5dba8a9b9`, with the C6a1/C6a2
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
-- The register records Requests 7, 8, and 10–18 as `ALIGN_LLM_VERIFIED`; the merged C6-EVALUATION
-  gate advanced Requests 11 and 14. Requests 2 and 9 remain `ALIGN_MERGED` for their later named
-  consumers (C6e/C6g1 provider timeouts and the C7 owned-JSON consumer); both surfaces are already
-  contained in the current pin, so no pin bump is required to adopt them. Every open Align request
-  now has a merged Align-side surface; no request is `PROPOSED`, `ACCEPTED`, or `IMPLEMENTING`.
+- The register records Requests 2, 7, 8, and 10–18 as `ALIGN_LLM_VERIFIED`; the merged C6-EVALUATION
+  gate advanced Requests 11 and 14, and C6-MEASURED Slice E advanced Request 2 once
+  `c6e-request2-adoption` and the wave's final capable gate both passed. Only Request 9 remains
+  `ALIGN_MERGED`, for its later named C7 owned-JSON consumer; that surface is already contained in
+  the current pin, so no pin bump is required to adopt it. C6-MEASURED then added Request 19, a
+  compiler code-generation performance gap, as the register's only `PROPOSED` entry; it is
+  non-blocking because its consumer was demoted out of the hosted lane. Every other open Align
+  request has a merged Align-side surface, and none is `ACCEPTED` or `IMPLEMENTING`.
 - The merged C6-EVALUATION capability drives the deterministic two-task corpus through source/workspace verification,
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
@@ -120,6 +286,158 @@ file records durable project state.
 
 ## Latest durable verification
 
+- **C6-MEASURED supervised gate, green, at head `3768ad8af68bb50ee3129ff392f6ba86ac89e071`
+  (2026-08-25).** `python3 scripts/run-fresh-worker-qualification --installed-profile-only
+  --require-docker --align-repo <path-to-sibling-align-checkout>`: **PASS**, exit 0,
+  `fresh image profile smoke: PASS` then `fresh worker qualification: PASS (installed profile
+  only)`. Phases: `docker-daemon` 675 ms, `image-build` 21,883 ms, `image-attestation` 3,822 ms,
+  `profile-lifecycle` 3,188 ms, `profile-self-test` 14,331 ms, `trust-mutations` 13,151 ms,
+  `runtime-replacements` 22,893 ms, `boundary-profile` 270,909 ms, **`worker-aggregate` pass after
+  354,739 ms**, `cleanup` 1,883 ms; whole installed profile 708,521 ms. The
+  aggregate is legitimately above the 172-192 s historical band because that band predates the
+  C6-MEASURED lane members, which this run is the first supervised run to complete. Run with the
+  default environment and no diagnostic opt-in.
+- The immediately preceding diagnostic run, same command with `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1`
+  exported, at head `e4c7e45`: FAIL at `worker-aggregate` after 178,853 ms, and it named the cause
+  verbatim — `prompt measurement adapter: FAIL: [Errno 2] No such file or directory: 'git'`,
+  `make[1]: *** [Makefile:129: prompt-measurement-adapter-smoke] Error 1`,
+  `make: *** [/workspace/Makefile:234: capable-checks] Error 2`. The controller forwarded 8,192 of
+  11,037 captured worker stderr bytes and the worker forwarded all 2,669 aggregate-child stderr
+  bytes.
+- Host (macOS, managed pinned toolchain) at `3768ad8`: `gmake check` (22 units per-unit),
+  `gmake gate-topology-check` (`check gate topology: PASS`), `gmake format-check`,
+  `git diff --check`, and `python3 scripts/check-baseline-chain` (`baseline chain: PASS`): PASS.
+  The `Makefile` is unchanged by this work, so the baseline chain needed no re-finalization.
+- Debian bookworm `aarch64` container, privileged, with `clang` and `unzip` installed and
+  `PYTHONDONTWRITEBYTECODE=1`, at `e4c7e45`: `python3 scripts/run-fresh-worker-qualification`
+  (all ten focused owners including `run-fresh-image-control-smoke` 4,745 ms with the new
+  controller-diagnostic case, `run-fresh-worker-unit-smoke` 5,206 ms with the new worker-admission
+  case, and `check-gate-topology --self-test`) and `python3 scripts/test-development-preflight`:
+  PASS. That focused run also builds both changed native launchers twice and compares them.
+- `python3 scripts/run-prompt-measurement-adapter-smoke` at `3768ad8`: PASS on the host (48 rows,
+  unchanged documented Linux-only SKIP) and PASS in the container with a tool root that contains
+  only `git` and is the whole child PATH (`ALIGN_LLM_TOOL_ROOT=/toolsim`, 64 rows) — the fresh
+  aggregate's shape, reproduced outside it.
+- C6-MEASURED aggregate-cost repair at head `55282a8` (2026-08-25). Host (macOS, managed pinned
+  toolchain): `gmake check` (22 units per-unit), `gmake gate-topology-check`, `gmake format-check`,
+  `gmake prompt-seed-attestation-smoke` (now 0 bytes on stderr), `git diff --check`, and
+  `python3 scripts/check-baseline-chain` (`baseline chain: PASS`): PASS. A direct probe also proves
+  `scripts/check-gate-topology`'s `exact_environment()` self-test copy still reproduces `EXPECTED`
+  byte-for-byte after the lane change.
+- Native Linux `aarch64` inside the privileged `c6g2-measure:latest` container, non-root with
+  `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of `ebcc8d5`:
+  `make gate-topology-check`, `python3 scripts/run-fresh-worker-unit-smoke` (includes the new
+  aggregate-diagnostic seam case), and `python3 scripts/test-development-preflight`: PASS.
+  `make prompt-verifier-smoke` also PASS as a direct invocation, in 719 s with a 1,525,732 KiB peak
+  resident set — the measurement behind its demotion.
+- `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker
+  --align-repo <path-to-sibling-align-checkout>` at head `55282a8`: **FAIL**. Phases:
+  `docker-daemon` 540 ms, `image-build` 20,497 ms, `image-attestation` 3,684 ms,
+  `profile-lifecycle` 2,657 ms, `profile-self-test` 14,642 ms, `trust-mutations` 12,299 ms,
+  `runtime-replacements` 21,970 ms, `boundary-profile` 266,754 ms, **`worker-aggregate` fail after
+  191,760 ms**, `cleanup` 1,751 ms; whole installed profile 537,636 ms. Only output:
+  `fresh compiler: ERROR CHILD aggregate`. See the two causes in the active checkpoint.
+- `python3 scripts/check-gate-topology --self-test` fails in the `c6g2-measure:latest` container
+  with `hanging child cleanup failed: ... lifecycle_errors=('process-group-remains',)`. It
+  reproduces identically at the pre-change head `cffdda66c6307d3b6abdbee4c27f3fbd14750690`, so it is
+  a pre-existing property of that container, not a regression. The image's own fresh profile runs
+  the self-test successfully.
+- C6-MEASURED review repair at head `e14c472b11abcbb2368a93d1fd4c97d3554f11e4` (2026-08-25).
+  Host (macOS, managed pinned toolchain): `gmake check` (22 units per-unit), `gmake format-check`,
+  `gmake gate-topology-check`, `gmake prompt-render-parity-smoke` (58 vectors byte-equal),
+  `gmake prompt-generate-smoke`, `gmake prompt-experiment-smoke`,
+  `gmake prompt-seed-attestation-smoke`, `gmake prompt-credential-lifetime-smoke`,
+  `python3 scripts/run-prompt-measurement-adapter-smoke` (48 rows; the Linux launch rows SKIP),
+  the six host-capable `prompt-gate-*-smoke` families, `python3 scripts/check-baseline-chain`, and
+  `git diff --check`: PASS. `prompt-evaluate-smoke`, `prompt-fixed-adapter-smoke`,
+  `prompt-source-verifier-smoke`, and `prompt-snapshot-helper-smoke` are Linux-only owners and fail
+  on macOS for platform reasons alone (`child-subreaper containment is unavailable`); they are run
+  in the container below.
+- Native Linux `aarch64` inside the privileged `c6g2-measure:latest` container, non-root with
+  `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of
+  `e14c472b11abcbb2368a93d1fd4c97d3554f11e4`: all 24 owner targets PASS — `check`, `format-check`,
+  `gate-topology-check`, `prompt-render-parity-smoke`, `prompt-experiment-smoke`,
+  `prompt-generate-smoke`, `prompt-measurement-adapter-smoke`, `prompt-credential-lifetime-smoke`,
+  `prompt-seed-attestation-smoke`, `prompt-evaluate-smoke`, `prompt-fixed-adapter-smoke`,
+  `prompt-source-verifier-smoke`, `prompt-snapshot-helper-smoke`, `prompt-state-smoke`,
+  `provider-smoke`, and all nine `prompt-gate-*-smoke` families. `eval-coding` and
+  `c6-evaluation-adoption` also PASS. The gate then passed:
+
+  ```text
+  make prompt-gate-check \
+    C6_GATE_SOURCE_BUNDLE_ROOT=/work/bundle \
+    C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 \
+    C6_GATE_GIT_EXECUTABLE_PATH=/usr/bin/git \
+    C6_GATE_GENERATION_CHILD_PATH=/work/align-llm/main \
+    C6_GATE_GENERATION_CHILD_SHA256=c2f5be632c8c3c09fa2d47102a844dd78a85aeebe7fc637296381e85b50c7bb9
+  ```
+
+  `prompt gate validator: PASS`. The generation child was built in-run by `make build` and its
+  SHA-256 reproduces the locator's frozen
+  `c2f5be632c8c3c09fa2d47102a844dd78a85aeebe7fc637296381e85b50c7bb9` exactly. The verifier reported
+  `align_llm_observed_head` equal to the derived CI head, `align_reachability: VERIFIED`, and
+  `corpus_reachability: VERIFIED`. The same command was re-run at
+  `07320e47f243e2a8abc7277f785e2d3a76a7a8d3` — which differs from the branch tip only by this
+  handoff entry — and exits 0 there with the same generation-child digest, so the transcript holds
+  over the documentation commits as well as over the evidence head.
+- Container environment fact discovered by the regeneration: the source verifier runs Git with
+  `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so a `safe.directory` exception cannot
+  apply. The pinned Align checkout at `/opt/align/<revision>` must therefore be owned by the
+  non-root runner, or every Git observation of it fails with dubious ownership and
+  `align_reachability` is `UNVERIFIED`. `chown -R runner:runner /opt/align` is environment
+  preparation, not repository state.
+- The regenerated measurement was produced at `c737adcf905cb4662472bc86e8345bbcd9bc1346`: measure
+  819.2 s, replicate 444.1 s, experiment 145.8 s. The re-run experiment used the identical
+  opportunity artifact and at `temperature_micros: 0` reproduced the same candidate variant
+  `78611fbc8f6f3f895a0ed715ef01800d5335cb5cba61ee2bd43aedc03166dc63`.
+- Publication closures at head `8ddea8a03b817404e68a23e8ce1f39534b7abd13` (2026-08-25). Host
+  (macOS, managed pinned toolchain): `gmake gate-topology-check`, `gmake check` (22 units
+  per-unit), `gmake prompt-render-parity-smoke` (58 vectors byte-equal), `gmake format-check`,
+  `git diff --check`, and `python3 scripts/check-baseline-chain`: PASS. Native Linux `aarch64`
+  inside the privileged `c6g2-measure:latest` container, non-root with `umask 022` and
+  `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of source commit
+  `ba47abdb01776d10f041c0d3e3f36edc67034993`: `python3 scripts/check-gate-topology --self-test`,
+  `make gate-topology-check`, and `make prompt-render-parity-smoke`: PASS, then
+  `eval/runners/record-baseline.py` recorded both deterministic-reference samples as `PASS`
+  (121,396,125-128,282,751 ns, median 124,839,438 ns). The self-test is the proof that the
+  `EXPECTED` bytes and the `exact_environment()` copy moved together.
+- C6-MEASURED Slice E final capable gate at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`
+  (2026-08-25): PASS. The complete capable check graph — every `HOSTED_CHECK_TARGETS` member in lane
+  order, then `eval-coding`, `baseline-check`, and `c6-evaluation-adoption`, serially at `-j1`, the
+  same list and order `capable-checks` runs — completed in 59 s, and `baseline chain: PASS`. The
+  wired gate then passed:
+
+  ```text
+  make prompt-gate-check \
+    C6_GATE_SOURCE_BUNDLE_ROOT=/work/bundle \
+    C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 \
+    C6_GATE_GIT_EXECUTABLE_PATH=/usr/bin/git \
+    C6_GATE_GENERATION_CHILD_PATH=/work/align-llm/main \
+    C6_GATE_GENERATION_CHILD_SHA256=93e590658253507dc1518275743fd4e30a7f6c234a9a1e3ac4cf096e29474603
+  ```
+
+  `prompt gate validator: PASS`. The generation child was built in-run by `make build` and its
+  SHA-256 was computed then; it reproduces the locator's frozen
+  `93e590658253507dc1518275743fd4e30a7f6c234a9a1e3ac4cf096e29474603` exactly. The source bundle is a
+  clean clone of the tested head plus a clean Align checkout at `.align-revision`; the verifier
+  reported `align_llm_observed_head` equal to the derived CI head, `align_reachability: VERIFIED`,
+  and `corpus_reachability: VERIFIED`.
+- Slice E capable host: the privileged `linux/arm64` `c6g2-measure:latest` container with
+  `bubblewrap` installed at run time, running as a non-root user with `umask 022` and
+  `PYTHONDONTWRITEBYTECODE=1`. All three matter and are environment facts, not repository state.
+  Root ignores directory mode bits, so the `c6f2` permission fixtures cannot fail as designed;
+  Ubuntu's default `umask 002` produces `0664` checkouts, which the `FILE_SET` corpus manifest
+  correctly rejects with `file-set entry type or mode disagrees`; and stray `__pycache__` output
+  makes the CI checkout unclean, which the gate validator correctly rejects. This is not a
+  `make ci` substitute: the supervised fresh-worker path builds a fresh compiler and runs the graph
+  in its own sandbox, and remains publication CI evidence.
+- Host checks at the same head: `gmake gate-topology-check`, `gmake format-check`, `gmake check`
+  (22 units per-unit), `python3 scripts/check-baseline-chain`, and `git diff --check`: PASS.
+  `gmake prompt-gate-check` with no `C6_GATE_*` values fails closed with
+  `prompt gate: ERROR explicit C6_GATE_* input`.
+- `python3 scripts/check-gate-topology --self-test` is Linux-only; it fails on macOS in the
+  reader-start cleanup case with `sigkill-PermissionError`. Run it on a capable profile.
+
 - `make provider-smoke` at the exact pin `19c3db144c462bf7d6784f88d64cc124229b7ec2` on native
   Linux `x86_64` (WSL2, 2026-08-24): PASS, including adapters, chunked SSE, framing failures, the
   bounded-response matrix with the `Error.Code(-1)` limit sentinel, HTTP 413, status diagnostics,
@@ -219,7 +537,7 @@ file records durable project state.
   at `0987a2271034881fd1ac27101aa695e94c7729e5` passed the `fresh-image` lane, including the native
   Linux `aarch64` installed profile in 533,103 ms and worker aggregate in 179,830 ms. GitHub's
   pinned checks passed in 2m06s, native `x86_64` in 17m16s, and native `aarch64` in 18m16s.
-- `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo /Users/hiro/Projects/align`:
+- `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo <path-to-sibling-align-checkout>`:
   PASS at `0f9e08eee427` on native Linux `aarch64`.
   The installed profile, Request 6 boundary, fresh compiler, worker aggregate, canonical baseline,
   complete `make ci`, resource owners, and cleanup pass; the worker aggregate took 172,039 ms and
@@ -314,9 +632,23 @@ file records durable project state.
 
 ## Next actions
 
-1. Merge the register/HANDOFF reconciliation branch `agent/reconcile-request-register`, which
-   records the passed C6-EVALUATION capable gate and advances Requests 11 and 14.
-2. Begin C6-MEASURED (C6e, C6g1, C6g2) as the next consumer capability on a fresh branch: bounded
+1. **Publish C6-MEASURED from `agent/c6-measured` at head `3768ad8`.** Nothing blocks it any more:
+   the supervised `make ci` gate is green at that exact head and the host checks pass there too.
+   The branch now carries three kinds of change, and the review must cover all of them: the
+   C6-MEASURED wave itself, the image-owned diagnostic seam (`e4c7e45` — native launchers, the
+   control plane, the worker's environment admission, two owner smokes, and the
+   `docs/specs/check-gate-topology.md` contract), and the measurement-adapter tool-root repair
+   (`3768ad8`). Run one fresh comprehensive review of the whole diff, then publish an English pull
+   request carrying the narrowed measured claim, the per-cell matrix, the validator transcript, the
+   named-qualification status of `prompt-gate-check` and `prompt-verifier-smoke`, and the exact
+   supervised-gate phase table recorded above. The seam touches an authoritative specification, so
+   it is a governance-relevant part of the diff, not an incidental one.
+2. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+   poll.
+3. Merged historical item: the register/HANDOFF reconciliation branch
+   `agent/reconcile-request-register` recorded the passed C6-EVALUATION capable gate and advanced
+   Requests 11 and 14.
+4. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
    provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
    policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
    linked rollback. The triggered design gate is satisfied: §11.3 of
@@ -328,11 +660,13 @@ file records durable project state.
    adoption target, C6g asset paths, and the gate-validator identity).
    Implementation may start immediately against that ledger; no further design pull request is
    required.
-3. Inside C6-MEASURED, adopt Request 2 (plaintext/TLS provider timeouts) through its named
-   C6e/C6g1 owners against the existing pin `19c3db144c46...`; no pin bump is required. Advance
-   Request 2 only after its named owners and the wave's final capable gate pass. Do not infer a
-   provider-quality claim before this wave's measured gate.
-4. After C6-MEASURED, begin C7-PERSISTED-RESULT per `docs/specs/c7-persisted-result.md` and adopt
+6. Request 2 (plaintext/TLS provider timeouts) is adopted and recorded `ALIGN_LLM_VERIFIED`: its
+   named `c6e-request2-adoption` owner and the wave's capable gate both pass at the pin
+   `2f33ac5c33a898a7894af58322852632ce6ffe42` and at the review-repaired head. Its final `make ci`
+   leg is open while the fresh-worker aggregate blocker above stands, and the register records that
+   openly. Do not infer a provider-quality claim beyond this wave's measured gate; §11.3's
+   "What the measured claim is and is not" is the delivered result.
+7. After C6-MEASURED, begin C7-PERSISTED-RESULT per `docs/specs/c7-persisted-result.md` and adopt
    Request 9 through the named C7 adoption fixture before product code consumes the owned-JSON
    surface.
 

@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+output_file="$(mktemp)"
+diagnostic_file="$(mktemp)"
+trap 'rm -f "${output_file}" "${diagnostic_file}"' EXIT
+
+if ! "${compiler}" run "${project_root}/src/prompt_seed_attestation_smoke.align" \
+  >"${output_file}" 2>"${diagnostic_file}"; then
+  printf 'prompt seed attestation compiler failed\n' >&2
+  tail -c 32768 "${diagnostic_file}" >&2
+  exit 1
+fi
+
+python3 - "${output_file}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+actual = [json.loads(line) for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()]
+rows = {row["case_name"]: row for row in actual}
+names = [row["case_name"] for row in actual]
+expected_names = [
+    "openai-unseeded",
+    "openai-unseeded-stream",
+    "openai-seeded",
+    "llama-unseeded",
+    "llama-unseeded-stream",
+    "llama-seeded",
+    "info-cloud-openai",
+    "info-openai-local",
+    "info-llama-cpp",
+    "attestation-applied",
+    "attestation-unsupported",
+    "attestation-rejected",
+]
+if names != expected_names:
+    raise SystemExit(f"unexpected smoke cases: {names!r}")
+
+# Golden unseeded request bytes captured from the pre-seed-extension implementation. The seed
+# extension must not perturb them: `seed: None` keeps the legacy wire record, so these two goldens
+# are the byte-identity regression for every existing caller.
+OPENAI_UNSEEDED = (
+    '{"model":"smoke-openai","messages":[{"role":"system","content":"SYSTEM"},'
+    '{"role":"user","content":"USER"}],"max_tokens":256,"temperature":0.5,"stream":false}'
+)
+OPENAI_UNSEEDED_STREAM = (
+    '{"model":"smoke-openai","messages":[{"role":"system","content":"SYSTEM"},'
+    '{"role":"user","content":"USER"}],"max_tokens":256,"temperature":0.5,"stream":true}'
+)
+LLAMA_UNSEEDED = '{"prompt":"SYSTEM\\n\\nUSER","n_predict":256,"temperature":0.5,"stream":false}'
+LLAMA_UNSEEDED_STREAM = '{"prompt":"SYSTEM\\n\\nUSER","n_predict":256,"temperature":0.5,"stream":true}'
+
+# Golden seeded twin bytes: exactly the unseeded record plus one trailing `seed` field.
+OPENAI_SEEDED = (
+    '{"model":"smoke-openai","messages":[{"role":"system","content":"SYSTEM"},'
+    '{"role":"user","content":"USER"}],"max_tokens":256,"temperature":0.5,"stream":false,"seed":42}'
+)
+LLAMA_SEEDED = (
+    '{"prompt":"SYSTEM\\n\\nUSER","n_predict":256,"temperature":0.5,"stream":false,"seed":42}'
+)
+
+expected_bytes = {
+    "openai-unseeded": OPENAI_UNSEEDED,
+    "openai-unseeded-stream": OPENAI_UNSEEDED_STREAM,
+    "openai-seeded": OPENAI_SEEDED,
+    "llama-unseeded": LLAMA_UNSEEDED,
+    "llama-unseeded-stream": LLAMA_UNSEEDED_STREAM,
+    "llama-seeded": LLAMA_SEEDED,
+}
+
+for name, golden in expected_bytes.items():
+    row = rows[name]
+    if row["request_bytes"] != golden:
+        raise SystemExit(
+            f"{name} request bytes mismatch:\nexpected={golden!r}\nactual={row['request_bytes']!r}"
+        )
+    # Request-digest equality: the SHA-256 recorded as `provider_request_sha256` must be taken over
+    # exactly the bytes the adapter puts on the wire.
+    digest = hashlib.sha256(golden.encode("utf-8")).hexdigest()
+    if row["request_sha256"] != digest:
+        raise SystemExit(f"{name} request digest mismatch: {row['request_sha256']} != {digest}")
+
+# The seeded twin adds exactly one field to the unseeded record and changes nothing else.
+for unseeded, seeded in (
+    ("openai-unseeded", "openai-seeded"),
+    ("llama-unseeded", "llama-seeded"),
+):
+    before = json.loads(rows[unseeded]["request_bytes"])
+    after = json.loads(rows[seeded]["request_bytes"])
+    added = [key for key in after if key not in before]
+    if added != ["seed"] or list(after)[:-1] != list(before):
+        raise SystemExit(f"{seeded} is not the one-field twin of {unseeded}: {added!r}")
+    if {key: after[key] for key in before} != before:
+        raise SystemExit(f"{seeded} changed a pre-existing field of {unseeded}")
+    if after["seed"] != 42:
+        raise SystemExit(f"{seeded} carries the wrong seed: {after['seed']!r}")
+    if rows[unseeded]["request_sha256"] == rows[seeded]["request_sha256"]:
+        raise SystemExit(f"{seeded} digest must differ from {unseeded}")
+
+# Truthful `supports_seed` per adapter kind: every shipped adapter declares a seeded wire record,
+# so every dispatched kind reports true, and the reported provider label stays kind-specific.
+expected_info = {
+    "info-cloud-openai": ("cloud-openai", True),
+    "info-openai-local": ("openai-local", True),
+    "info-llama-cpp": ("llama.cpp", True),
+}
+for name, (provider, supports_seed) in expected_info.items():
+    row = rows[name]
+    if row["provider"] != provider or row["supports_seed"] != supports_seed:
+        raise SystemExit(f"{name} model info mismatch: {row!r}")
+
+# Attestation rows bound to the real provider request bytes. `APPLIED` is gate-eligible only with
+# `applied_seed == requested_seed`; `UNSUPPORTED` and `REJECTED` carry no applied seed and make the
+# evaluation ineligible.
+expected_attestations = {
+    "attestation-applied": ("LOCAL_OPENAI", "smoke-openai", "APPLIED", 42, OPENAI_SEEDED),
+    "attestation-unsupported": ("LOCAL_OPENAI", "smoke-openai", "UNSUPPORTED", None, OPENAI_UNSEEDED),
+    "attestation-rejected": ("LLAMA_CPP", "smoke-llama", "REJECTED", None, LLAMA_SEEDED),
+}
+for name, (kind, provider_model, result, applied, preimage) in expected_attestations.items():
+    attestation = json.loads(rows[name]["attestation"])
+    if attestation["schema_version"] != 1:
+        raise SystemExit(f"{name} schema version mismatch: {attestation!r}")
+    if attestation["artifact_kind"] != "SEED_CAPABILITY_ATTESTATION":
+        raise SystemExit(f"{name} artifact kind mismatch: {attestation!r}")
+    if attestation["provider_kind"] != kind or attestation["provider_model"] != provider_model:
+        raise SystemExit(f"{name} provider identity mismatch: {attestation!r}")
+    if attestation["result"] != result or attestation["requested_seed"] != 42:
+        raise SystemExit(f"{name} seed result mismatch: {attestation!r}")
+    digest = hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+    if attestation["provider_request_sha256"] != digest:
+        raise SystemExit(f"{name} is not bound to the dispatched request bytes: {attestation!r}")
+    if applied is None:
+        # The shipped codec omits a `None` option rather than writing an explicit JSON null.
+        if "applied_seed" in attestation:
+            raise SystemExit(f"{name} must carry no applied seed: {attestation!r}")
+        eligible = False
+    else:
+        if attestation.get("applied_seed") != applied:
+            raise SystemExit(f"{name} applied seed mismatch: {attestation!r}")
+        eligible = True
+    if eligible != (result == "APPLIED"):
+        raise SystemExit(f"{name} gate eligibility mismatch: {attestation!r}")
+
+print(
+    "prompt seed attestation smoke: unseeded byte identity, seeded twin bytes, "
+    "request-digest equality, truthful supports_seed, and APPLIED/UNSUPPORTED/REJECTED rows PASS"
+)
+PY

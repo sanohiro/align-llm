@@ -6,8 +6,15 @@ Evaluation is the first delivery track because every later optimization needs a 
 - `expected/` contains acceptance criteria and expected outcomes.
 - `runners/` contains deterministic task setup, execution, and scoring adapters.
 - `baselines/` contains versioned baseline metadata and measurements, not model weights.
+- `prompt/` contains the frozen C6 prompt-optimizer scope assets and, later, the checked-in gate
+  evidence.
 
 Each task should identify its repository revision, allowed tools, timeout, checks, scoring rules, and cleanup procedure. Never accept a prompt, context, provider, or runtime optimization without comparing it against the fixed task set and recording regressions.
+
+`tasks/prompt-v1/` is the C6g1 gate corpus for the prompt/context optimizer, and
+`prompt/canonical-v1/` holds the frozen scope assets and the `baseline-v1` activation envelope that
+bind it. Read `eval/tasks/prompt-v1/README.md` and `eval/prompt/canonical-v1/README.md` before
+changing either; their digests are chained and must be regenerated together.
 
 `tasks/smoke-v1.json` checks the evaluator itself. `tasks/coding-v1.json` is the first real repair
 corpus: its runner constructs a pinned Git repository, proves the defect is observable, applies a

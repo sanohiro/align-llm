@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "CONTEXT_SOURCES",
+  "task_id": "record-codec-round-trip",
+  "patch_evaluation": {
+    "schema_version": 1,
+    "artifact_kind": "PATCH_EVALUATION",
+    "artifact_id": "record-codec-round-trip/patch-evaluation",
+    "text": "patch evaluation: prompt-v1-fixture/record-codec-round-trip\n\nverdict: REJECTED\nreason: TEST_FAILURE\nchanged files: src/encode.py\neditable files: src/decode.py, src/encode.py\nvalidation: exit code 1\n\nnotes:\n- The attempt changed only src/encode.py, and the round trip regressed instead\n  of converging.\n- failing tests: test_escaped_delimiter_pair_round_trips,\n  test_newline_inside_field_round_trips\n- unrelated diff count: 0\n- public API change count: 0\n- patch size: 331 bytes\n",
+    "content_sha256": "668f06c5ce043e242c79345b79785618256bf4313accd1afa8ed5ba29b2427a5"
+  },
+  "failure_memory_jsonl": {
+    "schema_version": 1,
+    "artifact_kind": "FAILURE_MEMORY_JSONL",
+    "artifact_id": "record-codec-round-trip/failure-memory",
+    "text": "{\"schema_version\":1,\"root\":\"/workspace/checkout\",\"task_id\":\"record-codec-round-trip\",\"attempted_patch\":\"src/encode.py: escape the escape character before the delimiter\",\"final_status\":\"FAIL\",\"failure_stage\":\"tests/test_codec.py\",\"failed_test\":\"tests/test_codec.py\",\"failure_status\":\"FAIL\",\"root_cause\":\"only one side of a shared escaping contract was changed\",\"repair_result\":\"EXHAUSTED\",\"successful_strategy\":\"\",\"unsuccessful_strategy\":\"changing the encoder without the matching decoder rule\",\"iteration_count\":1,\"repair_count\":1,\"risk_score\":55,\"recommended_tests\":\"tests/test_codec.py\",\"risky_symbols\":\"encode_record,decode_record\"}\n",
+    "content_sha256": "508fe0bde11b09f60d7eb56ac4b52de62e31b23a60ea86007115b55813c3c1bf"
+  },
+  "diagnostic_stdout": {
+    "schema_version": 1,
+    "artifact_kind": "DIAGNOSTIC_STDOUT",
+    "artifact_id": "record-codec-round-trip/diagnostic-stdout",
+    "text": "fixture revision: 4597a448a14a5cfb48521f9c9a796d9686cd510e\nvalidation exit code: 1\n",
+    "content_sha256": "e3adf32f4fc0879670ee58cc9c1b4d21297ec21c225654c61af8dbe70d86f253"
+  },
+  "diagnostic_stderr": {
+    "schema_version": 1,
+    "artifact_kind": "DIAGNOSTIC_STDERR",
+    "artifact_id": "record-codec-round-trip/diagnostic-stderr",
+    "text": "test_backslash_inside_field_round_trips (__main__.RecordCodecTests) ... FAIL\ntest_delimiter_inside_field_round_trips (__main__.RecordCodecTests) ... ok\ntest_empty_fields_round_trip (__main__.RecordCodecTests) ... ok\ntest_escaped_delimiter_pair_round_trips (__main__.RecordCodecTests) ... FAIL\ntest_newline_inside_field_round_trips (__main__.RecordCodecTests) ... FAIL\ntest_plain_fields_round_trip (__main__.RecordCodecTests) ... ok\ntest_single_field_round_trips (__main__.RecordCodecTests) ... ok\n\n======================================================================\nFAIL: test_backslash_inside_field_round_trips (__main__.RecordCodecTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/checkout/tests/test_codec.py\", line 19, in test_backslash_inside_field_round_trips\n    self.assert_round_trip([\"a\\\\b\", \"c\"])\n  File \"/workspace/checkout/tests/test_codec.py\", line 16, in assert_round_trip\n    self.assertEqual(decode_record(encoded), fields)\nAssertionError: Lists differ: ['ab', 'c'] != ['a\\\\b', 'c']\n\nFirst differing element 0:\n'ab'\n'a\\\\b'\n\n- ['ab', 'c']\n+ ['a\\\\b', 'c']\n?    ++\n\n\n======================================================================\nFAIL: test_escaped_delimiter_pair_round_trips (__main__.RecordCodecTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/checkout/tests/test_codec.py\", line 28, in test_escaped_delimiter_pair_round_trips\n    self.assert_round_trip([\"a\\\\|b\", \"c\"])\n  File \"/workspace/checkout/tests/test_codec.py\", line 16, in assert_round_trip\n    self.assertEqual(decode_record(encoded), fields)\nAssertionError: Lists differ: ['a\\\\', 'b', 'c'] != ['a\\\\|b', 'c']\n\nFirst differing element 0:\n'a\\\\'\n'a\\\\|b'\n\nFirst list contains 1 additional elements.\nFirst extra element 2:\n'c'\n\n- ['a\\\\', 'b', 'c']\n?      ^^^^\n\n+ ['a\\\\|b', 'c']\n?      ^\n\n\n======================================================================\nFAIL: test_newline_inside_field_round_trips (__main__.RecordCodecTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/checkout/tests/test_codec.py\", line 31, in test_newline_inside_field_round_trips\n    self.assert_round_trip([\"first\\nsecond\", \"third\"])\n  File \"/workspace/checkout/tests/test_codec.py\", line 15, in assert_round_trip\n    self.assertNotIn(\"\\n\", encoded)\nAssertionError: '\\n' unexpectedly found in 'first\\nsecond|third'\n\n----------------------------------------------------------------------\nRan 7 tests in 0.001s\n\nFAILED (failures=3)\n",
+    "content_sha256": "f764c16abcfd0ef34d92f24c3fd7b5b7290d4b4ad39407e61ca34c920b8476df"
+  },
+  "content_sha256": "baad9d73b8dbbe6d090c5a7ca9fdaff333b298226f8be1db1ccff1b74e831c82"
+}

@@ -1,0 +1,519 @@
+#!/usr/bin/env python3
+"""Owner smoke for `prompt generate`: precedence, golden request bytes, seed, mapping, credential.
+
+Every section 5 precedence row proves that no listener was contacted; the golden provider request
+bytes are read back off the wire and re-digested against the persisted `provider_request_sha256`;
+the transport, status, and decode rows are driven by a real fixture listener; and the recorded child
+spawn-overhead measurement is the measurement-risk evidence named by the section 11.3 ledger.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import pathlib
+import sys
+import tempfile
+import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from prompt_generate_fixture import (  # noqa: E402
+    CREDENTIAL_VALUE,
+    CREDENTIAL_VARIABLE,
+    DIAGNOSTIC_CAP,
+    PATCH_TEXT,
+    REPOSITORY,
+    assert_response,
+    canonical,
+    closed_port,
+    invoke,
+    prepare,
+    require,
+    start_server,
+    stop_server,
+)
+
+SPAWN_SAMPLE_COUNT = 12
+
+
+def assert_absent(name: str, response: dict, field: str) -> None:
+    require(field not in response, f"{name}: {field} must be absent, got {response.get(field)!r}")
+
+
+def assert_no_dispatch(name: str, response: dict) -> None:
+    """A response that never reached provider dispatch carries no request digest, seed, or timing."""
+    require(
+        response["provider_request_sha256"] == "0" * 64
+        and response["seed_result"] == "UNSUPPORTED"
+        and response["dispatch_start_ns"] == 0
+        and response["dispatch_end_ns"] == 0,
+        f"{name}: an undispatched response claimed provider work: {response!r}",
+    )
+    assert_absent(name, response, "applied_seed")
+    assert_absent(name, response, "http_status")
+    assert_absent(name, response, "content")
+
+
+def quiet_input_rows(root: pathlib.Path, server) -> list[str]:
+    """Every decoded-request precedence row, each proving no provider listener was contacted."""
+    endpoint = f"{server.base}/openai/ok"
+    covered: list[str] = []
+    baseline_connections = server.connections
+
+    # Step 1: the request envelope itself. No trusted response envelope exists, so no artifact.
+    for name, payload in (
+        ("malformed-json", b'{"schema_version":'),
+        ("non-canonical-json", canonical({"artifact_kind": "PROMPT_GENERATION_REQUEST"})),
+        ("reordered-fields", b'{"artifact_kind":"PROMPT_GENERATION_REQUEST","schema_version":1}'),
+    ):
+        case = prepare(root, name, endpoint)
+        case.write_request(payload)
+        completed = case.run()
+        require(completed.returncode == 2, f"{name}: undecodable request was accepted")
+        require(
+            not case.response_path.exists(),
+            f"{name}: an undecodable request published a response artifact",
+        )
+        covered.append(name)
+
+    # Step 2, first: the retained exclusive creation is the output preflight. An occupied path fails
+    # before any request field is validated and before any external work.
+    case = prepare(root, "occupied-output", endpoint)
+    case.response_path.write_text("occupied", encoding="utf-8")
+    completed = case.run()
+    require(completed.returncode == 2, f"occupied-output: an occupied response path was accepted")
+    require(
+        case.response_path.read_text(encoding="utf-8") == "occupied",
+        "occupied-output: the existing response path was overwritten",
+    )
+    covered.append("occupied-output")
+
+    # Step 2: request bounds, kind admission, and the declared request digest. Each row writes a
+    # response and performs no provider call.
+    bounds_rows = (
+        ("bad-schema-version", {"schema_version": 2}),
+        ("bad-artifact-kind", {"artifact_kind": "PROMPT_GENERATION_RESPONSE"}),
+        ("empty-request-id", {"request_id": ""}),
+        ("fixture-provider-kind", {"provider_kind": "FIXTURE"}),
+        ("unknown-provider-kind", {"provider_kind": "local_openai"}),
+        ("plaintext-cloud-endpoint", {"provider_kind": "CLOUD_OPENAI", "api_key_env": CREDENTIAL_VARIABLE}),
+        ("credential-in-endpoint", {"endpoint": "http://127.0.0.1:1/v1?api_key=secret"}),
+        ("empty-provider-model", {"provider_model": ""}),
+        ("empty-rendered-path", {"rendered_prompt_path": ""}),
+        ("bad-rendered-digest-shape", {"rendered_prompt_sha256": "not-a-digest"}),
+        ("zero-max-tokens", {"max_tokens": 0}),
+        ("oversized-max-tokens", {"max_tokens": 1_048_577}),
+        ("negative-temperature", {"temperature_micros": -1}),
+        ("oversized-temperature", {"temperature_micros": 1_000_001}),
+        ("zero-timeout", {"timeout_ns": 0}),
+        ("oversized-timeout", {"timeout_ns": 7_200_000_000_001}),
+        ("zero-response-cap", {"max_response_bytes": 0}),
+        ("oversized-response-cap", {"max_response_bytes": 1_048_577}),
+        ("llama-with-credential", {"provider_kind": "LLAMA_CPP", "api_key_env": CREDENTIAL_VARIABLE}),
+        ("cloud-without-credential", {"provider_kind": "CLOUD_OPENAI", "endpoint": "https://provider.invalid/v1"}),
+    )
+    for name, row_overrides in bounds_rows:
+        overrides = dict(row_overrides)
+        case = prepare(root, name, overrides.pop("endpoint", endpoint), **overrides)
+        completed = case.run()
+        response = assert_response(case, completed, "INVALID_INPUT", "INVALID_BOUNDS")
+        assert_no_dispatch(name, response)
+        covered.append(name)
+
+    # A request whose declared content digest does not bind its own bytes is rejected by the same
+    # bounds check: the digest is part of the record's validation, not a later step.
+    case = prepare(root, "tampered-request-digest", endpoint)
+    tampered = json.loads(case.request_path.read_text(encoding="utf-8"))
+    tampered["paired_seed"] = tampered["paired_seed"] + 1
+    case.write_request(tampered)
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INVALID_BOUNDS")
+    assert_no_dispatch("tampered-request-digest", response)
+    covered.append("tampered-request-digest")
+
+    # Step 2: the declared rendered prompt.
+    case = prepare(root, "missing-rendered-prompt", endpoint)
+    case.rendered_path.unlink()
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INPUT_NOT_FOUND")
+    assert_no_dispatch("missing-rendered-prompt", response)
+    covered.append("missing-rendered-prompt")
+
+    case = prepare(root, "undecodable-rendered-prompt", endpoint)
+    case.rendered_path.write_bytes(b'{"schema_version":')
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INVALID_SCHEMA")
+    assert_no_dispatch("undecodable-rendered-prompt", response)
+    covered.append("undecodable-rendered-prompt")
+
+    case = prepare(root, "wrong-rendered-kind", endpoint)
+    wrong = json.loads(case.rendered_path.read_text(encoding="utf-8"))
+    wrong["artifact_kind"] = "TASK_PROMPT"
+    case.rendered_path.write_bytes(canonical(wrong))
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INVALID_KIND")
+    assert_no_dispatch("wrong-rendered-kind", response)
+    covered.append("wrong-rendered-kind")
+
+    # The declared digest must equal the artifact's own `content_sha256`: no intermediate owner can
+    # prepend, append, or split the rendered bytes and still be dispatched.
+    case = prepare(root, "rendered-digest-mismatch", endpoint, rendered_sha256="a" * 64)
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INVALID_DIGEST")
+    assert_no_dispatch("rendered-digest-mismatch", response)
+    covered.append("rendered-digest-mismatch")
+
+    case = prepare(root, "substituted-rendered-prompt", endpoint)
+    substituted = case.write_rendered("a different rendered prompt")
+    require(substituted["content_sha256"] != "", "substituted rendered prompt was not bound")
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INVALID_DIGEST")
+    assert_no_dispatch("substituted-rendered-prompt", response)
+    covered.append("substituted-rendered-prompt")
+
+    # The credential is resolved after validation and before the first external call.
+    case = prepare(
+        root, "missing-credential", endpoint,
+        provider_kind="LOCAL_OPENAI", api_key_env=CREDENTIAL_VARIABLE,
+    )
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "MISSING_CREDENTIAL")
+    assert_no_dispatch("missing-credential", response)
+    covered.append("missing-credential")
+
+    case = prepare(
+        root, "empty-credential", endpoint,
+        provider_kind="LOCAL_OPENAI", api_key_env=CREDENTIAL_VARIABLE,
+    )
+    completed = case.run(environment={CREDENTIAL_VARIABLE: ""})
+    response = assert_response(case, completed, "INVALID_INPUT", "MISSING_CREDENTIAL")
+    assert_no_dispatch("empty-credential", response)
+    covered.append("empty-credential")
+
+    require(
+        server.connections == baseline_connections,
+        "a precedence row contacted the provider listener",
+    )
+    return covered
+
+
+def golden_request_bytes(root: pathlib.Path, server) -> list[str]:
+    """Both provider kinds' exact wire bytes, and the digest recomputed from those exact bytes."""
+    covered: list[str] = []
+    prompt = "Repair round_to_minutes so an exact half minute rounds away from zero."
+    expectations = (
+        (
+            "openai-golden",
+            "LOCAL_OPENAI",
+            f"{server.base}/openai/ok",
+            '{"model":"fixture-model","messages":[{"role":"system","content":""},'
+            '{"role":"user","content":"' + prompt + '"}],'
+            '"max_tokens":512,"temperature":0.25,"stream":false,"seed":4242}',
+        ),
+        (
+            "llama-golden",
+            "LLAMA_CPP",
+            f"{server.base}/llama/ok",
+            '{"prompt":"' + prompt + '","n_predict":512,"temperature":0.25,'
+            '"stream":false,"seed":4242}',
+        ),
+    )
+    for name, kind, endpoint, expected in expectations:
+        case = prepare(root, name, endpoint, provider_kind=kind, prompt_text=prompt)
+        completed = case.run()
+        response = assert_response(case, completed, "GENERATED", "NONE")
+        dispatched = server.requests[-1]["body"]
+        require(
+            dispatched.decode("utf-8") == expected,
+            f"{name}: dispatched bytes changed:\n  actual   {dispatched.decode('utf-8')!r}\n"
+            f"  expected {expected!r}",
+        )
+        # The persisted digest must be the SHA-256 of exactly those dispatched bytes, recomputed
+        # here from the wire rather than from any intermediate rendering of the request.
+        require(
+            response["provider_request_sha256"] == hashlib.sha256(dispatched).hexdigest(),
+            f"{name}: provider_request_sha256 is not the digest of the dispatched bytes",
+        )
+        require(
+            response["content"] == PATCH_TEXT and response["http_status"] == 200,
+            f"{name}: decoded content or received status is wrong: {response!r}",
+        )
+        require(
+            response["provider_kind"] == kind and response["provider_model"] == "fixture-model",
+            f"{name}: provider identity is not the declared one",
+        )
+        require(
+            0 <= response["dispatch_start_ns"] <= response["dispatch_end_ns"],
+            f"{name}: dispatch instants are not ordered",
+        )
+        covered.append(name)
+    return covered
+
+
+def seed_rows(root: pathlib.Path, server) -> list[str]:
+    """`APPLIED`, `REJECTED`, and `UNSUPPORTED` with the exact `applied_seed` shape each requires."""
+    covered: list[str] = []
+
+    case = prepare(root, "seed-applied", f"{server.base}/openai/ok", paired_seed=-9_007_199_254_740_993)
+    completed = case.run()
+    response = assert_response(case, completed, "GENERATED", "NONE")
+    require(
+        response["seed_result"] == "APPLIED"
+        and response["applied_seed"] == -9_007_199_254_740_993,
+        f"seed-applied: APPLIED requires applied_seed == requested seed: {response!r}",
+    )
+    require(
+        b'"seed":-9007199254740993' in server.requests[-1]["body"],
+        "seed-applied: the seeded twin bytes did not carry the paired seed",
+    )
+    covered.append("seed-applied")
+
+    case = prepare(root, "seed-in-content", f"{server.base}/openai/seed-in-content")
+    completed = case.run()
+    response = assert_response(case, completed, "GENERATED", "NONE")
+    require(
+        response["seed_result"] == "APPLIED" and response["applied_seed"] == 4_242
+        and "seed" in response["content"],
+        f"seed-in-content: a 2xx completion mentioning the seed was read as a refusal: {response!r}",
+    )
+    covered.append("seed-in-content")
+
+    case = prepare(root, "seed-rejected", f"{server.base}/openai/seed-rejected")
+    completed = case.run()
+    response = assert_response(case, completed, "PROVIDER_ERROR", "PROVIDER_HTTP_STATUS")
+    require(
+        response["seed_result"] == "REJECTED" and response["http_status"] == 400,
+        f"seed-rejected: a received seed refusal is REJECTED: {response!r}",
+    )
+    assert_absent("seed-rejected", response, "applied_seed")
+    covered.append("seed-rejected")
+
+    # `UNSUPPORTED` requires `applied_seed: None`. Every provider kind `model.ProviderKind` admits
+    # reports `supports_seed` and carries the paired seed in its declared seeded twin at this pin, so
+    # the reachable `UNSUPPORTED` row is the undispatched one: no request bytes were produced, so no
+    # seed was applied.
+    case = prepare(root, "seed-unsupported", f"{server.base}/openai/ok", request_id="")
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INVALID_BOUNDS")
+    require(
+        response["seed_result"] == "UNSUPPORTED",
+        f"seed-unsupported: an undispatched row must not claim an applied seed: {response!r}",
+    )
+    assert_absent("seed-unsupported", response, "applied_seed")
+    covered.append("seed-unsupported")
+    return covered
+
+
+def mapping_rows(root: pathlib.Path, server) -> list[str]:
+    """The complete section 11.3 transport, status, and decode error mapping."""
+    covered: list[str] = []
+    rows = (
+        ("status-404", f"{server.base}/openai/status-404", "PROVIDER_ERROR", "PROVIDER_HTTP_STATUS", 404),
+        ("decode-empty-choices", f"{server.base}/openai/bad-envelope", "PROVIDER_ERROR", "PROVIDER_RESPONSE_SCHEMA", 200),
+        ("decode-not-json", f"{server.base}/openai/bad-content", "PROVIDER_ERROR", "PROVIDER_RESPONSE_SCHEMA", 200),
+        # Empty decoded completion text is a response-schema failure, never a `GENERATED` response
+        # with zero-length content: the measurement adapter must never receive an empty generation.
+        ("decode-empty-content", f"{server.base}/openai/empty-content", "PROVIDER_ERROR", "PROVIDER_RESPONSE_SCHEMA", 200),
+        ("over-cap", f"{server.base}/openai/over-cap", "PROVIDER_ERROR", "PROVIDER_RESPONSE_TOO_LARGE", None),
+        ("non-utf8-body", f"{server.base}/openai/non-utf8", "PROVIDER_ERROR", "PROVIDER_TRANSPORT", None),
+    )
+    for name, endpoint, status, code, http_status in rows:
+        case = prepare(root, name, endpoint)
+        completed = case.run()
+        response = assert_response(case, completed, status, code)
+        if http_status is None:
+            assert_absent(name, response, "http_status")
+        else:
+            require(
+                response["http_status"] == http_status,
+                f"{name}: expected received status {http_status}, got {response.get('http_status')!r}",
+            )
+        assert_absent(name, response, "content")
+        require(
+            response["provider_request_sha256"] != "0" * 64
+            and response["dispatch_end_ns"] >= response["dispatch_start_ns"],
+            f"{name}: a dispatched row lost its request digest or timing: {response!r}",
+        )
+        covered.append(name)
+
+    # A transport errno can never masquerade as an HTTP status: the closed port has no listener.
+    case = prepare(root, "transport-refused", f"http://127.0.0.1:{closed_port()}/openai/ok")
+    completed = case.run()
+    response = assert_response(case, completed, "PROVIDER_ERROR", "PROVIDER_TRANSPORT")
+    assert_absent("transport-refused", response, "http_status")
+    covered.append("transport-refused")
+
+    # The stalled listener accepts the connection and never answers: the declared timeout fires.
+    case = prepare(root, "transport-timeout", f"{server.base}/openai/stall", timeout_ns=300_000_000)
+    completed = case.run()
+    response = assert_response(case, completed, "PROVIDER_ERROR", "PROVIDER_TIMEOUT")
+    assert_absent("transport-timeout", response, "http_status")
+    require(server.stalled.is_set(), "transport-timeout: the stalled listener was never reached")
+    server.release.set()
+    covered.append("transport-timeout")
+    return covered
+
+
+def credential_rows(root: pathlib.Path, server) -> list[str]:
+    """No credential byte reaches the response artifact, its diagnostics, or the command output."""
+    covered: list[str] = []
+    rows = (
+        ("credential-content", "/credential/echo-content", "GENERATED", "NONE", b"[REDACTED]"),
+        ("credential-status", "/credential/echo-status", "PROVIDER_ERROR", "PROVIDER_HTTP_STATUS", b"[REDACTED]"),
+        ("credential-schema", "/credential/echo-schema", "PROVIDER_ERROR", "PROVIDER_RESPONSE_SCHEMA", b"[REDACTED]"),
+        # The straddling occurrence is replaced before truncation, so only the marker's own prefix
+        # survives the 16 KiB bound. Nothing of the credential does.
+        ("credential-straddling", "/credential/echo-straddling", "PROVIDER_ERROR", "PROVIDER_HTTP_STATUS", b"[RED"),
+    )
+    for name, path, status, code, marker in rows:
+        case = prepare(
+            root, name, f"{server.base}{path}",
+            provider_kind="LOCAL_OPENAI", api_key_env=CREDENTIAL_VARIABLE,
+        )
+        completed = case.run(environment={CREDENTIAL_VARIABLE: CREDENTIAL_VALUE})
+        response = assert_response(case, completed, status, code)
+        raw = case.response_path.read_bytes()
+        require(
+            CREDENTIAL_VALUE.encode("utf-8") not in raw,
+            f"{name}: the persisted response artifact contains the credential value",
+        )
+        require(
+            CREDENTIAL_VALUE not in completed.stdout and CREDENTIAL_VALUE not in completed.stderr,
+            f"{name}: the command output contains the credential value",
+        )
+        require(
+            marker in raw,
+            f"{name}: the echoed credential was not replaced by the redaction marker",
+        )
+        require(
+            not any(
+                fragment.encode("utf-8") in raw
+                for fragment in (CREDENTIAL_VALUE[:12], CREDENTIAL_VALUE[-12:])
+            ),
+            f"{name}: a credential fragment survived redaction or truncation",
+        )
+        require(
+            server.requests[-1]["authorization"] == f"Bearer {CREDENTIAL_VALUE}",
+            f"{name}: the credential did not reach the single provider call",
+        )
+        covered.append(name)
+
+    # The credential occurrence that straddles the 16 KiB diagnostic bound is redacted before the
+    # bound is applied, so no partial credential can survive truncation.
+    require(DIAGNOSTIC_CAP == 16_384, "the diagnostic bound changed")
+
+    # `api_key_env: None` performs no environment read at all and sends no authorization header.
+    case = prepare(root, "credential-absent", f"{server.base}/openai/ok")
+    completed = case.run(environment={CREDENTIAL_VARIABLE: CREDENTIAL_VALUE})
+    assert_response(case, completed, "GENERATED", "NONE")
+    require(
+        server.requests[-1]["authorization"] is None,
+        "credential-absent: an uncredentialed run sent an authorization header",
+    )
+    covered.append("credential-absent")
+    return covered
+
+
+def spawn_overhead(root: pathlib.Path, server) -> float:
+    """Record the child spawn and initialization cost the measured timing boundary now includes.
+
+    Section 11.3 puts `generation_to_passing_patch_ns` start immediately before the adapter launches
+    this child, so spawn plus initialization is inside the measured window. The overhead is symmetric
+    across parent and candidate and cannot bias the paired comparison, but its magnitude is
+    measurement risk, so this smoke records it. The row asserts completion only; no bound is claimed.
+    """
+    endpoint = f"{server.base}/openai/ok"
+    total_wall_ns = 0
+    total_dispatch_ns = 0
+    for index in range(SPAWN_SAMPLE_COUNT):
+        case = prepare(root, f"spawn-{index}", endpoint)
+        started = time.monotonic_ns()
+        completed = case.run()
+        total_wall_ns += time.monotonic_ns() - started
+        response = assert_response(case, completed, "GENERATED", "NONE")
+        total_dispatch_ns += response["dispatch_end_ns"] - response["dispatch_start_ns"]
+    wall = total_wall_ns / SPAWN_SAMPLE_COUNT
+    dispatch = total_dispatch_ns / SPAWN_SAMPLE_COUNT
+    overhead = wall - dispatch
+    print(f"generation child samples: {SPAWN_SAMPLE_COUNT}")
+    print(f"generation child mean wall time: {wall / 1_000_000:.3f} ms")
+    print(f"generation child mean provider dispatch: {dispatch / 1_000_000:.3f} ms")
+    print(f"generation child spawn+init overhead estimate: {overhead / 1_000_000:.3f} ms")
+    require(overhead == overhead, "spawn overhead measurement did not complete")
+    return overhead
+
+
+def cli_rows(root: pathlib.Path, server) -> list[str]:
+    """The `./main prompt generate` arm: arity, printed label, and the non-success exit mapping."""
+    covered: list[str] = []
+    case = prepare(root, "cli-arity", f"{server.base}/openai/ok")
+    completed = invoke(["prompt", "generate", str(case.request_path)])
+    require(completed.returncode == 2, "cli-arity: a four-argument invocation was accepted")
+    require(
+        not case.response_path.exists(),
+        "cli-arity: a wrong-arity invocation published a response artifact",
+    )
+    covered.append("cli-arity")
+
+    completed = invoke(["prompt", "generate"])
+    require(completed.returncode == 2, "cli-arity-empty: a two-argument invocation was accepted")
+    covered.append("cli-arity-empty")
+
+    case = prepare(root, "cli-labels", f"{server.base}/openai/ok")
+    completed = case.run()
+    require(
+        completed.stdout.splitlines() == [
+            "prompt operation:", "generate", "status:", "GENERATED", "output:",
+            str(case.response_path),
+        ],
+        f"cli-labels: unexpected command output: {completed.stdout!r}",
+    )
+    covered.append("cli-labels")
+
+    completed = invoke(["prompt"])
+    require(completed.returncode == 2, "cli-usage: a bare `prompt` invocation was accepted")
+    usage = invoke([])
+    require(
+        "generate" in usage.stdout,
+        f"cli-usage: the usage line does not mention generate: {usage.stdout!r}",
+    )
+    covered.append("cli-usage")
+    return covered
+
+
+def main() -> int:
+    require(
+        pathlib.Path(REPOSITORY / "main").exists()
+        or "ALIGN_LLM_BIN" in __import__("os").environ,
+        "prompt generate: the align-llm binary has not been built",
+    )
+    server, thread = start_server()
+    try:
+        with tempfile.TemporaryDirectory(prefix="prompt-generate-smoke-") as directory:
+            root = pathlib.Path(directory).resolve()
+            covered: list[str] = []
+            covered += quiet_input_rows(root, server)
+            covered += golden_request_bytes(root, server)
+            covered += seed_rows(root, server)
+            covered += mapping_rows(root, server)
+            covered += credential_rows(root, server)
+            covered += cli_rows(root, server)
+            spawn_overhead(root, server)
+            require(len(covered) == len(set(covered)), "a smoke row name was reused")
+            print(f"prompt generate rows: {len(covered)}")
+    finally:
+        stop_server(server, thread)
+    print("prompt generate: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except SystemExit as failure:
+        if failure.code not in (0, None):
+            print(f"prompt generate: FAIL: {failure.code}", file=sys.stderr)
+            raise SystemExit(1)
+        raise

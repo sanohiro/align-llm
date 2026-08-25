@@ -23,5 +23,11 @@ declares the source fixture, edit allowlist, validation command, and validation 
 description states the failure and constraints without embedding a preferred patch. The corpus
 adapter chooses the candidate patch or future provider output separately.
 
+`prompt-v1/` is the C6 gate corpus and uses a different, richer record: each task file is a
+`PromptEvaluationTask` that additionally pins its measurement adapter, snapshot helper, content-bound
+artifact expectations, and regression limits. Its frozen membership lives in
+`eval/prompt/canonical-v1/corpus.json`, not in a sibling `prompt-v1.json`. See
+`prompt-v1/README.md`.
+
 `empty-invalid.json` is a negative regression fixture: `make eval-smoke` requires the evaluator to
 reject an empty corpus before it can emit a passing summary.

@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-24): Requests 1, 3–6 are CLOSED; Requests 7, 8, and 10–18 are ALIGN_LLM_VERIFIED; Requests 2 and 9 remain ALIGN_MERGED.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. Every open request now has a merged Align surface: Request 2's timeout adoption remains with C6e/C6g1 and Request 9's adoption remains with C7, both already contained in the pinned Align merge recorded below.
+> **Status (2026-08-25): Requests 1, 3–6 are CLOSED; Requests 2, 7, 8, and 10–18 are ALIGN_LLM_VERIFIED; only Request 9 remains ALIGN_MERGED.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, advancing Request 2. Request 9's adoption remains with C7 and is already contained in the pinned Align merge recorded below.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -291,14 +291,14 @@ Two smaller Align idioms worth recording (not requests): an owned `string` does 
 ## Request 2 — `std.http` / `std.net`: I/O timeouts
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: no
-Blocked gate or slice: provider HTTP client acceptance gate (not reached yet)
-Independent work that may continue: C0 evaluation and provider-independent loop work
-Resume condition: plaintext and TLS timeout gates pass in align-llm
+Blocked gate or slice: none; the C6-MEASURED provider consumer in `src/provider_http.align` consumes the shipped per-operation deadline
+Independent work that may continue: all work
+Resume condition: complete
 Align commit or pull request: #633 98b1712, #634 1b21cdb
-align-llm verification: pending plaintext and TLS timeout fixtures in the provider HTTP client
+align-llm verification: the named focused owner `c6e-request2-adoption` (`scripts/run-http-timeout-adoption-smoke`, `src/c6e_request2_adoption.align`) passes at Align `2f33ac5c33a898a7894af58322852632ce6ffe42`, proving the plaintext read-stall and the TLS handshake-stall both return `Error.Timeout` inside a `timeout_ns` of 250,000,000 (observed 258,576,584 ns and 296,394,625 ns) with a responsive control request at 1,529,083 ns; the target is a `HOSTED_CHECK_TARGETS` member, so it runs in every hosted and capable check graph. At the C6-MEASURED review-repaired head `e14c472b11abcbb2368a93d1fd4c97d3554f11e4` on native Linux `aarch64`, `c6e-request2-adoption` passes together with every other `HOSTED_CHECK_TARGETS` member and with `eval-coding` and `c6-evaluation-adoption`, and the wired `make prompt-gate-check` with all five explicit `C6_GATE_*` values exits 0 (`prompt gate validator: PASS`). **The final supervised `make ci` leg is met.** At head `3768ad8af68bb50ee3129ff392f6ba86ac89e071`, `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo <path-to-sibling-align-checkout>` exits 0 with `fresh image profile smoke: PASS` and `fresh worker qualification: PASS (installed profile only)`. That request is the trusted image entrypoint's `make --no-print-directory ci`, so the whole `capable-checks` graph — including this request's `c6e-request2-adoption` — ran inside the authenticated fresh worker. Phases: `docker-daemon` 675 ms, `image-build` 21,883 ms, `image-attestation` 3,822 ms, `profile-lifecycle` 3,188 ms, `profile-self-test` 14,331 ms, `trust-mutations` 13,151 ms, `runtime-replacements` 22,893 ms, `boundary-profile` 270,909 ms, **`worker-aggregate` pass after 354,739 ms**, `cleanup` 1,883 ms; whole installed profile 708,521 ms. The two causes of the earlier failure were the `prompt-verifier-smoke` code-generation cost (removed by demoting that member; see Request 19) and `prompt-measurement-adapter-smoke`'s Git fixture resolving `git` against a hard-coded host PATH instead of the aggregate's tool root (repaired in `3768ad8`); both were pre-existing C6-MEASURED wave gaps rather than review-repair regressions.
 ```
 
 ### Motivation
@@ -371,12 +371,32 @@ path too, same fd). `ns == 0` preserves today's blocking behavior exactly.
 **Gate.** A peer that accepts then never responds returns `Err(Timeout)` within the bound; a
 black-holed (never-accepting) address returns `Err(Timeout)` within the bound.
 
-### align-llm verification status
+### align-llm verification (2026-08-25 — ALIGN_LLM_VERIFIED)
 
-The Align capability is merged and pinned, but align-llm does not yet have the provider HTTP client
-that consumes it. Therefore this request remains `ALIGN_MERGED`, is non-blocking for the current C0
-and provider-independent loop work, and must not advance to `ALIGN_LLM_VERIFIED` or `CLOSED` until
-`make ci` runs both the plaintext and TLS timeout fixtures named in the original acceptance gate.
+C6-MEASURED shipped the consuming provider transport, so the original acceptance gate is now
+exercised by a real client. `src/provider_http.align` applies the configured `timeout_ns` to every
+blocking operation, and `src/c6e_request2_adoption.align` drives it against three loopback
+listeners: a plaintext listener that accepts and never answers, a listener that accepts and never
+answers the TLS ClientHello, and a responsive control. Both stalls classify as `Error.Timeout`
+inside the configured bound, the control exchange is untouched, and the client still works after two
+timed-out connections. `scripts/run-http-timeout-adoption-smoke` independently bounds the whole
+run's wall clock and rechecks each reported per-row timing.
+
+`c6e-request2-adoption` is now a member of `HOSTED_CHECK_TARGETS`, so it is a permanent part of the
+hosted and capable check graphs rather than a target that must be remembered separately. `CLOSED`
+remains reserved until the shipped surface, ownership, and limits are recorded against merged
+publication evidence.
+
+The C6-MEASURED review repair first ran the supervised publication route named by the review and it
+failed inside the fresh worker's `capable-checks` aggregate. The failure was never attributable to
+this request's surface — it reproduced unchanged at the pre-repair reviewed head — and it is now
+diagnosed and repaired. It had two independent causes, both C6-MEASURED lane additions that the
+supervised aggregate had never exercised: the `prompt-verifier-smoke` code-generation cost, and
+`prompt-measurement-adapter-smoke` resolving `git` for its patch fixture against a hard-coded
+`/usr/bin:/bin` child PATH rather than the aggregate's tool root. With both closed, the supervised
+`make ci` request passes at `3768ad8af68bb50ee3129ff392f6ba86ac89e071`, so this request's final
+`make ci` leg is met and the `ALIGN_LLM_VERIFIED` claim is complete. `CLOSED` still waits on merged
+publication evidence.
 
 ---
 
@@ -5742,6 +5762,100 @@ and multi-read JSON, deterministic multi-invalid order and error mapping, root/i
 and dangling symlinks, missing/denied/special inputs, unsafe/occupied output paths, destination
 preservation, and exactly one winner between concurrent creators. The routine `prompt-state-smoke`
 retains verifier-first acceptance, immutable rollback, tamper, lineage, and CLI coverage.
+
+---
+
+## Request 19 — compiler: code-generation cost on a graph of large by-value structs
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none — the affected member was demoted out of the hosted lane, so no gate waits on this
+Independent work that may continue: all of it; every other align-llm capability compiles and runs inside its existing budget at the current pin
+Resume condition: at the adopted pin, `alignc build src/prompt_verifier_smoke.align` completes within a small multiple of its `alignc check` cost and inside the supervised aggregate's per-target budget, after which `prompt-verifier-smoke` rejoins `HOSTED_CHECK_TARGETS` and `scripts/check-gate-topology`'s `EXPECTED` bytes
+Align commit or pull request: pending
+align-llm verification: pending — the focused target is `make prompt-verifier-smoke`, and the lane proof is `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` with the member restored
+```
+
+### Motivation and pinned-state evidence
+
+This is a compiler/runtime performance gap, not a missing surface. `align-llm` has one translation
+unit, `src/prompt_verifier_smoke.align` (1,573 lines), whose C6c2 verifier fixtures construct many
+literals of the C6 artifact records declared in `src/prompt_artifacts.align`. Semantic analysis of
+that unit is fast; code generation for the same unit is roughly three orders of magnitude slower and
+allocates over a gigabyte.
+
+Measured at the currently pinned Align revision `2f33ac5c33a898a7894af58322852632ce6ffe42`
+(`alignc 0.5.0`, release build), native `linux/aarch64`, 8 logical CPUs:
+
+```text
+$ alignc check src/prompt_verifier_smoke.align
+0.494 s wall, 76,275 bytes of diagnostics, exit 0
+
+$ make prompt-verifier-smoke          # alignc run: code generation, link, then execute
+719 s wall, peak resident set 1,525,732 KiB, exit 0
+```
+
+Code generation owns effectively all of that: the produced program prints one line and exits.
+
+The compiler's own diagnostics point at the shape it is struggling with. The same `check` emits 345
+`huge struct copy` warnings over exactly two kinds — by-value parameter passing and by-value return
+— across 39 distinct record types, and 100 of the 345 name one 5,056-byte record
+(`prompt_artifacts$PromptEvaluationResult`); the remaining sizes above 500 bytes run 504, 632, 736,
+744, 864, 960, and 1,120 bytes. Nothing in the unit is recursive, generic, or reflective: it is a
+wide, flat graph of large by-value aggregates, and the cost appears to be superlinear in the copy count times the
+copied size rather than in the source size.
+
+The concrete client consequence is measured, not hypothetical. The supervised fresh-worker
+aggregate (`make ci` inside the Section 9 sandbox) ran `make capable-checks` in roughly 110–180 s
+before this unit joined the hosted lane. With it, one reproduction of the exact aggregate
+environment took 890 s for the same graph, of which this single smoke accounted for roughly 780 s
+under aggregate contention, and the qualification's practical budget was exceeded. `align-llm` therefore demoted `prompt-verifier-smoke`
+from `HOSTED_CHECK_TARGETS` to a named focused qualification run on verifier-boundary changes and
+before publication (see `docs/specs/check-gate-topology.md` §2 and
+`docs/specs/c6-prompt-context-optimizer.md` §11.3). Coverage is unchanged; only its lane membership
+is. That is a scheduling decision on the client side, not a fix, and it is exactly the kind of
+non-blocking, workaround-shaped gap this register exists to record.
+
+### Requested behavior
+
+No new public surface. `alignc build` should generate code for a unit of this shape in time and
+memory proportional to what `alignc check` already proves is tractable — concretely, within a small
+constant multiple of the `check` cost and without a peak resident set that scales with the product
+of copy sites and struct size. Diagnostics, generated-program semantics, and the `huge struct copy`
+warning text are unchanged by this request; the warning is useful client advice and should stay.
+
+Align owns the choice of remedy. Plausible directions, listed only as evidence of where the cost
+concentrates and not as a required design:
+
+- lower a large by-value aggregate copy to a memory intrinsic or a single move instead of
+  materializing per-field code at every call and return site;
+- avoid re-expanding an identical aggregate copy sequence once per site when the source and
+  destination layouts are identical;
+- bound the working set held per function during code generation so peak memory tracks the largest
+  single function rather than the whole unit.
+
+### Public-contract ledger
+
+| Surface | Exact result/error and precedence | Ownership, allocation, effects, and identity | First real-client acceptance |
+| --- | --- | --- | --- |
+| `alignc build <unit>` | Unchanged. Same accepted programs, same rejections, same diagnostic text and order, same generated-program behavior. This request changes only the resources the existing contract consumes. | Unchanged for the generated program. Compiler-internal only: the peak resident set during code generation must not scale with (copy sites x copied struct bytes) across the whole unit. | `make prompt-verifier-smoke` at the adopted pin completes within the supervised aggregate's per-target budget, its output line is byte-identical to today's, and `prompt-verifier-smoke` is restored to `HOSTED_CHECK_TARGETS`, to `scripts/check-gate-topology`'s `EXPECTED` bytes, and to the `docs/specs/check-gate-topology.md` hosted oracle, with `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` passing at that head. |
+
+### Acceptance criteria
+
+1. At the adopted pin, `alignc check src/prompt_verifier_smoke.align` and
+   `alignc build src/prompt_verifier_smoke.align` both succeed, the build's wall time is within a
+   small constant multiple of the check's, and its peak resident memory stays well under the
+   1,525,732 KiB measured here.
+2. `make prompt-verifier-smoke` prints exactly
+   `prompt verifier smoke: complete, incomplete, compact, and tamper cases PASS`.
+3. `make check` still reports the same 22 units per-unit and every other align-llm target is
+   unaffected.
+4. `prompt-verifier-smoke` is restored to the hosted lane in `Makefile`,
+   `scripts/check-gate-topology`, and `docs/specs/check-gate-topology.md` in one change, and
+   `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` passes
+   at that head with the aggregate back inside its historical cost.
 
 ---
 

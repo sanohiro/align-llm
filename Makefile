@@ -14,7 +14,7 @@ ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
 CODING_CORPUS := eval/tasks/coding-v1.json
 
-override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke
+override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke c6e-request2-adoption
 override CAPABLE_ONLY_CHECK_TARGETS := eval-coding baseline-check c6-evaluation-adoption
 override SERIAL_CHECK_AGGREGATES := hosted-checks capable-checks ci
 override REQUESTED_SERIAL_CHECK_AGGREGATES := \
@@ -33,7 +33,7 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption ci
 
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
@@ -104,6 +104,9 @@ failure-memory-smoke: verify-loop-smoke
 prompt-model-smoke:
 	./scripts/run-prompt-model-smoke
 
+prompt-render-parity-smoke:
+	./scripts/run-prompt-render-parity-smoke
+
 prompt-score-smoke:
 	./scripts/run-prompt-score-smoke
 
@@ -112,6 +115,21 @@ prompt-score-prefix-smoke:
 
 prompt-verifier-smoke:
 	./scripts/run-prompt-verifier-smoke
+
+prompt-seed-attestation-smoke:
+	./scripts/run-prompt-seed-attestation-smoke
+
+prompt-experiment-smoke: build
+	./scripts/run-prompt-experiment-smoke
+
+prompt-generate-smoke: build
+	./scripts/run-prompt-generate-smoke
+
+prompt-measurement-adapter-smoke:
+	./scripts/run-prompt-measurement-adapter-smoke
+
+prompt-credential-lifetime-smoke: build
+	./scripts/run-prompt-credential-lifetime-smoke
 
 prompt-state-smoke: build
 	./scripts/run-prompt-state-smoke
@@ -128,8 +146,58 @@ prompt-fixed-adapter-smoke:
 prompt-evaluate-smoke:
 	./scripts/run-prompt-evaluate-smoke
 
+prompt-gate-validator-smoke:
+	./scripts/run-prompt-gate-validator-smoke validator
+
+prompt-gate-source-bundle-smoke:
+	./scripts/run-prompt-gate-validator-smoke source-bundle
+
+prompt-gate-source-revalidation-smoke:
+	./scripts/run-prompt-gate-validator-smoke source-revalidation
+
+prompt-gate-git-replacement-graft-smoke:
+	./scripts/run-prompt-gate-validator-smoke git-replacement-graft
+
+prompt-gate-local-git-config-smoke:
+	./scripts/run-prompt-gate-validator-smoke local-git-config
+
+prompt-gate-ordinary-clone-config-smoke:
+	./scripts/run-prompt-gate-validator-smoke ordinary-clone-config
+
+prompt-gate-replacement-namespace-smoke:
+	./scripts/run-prompt-gate-validator-smoke replacement-namespace
+
+prompt-gate-ancestry-smoke:
+	./scripts/run-prompt-gate-validator-smoke ancestry
+
+prompt-gate-merge-head-ancestry-smoke:
+	./scripts/run-prompt-gate-validator-smoke merge-head-ancestry
+
+# The C6-MEASURED capable gate. Every input is an explicit command-line value; there is no
+# environment, ambient-interpreter, or sibling-checkout fallback, and a missing or empty value
+# fails before the validator starts. The declared interpreter is also the launcher, so the target
+# never invokes an ambient Python or Git to reach the validator.
+prompt-gate-check:
+	@if [ -z "$(C6_GATE_SOURCE_BUNDLE_ROOT)" ] \
+	  || [ -z "$(C6_GATE_PYTHON_EXECUTABLE_PATH)" ] \
+	  || [ -z "$(C6_GATE_GIT_EXECUTABLE_PATH)" ] \
+	  || [ -z "$(C6_GATE_GENERATION_CHILD_PATH)" ] \
+	  || [ -z "$(C6_GATE_GENERATION_CHILD_SHA256)" ]; then \
+	  echo 'prompt gate: ERROR explicit C6_GATE_* input' >&2; \
+	  exit 1; \
+	fi; \
+	"$(C6_GATE_PYTHON_EXECUTABLE_PATH)" ./scripts/prompt-gate-validator.py \
+	  --source-bundle-root "$(C6_GATE_SOURCE_BUNDLE_ROOT)" \
+	  --python-executable-path "$(C6_GATE_PYTHON_EXECUTABLE_PATH)" \
+	  --git-executable-path "$(C6_GATE_GIT_EXECUTABLE_PATH)" \
+	  --generation-child-path "$(C6_GATE_GENERATION_CHILD_PATH)" \
+	  --generation-child-sha256 "$(C6_GATE_GENERATION_CHILD_SHA256)"
+
 c6d-request18-adoption: build
 	ALIGN_C6D_REQUEST18_ADOPTION=1 ./scripts/run-prompt-state-smoke
+
+c6e-request2-adoption:
+	./scripts/run-http-timeout-adoption-smoke
 
 c6f1-request11-adoption:
 	./scripts/run-c6f1-request11-adoption

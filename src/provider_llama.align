@@ -11,6 +11,18 @@ LlamaRequest {
   stream: bool,
 }
 
+// The seeded twin of LlamaRequest: exactly one additional field. Declaring the seed as its own
+// record keeps unseeded request bytes byte-identical to the pre-seed encoding, and its existence
+// is what makes `supports_seed` true for the llama.cpp adapter kind. The record carries no model
+// field, so llama model identity is bound by the provider control and model info, not these bytes.
+LlamaSeededRequest {
+  prompt: str,
+  n_predict: i64,
+  temperature: f64,
+  stream: bool,
+  seed: i64,
+}
+
 LlamaResponse { content: str }
 LlamaTokenRequest { content: str }
 LlamaTokenResponse { tokens: array<i64> }
@@ -18,16 +30,28 @@ StreamParsed { ok: bool, text: string }
 
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_kind(config.kind)?
-  body := request_body(request, false)
-  response := provider_http.post_json(config.endpoint, config.api_key, body, config.timeout_ns)?
-  decoded: LlamaResponse := json.decode(response)?
-  return Ok(decoded.content.clone())
+  body := request_bytes(request, false)
+  response := provider_http.post_json(
+    config.endpoint,
+    config.api_key,
+    body,
+    config.timeout_ns,
+    config.max_response_bytes,
+  )?
+  response_view: str := response
+  return decode_content(response_view)
 }
 
 pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_kind(config.kind)?
-  body := request_body(request, true)
-  response := provider_http.post_json(config.endpoint, config.api_key, body, config.timeout_ns)?
+  body := request_bytes(request, true)
+  response := provider_http.post_json(
+    config.endpoint,
+    config.api_key,
+    body,
+    config.timeout_ns,
+    config.max_response_bytes,
+  )?
   response_view: str := response
   parsed := parse_stream(response_view)
   if !parsed.ok {
@@ -44,7 +68,13 @@ pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.Tok
   }
   payload := LlamaTokenRequest { content: text }
   body := json.encode(payload)
-  response := provider_http.post_json(config.tokenize_endpoint, config.api_key, body, config.timeout_ns)?
+  response := provider_http.post_json(
+    config.tokenize_endpoint,
+    config.api_key,
+    body,
+    config.timeout_ns,
+    config.max_response_bytes,
+  )?
   decoded: LlamaTokenResponse := json.decode(response)?
   return Ok(model.TokenCount { count: decoded.tokens.len(), exact: true })
 }
@@ -71,7 +101,13 @@ pub fn count_prompt(config: model.ProviderConfig, request: model.GenerationReque
   prompt_view: str := prompt
   payload := LlamaTokenRequest { content: prompt_view }
   body := json.encode(payload)
-  response := provider_http.post_json(config.tokenize_endpoint, config.api_key, body, config.timeout_ns) else {
+  response := provider_http.post_json(
+    config.tokenize_endpoint,
+    config.api_key,
+    body,
+    config.timeout_ns,
+    config.max_response_bytes,
+  ) else {
     return model.TokenCount { count: -1, exact: false }
   }
   response_view: str := response
@@ -89,9 +125,24 @@ fn validate_kind(kind: model.ProviderKind) -> Result<(), Error> = match kind {
   LlamaCpp => Ok(()),
 }
 
-fn request_body(request: model.GenerationRequest, streaming: bool) -> string {
+// The single source of llama.cpp request bytes: the same bytes go on the wire and are the SHA-256
+// preimage of the recorded provider request digest.
+pub fn request_bytes(request: model.GenerationRequest, streaming: bool) -> string {
   prompt := prompt_text(request)
   prompt_view: str := prompt
+  match request.seed {
+    Some(seed) => {
+      seeded_payload := LlamaSeededRequest {
+        prompt: prompt_view,
+        n_predict: request.max_tokens,
+        temperature: request.temperature,
+        stream: streaming,
+        seed: seed,
+      }
+      return json.encode(seeded_payload).clone()
+    },
+    None => {},
+  }
   payload := LlamaRequest {
     prompt: prompt_view,
     n_predict: request.max_tokens,
@@ -99,6 +150,17 @@ fn request_body(request: model.GenerationRequest, streaming: bool) -> string {
     stream: streaming,
   }
   return json.encode(payload).clone()
+}
+
+// The envelope decoder shared by the generate path and every other consumer of a 2xx body. The
+// enclosing arena is required by the shipped Request 7 rule: a selected escaped string materializes
+// exactly once in the caller's arena, and a real completion body always escapes. The extracted text
+// is cloned out, so nothing arena-regioned escapes this function.
+pub fn decode_content(response: str) -> Result<string, Error> {
+  arena {
+    decoded: LlamaResponse := json.decode(response)?
+    return Ok(decoded.content.clone())
+  }
 }
 
 fn estimate_tokens(text: str) -> i64 {

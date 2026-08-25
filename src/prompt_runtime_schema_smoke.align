@@ -50,6 +50,54 @@ fn expect_locator_invalid(value: str) -> Result<(), Error> {
   }
 }
 
+fn expect_experiment_request_invalid(value: str) -> Result<(), Error> {
+  return match prompt_artifacts.decode_prompt_experiment_request(value) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn expect_experiment_request_bounded_rejected(
+  value: prompt_artifacts.PromptExperimentRequest,
+  max_bytes: i64,
+) -> Result<(), Error> {
+  return match prompt_artifacts.encode_prompt_experiment_request_bounded(value, max_bytes) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn repeat_ascii(count: i64) -> string {
+  output := builder()
+  mut index := 0
+  loop {
+    if index >= count { break }
+    output.write("a")
+    index = index + 1
+  }
+  return output.to_string()
+}
+
+fn repeat_ascii_b(count: i64) -> string {
+  output := builder()
+  mut index := 0
+  loop {
+    if index >= count { break }
+    output.write("b")
+    index = index + 1
+  }
+  return output.to_string()
+}
+
+fn oversized_endpoint() -> string {
+  output := builder()
+  output.write("https://")
+  filler: string := repeat_ascii(4089)
+  filler_view: str := filler
+  output.write(filler_view)
+  return output.to_string()
+}
+
 fn policy_value(helper: str, runtime: str, interpreter: str, git: str) -> prompt_artifacts.PromptSourceVerifierPolicy {
   return prompt_artifacts.PromptSourceVerifierPolicy {
     schema_version: 1,
@@ -129,11 +177,13 @@ fn request_value(manifest: Option<string>) -> prompt_artifacts.PromptEvaluateReq
     verifier_python_executable_path: "/usr/bin/python3.12".clone(),
     verifier_git_executable_path: "/usr/bin/git".clone(),
     evaluation_evidence_path: "evidence.json".clone(),
+    generation_child_path: "/project/main".clone(),
+    generation_child_sha256: "child".clone(),
   }
 }
 
 fn request_golden() -> Result<(), Error> {
-  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"experiment_path\":\"experiment.json\",\"parent_activation_path\":\"parent.json\",\"corpus_path\":\"corpus.json\",\"sample_count\":2,\"acceptance_policy_path\":\"acceptance.json\",\"workspace_path\":\"/project/workspace\",\"workspace_preflight_path\":\"preflight.json\",\"verifier_align_llm_repository_path\":\"/align-llm\",\"verifier_align_llm_commit\":\"llm\",\"verifier_align_repository_path\":\"/align\",\"verifier_align_revision\":\"align\",\"verifier_corpus_source_path\":\"/corpus\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"corpus\",\"verifier_source_policy_path\":\"source-policy.json\",\"verifier_source_policy_sha256\":\"policy\",\"verifier_python_executable_path\":\"/usr/bin/python3.12\",\"verifier_git_executable_path\":\"/usr/bin/git\",\"evaluation_evidence_path\":\"evidence.json\"}"
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"experiment_path\":\"experiment.json\",\"parent_activation_path\":\"parent.json\",\"corpus_path\":\"corpus.json\",\"sample_count\":2,\"acceptance_policy_path\":\"acceptance.json\",\"workspace_path\":\"/project/workspace\",\"workspace_preflight_path\":\"preflight.json\",\"verifier_align_llm_repository_path\":\"/align-llm\",\"verifier_align_llm_commit\":\"llm\",\"verifier_align_repository_path\":\"/align\",\"verifier_align_revision\":\"align\",\"verifier_corpus_source_path\":\"/corpus\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"corpus\",\"verifier_source_policy_path\":\"source-policy.json\",\"verifier_source_policy_sha256\":\"policy\",\"verifier_python_executable_path\":\"/usr/bin/python3.12\",\"verifier_git_executable_path\":\"/usr/bin/git\",\"evaluation_evidence_path\":\"evidence.json\",\"generation_child_path\":\"/project/main\",\"generation_child_sha256\":\"child\"}"
   decoded := prompt_artifacts.decode_prompt_evaluate_request(expected)?
   if decoded.evaluation_id != "evaluation" || decoded.verifier_python_executable_path != "/usr/bin/python3.12" ||
   decoded.verifier_git_executable_path != "/usr/bin/git" ||
@@ -163,7 +213,7 @@ fn request_golden() -> Result<(), Error> {
     return Err(Error.Invalid)
   }
 
-  some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"experiment_path\":\"experiment.json\",\"parent_activation_path\":\"parent.json\",\"corpus_path\":\"corpus.json\",\"sample_count\":2,\"acceptance_policy_path\":\"acceptance.json\",\"workspace_path\":\"/project/workspace\",\"workspace_preflight_path\":\"preflight.json\",\"verifier_align_llm_repository_path\":\"/align-llm\",\"verifier_align_llm_commit\":\"llm\",\"verifier_align_repository_path\":\"/align\",\"verifier_align_revision\":\"align\",\"verifier_corpus_source_path\":\"/corpus\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_file_set_manifest_path\":\"/manifest\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"corpus\",\"verifier_source_policy_path\":\"source-policy.json\",\"verifier_source_policy_sha256\":\"policy\",\"verifier_python_executable_path\":\"/usr/bin/python3.12\",\"verifier_git_executable_path\":\"/usr/bin/git\",\"evaluation_evidence_path\":\"evidence.json\"}"
+  some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"experiment_path\":\"experiment.json\",\"parent_activation_path\":\"parent.json\",\"corpus_path\":\"corpus.json\",\"sample_count\":2,\"acceptance_policy_path\":\"acceptance.json\",\"workspace_path\":\"/project/workspace\",\"workspace_preflight_path\":\"preflight.json\",\"verifier_align_llm_repository_path\":\"/align-llm\",\"verifier_align_llm_commit\":\"llm\",\"verifier_align_repository_path\":\"/align\",\"verifier_align_revision\":\"align\",\"verifier_corpus_source_path\":\"/corpus\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_file_set_manifest_path\":\"/manifest\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"corpus\",\"verifier_source_policy_path\":\"source-policy.json\",\"verifier_source_policy_sha256\":\"policy\",\"verifier_python_executable_path\":\"/usr/bin/python3.12\",\"verifier_git_executable_path\":\"/usr/bin/git\",\"evaluation_evidence_path\":\"evidence.json\",\"generation_child_path\":\"/project/main\",\"generation_child_sha256\":\"child\"}"
   if prompt_artifacts.encode_prompt_evaluate_request(request_value(Some("/manifest".clone()))) != some_expected {
     return Err(Error.Invalid)
   }
@@ -190,15 +240,17 @@ fn locator_value(manifest: Option<string>) -> prompt_artifacts.PromptGateSourceL
     source_verifier_runtime: "CPYTHON:python:helper".clone(),
     source_verifier_interpreter_sha256: "python".clone(),
     git_executable_sha256: "git".clone(),
+    generation_child_sha256: "child".clone(),
     content_sha256: "locator".clone(),
   }
 }
 
 fn locator_golden() -> Result<(), Error> {
-  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"locator\"}"
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"generation_child_sha256\":\"child\",\"content_sha256\":\"locator\"}"
   decoded := prompt_artifacts.decode_prompt_gate_source_locator(expected)?
   if decoded.source_bundle_id != "bundle" || decoded.source_verifier_sha256 != "helper" ||
   decoded.source_verifier_interpreter_sha256 != "python" || decoded.git_executable_sha256 != "git" ||
+  decoded.generation_child_sha256 != "child" ||
   match decoded.corpus_file_set_manifest_relative_path { Some(_) => true, None => false } {
     return Err(Error.Invalid)
   }
@@ -225,7 +277,7 @@ fn locator_golden() -> Result<(), Error> {
     return Err(Error.Invalid)
   }
 
-  some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"corpus_file_set_manifest_relative_path\":\"manifest\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"locator\"}"
+  some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"corpus_file_set_manifest_relative_path\":\"manifest\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"generation_child_sha256\":\"child\",\"content_sha256\":\"locator\"}"
   if prompt_artifacts.encode_prompt_gate_source_locator(locator_value(Some("manifest".clone()))) != some_expected {
     return Err(Error.Invalid)
   }
@@ -236,11 +288,691 @@ fn locator_golden() -> Result<(), Error> {
   }
 }
 
+EXPERIMENT_REQUEST_INVALID_CASE_COUNT := 34
+EXPERIMENT_REQUEST_ACCEPTED_CASE_COUNT := 11
+
+fn experiment_request_value(
+  kind: str,
+  endpoint: str,
+  api_key_env: Option<string>,
+  tokenize_endpoint: Option<string>,
+) -> prompt_artifacts.PromptExperimentRequest {
+  return prompt_artifacts.PromptExperimentRequest {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EXPERIMENT_REQUEST".clone(),
+    experiment_id: "experiment".clone(),
+    project_root: "/project".clone(),
+    parent_activation_path: "parent.json".clone(),
+    opportunity_path: "opportunity.json".clone(),
+    proposal_provider_kind: kind.clone(),
+    proposal_provider_endpoint: endpoint.clone(),
+    proposal_provider_endpoint_id: "endpoint".clone(),
+    proposal_provider_model: "model".clone(),
+    api_key_env: api_key_env,
+    tokenize_endpoint: tokenize_endpoint,
+    timeout_ns: 60_000_000_000,
+    max_prompt_bytes: 262_144,
+    max_tokens: 8_192,
+    temperature_micros: 0,
+  }
+}
+
+fn cloud_experiment_request() -> prompt_artifacts.PromptExperimentRequest {
+  return experiment_request_value(
+    "CLOUD_OPENAI",
+    "https://provider.invalid/v1/chat/completions",
+    Some("ALIGN_LLM_API_KEY".clone()),
+    None,
+  )
+}
+
+fn local_experiment_request() -> prompt_artifacts.PromptExperimentRequest {
+  return experiment_request_value(
+    "LOCAL_OPENAI",
+    "http://127.0.0.1:8000/v1/chat/completions",
+    None,
+    None,
+  )
+}
+
+fn llama_experiment_request() -> prompt_artifacts.PromptExperimentRequest {
+  return experiment_request_value(
+    "LLAMA_CPP",
+    "http://127.0.0.1:8080/completion",
+    None,
+    Some("http://127.0.0.1:8080/tokenize".clone()),
+  )
+}
+
+fn experiment_request_options_match(
+  borrow request: prompt_artifacts.PromptExperimentRequest,
+  api_key_env: str,
+  tokenize_endpoint: str,
+) -> bool {
+  api_key_valid := match request.api_key_env {
+    None => api_key_env.len() == 0,
+    Some(name) => name == api_key_env,
+  }
+  tokenize_valid := match request.tokenize_endpoint {
+    None => tokenize_endpoint.len() == 0,
+    Some(endpoint) => endpoint == tokenize_endpoint,
+  }
+  return api_key_valid && tokenize_valid
+}
+
+// One row per section 5.1 bound plus the schema-version and artifact-kind checks. Each row mutates
+// exactly one field of an otherwise valid request, so a rejected row proves that specific check.
+fn experiment_request_invalid_case(index: i64) -> prompt_artifacts.PromptExperimentRequest {
+  if index == 33 {
+    mut llama := llama_experiment_request()
+    llama.tokenize_endpoint = Some("ftp://127.0.0.1:8080/tokenize".clone())
+    return llama
+  }
+  mut request := cloud_experiment_request()
+  if index == 0 { request.schema_version = 2 }
+  if index == 1 { request.artifact_kind = "PROMPT_EXPERIMENT_RESULT".clone() }
+  if index == 2 { request.experiment_id = "".clone() }
+  if index == 3 { request.experiment_id = repeat_ascii(97) }
+  if index == 4 { request.project_root = "".clone() }
+  if index == 5 { request.project_root = repeat_ascii(4097) }
+  if index == 6 { request.parent_activation_path = "".clone() }
+  if index == 7 { request.opportunity_path = "".clone() }
+  if index == 8 { request.proposal_provider_kind = "FIXTURE".clone() }
+  if index == 9 { request.proposal_provider_kind = "cloud_openai".clone() }
+  if index == 10 { request.proposal_provider_endpoint = "http://provider.invalid/v1/chat/completions".clone() }
+  if index == 11 { request.proposal_provider_endpoint = "https://user:secret@provider.invalid/v1".clone() }
+  if index == 12 { request.proposal_provider_endpoint = "https://provider.invalid/v1?api_key=secret".clone() }
+  if index == 13 { request.proposal_provider_endpoint = "https://provider.invalid/v1#fragment".clone() }
+  if index == 14 { request.proposal_provider_endpoint = "provider.invalid/v1".clone() }
+  if index == 15 { request.proposal_provider_endpoint = "https:///v1".clone() }
+  if index == 16 { request.proposal_provider_endpoint = oversized_endpoint() }
+  if index == 17 { request.proposal_provider_endpoint_id = "".clone() }
+  if index == 18 { request.proposal_provider_endpoint_id = repeat_ascii(257) }
+  if index == 19 { request.proposal_provider_model = "".clone() }
+  if index == 20 { request.proposal_provider_model = repeat_ascii(257) }
+  if index == 21 { request.api_key_env = None }
+  if index == 22 { request.api_key_env = Some("1BAD_NAME".clone()) }
+  if index == 23 { request.api_key_env = Some("BAD-NAME".clone()) }
+  if index == 24 { request.tokenize_endpoint = Some("https://provider.invalid/tokenize".clone()) }
+  if index == 25 { request.timeout_ns = 0 }
+  if index == 26 { request.timeout_ns = 7_200_000_000_001 }
+  if index == 27 { request.max_prompt_bytes = 0 }
+  if index == 28 { request.max_prompt_bytes = 262_145 }
+  if index == 29 { request.max_tokens = 0 }
+  if index == 30 { request.max_tokens = 8_193 }
+  if index == 31 { request.temperature_micros = -1 }
+  if index == 32 { request.temperature_micros = 1_000_001 }
+  return request
+}
+
+// The inclusive edge of every section 5.1 bound must stay accepted.
+fn experiment_request_accepted_case(index: i64) -> prompt_artifacts.PromptExperimentRequest {
+  mut request := cloud_experiment_request()
+  if index == 0 { request.timeout_ns = 1 }
+  if index == 1 { request.timeout_ns = 7_200_000_000_000 }
+  if index == 2 { request.max_prompt_bytes = 1 }
+  if index == 3 { request.max_prompt_bytes = 262_144 }
+  if index == 4 { request.max_tokens = 1 }
+  if index == 5 { request.max_tokens = 8_192 }
+  if index == 6 { request.temperature_micros = 0 }
+  if index == 7 { request.temperature_micros = 1_000_000 }
+  if index == 8 { request.experiment_id = repeat_ascii(96) }
+  if index == 9 { request.proposal_provider_endpoint_id = repeat_ascii(256) }
+  if index == 10 { request.proposal_provider_model = repeat_ascii(256) }
+  return request
+}
+
+fn experiment_request_validation_rows() -> Result<(), Error> {
+  mut index := 0
+  loop {
+    if index >= EXPERIMENT_REQUEST_INVALID_CASE_COUNT { break }
+    invalid_row := experiment_request_invalid_case(index)
+    if prompt_artifacts.verify_prompt_experiment_request(invalid_row) {
+      print("experiment request invalid row accepted:")
+      print(index)
+      return Err(Error.Invalid)
+    }
+    index = index + 1
+  }
+  mut accepted := 0
+  loop {
+    if accepted >= EXPERIMENT_REQUEST_ACCEPTED_CASE_COUNT { break }
+    accepted_row := experiment_request_accepted_case(accepted)
+    if !prompt_artifacts.verify_prompt_experiment_request(accepted_row) {
+      print("experiment request accepted row rejected:")
+      print(accepted)
+      return Err(Error.Invalid)
+    }
+    accepted = accepted + 1
+  }
+  cloud := cloud_experiment_request()
+  local := local_experiment_request()
+  llama := llama_experiment_request()
+  if !prompt_artifacts.verify_prompt_experiment_request(cloud) ||
+  !prompt_artifacts.verify_prompt_experiment_request(local) ||
+  !prompt_artifacts.verify_prompt_experiment_request(llama) {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn experiment_request_golden() -> Result<(), Error> {
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"CLOUD_OPENAI\",\"proposal_provider_endpoint\":\"https://provider.invalid/v1/chat/completions\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"api_key_env\":\"ALIGN_LLM_API_KEY\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
+  if prompt_artifacts.encode_prompt_experiment_request(cloud_experiment_request()) != expected {
+    return Err(Error.Invalid)
+  }
+  decoded := prompt_artifacts.decode_prompt_experiment_request(expected)?
+  if decoded.schema_version != 1 || decoded.artifact_kind != "PROMPT_EXPERIMENT_REQUEST" ||
+  decoded.experiment_id != "experiment" || decoded.project_root != "/project" ||
+  decoded.parent_activation_path != "parent.json" ||
+  decoded.opportunity_path != "opportunity.json" ||
+  decoded.proposal_provider_kind != "CLOUD_OPENAI" ||
+  decoded.proposal_provider_endpoint != "https://provider.invalid/v1/chat/completions" ||
+  decoded.proposal_provider_endpoint_id != "endpoint" ||
+  decoded.proposal_provider_model != "model" ||
+  decoded.timeout_ns != 60_000_000_000 || decoded.max_prompt_bytes != 262_144 ||
+  decoded.max_tokens != 8_192 || decoded.temperature_micros != 0 ||
+  !experiment_request_options_match(decoded, "ALIGN_LLM_API_KEY", "") ||
+  !prompt_artifacts.verify_prompt_experiment_request(decoded) {
+    return Err(Error.Invalid)
+  }
+  if prompt_artifacts.encode_prompt_experiment_request(decoded) != expected {
+    return Err(Error.Invalid)
+  }
+
+  bounded := prompt_artifacts.encode_prompt_experiment_request_bounded(cloud_experiment_request(), 65_536)?
+  bounded_view: str := bounded
+  if bounded_view != expected { return Err(Error.Invalid) }
+  expect_experiment_request_bounded_rejected(cloud_experiment_request(), 16)?
+
+  llama_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"LLAMA_CPP\",\"proposal_provider_endpoint\":\"http://127.0.0.1:8080/completion\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"tokenize_endpoint\":\"http://127.0.0.1:8080/tokenize\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
+  if prompt_artifacts.encode_prompt_experiment_request(llama_experiment_request()) != llama_expected {
+    return Err(Error.Invalid)
+  }
+  llama_decoded := prompt_artifacts.decode_prompt_experiment_request(llama_expected)?
+  if !experiment_request_options_match(llama_decoded, "", "http://127.0.0.1:8080/tokenize") ||
+  !prompt_artifacts.verify_prompt_experiment_request(llama_decoded) {
+    return Err(Error.Invalid)
+  }
+  if prompt_artifacts.encode_prompt_experiment_request(llama_decoded) != llama_expected {
+    return Err(Error.Invalid)
+  }
+
+  local_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"LOCAL_OPENAI\",\"proposal_provider_endpoint\":\"http://127.0.0.1:8000/v1/chat/completions\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
+  if prompt_artifacts.encode_prompt_experiment_request(local_experiment_request()) != local_expected {
+    return Err(Error.Invalid)
+  }
+  local_decoded := prompt_artifacts.decode_prompt_experiment_request(local_expected)?
+  if !experiment_request_options_match(local_decoded, "", "") ||
+  !prompt_artifacts.verify_prompt_experiment_request(local_decoded) {
+    return Err(Error.Invalid)
+  }
+
+  legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\"}"
+  expect_experiment_request_invalid(legacy)?
+  duplicate: string := duplicate_first_field(expected)
+  duplicate_view: str := duplicate
+  expect_experiment_request_invalid(duplicate_view)?
+  normal_prefix := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\","
+  reordered: string := reorder_first_fields(expected, normal_prefix, "PROMPT_EXPERIMENT_REQUEST")
+  reordered_view: str := reordered
+  expect_experiment_request_invalid(reordered_view)?
+
+  // A decoded explicit `null` normalizes to the same `None` for either optional field, in any
+  // combination, but only in declaration order.
+  tokenize_null: string := insert_null_field(local_expected, "\"timeout_ns\":", "tokenize_endpoint")?
+  tokenize_null_view: str := tokenize_null
+  tokenize_null_decoded := prompt_artifacts.decode_prompt_experiment_request(tokenize_null_view)?
+  if !experiment_request_options_match(tokenize_null_decoded, "", "") { return Err(Error.Invalid) }
+  api_key_null: string := insert_null_field(local_expected, "\"timeout_ns\":", "api_key_env")?
+  api_key_null_view: str := api_key_null
+  api_key_null_decoded := prompt_artifacts.decode_prompt_experiment_request(api_key_null_view)?
+  if !experiment_request_options_match(api_key_null_decoded, "", "") { return Err(Error.Invalid) }
+  both_null: string := insert_null_field(tokenize_null_view, "\"tokenize_endpoint\":", "api_key_env")?
+  both_null_view: str := both_null
+  both_null_decoded := prompt_artifacts.decode_prompt_experiment_request(both_null_view)?
+  if !experiment_request_options_match(both_null_decoded, "", "") { return Err(Error.Invalid) }
+  swapped: string := insert_null_field(tokenize_null_view, "\"timeout_ns\":", "api_key_env")?
+  swapped_view: str := swapped
+  expect_experiment_request_invalid(swapped_view)?
+
+  cloud_request := cloud_experiment_request()
+  llama_request := llama_experiment_request()
+  digest := prompt_artifacts.prompt_experiment_request_content_digest(cloud_request)?
+  digest_view: str := digest
+  llama_digest := prompt_artifacts.prompt_experiment_request_content_digest(llama_request)?
+  llama_digest_view: str := llama_digest
+  if digest_view.len() != 64 || digest_view == llama_digest_view { return Err(Error.Invalid) }
+  repeat_digest := prompt_artifacts.prompt_experiment_request_content_digest(cloud_request)?
+  repeat_digest_view: str := repeat_digest
+  if repeat_digest_view != digest_view { return Err(Error.Invalid) }
+  return experiment_request_validation_rows()
+}
+
+GENERATION_REQUEST_INVALID_CASE_COUNT := 24
+GENERATION_REQUEST_ACCEPTED_CASE_COUNT := 9
+
+fn expect_generation_request_invalid(value: str) -> Result<(), Error> {
+  return match prompt_artifacts.decode_prompt_generation_request(value) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn expect_generation_request_bounded_rejected(
+  value: prompt_artifacts.PromptGenerationRequest,
+  max_bytes: i64,
+) -> Result<(), Error> {
+  return match prompt_artifacts.encode_prompt_generation_request_bounded(value, max_bytes) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn expect_generation_response_bounded_rejected(
+  value: prompt_artifacts.PromptGenerationResponse,
+  max_bytes: i64,
+) -> Result<(), Error> {
+  return match prompt_artifacts.encode_prompt_generation_response_bounded(value, max_bytes) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn generation_request_value(
+  kind: str,
+  endpoint: str,
+  api_key_env: Option<string>,
+  content_sha256: str,
+) -> prompt_artifacts.PromptGenerationRequest {
+  return prompt_artifacts.PromptGenerationRequest {
+    schema_version: 1,
+    artifact_kind: "PROMPT_GENERATION_REQUEST".clone(),
+    request_id: "generation".clone(),
+    provider_kind: kind.clone(),
+    endpoint: endpoint.clone(),
+    provider_model: "model".clone(),
+    api_key_env: api_key_env,
+    rendered_prompt_path: "rendered.json".clone(),
+    rendered_prompt_sha256: repeat_ascii(64),
+    max_tokens: 8_192,
+    temperature_micros: 0,
+    paired_seed: 42,
+    timeout_ns: 60_000_000_000,
+    max_response_bytes: 262_144,
+    content_sha256: content_sha256.clone(),
+  }
+}
+
+fn local_generation_request() -> prompt_artifacts.PromptGenerationRequest {
+  return generation_request_value(
+    "LOCAL_OPENAI",
+    "http://127.0.0.1:8000/v1/chat/completions",
+    None,
+    "5e02a38edb741ef65daa65c35c60c6c96ce65e08829d36b9129d8787a40de508",
+  )
+}
+
+fn cloud_generation_request() -> prompt_artifacts.PromptGenerationRequest {
+  return generation_request_value(
+    "CLOUD_OPENAI",
+    "https://provider.invalid/v1/chat/completions",
+    Some("ALIGN_LLM_API_KEY".clone()),
+    "104c8806a24a02ded8ad308fa89eeff6081a2a9e28c181cadbe345197e71b7d3",
+  )
+}
+
+fn llama_generation_request() -> prompt_artifacts.PromptGenerationRequest {
+  return generation_request_value(
+    "LLAMA_CPP",
+    "http://127.0.0.1:8080/completion",
+    None,
+    "53a33169529ea4373c134bb7a36b382a2b76384f93421bc379cc6bfff7b612ad",
+  )
+}
+
+fn generation_request_credential_matches(
+  borrow request: prompt_artifacts.PromptGenerationRequest,
+  api_key_env: str,
+) -> bool {
+  return match request.api_key_env {
+    None => api_key_env.len() == 0,
+    Some(name) => name == api_key_env,
+  }
+}
+
+// One row per section 1.2 bound plus the schema-version, artifact-kind, kind-admission, and
+// content-digest checks. Each row mutates exactly one field of an otherwise valid request, so a
+// rejected row proves that specific check: `verify_prompt_generation_request` evaluates every bound
+// and label before it consults the content digest, so each row is rejected by the check it targets
+// rather than by the digest its mutation also invalidates.
+fn generation_request_invalid_case(index: i64) -> prompt_artifacts.PromptGenerationRequest {
+  if index == 21 {
+    mut llama := llama_generation_request()
+    llama.api_key_env = Some("ALIGN_LLM_API_KEY".clone())
+    return llama
+  }
+  mut request := cloud_generation_request()
+  if index == 0 { request.schema_version = 2 }
+  if index == 1 { request.artifact_kind = "PROMPT_GENERATION_RESPONSE".clone() }
+  if index == 2 { request.request_id = "".clone() }
+  if index == 3 { request.request_id = repeat_ascii(97) }
+  // `model.ProviderKind` gains no `FIXTURE` variant: the evaluator-level control never reaches
+  // provider dispatch, so it is rejected here.
+  if index == 4 { request.provider_kind = "FIXTURE".clone() }
+  if index == 5 { request.provider_kind = "cloud_openai".clone() }
+  if index == 6 { request.endpoint = "http://provider.invalid/v1/chat/completions".clone() }
+  if index == 7 { request.endpoint = "https://user:secret@provider.invalid/v1".clone() }
+  if index == 8 { request.endpoint = "https://provider.invalid/v1?api_key=secret".clone() }
+  if index == 9 { request.endpoint = "https://provider.invalid/v1#fragment".clone() }
+  if index == 10 { request.endpoint = oversized_endpoint() }
+  if index == 11 { request.provider_model = "".clone() }
+  if index == 12 { request.rendered_prompt_path = "".clone() }
+  if index == 13 { request.rendered_prompt_sha256 = "not-a-digest".clone() }
+  if index == 14 { request.max_tokens = 0 }
+  if index == 15 { request.max_tokens = 1_048_577 }
+  if index == 16 { request.temperature_micros = -1 }
+  if index == 17 { request.temperature_micros = 1_000_001 }
+  if index == 18 { request.timeout_ns = 0 }
+  if index == 19 { request.timeout_ns = 7_200_000_000_001 }
+  if index == 20 { request.max_response_bytes = 0 }
+  if index == 22 { request.max_response_bytes = 1_048_577 }
+  if index == 23 { request.api_key_env = None }
+  return request
+}
+
+// The inclusive edge of every bound, and the digest binding itself, must stay accepted. Each row is
+// rebound by the caller before validation, so only the field under test differs.
+fn generation_request_accepted_case(index: i64) -> prompt_artifacts.PromptGenerationRequest {
+  mut request := cloud_generation_request()
+  if index == 0 { request.max_tokens = 1 }
+  if index == 1 { request.max_tokens = 1_048_576 }
+  if index == 2 { request.temperature_micros = 1_000_000 }
+  if index == 3 { request.timeout_ns = 1 }
+  if index == 4 { request.timeout_ns = 7_200_000_000_000 }
+  if index == 5 { request.max_response_bytes = 1 }
+  if index == 6 { request.max_response_bytes = 1_048_576 }
+  if index == 7 { request.request_id = repeat_ascii(96) }
+  if index == 8 { request.paired_seed = -9_223_372_036_854_775_807 }
+  return request
+}
+
+fn rebound_generation_request(
+  value: prompt_artifacts.PromptGenerationRequest,
+) -> Result<prompt_artifacts.PromptGenerationRequest, Error> {
+  mut rebound := value
+  rebound.content_sha256 = "".clone()
+  digest := prompt_artifacts.prompt_generation_request_content_digest(rebound)?
+  rebound.content_sha256 = digest
+  return Ok(rebound)
+}
+
+fn generation_request_validation_rows() -> Result<(), Error> {
+  mut index := 0
+  loop {
+    if index >= GENERATION_REQUEST_INVALID_CASE_COUNT { break }
+    invalid_row := generation_request_invalid_case(index)
+    if prompt_artifacts.verify_prompt_generation_request(invalid_row) {
+      print("generation request invalid row accepted:")
+      print(index)
+      return Err(Error.Invalid)
+    }
+    index = index + 1
+  }
+  mut accepted := 0
+  loop {
+    if accepted >= GENERATION_REQUEST_ACCEPTED_CASE_COUNT { break }
+    accepted_row := rebound_generation_request(generation_request_accepted_case(accepted))?
+    if !prompt_artifacts.verify_prompt_generation_request(accepted_row) {
+      print("generation request accepted row rejected:")
+      print(accepted)
+      return Err(Error.Invalid)
+    }
+    accepted = accepted + 1
+  }
+  // A rebound record whose declared digest no longer binds its own bytes is rejected: the content
+  // digest is part of the record's validation, not a later step.
+  mut tampered := cloud_generation_request()
+  tampered.paired_seed = 43
+  if prompt_artifacts.verify_prompt_generation_request(tampered) {
+    return Err(Error.Invalid)
+  }
+  cloud := cloud_generation_request()
+  local := local_generation_request()
+  llama := llama_generation_request()
+  if !prompt_artifacts.verify_prompt_generation_request(cloud) ||
+  !prompt_artifacts.verify_prompt_generation_request(local) ||
+  !prompt_artifacts.verify_prompt_generation_request(llama) {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn generation_request_golden() -> Result<(), Error> {
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"generation\",\"provider_kind\":\"LOCAL_OPENAI\",\"endpoint\":\"http://127.0.0.1:8000/v1/chat/completions\",\"provider_model\":\"model\",\"rendered_prompt_path\":\"rendered.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":8192,\"temperature_micros\":0,\"paired_seed\":42,\"timeout_ns\":60000000000,\"max_response_bytes\":262144,\"content_sha256\":\"5e02a38edb741ef65daa65c35c60c6c96ce65e08829d36b9129d8787a40de508\"}"
+  if prompt_artifacts.encode_prompt_generation_request(local_generation_request()) != expected {
+    return Err(Error.Invalid)
+  }
+  decoded := prompt_artifacts.decode_prompt_generation_request(expected)?
+  if decoded.schema_version != 1 || decoded.artifact_kind != "PROMPT_GENERATION_REQUEST" ||
+  decoded.request_id != "generation" || decoded.provider_kind != "LOCAL_OPENAI" ||
+  decoded.endpoint != "http://127.0.0.1:8000/v1/chat/completions" ||
+  decoded.provider_model != "model" || decoded.rendered_prompt_path != "rendered.json" ||
+  decoded.max_tokens != 8_192 || decoded.temperature_micros != 0 || decoded.paired_seed != 42 ||
+  decoded.timeout_ns != 60_000_000_000 || decoded.max_response_bytes != 262_144 ||
+  !generation_request_credential_matches(decoded, "") ||
+  !prompt_artifacts.verify_prompt_generation_request(decoded) {
+    return Err(Error.Invalid)
+  }
+  if prompt_artifacts.encode_prompt_generation_request(decoded) != expected {
+    return Err(Error.Invalid)
+  }
+
+  bounded := prompt_artifacts.encode_prompt_generation_request_bounded(local_generation_request(), 65_536)?
+  bounded_view: str := bounded
+  if bounded_view != expected { return Err(Error.Invalid) }
+  expect_generation_request_bounded_rejected(local_generation_request(), 16)?
+
+  cloud_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"generation\",\"provider_kind\":\"CLOUD_OPENAI\",\"endpoint\":\"https://provider.invalid/v1/chat/completions\",\"provider_model\":\"model\",\"api_key_env\":\"ALIGN_LLM_API_KEY\",\"rendered_prompt_path\":\"rendered.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":8192,\"temperature_micros\":0,\"paired_seed\":42,\"timeout_ns\":60000000000,\"max_response_bytes\":262144,\"content_sha256\":\"104c8806a24a02ded8ad308fa89eeff6081a2a9e28c181cadbe345197e71b7d3\"}"
+  if prompt_artifacts.encode_prompt_generation_request(cloud_generation_request()) != cloud_expected {
+    return Err(Error.Invalid)
+  }
+  cloud_decoded := prompt_artifacts.decode_prompt_generation_request(cloud_expected)?
+  if !generation_request_credential_matches(cloud_decoded, "ALIGN_LLM_API_KEY") ||
+  !prompt_artifacts.verify_prompt_generation_request(cloud_decoded) {
+    return Err(Error.Invalid)
+  }
+  if prompt_artifacts.encode_prompt_generation_request(cloud_decoded) != cloud_expected {
+    return Err(Error.Invalid)
+  }
+
+  llama_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"generation\",\"provider_kind\":\"LLAMA_CPP\",\"endpoint\":\"http://127.0.0.1:8080/completion\",\"provider_model\":\"model\",\"rendered_prompt_path\":\"rendered.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":8192,\"temperature_micros\":0,\"paired_seed\":42,\"timeout_ns\":60000000000,\"max_response_bytes\":262144,\"content_sha256\":\"53a33169529ea4373c134bb7a36b382a2b76384f93421bc379cc6bfff7b612ad\"}"
+  if prompt_artifacts.encode_prompt_generation_request(llama_generation_request()) != llama_expected {
+    return Err(Error.Invalid)
+  }
+
+  legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"generation\"}"
+  expect_generation_request_invalid(legacy)?
+  duplicate: string := duplicate_first_field(expected)
+  duplicate_view: str := duplicate
+  expect_generation_request_invalid(duplicate_view)?
+  normal_prefix := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\","
+  reordered: string := reorder_first_fields(expected, normal_prefix, "PROMPT_GENERATION_REQUEST")
+  reordered_view: str := reordered
+  expect_generation_request_invalid(reordered_view)?
+
+  // A decoded explicit `null` normalizes to the same `None`, but only in declaration order.
+  api_key_null: string := insert_null_field(expected, "\"rendered_prompt_path\":", "api_key_env")?
+  api_key_null_view: str := api_key_null
+  api_key_null_decoded := prompt_artifacts.decode_prompt_generation_request(api_key_null_view)?
+  if !generation_request_credential_matches(api_key_null_decoded, "") { return Err(Error.Invalid) }
+  swapped: string := insert_null_field(expected, "\"max_tokens\":", "api_key_env")?
+  swapped_view: str := swapped
+  expect_generation_request_invalid(swapped_view)?
+
+  local_request := local_generation_request()
+  llama_request := llama_generation_request()
+  repeat_request := local_generation_request()
+  local_digest := prompt_artifacts.prompt_generation_request_content_digest(local_request)?
+  local_digest_view: str := local_digest
+  llama_digest := prompt_artifacts.prompt_generation_request_content_digest(llama_request)?
+  llama_digest_view: str := llama_digest
+  if local_digest_view.len() != 64 || local_digest_view == llama_digest_view {
+    return Err(Error.Invalid)
+  }
+  repeat_digest := prompt_artifacts.prompt_generation_request_content_digest(repeat_request)?
+  repeat_digest_view: str := repeat_digest
+  if repeat_digest_view != local_digest_view { return Err(Error.Invalid) }
+  return generation_request_validation_rows()
+}
+
+fn generation_response_value(
+  status: str,
+  error_code: str,
+  detail: str,
+  seed_result: str,
+  applied_seed: Option<i64>,
+  http_status: Option<i64>,
+  content: Option<string>,
+  content_sha256: str,
+) -> prompt_artifacts.PromptGenerationResponse {
+  return prompt_artifacts.PromptGenerationResponse {
+    schema_version: 1,
+    artifact_kind: "PROMPT_GENERATION_RESPONSE".clone(),
+    request_id: "generation".clone(),
+    status: status.clone(),
+    error_code: error_code.clone(),
+    error: detail.clone(),
+    provider_kind: "LOCAL_OPENAI".clone(),
+    provider_model: "model".clone(),
+    provider_request_sha256: repeat_ascii_b(64),
+    seed_result: seed_result.clone(),
+    applied_seed: applied_seed,
+    http_status: http_status,
+    content: content,
+    dispatch_start_ns: 10,
+    dispatch_end_ns: 20,
+    content_sha256: content_sha256.clone(),
+  }
+}
+
+fn generated_response() -> prompt_artifacts.PromptGenerationResponse {
+  return generation_response_value(
+    "GENERATED",
+    "NONE",
+    "",
+    "APPLIED",
+    Some(42),
+    Some(200),
+    Some("patch text".clone()),
+    "53fb73003932f7a481d989eefca9db4800399b9c63ffc7dea47e5ddf20693a76",
+  )
+}
+
+fn undispatched_response() -> prompt_artifacts.PromptGenerationResponse {
+  return generation_response_value(
+    "PROVIDER_ERROR",
+    "PROVIDER_TIMEOUT",
+    "generation provider transport failure",
+    "UNSUPPORTED",
+    None,
+    None,
+    None,
+    "90e574f52668e143035e433f48e08b133c70d73717c0758d8547421e273a207c",
+  )
+}
+
+fn generation_response_golden() -> Result<(), Error> {
+  expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_RESPONSE\",\"request_id\":\"generation\",\"status\":\"GENERATED\",\"error_code\":\"NONE\",\"error\":\"\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_result\":\"APPLIED\",\"applied_seed\":42,\"http_status\":200,\"content\":\"patch text\",\"dispatch_start_ns\":10,\"dispatch_end_ns\":20,\"content_sha256\":\"53fb73003932f7a481d989eefca9db4800399b9c63ffc7dea47e5ddf20693a76\"}"
+  if prompt_artifacts.encode_prompt_generation_response(generated_response()) != expected {
+    return Err(Error.Invalid)
+  }
+  decoded := prompt_artifacts.decode_prompt_generation_response(expected)?
+  if decoded.schema_version != 1 || decoded.artifact_kind != "PROMPT_GENERATION_RESPONSE" ||
+  decoded.request_id != "generation" || decoded.status != "GENERATED" ||
+  decoded.error_code != "NONE" || decoded.error.len() != 0 ||
+  decoded.provider_kind != "LOCAL_OPENAI" || decoded.provider_model != "model" ||
+  decoded.seed_result != "APPLIED" || decoded.dispatch_start_ns != 10 ||
+  decoded.dispatch_end_ns != 20 ||
+  !prompt_artifacts.verify_prompt_generation_response_content(decoded) {
+    return Err(Error.Invalid)
+  }
+  if prompt_artifacts.encode_prompt_generation_response(
+    prompt_artifacts.clone_prompt_generation_response(decoded),
+  ) != expected {
+    return Err(Error.Invalid)
+  }
+  applied_ok := match decoded.applied_seed { None => false, Some(seed) => seed == 42 }
+  status_ok := match decoded.http_status { None => false, Some(code) => code == 200 }
+  content_ok := match decoded.content { None => false, Some(text) => text == "patch text" }
+  if !applied_ok || !status_ok || !content_ok { return Err(Error.Invalid) }
+
+  // The three optional fields are omitted together on every response that never reached a received
+  // HTTP response, and `UNSUPPORTED`/`REJECTED` require an absent `applied_seed`.
+  sparse_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_RESPONSE\",\"request_id\":\"generation\",\"status\":\"PROVIDER_ERROR\",\"error_code\":\"PROVIDER_TIMEOUT\",\"error\":\"generation provider transport failure\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_result\":\"UNSUPPORTED\",\"dispatch_start_ns\":10,\"dispatch_end_ns\":20,\"content_sha256\":\"90e574f52668e143035e433f48e08b133c70d73717c0758d8547421e273a207c\"}"
+  if prompt_artifacts.encode_prompt_generation_response(undispatched_response()) != sparse_expected {
+    return Err(Error.Invalid)
+  }
+  sparse_decoded := prompt_artifacts.decode_prompt_generation_response(sparse_expected)?
+  if !prompt_artifacts.verify_prompt_generation_response_content(sparse_decoded) {
+    return Err(Error.Invalid)
+  }
+  if prompt_artifacts.encode_prompt_generation_response(
+    prompt_artifacts.clone_prompt_generation_response(sparse_decoded),
+  ) != sparse_expected {
+    return Err(Error.Invalid)
+  }
+  sparse_applied := match sparse_decoded.applied_seed { None => true, Some(_) => false }
+  sparse_status := match sparse_decoded.http_status { None => true, Some(_) => false }
+  sparse_content := match sparse_decoded.content { None => true, Some(_) => false }
+  if !sparse_applied || !sparse_status || !sparse_content {
+    return Err(Error.Invalid)
+  }
+
+  bounded := prompt_artifacts.encode_prompt_generation_response_bounded(generated_response(), 2_097_152)?
+  bounded_view: str := bounded
+  if bounded_view != expected { return Err(Error.Invalid) }
+  expect_generation_response_bounded_rejected(generated_response(), 16)?
+
+  // A real completion body always escapes; the response codec must round-trip those bytes.
+  escaped := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_RESPONSE\",\"request_id\":\"generation\",\"status\":\"GENERATED\",\"error_code\":\"NONE\",\"error\":\"\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_result\":\"APPLIED\",\"applied_seed\":42,\"http_status\":200,\"content\":\"--- a/x\\n+++ b/x\\n@@\\n-\\\"old\\\"\\n+\\\"new\\\"\\n\",\"dispatch_start_ns\":10,\"dispatch_end_ns\":20,\"content_sha256\":\"\"}"
+  escaped_decoded := prompt_artifacts.decode_prompt_generation_response(escaped)?
+  if prompt_artifacts.encode_prompt_generation_response(
+    prompt_artifacts.clone_prompt_generation_response(escaped_decoded),
+  ) != escaped {
+    return Err(Error.Invalid)
+  }
+  escaped_ok := match escaped_decoded.content {
+    None => false,
+    Some(text) => text == "--- a/x\n+++ b/x\n@@\n-\"old\"\n+\"new\"\n",
+  }
+  if !escaped_ok { return Err(Error.Invalid) }
+
+  full_response := generated_response()
+  sparse_response := undispatched_response()
+  full_digest := prompt_artifacts.prompt_generation_response_content_digest(full_response)?
+  full_digest_view: str := full_digest
+  sparse_digest := prompt_artifacts.prompt_generation_response_content_digest(sparse_response)?
+  sparse_digest_view: str := sparse_digest
+  if full_digest_view.len() != 64 || full_digest_view == sparse_digest_view {
+    return Err(Error.Invalid)
+  }
+  mut tampered := generated_response()
+  tampered.applied_seed = Some(43)
+  if prompt_artifacts.verify_prompt_generation_response_content(tampered) {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 1 { return Err(Error.Invalid) }
   policy_golden()?
   request_golden()?
   locator_golden()?
+  experiment_request_golden()?
+  generation_request_golden()?
+  generation_response_golden()?
   print("prompt runtime schema v1: PASS")
   return Ok(())
 }

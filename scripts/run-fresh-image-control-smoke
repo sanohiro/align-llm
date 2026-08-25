@@ -867,6 +867,116 @@ def subreaper_cases() -> None:
         control._control_require_subreaper = original_require
 
 
+def controller_worker_diagnostic_cases(temporary: Path) -> None:
+    variable = control.AGGREGATE_DIAGNOSTIC_VARIABLE
+    fixed = dict(control.WORKER_ENVIRONMENT)
+    assert control._diagnostic_environment(control.WORKER_ENVIRONMENT) == fixed
+    assert control._diagnostic_environment(control.CHILD_ENVIRONMENT) == dict(
+        control.CHILD_ENVIRONMENT
+    )
+    originals = {
+        name: getattr(control, name)
+        for name in (
+            "_bootstrap_verify",
+            "_control_require_subreaper",
+            "_worker_snapshot",
+            "_sealed_memfd",
+            "_run_controlled_child",
+        )
+    }
+    observed: list[dict[str, str]] = []
+    child_stderr = bytearray(b"worker stderr line\n")
+
+    def fake_child(arguments, *, environment, **_keywords):
+        observed.append(dict(environment))
+        return subprocess.CompletedProcess(
+            list(arguments), 1, b"", bytes(child_stderr)
+        )
+
+    sink = temporary / "controller-worker-diagnostic-sink"
+    previous = os.environ.get(variable)
+    retained = {fd: (os.dup(fd) if _fd_open(fd) else None) for fd in (5, 6)}
+
+    def failed_bootstrap(value: str | None) -> bytes:
+        observed.clear()
+        if value is None:
+            os.environ.pop(variable, None)
+        else:
+            os.environ[variable] = value
+        for fd in (5, 6):
+            placeholder = os.open(os.devnull, os.O_RDONLY)
+            if placeholder != fd:
+                os.dup2(placeholder, fd)
+                os.close(placeholder)
+        original_stderr = os.dup(2)
+        try:
+            descriptor = os.open(sink, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.dup2(descriptor, 2)
+            finally:
+                os.close(descriptor)
+            try:
+                control.bootstrap("build", self_fd=10)
+            except ControlError as error:
+                assert (error.category, error.phase) == ("CHILD", "aggregate")
+            else:
+                raise AssertionError("a non-canonical worker result was accepted")
+        finally:
+            os.dup2(original_stderr, 2)
+            os.close(original_stderr)
+        return sink.read_bytes()
+
+    try:
+        control._bootstrap_verify = lambda **_keywords: (
+            b"",
+            b"",
+            b"{}\n",
+            {"controller_sha256": control.sha256_hex(b"worker")},
+        )
+        control._control_require_subreaper = lambda: None
+        control._worker_snapshot = lambda *_arguments, **_keywords: b"worker"
+        control._sealed_memfd = lambda *_arguments, **_keywords: -1
+        control._run_controlled_child = fake_child
+        for absent in (None, "", "0", "11"):
+            assert failed_bootstrap(absent) == b""
+            assert observed == [fixed]
+        propagated = failed_bootstrap("1")
+        assert observed == [{**fixed, variable: "1"}]
+        assert propagated == (
+            b"fresh compiler: DIAGNOSTIC worker stderr captured=19 shown=19\n"
+            b"worker stderr line\n"
+        )
+        child_stderr[:] = (
+            b"E" * (control.MAX_WORKER_DIAGNOSTIC_BYTES + 5) + b"TAIL-ERR"
+        )
+        bounded = failed_bootstrap("1")
+        tail = bytes(child_stderr)[-control.MAX_WORKER_DIAGNOSTIC_BYTES :]
+        assert bounded == (
+            f"fresh compiler: DIAGNOSTIC worker stderr "
+            f"captured={len(child_stderr)} shown={len(tail)}\n".encode("ascii")
+            + tail
+            + b"\n"
+        )
+        assert len(tail) == control.MAX_WORKER_DIAGNOSTIC_BYTES
+        assert tail.endswith(b"TAIL-ERR")
+    finally:
+        for name, value in originals.items():
+            setattr(control, name, value)
+        if previous is None:
+            os.environ.pop(variable, None)
+        else:
+            os.environ[variable] = previous
+        for fd, saved in retained.items():
+            if saved is None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            else:
+                os.dup2(saved, fd)
+                os.close(saved)
+
+
 def native_runtime_bindings() -> list[dict[str, object]]:
     node: dict[str, object] = {
         "kind": "file",
@@ -1196,6 +1306,7 @@ def main() -> int:
         controller_runtime_bwrap_precedence_case()
         controller_cgroup_contract_case()
         controller_phase_mapping_cases()
+        controller_worker_diagnostic_cases(temporary)
     retained_runtime_file_cases()
 
     original = os.dup(31) if _fd_open(31) else None

@@ -4,7 +4,9 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 binary="${ALIGN_LLM_BIN:-${project_root}/main}"
-temporary_dir="$(mktemp -d)"
+# Resolve the physical path: macOS mktemp returns /var/folders/..., and /var is
+# a symlink the Align path walk correctly refuses.
+temporary_dir="$(cd "$(mktemp -d)" && pwd -P)"
 fixture_output="${temporary_dir}/fixture.jsonl"
 trap 'rm -rf "${temporary_dir}"' EXIT
 

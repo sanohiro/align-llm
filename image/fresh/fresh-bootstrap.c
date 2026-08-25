@@ -4,6 +4,7 @@
 #include <linux/memfd.h>
 #include <limits.h>
 #include <stddef.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -23,6 +24,9 @@
 
 #define PYTHON_PATH "/usr/bin/python3"
 #define REQUIRED_SEALS (F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL)
+#define AGGREGATE_DIAGNOSTIC_ENTRY "ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1"
+
+extern char **environ;
 
 static int fail(void) {
     static const char message[] = "fresh compiler: ERROR TRUST supervisor\n";
@@ -63,6 +67,7 @@ int main(int argc, char **argv) {
         "HOME=/nonexistent",
         "TMPDIR=/tmp",
         NULL,
+        NULL,
     };
     int payload_fd;
     int self_fd;
@@ -71,6 +76,12 @@ int main(int argc, char **argv) {
 
     if (argc != 3) {
         return fail();
+    }
+    for (index = 0; environ != NULL && environ[index] != NULL; ++index) {
+        if (strcmp(environ[index], AGGREGATE_DIAGNOSTIC_ENTRY) == 0) {
+            child_env[5] = environ[index];
+            break;
+        }
     }
     payload_fd = memfd("align-llm-bootstrap-payload");
     if (payload_fd < 0 || write_all(payload_fd, bootstrap_payload, bootstrap_payload_len) < 0 ||

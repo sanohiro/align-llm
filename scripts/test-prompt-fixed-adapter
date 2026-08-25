@@ -101,7 +101,17 @@ def main() -> int:
                 "generation_policy_path": str(policy_path), "generation_policy_sha256": policy["content_sha256"],
                 "provider_control_path": str(control_path), "provider_control_sha256": control["content_sha256"],
                 "workspace_path": str(workspace), "result_path": str(result_path), "paired_seed": 100,
-                "credential_env_name": None, "environment_policy_sha256": "3" * 64, "content_sha256": "",
+                "credential_env_name": None, "environment_policy_sha256": "3" * 64,
+                "validation_runner_path": str(ROOT / "eval" / "runners" / "run-coding-task.py"),
+                "validation_runner_sha256": "4" * 64,
+                "task_definition_path": str(ROOT / "eval" / "tasks" / "coding-v1" / "python-inclusive-range" / "task.json"),
+                "task_definition_sha256": "5" * 64,
+                "validation_argv": ["--retained-inputs", "%TASK%", "%PATCH%"],
+                "patch_path": None, "patch_sha256": None,
+                "generation_child_path": str(ROOT / "main"),
+                "generation_child_sha256": "6" * 64,
+                "task_deadline_ns": 30_000_000_000,
+                "content_sha256": "",
             }
             bind(request)
             if tamper:

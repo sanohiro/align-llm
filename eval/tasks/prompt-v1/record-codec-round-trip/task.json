@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "record-codec-round-trip",
+  "source_dir": "eval/fixtures/prompt-v1-record-codec/repository",
+  "source_revision": "4597a448a14a5cfb48521f9c9a796d9686cd510e",
+  "allowed_edits": [
+    "src/decode.py",
+    "src/encode.py"
+  ],
+  "validation_argv": [
+    "python3",
+    "tests/test_codec.py",
+    "-v"
+  ],
+  "validation_timeout_seconds": 10
+}

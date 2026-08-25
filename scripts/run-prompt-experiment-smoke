@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+"""Owner smoke for `prompt experiment`: precedence, prompt, transport, proposal, publication, CLI.
+
+Every section 5 `experiment` precedence row proves that no listener was contacted, the golden
+proposal-prompt vector is read back off the wire, the transport rows are driven by a real fixture
+listener, and every terminal status is checked for its exact `Option` population.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from prompt_experiment_fixture import (  # noqa: E402
+    REPOSITORY,
+    CANDIDATE_APPEND,
+    CANDIDATE_POLICY,
+    CREDENTIAL_VALUE,
+    CREDENTIAL_VARIABLE,
+    DIAGNOSTIC_CAP,
+    OPPORTUNITY_TEXT,
+    PARENT_POLICY,
+    activation_result,
+    assert_status,
+    bind,
+    canonical,
+    closed_port,
+    expected_prompt,
+    experiment_request,
+    invoke,
+    prepare,
+    require,
+    start_server,
+    straddling_body,
+    stop_server,
+    text_artifact,
+)
+
+ABSENT = object()
+
+
+def opportunity(text: str = OPPORTUNITY_TEXT, kind: str = "OPPORTUNITY") -> dict:
+    return text_artifact(kind, "opportunity-1", text)
+
+
+def assert_options(name: str, result: dict, expectations: dict) -> None:
+    for field, expected in expectations.items():
+        if expected is ABSENT:
+            require(field not in result, f"{name}: {field} must be absent, got {result.get(field)!r}")
+        elif expected is not None:
+            require(
+                result.get(field) == expected,
+                f"{name}: {field} expected {expected!r}, got {result.get(field)!r}",
+            )
+        else:
+            require(field in result, f"{name}: {field} must be present")
+
+
+def quiet_input_rows(root: pathlib.Path, server) -> list[str]:
+    """Every decoded-request precedence row, each proving no provider listener was contacted."""
+    endpoint = f"{server.base}/openai/ok"
+    covered: list[str] = []
+    baseline_connections = server.connections
+    baseline_requests = len(server.requests)
+
+    # Step 1: the request envelope itself. No trusted result envelope exists, so no artifact.
+    for name, payload in (
+        ("malformed-json", b'{"schema_version":'),
+        ("non-canonical-json", canonical({"artifact_kind": "PROMPT_EXPERIMENT_REQUEST"})),
+    ):
+        case = prepare(root, name, endpoint)
+        case.write_request(payload)
+        completed = case.run()
+        require(completed.returncode == 2, f"{name}: expected failure, got {completed.returncode}")
+        require(not case.result_path.exists(), f"{name}: a result artifact must not exist")
+        covered.append(name)
+
+    # Step 2, first: the retained exclusive create. An occupied or unwritable output path fails
+    # before any request field is validated and leaves the existing bytes untouched.
+    case = prepare(root, "occupied-output", endpoint)
+    case.result_path.write_bytes(b"PRE-EXISTING")
+    completed = case.run()
+    require(completed.returncode == 2, "occupied-output: expected failure")
+    require(
+        case.result_path.read_bytes() == b"PRE-EXISTING",
+        "occupied-output: the existing output was modified",
+    )
+    covered.append("occupied-output")
+
+    case = prepare(root, "unwritable-output", endpoint)
+    completed = invoke([
+        "prompt", "experiment", str(case.request_path), str(case.directory / "absent" / "result.json"),
+    ])
+    require(completed.returncode == 2, "unwritable-output: expected failure")
+    require(
+        not (case.directory / "absent").exists(),
+        "unwritable-output: the missing parent directory must not be created",
+    )
+    covered.append("unwritable-output")
+
+    # Step 2: request bounds, in declaration order.
+    bounds_rows = {
+        "bounds-schema-version": {"schema_version": 2},
+        "bounds-artifact-kind": {"artifact_kind": "PROMPT_EVALUATE_REQUEST"},
+        "bounds-experiment-id": {"experiment_id": ""},
+        "bounds-project-root": {"project_root": ""},
+        "bounds-parent-path": {"parent_activation_path": ""},
+        "bounds-opportunity-path": {"opportunity_path": ""},
+        "bounds-provider-kind": {"proposal_provider_kind": "OPENAI"},
+        "bounds-endpoint-userinfo": {"proposal_provider_endpoint": "http://user:pw@127.0.0.1/v1"},
+        "bounds-endpoint-query": {"proposal_provider_endpoint": "http://127.0.0.1/v1?key=secret"},
+        "bounds-endpoint-id": {"proposal_provider_endpoint_id": ""},
+        "bounds-provider-model": {"proposal_provider_model": ""},
+        "bounds-timeout": {"timeout_ns": 0},
+        "bounds-max-prompt-bytes": {"max_prompt_bytes": 262_145},
+        "bounds-max-tokens": {"max_tokens": 8_193},
+        "bounds-temperature": {"temperature_micros": 1_000_001},
+        "bounds-cloud-without-credential": {
+            "proposal_provider_kind": "CLOUD_OPENAI",
+            "proposal_provider_endpoint": "https://127.0.0.1/v1/chat/completions",
+        },
+        "bounds-tokenize-on-openai": {"tokenize_endpoint": "http://127.0.0.1/tokenize"},
+        "bounds-credential-name": {"api_key_env": "1BAD NAME"},
+    }
+    for name, overrides in bounds_rows.items():
+        case = prepare(root, name, endpoint, **overrides)
+        assert_status(case, case.run(), "INVALID_INPUT", "INVALID_BOUNDS")
+        covered.append(name)
+
+    # An empty identifier that causes INVALID_INPUT is `None`, not an invented identity.
+    case = prepare(root, "bounds-experiment-id-none", endpoint, experiment_id="")
+    result = assert_status(case, case.run(), "INVALID_INPUT", "INVALID_BOUNDS")
+    assert_options("bounds-experiment-id-none", result, {"experiment_id": ABSENT})
+    covered.append("bounds-experiment-id-none")
+
+    # Step 2: parent activation envelope.
+    case = prepare(root, "parent-missing", endpoint, parent_activation_path="absent.json")
+    assert_status(case, case.run(), "INVALID_INPUT", "INPUT_NOT_FOUND")
+    covered.append("parent-missing")
+
+    case = prepare(root, "parent-type", endpoint, parent_activation_path="parent-directory")
+    (case.directory / "parent-directory").mkdir()
+    assert_status(case, case.run(), "INVALID_INPUT", "INPUT_TYPE")
+    covered.append("parent-type")
+
+    tampered = activation_result()
+    tampered["content_sha256"] = "b" * 64
+    case = prepare(root, "parent-digest", endpoint, activation=tampered)
+    assert_status(case, case.run(), "INVALID_INPUT", "INVALID_REFERENCE")
+    covered.append("parent-digest")
+
+    unselectable = bind({
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_ACTIVATION_RESULT",
+        "status": "INVALID_INPUT",
+        "error_code": "INVALID_BOUNDS",
+        "error": "the fixture parent envelope is a recorded failure",
+        "content_sha256": "",
+    })
+    case = prepare(root, "parent-not-selectable", endpoint, activation=unselectable)
+    assert_status(case, case.run(), "INVALID_INPUT", "INVALID_REFERENCE")
+    covered.append("parent-not-selectable")
+
+    # Step 2: opportunity artifact.
+    case = prepare(root, "opportunity-missing", endpoint, opportunity_path="absent.json")
+    assert_status(case, case.run(), "INVALID_INPUT", "INPUT_NOT_FOUND")
+    covered.append("opportunity-missing")
+
+    case = prepare(root, "opportunity-malformed", endpoint, opportunity_bytes=b"{not json")
+    assert_status(case, case.run(), "INVALID_INPUT", "INVALID_SCHEMA")
+    covered.append("opportunity-malformed")
+
+    versioned = opportunity()
+    versioned["schema_version"] = 2
+    versioned = bind(versioned)
+    case = prepare(root, "opportunity-schema-version", endpoint, opportunity=versioned)
+    assert_status(case, case.run(), "INVALID_INPUT", "INVALID_SCHEMA")
+    covered.append("opportunity-schema-version")
+
+    case = prepare(root, "opportunity-kind", endpoint, opportunity=opportunity(kind="BASE_PROMPT"))
+    assert_status(case, case.run(), "INVALID_INPUT", "INVALID_KIND")
+    covered.append("opportunity-kind")
+
+    case = prepare(root, "opportunity-empty-text", endpoint, opportunity=opportunity(text=""))
+    assert_status(case, case.run(), "INVALID_INPUT", "INVALID_BOUNDS")
+    covered.append("opportunity-empty-text")
+
+    # The section 4.3 text bound is inclusive: 65,536 bytes are accepted and 65,537 are not.
+    case = prepare(root, "opportunity-oversize-text", endpoint, opportunity=opportunity(text="o" * 65_537))
+    assert_status(case, case.run(), "INVALID_INPUT", "INVALID_BOUNDS")
+    covered.append("opportunity-oversize-text")
+
+    tampered_opportunity = opportunity()
+    tampered_opportunity["content_sha256"] = "c" * 64
+    case = prepare(root, "opportunity-digest", endpoint, opportunity=tampered_opportunity)
+    assert_status(case, case.run(), "INVALID_INPUT", "INVALID_DIGEST")
+    covered.append("opportunity-digest")
+
+    # Step 2, last: environment-key presence, before the first external call.
+    case = prepare(root, "credential-missing", endpoint, api_key_env=CREDENTIAL_VARIABLE)
+    assert_status(case, case.run(), "INVALID_INPUT", "MISSING_CREDENTIAL")
+    covered.append("credential-missing")
+
+    case = prepare(root, "credential-empty", endpoint, api_key_env=CREDENTIAL_VARIABLE)
+    assert_status(
+        case,
+        case.run(environment={CREDENTIAL_VARIABLE: ""}),
+        "INVALID_INPUT",
+        "MISSING_CREDENTIAL",
+    )
+    covered.append("credential-empty")
+
+    # Precedence pairs: the first failing check fixes the diagnosis, later checks never overwrite it.
+    precedence_pairs = (
+        ("precedence-bounds-before-parent", {"timeout_ns": 0, "parent_activation_path": "absent.json"},
+         "INVALID_BOUNDS"),
+        ("precedence-parent-before-opportunity",
+         {"parent_activation_path": "absent.json", "opportunity_path": "absent.json"},
+         "INPUT_NOT_FOUND"),
+        ("precedence-opportunity-before-credential",
+         {"opportunity_path": "absent.json", "api_key_env": CREDENTIAL_VARIABLE},
+         "INPUT_NOT_FOUND"),
+        ("precedence-credential-before-prompt-bound",
+         {"api_key_env": CREDENTIAL_VARIABLE, "max_prompt_bytes": 1},
+         "MISSING_CREDENTIAL"),
+    )
+    for name, overrides, code in precedence_pairs:
+        case = prepare(root, name, endpoint, **overrides)
+        assert_status(case, case.run(), "INVALID_INPUT", code)
+        covered.append(name)
+
+    require(
+        server.connections == baseline_connections and len(server.requests) == baseline_requests,
+        "a pre-provider precedence row contacted the fixture listener:"
+        f" {server.connections - baseline_connections} connections,"
+        f" {len(server.requests) - baseline_requests} requests",
+    )
+    return covered
+
+
+def prompt_rows(root: pathlib.Path, server) -> tuple[str, dict]:
+    endpoint = f"{server.base}/openai/ok"
+    activation = activation_result()
+    opportunity_artifact = opportunity()
+    golden = expected_prompt(activation, opportunity_artifact)
+
+    case = prepare(root, "golden-prompt", endpoint)
+    result = assert_status(case, case.run(), "PROPOSED", "NONE")
+    sent = json.loads(server.requests[-1]["body"].decode("utf-8"))
+    require(server.requests[-1]["path"] == "/openai/ok", "golden-prompt: wrong fixture path")
+    require(
+        list(sent) == ["model", "messages", "max_tokens", "temperature", "stream"],
+        f"golden-prompt: unexpected wire fields {list(sent)!r}",
+    )
+    require("seed" not in sent, "golden-prompt: a proposal call must be unseeded")
+    require(sent["model"] == "fixture-model", "golden-prompt: wrong model on the wire")
+    require(sent["max_tokens"] == 512 and sent["temperature"] == 0.25 and sent["stream"] is False,
+            f"golden-prompt: wrong generation parameters {sent!r}")
+    require(
+        sent["messages"] == [
+            {"role": "system", "content": ""},
+            {"role": "user", "content": golden},
+        ],
+        "golden-prompt: the constructed proposal prompt does not match the golden vector:\n"
+        f"{sent['messages'][1]['content']!r}",
+    )
+
+    # The bound is enforced on the constructed prompt before any provider call.
+    length = len(golden.encode("utf-8"))
+    exact = prepare(root, "prompt-exact-cap", endpoint, max_prompt_bytes=length)
+    assert_status(exact, exact.run(), "PROPOSED", "NONE")
+
+    before = server.connections
+    over = prepare(root, "prompt-cap-plus-one", endpoint, max_prompt_bytes=length - 1)
+    assert_status(over, over.run(), "INVALID_INPUT", "INVALID_BOUNDS")
+    require(
+        server.connections == before,
+        "prompt-cap-plus-one: the over-cap prompt reached the listener",
+    )
+
+    # The other branch of the hierarchy section: a parent with a non-empty effective learned append
+    # renders that text rather than the `(none)` placeholder.
+    learned = activation_result(learned_append="Prefer the smallest reproducible patch.")
+    case = prepare(root, "golden-prompt-learned", endpoint, activation=learned)
+    assert_status(case, case.run(), "PROPOSED", "NONE")
+    sent = json.loads(server.requests[-1]["body"].decode("utf-8"))
+    require(sent["messages"][1]["content"] == expected_prompt(learned, opportunity_artifact),
+            "golden-prompt-learned: the non-empty learned append branch does not match")
+
+    # The section 4.3 opportunity text bound is inclusive: exactly 65,536 bytes is accepted.
+    case = prepare(root, "opportunity-exact-bound", endpoint,
+                   opportunity=opportunity(text="o" * 65_536))
+    assert_status(case, case.run(), "PROPOSED", "NONE")
+    return golden, result
+
+
+def transport_rows(root: pathlib.Path, server) -> dict[str, dict]:
+    results: dict[str, dict] = {}
+
+    case = prepare(root, "http-404", f"{server.base}/openai/status-404")
+    results["http-404"] = assert_status(case, case.run(), "PROVIDER_ERROR", "PROVIDER_HTTP_STATUS")
+    require(results["http-404"]["proposal_status_code"] == 404,
+            "http-404: a received status must reach proposal_status_code")
+    require(results["http-404"]["bounded_provider_output"] == '{"error":"no such model"}',
+            f"http-404: unexpected diagnostics {results['http-404']['bounded_provider_output']!r}")
+
+    # A received 5xx whose only credential occurrence crosses the 16 KiB truncation boundary:
+    # redaction runs first, so the marker survives truncation and no credential byte does.
+    case = prepare(root, "http-503-redacted", f"{server.base}/openai/status-503",
+                   api_key_env=CREDENTIAL_VARIABLE)
+    results["http-503"] = assert_status(
+        case,
+        case.run(environment={CREDENTIAL_VARIABLE: CREDENTIAL_VALUE}),
+        "PROVIDER_ERROR",
+        "PROVIDER_HTTP_STATUS",
+    )
+    diagnostics = results["http-503"]["bounded_provider_output"]
+    redacted_body = straddling_body(CREDENTIAL_VALUE).decode("utf-8").replace(
+        CREDENTIAL_VALUE, "[REDACTED]")
+    require(results["http-503"]["proposal_status_code"] == 503, "http-503: wrong status code")
+    require(len(diagnostics.encode("utf-8")) == DIAGNOSTIC_CAP,
+            f"http-503: diagnostics were not bounded at 16 KiB: {len(diagnostics)}")
+    require(diagnostics == redacted_body[:DIAGNOSTIC_CAP],
+            "http-503: diagnostics are not the redacted body truncated at the cap")
+    require(CREDENTIAL_VALUE not in diagnostics, "http-503: the credential survived redaction")
+    # Truncating first would have left this credential prefix inside the persisted diagnostics.
+    require(CREDENTIAL_VALUE[:4] not in diagnostics,
+            "http-503: the boundary-crossing occurrence was truncated before it was redacted")
+
+    case = prepare(root, "over-cap", f"{server.base}/openai/over-cap")
+    results["over-cap"] = assert_status(
+        case, case.run(), "PROVIDER_ERROR", "PROVIDER_RESPONSE_TOO_LARGE")
+
+    case = prepare(root, "non-utf8", f"{server.base}/openai/non-utf8")
+    results["non-utf8"] = assert_status(case, case.run(), "PROVIDER_ERROR", "PROVIDER_TRANSPORT")
+
+    case = prepare(root, "stall-timeout", f"{server.base}/openai/stall", timeout_ns=500_000_000)
+    results["stall-timeout"] = assert_status(case, case.run(), "PROVIDER_ERROR", "PROVIDER_TIMEOUT")
+    require(server.stalled.is_set(), "stall-timeout: the fixture never saw the stalled request")
+    server.release.set()
+
+    # A refused connect is a transport errno and can never masquerade as an HTTP status.
+    refused = f"http://127.0.0.1:{closed_port()}/openai/ok"
+    case = prepare(root, "connection-refused", refused, timeout_ns=5_000_000_000)
+    results["refused"] = assert_status(case, case.run(), "PROVIDER_ERROR", "PROVIDER_TRANSPORT")
+    for name in ("over-cap", "non-utf8", "stall-timeout", "refused"):
+        require("proposal_status_code" not in results[name],
+                f"{name}: only a received HTTP status may populate proposal_status_code")
+    return results
+
+
+def proposal_rows(root: pathlib.Path, server) -> dict[str, dict]:
+    results: dict[str, dict] = {}
+    schema_rows = ("bad-envelope", "bad-content", "bad-version")
+    for name in schema_rows:
+        case = prepare(root, f"proposal-{name}", f"{server.base}/openai/{name}")
+        results[name] = assert_status(case, case.run(), "INVALID_PROPOSAL", "PROPOSAL_SCHEMA")
+
+    bounds_rows = ("bounds-summary", "bounds-empty-summary", "bounds-append", "bounds-policy")
+    for name in bounds_rows:
+        case = prepare(root, f"proposal-{name}", f"{server.base}/openai/{name}")
+        results[name] = assert_status(case, case.run(), "INVALID_PROPOSAL", "PROPOSAL_BOUNDS")
+
+    # Changing only the summary is `PROPOSAL_NO_CHANGE`.
+    case = prepare(root, "proposal-no-change", f"{server.base}/openai/no-change")
+    results["no-change"] = assert_status(
+        case, case.run(), "INVALID_PROPOSAL", "PROPOSAL_NO_CHANGE")
+
+    # The llama.cpp adapter shares the same flow through its own wire records.
+    case = prepare(root, "llama-proposed", f"{server.base}/llama/ok",
+                   proposal_provider_kind="LLAMA_CPP")
+    results["llama"] = assert_status(case, case.run(), "PROPOSED", "NONE")
+    sent = json.loads(server.requests[-1]["body"].decode("utf-8"))
+    require(list(sent) == ["prompt", "n_predict", "temperature", "stream"],
+            f"llama-proposed: unexpected wire fields {list(sent)!r}")
+    require("seed" not in sent, "llama-proposed: a proposal call must be unseeded")
+    return results
+
+
+def publication_rows(root: pathlib.Path, server, proposed: dict) -> None:
+    activation = activation_result()
+    parent_variant = activation["activation"]["effective_variant"]
+    candidate = proposed["candidate_variant"]
+    require(candidate["variant_id"] == "experiment-1/variant"
+            and candidate["candidate_id"] == "experiment-1/candidate",
+            f"candidate identity is not derived from the experiment id: {candidate!r}")
+    require(candidate["base_prompt"] == parent_variant["base_prompt"]
+            and candidate["repo_prompt"] == parent_variant["repo_prompt"],
+            "the candidate variant must embed the parent base/repo artifacts byte-for-byte")
+    require(candidate["learned_prompt_append"] == CANDIDATE_APPEND
+            and candidate["context_policy"] == CANDIDATE_POLICY,
+            "the candidate variant did not carry the proposed append and policy")
+    require(candidate["context_policy"] != PARENT_POLICY, "the fixture candidate must differ")
+    recomputed = dict(candidate)
+    recomputed["content_sha256"] = ""
+    require(hashlib.sha256(canonical(recomputed)).hexdigest() == candidate["content_sha256"],
+            "the candidate variant digest does not bind its own bytes")
+
+    # A post-validation write failure is `OutputWrite`/`OUTPUT_WRITE`: the retained writer was
+    # created by the preflight, so the empty output file exists and carries no partial artifact.
+    case = prepare(root, "output-write", f"{server.base}/openai/ok")
+    completed = case.run(limit_file_size=True)
+    require(completed.returncode == 2, "output-write: expected failure")
+    require("\nOUTPUT_WRITE\n" in completed.stdout,
+            f"output-write: stdout did not report OUTPUT_WRITE: {completed.stdout!r}")
+    require(case.result_path.is_file() and case.result_path.stat().st_size == 0,
+            "output-write: a partial artifact must never be reported as a result")
+
+
+def option_rows(proposed: dict, transport: dict[str, dict], proposal: dict[str, dict]) -> None:
+    assert_options("PROPOSED", proposed, {
+        "experiment_id": "experiment-1",
+        "parent_activation": None,
+        "scope": None,
+        "opportunity": None,
+        "proposal_provider_kind": "LOCAL_OPENAI",
+        "proposal_provider_endpoint_id": "fixture-endpoint",
+        "proposal_provider_model": "fixture-model",
+        "proposal_status_code": ABSENT,
+        "candidate_variant": None,
+        "bounded_provider_output": "",
+        "error_code": "NONE",
+        "error": "",
+    })
+    require(proposed["proposal_summary"] == "Cite the failing test in every repair turn.",
+            f"PROPOSED: unexpected summary {proposed['proposal_summary']!r}")
+    require(proposed["proposal_elapsed_ns"] >= 0, "PROPOSED: elapsed time must be non-negative")
+    require(proposed["parent_activation"]["artifact_kind"] == "PROMPT_ACTIVATION_RESULT"
+            and proposed["parent_activation"]["artifact_id"] == "baseline-v1",
+            "PROPOSED: the parent reference is not bound to the activation envelope")
+    require(proposed["opportunity"]["artifact_kind"] == "OPPORTUNITY"
+            and proposed["opportunity"]["artifact_id"] == "opportunity-1"
+            and proposed["opportunity"]["content_sha256"] == opportunity()["content_sha256"],
+            "PROPOSED: the opportunity reference is not bound by identity and digest")
+
+    for name, result in list(transport.items()) + list(proposal.items()):
+        if result["status"] == "PROPOSED":
+            continue
+        assert_options(name, result, {
+            "experiment_id": "experiment-1",
+            "parent_activation": None,
+            "scope": None,
+            "opportunity": None,
+            "proposal_provider_kind": "LOCAL_OPENAI" if "llama" not in name else "LLAMA_CPP",
+            "candidate_variant": ABSENT,
+        })
+        require(result["proposal_summary"] == "",
+                f"{name}: a non-PROPOSED summary must be empty")
+        require(result["proposal_elapsed_ns"] >= 0, f"{name}: elapsed time must be non-negative")
+    for name, result in proposal.items():
+        if result["status"] == "PROPOSED":
+            continue
+        require(result["bounded_provider_output"] != "",
+                f"{name}: INVALID_PROPOSAL must record bounded diagnostics")
+        require(len(result["bounded_provider_output"].encode("utf-8")) <= DIAGNOSTIC_CAP,
+                f"{name}: diagnostics exceeded the 16 KiB bound")
+
+
+def cli_rows(root: pathlib.Path, server) -> None:
+    case = prepare(root, "cli", f"{server.base}/openai/ok")
+    for name, arguments in (
+        ("cli-too-few", ["prompt", "experiment", str(case.request_path)]),
+        ("cli-too-many", ["prompt", "experiment", str(case.request_path),
+                          str(case.directory / "a.json"), "extra"]),
+        ("cli-unknown-operation", ["prompt", "propose", str(case.request_path),
+                                   str(case.directory / "b.json")]),
+    ):
+        completed = invoke(arguments)
+        require(completed.returncode == 2, f"{name}: expected failure")
+        require(not (case.directory / "a.json").exists()
+                and not (case.directory / "b.json").exists(),
+                f"{name}: an invalid invocation must not publish an artifact")
+
+    usage = invoke([])
+    require(usage.returncode == 0, "usage: expected success")
+    require("main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>"
+            in usage.stdout, f"usage line was not updated: {usage.stdout!r}")
+
+    completed = case.run()
+    require(completed.returncode == 0 and "\nPROPOSED\n" in completed.stdout,
+            f"cli-valid: expected PROPOSED, got {completed.stdout!r}")
+    require(f"\n{case.result_path}\n" in completed.stdout,
+            "cli-valid: the output path is not printed")
+
+
+def redaction_rows() -> int:
+    """The pure `redact_credential` golden vectors, compared against an independent reference.
+
+    Python's `str.replace` is the same left-to-right, non-overlapping replacement the section 1.2
+    pass specifies, so it is a genuine second implementation rather than a restatement.
+    """
+    completed = subprocess.run(
+        [str(REPOSITORY / "scripts" / "alignc"), "run",
+         str(REPOSITORY / "src" / "prompt_experiment_smoke.align")],
+        cwd=REPOSITORY, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        check=False, timeout=300,
+    )
+    require(completed.returncode == 0, f"redaction vectors failed to run: {completed.stderr}")
+    rows = [json.loads(line) for line in completed.stdout.splitlines()]
+    redactions = [row for row in rows if "redacted" in row]
+    statuses = [row for row in rows if "label" in row]
+    require(len(redactions) == 13 and len(statuses) == 5,
+            f"unexpected vector counts: {len(redactions)} redaction, {len(statuses)} status")
+
+    expected_cases = [
+        "empty-pattern", "punctuation", "punctuation-absent", "overlapping-even",
+        "overlapping-odd", "overlapping-tail", "multibyte-adjacent", "multibyte-credential",
+        "multibyte-repeated", "boundaries", "whole-text", "absent", "truncation-boundary",
+    ]
+    require([row["case_name"] for row in redactions] == expected_cases,
+            f"unexpected redaction cases: {[row['case_name'] for row in redactions]}")
+    for row in redactions:
+        credential = row["credential"]
+        reference = row["text"] if credential == "" else row["text"].replace(credential, "[REDACTED]")
+        require(row["redacted"] == reference,
+                f"{row['case_name']}: redaction differs from the reference pass")
+        require(row["redacted_len"] == len(row["redacted"].encode("utf-8")),
+                f"{row['case_name']}: reported byte length is wrong")
+        if credential:
+            require(credential not in row["redacted"],
+                    f"{row['case_name']}: the credential survived the pass")
+
+    boundary = next(row for row in redactions if row["case_name"] == "truncation-boundary")
+    require(len(boundary["text"].encode("utf-8")) > DIAGNOSTIC_CAP,
+            "truncation-boundary: the vector must exceed the 16 KiB diagnostic cap")
+    require(boundary["redacted"].index("[REDACTED]") < DIAGNOSTIC_CAP < len(boundary["text"]),
+            "truncation-boundary: the occurrence must straddle the truncation cap")
+
+    expected_statuses = {
+        "status-proposed": ("PROPOSED", True),
+        "status-invalid-input": ("INVALID_INPUT", False),
+        "status-invalid-proposal": ("INVALID_PROPOSAL", False),
+        "status-provider-error": ("PROVIDER_ERROR", False),
+        "status-output-write": ("OUTPUT_WRITE", False),
+    }
+    for row in statuses:
+        label, success = expected_statuses[row["case_name"]]
+        require(row["label"] == label and row["success"] == success,
+                f"{row['case_name']}: expected {label}/{success}, got {row!r}")
+    return len(redactions)
+
+
+def main() -> None:
+    vectors = redaction_rows()
+    server, thread = start_server()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory).resolve()
+            covered = quiet_input_rows(root, server)
+            _, proposed = prompt_rows(root, server)
+            transport = transport_rows(root, server)
+            proposal = proposal_rows(root, server)
+            publication_rows(root, server, proposed)
+            option_rows(proposed, transport, proposal)
+            cli_rows(root, server)
+    finally:
+        stop_server(server, thread)
+
+    print(
+        f"prompt experiment smoke: {vectors} redaction golden vectors, {len(covered)} "
+        "no-listener precedence rows, golden proposal "
+        "prompt with exact-cap and cap-plus-one bounds, timeout/limit/status/errno/non-UTF-8 "
+        "transport rows, PROPOSAL_SCHEMA/BOUNDS/NO_CHANGE rows, per-status Option population, "
+        "occupied-output rejection, OUTPUT_WRITE publication failure, and CLI arity PASS"
+    )
+
+
+if __name__ == "__main__":
+    main()

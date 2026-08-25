@@ -1,0 +1,95 @@
+module prompt_render_parity_smoke
+
+import core.json
+import prompt_model
+import std.fs
+
+// Renderer-parity driver: the evaluator's Python port and this owning Align renderer must produce
+// byte-identical text and digests for the same vectors. The runner supplies one vector index whose
+// text payloads are separate files, so exactly one source of truth crosses the boundary and no
+// rendered byte depends on a JSON escape of the vector transport itself.
+
+RenderVector {
+  case_name: str,
+  task_id: str,
+  base_prompt_path: str,
+  repo_prompt_path: str,
+  task_prompt_path: str,
+  learned_prompt_append_path: str,
+  failure_memory_jsonl_path: str,
+  patch_evaluation_path: str,
+  diagnostic_stdout_path: str,
+  diagnostic_stderr_path: str,
+  include_patch_evaluation: bool,
+  include_failure_memory: bool,
+  include_diagnostics: bool,
+  max_patch_evaluation_bytes: i64,
+  max_failure_events: i64,
+  max_failure_context_bytes: i64,
+  max_diagnostic_bytes_per_stream: i64,
+}
+
+RenderVectorFile { vectors: array<RenderVector> }
+
+SmokeOutput { case_name: str, status: str, text: str, sha256: str }
+
+fn status_label(status: prompt_model.PromptRenderStatus) -> str = match status {
+  Valid => "VALID",
+  InvalidInput => "INVALID_INPUT",
+  InvalidFailureMemory => "INVALID_FAILURE_MEMORY",
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 {
+    return Err(Error.Invalid)
+  }
+  source := fs.read_file(args[1])?
+  file: RenderVectorFile := json.decode(source)?
+  mut index := 0
+  loop {
+    if index >= file.vectors.len() {
+      break
+    }
+    vector := file.vectors[index]
+    base_prompt := fs.read_file(vector.base_prompt_path)?
+    repo_prompt := fs.read_file(vector.repo_prompt_path)?
+    task_prompt := fs.read_file(vector.task_prompt_path)?
+    learned_prompt_append := fs.read_file(vector.learned_prompt_append_path)?
+    failure_memory_jsonl := fs.read_file(vector.failure_memory_jsonl_path)?
+    patch_evaluation := fs.read_file(vector.patch_evaluation_path)?
+    diagnostic_stdout := fs.read_file(vector.diagnostic_stdout_path)?
+    diagnostic_stderr := fs.read_file(vector.diagnostic_stderr_path)?
+    policy := prompt_model.ContextPolicy {
+      include_patch_evaluation: vector.include_patch_evaluation,
+      include_failure_memory: vector.include_failure_memory,
+      include_diagnostics: vector.include_diagnostics,
+      max_patch_evaluation_bytes: vector.max_patch_evaluation_bytes,
+      max_failure_events: vector.max_failure_events,
+      max_failure_context_bytes: vector.max_failure_context_bytes,
+      max_diagnostic_bytes_per_stream: vector.max_diagnostic_bytes_per_stream,
+    }
+    render := prompt_model.render(
+      base_prompt,
+      repo_prompt,
+      task_prompt,
+      learned_prompt_append,
+      vector.task_id,
+      failure_memory_jsonl,
+      policy,
+      patch_evaluation,
+      diagnostic_stdout,
+      diagnostic_stderr,
+    )
+    text_view: str := render.text
+    sha256_view: str := render.sha256
+    output := SmokeOutput {
+      case_name: vector.case_name,
+      status: status_label(render.status),
+      text: text_view,
+      sha256: sha256_view,
+    }
+    print(json.encode(output))
+    index = index + 1
+  }
+  return Ok(())
+}

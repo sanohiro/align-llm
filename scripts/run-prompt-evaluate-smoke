@@ -235,10 +235,36 @@ def verify_descendant_cleanup_boundary() -> None:
         and module.SNAPSHOT_HELPER_OUTER_TIMEOUT_NS >= 2 * 12_000_000_000 + module.CHILD_CLEANUP_MARGIN_NS
         and module.SOURCE_VERIFIER_OUTER_TIMEOUT_NS >= 9 * 12_000_000_000 + module.CHILD_CLEANUP_MARGIN_NS
         and source.count("nested_owner_timeout(task[\"timeout_ns\"])") == 1
-        and "nested_owner_timeout(max(task[\"timeout_ns\"], provider_timeout_ns))" in source
+        # Section 10.1e as amended by section 11.3: the adapter now runs two sequential contained
+        # children, so its outer deadline is the sum of the provider-control and task deadlines plus
+        # the existing bounded cleanup and report margin rather than their maximum.
+        and "nested_owner_timeout(task[\"timeout_ns\"] + provider_timeout_ns)" in source
+        and "nested_owner_timeout(max(task[\"timeout_ns\"], provider_timeout_ns))" not in source
         and "SOURCE_VERIFIER_OUTER_TIMEOUT_NS" in source,
         "nested child owners lost their cleanup/report deadline margin",
     )
+    # Both inner deadlines the adapter applies must be strictly smaller than that outer sum: the
+    # generation child keeps the provider-control deadline and the validation runner is bounded by
+    # the task deadline the request now carries, so neither child, nor both in sequence, can reach
+    # the evaluator deadline that started earlier.
+    adapter_source = (SOURCE / "scripts" / "prompt-measurement-adapter.py").read_text()
+    require(
+        'request["task_deadline_ns"]' in adapter_source
+        and 'control["timeout_ns"] / 1_000_000_000' in adapter_source
+        and 'execute_validation(\n            request, runner, task_definition, patch, control["timeout_ns"]'
+        not in adapter_source,
+        "the adapter no longer bounds its validation runner by the declared task deadline",
+    )
+    require(
+        source.count('"task_deadline_ns": task["timeout_ns"]') == 1,
+        "the evaluator no longer declares the task deadline in its adapter request",
+    )
+    for task_ns, provider_ns in ((30_000_000_000, 1_800_000_000_000), (1, 1), (7_200_000_000_000, 1)):
+        outer = module.nested_owner_timeout(task_ns + provider_ns)
+        require(
+            task_ns < outer and provider_ns < outer and task_ns + provider_ns < outer,
+            f"an inner adapter deadline is not strictly smaller than the outer sum {outer}",
+        )
     original_cleanup = module.cleanup_process_group
     cleanup_calls = 0
 
@@ -956,6 +982,101 @@ def verify_complete_score_boundary() -> None:
     )
 
 
+def verify_provider_admission_boundary() -> None:
+    """Section 5.2 admits every declared provider kind and binds the credential name to that kind."""
+    module_path = SOURCE / "scripts/prompt-evaluate.py"
+    spec = importlib.util.spec_from_file_location("prompt_evaluate_admission", module_path)
+    require(spec is not None and spec.loader is not None, "admission evaluator could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    policy = {"allowed_variables": [
+        {"name": name, "non_secret_value": "", "source": "EXPLICIT_POLICY", "precedence": ordinal}
+        for ordinal, name in enumerate(("LANG", "LC_ALL", "PATH"))
+    ]}
+
+    def control(provider_kind: str, api_key_env):
+        return {"provider_kind": provider_kind, "api_key_env": api_key_env}
+
+    def rejected(provider_kind: str, api_key_env, expected_code: str, label: str) -> None:
+        try:
+            module.validated_credential_name(control(provider_kind, api_key_env), policy)
+        except module.EvaluationError as failure:
+            code = module.validation_error_code(failure)
+            require(code == expected_code, f"{label} was rejected as {code}, not {expected_code}")
+            return
+        raise RuntimeError(f"{label} was admitted")
+
+    for provider_kind in ("LOCAL_OPENAI", "LLAMA_CPP", "FIXTURE"):
+        require(
+            module.validated_credential_name(control(provider_kind, None), policy) is None,
+            f"{provider_kind} without a credential name was not admitted",
+        )
+    for provider_kind in ("CLOUD_OPENAI", "LOCAL_OPENAI"):
+        require(
+            module.validated_credential_name(control(provider_kind, "PROVIDER_KEY"), policy)
+            == "PROVIDER_KEY",
+            f"{provider_kind} with a credential name was not admitted",
+        )
+    rejected("CLOUD_OPENAI", None, "MISSING_CREDENTIAL", "a cloud provider without a credential name")
+    # A name that conflicts with the environment policy is an invalid declaration, not a missing
+    # credential: the substring "credential" alone must not select `MISSING_CREDENTIAL`.
+    rejected("LOCAL_OPENAI", "PATH", "INVALID_SCHEMA", "a credential name inside the policy")
+    rejected("LLAMA_CPP", "PROVIDER_KEY", "INVALID_SCHEMA", "an uncredentialed llama.cpp credential name")
+    rejected("FIXTURE", "PROVIDER_KEY", "INVALID_SCHEMA", "a fixture credential name")
+    rejected("LIVE", None, "INVALID_SCHEMA", "an undeclared provider kind")
+    rejected("LOCAL_OPENAI", "1BAD NAME", "INVALID_SCHEMA", "a malformed credential name")
+    rejected("LOCAL_OPENAI", "X" * 257, "INVALID_SCHEMA", "an oversized credential name")
+
+    name = "ALIGN_LLM_ADMISSION_PROBE"
+    for absent in (None, ""):
+        if absent is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = absent
+        try:
+            module.resolved_credential(name)
+        except module.EvaluationError as failure:
+            require(
+                module.validation_error_code(failure) == "MISSING_CREDENTIAL",
+                "an absent credential value was not MISSING_CREDENTIAL",
+            )
+        else:
+            raise RuntimeError("an absent credential value was accepted")
+    os.environ[name] = "probe-value"
+    try:
+        require(
+            module.resolved_credential(name) == "probe-value"
+            and module.resolved_credential(None) is None,
+            "the credential owner did not read its startup environment exactly once",
+        )
+    finally:
+        os.environ.pop(name, None)
+    policy_values = {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin"}
+    require(
+        module.adapter_child_environment(policy_values, "PROVIDER_KEY", "probe-value")
+        == {**policy_values, "PROVIDER_KEY": "probe-value"}
+        and module.adapter_child_environment(policy_values, None, None) == policy_values
+        and policy_values == {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin"},
+        "the adapter child environment is not the cleared policy plus one credential entry",
+    )
+    try:
+        module.adapter_child_environment(policy_values, "PATH", "probe-value")
+    except module.EvaluationError as failure:
+        require(
+            module.validation_error_code(failure) == "INVALID_SCHEMA",
+            "a conflicting credential name was not INVALID_SCHEMA",
+        )
+    else:
+        raise RuntimeError("a credential name conflicting with the policy was injected")
+    source = module_path.read_text()
+    require(
+        source.count("adapter_child_environment(") == 2
+        and source.count("adapter_environment,") == 1
+        and "credential" not in source.split("def invoke_snapshot(", 1)[1].split("def invoke_adapter(", 1)[0],
+        "the credential injection left the measurement-adapter boundary",
+    )
+
+
 def copy_writable(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
     destination.chmod(stat.S_IMODE(destination.stat().st_mode) | stat.S_IWUSR)
@@ -998,6 +1119,7 @@ def main() -> int:
     verify_reviewed_execution_boundary()
     verify_strict_source_membership_boundary()
     verify_complete_score_boundary()
+    verify_provider_admission_boundary()
     with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:
         root = Path(directory)
         project = root / "project"
@@ -1163,7 +1285,16 @@ def main() -> int:
                 "cwd": ".", "timeout_ns": 30_000_000_000, "task_prompt_path": prompt_path,
                 "context_sources_path": context_path, "generation_policy_path": "artifacts/generation-policy.json",
                 "provider_control_path": "artifacts/provider-control.json",
-                "environment_policy_path": "artifacts/environment.json", "artifacts": expectations,
+                "environment_policy_path": "artifacts/environment.json",
+                "validation_runner_path": "eval/runners/run-coding-task.py",
+                "validation_runner_sha256": raw_digest(project / "eval/runners/run-coding-task.py"),
+                "task_definition_path": "eval/tasks/coding-v1/python-inclusive-range/task.json",
+                "task_definition_sha256": raw_digest(
+                    project / "eval/tasks/coding-v1/python-inclusive-range/task.json"
+                ),
+                "validation_argv": ["--retained-inputs", "%TASK%", "%PATCH%"],
+                "patch_path": None, "patch_sha256": None,
+                "artifacts": expectations,
                 "regression_limits": {
                     "maximum_unrelated_diff_count": 0, "maximum_patch_size_bytes": 16_384,
                     "maximum_public_api_change_count": 0, "maximum_repair_loops": 2,
@@ -1185,6 +1316,14 @@ def main() -> int:
             "content_sha256": "",
         })
         store(project, "artifacts/preflight.json", preflight)
+        build_root = root / "build"
+        build_root.mkdir()
+        built = subprocess.run(
+            [str(ALIGNC), "build", str(SOURCE / "src/main.align")], cwd=build_root,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        require(built.returncode == 0, f"evaluator command did not compile: {built.stderr.decode()[-4096:]}")
+
         request = {
             "schema_version": 1, "artifact_kind": "PROMPT_EVALUATE_REQUEST", "evaluation_id": "evaluation-v1",
             "project_root": str(project), "experiment_path": "artifacts/experiment.json",
@@ -1201,18 +1340,15 @@ def main() -> int:
             "verifier_source_policy_sha256": source_policy["content_sha256"],
             "verifier_python_executable_path": str(PYTHON),
             "verifier_git_executable_path": str(GIT), "evaluation_evidence_path": "evidence.json",
+            # The derived generation child is built, not committed: its per-run path and digest
+            # travel in the request rather than in any frozen asset.
+            "generation_child_path": str(build_root / "main"),
+            "generation_child_sha256": raw_digest(build_root / "main"),
         }
         request_path = project / "evaluate-request.json"
         request_path.write_bytes(canonical(request))
         result_path = project / "result.json"
         evidence_path = project / "evidence.json"
-        build_root = root / "build"
-        build_root.mkdir()
-        built = subprocess.run(
-            [str(ALIGNC), "build", str(SOURCE / "src/main.align")], cwd=build_root,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        require(built.returncode == 0, f"evaluator command did not compile: {built.stderr.decode()[-4096:]}")
 
         source_child_marker = project / "source-child-ran"
         marker_helper = project / "scripts/source-verifier-marker.py"
@@ -2224,6 +2360,174 @@ def main() -> int:
 
         result_path.unlink()
         evidence_path.unlink()
+
+        # Section 5.2 provider admission and credential delivery at the real command boundary.
+        canonical_control = json.loads((project / "artifacts/provider-control.json").read_text())
+        canonical_tasks = {path: json.loads((project / path).read_text()) for path in task_files}
+        credential_name = "ALIGN_LLM_FIXTURE_PROVIDER_KEY"
+        secret = "fixture-provider-credential-value"
+
+        def run_evaluate(result_name: str):
+            completed = subprocess.run(
+                [str(build_root / "main"), "prompt", "evaluate", str(request_path), result_name],
+                cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            published = project / result_name
+            value = json.loads(published.read_text()) if published.exists() else None
+            return completed, value, published
+
+        def store_control(**changes):
+            mutated = dict(canonical_control)
+            mutated.update(changes)
+            bind(mutated)
+            store(project, "artifacts/provider-control.json", mutated)
+            return mutated
+
+        def require_control_invalid(result_name: str, expected_code: str, **changes) -> None:
+            store_control(**changes)
+            completed, value, published = run_evaluate(result_name)
+            require(
+                completed.returncode != 0 and value is not None
+                and value["status"] == "INVALID_INPUT" and value["error_code"] == expected_code
+                and not evidence_path.exists() and not any(os.scandir(workspace)),
+                f"provider control row {result_name} did not fail as {expected_code}: {value!r}",
+            )
+            published.unlink()
+
+        require_control_invalid(
+            "control-fixture-credential.json", "INVALID_SCHEMA", api_key_env=credential_name,
+        )
+        require_control_invalid(
+            "control-llama-credential.json", "INVALID_SCHEMA",
+            provider_kind="LLAMA_CPP", api_key_env=credential_name,
+        )
+        require_control_invalid("control-unknown-kind.json", "INVALID_SCHEMA", provider_kind="LIVE")
+        require_control_invalid(
+            "control-cloud-missing-name.json", "MISSING_CREDENTIAL", provider_kind="CLOUD_OPENAI",
+        )
+        # A declared name that conflicts with the environment policy is an invalid declaration,
+        # not a missing credential.
+        require_control_invalid(
+            "control-policy-conflict.json", "INVALID_SCHEMA",
+            provider_kind="LOCAL_OPENAI", api_key_env="PATH",
+        )
+        require_control_invalid(
+            "control-missing-value.json", "MISSING_CREDENTIAL",
+            provider_kind="LOCAL_OPENAI", api_key_env=credential_name,
+        )
+
+        store_control(provider_kind="LOCAL_OPENAI", api_key_env=credential_name)
+
+        def install_recording_helper(name: str, marker: Path, argv_field: str, runtime_field: str) -> None:
+            """Replace one trusted child with a helper that records the environment it received."""
+            relative = f"scripts/{name}"
+            helper = project / relative
+            helper.write_text(
+                "#!/usr/bin/python3\n"
+                "import json, os, sys\n"
+                f"open({str(marker)!r}, 'w').write(json.dumps(dict(os.environ), sort_keys=True))\n"
+                "sys.exit(1)\n"
+            )
+            helper.chmod(0o755)
+            reviewed_helper = reviewed_source / relative
+            reviewed_helper.write_text(helper.read_text())
+            reviewed_helper.chmod(0o755)
+            digest = raw_digest(helper)
+            for task_path in task_files:
+                task_document = json.loads((project / task_path).read_text())
+                task_document[argv_field] = ["/usr/bin/python3", relative]
+                task_document[runtime_field] = "PYTHON:" + digest
+                task_document["artifacts"].append({
+                    "path": relative, "kind": "FILE",
+                    "expected_sha256": file_expectation_digest(project, relative),
+                })
+                bind(task_document)
+                store(project, task_path, task_document)
+
+        def run_credential_evaluator(result_name: str):
+            """Run the evaluator itself with the credential in its startup environment.
+
+            `src/prompt_evaluate.align` clears the environment before launching the evaluator, so
+            the Align command cannot yet carry a credential to it; the evaluator's own credential
+            boundary is exercised directly here and publishes nothing itself.
+            """
+            completed = subprocess.run(
+                [
+                    str(PYTHON), str(project / "scripts/prompt-evaluate.py"),
+                    "--request", str(request_path),
+                    "--final-result-relative", result_name,
+                    "--final-evidence-relative", "evidence.json",
+                ],
+                cwd=project,
+                env={
+                    "LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin",
+                    "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+                    credential_name: secret,
+                },
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            require(
+                completed.returncode == 0 and not completed.stderr,
+                f"the credential evaluator run failed: {completed.stderr[-2048:]!r}",
+            )
+            payload = completed.stdout.split(b"\n", 1)
+            require(payload[0] in (b"1", b"2"), "the evaluator output carrier changed")
+            documents = payload[1].split(b"\n") if payload[0] == b"2" else [payload[1]]
+            return json.loads(documents[0]), completed.stdout
+
+        adapter_marker = root / "adapter-environment.json"
+        install_recording_helper(
+            "recording-adapter.py", adapter_marker, "argv", "measurement_adapter_runtime",
+        )
+        value, output = run_credential_evaluator("credential-injection-result.json")
+        require(
+            value["status"] == "ERROR" and value["error_code"] == "ADAPTER_RESULT"
+            and adapter_marker.exists(),
+            f"the credential evaluation did not reach the measurement adapter: {value!r}",
+        )
+        adapter_environment = json.loads(adapter_marker.read_text())
+        require(
+            adapter_environment.get(credential_name) == secret
+            and set(adapter_environment) == set(allowed_variable_values) | {credential_name},
+            "the measurement adapter environment is not the policy plus exactly one credential entry: "
+            f"{sorted(adapter_environment)!r}",
+        )
+        require(
+            secret.encode() not in output and not evidence_path.exists()
+            and not (project / "credential-injection-result.json").exists()
+            and not any(os.scandir(workspace)),
+            "the credential value reached an evaluation result, evidence, or diagnostic",
+        )
+        adapter_marker.unlink()
+        for task_path, task_document in canonical_tasks.items():
+            store(project, task_path, task_document)
+
+        snapshot_marker = root / "snapshot-environment.json"
+        install_recording_helper(
+            "recording-snapshot-helper.py", snapshot_marker, "snapshot_argv", "snapshot_helper_runtime",
+        )
+        value, output = run_credential_evaluator("credential-snapshot-result.json")
+        require(
+            value["status"] == "ERROR" and value["error_code"] == "SNAPSHOT_ERROR"
+            and snapshot_marker.exists(),
+            f"the credential evaluation did not reach the snapshot helper: {value!r}",
+        )
+        snapshot_environment = json.loads(snapshot_marker.read_text())
+        require(
+            credential_name not in snapshot_environment
+            and set(snapshot_environment) == set(allowed_variable_values),
+            f"the snapshot helper received the provider credential: {sorted(snapshot_environment)!r}",
+        )
+        require(
+            secret.encode() not in output and not evidence_path.exists(),
+            "the credential value reached a snapshot-failure result or evidence",
+        )
+        snapshot_marker.unlink()
+        store(project, "artifacts/provider-control.json", canonical_control)
+        for task_path, task_document in canonical_tasks.items():
+            store(project, task_path, task_document)
+        require(not any(os.scandir(workspace)), "the credential rows left workspace artifacts")
+
         noisy_adapter = project / "scripts/noisy-adapter.py"
         noisy_adapter.write_text("#!/usr/bin/python3\nimport sys\nsys.stdout.write('x')\n")
         noisy_adapter.chmod(0o755)

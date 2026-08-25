@@ -1,0 +1,1084 @@
+module prompt_experiment
+
+import model
+import prompt_artifact_io
+import prompt_artifacts
+import provider_http
+import provider_llama
+import provider_openai
+import std.env
+import std.fs
+import std.path
+import std.time
+
+// C6e owns `prompt experiment`: ask one configured provider for a single learned prompt/context
+// candidate. The module follows the shipped `prompt_evaluate.evaluate_file` shape — a terminal
+// status enum plus a label/success pair — because the section 6 `run_file` sketch cannot express an
+// experiment outcome. Section 5's universal precedence is implemented literally: the result output
+// path is preflighted by exclusively creating and retaining its writer before any request field is
+// inspected, every decoded-request failure writes a result and performs no provider call, and the
+// first failing check fixes the status and error code.
+
+// The pre-C6e receive-side allowance the proposal path fixes explicitly (section 5.1).
+PROPOSAL_RESPONSE_MAX_BYTES := 262_144
+// Section 5.1 result bounds.
+BOUNDED_OUTPUT_MAX_BYTES := 16_384
+SUMMARY_MAX_BYTES := 4_096
+LEARNED_APPEND_MAX_BYTES := 8_192
+OPPORTUNITY_TEXT_MAX_BYTES := 65_536
+IDENTIFIER_MAX_BYTES := 96
+EMPTY_DIGEST := "0000000000000000000000000000000000000000000000000000000000000000"
+
+pub PromptExperimentStatus { Proposed, InvalidInput, InvalidProposal, ProviderError, OutputWrite }
+
+pub fn status_label(value: PromptExperimentStatus) -> str = match value {
+  Proposed => "PROPOSED",
+  InvalidInput => "INVALID_INPUT",
+  InvalidProposal => "INVALID_PROPOSAL",
+  ProviderError => "PROVIDER_ERROR",
+  OutputWrite => "OUTPUT_WRITE",
+}
+
+pub fn status_success(value: PromptExperimentStatus) -> bool = match value {
+  Proposed => true,
+  _ => false,
+}
+
+// The exact section 1.2 replacement pass: one left-to-right scan replacing every non-overlapping
+// exact UTF-8 occurrence of `credential` with `[REDACTED]`. An empty pattern returns the input
+// unchanged, which is the ordinary path for every `api_key_env: None` provider run. `find` is
+// byte-oriented and UTF-8 is self-synchronizing, so a match offset is always a scalar boundary and
+// the slices below cannot split a multi-byte character.
+pub fn redact_credential(borrow text: str, borrow credential: str) -> string {
+  if credential.len() == 0 {
+    return text.clone()
+  }
+  output := builder()
+  mut cursor := 0
+  loop {
+    if cursor >= text.len() {
+      break
+    }
+    tail := text[cursor..text.len()]
+    match tail.find(credential) {
+      Some(offset) => {
+        output.write(text[cursor..cursor + offset])
+        output.write("[REDACTED]")
+        cursor = cursor + offset + credential.len()
+      },
+      None => {
+        output.write(tail)
+        cursor = text.len()
+      },
+    }
+  }
+  return output.to_string()
+}
+
+fn valid_nonempty_text(value: str, maximum: i64) -> bool {
+  if value.len() <= 0 || value.len() > maximum {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] == 0 {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_ascii_identifier(value: str, maximum: i64) -> bool {
+  if !valid_nonempty_text(value, maximum) {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] > 0x7f {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_path_component(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 255 {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] == 0 || bytes[index] == 0x2f {
+      return false
+    }
+    index = index + 1
+  }
+  return value != "." && value != ".."
+}
+
+fn valid_relative_path(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 4096 || value.bytes()[0] == 0x2f {
+    return false
+  }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index > value.len() {
+      break
+    }
+    if index == value.len() || value.bytes()[index] == 0x2f {
+      if !valid_path_component(value[start..index]) {
+        return false
+      }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn valid_absolute_path(value: str) -> bool {
+  if !valid_nonempty_text(value, 4096) || value.bytes()[0] != 0x2f {
+    return false
+  }
+  if value.len() == 1 {
+    return true
+  }
+  mut start := 1
+  mut index := 1
+  loop {
+    if index >= value.len() {
+      return valid_path_component(value[start..index])
+    }
+    if value.bytes()[index] == 0x2f {
+      if !valid_path_component(value[start..index]) {
+        return false
+      }
+      start = index + 1
+    }
+    index = index + 1
+  }
+}
+
+fn valid_output_path(value: str) -> bool {
+  if value.len() <= 0 {
+    return false
+  }
+  valid := if value.bytes()[0] == 0x2f { valid_absolute_path(value) } else { valid_relative_path(value) }
+  return valid && valid_path_component(path.base(value))
+}
+
+fn file_root(value: str) -> str {
+  root := path.dir(value)
+  return if root.len() == 0 { "." } else { root }
+}
+
+fn file_leaf(value: str) -> str {
+  return path.base(value)
+}
+
+// The longest UTF-8-safe prefix within `maximum` bytes. `s[a..b]` aborts on a non-boundary index,
+// so the end is walked back over continuation bytes before the slice is taken.
+fn utf8_prefix(value: str, maximum: i64) -> str {
+  if value.len() <= maximum {
+    return value
+  }
+  bytes := value.bytes()
+  mut end := maximum
+  loop {
+    if end <= 0 {
+      break
+    }
+    if (bytes[end] & 0xc0) != 0x80 {
+      break
+    }
+    end = end - 1
+  }
+  return value[0..end]
+}
+
+fn bounded_diagnostic(value: str) -> string {
+  return utf8_prefix(value, BOUNDED_OUTPUT_MAX_BYTES).clone()
+}
+
+fn owned_text_length(borrow value: string) -> i64 {
+  return value.len()
+}
+
+fn optional_identifier(value: str) -> Option<string> {
+  if valid_ascii_identifier(value, IDENTIFIER_MAX_BYTES) {
+    return Some(value.clone())
+  }
+  return None
+}
+
+fn source_loaded(status: prompt_artifact_io.InputSourceStatus) -> bool {
+  return match status { Loaded => true, _ => false }
+}
+
+fn source_error_code(status: prompt_artifact_io.InputSourceStatus) -> str = match status {
+  NotFound => "INPUT_NOT_FOUND",
+  InputType => "INPUT_TYPE",
+  _ => "INPUT_READ",
+}
+
+fn provider_kind_of(value: str) -> Result<model.ProviderKind, Error> {
+  if value == "CLOUD_OPENAI" {
+    return Ok(model.ProviderKind.CloudOpenAI)
+  }
+  if value == "LOCAL_OPENAI" {
+    return Ok(model.ProviderKind.LocalOpenAI)
+  }
+  if value == "LLAMA_CPP" {
+    return Ok(model.ProviderKind.LlamaCpp)
+  }
+  return Err(Error.Invalid)
+}
+
+fn selectable_activation(borrow value: prompt_artifacts.PromptActivationResult) -> bool {
+  successful := value.status == "BASELINED" || value.status == "ACCEPTED" || value.status == "ROLLED_BACK"
+  present := match value.activation { None => false, Some(_) => true }
+  return successful && value.error.len() == 0 && present
+}
+
+fn activation_of(
+  borrow value: prompt_artifacts.PromptActivationResult,
+) -> Result<prompt_artifacts.PromptActivation, Error> {
+  return match value.activation {
+    None => Err(Error.Invalid),
+    Some(activation) => Ok(prompt_artifacts.clone_prompt_activation(activation)),
+  }
+}
+
+fn decision_id_of(borrow value: prompt_artifacts.PromptActivationResult) -> Result<string, Error> {
+  return match value.decision_id {
+    None => Err(Error.Invalid),
+    Some(id) => Ok(id.clone()),
+  }
+}
+
+fn same_context_policy(
+  left: prompt_artifacts.ContextPolicy,
+  right: prompt_artifacts.ContextPolicy,
+) -> bool {
+  return left.include_patch_evaluation == right.include_patch_evaluation &&
+  left.include_failure_memory == right.include_failure_memory &&
+  left.include_diagnostics == right.include_diagnostics &&
+  left.max_patch_evaluation_bytes == right.max_patch_evaluation_bytes &&
+  left.max_failure_events == right.max_failure_events &&
+  left.max_failure_context_bytes == right.max_failure_context_bytes &&
+  left.max_diagnostic_bytes_per_stream == right.max_diagnostic_bytes_per_stream
+}
+
+fn derived_identifier(experiment_id: str, suffix: str) -> string {
+  output := builder()
+  output.write(experiment_id)
+  output.write(suffix)
+  return output.to_string()
+}
+
+// The fixed labeled-section order of the proposal prompt: parent effective hierarchy, parent
+// effective context policy in canonical field order, the immutable section 5.1 constraints, the
+// opportunity in persisted order, then the exact `CandidateProposal` response schema.
+fn build_proposal_prompt(
+  borrow activation: prompt_artifacts.PromptActivation,
+  borrow opportunity: prompt_artifacts.PromptTextArtifact,
+) -> string {
+  policy := activation.effective_variant.context_policy
+  output := builder()
+  output.write("--- parent activation effective hierarchy ---\nbase prompt:\n")
+  output.write(activation.effective_variant.base_prompt.text)
+  output.write("\n\nrepo prompt:\n")
+  output.write(activation.effective_variant.repo_prompt.text)
+  output.write("\n\neffective learned append:\n")
+  if activation.effective_variant.learned_prompt_append.len() == 0 {
+    output.write("(none)")
+  } else {
+    output.write(activation.effective_variant.learned_prompt_append)
+  }
+  output.write("\n\n--- parent effective context policy ---\ninclude_patch_evaluation: ")
+  output.write(if policy.include_patch_evaluation { "true" } else { "false" })
+  output.write("\ninclude_failure_memory: ")
+  output.write(if policy.include_failure_memory { "true" } else { "false" })
+  output.write("\ninclude_diagnostics: ")
+  output.write(if policy.include_diagnostics { "true" } else { "false" })
+  output.write("\nmax_patch_evaluation_bytes: ")
+  output.write_int(policy.max_patch_evaluation_bytes)
+  output.write("\nmax_failure_events: ")
+  output.write_int(policy.max_failure_events)
+  output.write("\nmax_failure_context_bytes: ")
+  output.write_int(policy.max_failure_context_bytes)
+  output.write("\nmax_diagnostic_bytes_per_stream: ")
+  output.write_int(policy.max_diagnostic_bytes_per_stream)
+  output.write("\n\n--- immutable constraints ---\n")
+  output.write("The model does not choose identifiers.\n")
+  output.write("The model does not choose scope.\n")
+  output.write("The model does not choose the parent activation.\n")
+  output.write("The model does not choose acceptance thresholds.\n")
+  output.write("The model does not choose evaluation tasks.\n")
+  output.write("align-coder validates the proposal and computes candidate_id and content_sha256.\n")
+  output.write("The rendered learned append and context policy must differ from the parent effective variant.\n")
+  output.write("\n--- opportunity ---\nopportunity id:\n")
+  output.write(opportunity.artifact_id)
+  output.write("\n\nopportunity summary and diagnostics:\n")
+  output.write(opportunity.text)
+  output.write("\n\n--- candidate response schema ---\n")
+  output.write("Return exactly one JSON object with these fields and no others:\n")
+  output.write("{\"schema_version\":1,\"summary\":\"<English summary, at most 4096 bytes>\",")
+  output.write("\"learned_prompt_append\":\"<at most 8192 bytes>\",\"context_policy\":{")
+  output.write("\"include_patch_evaluation\":<bool>,\"include_failure_memory\":<bool>,")
+  output.write("\"include_diagnostics\":<bool>,\"max_patch_evaluation_bytes\":<integer>,")
+  output.write("\"max_failure_events\":<integer>,\"max_failure_context_bytes\":<integer>,")
+  output.write("\"max_diagnostic_bytes_per_stream\":<integer>}}\n")
+  return output.to_string()
+}
+
+CredentialLoad {
+  present: bool,
+  value: string,
+}
+
+// The single environment read. A `None` name performs no read at all and yields the empty
+// `api_key` an uncredentialed provider expects; a `Some` name is read exactly once and a missing or
+// empty value is `MISSING_CREDENTIAL` before the first external call.
+fn load_credential(borrow name: Option<string>) -> CredentialLoad {
+  return match name {
+    None => CredentialLoad { present: true, value: "".clone() },
+    Some(variable) => match env.get(variable) {
+      None => CredentialLoad { present: false, value: "".clone() },
+      Some(value) => if owned_text_length(value) == 0 {
+        CredentialLoad { present: false, value: "".clone() }
+      } else {
+        CredentialLoad { present: true, value: value }
+      },
+    },
+  }
+}
+
+ProposalOutcome {
+  ok: bool,
+  terminal: PromptExperimentStatus,
+  status: string,
+  error_code: string,
+  error: string,
+  status_code: Option<i64>,
+  elapsed_ns: i64,
+  content: string,
+  bounded_output: string,
+}
+
+fn proposal_failure(
+  terminal: PromptExperimentStatus,
+  status: str,
+  error_code: str,
+  detail: str,
+  status_code: Option<i64>,
+  elapsed_ns: i64,
+  bounded_output: string,
+) -> ProposalOutcome {
+  return ProposalOutcome {
+    ok: false,
+    terminal: terminal,
+    status: status.clone(),
+    error_code: error_code.clone(),
+    error: detail.clone(),
+    status_code: status_code,
+    elapsed_ns: elapsed_ns,
+    content: "".clone(),
+    bounded_output: bounded_output,
+  }
+}
+
+fn transport_error_code(failure: Error) -> str = match failure {
+  Timeout => "PROVIDER_TIMEOUT",
+  Code(code) => if code == -1 { "PROVIDER_RESPONSE_TOO_LARGE" } else { "PROVIDER_TRANSPORT" },
+  _ => "PROVIDER_TRANSPORT",
+}
+
+fn provider_request_bytes(
+  kind: model.ProviderKind,
+  model_name: str,
+  request: model.GenerationRequest,
+) -> string = match kind {
+  CloudOpenAI => provider_openai.request_bytes(model_name, request, false),
+  LocalOpenAI => provider_openai.request_bytes(model_name, request, false),
+  LlamaCpp => provider_llama.request_bytes(request, false),
+}
+
+fn provider_decode_content(kind: model.ProviderKind, response: str) -> Result<string, Error> = match kind {
+  CloudOpenAI => provider_openai.decode_content(response),
+  LocalOpenAI => provider_openai.decode_content(response),
+  LlamaCpp => provider_llama.decode_content(response),
+}
+
+// The one function that owns the credential. Everything from the single `env.get` to the redacted,
+// bounded provider text happens here, so the credential is dropped with this frame — before any
+// result record is constructed — on the success path and on every `?`-free early return below.
+fn run_proposal(
+  borrow request: prompt_artifacts.PromptExperimentRequest,
+  borrow activation: prompt_artifacts.PromptActivation,
+  borrow opportunity: prompt_artifacts.PromptTextArtifact,
+) -> ProposalOutcome {
+  credential_owner := load_credential(request.api_key_env)
+  if !credential_owner.present {
+    return proposal_failure(
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "MISSING_CREDENTIAL",
+      "proposal credential environment variable is missing or empty",
+      None,
+      0,
+      "".clone(),
+    )
+  }
+  credential: str := credential_owner.value
+
+  prompt := build_proposal_prompt(activation, opportunity)
+  prompt_view: str := prompt
+  if prompt_view.len() > request.max_prompt_bytes {
+    return proposal_failure(
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_BOUNDS",
+      "constructed proposal prompt exceeds max_prompt_bytes",
+      None,
+      0,
+      "".clone(),
+    )
+  }
+
+  kind := provider_kind_of(request.proposal_provider_kind) else {
+    return proposal_failure(
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_LABEL",
+      "unsupported proposal provider kind",
+      None,
+      0,
+      "".clone(),
+    )
+  }
+  generation := model.GenerationRequest {
+    system: "",
+    user: prompt_view,
+    max_tokens: request.max_tokens,
+    temperature: (request.temperature_micros as f64) / 1_000_000.0,
+    // A proposal call is unseeded and records no seed attestation.
+    seed: None,
+  }
+  body := provider_request_bytes(kind, request.proposal_provider_model, generation)
+  body_view: str := body
+  endpoint: str := request.proposal_provider_endpoint
+
+  started := time.instant()
+  response := provider_http.post_json_response(
+    endpoint,
+    credential,
+    body_view,
+    request.timeout_ns,
+    PROPOSAL_RESPONSE_MAX_BYTES,
+  )
+  elapsed := time.instant() - started
+
+  received := match response {
+    Err(failure) => {
+      // A transport `Err` is matched as `Error.Timeout`, then the receive-side `Error.Code(-1)`
+      // limit sentinel, then everything else. A received HTTP status never reaches this arm, so an
+      // errno can never masquerade as `PROVIDER_HTTP_STATUS`.
+      return proposal_failure(
+        PromptExperimentStatus.ProviderError,
+        "PROVIDER_ERROR",
+        transport_error_code(failure),
+        "proposal provider transport failure",
+        None,
+        elapsed,
+        "".clone(),
+      )
+    },
+    Ok(value) => value,
+  }
+
+  // Redaction happens once, on the whole received body, before any truncation, decoding, digesting,
+  // or persistence. Every later value in this flow — the bounded diagnostics and the proposal
+  // summary — is derived from these already-redacted bytes.
+  raw_body: str := received.body
+  redacted := redact_credential(raw_body, credential)
+  redacted_view: str := redacted
+  bounded := bounded_diagnostic(redacted_view)
+
+  if received.status < 200 || received.status >= 300 {
+    return proposal_failure(
+      PromptExperimentStatus.ProviderError,
+      "PROVIDER_ERROR",
+      "PROVIDER_HTTP_STATUS",
+      "proposal provider returned a non-2xx HTTP status",
+      Some(received.status),
+      elapsed,
+      bounded,
+    )
+  }
+
+  extracted := provider_decode_content(kind, redacted_view) else {
+    return proposal_failure(
+      PromptExperimentStatus.InvalidProposal,
+      "INVALID_PROPOSAL",
+      "PROPOSAL_SCHEMA",
+      "provider response envelope did not decode to one content text",
+      None,
+      elapsed,
+      bounded,
+    )
+  }
+  return ProposalOutcome {
+    ok: true,
+    terminal: PromptExperimentStatus.Proposed,
+    status: "PROPOSED".clone(),
+    error_code: "NONE".clone(),
+    error: "".clone(),
+    status_code: None,
+    elapsed_ns: elapsed,
+    content: extracted,
+    bounded_output: bounded,
+  }
+}
+
+ExperimentDraft {
+  experiment_id: Option<string>,
+  parent_activation: Option<prompt_artifacts.ArtifactReference>,
+  scope: Option<prompt_artifacts.PromptScope>,
+  opportunity: Option<prompt_artifacts.ArtifactReference>,
+  proposal_provider_kind: Option<string>,
+  proposal_provider_endpoint_id: Option<string>,
+  proposal_provider_model: Option<string>,
+}
+
+// Input and provider options become `Some` only after each value validates in the documented
+// precedence. Owned option fields carrying records cannot be replaced in place under the pinned
+// compiler, so each stage consumes the previous draft and returns the complete next one.
+fn initial_draft(experiment_id: Option<string>) -> ExperimentDraft {
+  return ExperimentDraft {
+    experiment_id: experiment_id,
+    parent_activation: None,
+    scope: None,
+    opportunity: None,
+    proposal_provider_kind: None,
+    proposal_provider_endpoint_id: None,
+    proposal_provider_model: None,
+  }
+}
+
+fn draft_with_parent(
+  draft: ExperimentDraft,
+  parent_activation: prompt_artifacts.ArtifactReference,
+  scope: prompt_artifacts.PromptScope,
+) -> ExperimentDraft {
+  return ExperimentDraft {
+    experiment_id: draft.experiment_id,
+    parent_activation: Some(parent_activation),
+    scope: Some(scope),
+    opportunity: draft.opportunity,
+    proposal_provider_kind: draft.proposal_provider_kind,
+    proposal_provider_endpoint_id: draft.proposal_provider_endpoint_id,
+    proposal_provider_model: draft.proposal_provider_model,
+  }
+}
+
+fn draft_with_opportunity(
+  draft: ExperimentDraft,
+  opportunity: prompt_artifacts.ArtifactReference,
+) -> ExperimentDraft {
+  return ExperimentDraft {
+    experiment_id: draft.experiment_id,
+    parent_activation: draft.parent_activation,
+    scope: draft.scope,
+    opportunity: Some(opportunity),
+    proposal_provider_kind: draft.proposal_provider_kind,
+    proposal_provider_endpoint_id: draft.proposal_provider_endpoint_id,
+    proposal_provider_model: draft.proposal_provider_model,
+  }
+}
+
+fn draft_with_provider(
+  draft: ExperimentDraft,
+  provider_kind: string,
+  endpoint_id: string,
+  provider_model: string,
+) -> ExperimentDraft {
+  return ExperimentDraft {
+    experiment_id: draft.experiment_id,
+    parent_activation: draft.parent_activation,
+    scope: draft.scope,
+    opportunity: draft.opportunity,
+    proposal_provider_kind: Some(provider_kind),
+    proposal_provider_endpoint_id: Some(endpoint_id),
+    proposal_provider_model: Some(provider_model),
+  }
+}
+
+fn build_result(
+  draft: ExperimentDraft,
+  status: str,
+  error_code: str,
+  detail: str,
+  elapsed_ns: i64,
+  status_code: Option<i64>,
+  summary: string,
+  candidate_variant: Option<prompt_artifacts.PromptVariant>,
+  bounded_output: string,
+) -> prompt_artifacts.PromptExperimentResult {
+  return prompt_artifacts.PromptExperimentResult {
+    schema_version: 1,
+    artifact_kind: "PROMPT_EXPERIMENT_RESULT".clone(),
+    experiment_id: draft.experiment_id,
+    status: status.clone(),
+    error_code: error_code.clone(),
+    error: detail.clone(),
+    parent_activation: draft.parent_activation,
+    scope: draft.scope,
+    opportunity: draft.opportunity,
+    proposal_provider_kind: draft.proposal_provider_kind,
+    proposal_provider_endpoint_id: draft.proposal_provider_endpoint_id,
+    proposal_provider_model: draft.proposal_provider_model,
+    proposal_elapsed_ns: elapsed_ns,
+    proposal_status_code: status_code,
+    proposal_summary: summary,
+    candidate_variant: candidate_variant,
+    bounded_provider_output: bounded_output,
+    // The publisher computes the canonical digest over the complete record.
+    content_sha256: "".clone(),
+  }
+}
+
+fn publish(
+  output: writer,
+  value: prompt_artifacts.PromptExperimentResult,
+  terminal: PromptExperimentStatus,
+) -> PromptExperimentStatus {
+  prompt_artifact_io.write_prompt_experiment_result(output, value) else {
+    return PromptExperimentStatus.OutputWrite
+  }
+  return terminal
+}
+
+fn fail(
+  output: writer,
+  draft: ExperimentDraft,
+  terminal: PromptExperimentStatus,
+  status: str,
+  error_code: str,
+  detail: str,
+  elapsed_ns: i64,
+  status_code: Option<i64>,
+  bounded_output: string,
+) -> PromptExperimentStatus {
+  value := build_result(
+    draft,
+    status,
+    error_code,
+    detail,
+    elapsed_ns,
+    status_code,
+    "".clone(),
+    None,
+    bounded_output,
+  )
+  return publish(output, value, terminal)
+}
+
+pub fn experiment_file(request_path: str, result_path: str) -> PromptExperimentStatus {
+  // Step 1: CLI arity is the caller's; decode the declared request. A failure here has no trusted
+  // result envelope and therefore produces no result artifact.
+  if !valid_output_path(request_path) {
+    return PromptExperimentStatus.InvalidInput
+  }
+  request := prompt_artifact_io.load_prompt_experiment_request(request_path) else {
+    return PromptExperimentStatus.InvalidInput
+  }
+
+  // Step 2, first: the result output-path preflight is exactly the retained exclusive creation. An
+  // occupied or unwritable path fails here, before any request field is validated and before any
+  // external work, and produces no result artifact. The retained writer persists the bounded result
+  // bytes later.
+  if !valid_output_path(result_path) {
+    return PromptExperimentStatus.InvalidInput
+  }
+  output := fs.create_exclusive_beneath(file_root(result_path), file_leaf(result_path)) else {
+    return PromptExperimentStatus.InvalidInput
+  }
+
+  draft_request := initial_draft(optional_identifier(request.experiment_id))
+
+  // Step 2, operation precedence: request bounds.
+  if !prompt_artifacts.verify_prompt_experiment_request(request) {
+    return fail(
+      output,
+      draft_request,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_BOUNDS",
+      "invalid prompt experiment request",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+
+  // Step 2: parent activation envelope, then its scope and embedded prompt variant. The retained
+  // source decoder verifies the envelope, the nested activation, the scope, and the effective
+  // variant content digests.
+  parent_source := prompt_artifact_io.read_prompt_activation_result_source(
+    request.project_root,
+    request.parent_activation_path,
+  )
+  if !source_loaded(parent_source.status) {
+    return fail(
+      output,
+      draft_request,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      source_error_code(parent_source.status),
+      "cannot read parent activation",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  parent := prompt_artifact_io.decode_prompt_activation_result_source(parent_source.source) else {
+    return fail(
+      output,
+      draft_request,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_REFERENCE",
+      "invalid parent activation artifact",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  if !selectable_activation(parent) {
+    return fail(
+      output,
+      draft_request,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_REFERENCE",
+      "parent activation is not selectable",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  parent_decision_id := decision_id_of(parent) else {
+    return fail(
+      output,
+      draft_request,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_ID",
+      "parent activation has no decision identifier",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  activation := activation_of(parent) else {
+    return fail(
+      output,
+      draft_request,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_REFERENCE",
+      "parent activation envelope carries no activation",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  parent_reference := prompt_artifacts.ArtifactReference {
+    artifact_kind: "PROMPT_ACTIVATION_RESULT".clone(),
+    path: request.parent_activation_path.clone(),
+    artifact_id: parent_decision_id,
+    content_sha256: parent.content_sha256.clone(),
+  }
+  draft_parent := draft_with_parent(
+    draft_request,
+    parent_reference,
+    prompt_artifacts.clone_prompt_scope(activation.scope),
+  )
+
+  // Step 2: opportunity artifact — the settled section 4.1 `PromptTextArtifact` with kind
+  // `OPPORTUNITY` and the section 4.3 inclusive 65,536-byte text bound.
+  opportunity_source := prompt_artifact_io.read_prompt_text_artifact_source(
+    request.project_root,
+    request.opportunity_path,
+  )
+  if !source_loaded(opportunity_source.status) {
+    return fail(
+      output,
+      draft_parent,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      source_error_code(opportunity_source.status),
+      "cannot read opportunity artifact",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  opportunity_view: str := opportunity_source.source
+  opportunity := prompt_artifacts.decode_prompt_text_artifact(opportunity_view) else {
+    return fail(
+      output,
+      draft_parent,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_SCHEMA",
+      "opportunity artifact did not decode",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  if opportunity.schema_version != 1 {
+    return fail(
+      output,
+      draft_parent,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_SCHEMA",
+      "unknown opportunity schema version",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  if opportunity.artifact_kind != "OPPORTUNITY" {
+    return fail(
+      output,
+      draft_parent,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_KIND",
+      "opportunity artifact kind is not OPPORTUNITY",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  if !valid_ascii_identifier(opportunity.artifact_id, 128) {
+    return fail(
+      output,
+      draft_parent,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_ID",
+      "invalid opportunity identifier",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  if !valid_nonempty_text(opportunity.text, OPPORTUNITY_TEXT_MAX_BYTES) {
+    return fail(
+      output,
+      draft_parent,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_BOUNDS",
+      "opportunity text is empty or exceeds its 65,536-byte bound",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  if !prompt_artifacts.verify_prompt_text_content(opportunity) {
+    return fail(
+      output,
+      draft_parent,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_DIGEST",
+      "opportunity content digest does not match",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  opportunity_reference := prompt_artifacts.ArtifactReference {
+    artifact_kind: "OPPORTUNITY".clone(),
+    path: request.opportunity_path.clone(),
+    artifact_id: opportunity.artifact_id.clone(),
+    content_sha256: opportunity.content_sha256.clone(),
+  }
+  draft_opportunity := draft_with_opportunity(draft_parent, opportunity_reference)
+
+  // Step 2: proposal-provider kind and configuration.
+  provider_kind_of(request.proposal_provider_kind) else {
+    return fail(
+      output,
+      draft_opportunity,
+      PromptExperimentStatus.InvalidInput,
+      "INVALID_INPUT",
+      "INVALID_LABEL",
+      "unsupported proposal provider kind",
+      0,
+      None,
+      "".clone(),
+    )
+  }
+  draft_provider := draft_with_provider(
+    draft_opportunity,
+    request.proposal_provider_kind.clone(),
+    request.proposal_provider_endpoint_id.clone(),
+    request.proposal_provider_model.clone(),
+  )
+
+  // Steps 2 (environment-key presence) through 4: the credential-owning stage performs the single
+  // provider call and returns only credential-free, redacted, bounded data. Its fields are copied
+  // into independent owners here so no later move invalidates a sibling view.
+  outcome := run_proposal(request, activation, opportunity)
+  outcome_ok := outcome.ok
+  outcome_terminal := outcome.terminal
+  outcome_elapsed := outcome.elapsed_ns
+  outcome_status_code := outcome.status_code
+  outcome_status := outcome.status.clone()
+  outcome_code := outcome.error_code.clone()
+  outcome_detail := outcome.error.clone()
+  outcome_content := outcome.content.clone()
+  outcome_bounded := outcome.bounded_output.clone()
+  if !outcome_ok {
+    return fail(
+      output,
+      draft_provider,
+      outcome_terminal,
+      outcome_status,
+      outcome_code,
+      outcome_detail,
+      outcome_elapsed,
+      outcome_status_code,
+      outcome_bounded,
+    )
+  }
+
+  content_view: str := outcome_content
+  proposal := prompt_artifacts.decode_candidate_proposal(content_view) else {
+    return fail(
+      output,
+      draft_provider,
+      PromptExperimentStatus.InvalidProposal,
+      "INVALID_PROPOSAL",
+      "PROPOSAL_SCHEMA",
+      "candidate proposal did not decode",
+      outcome_elapsed,
+      None,
+      outcome_bounded,
+    )
+  }
+  if proposal.schema_version != 1 {
+    return fail(
+      output,
+      draft_provider,
+      PromptExperimentStatus.InvalidProposal,
+      "INVALID_PROPOSAL",
+      "PROPOSAL_SCHEMA",
+      "unknown candidate proposal schema version",
+      outcome_elapsed,
+      None,
+      outcome_bounded,
+    )
+  }
+  if !valid_nonempty_text(proposal.summary, SUMMARY_MAX_BYTES) ||
+  proposal.learned_prompt_append.len() > LEARNED_APPEND_MAX_BYTES {
+    return fail(
+      output,
+      draft_provider,
+      PromptExperimentStatus.InvalidProposal,
+      "INVALID_PROPOSAL",
+      "PROPOSAL_BOUNDS",
+      "candidate proposal summary or learned append is out of bounds",
+      outcome_elapsed,
+      None,
+      outcome_bounded,
+    )
+  }
+
+  mut candidate := prompt_artifacts.clone_prompt_variant(activation.effective_variant)
+  candidate.variant_id = derived_identifier(request.experiment_id, "/variant")
+  candidate.candidate_id = derived_identifier(request.experiment_id, "/candidate")
+  candidate.learned_prompt_append = proposal.learned_prompt_append.clone()
+  candidate.context_policy = proposal.context_policy
+  candidate.content_sha256 = EMPTY_DIGEST.clone()
+  candidate_digest := prompt_artifacts.prompt_variant_content_digest(candidate) else {
+    return fail(
+      output,
+      draft_provider,
+      PromptExperimentStatus.InvalidProposal,
+      "INVALID_PROPOSAL",
+      "PROPOSAL_BOUNDS",
+      "candidate variant could not be encoded within its bound",
+      outcome_elapsed,
+      None,
+      outcome_bounded,
+    )
+  }
+  candidate.content_sha256 = candidate_digest
+  if !prompt_artifacts.verify_prompt_variant_content(candidate) {
+    return fail(
+      output,
+      draft_provider,
+      PromptExperimentStatus.InvalidProposal,
+      "INVALID_PROPOSAL",
+      "PROPOSAL_BOUNDS",
+      "candidate context policy or variant shape is out of bounds",
+      outcome_elapsed,
+      None,
+      outcome_bounded,
+    )
+  }
+
+  // The rendered learned append and context policy must differ from the parent effective variant;
+  // changing only the summary is `PROPOSAL_NO_CHANGE`.
+  unchanged := candidate.learned_prompt_append == activation.effective_variant.learned_prompt_append &&
+  same_context_policy(candidate.context_policy, activation.effective_variant.context_policy)
+  if unchanged {
+    return fail(
+      output,
+      draft_provider,
+      PromptExperimentStatus.InvalidProposal,
+      "INVALID_PROPOSAL",
+      "PROPOSAL_NO_CHANGE",
+      "candidate learned append and context policy equal the parent effective variant",
+      outcome_elapsed,
+      None,
+      outcome_bounded,
+    )
+  }
+
+  // Step 5/6: a successful proposal retains no provider response bytes.
+  value := build_result(
+    draft_provider,
+    "PROPOSED",
+    "NONE",
+    "",
+    outcome_elapsed,
+    None,
+    proposal.summary.clone(),
+    Some(candidate),
+    "".clone(),
+  )
+  return publish(output, value, PromptExperimentStatus.Proposed)
+}

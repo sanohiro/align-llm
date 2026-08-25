@@ -42,11 +42,21 @@ pub fn model_info(config: model.ProviderConfig) -> model.ModelInfo {
     LlamaCpp => config.tokenize_endpoint.len() > 0,
     _ => false,
   }
+  // Truthful per adapter kind: an adapter supports a seed exactly when its module declares a
+  // seeded wire record that can carry one. OpenAI-compatible chat completions accept `seed`, and
+  // the llama.cpp completion endpoint accepts `seed`; both modules declare that seeded twin. The
+  // dispatch stays per kind so a future adapter without a seeded record reports the truth here.
+  seeded := match config.kind {
+    CloudOpenAI => true,
+    LocalOpenAI => true,
+    LlamaCpp => true,
+  }
   return model.ModelInfo {
     provider: info_provider,
     model: config.model,
     endpoint: config.endpoint,
     supports_stream: true,
+    supports_seed: seeded,
     token_count_exact: exact,
   }
 }

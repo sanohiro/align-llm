@@ -237,6 +237,13 @@ fn task() -> prompt_artifacts.PromptEvaluationTask {
     generation_policy_path: "generation.json".clone(),
     provider_control_path: "provider.json".clone(),
     environment_policy_path: "environment.json".clone(),
+    validation_runner_path: "runner.py".clone(),
+    validation_runner_sha256: digest_a(),
+    task_definition_path: "task-definition.json".clone(),
+    task_definition_sha256: digest_b(),
+    validation_argv: one_string("--retained-inputs"),
+    patch_path: None,
+    patch_sha256: None,
     artifacts: expectations(),
     regression_limits: prompt_artifacts.RegressionLimits {
       maximum_unrelated_diff_count: 10,
