@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-25): Requests 1–18 are CLOSED; Request 19 remains PROPOSED, Request 20 is ALIGN_MERGED, and neither blocks.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 now closes that provider-side gap; the latest Align `main` is pinned here and final client verification remains pending.
+> **Status (2026-08-26): Requests 1–18 are CLOSED; Request 19 remains PROPOSED, Request 20 is ALIGN_LLM_VERIFIED, and neither blocks.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm now pins the containing latest Align `main`, and both the Darwin client profile and the supervised capable graph pass against it.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -5866,14 +5866,14 @@ concentrates and not as a required design:
 ## Request 20 — CI: run the owned-JSON boundary regressions on the macOS matrix leg
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none — align-llm's own aarch64-apple-darwin profile gate exercises the shipped surface from the client side, and the Linux legs cover the compiler-side regressions
 Independent work that may continue: all of it; this asks for detection coverage in Align CI, not for a behavior change
-Resume condition: Align CI's `macos-15` matrix leg runs the `m5_owned_json` integration target on every pull request, and one green macOS run exists at the revision align-llm pins
+Resume condition: satisfied — Align CI's `macos-15` matrix leg runs the `m5_owned_json` integration target on every pull request, and its required job is green at the revision align-llm pins
 Align commit or pull request: PR #887, merged as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; adopted through Align `main` at `dc3214129692e9be36dea4f046ed11373cc355bd`
-align-llm verification: in progress — the managed compiler/runtime materializes and `c7-owned-record-source-expiry-adoption` passes at the adopted pin; the client-side proof remains `make darwin-profile-gate`, whose `persisted-result-qualification` command exercises the Request 9 owned surface on `aarch64-apple-darwin`; that gate is coverage for the consumer, not for Align's own boundary regressions
+align-llm verification: complete — the managed compiler/runtime materializes, `c7-owned-record-source-expiry-adoption` passes, the attested Darwin profile including `persisted-result-qualification` passes, and the supervised fresh-image capable graph passes at the adopted pin; publication merge evidence remains before `CLOSED`
 ```
 
 ### Align response (2026-08-25 — merged)
@@ -5888,6 +5888,30 @@ locally and the required macOS Apple Silicon CI leg passed on the merged candida
 pin adoption and `make darwin-profile-gate` proof belong to align-llm. Align PR #888 then closed
 the upstream handoff without changing the implementation; the adopted latest `main` commit above
 contains both merges.
+
+### align-llm verification (2026-08-26 — ALIGN_LLM_VERIFIED)
+
+The latest Align `main` pin materializes natively on Apple Silicon and the original
+`c7-owned-record-source-expiry-adoption` fixture passes all 45 adoption rows. The Section 10 Darwin
+profile then passed at clean head `5344da63386f595f1dcf729f6be024684eee0104`; section 11.3 of
+`docs/specs/c7-persisted-result.md` carries the emitted identity block and its five passing commands.
+The profile's `persisted-result-qualification` is the client-side Request 9 proof; it complements,
+but does not replace, Align PR #887's own 10-row macOS boundary owner.
+
+The pin moved the identity-bound coding baseline. The accepted replacement was measured as non-root
+on native Linux aarch64 with CPython 3.12 and bubblewrap: both deterministic-reference samples
+passed in 141,653,292–172,349,542 ns, median 157,001,417 ns. Its strict chain is source
+`81183d7a1d0041bab120274cd3fccdfa85c06706`, oracle
+`a0068c70499632d0dcac16700cd2daf255412eb7`, and finalization
+`5344da63386f595f1dcf729f6be024684eee0104`. The earlier macOS-produced non-passing chain remains
+in history as rejected evidence and is not the canonical record.
+
+Finally, `python3 scripts/run-fresh-image-profile-smoke --require-docker --align-repo <managed-pin>`
+passed at `5344da63386f595f1dcf729f6be024684eee0104`: image build, attestation, lifecycle,
+self-test, trust mutations, runtime replacements, native aarch64 boundary profile, the complete
+worker aggregate (412,486 ms), and cleanup all passed. This is the request's final capable
+integration evidence at the adopted pin. The request advances to `ALIGN_LLM_VERIFIED`; `CLOSED`
+waits only for the align-llm publication merge that carries this record.
 
 ### Motivation and current sibling evidence
 

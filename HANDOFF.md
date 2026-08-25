@@ -28,10 +28,18 @@ file records durable project state.
   deliberately persisted two complete FAIL samples, and the negative smoke exposed their null
   aggregate timing. That non-passing chain (`026e3b1` -> `7d24042` -> `1a8b026`) is preserved as
   failed evidence and must not be published as canonical proof.
-- Pending at this checkpoint: record two passing deterministic-reference samples on native Linux
-  aarch64 in the privileged `c6g2-measure:latest` helper, append a new source/oracle/finalization
-  chain, rerun the supervised profile, advance Request 20 to `ALIGN_LLM_VERIFIED`, record the final
-  evidence, review, preflight, and publish.
+- The accepted replacement was recorded as non-root on native Linux aarch64 in the privileged
+  `c6g2-measure:latest` helper with CPython 3.12 and bubblewrap. Both deterministic-reference
+  samples passed (141,653,292–172,349,542 ns; median 157,001,417 ns). The strict chain is source
+  `81183d7a1d0041bab120274cd3fccdfa85c06706`, oracle
+  `a0068c70499632d0dcac16700cd2daf255412eb7`, and finalization
+  `5344da63386f595f1dcf729f6be024684eee0104`; `check-baseline-chain` and `verify-baseline.py` pass.
+- The final supervised fresh-image profile passes at `5344da6`. Phases: image build 22,435 ms,
+  attestation 3,627 ms, lifecycle 2,490 ms, self-test 13,641 ms, trust mutations 12,433 ms,
+  runtime replacements 23,543 ms, boundary profile 282,585 ms, worker aggregate 412,486 ms, and
+  cleanup 1,359 ms. Request 20 is `ALIGN_LLM_VERIFIED` at the adopted pin.
+- Pending at this checkpoint: commit the evidence record, perform one comprehensive review, run the
+  exact-head executable preflight, and publish. `CLOSED` waits for the resulting align-llm merge.
 
 ## Merged checkpoint: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
 
@@ -1311,8 +1319,8 @@ file records durable project state.
 
 ## Next actions
 
-1. Complete REQUEST20-PIN's clean-head Darwin profile and final capable integration gate, then
-   advance Request 20 to `ALIGN_LLM_VERIFIED`, record the evidence, review, preflight, and publish.
+1. Commit REQUEST20-PIN's evidence record, review the stable candidate, run the exact-head
+   executable preflight, and publish with merge-commit integration.
 2. After the pin capability merges, close Request 20 with the merged align-llm publication evidence.
 3. Start Request 19, the only remaining proposed Align request and the highest-priority upstream
    capability.
