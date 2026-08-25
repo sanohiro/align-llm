@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-25): Requests 1, 3–6 are CLOSED; Requests 2 and 7–18 are ALIGN_LLM_VERIFIED; Requests 19 and 20 remain PROPOSED, and neither blocks.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, advancing Request 2. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, advancing Request 9 to `ALIGN_LLM_VERIFIED` at the unchanged pin. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executes no test binary, so Request 9's own `m5_owned_json` boundary regressions never run on macOS even though its contract is target-local.
+> **Status (2026-08-25): Requests 1–18 are CLOSED; Request 19 remains PROPOSED, Request 20 is ALIGN_MERGED, and neither blocks.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 now closes that provider-side gap; the latest Align `main` is pinned here and final client verification remains pending.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -291,7 +291,7 @@ Two smaller Align idioms worth recording (not requests): an owned `string` does 
 ## Request 2 — `std.http` / `std.net`: I/O timeouts
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: no
 Blocked gate or slice: none; the C6-MEASURED provider consumer in `src/provider_http.align` consumes the shipped per-operation deadline
@@ -371,7 +371,7 @@ path too, same fd). `ns == 0` preserves today's blocking behavior exactly.
 **Gate.** A peer that accepts then never responds returns `Err(Timeout)` within the bound; a
 black-holed (never-accepting) address returns `Err(Timeout)` within the bound.
 
-### align-llm verification (2026-08-25 — ALIGN_LLM_VERIFIED)
+### align-llm verification (2026-08-25 — CLOSED)
 
 C6-MEASURED shipped the consuming provider transport, so the original acceptance gate is now
 exercised by a real client. `src/provider_http.align` applies the configured `timeout_ns` to every
@@ -383,9 +383,9 @@ timed-out connections. `scripts/run-http-timeout-adoption-smoke` independently b
 run's wall clock and rechecks each reported per-row timing.
 
 `c6e-request2-adoption` is now a member of `HOSTED_CHECK_TARGETS`, so it is a permanent part of the
-hosted and capable check graphs rather than a target that must be remembered separately. `CLOSED`
-remains reserved until the shipped surface, ownership, and limits are recorded against merged
-publication evidence.
+hosted and capable check graphs rather than a target that must be remembered separately. The
+shipped surface, ownership, and limits are recorded above; merged publication evidence is named
+below.
 
 The C6-MEASURED review repair first ran the supervised publication route named by the review and it
 failed inside the fresh worker's `capable-checks` aggregate. The failure was never attributable to
@@ -395,8 +395,9 @@ supervised aggregate had never exercised: the `prompt-verifier-smoke` code-gener
 `prompt-measurement-adapter-smoke` resolving `git` for its patch fixture against a hard-coded
 `/usr/bin:/bin` child PATH rather than the aggregate's tool root. With both closed, the supervised
 `make ci` request passes at `3768ad8af68bb50ee3129ff392f6ba86ac89e071`, so this request's final
-`make ci` leg is met and the `ALIGN_LLM_VERIFIED` claim is complete. `CLOSED` still waits on merged
-publication evidence.
+`make ci` leg is met. C6-MEASURED merged as align-llm PR #103
+(`c9a510dc6ef4dc123f586eb33f447f02348061fb`), completing the publication evidence and closing this
+request.
 
 ---
 
@@ -2574,7 +2575,7 @@ provide per-row Drop; those remain outside this request's shipped surface.
 ## Request 7 — `core.json`: escaped strings in declared-record decoding
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: align-llm adoption; roadmap C6 Prompt Optimizer canonical declared-artifact encoding remains blocked until every separately registered JSON prerequisite is also adopted
@@ -2600,7 +2601,7 @@ or a second persisted format. The canonical fixture and closure matrix are owned
 
 The Align-side release build completed on merged `main` with exactly
 `cargo build --release --workspace`. Align-llm PR #94 then passed Request 7's exact pin/adoption
-target and final capable `make ci`; the register now records Request 7 as `ALIGN_LLM_VERIFIED`.
+target and final capable `make ci`; the merged shipped-surface and client evidence close Request 7.
 
 ### Align benchmark-evidence implementation progress (2026-08-16)
 
@@ -3736,7 +3737,7 @@ product slice starts only after every other separately registered JSON prerequis
 ## Request 8 — `core.array_builder`: runtime construction of declared-record arrays
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Request 8 supplies the recursively Copy, owned-record base needed by Request 10's evaluator extension, and C6c2 cannot consume its runtime-sized declared-record result arrays until the named real-client adoption and shared consumer pin wave pass
@@ -4148,7 +4149,7 @@ running after every checkpoint. Adoption does not silently inherit another consu
 ## Request 9 — `core.json`: owned text fields and runtime-sized text arrays
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: no
 Blocked gate or slice: none; the `C7-PERSISTED-RESULT` consumer in `src/persisted_result.align` and `src/main.align` consumes the shipped owned-JSON surface
@@ -4182,8 +4183,9 @@ The Align-side release build completed on merged `main` with exactly
 `2f33ac5c33a898a7894af58322852632ce6ffe42`, adopted by align-llm in `f344ea9`; the earlier pin
 `19c3db144c462bf7d6784f88d64cc124229b7ec2` already contained it and no pin bump was required for
 this request. The `C7-PERSISTED-RESULT` adoption fixture, consumer lifetime/artifact qualification,
-and final `make ci` are complete and are recorded above, which advances Request 9 to
-`ALIGN_LLM_VERIFIED`; `CLOSED` remains owned by the merged capability's shipped-surface record.
+and final `make ci` are complete and are recorded above. C7-PERSISTED-RESULT merged as align-llm PR
+#104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`), completing the shipped-surface record and closing
+Request 9.
 
 ### Motivation
 
@@ -4892,7 +4894,7 @@ adoption evidence before they become dependent on this request.
 ## Request 10 — `core.array_builder`: recursive evaluator record fields
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6f2 deterministic paired evaluator and C6c2 decoded evaluation verifier; Requests 8 and 10 supply the recursive runtime-sized result arrays, which C6c2 cannot consume until the named real-client adoption and shared consumer pin wave pass
@@ -4983,7 +4985,7 @@ evidence.
 ## Request 11 — `std.process`: bounded child output capture
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: no
 Blocked gate or slice: none; the merged C6-EVALUATION contained evaluator consumes the shipped bounded capture
@@ -5034,7 +5036,7 @@ claim a bound using `run()` followed by a length check.
 ## Request 12 — `core.json`: bounded canonical encoding
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6a1/C6a2 canonical artifact persistence and every C6 slice that writes a result with a declared raw-byte cap
@@ -5083,7 +5085,7 @@ encode unboundedly and then discard an oversized string.
 ## Request 13 — `core.json`: recursive owned C6 artifact graphs
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6a1/C6a2 canonical artifact declarations and every C6 command that persists a nested result
@@ -5223,7 +5225,7 @@ The Align design and implementation must prove:
 ## Request 14 — `std.fs`: exclusive creation and no-replace publication
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: no
 Blocked gate or slice: none; the merged C6-EVALUATION pair publication consumes the shipped exclusive operations
@@ -5319,7 +5321,7 @@ The Align design and implementation must prove:
 ## Request 15 — `core.json`: complete decoded-owner transitions
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6-LIFECYCLE's `c6-json-decoded-owner-adoption`, plus any later JSON change that adds a recoverable failure edge after a declared-record owner becomes live
@@ -5421,7 +5423,7 @@ reviewed head; align-llm later reaches `ALIGN_LLM_VERIFIED` through
 ## Request 16 — language: borrow-safe inspection of owned sum payloads
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: no
 Blocked gate or slice: none; the C6c2 decoded verifier now consumes the shipped surface
@@ -5550,7 +5552,7 @@ sentinel, wrapper record, hidden clone, or alternate verifier signature is an ac
 ## Request 17 — language: borrow-safe dynamic aggregate projection
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: no
 Blocked gate or slice: none; the C6c2 decoded evaluation verifier now consumes the shipped surface
@@ -5618,7 +5620,7 @@ remain live after verification.
 ## Request 18 — `std.fs`: retained-root regular-file access
 
 ```text
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: C6d offline accept/rollback CLI and any later C6 owner that consumes an ordinary artifact through the common physical-path trust boundary
@@ -5864,15 +5866,28 @@ concentrates and not as a required design:
 ## Request 20 — CI: run the owned-JSON boundary regressions on the macOS matrix leg
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none — align-llm's own aarch64-apple-darwin profile gate exercises the shipped surface from the client side, and the Linux legs cover the compiler-side regressions
 Independent work that may continue: all of it; this asks for detection coverage in Align CI, not for a behavior change
 Resume condition: Align CI's `macos-15` matrix leg runs the `m5_owned_json` integration target on every pull request, and one green macOS run exists at the revision align-llm pins
-Align commit or pull request: pending
-align-llm verification: pending — the client-side proof stays `make darwin-profile-gate` at the adopted pin, whose `persisted-result-qualification` command exercises the Request 9 owned surface on `aarch64-apple-darwin`; that gate is coverage for the consumer, not for Align's own boundary regressions
+Align commit or pull request: PR #887, merged as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; adopted through Align `main` at `dc3214129692e9be36dea4f046ed11373cc355bd`
+align-llm verification: in progress — the managed compiler/runtime materializes and `c7-owned-record-source-expiry-adoption` passes at the adopted pin; the client-side proof remains `make darwin-profile-gate`, whose `persisted-result-qualification` command exercises the Request 9 owned surface on `aarch64-apple-darwin`; that gate is coverage for the consumer, not for Align's own boundary regressions
 ```
+
+### Align response (2026-08-25 — merged)
+
+Align PR #887 adds the existing `m5_owned_json` owner after the workspace build in the
+required `macos-15` PR leg. Running that owner locally on Apple Silicon exposed a pre-existing
+storage-generation regression introduced after the align-llm pin: `JsonOwnedDecode` was incorrectly
+retaining both its input fact and the enclosing arena's allocation mode even though the checked-HIR,
+MIR, runtime, and Request 9 contract make every decoded owner free-standing. The same candidate
+restores those two analysis facts to the existing contract. The complete 10-test owner passed
+locally and the required macOS Apple Silicon CI leg passed on the merged candidate. The remaining
+pin adoption and `make darwin-profile-gate` proof belong to align-llm. Align PR #888 then closed
+the upstream handoff without changing the implementation; the adopted latest `main` commit above
+contains both merges.
 
 ### Motivation and current sibling evidence
 
