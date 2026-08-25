@@ -585,6 +585,29 @@ file records durable project state.
     `prompt-evaluate-smoke` reports `an adopted zombie was treated as an escaped descendant:
     PROCESS`. In every negative control the live-descendant row still passes, so the controls
     isolate the zombie classification and not the containment guarantee.
+- **ADAPTER-ZOMBIE publication preflight and supervised gate, at the final head
+  `fd44514212c9989c5c60db1432822fb216f96018` (2026-08-25).** `python3 scripts/pre-pr --owner-test
+  descendant-scan -- <the repaired-file owners in a privileged Linux container>` classified the
+  wave `fresh-image`, because `eval/*` changed. Phases: `descendant-scan` 18,359 ms **PASS**,
+  `managed-align-ensure` 276 ms **PASS**, `pinned-align-build` 100 ms **PASS**, `hosted-checks`
+  49,531 ms **PASS**. Its `fresh-focused` leg **cannot run on Darwin**:
+  `scripts/run-fresh-source-identity-smoke` reads `/proc/self/fd`, and the identical failure
+  reproduces on a clean clone of the base commit `a4f8663`, so it is a pre-existing host
+  limitation rather than a wave regression — the same `N/A` reason C7-P recorded. Both fresh legs
+  were therefore run where they belong.
+  - **Focused leg, native Linux `aarch64`** in the privileged `c6g2-measure:latest` container with
+    `--init`, `bubblewrap`, `clang`, and `unzip`, non-root with `umask 022` and
+    `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the exact head:
+    `python3 scripts/run-fresh-worker-qualification` **PASS**, exit 0 (focused; installed profile
+    deferred).
+  - **Installed profile, host Docker:** `python3 scripts/run-fresh-worker-qualification
+    --installed-profile-only --require-docker`: **PASS**, `fresh image profile smoke: PASS` then
+    `fresh worker qualification: PASS (installed profile only)`. Phases: `docker-daemon` 618 ms,
+    `image-build` 22,731 ms, `image-attestation` 3,544 ms, `profile-lifecycle` 2,397 ms,
+    `profile-self-test` 15,437 ms, `trust-mutations` 12,301 ms, `runtime-replacements` 21,955 ms,
+    `boundary-profile` 302,596 ms, **`worker-aggregate` pass after 365,588 ms**, `cleanup`
+    1,313 ms; whole installed profile 749,127 ms. Run with the default environment and no
+    diagnostic opt-in. **That is this capability's `make ci` evidence.**
 - **C7-P Darwin platform-profile gate, green, re-emitted at the review-repaired head
   `3e9b27e9af04d4eae616dffb812c8db926d938d8` (macOS `aarch64-apple-darwin`, 2026-08-25).** The
   repair changed the gate's own owner, which section 10.4 names as a re-run trigger, so the
