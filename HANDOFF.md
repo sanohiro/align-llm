@@ -3,12 +3,104 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: C7-P — aarch64 platform profiles (2026-08-25)
+## Active capability: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
 
-- C7-PERSISTED-RESULT merged as align-llm PR #104 (`a52b9ac`). The active capability is C7-P on
-  branch `agent/c7p-aarch64-profiles`, the two reviewed non-x86 platform profiles that section 11
+- C7-P merged as align-llm PR #105 (`a4f8663`). The active capability is ADAPTER-ZOMBIE on branch
+  `agent/adapter-zombie-descendants`, which closes follow-up item 2 below — the latent
+  containment-scan defect deferred from PR #103's CI repair `d7f1ff6`.
+- **The defect.** Every `/proc` descendant scan counted any entry whose `PPid:` matched a root,
+  including entries in `State: Z`. A zombie has already terminated and only holds a process-table
+  slot until someone waits for it, so it cannot escape containment. Under `PR_SET_CHILD_SUBREAPER`
+  an adopted orphan that has already exited becomes a permanent zombie child of the scanning
+  process, so the scan reported a containment failure for a process that no longer runs. Git 2.47
+  detaches auto-maintenance before deciding whether any task is due, which is how PR #103 hit it as
+  `generation child left a descendant`. `d7f1ff6` treated that one trigger from the harness side;
+  this repairs the class in the scan itself.
+- **All six candidates named in the PR #103 diagnosis carry the pattern and all six are repaired**
+  (`cf9bd75`): `scripts/prompt-measurement-adapter.py`, `scripts/prompt-evaluate.py`,
+  `scripts/prompt-fixed-adapter.py`, `scripts/prompt-gate-validator.py`,
+  `scripts/prompt-snapshot-helper.py`, and `scripts/prompt-source-verifier.py`. The
+  private-group check is a separate contract and is untouched — a zombie still holds its process
+  group open — so each end-to-end regression's orphan leads its own session.
+- **The exact-head review found that repair too wide, and `563e3ae` narrows it (finding F1).** A
+  zombie is not always a terminated process: when a thread-group leader exits while another thread
+  in its group keeps running, the leader stays in `State: Z` and cannot be released, yet the worker
+  thread continues to execute. Omitting every `State: Z` entry hid that live descendant. Liveness
+  is a property of the thread group, not of its leader, so all six scans now omit an entry only at
+  `State: Z` **and** `Threads: 1`, read from the `/proc/PID/status` text already in hand — no second
+  filesystem read. The visited-set traversal is unchanged, so a live entry parented to an omitted
+  one is still reported. The two parse failures are deliberately asymmetric and both the code and
+  the specification now say so: a vanished entry or an absent/malformed `PPid:` line is dropped by
+  the shared `OSError`/`IndexError` path and **fails open** for that one entry, consciously accepted
+  for parse robustness because without a parent link it cannot be placed in the tree at all; an
+  absent or malformed `State:`/`Threads:` line **fails closed** and reports the entry.
+- **The regression is the reviewer's own reproduction, and it is a negative control.** Every owner
+  with `descendant_scan_rows` carries it — `prompt-evaluate-smoke`, `test-prompt-fixed-adapter`,
+  `test-prompt-snapshot-helper`, `test-prompt-source-verifier`, and `prompt-gate-validator-smoke`'s
+  `validator` family — and `e41d9ba` added the same three rows to the measurement adapter's inline
+  equivalents (73 rows become 74). The fixture forks a child that starts a worker thread and then
+  leaves its own leader thread through `pthread_exit`, which the kernel takes as a plain thread exit
+  rather than a group exit; the child settles at `State: Z` with `Threads: 2`. Two alternatives were
+  measured first: a raw `SYS_exit` through `ctypes` works but needs a per-architecture syscall
+  table, and a compiled-at-test-time C helper needs a toolchain in every image. `pthread_exit` needs
+  neither and was verified on `x86_64` and `aarch64` glibc CPython, so it is the portable
+  construction.
+- **A seventh occurrence exists and is deliberately not repaired here, and the deferral now lives in
+  the plan.** `eval/runners/run-coding-task.py` has the same scan, but its consumers are
+  `kill_owned_processes`/`kill_adopted_descendants` (signalling a terminated entry is a no-op) and
+  `validation_process_usage`, which counts processes against `MAX_VALIDATION_PROCESSES = 256`.
+  That is a resource-budget contract, not a containment verdict, so it is a distinct failure
+  domain; and the file is a frozen `FILE_SET` corpus member, so touching it forces another chain
+  rebind and another provider-backed re-measurement. Review finding F2 required this to be a plan
+  decision rather than a handoff note, so §1.2 of `docs/specs/c6-prompt-context-optimizer.md` now
+  records it with its owner (the coding runner) and its resume condition. Also tracked as follow-up
+  item 2 below.
+- **Where the rule is written.** The prose is §1.2 "Runtime ownership and bounded persistence" of
+  `docs/specs/c6-prompt-context-optimizer.md`; the descendant-ownership ledger rows are §10.1g and
+  §10.1c. `cf9bd75`'s commit message cited "section 11.3" for that ledger row, which is the
+  C6-MEASURED public-contract ledger instead; the documents now carry the correct citations.
+- **Review envelope.** One comprehensive review at head `8e86a22` returned **request-changes** with
+  five findings. Dispositions, all accepted: **F1** (blocking, code — the `State: Z` skip hides a
+  live zombie leader) closed in code by `563e3ae` and extended to the sixth owner by `7df41ac`;
+  **F2** (spec-section citations, the closure-row owners, and the seventh-occurrence deferral
+  belonging in the plan) closed by `563e3ae` and this handoff; **F3** (the movement sentence
+  overstated "digest plus wall time") closed by naming the exact moved fields above; **F4** (the
+  `IndexError` fail-open behaviour was undocumented) and **F5** (the row docstrings called a direct
+  fork child an adopted orphan) closed by `563e3ae`. No finding was rejected. The repair changed
+  behaviour in the six shipped scans, so it carried the full rebind and re-measurement chain rather
+  than being treated as a narrow documentation fix.
+- **Consequence, discharged a second time: the frozen digest chain was rebound again (`762b1d0`).**
+  The review repair moved the same three script bytes, so the identical rebind set moved again and
+  nothing else. The rebind tool was replayed unchanged against a worktree of the pre-repair commit
+  `8e86a22`, where it reproduces the committed chain exactly and reports nothing moved; only then
+  was it allowed to write. `EVALUATOR_SOURCE_SHA256` moved with the repair in `563e3ae`, as before.
+- **Consequence, discharged: the frozen digest chain was rebound (`bf844f8`).** Three repaired
+  scripts are corpus members and declared task artifacts — both adapters and the snapshot helper —
+  so each task's `measurement_adapter_runtime`, `snapshot_helper_runtime`, three
+  `artifacts[].expected_sha256` entries, and `content_sha256` moved, then
+  `corpus-file-set.manifest` (six digest columns), `corpus.json`, `scope.json`, and the
+  `prompt-activation-baseline-v1.json` envelope. The rebind uses only the shipped canonical binder
+  and the shipped snapshot helper's `canonical_mode`/`digest_file`/`file_expectation_sha256`, and
+  asserts that no other field, no membership, no mode, and no path byte moved. This extends
+  `1d27b5f`; the snapshot helper is new to this rebind set.
+- **Consequence, discharged: `src/prompt_evaluate.align` `EVALUATOR_SOURCE_SHA256`.**
+  `scripts/prompt-evaluate.py` is bound by exact digest and executed from those bytes, so the
+  repair left `./main prompt evaluate` failing before it could construct any result — exactly the
+  `99a6ba7` failure mode, and `prompt-evaluate-smoke` reproduced it. The digest moves in the same
+  commit as the repair so that commit is self-consistent.
+- **Consequence, discharged: the gate evidence was re-measured**, because the rebind moves every
+  digest the checked-in `eval/prompt/gate/` bundle embeds. Result and transcript below.
+- **No new Align request.** The whole defect and its repair live in the Python contained-execution
+  helpers; nothing here needs a language, compiler/runtime, or standard-library surface Align does
+  not ship. `docs/align-requests.md` is unchanged.
+
+## Merged checkpoint: C7-P — aarch64 platform profiles (2026-08-25)
+
+- C7-PERSISTED-RESULT merged as align-llm PR #104 (`a52b9ac`). C7-P was implemented on
+  branch `agent/c7p-aarch64-profiles` and merged as align-llm PR #105 (`a4f8663`), the two reviewed
+  non-x86 platform profiles that section 11
   of `docs/specs/c7-persisted-result.md` requires before either aarch64 target may provide C7
-  evidence. **Both are now discharged and the branch is ready for publication.**
+  evidence. Both are discharged and merged.
 - **Settled and implemented: the `aarch64-apple-darwin` profile.** Section 10 of
   `docs/specs/check-gate-topology.md` is the contract. It is deliberately minimal — a process
   boundary plus digest attestation — and explicitly claims no kernel-mediated containment, **no
@@ -57,11 +149,8 @@ file records durable project state.
   re-emission commit. `scripts/test-check-darwin-profile` has no Make target, per the
   `scripts/test-align-toolchain` precedent, so the `Makefile` and the identity-bound canonical
   baseline chain are untouched by the repair.
-- Next actions, in order: (1) publish the English pull request citing sections 11.2/11.3 and the
-  verification table below; (2) after merge,
-  the adapter-zombie follow-up recorded under the merged C6-EVALUATION notes — the `c6f2` fixture
-  poll race and the container's unreaped-descendant class both want a deterministic seam rather than
-  a timing window; (3) then the next eligible roadmap capability.
+- Published and merged as PR #105 (`a4f8663`) with the sections 11.2/11.3 citations and the
+  verification table below.
 
 ## Merged checkpoint: C7-PERSISTED-RESULT (2026-08-25)
 
@@ -455,6 +544,241 @@ file records durable project state.
 
 ## Latest durable verification
 
+- **ADAPTER-ZOMBIE review-repaired C6g2 gate, green (native Linux `aarch64`, 2026-08-25).** This is
+  the current evidence and supersedes the `b336017` block below. Measured at the rebind head
+  `762b1d0f068a10774ff976b1889ddacf483321a5`; the evidence is committed as `6537482`. Same
+  environment as both earlier runs: the privileged `c6g2-measure:latest` container with `--init`,
+  `bubblewrap` installed at run time, a non-root uid, `umask 022`, `PYTHONDONTWRITEBYTECODE=1`, the
+  model copied onto the container filesystem, and `LOCAL_OPENAI` on a co-located `llama-server` at
+  `http://127.0.0.1:18080/v1/chat/completions`, model `qwen2.5-coder-7b-instruct-q4_k_m`. The served
+  build and weights match the frozen `provider_service_revision` exactly: llama.cpp `b10610` /
+  `a14dba686aaafba3a2d6b5eb8820b0df5c5d2d92`, `llama-server`
+  `e3905073c4322ff33c7b365c9ea10aadbc776fe3eab372869694555d8f5693a8`, model
+  `509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c`. The server ran
+  `--parallel 1 -c 16384` on 8 threads over the 8 logical CPUs the environment probe records, and
+  every prompt reported `truncated = 0`. Generation child built in run:
+  `6650e4486ec8b205604e6348cd9dd81f7370b478a7ed1cf7607ce7aa94ff2aba`.
+  - **Measure (`c6g2-measure`), 595.0 s: `IMPROVED`, `gate_eligible: true`,
+    `serious_regression_reasons: []`, corpus `completion_gain_count: 2`.**
+    `duration-half-away-from-zero` 0/2 parent to 2/2 candidate; `layer-precedence-frozen-module`
+    and `record-codec-round-trip` fail in both variants. `paired_pass_count` is 0 for every task
+    and for the corpus, so this evidence still carries **no paired timing and no
+    time-to-passing-patch comparison**; acceptance is the section 8 completion-gain path alone.
+    Result `content_sha256`
+    `0d8668053654d3f7fef3bcd5b2966dcaaf966315432ec4e9245b4ecb25346267`, evidence sidecar
+    `bc7ed85a647a0098fb4812c69adbeb0e87132fc9704d8746bc880db9efd862aa`. Accept then rollback
+    reproduce as `ACCEPTED` (`00b3cf42…`) and `ROLLED_BACK` (`cf881026…`). All three source
+    reachabilities are `VERIFIED`.
+  - **Reproducible baseline, the parent-vs-parent null replicate (`c6g2-replicate`), 493.0 s:**
+    `NO_IMPROVEMENT`, `gate_eligible: false`, every task 0/2 in both variants, corpus
+    `completion_gain_count: 0` — it flipped no cell. Result digest (SHA-256 of the exact
+    `run/result-replicate.json` bytes)
+    `dcd4e994f1a44c59a4e0ac96644d8adce0023b86f8e870dd2f7794f08cacd359`, evidence sidecar
+    `0b77c94b70d9eae285a24aaca718401d9211c8a6ed2dc03c2c606b8a73867c03`. Same reproducing command as
+    below. The replicate artifacts are diagnostics, not repository state, and are not checked in.
+  - **The comparison with the superseded evidence is tighter than the previous one: no measurement
+    field moved at all.** Movement is confined to digests and runtime identities, to
+    `artifact_digests[].byte_count` for the three rebound scripts, and to wall-clock `*_ns` timings
+    with the test-duration text they print into `diagnostic_stderr`. Every verdict-bearing cell is
+    identical — `status`, `gate_eligible`, `serious_regression_reasons`, every `task_aggregates`
+    entry, the whole `corpus_aggregate`, and every row's `measurement.status`. The candidate variant
+    is provably the same one: its `content_sha256` `78611fbc…` is byte-identical to the variant both
+    earlier measurements consumed. Only the experiment artifact's own frozen-chain references — the
+    parent-activation digest and its embedded scope — were rebound with the corpus, giving artifact
+    digest `435a34b9…` in place of `01b04b76…`.
+  - **Three reproduction preconditions, recorded because rebuilding the lost drivers hit all
+    three.** The measurement drivers are diagnostics and were never checked in, so they were
+    reconstructed from the embedded copies in the checked-in evidence. (1) `observe_git` requires an
+    empty `git status --porcelain=v1 -z --untracked-files=all` in **both** the align-llm and the
+    Align repository. The run's own `run/` outputs are untracked and `run/` is not in `.gitignore`,
+    so the working clone needs `run/` in `.git/info/exclude` (local, uncommitted). (2) The Align
+    checkout must be owned by the running uid, because a root-owned checkout trips git's
+    dubious-ownership guard. Either of those degrades the affected reachability to `UNVERIFIED`,
+    which silently drops `gate_eligible` to false while still reporting `IMPROVED` with identical
+    aggregates — the first attempt produced exactly that and was discarded. (3) The evaluate
+    request's `verifier_source_policy_path` must name the **same** `PROMPT_SOURCE_VERIFIER_POLICY`
+    document the gate bundle carries, `policy_id: prompt-v1-gate-source-policy-v1`; a
+    differently-named policy over identical helper bytes produces a different digest and the
+    validator rejects the evidence with `evaluation environment source_verifier_policy_sha256
+    disagrees with the gate locator`. That policy id was recovered by solving the previous
+    locator's recorded digest against the known helper, interpreter, and Git digests. Only the run
+    that satisfies all three is checked in.
+- **Superseded: ADAPTER-ZOMBIE re-measured C6g2 gate (native Linux `aarch64`, 2026-08-25).** Kept
+  as history; the block above is the current evidence. Measured at
+  the rebind head `bf844f821a45464e67ed30eafe025c31dfb2c4e5`; the evidence was committed as
+  `b336017`. Environment identical to the superseded run: the privileged `c6g2-measure:latest`
+  container with `--init`, `bubblewrap` installed at run time, a non-root uid, `umask 022`,
+  `PYTHONDONTWRITEBYTECODE=1`, the model copied onto the container filesystem, and `LOCAL_OPENAI`
+  on a co-located `llama-server` at `http://127.0.0.1:18080/v1/chat/completions`, model
+  `qwen2.5-coder-7b-instruct-q4_k_m`. Generation child built in run:
+  `903f38004ac3c935b0ca41c70f94f77b274bdb84adebe3873a1aec70be59bf72`.
+  - **Measure (`c6g2-measure`), 685.2 s: `IMPROVED`, `gate_eligible: true`,
+    `serious_regression_reasons: []`, corpus `completion_gain_count: 2`.**
+    `duration-half-away-from-zero` 0/2 parent to 2/2 candidate; `layer-precedence-frozen-module`
+    and `record-codec-round-trip` fail in both variants. `paired_pass_count` is 0 for every task
+    and for the corpus, so this evidence still carries **no paired timing and no
+    time-to-passing-patch comparison**; acceptance is the section 8 completion-gain path alone.
+    Result digest `1b2164dc8acebf25ae815e87d9aa9b3b9fb25be99917b57658b6462fb1a281cc`, evidence
+    sidecar `7c2d48b571377f20918dc2a8d0ce6d68372c2ca440a10bd997009b3f2e8a9f80`. Accept then
+    rollback reproduce as `ACCEPTED` and `ROLLED_BACK`.
+  - **Reproducible baseline, the parent-vs-parent null replicate (`c6g2-replicate`), 637.6 s:**
+    `NO_IMPROVEMENT`, `gate_eligible: false`, every task 0/2 in both variants, corpus
+    `completion_gain_count: 0` — it flipped no cell. Result digest
+    `56a4f367b054db8471500bb61921e169270b36bc5e7d54ed608eb7272d05c87a`. Reproducing command, in
+    the same container at project root `/work/align-llm`:
+
+    ```text
+    ./main prompt evaluate run/evaluate-request-replicate.json run/result-replicate.json
+    ```
+
+    The replicate artifacts are diagnostics, not repository state, and are not checked in.
+  - **The comparison with the superseded evidence is cell for cell identical.** Same verdicts, same
+    per-task pass counts, same `completion_gain_count: 2`, same empty serious-regression array,
+    same all-zero `paired_pass_count`, and the same null replicate verdict. The candidate variant
+    is provably the same one: its `content_sha256` `78611fbc…` is byte-identical to the variant the
+    superseded measurement consumed, taken from the checked-in evaluation. Only the experiment
+    artifact's own frozen-chain references — the parent-activation digest and its embedded scope —
+    were rebound with the corpus, giving artifact digest `01b04b76…` in place of `4dfe5fe7…`.
+    **Correction (review finding F3): "everything that moved is a digest plus wall time" was
+    wrong.** Besides digests, runtime identities, `align_llm_commit` and timings, two measurement
+    fields moved on the `record-codec-round-trip` **parent** row, sample 1 (`rows[8]`, not a
+    candidate row): `patch_size_bytes` went 1036 to 1008, and `diagnostic_summary`'s applied-edit
+    list went from `src/encode.py` to `src/decode.py, src/encode.py`. Every snapshot's
+    `artifact_digests[].byte_count` also moved for the three rebound scripts, since their bytes are
+    what the rebind was for. Both variants fail `record-codec-round-trip`, so no verdict-bearing
+    cell moved: the verdict-bearing cells were and remain identical.
+- **ADAPTER-ZOMBIE review-repair owner verification (2026-08-25).** At the evidence head `6537482`,
+  with the working tree carrying only this documentation change. Linux rows ran in the privileged
+  `c6g2-measure:latest` image with `bubblewrap` installed at run time, non-root with `umask 022` and
+  `PYTHONDONTWRITEBYTECODE=1`; the repaired scans are Linux-only, so all three helper owners fail on
+  Darwin for that reason at the base commit too.
+  - Repaired-file owners, all **PASS**: `test-prompt-fixed-adapter`, `test-prompt-snapshot-helper`,
+    `test-prompt-source-verifier`, `run-prompt-measurement-adapter-smoke` (**74** rows, up from 73),
+    `run-prompt-evaluate-smoke`, and all nine `prompt-gate-*` families.
+  - Regression neighbours, all **PASS**: `prompt-experiment-smoke`, `prompt-seed-attestation-smoke`,
+    `prompt-generate-smoke`, `prompt-credential-lifetime-smoke`, `prompt-render-parity-smoke`
+    (58 vectors byte-equal), `prompt-state-smoke`.
+  - Host (macOS, managed pinned toolchain), all **PASS**: `gmake check` (23 units per-unit),
+    `gmake format-check`, `gmake gate-topology-check` (`check gate topology: PASS`; no lane member
+    changed), `gmake provider-smoke`, `gmake persisted-result-smoke`, `git diff --check`, and
+    `python3 scripts/check-baseline-chain` (`baseline chain: PASS` — the `Makefile` is untouched, so
+    the identity-bound chain stands).
+  - **The new row is a negative control in all six files.** With the `Threads:` discriminator
+    removed in one scan at a time — `return state == "Z"` in place of
+    `return state == "Z" and tasks == 1` — each owner fails with `a zombie leader with a live worker
+    thread was not reported as a live descendant` (the measurement adapter reports the same message
+    under its `zombie-leader-descendant` label). The evaluator's control also rebinds
+    `EVALUATOR_SOURCE_SHA256` for the mutated bytes, so it fails on the row and not on the digest
+    gate. In every control the terminated-zombie row and the live-descendant row still pass, so the
+    control isolates the discriminator and not the containment guarantee.
+- **ADAPTER-ZOMBIE review-repaired gate qualification, green, at head
+  `65374827f4fc901ead4e777b680ce8692d5805e8`.** Same container, clean clone (`dirty=0`), bundle
+  built from a clean align-llm mirror at that head plus a clean Align checkout at
+  `2f33ac5c33a898a7894af58322852632ce6ffe42` (`dirty=0`). The generation child rebuilt in run
+  reproduced the locator's frozen digest
+  `6650e4486ec8b205604e6348cd9dd81f7370b478a7ed1cf7607ce7aa94ff2aba` exactly. Both forms pass:
+
+  ```text
+  /usr/bin/python3.12 scripts/prompt-gate-validator.py \
+    --source-bundle-root /tmp/bundle \
+    --python-executable-path /usr/bin/python3.12 \
+    --git-executable-path /usr/bin/git \
+    --generation-child-path /tmp/bundle/align-llm/main \
+    --generation-child-sha256 6650e4486ec8b205604e6348cd9dd81f7370b478a7ed1cf7607ce7aa94ff2aba
+  -> prompt gate validator: PASS (exit 0)
+
+  make prompt-gate-check C6_GATE_SOURCE_BUNDLE_ROOT=/tmp/bundle \
+    C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 \
+    C6_GATE_GIT_EXECUTABLE_PATH=/usr/bin/git \
+    C6_GATE_GENERATION_CHILD_PATH=/tmp/bundle/align-llm/main \
+    C6_GATE_GENERATION_CHILD_SHA256=6650e448...94ff2aba
+  -> prompt gate validator: PASS (exit 0)
+  ```
+
+  The bundle holds `align-llm/`, `align/`, `scripts/prompt-source-verifier.py` at mode 0644, and the
+  `prompt-v1-gate-source-policy-v1` policy document — the same one the evaluate request consumed.
+- **Publication preflight, both fresh legs, and the supervised installed profile run at the exact
+  publication head and are recorded in the pull request**, not here: a `pre-pr` stamp belongs to an
+  unchanged `HEAD`, so it cannot be committed into the head it certifies. This branch changes
+  `src/*` and `eval/*`, so the wave classifies `fresh-image` and both compensating legs are re-run
+  rather than argued from a head delta.
+- **Superseded: ADAPTER-ZOMBIE gate qualification, green, at head
+  `b3360171e965568af59aabaec14f89c6b5b60602`.** Same container, clean clone, bundle built from a
+  clean align-llm mirror at that head (`dirty=0`) plus a clean Align checkout at
+  `2f33ac5c33a898a7894af58322852632ce6ffe42` (`dirty=0`). The generation child rebuilt in run
+  reproduced the locator's frozen digest exactly. Both forms pass:
+
+  ```text
+  /usr/bin/python3.12 scripts/prompt-gate-validator.py \
+    --source-bundle-root /work/bundle \
+    --python-executable-path /usr/bin/python3.12 \
+    --git-executable-path /usr/bin/git \
+    --generation-child-path /work/align-llm/main \
+    --generation-child-sha256 903f38004ac3c935b0ca41c70f94f77b274bdb84adebe3873a1aec70be59bf72
+  -> prompt gate validator: PASS (exit 0)
+
+  make prompt-gate-check C6_GATE_SOURCE_BUNDLE_ROOT=/work/bundle \
+    C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 \
+    C6_GATE_GIT_EXECUTABLE_PATH=/usr/bin/git \
+    C6_GATE_GENERATION_CHILD_PATH=/work/align-llm/main \
+    C6_GATE_GENERATION_CHILD_SHA256=903f3800...be59bf72
+  -> prompt gate validator: PASS (exit 0)
+  ```
+
+  The same qualification was re-run unchanged at the documentation head
+  `fd44514212c9989c5c60db1432822fb216f96018` and again after it, each time rebuilding the
+  generation child in run to the same digest and each time reporting `prompt gate validator: PASS`.
+  Every commit after `b336017` is Markdown only, so no input the validator, the preflight, or
+  either fresh leg consumes has moved.
+
+- **ADAPTER-ZOMBIE owner verification (2026-08-25).** Linux rows ran in a privileged
+  `python:3.12-bookworm`-derived container with `bubblewrap`, and the Align-dependent rows in the
+  `c6g2-measure:latest` image at the pinned compiler; the repaired scans are Linux-only, and all
+  three helper owners already fail on Darwin for that reason at the base commit.
+  - Repaired-file owners, all **PASS**: `test-prompt-fixed-adapter`,
+    `test-prompt-snapshot-helper`, `test-prompt-source-verifier`,
+    `run-prompt-measurement-adapter-smoke` (73 rows), `run-prompt-evaluate-smoke`, and all nine
+    `prompt-gate-*` families.
+  - Regression neighbours, all **PASS**: `prompt-experiment-smoke`,
+    `prompt-seed-attestation-smoke`, `prompt-generate-smoke`,
+    `prompt-credential-lifetime-smoke`, `prompt-render-parity-smoke`, `prompt-state-smoke`.
+  - Host (macOS, managed pinned toolchain), all **PASS**: `gmake check` (23 units per-unit),
+    `gmake format-check`, `gmake gate-topology-check` (`check gate topology: PASS`; no lane member
+    changed), `gmake provider-smoke`, `gmake persisted-result-smoke`, `git diff --check`, and
+    `python3 scripts/check-baseline-chain` (`baseline chain: PASS` — the `Makefile` is untouched,
+    so the identity-bound chain stands).
+  - **Every regression has a recorded negative control.** With the repair reverted in that one
+    file, each owner fails on its new row: the four `owned_descendant_ids` unit rows report `an
+    adopted zombie was counted as a live descendant`; `test-prompt-fixed-adapter`'s contained
+    runner reports `an adopted zombie descendant was reported as a containment failure`;
+    `prompt-measurement-adapter-smoke`'s generation-child row reproduces the exact PR #103
+    diagnostic `generation child left a descendant` with `failure_kind: CONTAINMENT`; and
+    `prompt-evaluate-smoke` reports `an adopted zombie was treated as an escaped descendant:
+    PROCESS`. In every negative control the live-descendant row still passes, so the controls
+    isolate the zombie classification and not the containment guarantee.
+- **ADAPTER-ZOMBIE publication preflight and supervised gate, at the final head
+  `fd44514212c9989c5c60db1432822fb216f96018` (2026-08-25).** `python3 scripts/pre-pr --owner-test
+  descendant-scan -- <the repaired-file owners in a privileged Linux container>` classified the
+  wave `fresh-image`, because `eval/*` changed. Phases: `descendant-scan` 18,359 ms **PASS**,
+  `managed-align-ensure` 276 ms **PASS**, `pinned-align-build` 100 ms **PASS**, `hosted-checks`
+  49,531 ms **PASS**. Its `fresh-focused` leg **cannot run on Darwin**:
+  `scripts/run-fresh-source-identity-smoke` reads `/proc/self/fd`, and the identical failure
+  reproduces on a clean clone of the base commit `a4f8663`, so it is a pre-existing host
+  limitation rather than a wave regression — the same `N/A` reason C7-P recorded. Both fresh legs
+  were therefore run where they belong.
+  - **Focused leg, native Linux `aarch64`** in the privileged `c6g2-measure:latest` container with
+    `--init`, `bubblewrap`, `clang`, and `unzip`, non-root with `umask 022` and
+    `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the exact head:
+    `python3 scripts/run-fresh-worker-qualification` **PASS**, exit 0 (focused; installed profile
+    deferred).
+  - **Installed profile, host Docker:** `python3 scripts/run-fresh-worker-qualification
+    --installed-profile-only --require-docker`: **PASS**, `fresh image profile smoke: PASS` then
+    `fresh worker qualification: PASS (installed profile only)`. Phases: `docker-daemon` 618 ms,
+    `image-build` 22,731 ms, `image-attestation` 3,544 ms, `profile-lifecycle` 2,397 ms,
+    `profile-self-test` 15,437 ms, `trust-mutations` 12,301 ms, `runtime-replacements` 21,955 ms,
+    `boundary-profile` 302,596 ms, **`worker-aggregate` pass after 365,588 ms**, `cleanup`
+    1,313 ms; whole installed profile 749,127 ms. Run with the default environment and no
+    diagnostic opt-in. **That is this capability's `make ci` evidence.**
 - **C7-P Darwin platform-profile gate, green, re-emitted at the review-repaired head
   `3e9b27e9af04d4eae616dffb812c8db926d938d8` (macOS `aarch64-apple-darwin`, 2026-08-25).** The
   repair changed the gate's own owner, which section 10.4 names as a re-run trigger, so the
@@ -985,15 +1309,22 @@ file records durable project state.
    Section 9 x86_64 profile substitutes for neither. It changes an ownership/process boundary and a
    persisted profile identity, so it triggers the proportional design gate: settle the
    public-contract ledger and closure matrix under `docs/specs/` before coding.
-2. **Adapter-zombie follow-up from PR #103 (`d7f1ff6`).** That commit repaired one row: the
-   in-process `post-admission-replacement` measurement-adapter case now waits for anything the
-   harness adopted as a subreaper, and its Git fixture refuses background maintenance. The latent
-   class is wider and is not yet audited: any in-process harness that enables
-   `PR_SET_CHILD_SUBREAPER` before a containment or process-group scan must reap adopted orphans
-   first, and any fixture that runs `git commit` under such a harness can fork a detached
-   auto-maintenance child on a recent Git. The container self-test finding recorded above
-   (`process-group-remains` without a reaping PID 1) is the same class observed from the other side.
-   Audit the class across the harnesses and give the scans an explicit reap-then-scan seam.
+2. **Closed by ADAPTER-ZOMBIE, with one deliberate remainder.** The adapter-zombie follow-up from
+   PR #103 (`d7f1ff6`) is discharged for the containment class: all six scans named in that
+   diagnosis now omit an entry only at `State: Z` with `Threads: 1`, so a fully terminated adopted
+   orphan can no longer be reported as an escaped descendant, a zombie leader whose group still
+   holds a live worker thread still is, and no harness needs a reap-then-scan seam to get a correct
+   verdict. The remainder is `eval/runners/run-coding-task.py`, which carries the same scan under a
+   **different** contract: its `validation_process_usage` counts entries against
+   `MAX_VALIDATION_PROCESSES = 256`, so an adopted zombie inflates a resource budget rather than
+   failing containment, and its other two consumers only kill (a no-op on a zombie). It was left
+   alone because it is a distinct failure domain and because it is a frozen `FILE_SET` corpus
+   member — changing its bytes forces another chain rebind and another provider-backed
+   re-measurement. Repair it inside a capability that already pays that cost, or when the
+   validation process budget is next revisited. **The deferral is a plan decision, not just this
+   note:** §1.2 of `docs/specs/c6-prompt-context-optimizer.md` records it with the same owner and
+   resume condition, and the §10.1g ledger row no longer names the coding runner as an owner of the
+   live-entry rule.
 3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
 4. Merged historical item: C6-MEASURED was published from `agent/c6-measured` and merged as PR #103

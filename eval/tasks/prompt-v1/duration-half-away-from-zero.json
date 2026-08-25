@@ -16,8 +16,8 @@
     "/usr/bin/python3",
     "scripts/prompt-snapshot-helper.py"
   ],
-  "measurement_adapter_runtime": "PYTHON:8dd58f739552a59de02a12943a2b1fd72dd096adaa43ce84d261fbb3d6d6192c",
-  "snapshot_helper_runtime": "PYTHON:f3c47a49a7a3573b90c08a294df1a707fe2b8166750013c252d7eaf4383504d5",
+  "measurement_adapter_runtime": "PYTHON:2d3796dbf1159d4a9528a62bbb9af0f36ccc5878b76d83aa65fa0d39cca7b20c",
+  "snapshot_helper_runtime": "PYTHON:9621307752feed0e18ec185f7c860412365299b1b7a034db118b95ec7b449aa6",
   "cwd": ".",
   "timeout_ns": 30000000000,
   "task_prompt_path": "eval/tasks/prompt-v1/duration-half-away-from-zero/task-prompt.json",
@@ -65,17 +65,17 @@
     {
       "path": "scripts/prompt-fixed-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "75ab1df93eb90e131233326f4e7b41c0e30c2fafe08f745303f9b17fd67b15c8"
+      "expected_sha256": "7b8bdf3f80bb8bf033902ee522c04c61e39bee67d2f47cb6e1905f32421cd099"
     },
     {
       "path": "scripts/prompt-measurement-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "6abc0144f4ca3ac5cf039b1e14750760f9d34baf307134bb66c12ae297b6fa74"
+      "expected_sha256": "a9d82f7b50964dc6db40dd2b9d28d2372a0da7206d8bbee6626423763f65f31f"
     },
     {
       "path": "scripts/prompt-snapshot-helper.py",
       "kind": "FILE",
-      "expected_sha256": "3a6c3fc91f577b308358c7b8126cc2af4ff2f4c427a9833e2a0504db3c465d7a"
+      "expected_sha256": "dce3cd89e6b269e227d9a61e35d76314583219fe99436009f501fd421c19c3a2"
     }
   ],
   "regression_limits": {
@@ -85,5 +85,5 @@
     "maximum_repair_loops": 0,
     "maximum_benchmark_regression_ppm": null
   },
-  "content_sha256": "010cb8af471fc884991df0c0115b839e8bbaa562c06b6dde23f39a6c7c963647"
+  "content_sha256": "9bcfc6b8651e08c6b612b1e4b20c50916295dec0674a886095a53ea2fd2c5208"
 }

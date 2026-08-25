@@ -6,6 +6,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -15,6 +17,143 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ADAPTER = ROOT / "scripts" / "prompt-fixed-adapter.py"
+LINUX = sys.platform.startswith("linux")
+
+
+def reap_adopted_children() -> int:
+    """Wait for every orphan this process adopted as a subreaper, and nothing else.
+
+    Returns how many were reaped, so a caller can prove an adopted zombie was still
+    present when the scan it is exercising ran.
+    """
+    reaped = 0
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return reaped
+        if pid == 0:
+            return reaped
+        reaped += 1
+
+
+def status_field(pid: int, field: str) -> str:
+    """Return one `/proc/PID/status` field value."""
+    return next(
+        line for line in Path(f"/proc/{pid}/status").read_text().splitlines()
+        if line.startswith(field)
+    ).split()[1]
+
+
+def fork_zombie_leader() -> int:
+    """Fork a child that becomes a zombie thread-group leader with a live worker thread.
+
+    The child starts a worker thread and then leaves its own leader thread through
+    `pthread_exit`, which the kernel takes as a plain thread exit rather than a group exit.
+    A leader cannot be released while its group still holds a task, so it stays in
+    `State: Z` with `Threads: 2` while the worker keeps executing. That is the reviewer's
+    reproduction of a zombie entry that is still a live process. It is the portable
+    construction: it needs no architecture syscall table and no compiler at test time, and
+    it was verified on `x86_64` and `aarch64` glibc CPython.
+    """
+    child = os.fork()
+    if child == 0:
+        try:
+            import ctypes
+            import threading
+
+            running = threading.Event()
+
+            def worker() -> None:
+                running.set()
+                time.sleep(600)
+
+            threading.Thread(target=worker, daemon=True).start()
+            running.wait(5.0)
+            ctypes.CDLL(None).pthread_exit(None)
+        except BaseException:
+            pass
+        os._exit(97)
+    return child
+
+
+def await_zombie_leader(pid: int) -> None:
+    """Block until `pid` is a zombie leader whose group still holds another task."""
+    deadline = time.monotonic() + 5.0
+    state, tasks = "", ""
+    while time.monotonic() < deadline:
+        try:
+            state = status_field(pid, "State:")
+            tasks = status_field(pid, "Threads:")
+        except (OSError, StopIteration):
+            break
+        if state == "Z" and tasks != "1":
+            return
+        time.sleep(0.01)
+    raise RuntimeError(
+        f"the synthetic zombie leader never reached State Z with a live task: {state!r}/{tasks!r}"
+    )
+
+
+def descendant_scan_rows(module) -> None:
+    """The scan reports every live descendant and skips only a fully terminated one.
+
+    The first row forks a direct child that exits at once. This process has not waited for
+    it, so it stays a zombie in this process's table: `State: Z` with a single task. It has
+    terminated and cannot escape containment, so counting it would fail containment for a
+    process that no longer runs. In production the same entry also arrives through
+    child-subreaper mode, which reparents an already-exited orphan here as a zombie child;
+    a direct fork reaches the identical `/proc` shape without racing an orphan.
+
+    The second row forks a zombie thread-group *leader* whose worker thread is still
+    running. That entry is `State: Z` too, but it is a live process and must be reported.
+    The row fails if the `Threads:` discriminator is dropped and every zombie is skipped
+    again.
+
+    The third row proves an ordinary live descendant is still reported.
+    """
+    zombie = os.fork()
+    if zombie == 0:
+        os._exit(0)
+    deadline = time.monotonic() + 5.0
+    state = ""
+    while time.monotonic() < deadline:
+        state = status_field(zombie, "State:")
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    require(state == "Z", "the synthetic child never reached the terminated zombie state")
+    require(
+        zombie not in module.owned_descendant_ids(),
+        "a fully terminated zombie child was counted as a live descendant",
+    )
+    os.waitpid(zombie, 0)
+
+    leader = fork_zombie_leader()
+    try:
+        await_zombie_leader(leader)
+        require(
+            leader in module.owned_descendant_ids(),
+            "a zombie leader with a live worker thread was not reported as a live descendant",
+        )
+    finally:
+        os.kill(leader, signal.SIGKILL)
+        os.waitpid(leader, 0)
+
+    live = subprocess.Popen(
+        [sys.executable, "-c", "import time\ntime.sleep(30)\n"], start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        seen = False
+        while time.monotonic() < deadline and not seen:
+            seen = live.pid in module.owned_descendant_ids()
+            if not seen:
+                time.sleep(0.01)
+        require(seen, "a live descendant was not reported by the scan")
+    finally:
+        live.kill()
+        live.wait()
 
 
 def canonical(value):
@@ -210,6 +349,51 @@ def main() -> int:
         require(cleanup_calls == 1, "fixed adapter descendant cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "fixed adapter left a runner descendant alive")
+
+        if LINUX:
+            reap_adopted_children()
+            descendant_scan_rows(module)
+
+            # End to end: a runner whose own child exits before the runner does leaves an orphan
+            # that this subreaper adopts as a zombie. It has terminated, so the contained run is
+            # still a clean pass rather than a containment failure. The orphan leads its own
+            # session, so it is only reachable through the descendant scan: a zombie still holds
+            # its process group open, and the private-group check is a separate contract.
+            zombie_runner = root / "zombie-runner.py"
+            zombie_runner.write_text(
+                "import os, time\n"
+                "from pathlib import Path\n"
+                "pid = os.fork()\n"
+                "if pid == 0:\n"
+                "    os.setsid()\n"
+                "    os._exit(0)\n"
+                "deadline = time.monotonic() + 5.0\n"
+                "state = ''\n"
+                "while time.monotonic() < deadline:\n"
+                "    state = next(\n"
+                "        line for line in Path(f'/proc/{pid}/status').read_text().splitlines()\n"
+                "        if line.startswith('State:')\n"
+                "    ).split()[1]\n"
+                "    if state == 'Z':\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "raise SystemExit(0 if state == 'Z' else 5)\n"
+            )
+            select_runner(zombie_runner)
+            outcome, cleanup_passed, containment_passed, _, _, _ = module.execute_fixture(
+                "CANDIDATE", 20_000_000_000,
+            )
+            require(
+                outcome == "PASS" and cleanup_passed and containment_passed,
+                "an adopted zombie descendant was reported as a containment failure",
+            )
+            # Nothing waits for the adopted orphan between the adapter's scan and this
+            # reap, so a nonzero count proves the zombie was still in the table when the
+            # scan classified it, rather than having been reaped before the scan ran.
+            require(
+                reap_adopted_children() >= 1,
+                "the adopted zombie was already gone when the containment scan ran",
+            )
 
         bounded_runner = root / "bounded-runner.py"
         bounded_runner.write_text(

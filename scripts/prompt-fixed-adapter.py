@@ -134,29 +134,75 @@ def process_group_exists(group: int) -> bool:
         return True
 
 
+def zombie_without_live_task(status_lines: list[str]) -> bool:
+    """Report whether `/proc/PID/status` text describes a fully terminated entry.
+
+    A `State: Z` thread-group leader whose group still holds another task is a
+    live process: its leader thread exited, but a worker thread keeps running
+    under the zombie leader and can still act. Only `Threads: 1` proves that no
+    task in the group can execute again. A missing or malformed
+    `State:`/`Threads:` line fails closed and reports the entry as live.
+    """
+    try:
+        state = next(line for line in status_lines if line.startswith("State:")).split()[1]
+        tasks = int(next(line for line in status_lines if line.startswith("Threads:")).split()[1])
+    except (IndexError, StopIteration, ValueError):
+        return False
+    return state == "Z" and tasks == 1
+
+
 def descendant_process_ids(root_pids: set[int]) -> set[int]:
+    """Return the live descendants of `root_pids` from the /proc parent links.
+
+    An entry is omitted only when it has fully terminated: `State: Z` with
+    `Threads: 1`, a zombie thread-group leader whose group holds no other task.
+    It keeps a process-table slot until someone waits for it and can never
+    execute again, so it cannot escape containment. Under
+    `PR_SET_CHILD_SUBREAPER` an adopted orphan that has already exited becomes a
+    permanent zombie child of this process, and counting it would report a
+    containment failure for a process that no longer runs. A zombie leader whose
+    group still holds a live worker thread is a running process and is reported.
+    Terminated entries are still traversed, so a live entry parented to one is
+    still reported.
+
+    The two parse failures are deliberately asymmetric. An entry that exits
+    between the directory scan and the status read, or whose `PPid:` line is
+    absent or malformed, is dropped by the shared `OSError`/`IndexError` path
+    exactly as a vanished process is. That arm fails open for a single
+    unparseable entry, a tradeoff consciously accepted for parse robustness
+    because without a parent link the entry cannot be placed in the tree at all.
+    A missing or malformed `State:`/`Threads:` line instead fails closed and
+    reports the entry, because its parent link is already known and only the
+    justification for skipping it is missing.
+    """
     parents: dict[int, list[int]] = {}
+    terminated: set[int] = set()
     if not sys.platform.startswith("linux"):
         return set()
     for status_path in Path("/proc").glob("[0-9]*/status"):
         try:
             pid = int(status_path.parent.name)
+            status_lines = status_path.read_text(encoding="utf-8").splitlines()
             parent_line = next(
-                line for line in status_path.read_text(encoding="utf-8").splitlines()
-                if line.startswith("PPid:")
+                line for line in status_lines if line.startswith("PPid:")
             )
             parent = int(parent_line.split()[1])
-        except (OSError, StopIteration, ValueError):
+        except (IndexError, OSError, StopIteration, ValueError):
             continue
+        if zombie_without_live_task(status_lines):
+            terminated.add(pid)
         parents.setdefault(parent, []).append(pid)
     descendants: set[int] = set()
+    visited: set[int] = set()
     pending = list(root_pids)
     while pending:
         parent = pending.pop()
         for child in parents.get(parent, []):
-            if child not in descendants:
-                descendants.add(child)
+            if child not in visited:
+                visited.add(child)
                 pending.append(child)
+                if child not in terminated:
+                    descendants.add(child)
     return descendants
 
 

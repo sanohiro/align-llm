@@ -29,10 +29,10 @@ repo-prompt.json                     1be40aada3352a4622eed7446820cacd1127b0ffaec
 prompt-acceptance-policy.json        7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3
 evaluation-provider-control.json     f8f9043231d8f4213ceb392bf5a05c600e6c2796015deeb44c96436eb77cb469
 generation-policy.json               e5887c233dbb21bacad79923c2b9f43eba250c8b0fa2550354f6ffbf8960133e
-corpus-file-set.manifest (raw bytes) 7544e743167ddf97167145217b963c8f92bf41348ecb45c935ed38b1b93b1b07
-corpus.json                          c051c6f7ab181662a33880c67693bc33f96e2abef4d48f1f5d6b99a3b744254b
-scope.json                           e543fc8be4cf5eb5f731550917240362dbea7b2c0afea01a3306816024a7c4f3
-prompt-activation-baseline-v1.json   e8d1043370d1ffadb1ece420ad3e25d3f109c4112c28724e53405bc9cf82653a
+corpus-file-set.manifest (raw bytes) 15efa89e0894feff4b8c9f6143736bae9c2e48d600ec3339063576ce248cd862
+corpus.json                          b99e7eb85ed0fcfe932c35622c6df1b5eaccb80090a3a6d12a9bfc1970801264
+scope.json                           84f3fed4bf3128a93f061c7dbc477491feaa23530c82e01231745191d2ec5283
+prompt-activation-baseline-v1.json   c93732c52bf357dc6930d68a459639a5c29f5b77df3b11c1b968d8dac78da5d5
 ```
 
 `base-prompt.json` states the section 11.3 measurement response format: whole-file `FILE:` blocks,
@@ -96,15 +96,26 @@ These files did not reach their current bytes in a single freeze commit. The exa
 | `4d85ccb64aff853c4dd8fe25fcbb9033ffdab606` | replaced the fail-closed `FIXTURE` placeholder with the real `LOCAL_OPENAI` provider decision, rewriting `generation-policy.json`, `scope.json`, and `prompt-activation-baseline-v1.json` |
 | `6da28d88327797649bbf229f14be9be1e6dd2d96` | repaired the shipped measurement adapter, which capped every sealed input at 2 MiB and so could never admit the derived generation child; the adapter is a corpus member, a declared task artifact, and each task's `measurement_adapter_runtime`, so only those digest bindings moved |
 | `1d27b5f4c5ab3459e1b532859030c0e06df9a53a` | rebound the same three bindings again after the C6-MEASURED review repair changed both adapters' bytes; only each task's two adapter expectations, its `measurement_adapter_runtime`, the `FILE_SET` manifest, `corpus.json`, `scope.json`, and the baseline envelope moved |
+| `bf844f821a45464e67ed30eafe025c31dfb2c4e5` | rebound the chain after the zombie-descendant containment repair changed three corpus members — both adapters **and** the snapshot helper; each task's three script expectations, its `measurement_adapter_runtime` **and** `snapshot_helper_runtime`, the `FILE_SET` manifest, `corpus.json`, `scope.json`, and the baseline envelope moved |
+| `762b1d0f068a10774ff976b1889ddacf483321a5` | rebound the identical set a third time, after the exact-head review of that repair narrowed the live-entry rule to `State: Z` with `Threads: 1` and moved the same three scripts' bytes again; the same fields moved and nothing else. The rebind was replayed against the pre-repair tree at `8e86a22`, where it reproduces the committed chain exactly and reports nothing moved |
 
-`1d27b5f` is the last commit that touched these files, and the checked-in C6g2 measurement was
-produced against `c737adcf905cb4662472bc86e8345bbcd9bc1346`, which contains it.
-`git diff 1d27b5f HEAD -- eval/prompt/canonical-v1 eval/tasks/prompt-v1 ':!*/README.md'` is empty:
+`762b1d0` is the last commit that touched these files, and the checked-in C6g2 measurement was
+re-run against it and committed immediately after.
+`git diff 762b1d0 HEAD -- eval/prompt/canonical-v1 eval/tasks/prompt-v1 ':!*/README.md'` is empty:
 no frozen record or gate-corpus file was mutated after measuring against it, and this document is
 the only thing in the directory that moved. A rebind is always a
 separate commit whose measurement is then re-run against the rebound bytes; the section 11.3 rule is
 that C6g2 must not mutate the frozen set *after* measuring, not that the set was never rebound
 before a measurement.
+
+The snapshot helper is a corpus member and each task's `snapshot_helper_runtime`, so a repair to it
+rebinds the same chain the adapters do. `bf844f8` is the first rebind that had to move that binding
+as well; treat all three scripts as one rebind set.
+
+A rebind is mechanical, so it is worth verifying rather than trusting. The `762b1d0` rebind was
+replayed unchanged against a worktree of the pre-repair commit and reported that nothing moved,
+which proves the tool reproduces whatever produced the previous chain before it is allowed to
+change anything.
 
 Rewriting the provider decision rewrites `generation-policy.json`, and therefore `scope.json` and
 `prompt-activation-baseline-v1.json`. Replacing the measurement adapter additionally rewrites every
