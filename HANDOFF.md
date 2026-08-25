@@ -3,12 +3,61 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: C7-P — aarch64 platform profiles (2026-08-25)
+## Active capability: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
 
-- C7-PERSISTED-RESULT merged as align-llm PR #104 (`a52b9ac`). The active capability is C7-P on
-  branch `agent/c7p-aarch64-profiles`, the two reviewed non-x86 platform profiles that section 11
+- C7-P merged as align-llm PR #105 (`a4f8663`). The active capability is ADAPTER-ZOMBIE on branch
+  `agent/adapter-zombie-descendants`, which closes follow-up item 2 below — the latent
+  containment-scan defect deferred from PR #103's CI repair `d7f1ff6`.
+- **The defect.** Every `/proc` descendant scan counted any entry whose `PPid:` matched a root,
+  including entries in `State: Z`. A zombie has already terminated and only holds a process-table
+  slot until someone waits for it, so it cannot escape containment. Under `PR_SET_CHILD_SUBREAPER`
+  an adopted orphan that has already exited becomes a permanent zombie child of the scanning
+  process, so the scan reported a containment failure for a process that no longer runs. Git 2.47
+  detaches auto-maintenance before deciding whether any task is due, which is how PR #103 hit it as
+  `generation child left a descendant`. `d7f1ff6` treated that one trigger from the harness side;
+  this repairs the class in the scan itself.
+- **All six candidates named in the PR #103 diagnosis carry the pattern and all six are repaired**
+  (`cf9bd75`): `scripts/prompt-measurement-adapter.py`, `scripts/prompt-evaluate.py`,
+  `scripts/prompt-fixed-adapter.py`, `scripts/prompt-gate-validator.py`,
+  `scripts/prompt-snapshot-helper.py`, and `scripts/prompt-source-verifier.py`. Each reads `State:`
+  beside `PPid:` and omits zombies from the reported set while still traversing them, so a live
+  entry parented to a zombie is still reported and no live descendant escapes. The
+  private-group check is a separate contract and is untouched — a zombie still holds its process
+  group open — so each end-to-end regression's orphan leads its own session.
+- **A seventh occurrence exists and is deliberately not repaired here.**
+  `eval/runners/run-coding-task.py:137` has the same scan, but its consumers are
+  `kill_owned_processes`/`kill_adopted_descendants` (killing a zombie is a no-op) and
+  `validation_process_usage`, which counts processes against `MAX_VALIDATION_PROCESSES = 256`.
+  That is a resource-budget contract, not a containment verdict, so it is a distinct failure
+  domain; and the file is a frozen `FILE_SET` corpus member, so touching it forces another chain
+  rebind and another provider-backed re-measurement. Recorded as follow-up item 2 below.
+- **Consequence, discharged: the frozen digest chain was rebound (`bf844f8`).** Three repaired
+  scripts are corpus members and declared task artifacts — both adapters and the snapshot helper —
+  so each task's `measurement_adapter_runtime`, `snapshot_helper_runtime`, three
+  `artifacts[].expected_sha256` entries, and `content_sha256` moved, then
+  `corpus-file-set.manifest` (six digest columns), `corpus.json`, `scope.json`, and the
+  `prompt-activation-baseline-v1.json` envelope. The rebind uses only the shipped canonical binder
+  and the shipped snapshot helper's `canonical_mode`/`digest_file`/`file_expectation_sha256`, and
+  asserts that no other field, no membership, no mode, and no path byte moved. This extends
+  `1d27b5f`; the snapshot helper is new to this rebind set.
+- **Consequence, discharged: `src/prompt_evaluate.align` `EVALUATOR_SOURCE_SHA256`.**
+  `scripts/prompt-evaluate.py` is bound by exact digest and executed from those bytes, so the
+  repair left `./main prompt evaluate` failing before it could construct any result — exactly the
+  `99a6ba7` failure mode, and `prompt-evaluate-smoke` reproduced it. The digest moves in the same
+  commit as the repair so that commit is self-consistent.
+- **Consequence, discharged: the gate evidence was re-measured**, because the rebind moves every
+  digest the checked-in `eval/prompt/gate/` bundle embeds. Result and transcript below.
+- **No new Align request.** The whole defect and its repair live in the Python contained-execution
+  helpers; nothing here needs a language, compiler/runtime, or standard-library surface Align does
+  not ship. `docs/align-requests.md` is unchanged.
+
+## Merged checkpoint: C7-P — aarch64 platform profiles (2026-08-25)
+
+- C7-PERSISTED-RESULT merged as align-llm PR #104 (`a52b9ac`). C7-P was implemented on
+  branch `agent/c7p-aarch64-profiles` and merged as align-llm PR #105 (`a4f8663`), the two reviewed
+  non-x86 platform profiles that section 11
   of `docs/specs/c7-persisted-result.md` requires before either aarch64 target may provide C7
-  evidence. **Both are now discharged and the branch is ready for publication.**
+  evidence. Both are discharged and merged.
 - **Settled and implemented: the `aarch64-apple-darwin` profile.** Section 10 of
   `docs/specs/check-gate-topology.md` is the contract. It is deliberately minimal — a process
   boundary plus digest attestation — and explicitly claims no kernel-mediated containment, **no
@@ -57,11 +106,8 @@ file records durable project state.
   re-emission commit. `scripts/test-check-darwin-profile` has no Make target, per the
   `scripts/test-align-toolchain` precedent, so the `Makefile` and the identity-bound canonical
   baseline chain are untouched by the repair.
-- Next actions, in order: (1) publish the English pull request citing sections 11.2/11.3 and the
-  verification table below; (2) after merge,
-  the adapter-zombie follow-up recorded under the merged C6-EVALUATION notes — the `c6f2` fixture
-  poll race and the container's unreaped-descendant class both want a deterministic seam rather than
-  a timing window; (3) then the next eligible roadmap capability.
+- Published and merged as PR #105 (`a4f8663`) with the sections 11.2/11.3 citations and the
+  verification table below.
 
 ## Merged checkpoint: C7-PERSISTED-RESULT (2026-08-25)
 
@@ -455,6 +501,90 @@ file records durable project state.
 
 ## Latest durable verification
 
+- **ADAPTER-ZOMBIE re-measured C6g2 gate, green (native Linux `aarch64`, 2026-08-25).** Measured at
+  the rebind head `bf844f821a45464e67ed30eafe025c31dfb2c4e5`; the evidence is committed as
+  `b336017`. Environment identical to the superseded run: the privileged `c6g2-measure:latest`
+  container with `--init`, `bubblewrap` installed at run time, a non-root uid, `umask 022`,
+  `PYTHONDONTWRITEBYTECODE=1`, the model copied onto the container filesystem, and `LOCAL_OPENAI`
+  on a co-located `llama-server` at `http://127.0.0.1:18080/v1/chat/completions`, model
+  `qwen2.5-coder-7b-instruct-q4_k_m`. Generation child built in run:
+  `903f38004ac3c935b0ca41c70f94f77b274bdb84adebe3873a1aec70be59bf72`.
+  - **Measure (`c6g2-measure`), 685.2 s: `IMPROVED`, `gate_eligible: true`,
+    `serious_regression_reasons: []`, corpus `completion_gain_count: 2`.**
+    `duration-half-away-from-zero` 0/2 parent to 2/2 candidate; `layer-precedence-frozen-module`
+    and `record-codec-round-trip` fail in both variants. `paired_pass_count` is 0 for every task
+    and for the corpus, so this evidence still carries **no paired timing and no
+    time-to-passing-patch comparison**; acceptance is the section 8 completion-gain path alone.
+    Result digest `1b2164dc8acebf25ae815e87d9aa9b3b9fb25be99917b57658b6462fb1a281cc`, evidence
+    sidecar `7c2d48b571377f20918dc2a8d0ce6d68372c2ca440a10bd997009b3f2e8a9f80`. Accept then
+    rollback reproduce as `ACCEPTED` and `ROLLED_BACK`.
+  - **Reproducible baseline, the parent-vs-parent null replicate (`c6g2-replicate`), 637.6 s:**
+    `NO_IMPROVEMENT`, `gate_eligible: false`, every task 0/2 in both variants, corpus
+    `completion_gain_count: 0` — it flipped no cell. Result digest
+    `56a4f367b054db8471500bb61921e169270b36bc5e7d54ed608eb7272d05c87a`. Reproducing command, in
+    the same container at project root `/work/align-llm`:
+
+    ```text
+    ./main prompt evaluate run/evaluate-request-replicate.json run/result-replicate.json
+    ```
+
+    The replicate artifacts are diagnostics, not repository state, and are not checked in.
+  - **The comparison with the superseded evidence is cell for cell identical.** Same verdicts, same
+    per-task pass counts, same `completion_gain_count: 2`, same empty serious-regression array,
+    same all-zero `paired_pass_count`, and the same null replicate verdict. The candidate variant
+    is provably the same one: its `content_sha256` `78611fbc…` is byte-identical to the variant the
+    superseded measurement consumed, taken from the checked-in evaluation. Only the experiment
+    artifact's own frozen-chain references — the parent-activation digest and its embedded scope —
+    were rebound with the corpus, giving artifact digest `01b04b76…` in place of `4dfe5fe7…`.
+    Everything that moved between the two runs is a digest, plus wall time.
+- **ADAPTER-ZOMBIE gate qualification, green, at head
+  `b3360171e965568af59aabaec14f89c6b5b60602`.** Same container, clean clone, bundle built from a
+  clean align-llm mirror at that head (`dirty=0`) plus a clean Align checkout at
+  `2f33ac5c33a898a7894af58322852632ce6ffe42` (`dirty=0`). The generation child rebuilt in run
+  reproduced the locator's frozen digest exactly. Both forms pass:
+
+  ```text
+  /usr/bin/python3.12 scripts/prompt-gate-validator.py \
+    --source-bundle-root /work/bundle \
+    --python-executable-path /usr/bin/python3.12 \
+    --git-executable-path /usr/bin/git \
+    --generation-child-path /work/align-llm/main \
+    --generation-child-sha256 903f38004ac3c935b0ca41c70f94f77b274bdb84adebe3873a1aec70be59bf72
+  -> prompt gate validator: PASS (exit 0)
+
+  make prompt-gate-check C6_GATE_SOURCE_BUNDLE_ROOT=/work/bundle \
+    C6_GATE_PYTHON_EXECUTABLE_PATH=/usr/bin/python3.12 \
+    C6_GATE_GIT_EXECUTABLE_PATH=/usr/bin/git \
+    C6_GATE_GENERATION_CHILD_PATH=/work/align-llm/main \
+    C6_GATE_GENERATION_CHILD_SHA256=903f3800...be59bf72
+  -> prompt gate validator: PASS (exit 0)
+  ```
+
+- **ADAPTER-ZOMBIE owner verification (2026-08-25).** Linux rows ran in a privileged
+  `python:3.12-bookworm`-derived container with `bubblewrap`, and the Align-dependent rows in the
+  `c6g2-measure:latest` image at the pinned compiler; the repaired scans are Linux-only, and all
+  three helper owners already fail on Darwin for that reason at the base commit.
+  - Repaired-file owners, all **PASS**: `test-prompt-fixed-adapter`,
+    `test-prompt-snapshot-helper`, `test-prompt-source-verifier`,
+    `run-prompt-measurement-adapter-smoke` (73 rows), `run-prompt-evaluate-smoke`, and all nine
+    `prompt-gate-*` families.
+  - Regression neighbours, all **PASS**: `prompt-experiment-smoke`,
+    `prompt-seed-attestation-smoke`, `prompt-generate-smoke`,
+    `prompt-credential-lifetime-smoke`, `prompt-render-parity-smoke`, `prompt-state-smoke`.
+  - Host (macOS, managed pinned toolchain), all **PASS**: `gmake check` (23 units per-unit),
+    `gmake format-check`, `gmake gate-topology-check` (`check gate topology: PASS`; no lane member
+    changed), `gmake provider-smoke`, `gmake persisted-result-smoke`, `git diff --check`, and
+    `python3 scripts/check-baseline-chain` (`baseline chain: PASS` — the `Makefile` is untouched,
+    so the identity-bound chain stands).
+  - **Every regression has a recorded negative control.** With the repair reverted in that one
+    file, each owner fails on its new row: the four `owned_descendant_ids` unit rows report `an
+    adopted zombie was counted as a live descendant`; `test-prompt-fixed-adapter`'s contained
+    runner reports `an adopted zombie descendant was reported as a containment failure`;
+    `prompt-measurement-adapter-smoke`'s generation-child row reproduces the exact PR #103
+    diagnostic `generation child left a descendant` with `failure_kind: CONTAINMENT`; and
+    `prompt-evaluate-smoke` reports `an adopted zombie was treated as an escaped descendant:
+    PROCESS`. In every negative control the live-descendant row still passes, so the controls
+    isolate the zombie classification and not the containment guarantee.
 - **C7-P Darwin platform-profile gate, green, re-emitted at the review-repaired head
   `3e9b27e9af04d4eae616dffb812c8db926d938d8` (macOS `aarch64-apple-darwin`, 2026-08-25).** The
   repair changed the gate's own owner, which section 10.4 names as a re-run trigger, so the
@@ -985,15 +1115,18 @@ file records durable project state.
    Section 9 x86_64 profile substitutes for neither. It changes an ownership/process boundary and a
    persisted profile identity, so it triggers the proportional design gate: settle the
    public-contract ledger and closure matrix under `docs/specs/` before coding.
-2. **Adapter-zombie follow-up from PR #103 (`d7f1ff6`).** That commit repaired one row: the
-   in-process `post-admission-replacement` measurement-adapter case now waits for anything the
-   harness adopted as a subreaper, and its Git fixture refuses background maintenance. The latent
-   class is wider and is not yet audited: any in-process harness that enables
-   `PR_SET_CHILD_SUBREAPER` before a containment or process-group scan must reap adopted orphans
-   first, and any fixture that runs `git commit` under such a harness can fork a detached
-   auto-maintenance child on a recent Git. The container self-test finding recorded above
-   (`process-group-remains` without a reaping PID 1) is the same class observed from the other side.
-   Audit the class across the harnesses and give the scans an explicit reap-then-scan seam.
+2. **Closed by ADAPTER-ZOMBIE, with one deliberate remainder.** The adapter-zombie follow-up from
+   PR #103 (`d7f1ff6`) is discharged for the containment class: all six scans named in that
+   diagnosis now skip `State: Z`, so an adopted zombie can no longer be reported as an escaped
+   descendant and no harness needs a reap-then-scan seam to get a correct verdict. The remainder is
+   `eval/runners/run-coding-task.py:137`, which carries the same scan under a **different**
+   contract: its `validation_process_usage` counts entries against
+   `MAX_VALIDATION_PROCESSES = 256`, so an adopted zombie inflates a resource budget rather than
+   failing containment, and its other two consumers only kill (a no-op on a zombie). It was left
+   alone because it is a distinct failure domain and because it is a frozen `FILE_SET` corpus
+   member — changing its bytes forces another chain rebind and another provider-backed
+   re-measurement. Repair it inside a capability that already pays that cost, or when the
+   validation process budget is next revisited.
 3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
 4. Merged historical item: C6-MEASURED was published from `agent/c6-measured` and merged as PR #103

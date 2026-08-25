@@ -209,7 +209,16 @@ direct child that exits while its group still has members, the owner sends `SIGK
 waits the direct child, and polls the group until `killpg(pgid, 0)` proves absence. Every Python
 owner first enables Linux child-subreaper mode. It enumerates direct and transitive `/proc`
 descendants, kills members that entered nested sessions or process groups, reaps adopted children,
-and proves both private-group and descendant absence before returning. A group ID cannot be reused
+and proves both private-group and descendant absence before returning. The descendant enumeration
+counts **live** entries only: an entry in `State: Z` has already terminated and holds only a
+process-table slot until it is waited for, so it cannot escape containment and is never a
+descendant-absence failure. It is still traversed, so a live entry parented to one is still
+enumerated, and a `/proc` entry that disappears between the directory scan and the status read is
+skipped. Child-subreaper mode makes this rule load-bearing rather than cosmetic: an orphan that
+exited before its parent did is reparented to the owner and stays a zombie until the owner waits
+for it, and counting it would fail containment for a process that no longer runs. The
+private-group proof is a separate contract with different mechanics — a zombie member still keeps
+`killpg(pgid, 0)` succeeding — and is unchanged. A group ID cannot be reused
 while any member of the old group remains, and the owner sends no signal after the first complete
 absence proof. A failed kill, direct wait, adopted-child reap, or bounded absence proof is
 `CLEANUP_FAILED` and takes precedence over the triggering process error. Normal success performs
@@ -3392,7 +3401,7 @@ and unsafe intermediate protocol.
 
 | Reopened invariant | Contract owner | Required design decision | Exact regression |
 | --- | --- | --- | --- |
-| Complete descendant ownership | evaluator, fixed adapter, snapshot helper, source verifier, coding runner | every Python child owner enables Linux child-subreaper mode, kills the private process group and every direct, transitive, or adopted descendant across nested sessions, reaps owned children, and proves group and descendant absence before returning; a nested `setsid` child cannot survive into the next invocation | evaluator, adapter, snapshot-helper, and source-verifier owners launch a marker-bearing nested-session descendant and prove bounded cleanup plus marker absence |
+| Complete descendant ownership | evaluator, fixed adapter, snapshot helper, source verifier, coding runner | every Python child owner enables Linux child-subreaper mode, kills the private process group and every direct, transitive, or adopted descendant across nested sessions, reaps owned children, and proves group and descendant absence before returning; a nested `setsid` child cannot survive into the next invocation; the enumeration counts live entries only, so an adopted `State: Z` orphan is never a containment failure while every live descendant still is | evaluator, adapter, snapshot-helper, and source-verifier owners launch a marker-bearing nested-session descendant and prove bounded cleanup plus marker absence; each repaired scan additionally carries a paired regression — a synthetic zombie child that must not be reported and a live session-leading child that must — and the fixed-adapter and measurement-adapter owners drive an adopted zombie end to end through a contained runner and a generation child |
 | Bounded adapter diagnostics | fixed adapter | drain stdout and stderr concurrently into independently bounded prefixes; never call an unbounded `communicate`; cap, cap+1, simultaneous-stream, timeout, and descendant cleanup preserve the declared diagnostic limit | fixed-adapter owner measures retained byte counts and termination for both streams at the boundary |
 | Operational runner outcome | coding runner and fixed adapter | the content-bound runner uses a distinct terminal code for an expected post-repair validation failure; launch, timeout, containment, cleanup, output, and internal runner failures produce `ERROR`/`ADAPTER`, never an ordinary `FAIL`/`TEST` row eligible for improvement scoring | parent expected-failure and candidate-pass rows remain scoreable; timeout, launch, internal-error, and unexpected exit fixtures terminate evaluation as adapter errors |
 | Child output-file ownership | evaluator, snapshot helper, fixed adapter | the evaluator exclusively creates each snapshot/measurement result, records ownership immediately after successful creation, and passes its retained descriptor to the child; a create collision establishes no ownership, while every successful removal retires ownership before later observation | occupied snapshot/measurement names are preserved end to end; descriptor-backed success, failed-child cleanup, and late replacement cases prove exact ownership transitions |
