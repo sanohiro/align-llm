@@ -29,10 +29,10 @@ repo-prompt.json                     1be40aada3352a4622eed7446820cacd1127b0ffaec
 prompt-acceptance-policy.json        7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3
 evaluation-provider-control.json     f8f9043231d8f4213ceb392bf5a05c600e6c2796015deeb44c96436eb77cb469
 generation-policy.json               e5887c233dbb21bacad79923c2b9f43eba250c8b0fa2550354f6ffbf8960133e
-corpus-file-set.manifest (raw bytes) 7544e743167ddf97167145217b963c8f92bf41348ecb45c935ed38b1b93b1b07
-corpus.json                          c051c6f7ab181662a33880c67693bc33f96e2abef4d48f1f5d6b99a3b744254b
-scope.json                           e543fc8be4cf5eb5f731550917240362dbea7b2c0afea01a3306816024a7c4f3
-prompt-activation-baseline-v1.json   e8d1043370d1ffadb1ece420ad3e25d3f109c4112c28724e53405bc9cf82653a
+corpus-file-set.manifest (raw bytes) 95a0488af816de0ae8554dfd07ee77cfd74950c26cd5c40065e8fb9f81278d26
+corpus.json                          37ca521421a8579ca311f2422a98c8d17ec205790851c2e2402b73fb323225ff
+scope.json                           ed5507312c510055169203a2d317cb219d5dd93aa458d69e317852e8597857b4
+prompt-activation-baseline-v1.json   2a37f7a8b12b03cb841792cd1982f13ce4782d938e4a58a4159ab1cf2642283b
 ```
 
 `base-prompt.json` states the section 11.3 measurement response format: whole-file `FILE:` blocks,
