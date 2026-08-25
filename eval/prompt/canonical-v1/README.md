@@ -97,10 +97,11 @@ These files did not reach their current bytes in a single freeze commit. The exa
 | `6da28d88327797649bbf229f14be9be1e6dd2d96` | repaired the shipped measurement adapter, which capped every sealed input at 2 MiB and so could never admit the derived generation child; the adapter is a corpus member, a declared task artifact, and each task's `measurement_adapter_runtime`, so only those digest bindings moved |
 | `1d27b5f4c5ab3459e1b532859030c0e06df9a53a` | rebound the same three bindings again after the C6-MEASURED review repair changed both adapters' bytes; only each task's two adapter expectations, its `measurement_adapter_runtime`, the `FILE_SET` manifest, `corpus.json`, `scope.json`, and the baseline envelope moved |
 | `bf844f821a45464e67ed30eafe025c31dfb2c4e5` | rebound the chain after the zombie-descendant containment repair changed three corpus members — both adapters **and** the snapshot helper; each task's three script expectations, its `measurement_adapter_runtime` **and** `snapshot_helper_runtime`, the `FILE_SET` manifest, `corpus.json`, `scope.json`, and the baseline envelope moved |
+| `762b1d0f068a10774ff976b1889ddacf483321a5` | rebound the identical set a third time, after the exact-head review of that repair narrowed the live-entry rule to `State: Z` with `Threads: 1` and moved the same three scripts' bytes again; the same fields moved and nothing else. The rebind was replayed against the pre-repair tree at `8e86a22`, where it reproduces the committed chain exactly and reports nothing moved |
 
-`bf844f8` is the last commit that touched these files, and the checked-in C6g2 measurement was
+`762b1d0` is the last commit that touched these files, and the checked-in C6g2 measurement was
 re-run against it and committed immediately after.
-`git diff bf844f8 HEAD -- eval/prompt/canonical-v1 eval/tasks/prompt-v1 ':!*/README.md'` is empty:
+`git diff 762b1d0 HEAD -- eval/prompt/canonical-v1 eval/tasks/prompt-v1 ':!*/README.md'` is empty:
 no frozen record or gate-corpus file was mutated after measuring against it, and this document is
 the only thing in the directory that moved. A rebind is always a
 separate commit whose measurement is then re-run against the rebound bytes; the section 11.3 rule is
@@ -110,6 +111,11 @@ before a measurement.
 The snapshot helper is a corpus member and each task's `snapshot_helper_runtime`, so a repair to it
 rebinds the same chain the adapters do. `bf844f8` is the first rebind that had to move that binding
 as well; treat all three scripts as one rebind set.
+
+A rebind is mechanical, so it is worth verifying rather than trusting. The `762b1d0` rebind was
+replayed unchanged against a worktree of the pre-repair commit and reported that nothing moved,
+which proves the tool reproduces whatever produced the previous chain before it is allowed to
+change anything.
 
 Rewriting the provider decision rewrites `generation-policy.json`, and therefore `scope.json` and
 `prompt-activation-baseline-v1.json`. Replacing the measurement adapter additionally rewrites every
