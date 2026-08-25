@@ -81,9 +81,12 @@ pub VerificationSummary {
   observed: i64,
 }
 
+// Section 6.2. The borrowed value here is the byte-slice view `digest[0..digest.len()]`, which is
+// consumed inside this scope; `encoding.hex_encode` returns an owned free-standing `string`, so
+// the digest owner and its view both expire on return and no view escapes.
 fn digest_text(value: str) -> string {
   digest := crypto.sha256(value)
-  return encoding.hex_encode(digest[0..digest.len()]).clone()
+  return encoding.hex_encode(digest[0..digest.len()])
 }
 
 // Section 3.2 path rule: nonempty UTF-8 (guaranteed by `str`), no embedded NUL, at most 4,096
@@ -311,19 +314,20 @@ fn decode_failure(value: Error) -> Error {
   return Error.Invalid
 }
 
-// Section 6.1 steps 1-3. The helper clones the caller's view into its own document owner, decodes
-// a free-standing record through the Request 9 owned direct-record path, and returns after that
-// owner has been dropped.
+// Section 6.1 steps 1-3. `json.decode` borrows the caller's document view and never retains it,
+// and Request 9 makes the decoded record free-standing, so the helper needs no document owner of
+// its own: it decodes directly from the borrowed view and returns a record that outlives it. The
+// caller in `stage_result`/`load_result` owns the one document `string` for exactly as long as its
+// own canonical byte comparison needs it, and no `str` view escapes this scope. This is the same
+// borrowed-source form the `c7-owned-record-source-expiry-adoption` fixture pins.
 fn decode_input(source: str) -> Result<C7VerificationInput, Error> {
-  document := source.clone()
-  raw: Result<C7VerificationInput, Error> := json.decode(document)
+  raw: Result<C7VerificationInput, Error> := json.decode(source)
   value: C7VerificationInput := raw.map_err(decode_failure)?
   return Ok(value)
 }
 
 fn decode_result(source: str) -> Result<C7PersistedResult, Error> {
-  document := source.clone()
-  raw: Result<C7PersistedResult, Error> := json.decode(document)
+  raw: Result<C7PersistedResult, Error> := json.decode(source)
   value: C7PersistedResult := raw.map_err(decode_failure)?
   return Ok(value)
 }

@@ -6,7 +6,9 @@
 # the escape/NUL/UTF-8 grammar, the input digest identity, the blank-digest content preimage, the
 # result canonical bytes, the successful publication write, and the artifact schema/wire identity.
 # It also covers the section 13.2 note discriminators: omitted `None`, `Some("")`, and the section
-# 4.4 escaped/NUL/UTF-8 `Some`.
+# 4.4 escaped/NUL/UTF-8 `Some`, plus one `Some` carrying the five *real* control bytes
+# (U+0008/U+000C/U+000A/U+000D/U+0009) and a U+0001 with no short escape, so the short-escape and
+# `\u00xx` branches of the grammar are proved on real bytes rather than on their literal spellings.
 #
 # The expected bytes come from `scripts/c7_persisted_result_fixtures.py`, an independent ordered
 # field table and escape grammar. They are never derived by parsing the produced artifact.
@@ -29,11 +31,13 @@ fixtures.require_golden()
 work = Path(sys.argv[2])
 names = []
 statuses = []
-for name, note in (
+note_cases = (
     ("escaped", fixtures.ESCAPED_NOTE),
+    ("control-bytes", fixtures.CONTROL_NOTE),
     ("empty-note", ""),
     ("omitted-note", None),
-):
+)
+for name, note in note_cases:
     source, artifact, status = fixtures.expected_pair("upper-equal", 4, 5, 0, 9, 2, note)
     (work / f"{name}.input.json").write_bytes(source.encode("utf-8"))
     (work / f"{name}.expected.json").write_bytes(artifact.encode("utf-8"))
@@ -66,6 +70,7 @@ for case_id, left, right, lower_bound, upper_bound, expected in (
 
 (work / "case-order.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
 (work / "case-status.txt").write_text("\n".join(statuses) + "\n", encoding="utf-8")
+(work / "note-case-count.txt").write_text(f"{len(note_cases)}\n", encoding="utf-8")
 PY
 
 case_paths=()
@@ -129,6 +134,31 @@ for label, actual, expected in checks:
             f"c7 persisted result wire smoke: golden {label} mismatch: "
             f"expected {expected}, observed {actual}"
         )
+
+# The control-byte vector: the five real control bytes must reach the wire as their short escapes
+# and U+0001 as its four-hex-digit form, byte-identical to the independent reference above.
+control_input = (work / "control-bytes.input.json").read_bytes()
+control_expected = fixtures.encode_input(
+    "upper-equal", 4, 5, 0, 9, 2, fixtures.CONTROL_NOTE
+).encode("utf-8")
+if control_input != control_expected:
+    raise SystemExit("c7 persisted result wire smoke: the control-byte input vector drifted")
+control_result = (work / "control-bytes.result.json").read_bytes()
+control_note_wire = (
+    b'"note":"controls:\\b\\f\\n\\r\\t other:\\u0001 NUL:\\u0000 emoji:\xf0\x9f\x98\x80"'
+)
+if control_note_wire not in control_result:
+    raise SystemExit(
+        "c7 persisted result wire smoke: the published artifact does not carry the expected "
+        f"control-byte escaping\n  expected substring: {control_note_wire!r}\n"
+        f"  observed: {control_result!r}"
+    )
+for raw_control in (b"\x08", b"\x0c", b"\x0a", b"\x0d", b"\x09", b"\x01", b"\x00"):
+    if raw_control in control_result:
+        raise SystemExit(
+            "c7 persisted result wire smoke: a raw control byte reached the published artifact"
+        )
+
 carried = golden_result.decode("utf-8")
 if f'"input_sha256":"{fixtures.GOLDEN_INPUT_SHA256}"' not in carried:
     raise SystemExit("c7 persisted result wire smoke: the artifact does not carry the input digest")
@@ -137,9 +167,10 @@ if f'"content_sha256":"{fixtures.GOLDEN_CONTENT_SHA256}"' not in carried:
         "c7 persisted result wire smoke: the artifact does not carry the golden content digest"
     )
 
+note_case_count = int((work / "note-case-count.txt").read_text(encoding="utf-8").strip())
 print(
-    "c7 persisted result wire smoke: escape/NUL/UTF-8 grammar, three optional-note states, "
-    f"the {len(names) - 3} section 10.2 boundary cases, canonical declaration order, and the "
-    "section 4.4 golden digests PASS"
+    "c7 persisted result wire smoke: escape/NUL/UTF-8 grammar, real control-byte escaping, three "
+    f"optional-note states, the {len(names) - note_case_count} section 10.2 boundary cases, "
+    "canonical declaration order, and the section 4.4 golden digests PASS"
 )
 PY

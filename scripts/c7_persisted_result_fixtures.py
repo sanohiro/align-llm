@@ -23,6 +23,13 @@ FAIL_DIAGNOSTIC = "expected does not match observed"
 # literal control spellings, a semantic NUL byte, and a four-byte UTF-8 scalar. 64 bytes.
 ESCAPED_NOTE = "quote:\" slash:/ backslash:\\ controls:\\b\\f\\n\\r\\t NUL:\x00 emoji:\U0001F600"
 
+# The same vector written with the five *real* control bytes rather than their two-character
+# literal spellings, plus one `\u00xx` control that has no short escape. The section 4.4 vector
+# above proves that a backslash followed by `b` survives unchanged; this one proves that U+0008,
+# U+000C, U+000A, U+000D, and U+0009 are emitted as `\b`, `\f`, `\n`, `\r`, and `\t`, and that
+# U+0001 has no short escape and falls through to the lowercase four-hex-digit form.
+CONTROL_NOTE = "controls:\b\f\n\r\t other:\x01 NUL:\x00 emoji:\U0001F600"
+
 # Section 4.4 normative digests. They are assertions about the wire, not values derived from it.
 GOLDEN_INPUT_SHA256 = "6de733d453b56f83c4dbe11406e72996cc52a3a236b8d221d383133b77bb89d2"
 GOLDEN_CONTENT_SHA256 = "a0160d3677ecac64c1682e3802e01462e178412702a8ca1cdf6c55c5841b379a"
@@ -201,6 +208,13 @@ def require_golden() -> None:
         raise SystemExit("c7 fixtures: the golden vector is not a PASS case")
     if len(ESCAPED_NOTE.encode("utf-8")) != 64:
         raise SystemExit("c7 fixtures: the escaped note vector is not 64 bytes")
+    for control in ("\b", "\f", "\n", "\r", "\t", "\x01"):
+        if control not in CONTROL_NOTE:
+            raise SystemExit("c7 fixtures: the control note vector lost a real control byte")
+    if quote_string(CONTROL_NOTE) != (
+        '"controls:\\b\\f\\n\\r\\t other:\\u0001 NUL:\\u0000 emoji:\U0001F600"'
+    ):
+        raise SystemExit("c7 fixtures: the control note escape expectation drifted")
     if digest(source) != GOLDEN_INPUT_SHA256:
         raise SystemExit(f"c7 fixtures: input_sha256 drifted to {digest(source)}")
     preimage = encode_result(

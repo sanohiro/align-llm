@@ -8,6 +8,11 @@
 # validation row, the "CLI option/environment isolation" row, and the section 3.3 stable summary
 # block for `PASS` and for the valid semantic `FAIL` that exits nonzero after publication.
 #
+# Every rejection asserts its exact process exit, not merely a nonzero one: section 8.3 `Invalid`
+# rows are exit 2 and the absent-file filesystem row is exit 1, which is what pins the section 8.1
+# row-3 typed `map_err` inside the hosted lane. It also covers both sides of the section 3.2
+# 4,096-byte path bound.
+#
 # The expected artifact bytes come from the independent `scripts/c7_persisted_result_fixtures.py`
 # table, never from the produced files.
 
@@ -45,6 +50,15 @@ if pass_status != "PASS" or fail_status != "FAIL":
 (work / "fail.input.json").write_bytes(fail_input.encode("utf-8"))
 (work / "pass.expected.json").write_bytes(pass_artifact.encode("utf-8"))
 (work / "fail.expected.json").write_bytes(fail_artifact.encode("utf-8"))
+
+# Section 8.1/8.2 row 3: the shipped `core.json` decoder reports its own `Error.Code(_)` for a
+# malformed document, so without the typed `map_err` these three exit 1 instead of 2. They are the
+# hosted-lane regression guard for that mapping at the process boundary.
+(work / "malformed.input.json").write_bytes(pass_input[:-8].encode("utf-8"))
+(work / "malformed.result.json").write_bytes(pass_artifact[:-8].encode("utf-8"))
+(work / "mutated.result.json").write_bytes(
+    pass_artifact.replace('"observed":2', '"observed":1').encode("utf-8")
+)
 PY
 
 run_case() {
@@ -81,6 +95,29 @@ run_case verify-selector-as-operand "${executable}" --verify-result --persist-re
 run_case same-path "${executable}" --persist-result \
   "${work_dir}/pass.input.json" "${work_dir}/pass.input.json"
 
+# Section 3.2 / section 8.1 row 1 path byte bound, on both sides of the inclusive limit. The
+# 4,096-byte destination is accepted by path validation and reaches the filesystem, where every
+# supported host rejects it with its own `PATH_MAX` errno; the 4,097-byte destination never gets
+# that far and is the application's own `Error.Invalid`.
+path_bound_input="${work_dir}/pass.input.json"
+python3 - "${work_dir}" <<'PY'
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+prefix = f"{work}/"
+for name, total in (("path-at-bound", 4096), ("path-over-bound", 4097)):
+    filler = "x" * (total - len(prefix) - len(".json"))
+    path = f"{prefix}{filler}.json"
+    if len(path.encode("utf-8")) != total:
+        raise SystemExit(f"c7 persisted result cli smoke: {name} path is not {total} bytes")
+    (work / f"{name}.path").write_text(path, encoding="utf-8")
+PY
+run_case path-at-bound "${executable}" --persist-result "${path_bound_input}" \
+  "$(cat "${work_dir}/path-at-bound.path")"
+run_case path-over-bound "${executable}" --persist-result "${path_bound_input}" \
+  "$(cat "${work_dir}/path-over-bound.path")"
+
 # The supported paths.
 run_case persist-pass "${executable}" --persist-result \
   "${work_dir}/pass.input.json" "${work_dir}/pass.result.json"
@@ -89,6 +126,14 @@ run_case persist-fail "${executable}" --persist-result \
   "${work_dir}/fail.input.json" "${work_dir}/fail.result.json"
 run_case verify-fail "${executable}" --verify-result "${work_dir}/fail.result.json"
 run_case verify-absent "${executable}" --verify-result "${work_dir}/absent.result.json"
+
+# Section 8.1/8.2 row 3 and the section 8.3 malformed rows, observed as process exits.
+run_case persist-malformed-input "${executable}" --persist-result \
+  "${work_dir}/malformed.input.json" "${work_dir}/malformed.result.out.json"
+run_case verify-malformed-artifact "${executable}" --verify-result \
+  "${work_dir}/malformed.result.json"
+run_case verify-mutated-artifact "${executable}" --verify-result \
+  "${work_dir}/mutated.result.json"
 
 # Section 9.1: no environment variable, locale, or C7-looking name changes the bytes or status.
 run_case persist-perturbed-environment env \
@@ -147,8 +192,11 @@ for name in ("unknown-selector", "unknown-prefix"):
     require(code(name) == 0, f"{name} did not exit 0")
     require(read(name, "out") == help_text, f"{name} did not print the current help block")
 
-# Arity, selector-conflict, and path-overlap rejections: nonzero, no summary, no destination.
-rejected = (
+# Arity, selector-conflict, path-overlap, path-bound, and malformed-document rejections. Section
+# 8.3 makes every one of these an `Error.Invalid` row, and `Error.Invalid` is process exit 2, so the
+# assertion is the exact code and not merely "nonzero": the malformed rows exit 1 without the
+# section 8.1 row-3 typed `map_err`, which a nonzero check would not have caught.
+rejected_invalid = (
     "persist-no-operand",
     "persist-one-operand",
     "persist-extra-operand",
@@ -158,12 +206,37 @@ rejected = (
     "persist-selector-as-output",
     "verify-selector-as-operand",
     "same-path",
-    "verify-absent",
+    "path-over-bound",
+    "persist-malformed-input",
+    "verify-malformed-artifact",
+    "verify-mutated-artifact",
 )
-for name in rejected:
-    require(code(name) != 0, f"{name} unexpectedly exited 0")
+for name in rejected_invalid:
+    require(code(name) == 2, f"{name} exited {code(name)}, expected 2 (Error.Invalid)")
     require(read(name, "out") == "", f"{name} printed a summary block")
-for absent in ("arity.result.json", "conflict.result.json", "absent.result.json"):
+
+# Section 8.1/8.2 row 2: a genuinely absent file stays the mapped filesystem error, which is
+# `Error.NotFound` and process exit 1. This is the negative control for the row-3 mapping above.
+require(code("verify-absent") == 1, f"verify-absent exited {code('verify-absent')}, expected 1")
+require(read("verify-absent", "out") == "", "verify-absent printed a summary block")
+
+# Section 3.2 path bound: the 4,096-byte destination is accepted by row 1 and reaches the
+# filesystem, which rejects it with the host's own `PATH_MAX` errno (63 on Darwin, 36 on Linux).
+# The observable claim is that it is neither a success nor the row-1 `Error.Invalid` exit 2.
+at_bound = code("path-at-bound")
+require(
+    at_bound not in (0, 2),
+    f"path-at-bound exited {at_bound}; a 4,096-byte destination must pass path validation and "
+    "reach the filesystem",
+)
+require(read("path-at-bound", "out") == "", "path-at-bound printed a summary block")
+
+for absent in (
+    "arity.result.json",
+    "conflict.result.json",
+    "absent.result.json",
+    "malformed.result.out.json",
+):
     require(not (work / absent).exists(), f"{absent} was created by a rejected invocation")
 require(
     (work / "pass.input.json").read_bytes() == (work / "pass.input.control.json").read_bytes(),
@@ -182,9 +255,9 @@ require(
 
 # Valid semantic FAIL: the artifact is written and reloaded, the summary is printed, and only then
 # does the CLI take the existing Error.Invalid exit.
-require(code("persist-fail") != 0, "persist-fail exited 0 for a valid semantic FAIL")
+require(code("persist-fail") == 2, f"persist-fail exited {code('persist-fail')}, expected 2")
 require(read("persist-fail", "out") == summary_block("FAIL", 2, 1), "persist-fail summary mismatch")
-require(code("verify-fail") != 0, "verify-fail exited 0 for a valid semantic FAIL")
+require(code("verify-fail") == 2, f"verify-fail exited {code('verify-fail')}, expected 2")
 require(read("verify-fail", "out") == summary_block("FAIL", 2, 1), "verify-fail summary mismatch")
 require(
     (work / "fail.result.json").read_bytes() == (work / "fail.expected.json").read_bytes(),
@@ -208,8 +281,9 @@ if failures:
     )
 
 print(
-    "c7 persisted result cli smoke: help compatibility, exact arity, selector-conflict and "
-    "same-path rejection, stable PASS/FAIL summaries with their exits, and environment isolation "
-    "PASS"
+    "c7 persisted result cli smoke: help compatibility, exact arity, selector-conflict, same-path "
+    "and path-bound rejection, exact exit 2 for every section 8.3 Invalid row including the three "
+    "malformed-document rows, exit 1 for the absent-file filesystem row, stable PASS/FAIL "
+    "summaries with their exits, and environment isolation PASS"
 )
 PY

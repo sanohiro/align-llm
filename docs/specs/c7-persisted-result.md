@@ -321,7 +321,8 @@ optional field.
 
 ### 4.4 Canonical wire contract
 
-- The file is UTF-8 JSON bytes produced by the declared-record `json.encode` path.
+- The file is UTF-8 JSON bytes produced by the declared-record `json.encode_bounded` path, whose
+  graph, descriptor identity, and canonical bytes are identical to unbounded `json.encode`.
 - There is no leading/trailing whitespace and no final newline.
 - Object fields appear in declaration order.
 - `Option.None` fields are omitted; `Option.Some("")` is present.
@@ -429,16 +430,25 @@ The implementation must use a helper boundary equivalent to this sequence:
    to keep a `str` view into that owner.
 4. `persist_file` validates and consumes the owned input record. It moves the surviving fields into
    `C7PersistedResult`; it does not clone every field merely to hide ownership.
-5. `json.encode` returns a borrowed canonical `str` view. Before hashing a result preimage or
-   passing final bytes to `fs.write_file`, the caller explicitly invokes `canonical.clone()` and
-   owns the resulting free-standing `string` until that one digest or write call completes. The
-   borrowed view never escapes the encoder scope. The preimage clone is dropped immediately after
-   `crypto.sha256`; the final-output clone is dropped after `fs.write_file`, including its failure
-   path. This is the explicit persistence boundary required by Request 9.
-6. Digest arrays and hex strings are consumed within their owner scopes; no `str` returned by
-   `json.encode` is stored in the result record or returned from a function. The final result is
-   written, the in-memory result owner is released at the publication boundary, and `verify_file`
-   reads a fresh artifact owner.
+5. Canonical bytes are produced by `json.encode_bounded(value, RECORD_MAX_BYTES)`, whose success
+   value is one **owned free-standing `string`**; the encoded record is only borrowed and is left
+   unchanged, and no encoder-internal view is exposed to the caller. No `clone()` is therefore
+   required or permitted to manufacture ownership at this boundary. The same call carries the §8.1
+   row-10 canonical size check: a negative limit or a first byte beyond the inclusive
+   `RECORD_MAX_BYTES` ceiling is `Err(Error.Invalid)` with no partial public value, so the bound is
+   enforced by the encode operation itself rather than by a separate post-encode length test. Each
+   encoded owner is bound to a local in the scope that needs it and expires there: the preimage
+   owner after `crypto.sha256`, the final-output owner after `fs.write_file` including its failure
+   path, and each verifier re-encoding after its byte comparison. The invariant is unchanged — no
+   encoder view escapes its scope — but it holds because the encoder hands out an owner, not
+   because the caller copies a view.
+6. The one genuine borrowed-view boundary inside the digest path is the byte-slice view
+   `digest[0..digest.len()]` passed to `encoding.hex_encode`, which is consumed inside
+   `digest_text` and expires with the `array<u8>` digest owner; `hex_encode` itself returns an
+   owned `string`. Digest arrays and hex strings are consumed within their owner scopes; no
+   `string` returned by `json.encode_bounded` is stored in the result record or returned from a
+   function. The final result is written, the in-memory result owner is released at the publication
+   boundary, and `verify_file` reads a fresh artifact owner.
 7. `verify_file` decodes an independently owned result, drops the raw artifact input before
    recomputing the algorithm, and returns only the Copy summary.
 
@@ -459,10 +469,10 @@ adds the file-deletion/reload proof but cannot replace this direct adoption fixt
 | Value | Owner and lifetime | Move/borrow rule |
 | --- | --- | --- |
 | CLI path arguments | `main(args)`/argv; borrowed `str` views | Passed to calls only; never stored in a record. |
-| `fs.read_file` input | Owned `string` in `decode_input` | Borrowed only during decode/hash; dropped before owned input is returned. |
-| `C7VerificationInput` | Request 9 owned direct fields | Move into result construction or drop on every invalid/early path. |
-| `json.encode` output | Borrowed encoder `str` view plus an explicit caller-owned `string` clone | The view is consumed only in the encoder scope; `canonical.clone()` is the sole value passed to `crypto.sha256` or `fs.write_file`, and that clone is dropped after the operation. |
-| SHA-256 digest | Owned `array<u8>` from `std.crypto` | Sliced only for `hex_encode`; dropped after hex string creation. |
+| `fs.read_file` input | Owned `string` in the reading scope (`stage_result`/`load_result`) | Borrowed for decode, for hashing, and for the canonical byte comparison; dropped when that scope ends, before the free-standing record is returned. |
+| `C7VerificationInput` | Request 9 owned direct fields | Move into result construction or drop on every invalid/early path. `decode_input` borrows its `str` source and retains nothing from it, so it needs no document owner of its own. |
+| `json.encode_bounded` output | Owned free-standing `string` returned by the encoder; the encoded record is borrowed and unchanged | No caller clone exists or is allowed: the owner is bound to a local in the scope that consumes it, passed to `crypto.sha256` or `fs.write_file` or compared with the document bytes, and dropped when that scope ends, including on the failure path. The inclusive `RECORD_MAX_BYTES` limit is enforced by this call, and a rejected encode exposes no partial value. |
+| SHA-256 digest | Owned `array<u8>` from `std.crypto` | The only borrowed view in this path: `digest[0..digest.len()]` is consumed by `encoding.hex_encode` inside `digest_text` and expires with the digest owner. `hex_encode` returns an owned `string`, so no clone is needed. |
 | `input_sha256`/`content_sha256` | Owned `string` fields | Moved into the result; replacement of the blank content digest drops the old owner exactly once. |
 | `C7PersistedResult` | Move record with direct owned fields | Dropped on malformed/invariant/write/reload failure; moved only into the explicit next owner. |
 | Reloaded artifact | New owned `string` plus owned result record | Raw bytes expire before verification; no input/result alias is permitted. |
@@ -855,18 +865,24 @@ The capability owns two deliberately different test classes:
   when changed, but it remains outside routine hosted/capable aggregates. Performance checks run
   only when making a performance claim.
 
-The admission decision is measured and settled: at the pinned compiler
-`2f33ac5c33a898a7894af58322852632ce6ffe42`, `scripts/run-persisted-result-smoke` drives all six
-member runners in 3.6 s of wall clock (0.6 s each) after the aggregate's existing `build` target,
-and it adds no new fixture corpus, network access, container, or host capability. That is a small
-stable integration regression by the rule above, so `persisted-result-smoke` is a
-`HOSTED_CHECK_TARGETS` member, the six member targets stay outside every aggregate so the set runs
-exactly once, and the topology oracle, its self-test literals, and
-`docs/specs/check-gate-topology.md` were updated with the `Makefile` list in the same change. The
-identity-bound canonical baseline chain is re-finalized once this capability's `Makefile` is final.
-`scripts/run-persisted-result-qualification` costs 8.8 s and one extra whole-program compile on the
-same host; it remains outside every aggregate regardless, because its value is boundary coverage at
-a changed algorithm/wire/verifier boundary rather than routine integration signal.
+The admission decision is measured and settled. The measurement host is the C7 development host,
+`aarch64-apple-darwin` (Apple silicon, Darwin 25.x), at the pinned compiler
+`2f33ac5c33a898a7894af58322852632ce6ffe42`, with the aggregate's existing `build` target already
+satisfied. `scripts/run-persisted-result-smoke` drives all six member runners in single-digit
+seconds: the admission sample was 3.6 s of wall clock (about 0.6 s per runner), and three
+consecutive confirming samples taken after the capability's review repair were 4.0 s, 2.7 s, and
+3.7 s — four samples in total, spanning 2.7-4.0 s on an otherwise-quiet host. It adds no new fixture
+corpus, network access, container, or host capability. That is a small stable integration
+regression by the rule above, so `persisted-result-smoke` is a `HOSTED_CHECK_TARGETS` member, the
+six member targets stay outside every aggregate so the set runs exactly once, and the topology
+oracle, its self-test literals, and `docs/specs/check-gate-topology.md` were updated with the
+`Makefile` list in the same change. The identity-bound canonical baseline chain is re-finalized once
+this capability's `Makefile` is final. `scripts/run-persisted-result-qualification` costs 8.7-8.8 s
+and one extra whole-program compile on the same host; it remains outside every aggregate
+regardless, because its value is boundary coverage at a changed algorithm/wire/verifier boundary
+rather than routine integration signal. These are development-host costs on an unreviewed C7-P
+platform, recorded as the admission datum for aggregate cost only; they are not §11 platform
+acceptance evidence and carry no performance claim.
 
 At the named capability gate, run the focused module/per-unit checks, both commands above, the
 applicable platform-profile acceptance, and one full Section 9 supervisor-attested `make ci` after

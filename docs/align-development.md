@@ -316,6 +316,11 @@ file, so unknown fields, reordered keys, whitespace, and a `null` optional spell
 rejected. Both paths must be nonempty, NUL-free, and at most 4,096 bytes, and the two path strings
 must not be byte-identical.
 
+Only an exact-string overlap between the two paths is rejected. An aliased destination that
+resolves to the same file under a different spelling — a symbolic link, a hard link, `./` or `..`
+segments, or any other alternative path to the input — passes that check, and publication then
+creates/truncates that file, destroying the input. Pass two distinct real paths.
+
 Run the two commands with:
 
 ```sh
