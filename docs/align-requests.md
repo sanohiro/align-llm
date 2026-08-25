@@ -5873,7 +5873,7 @@ Blocking: no
 Blocked gate or slice: none — align-llm's own aarch64-apple-darwin profile gate exercises the shipped surface from the client side, and the Linux legs cover the compiler-side regressions
 Independent work that may continue: all of it; this asks for detection coverage in Align CI, not for a behavior change
 Resume condition: satisfied — Align CI's `macos-15` matrix leg runs the `m5_owned_json` integration target on every pull request, and its required job is green at the revision align-llm pins
-Align commit or pull request: PR #887, merged as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; adopted through Align `main` at `dc3214129692e9be36dea4f046ed11373cc355bd`
+Align commit or pull request: PR #887, merged as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; adopted through Align `main` at `f57b986bc9326ba8d75dad5dbe4c6531c0f872b6`
 align-llm verification: complete — the managed compiler/runtime materializes, `c7-owned-record-source-expiry-adoption` passes, the attested Darwin profile including `persisted-result-qualification` passes, and the supervised fresh-image capable graph passes at the adopted pin; publication merge evidence remains before `CLOSED`
 ```
 
@@ -5887,30 +5887,31 @@ MIR, runtime, and Request 9 contract make every decoded owner free-standing. The
 restores those two analysis facts to the existing contract. The complete 10-test owner passed
 locally and the required macOS Apple Silicon CI leg passed on the merged candidate. The remaining
 pin adoption and `make darwin-profile-gate` proof belong to align-llm. Align PR #888 then closed
-the upstream handoff without changing the implementation; the adopted latest `main` commit above
-contains both merges.
+the upstream handoff without changing the implementation. PR #889 later changed only docs-only CI
+scope; the adopted latest `main` commit above contains all three merges.
 
 ### align-llm verification (2026-08-26 — ALIGN_LLM_VERIFIED)
 
 The latest Align `main` pin materializes natively on Apple Silicon and the original
 `c7-owned-record-source-expiry-adoption` fixture passes all 45 adoption rows. The Section 10 Darwin
-profile then passed at clean head `5344da63386f595f1dcf729f6be024684eee0104`; section 11.3 of
+profile then passed at clean head `863ab0d333209fbd90bec0dd4e4148ef56f167f7`; section 11.3 of
 `docs/specs/c7-persisted-result.md` carries the emitted identity block and its five passing commands.
 The profile's `persisted-result-qualification` is the client-side Request 9 proof; it complements,
 but does not replace, Align PR #887's own 10-row macOS boundary owner.
 
 The pin moved the identity-bound coding baseline. The accepted replacement was measured as non-root
 on native Linux aarch64 with CPython 3.12 and bubblewrap: both deterministic-reference samples
-passed in 141,653,292–172,349,542 ns, median 157,001,417 ns. Its strict chain is source
-`81183d7a1d0041bab120274cd3fccdfa85c06706`, oracle
-`a0068c70499632d0dcac16700cd2daf255412eb7`, and finalization
-`5344da63386f595f1dcf729f6be024684eee0104`. The earlier macOS-produced non-passing chain remains
-in history as rejected evidence and is not the canonical record.
+passed in 133,219,500–141,093,417 ns, median 137,156,458 ns. Its strict chain is source
+`3714b371e09ca2937981d9098a167c43084bc0f3`, oracle
+`7080b61f9a4b5b6542b77524f0f6c7b42786b801`, and finalization
+`863ab0d333209fbd90bec0dd4e4148ef56f167f7`. The earlier macOS-produced non-passing chain remains
+in history as rejected evidence; the later `dc321412` Linux chain is a valid intermediate pin
+checkpoint, but neither is the canonical record for the selected latest pin.
 
 Finally, `python3 scripts/run-fresh-image-profile-smoke --require-docker --align-repo <managed-pin>`
-passed at `5344da63386f595f1dcf729f6be024684eee0104`: image build, attestation, lifecycle,
+passed at `863ab0d333209fbd90bec0dd4e4148ef56f167f7`: image build, attestation, lifecycle,
 self-test, trust mutations, runtime replacements, native aarch64 boundary profile, the complete
-worker aggregate (412,486 ms), and cleanup all passed. This is the request's final capable
+worker aggregate (424,471 ms), and cleanup all passed. This is the request's final capable
 integration evidence at the adopted pin. The request advances to `ALIGN_LLM_VERIFIED`; `CLOSED`
 waits only for the align-llm publication merge that carries this record.
 

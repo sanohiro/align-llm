@@ -932,8 +932,8 @@ availability, the privileged flag, and `--init` are environment facts recorded i
 ### 11.3 Discharge record — `aarch64-apple-darwin`
 
 The Section 10 profile gate was re-run for the Request 20 pin adoption at clean head
-`5344da63386f595f1dcf729f6be024684eee0104`. That head contains the latest pinned Align
-`dc3214129692e9be36dea4f046ed11373cc355bd`, the native Linux replacement baseline chain, and no
+`863ab0d333209fbd90bec0dd4e4148ef56f167f7`. That head contains the latest pinned Align
+`f57b986bc9326ba8d75dad5dbe4c6531c0f872b6`, the native Linux replacement baseline chain, and no
 later executable change. The commits after the recorded head only record this emitted block,
 Request 20's lifecycle result, and the durable handoff. A gate run binds the head it ran at, so the
 record cannot be the commit that carries it; under merge-commit integration the recorded head stays
@@ -944,14 +944,14 @@ every digest, version, byte length, command, status, and duration is verbatim.
 
 ```json
 {
-  "align_revision": "dc3214129692e9be36dea4f046ed11373cc355bd",
+  "align_revision": "f57b986bc9326ba8d75dad5dbe4c6531c0f872b6",
   "commands": [
     {
       "argv": [
         "/opt/homebrew/bin/gmake",
         "check"
       ],
-      "duration_ms": 4709,
+      "duration_ms": 4677,
       "label": "/opt/homebrew/bin/gmake check",
       "status": 0
     },
@@ -960,17 +960,17 @@ every digest, version, byte length, command, status, and duration is verbatim.
         "/opt/homebrew/bin/gmake",
         "build"
       ],
-      "duration_ms": 531,
+      "duration_ms": 5960,
       "label": "/opt/homebrew/bin/gmake build",
       "status": 0
     },
     {
       "argv": [
-        "${HOME}/.cache/align-llm/align/dev-v1/dc3214129692e9be36dea4f046ed11373cc355bd/target/release/alignc",
+        "${HOME}/.cache/align-llm/align/dev-v1/f57b986bc9326ba8d75dad5dbe4c6531c0f872b6/target/release/alignc",
         "check-per-unit",
         "src/main.align"
       ],
-      "duration_ms": 4608,
+      "duration_ms": 4568,
       "label": "alignc check-per-unit src/main.align",
       "status": 0
     },
@@ -979,7 +979,7 @@ every digest, version, byte length, command, status, and duration is verbatim.
         "/opt/homebrew/bin/gmake",
         "persisted-result-smoke"
       ],
-      "duration_ms": 3664,
+      "duration_ms": 3534,
       "label": "/opt/homebrew/bin/gmake persisted-result-smoke",
       "status": 0
     },
@@ -988,7 +988,7 @@ every digest, version, byte length, command, status, and duration is verbatim.
         "/opt/homebrew/bin/gmake",
         "persisted-result-qualification"
       ],
-      "duration_ms": 11597,
+      "duration_ms": 11138,
       "label": "/opt/homebrew/bin/gmake persisted-result-qualification",
       "status": 0
     }
@@ -1064,20 +1064,20 @@ every digest, version, byte length, command, status, and duration is verbatim.
   "profile_schema_version": 1,
   "repository": {
     "git_version": "git version 2.50.1 (Apple Git-155)",
-    "head": "5344da63386f595f1dcf729f6be024684eee0104",
+    "head": "863ab0d333209fbd90bec0dd4e4148ef56f167f7",
     "worktree": "clean"
   },
   "toolchain": {
     "attestation_schema_version": 1,
     "compiler_bytes": 10404768,
-    "compiler_path": "${HOME}/.cache/align-llm/align/dev-v1/dc3214129692e9be36dea4f046ed11373cc355bd/target/release/alignc",
-    "compiler_sha256": "35775338a1271d6751d645c8abef94456b3fbe998243185f02cf984ae625772e",
+    "compiler_path": "${HOME}/.cache/align-llm/align/dev-v1/f57b986bc9326ba8d75dad5dbe4c6531c0f872b6/target/release/alignc",
+    "compiler_sha256": "ea90318886ebcc9ed9e29b11ea3065c9d91160fea61b0be285d3196ffa1d084e",
     "compiler_version": "alignc 0.5.0",
     "generation": "dev-v1",
-    "revision": "dc3214129692e9be36dea4f046ed11373cc355bd",
-    "root": "${HOME}/.cache/align-llm/align/dev-v1/dc3214129692e9be36dea4f046ed11373cc355bd",
+    "revision": "f57b986bc9326ba8d75dad5dbe4c6531c0f872b6",
+    "root": "${HOME}/.cache/align-llm/align/dev-v1/f57b986bc9326ba8d75dad5dbe4c6531c0f872b6",
     "runtime_bytes": 11816304,
-    "runtime_path": "${HOME}/.cache/align-llm/align/dev-v1/dc3214129692e9be36dea4f046ed11373cc355bd/target/release/libalign_runtime.a",
+    "runtime_path": "${HOME}/.cache/align-llm/align/dev-v1/f57b986bc9326ba8d75dad5dbe4c6531c0f872b6/target/release/libalign_runtime.a",
     "runtime_sha256": "0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211"
   }
 }

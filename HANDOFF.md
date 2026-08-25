@@ -15,14 +15,15 @@ file records durable project state.
   Apple Silicon job ran `align_driver --test m5_owned_json` and all 10 rows passed. The same PR
   repairs the storage-generation regression that made `JsonOwnedDecode` retain its input and arena
   facts even though the shipped owner is free-standing.
-- The managed release compiler/runtime materializes at the new pin on native macOS arm64 with
+- The managed release compiler/runtime materializes at the selected latest pin on native macOS arm64 with
   `LLVM_CONFIG=/opt/homebrew/opt/llvm@22/bin/llvm-config`. The first original client fixture passes:
   `gmake --no-print-directory c7-owned-record-source-expiry-adoption` reports 3 parsed fixtures,
   12 example rows, and 45 adoption rows.
-- The Darwin profile passed at clean head `026e3b1847ef73b2482123ab3f95f8b6c59ea3b6`: `check` 4,697
-  ms, `build` 7,626 ms, direct `check-per-unit` 5,069 ms, `persisted-result-smoke` 4,094 ms,
-  and `persisted-result-qualification` 13,703 ms. The attested compiler digest is
-  `35775338a1271d6751d645c8abef94456b3fbe998243185f02cf984ae625772e`; runtime digest is
+- The Darwin profile passed at clean latest-pin head `863ab0d333209fbd90bec0dd4e4148ef56f167f7`:
+  `check` 4,677 ms, `build` 5,960 ms, direct `check-per-unit` 4,568 ms,
+  `persisted-result-smoke` 3,534 ms, and `persisted-result-qualification` 11,138 ms. The attested
+  compiler digest is `ea90318886ebcc9ed9e29b11ea3065c9d91160fea61b0be285d3196ffa1d084e`;
+  runtime digest is
   `0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211`.
 - The first supervised aggregate correctly rejected the canonical baseline's old Align pin. A
   replacement chain was then mistakenly measured on macOS, where the corpus-fixed
@@ -30,24 +31,23 @@ file records durable project state.
   deliberately persisted two complete FAIL samples, and the negative smoke exposed their null
   aggregate timing. That non-passing chain (`026e3b1` -> `7d24042` -> `1a8b026`) is preserved as
   failed evidence and must not be published as canonical proof.
-- The accepted replacement was recorded as non-root on native Linux aarch64 in the privileged
+- The latest accepted replacement was recorded as non-root on native Linux aarch64 in the privileged
   `c6g2-measure:latest` helper with CPython 3.12 and bubblewrap. Both deterministic-reference
-  samples passed (141,653,292–172,349,542 ns; median 157,001,417 ns). The strict chain is source
-  `81183d7a1d0041bab120274cd3fccdfa85c06706`, oracle
-  `a0068c70499632d0dcac16700cd2daf255412eb7`, and finalization
-  `5344da63386f595f1dcf729f6be024684eee0104`; `check-baseline-chain` and `verify-baseline.py` pass.
-- The final supervised fresh-image profile passes at `5344da6`. Phases: image build 22,435 ms,
-  attestation 3,627 ms, lifecycle 2,490 ms, self-test 13,641 ms, trust mutations 12,433 ms,
-  runtime replacements 23,543 ms, boundary profile 282,585 ms, worker aggregate 412,486 ms, and
-  cleanup 1,359 ms. Request 20 is `ALIGN_LLM_VERIFIED` at the adopted pin.
+  samples passed (133,219,500–141,093,417 ns; median 137,156,458 ns). The strict chain is source
+  `3714b371e09ca2937981d9098a167c43084bc0f3`, oracle
+  `7080b61f9a4b5b6542b77524f0f6c7b42786b801`, and finalization
+  `863ab0d333209fbd90bec0dd4e4148ef56f167f7`; `check-baseline-chain` and `verify-baseline.py` pass.
+  The preceding `dc321412` Linux chain remains a valid intermediate pin checkpoint, not canonical.
+- The final supervised fresh-image profile passes at `863ab0d`. Phases: image build 33,852 ms,
+  attestation 3,354 ms, lifecycle 2,426 ms, self-test 14,769 ms, trust mutations 12,336 ms,
+  runtime replacements 21,554 ms, boundary profile 274,947 ms, worker aggregate 424,471 ms, and
+  cleanup 1,272 ms. Request 20 is `ALIGN_LLM_VERIFIED` at the selected latest pin.
 - The first comprehensive review of `2caae5f` found one valid P2: the request register still called
   the earlier `2f33ac5` revision current. The register now names the selected pin and labels Request
   19's filing-time measurement historical. Because Align advanced during review, the accepted
   `dc321412` evidence above is now an intermediate checkpoint rather than publication evidence.
-- Pending at this checkpoint: commit the `f57b986b` source identity, materialize and verify it,
-  regenerate the native Linux baseline chain, rerun the Darwin and supervised capable gates, update
-  the final evidence, run exact-head preflight, and publish. `CLOSED` waits for the resulting
-  align-llm merge.
+- Pending at this checkpoint: commit the final evidence, inspect the review-repair delta, run
+  exact-head preflight, and publish. `CLOSED` waits for the resulting align-llm merge.
 
 ## Merged checkpoint: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
 
