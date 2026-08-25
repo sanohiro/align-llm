@@ -932,10 +932,18 @@ availability, the privileged flag, and `--init` are environment facts recorded i
 ### 11.3 Discharge record — `aarch64-apple-darwin`
 
 The Section 10 profile gate passed on this development host at head
-`41b2f436ffcc79cc3e8275ee73c75d5aa9eef60c`, the branch's final executable state; the only later
-commits are this record and the handoff update, and neither changes an executable input. The record
-is the block the gate emitted, not a transcription of it; `${HOME}` is the emitter's own path
-redaction, and every digest, version, and byte length is verbatim. Any host reproducing these
+`3e9b27e9af04d4eae616dffb812c8db926d938d8`, the branch's final executable state — the review-repair
+commit that closed the gate's own failure paths, which is itself a section 10.4 re-run trigger. The
+only later commits are this record and the handoff update; both are Markdown and neither changes an
+executable input, a fresh-image classifier input, or a C7 owner boundary. A gate run binds the head
+it ran at, so the record can never be the commit that carries it; what section 10.4 requires, and
+what holds here, is that no executable input moves after the recorded head. Under this repository's
+merge-commit integration that recorded head stays a reachable ancestor of the integration commit, so
+the binding survives the merge; a rebase, squash, or amend would invalidate it and require a fresh
+run.
+
+The record is the block the gate emitted, not a transcription of it; `${HOME}` is the emitter's own
+path redaction, and every digest, version, and byte length is verbatim. Any host reproducing these
 identities satisfies the profile.
 
 ```json
@@ -947,7 +955,7 @@ identities satisfies the profile.
         "/opt/homebrew/bin/gmake",
         "check"
       ],
-      "duration_ms": 1310,
+      "duration_ms": 1266,
       "label": "/opt/homebrew/bin/gmake check",
       "status": 0
     },
@@ -956,7 +964,7 @@ identities satisfies the profile.
         "/opt/homebrew/bin/gmake",
         "build"
       ],
-      "duration_ms": 537,
+      "duration_ms": 276,
       "label": "/opt/homebrew/bin/gmake build",
       "status": 0
     },
@@ -966,7 +974,7 @@ identities satisfies the profile.
         "check-per-unit",
         "src/main.align"
       ],
-      "duration_ms": 1178,
+      "duration_ms": 1166,
       "label": "alignc check-per-unit src/main.align",
       "status": 0
     },
@@ -975,7 +983,7 @@ identities satisfies the profile.
         "/opt/homebrew/bin/gmake",
         "persisted-result-smoke"
       ],
-      "duration_ms": 3816,
+      "duration_ms": 3534,
       "label": "/opt/homebrew/bin/gmake persisted-result-smoke",
       "status": 0
     },
@@ -984,7 +992,7 @@ identities satisfies the profile.
         "/opt/homebrew/bin/gmake",
         "persisted-result-qualification"
       ],
-      "duration_ms": 9240,
+      "duration_ms": 9325,
       "label": "/opt/homebrew/bin/gmake persisted-result-qualification",
       "status": 0
     }
@@ -1060,7 +1068,7 @@ identities satisfies the profile.
   "profile_schema_version": 1,
   "repository": {
     "git_version": "git version 2.50.1 (Apple Git-155)",
-    "head": "41b2f436ffcc79cc3e8275ee73c75d5aa9eef60c",
+    "head": "3e9b27e9af04d4eae616dffb812c8db926d938d8",
     "worktree": "clean"
   },
   "toolchain": {

@@ -48,8 +48,17 @@ file records durable project state.
   bare `make`, so run it with a directory containing a `make` symlink to `gmake` ahead of
   `/usr/bin` on `PATH`. The profile gate itself is unaffected: it resolves `gmake` before `make` and
   rejects anything that does not report GNU Make.
-- Next actions, in order: (1) one fresh comprehensive review of this branch, then publish the
-  English pull request citing sections 11.2/11.3 and the verification table below; (2) after merge,
+- **Reviewed and repaired.** One fresh comprehensive adversarial review of head `9119549` returned
+  request-changes with nine findings (F1-F9); all nine were accepted. The consolidated repair is
+  `3e9b27e` — three uncaught-exception paths in `scripts/check-darwin-profile` (empty `--version`
+  output, attestation shape drift, a non-ASCII `.align-revision`), the `gmake --version` fall-through
+  and the `ALIGN_LLM_FRESH_COMPILER=0` selector, the new failure-path owner
+  `scripts/test-check-darwin-profile`, and the specification repairs — followed by the gate
+  re-emission commit. `scripts/test-check-darwin-profile` has no Make target, per the
+  `scripts/test-align-toolchain` precedent, so the `Makefile` and the identity-bound canonical
+  baseline chain are untouched by the repair.
+- Next actions, in order: (1) publish the English pull request citing sections 11.2/11.3 and the
+  verification table below; (2) after merge,
   the adapter-zombie follow-up recorded under the merged C6-EVALUATION notes — the `c6f2` fixture
   poll race and the container's unreaped-descendant class both want a deterministic seam rather than
   a timing window; (3) then the next eligible roadmap capability.
@@ -446,12 +455,14 @@ file records durable project state.
 
 ## Latest durable verification
 
-- **C7-P Darwin platform-profile gate, green, at head `41b2f436ffcc79cc3e8275ee73c75d5aa9eef60c`
-  (macOS `aarch64-apple-darwin`, 2026-08-25).**
+- **C7-P Darwin platform-profile gate, green, re-emitted at the review-repaired head
+  `3e9b27e9af04d4eae616dffb812c8db926d938d8` (macOS `aarch64-apple-darwin`, 2026-08-25).** The
+  repair changed the gate's own owner, which section 10.4 names as a re-run trigger, so the
+  section 11.3 record is the block from this run, not the superseded `41b2f43` one.
   `LIBRARY_PATH="$(brew --prefix)/lib:$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib"
   make darwin-profile-gate`: **PASS**. Five acceptance commands, all exit 0 — `gmake check`
-  1,310 ms, `gmake build` 537 ms, direct `alignc check-per-unit src/main.align` 1,178 ms,
-  `gmake persisted-result-smoke` 3,816 ms, `gmake persisted-result-qualification` 9,240 ms. Attested
+  1,266 ms, `gmake build` 276 ms, direct `alignc check-per-unit src/main.align` 1,166 ms,
+  `gmake persisted-result-smoke` 3,534 ms, `gmake persisted-result-qualification` 9,325 ms. Attested
   identity: managed compiler `82e6bea0933332291012f5de43a2a65c02e8dda7dfe990602de3cce3e30c0908`,
   runtime archive `0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211`, pin
   `2f33ac5c33a898a7894af58322852632ce6ffe42`, Homebrew `llvm 22.1.8`, `openssl@3 3.6.3`,
@@ -478,11 +489,21 @@ file records durable project state.
   scripts/run-fresh-worker-qualification` **PASS** (focused; installed profile deferred; 23 focused
   rows including `check-gate-topology --self-test`), `python3 scripts/test-development-preflight`
   PASS, and `python3 scripts/test-align-toolchain` PASS. Both the preflight and the installed
-  profile were then re-run at the publication head `cab6755b55b6fb6d94317d3fbfa518cb0ed12061` with
+  profile were then re-run at `cab6755b55b6fb6d94317d3fbfa518cb0ed12061` with
   the same results — preflight phases `darwin-profile-gate` 15,143 ms, `hosted-checks` 50,434 ms,
   the same Darwin-only `fresh-focused` failure; installed profile **PASS** with `boundary-profile`
-  255,854 ms and **`worker-aggregate` pass after 379,459 ms**. Only this documentation commit
-  follows that head.
+  255,854 ms and **`worker-aggregate` pass after 379,459 ms**.
+- **Why the two Linux legs are not re-run for the review repair, stated as a head delta.** Both
+  compensating legs are owned by the fresh-image classifier in `scripts/verification_scope.py`. The
+  complete delta from `4d8aa33` (focused fresh-worker qualification, native Linux `aarch64`) and
+  from `cab6755` (installed profile, host Docker) to the publication head is `HANDOFF.md`,
+  `docs/align-development.md`, `docs/specs/c7-persisted-result.md`,
+  `docs/specs/check-gate-topology.md`, `scripts/check-darwin-profile`, and the added
+  `scripts/test-check-darwin-profile`. `owns_fresh_image()` returns false for every one of them —
+  neither the Darwin gate nor its owner test is a `FRESH_IMAGE_PATTERNS` entry — so no input either
+  leg consumes has moved and both green runs stand. The publication preflight still classifies the
+  wave `fresh-image`, because the `Makefile` and `eval/*` changed earlier in the branch; its
+  per-phase table and the Darwin `fresh-focused` `N/A` reason are recorded in the pull request.
 - **C7-P target-local aarch64 Linux gate, green, at head
   `09294dec94924e0363f0443cc671751dd8174186` (2026-08-25).** Native Linux
   `aarch64` in the privileged `c6g2-measure:latest` container with `--init`, non-root with
@@ -495,12 +516,15 @@ file records durable project state.
   `make persisted-result-qualification` **PASS** (7,179 ms; same corpus counts as the host, with the
   runner's own `target aarch64-linux` observation), and `python3 scripts/check-baseline-chain`
   `baseline chain: PASS`. Section 11.2 holds the full record.
-- **C7-P host publication checks at head `41b2f43` (macOS, managed pinned toolchain, 2026-08-25).**
-  `gmake check` (23 units per-unit), `gmake gate-topology-check` (`check gate topology: PASS`, the
-  `EXPECTED` lane bytes unchanged because `darwin-profile-gate` joins no aggregate), `gmake
-  format-check`, `git diff --check`, `python3 scripts/test-align-toolchain` (managed checkout plus
-  the new attestation cases), and `python3 scripts/check-baseline-chain` (`baseline chain: PASS`):
-  all PASS.
+- **C7-P host publication checks at the repaired head `3e9b27e` (macOS, managed pinned toolchain,
+  2026-08-25).** `gmake check` (23 units per-unit), `gmake gate-topology-check` (`check gate
+  topology: PASS`, the `EXPECTED` lane bytes unchanged because `darwin-profile-gate` joins no
+  aggregate), `gmake format-check`, `git diff --check`, `python3 scripts/test-align-toolchain`
+  (managed checkout plus the attestation cases), `python3 scripts/test-check-darwin-profile` (the
+  new failure-path owner: construction, malformed input, early exit, and cleanup PASS), and
+  `python3 scripts/check-baseline-chain` (`baseline chain: PASS`): all PASS. Negative controls for
+  the new owner: reverting each of the four repairs it covers makes it fail with the exact escaped
+  exception type.
 - **C7-P baseline chain re-finalization (2026-08-25).** Recorded on native Linux `aarch64` in the
   privileged `c6g2-measure:latest` container with `--init` and `bubblewrap` installed at run time,
   as a non-root uid with `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean `git clone` of the
