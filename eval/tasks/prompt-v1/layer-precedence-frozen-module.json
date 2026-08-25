@@ -16,8 +16,8 @@
     "/usr/bin/python3",
     "scripts/prompt-snapshot-helper.py"
   ],
-  "measurement_adapter_runtime": "PYTHON:161e91ec54e4d6b5daffe71d095d6ae634414d76ece5cdc485f9ce2f973ef2de",
-  "snapshot_helper_runtime": "PYTHON:2843e0c7ceaaeb2e9ef8bdef62d42afbf1089e0e97f015ddf0850e4df521e357",
+  "measurement_adapter_runtime": "PYTHON:2d3796dbf1159d4a9528a62bbb9af0f36ccc5878b76d83aa65fa0d39cca7b20c",
+  "snapshot_helper_runtime": "PYTHON:9621307752feed0e18ec185f7c860412365299b1b7a034db118b95ec7b449aa6",
   "cwd": ".",
   "timeout_ns": 30000000000,
   "task_prompt_path": "eval/tasks/prompt-v1/layer-precedence-frozen-module/task-prompt.json",
@@ -65,17 +65,17 @@
     {
       "path": "scripts/prompt-fixed-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "0763915a42c18570364c29b2433a264e7e4654b85e9ea909bfd5adacf9a1a6e1"
+      "expected_sha256": "7b8bdf3f80bb8bf033902ee522c04c61e39bee67d2f47cb6e1905f32421cd099"
     },
     {
       "path": "scripts/prompt-measurement-adapter.py",
       "kind": "FILE",
-      "expected_sha256": "5b4c7403d048fdf0e39078eeeec5586155d6173eb57614e3ee595f8e34a11067"
+      "expected_sha256": "a9d82f7b50964dc6db40dd2b9d28d2372a0da7206d8bbee6626423763f65f31f"
     },
     {
       "path": "scripts/prompt-snapshot-helper.py",
       "kind": "FILE",
-      "expected_sha256": "95d85d38c353660700996d2cd52ca9595c20b9087b0b5b20e6c636a8669fbb51"
+      "expected_sha256": "dce3cd89e6b269e227d9a61e35d76314583219fe99436009f501fd421c19c3a2"
     }
   ],
   "regression_limits": {
@@ -85,5 +85,5 @@
     "maximum_repair_loops": 0,
     "maximum_benchmark_regression_ppm": null
   },
-  "content_sha256": "7890836cfb302b48cec25391935431bebc92ffb632cd29a1d6f1b22bfd554b20"
+  "content_sha256": "8bdf41d1af8adfdfe0e5f3bbd5a6b4573a3bb3e57eca95a8365ca38ca3677b4c"
 }
