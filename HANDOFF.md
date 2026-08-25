@@ -9,8 +9,8 @@ file records durable project state.
   shipped in Align PR #887 as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; PR #888 then closed
   its upstream handoff. A later docs-only CI merge, PR #889, moved Align `main` to
   `f57b986bc9326ba8d75dad5dbe4c6531c0f872b6`; `.align-revision` now selects that exact latest
-  commit. The compiler/runtime payload is expected to be unchanged, but pin-bound evidence must be
-  regenerated against the new identity.
+  commit. The compiler/runtime source payload is unchanged, but the managed binary and every
+  pin-bound record still require evidence against the new identity.
 - The upstream response is verified, not inferred from the PR summary: the required `macos-15`
   Apple Silicon job ran `align_driver --test m5_owned_json` and all 10 rows passed. The same PR
   repairs the storage-generation regression that made `JsonOwnedDecode` retain its input and arena
@@ -52,7 +52,7 @@ file records durable project state.
   publication links. The repair narrows the CI contract to platform-required pull requests with the
   exact fail-closed exception and records PR #98/#99 merge evidence; no executable or baseline-owned
   path moves.
-- Pending at this checkpoint: commit and inspect the narrow review repair, run exact-head preflight,
+- Pending at this checkpoint: inspect the narrow review-repair commits, run exact-head preflight,
   and publish. `CLOSED` waits for the resulting align-llm merge.
 
 ## Merged checkpoint: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
