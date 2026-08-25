@@ -4235,7 +4235,8 @@ the repository root rather than rediscovering either from a temporary tree.
 
 Each acceptance child launched by `scripts/check-darwin-profile` follows the same shape. It is
 started from an explicit environment map (`LANG`, `LC_ALL`, `PATH`, `LIBRARY_PATH`,
-`PYTHONDONTWRITEBYTECODE`, and the caller's `HOME` and `TMPDIR` when supplied), with no shell, with
+`PYTHONDONTWRITEBYTECODE`, and the caller's `HOME`, `TMPDIR`, `XDG_CACHE_HOME`, and
+`ALIGN_TOOLCHAIN_ROOT` when supplied), with no shell, with
 `close_fds=True` and `pass_fds=()`, with stdin at `/dev/null`, with a fixed 1,800 s timeout, and
 with a bounded per-stream capture that retains the last 1 MiB — the same bound section 9.4 sets for
 a compiler child, because `check` and `build` emit the pinned compiler's whole-program advisory

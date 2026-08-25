@@ -42,6 +42,12 @@ file records durable project state.
   `if: matrix.lint`, and `scripts/test-pr.sh` does not select `m5_owned_json` even there, so
   Request 9's own boundary regressions run only in the ubuntu-only nightly full suite. Request 9's
   contract is target-local, so this asks upstream to run that focused target on the macOS leg.
+- **Environment fact for the local preflight on this host, not repository state.** `/usr/bin/make`
+  is GNU Make 3.81 and cannot parse this `Makefile` (`Makefile:220: *** multiple target patterns`),
+  while the repository requires GNU Make 4.3 or newer. `scripts/pre-pr`'s executable plan invokes a
+  bare `make`, so run it with a directory containing a `make` symlink to `gmake` ahead of
+  `/usr/bin` on `PATH`. The profile gate itself is unaffected: it resolves `gmake` before `make` and
+  rejects anything that does not report GNU Make.
 - Next actions, in order: (1) one fresh comprehensive review of this branch, then publish the
   English pull request citing sections 11.2/11.3 and the verification table below; (2) after merge,
   the adapter-zombie follow-up recorded under the merged C6-EVALUATION notes — the `c6f2` fixture
