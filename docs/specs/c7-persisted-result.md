@@ -810,23 +810,55 @@ The minimum C7 acceptance environment is the repository's pinned Align environme
   `./Configure --prefix="$OPENSSL_PREFIX" --libdir=lib shared no-tests`, `make`, and
   `make install_sw`; the resulting `LIBRARY_PATH`, `LD_LIBRARY_PATH`, and
   `PKG_CONFIG_PATH` are the only OpenSSL paths admitted to the runner;
-- macOS uses the Align CI's native `openssl@3` Homebrew dependency and its
-  `LIBRARY_PATH=$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib` setup;
 - the exact Align revision recorded in `.align-revision`, materialized as the managed release
   compiler and runtime before adoption.
 
-The common fresh-compiler topology in Section 9 of `docs/specs/check-gate-topology.md` is only the
-Linux x86_64 platform profile. The sibling Align release targets `aarch64-unknown-linux-gnu` on
-Ubuntu 24.04-arm and `aarch64-apple-darwin` on macOS 15 are required C7 acceptance environments,
-not supplementary evidence, because Request 9 makes target-local natural ownership/layout behavior
-part of its contract. Before either non-x86 environment can enter C7 adoption or provide C7 evidence,
-it needs its own reviewed platform-profile design and implementation, including the compiler/runtime
-construction, namespace or process boundary, toolchain inputs, and exact acceptance commands. The
-x86_64 Section 9 profile is not evidence for either target. Each native environment must run the C7
-focused target against a compiler and runtime rebuilt at the exact pinned revision after its own
-profile passes. A newer compiler, host, or generic OpenSSL 3.0 installation is not a substitute for
-the named build configurations. The C7 artifact itself contains no target or ABI field; the adoption
-result is bound externally to the tested compiler revision, platform profile, and environment.
+That list is the Linux minimum environment. The `aarch64-apple-darwin` target's own toolchain
+inputs, including its Homebrew `openssl@3`/`zstd`/`llvm` identities and the `LIBRARY_PATH` the Align
+build gate requires there, belong to the Darwin profile and are stated in section 11.1 and in
+Section 10 of `docs/specs/check-gate-topology.md`.
+
+Section 9 of `docs/specs/check-gate-topology.md` is the common fresh-compiler topology for native
+Linux, and section 9.1 claims both the `x86_64` and the `aarch64` row of its architecture table. It
+is not a macOS profile and never becomes one. For C7 the two facts are separate: the arm topology
+exists, but C7 evidence on `aarch64-unknown-linux-gnu` additionally requires the reuse condition
+stated at the end of that section's platform paragraph — the profile's native aarch64 owner passing
+at the exact C7 head — which section 11.2 below discharges. The sibling Align release targets
+`aarch64-unknown-linux-gnu` on Ubuntu 24.04-arm and `aarch64-apple-darwin` on macOS 15 are required
+C7 acceptance environments, not supplementary evidence, because Request 9 makes target-local natural
+ownership/layout behavior part of its contract. Before either non-x86 environment can enter C7
+adoption or provide C7 evidence, it needs its own reviewed platform profile, including the
+compiler/runtime construction, namespace or process boundary, toolchain inputs, and exact acceptance
+commands. Each native environment must run the C7 focused targets against a compiler and runtime
+rebuilt at the exact pinned revision after its own profile passes. A newer compiler, host, or generic
+OpenSSL 3.0 installation is not a substitute for the named build configurations. The C7 artifact
+itself contains no target or ABI field; the adoption result is bound externally to the tested
+compiler revision, platform profile, and environment.
+
+### 11.1 Platform profiles, owners, and gate cadence
+
+| Target | Owning profile | Target-local gate | Cadence | Status |
+| --- | --- | --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md` | The installed fresh-image profile plus the supervised `make ci` graph | Per capability gate, as Section 9 already defines | Available; unchanged by this wave |
+| `aarch64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md`, reused under its own stated condition | `persisted-result-smoke` and `persisted-result-qualification`, run natively at the exact head against a pinned-revision compiler and runtime | Named focused qualification: pin bump, C7 owner-boundary change, or explicit audit | Discharged in section 11.2 |
+| `aarch64-apple-darwin` | Section 10 of `docs/specs/check-gate-topology.md` | `make darwin-profile-gate` (`scripts/check-darwin-profile`), whose five acceptance commands include both C7 targets | Named focused qualification: pin bump, C7 owner-boundary change, or explicit audit | Discharged in section 11.3 |
+
+Neither aarch64 gate is a per-pull-request check and neither joins `hosted-checks`,
+`capable-checks`, or `ci`; both are named focused qualifications in the sense of `CLAUDE.md`'s
+verification categories, where platform suites run when their owner boundary changes or an audit
+requires them. The Darwin profile is deliberately minimal: it claims a process boundary and digest
+attestation, never Linux containment parity, and explicitly no `sandbox-exec`. Its full scope,
+non-claims, identity inputs, contract, and ledger are Section 10 of
+`docs/specs/check-gate-topology.md`; this section records only the discharge evidence.
+
+### 11.2 Discharge record — `aarch64-unknown-linux-gnu`
+
+Reserved for the recorded evidence: the Section 9 native aarch64 owner at the exact C7 head, the
+pinned-revision compiler and runtime identity used, and the target-local C7 gate run.
+
+### 11.3 Discharge record — `aarch64-apple-darwin`
+
+Reserved for the emitted identity block and command results of the `darwin-profile-gate` run.
 
 The target-local nature of Request 9's owned descriptor is Align's contract. C7 does not invent a
 portable binary layout or compare compiler descriptors. Per-unit and whole-program checks must
@@ -841,9 +873,17 @@ boundaries:
 
 1. **C7-P — target platform profiles.** A platform profile is independently installable and has a
    distinct host-image failure domain. Before C7 evidence is claimed on aarch64 Linux or aarch64
-   macOS, that target's reviewed profile must be implemented, the sibling compiler/runtime rebuilt
-   at the pinned revision, and the target-local profile gate passed. The x86_64 Section 9 profile
-   cannot substitute for another target.
+   macOS, that target's reviewed profile must be implemented, the compiler/runtime rebuilt or
+   materialized at the pinned revision, and the target-local profile gate passed. The x86_64
+   Section 9 profile cannot substitute for another target. **This wave delivers C7-P for both
+   targets.** `aarch64-unknown-linux-gnu` reuses the Section 9 topology under that section's own
+   stated condition, discharged in section 11.2. `aarch64-apple-darwin` gets a new, deliberately
+   minimal profile — Section 10 of `docs/specs/check-gate-topology.md` — implemented as
+   `scripts/check-darwin-profile` behind `make darwin-profile-gate`, with
+   `scripts/align-toolchain attest compiler` as its toolchain-identity source, discharged in
+   section 11.3. Both gates are named focused qualifications, not lane members, so neither changes
+   the topology oracle; the Make target addition does re-finalize the identity-bound canonical
+   baseline chain.
 2. **C7-PERSISTED-RESULT — complete product consumer.** After Request 9 is `ALIGN_MERGED` and the
    applicable platform profile is available, adopt the exact owned-record surface and implement the
    records, decode/encode lifetime boundary, digest identity, algorithm, `persist_file`/
@@ -902,7 +942,9 @@ blocked records.
 | `eval/` C7 fixtures | Acceptance owner | Canonical boundary inputs/expected bytes only after adopted encoder behavior is fixed |
 | `docs/examples/c7-persisted-result-syntax.align` | Syntax/adoption owner | Declarations and calls separately; parser-only check |
 | `docs/examples/c7-persisted-result-lifetime.align` | Request 9 adoption owner | Direct source-owner expiry before every retained field read/move; parser/runtime adoption fixture |
-| `Makefile` | Check-topology owner | Focused commands; aggregate inclusion only after the bounded-smoke admission decision |
+| `scripts/check-darwin-profile` | C7-P Darwin profile owner | Host/toolchain/library identity validation, the five acceptance commands as bounded children, and the emitted identity block |
+| `scripts/align-toolchain` | Managed-toolchain owner | The `attest compiler` subcommand: the read-only digest identity of the managed compiler and runtime at the pin |
+| `Makefile` | Check-topology owner | Focused commands; aggregate inclusion only after the bounded-smoke admission decision; the focused `darwin-profile-gate` target joins no aggregate |
 | `scripts/check-gate-topology` | Topology oracle owner | Update only if aggregate membership changes |
 | `docs/specs/check-gate-topology.md` | Topology design owner | Record the admission decision and baseline implications when applicable |
 | `docs/align-development.md` | Developer-guide owner | Command and adoption instructions |
@@ -961,7 +1003,7 @@ not a missing owner.
 | Structural Align compiler cache identity | N/A: C7 owns no compiler/cache artifact | Request 9/Align owns descriptor identity; C7 uses no application cache | N/A with this reason; adoption compiler checks remain required |
 | Artifact schema/wire identity | C7 plan and module | Field order/types/version/content digest agree | canonical golden vectors, schema mutation |
 | Producer-owned inspection fields | C7 module | Every persisted field is constructed from explicit input or deterministic algorithm; no reflection/source read | producer table below and independent reference comparison |
-| Minimum tool/platform compatibility | adoption Make/CI owner | Pin and test every named native environment; no supplementary host substitutes for a required target | named environments in §11 and hosted evidence |
+| Minimum tool/platform compatibility | adoption Make/CI owner; C7-P profile owners | Pin and test every named native environment; no supplementary host substitutes for a required target | named environments in §11, the §11.1 profile table, the §11.2/§11.3 discharge records, and hosted evidence |
 | Performance benchmark | N/A for this capability | No threshold or speed claim | Later C7 benchmark design required before a performance claim |
 | Syntax examples | docs/adoption owner | Declaration and positional-call examples parse separately | `alignc fmt docs/examples/c7-persisted-result-syntax.align` |
 | Milestone ordering | C7 design owner | Shipped Request 9 surface and platform profile precede dependent implementation; internal checkpoints remain on the capability branch | capability commits and focused acceptance evidence |

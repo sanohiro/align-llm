@@ -1582,7 +1582,10 @@ through `--userns <fd>`, so the bwrap forwarder must preserve that exact descrip
 instead proves that a read-only `/tools` bind pins the descriptor, guard, compiler, and runtime
 archive as one immutable sibling bundle. C7's aarch64 Linux environment may reuse this common
 topology only after this profile's native aarch64 owner passes at the exact C7 head; C7's aarch64
-macOS environment still requires its separate non-Linux platform profile.
+macOS environment still requires its separate non-Linux platform profile. Both conditions are now
+discharged: section 11.2 of `docs/specs/c7-persisted-result.md` records this profile's native
+aarch64 owner passing at the exact C7 head together with the target-local C7 gate, and Section 10
+of this document is the separate `aarch64-apple-darwin` profile.
 Request 7's immutable image whose `/usr/bin/git` is exactly Git 2.45.0 remains a separate
 prerequisite. The accepted `/tmp` mount must be executable: a `noexec` mount is a `PLATFORM`
 failure before private-root creation. The accepted image also provides the fixed process, descriptor,
@@ -4156,3 +4159,153 @@ implementations remain governed by their own applicable image and worker profile
 descriptor, manifest, host image, or platform profile is not an input. The request register remains
 lifecycle authority; this section owns the common native Linux x86_64 and aarch64 fresh-compiler
 contract and their separately identified evidence.
+
+## 10. Darwin platform profile (`aarch64-apple-darwin`)
+
+This section is the reviewed platform profile that section 11 of `docs/specs/c7-persisted-result.md`
+requires before an `aarch64-apple-darwin` host may enter C7 adoption or provide C7 evidence. It is
+deliberately not a Darwin port of the Section 9 fresh-compiler topology. Section 9 remains the only
+fresh-compiler contract and remains Linux-only; this profile claims a minimal process boundary plus
+digest attestation, and nothing else. Its owner is `scripts/check-darwin-profile`, invoked by the
+`.PHONY` Make target `darwin-profile-gate`.
+
+### 10.1 Scope and non-claims
+
+The profile claims macOS 15 or newer on native Apple silicon, GNU Make 4.3 or newer, CPython 3.12 or
+newer, Git 2.45 or newer, the managed pinned Align release compiler and runtime archive built for
+`aarch64-apple-darwin`, and the Homebrew `llvm`, `openssl@3`, and `zstd` formulae that the Align
+CI's macOS leg links against. Native execution is a precondition, not an observation:
+`platform.machine()` must be `arm64` and `sysctl.proc_translated` must be absent or `0`, so a
+Rosetta-translated interpreter fails the gate before any child starts.
+
+The profile explicitly does not claim:
+
+- **Kernel-mediated containment.** There is no user namespace, no overlay mount, no delegated
+  cgroup, no descriptor or resource-limit profile, and **no `sandbox-exec`**. macOS ships no
+  supported equivalent of the Section 9 boundary; `sandbox-exec` is a deprecated, undocumented
+  interface whose profile language is not a stable contract, and building a gate on it would
+  advertise Linux containment parity without owning the properties. Section 10.4 states what
+  replaces it: this gate's trust content is digest attestation, not mediation.
+- **A fresh compiler.** The profile consumes the managed pinned release toolchain materialized by
+  `scripts/align-toolchain` and attests its digests. It verifies no supervisor, image attestation,
+  run capsule, toolchain manifest, or sealed worker, and it cannot advance a pin-changing request.
+  `make ci` remains Section 9's and is unaffected.
+- **Aggregate membership.** `darwin-profile-gate` joins no aggregate. It is absent from
+  `HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and `SERIAL_CHECK_AGGREGATES`, so the
+  Section 5 oracle inputs and `scripts/check-gate-topology`'s `EXPECTED` bytes are unchanged by it.
+- **Any other target.** It is evidence for `aarch64-apple-darwin` only. It is not evidence for
+  x86_64 macOS, for a translated host, or for either Linux row in Section 9.1, and no Linux profile
+  is evidence for it.
+
+### 10.2 Toolchain-input identities
+
+The gate emits one identity block that binds the host, the toolchain, the linker inputs, the
+repository head, and the exact commands it ran. Every field is machine-produced by the profile
+script; none is transcribed by a human.
+
+| Identity | Source | Exactly what is recorded |
+| --- | --- | --- |
+| Host | `platform.uname()`, `sw_vers`, `sysctl -n sysctl.proc_translated` | system, kernel release, machine, macOS product and build version, translation flag |
+| Repository | `git rev-parse HEAD`, `git status --porcelain=v1 --untracked-files=all` | the exact head the commands ran at, and whether the working tree was clean |
+| Align pin | `.align-revision` | the 40-hex revision |
+| Managed toolchain | `scripts/align-toolchain attest compiler` | generation, revision, checkout root, `alignc` path/size/SHA-256, `libalign_runtime.a` path/size/SHA-256, and the `alignc --version` line |
+| Homebrew formulae | `brew --prefix`, `brew --prefix <formula>` | for `llvm`, `openssl@3`, and `zstd`: the opt prefix, its realpath below `Cellar`, and the resolved version component |
+| Linker inputs | `LIBRARY_PATH` | the exact ordered value plus, for each declared library, its realpath and SHA-256: `libssl.3.dylib`, `libcrypto.3.dylib`, `libzstd.dylib`, and `libLLVM.dylib` |
+| Commands | the gate itself | ordered label, exact argv, exit status, and wall-clock milliseconds for every acceptance command |
+
+`LIBRARY_PATH` is this target's Align build-gate linker input, so the profile requires it explicitly
+and fails closed with the expected value when it is absent or different. The required value is
+exactly `<brew-prefix>/lib:<openssl@3-prefix>/lib:<zstd-prefix>/lib`, resolved from `brew` at run
+time rather than hard-coded.
+
+The Linux minimum environment in section 11 of `docs/specs/c7-persisted-result.md` names a
+checksum-pinned OpenSSL 3.5.7 source build. This profile deliberately does not: the Align CI macOS
+leg links the native `openssl@3` formula, so the formula's resolved version together with the
+recorded dylib digests *is* this target's OpenSSL identity. A host reproducing the profile must
+reproduce those digests, not a version string.
+
+### 10.3 Process boundary
+
+Section 9.4 of `docs/specs/c7-persisted-result.md` is this profile's process-boundary story, and it
+is already Darwin-aware: `child_environment()` in `scripts/run-persisted-result-qualification`
+raises a harness error when the macOS build gate supplies no `LIBRARY_PATH`, before the first child
+starts, and both C7 runners receive the resolved compiler and product paths from the Make recipe at
+the repository root rather than rediscovering either from a temporary tree.
+
+Each acceptance child launched by `scripts/check-darwin-profile` follows the same shape. It is
+started from an explicit environment map (`LANG`, `LC_ALL`, `PATH`, `LIBRARY_PATH`,
+`PYTHONDONTWRITEBYTECODE`, and the caller's `HOME` and `TMPDIR` when supplied), with no shell, with
+`close_fds=True` and `pass_fds=()`, with stdin at `/dev/null`, with a fixed 1,800 s timeout, and
+with a bounded per-stream capture that retains the last 1 MiB — the same bound section 9.4 sets for
+a compiler child, because `check` and `build` emit the pinned compiler's whole-program advisory
+diagnostics. On failure the gate reports the last 8,192 bytes of each retained stream. A timeout
+enters terminate, kill-if-needed, wait, and close cleanup in that order and fails the gate. The
+sandbox-owned `HOME`, `TMPDIR`, and `PYTHONDONTWRITEBYTECODE` values are forwarded when the caller
+supplies them and are never reinvented from literals; this is the same rule, and the same defect
+class, that section 9.4 records for the bounded functional owner's member runners.
+
+### 10.4 The attested-gate contract
+
+The profile gate is satisfied by an attested local run that binds host identity, toolchain digests,
+and exact commands, emitted by the profile script rather than transcribed; any host reproducing the
+recorded identities satisfies the profile; superseded by a hosted runner when available.
+
+Its cadence is a named focused qualification, matching `CLAUDE.md`'s rule that platform suites are
+named focused qualifications rather than routine gates. Run it when:
+
+1. `.align-revision` changes, because the attested compiler and runtime digests change with it;
+2. a C7 owner boundary named in section 12.1 of `docs/specs/c7-persisted-result.md` changes — the
+   product module, the CLI dispatch, either C7 runner, or the C7 Make targets;
+3. an explicit audit asks for current platform evidence.
+
+It does not run per pull request and joins no aggregate. A run's evidence is the emitted identity
+block, recorded in section 11 of `docs/specs/c7-persisted-result.md`; a pull request cites that
+record rather than restating it.
+
+Failure is fail-closed and phased. Any host-identity mismatch, missing or unexpected `LIBRARY_PATH`,
+missing Homebrew formula, unreadable declared library, dirty or unreadable repository state,
+toolchain attestation failure, or nonzero acceptance child exits nonzero with one canonical
+`darwin profile gate: ERROR <phase> <detail>` line. The `darwin profile gate: PASS` line and the
+identity block are emitted only after every acceptance command has succeeded.
+
+### 10.5 Acceptance commands and identity-block emission
+
+The acceptance sequence is fixed and ordered. `<make>` is the resolved GNU Make program (`gmake`
+before `make`, each rejected unless it reports GNU Make); `<alignc>` is the attested managed
+compiler path:
+
+```text
+<make> check
+<make> build
+<alignc> check-per-unit src/main.align
+<make> persisted-result-smoke
+<make> persisted-result-qualification
+```
+
+`check` and the direct `check-per-unit` invocation together satisfy the section 13 closure row
+"Per-unit/imported interface" on this target: the Make target proves it through the repository
+selector, and the direct invocation proves it against the exact attested compiler bytes with no
+selector in between. `build` produces the product the two C7 runners consume;
+`persisted-result-smoke` is the bounded functional owner and `persisted-result-qualification` is the
+full boundary, differential, and mutation qualification, which is what makes this a platform
+*acceptance* gate rather than a smoke test.
+
+After the last command succeeds the script writes the identity block to stdout as one canonical JSON
+object (sorted keys, two-space indent, one trailing LF) followed by the `darwin profile gate: PASS`
+line. `--json-only` suppresses the human lines so the block can be captured verbatim.
+
+### 10.6 Public-contract ledger
+
+| Field | `scripts/check-darwin-profile` / `make darwin-profile-gate` | `scripts/align-toolchain attest compiler` |
+| --- | --- | --- |
+| Exact surface | `python3 scripts/check-darwin-profile [--json-only]`; `make darwin-profile-gate` | `python3 scripts/align-toolchain attest compiler` |
+| Inputs and defaults | Environment only: `LIBRARY_PATH` (required, exact expected value), `PATH`, `HOME`, `TMPDIR`, `PYTHONDONTWRITEBYTECODE`. No positional argument, no Make variable, no path override. The per-child timeout is a fixed 1,800 s and the per-stream capture is a fixed 1 MiB tail | `.align-revision` plus the managed-root selectors `ALIGN_TOOLCHAIN_ROOT`, `XDG_CACHE_HOME`, and `HOME`, exactly as `path`, `ensure`, and `verify` already resolve them |
+| Results and errors | Exit 0 with the identity block and `darwin profile gate: PASS`; exit 1 with one `darwin profile gate: ERROR <phase> <detail>` line on any phase failure. Phases: `host`, `repository`, `toolchain`, `homebrew`, `library-path`, `make`, `command` | Exit 0 with the canonical JSON attestation; exit 1 with the existing `align-toolchain: <error>` line. It never fetches, builds, or mutates the checkout |
+| Ownership and allocation | The script owns only its child processes and its bounded capture buffers, and releases both in the enclosing `finally`. It writes no file, creates no temporary directory, and mutates no repository state; `./main` is owned by the existing `build` target | Read-only over the managed checkout; it owns only its hashing buffers |
+| Owner module | `scripts/check-darwin-profile`; the Make target is owned by `Makefile` | `scripts/align-toolchain`, reusing `read_revision()`, `cache_root()`, and `verify()` |
+| Persisted or cache identity | N/A: the gate persists nothing. Its output is stdout only, and its durable record is the block copied into section 11 of `docs/specs/c7-persisted-result.md` | N/A: it reads the managed cache and creates no identity of its own |
+| Schema version | Identity-block field `profile_schema_version`, integer `1`. Adding or removing a field increments it | Attestation field `attestation_schema_version`, integer `1` |
+| Validation order | Host identity, then repository head and cleanliness, then the Align pin and toolchain attestation, then the Homebrew formulae, then `LIBRARY_PATH` and the declared library digests, then Make resolution, then the five acceptance commands in order. Every identity is bound before the first child starts | Revision, then managed-checkout verification (`verify()`: directory, revision, cleanliness, both build outputs, `--version`), then the digests |
+| Prerequisites | A materialized managed toolchain at the pin (`scripts/align-toolchain ensure compiler`) and an installed Homebrew providing `llvm`, `openssl@3`, and `zstd` | The same materialized managed toolchain |
+| Acceptance evidence | The recorded identity block and its five passing commands in section 11.3 of `docs/specs/c7-persisted-result.md` | Exercised by every `darwin-profile-gate` run; its output is a recorded field of that block |
+| Metrics | Per-command wall-clock milliseconds, recorded as diagnostics only. **No performance claim**: no threshold, comparison, or baseline is defined, and a later claim needs its own benchmark design | N/A: it records and claims no timing |

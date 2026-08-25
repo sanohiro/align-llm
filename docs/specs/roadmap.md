@@ -53,6 +53,14 @@ The current forward delivery order is:
    functional verification as one vertical capability. Keep generated differential, mutation,
    fuzz, stress, and benchmark work in focused qualification commands unless a later core contract
    specifically requires it.
+7. **C7-P — aarch64 platform profiles.** Deliver the two reviewed non-x86 C7 acceptance
+   environments required by section 11 of `docs/specs/c7-persisted-result.md`: discharge the
+   Section 9 reuse condition for `aarch64-unknown-linux-gnu`, and add the separate minimal
+   `aarch64-apple-darwin` profile (Section 10 of `docs/specs/check-gate-topology.md`) whose trust
+   content is digest attestation rather than kernel mediation. Both gates are named focused
+   qualifications; neither joins an aggregate. It is listed after the consumer because the consumer
+   defines the exact targets a profile must gate, and because the profiles gate *evidence*, not
+   implementation.
 
 **ALIGN-ADOPTION is an internal prerequisite checkpoint, not a standalone capability.** Within the
 next consumer branch, batch its merged Align requests into one compiler-pin update, run every named
@@ -276,6 +284,15 @@ before implementation starts. Align Request 9 is now `ALIGN_MERGED` at named com
 `2bb93a93a2f30da1daabd5b65d83863dab617560`, and the consumer design explicitly names the accepted
 owned record shapes. Its managed pin and C7 adoption target remain a blocking prerequisite for the
 consumer; C6 work remains independent.
+
+### Platform profiles: C7-P
+
+C7 evidence is target-bound, so each required non-x86 acceptance environment has its own reviewed
+platform profile before it may provide that evidence: `aarch64-unknown-linux-gnu` reuses the
+Section 9 fresh-compiler topology under that section's own stated condition, and
+`aarch64-apple-darwin` has the separate minimal profile in Section 10 of
+`docs/specs/check-gate-topology.md`, gated by `make darwin-profile-gate`. Both are named focused
+qualifications run at a pin bump, a C7 owner-boundary change, or an explicit audit.
 
 ### Gate
 
