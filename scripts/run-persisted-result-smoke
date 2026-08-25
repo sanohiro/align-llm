@@ -44,6 +44,19 @@ FORWARDED_TOOLCHAIN_NAMES = (
     "LLVM_SYS_221_PREFIX",
 )
 COMPILER_HANDOFF_NAMES = ("ALIGN_LLM_FRESH_COMPILER", "ALIGNC_CACHE", "ALIGNC_DESCRIPTOR")
+# Values the surrounding sandbox owns for the interpreter and the writable temporary root. The
+# member runners are the checked-in `bash`/`python3` runners, not product children, so they must
+# execute in the sandbox the caller declared instead of a partially rebuilt one. Rebuilding the map
+# from fixed literals silently dropped `PYTHONDONTWRITEBYTECODE`, which let a member runner's
+# `import c7_persisted_result_fixtures` write `scripts/__pycache__` into the aggregate's
+# output-only workspace overlay and fail the capable gate after a green check graph.
+FORWARDED_SANDBOX_NAMES = (
+    "HOME",
+    "TMPDIR",
+    "PYTHONHOME",
+    "PYTHONNOUSERSITE",
+    "PYTHONDONTWRITEBYTECODE",
+)
 FRESH_LAUNCHER = "/tools/fresh-alignc"
 
 # The section 12 bounded functional set, in a fixed order. Each runner owns the section 13 rows named
@@ -66,13 +79,19 @@ def child_environment(compiler: str) -> dict[str, str]:
     """Section 9.4: an explicit map; all other inherited variables are cleared.
 
     The member runners select their compiler through `ALIGNC`, so the resolved selection is passed
-    explicitly instead of letting a child rediscover one from `PATH` or a sibling checkout.
+    explicitly instead of letting a child rediscover one from `PATH` or a sibling checkout. The
+    caller's sandbox-owned interpreter and temporary-root values are forwarded rather than
+    reinvented, so a member runner writes only where the surrounding aggregate allows.
     """
     search_path = os.environ.get("PATH")
     if not search_path:
         raise HarnessError("the harness environment supplies no PATH for its children")
     environment = {"LANG": "C", "LC_ALL": "C", "PATH": search_path, "ALIGNC": compiler}
     for name in FORWARDED_TOOLCHAIN_NAMES:
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    for name in FORWARDED_SANDBOX_NAMES:
         value = os.environ.get(name)
         if value:
             environment[name] = value

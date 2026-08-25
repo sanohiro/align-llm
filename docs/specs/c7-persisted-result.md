@@ -683,6 +683,16 @@ argument, not rediscovered from `PATH`; no C7 product option or ambient value cr
 boundary. A missing required toolchain value or compiler path is a harness error before the first
 child starts.
 
+The bounded functional owner's own children are the six checked-in `bash`/`python3` member runners,
+not product children, and they additionally receive the caller's sandbox-owned interpreter and
+temporary-root values when it supplies them: `HOME`, `TMPDIR`, `PYTHONHOME`, `PYTHONNOUSERSITE`, and
+`PYTHONDONTWRITEBYTECODE`. These are execution inputs owned by the surrounding sandbox, never C7
+configuration, and they are forwarded rather than reinvented so that a member runner writes only
+where its caller allows. Under the Section 9 capable aggregate this is a correctness requirement,
+not a convenience: that aggregate exports `PYTHONDONTWRITEBYTECODE=1` and admits exactly one
+workspace-overlay output, so a dropped value that lets a member runner's `import` write
+`scripts/__pycache__` into the workspace fails the gate after an otherwise green check graph.
+
 ## 10. Acceptance contract and algorithm-testing gate
 
 ### 10.1 Independent reference
