@@ -5430,7 +5430,7 @@ Blocked gate or slice: none; the C6c2 decoded verifier now consumes the shipped 
 Independent work that may continue: all work; Request 17 separately closes the dynamic-array extension used by the same verifier
 Resume condition: complete
 Align commit or pull request: design PR #856; implementation PR #857, merged as `8557c1525aefd9a4afef02d1ec5c2f88e16db4e4`
-align-llm verification: `.align-revision` pins `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`; `c6-borrowed-option-adoption`, `c6-borrowed-array-adoption`, and `prompt-verifier-smoke` PASS
+align-llm verification: `.align-revision` pins `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`; `c6-borrowed-option-adoption`, `c6-borrowed-array-adoption`, and `prompt-verifier-smoke` PASS; the consuming verifier merged in align-llm PR #98 as `e44b3cca9f834266d6f541d7a68eec2b2c3de9ec`
 ```
 
 ### Align response and adoption (2026-08-20 — verified)
@@ -5559,7 +5559,7 @@ Blocked gate or slice: none; the C6c2 decoded evaluation verifier now consumes t
 Independent work that may continue: all work
 Resume condition: complete
 Align commit or pull request: design PR #864, merged as `0d4b8824`; implementation PR #865, merged as `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`
-align-llm verification: `.align-revision` pins `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`; `c6-borrowed-array-adoption` and the complete `prompt-verifier-smoke` owner PASS
+align-llm verification: `.align-revision` pins `cdf333dc0707edbc4984dc8b1cb6b52edf7b48d0`; `c6-borrowed-array-adoption` and the complete `prompt-verifier-smoke` owner PASS; the consuming verifier merged in align-llm PR #98 as `e44b3cca9f834266d6f541d7a68eec2b2c3de9ec`
 ```
 
 ### Align response and adoption (2026-08-20 — verified)
@@ -5627,7 +5627,7 @@ Blocked gate or slice: C6d offline accept/rollback CLI and any later C6 owner th
 Independent work that may continue: C6 pure rendering/scoring/verifier work, C6f1 source-helper design, C6f2 publication design, provider work, and every Align capability unrelated to trusted filesystem traversal
 Resume condition: met by the exact pin, `c6d-request18-adoption`, and the final capable C6d integration gate
 Align commit or pull request: design PR #866, merged as `0b9d25e4d2ac34877ec79f28516f5f31c70ea9e0`; implementation PR #867, merged as `19c3db144c462bf7d6784f88d64cc124229b7ec2`
-align-llm verification: `.align-revision` pins `19c3db144c462bf7d6784f88d64cc124229b7ec2`; `make c6d-request18-adoption` passes the retained-root input/output matrix; the final native Linux x86_64 capable `make ci` passes on the same C6d integration head
+align-llm verification: `.align-revision` pins `19c3db144c462bf7d6784f88d64cc124229b7ec2`; `make c6d-request18-adoption` passes the retained-root input/output matrix; the final native Linux x86_64 capable `make ci` passes on the same C6d integration head; align-llm PR #99 head `78eae459fd1f88bad1c3c3ca7b86921a08ecf168` merged as `df30533fcf62242e00320b55cd745dd2e4e0a860`
 ```
 
 ### Motivation and pinned-state evidence
@@ -5872,7 +5872,7 @@ Priority: medium
 Blocking: no
 Blocked gate or slice: none — align-llm's own aarch64-apple-darwin profile gate exercises the shipped surface from the client side, and the Linux legs cover the compiler-side regressions
 Independent work that may continue: all of it; this asks for detection coverage in Align CI, not for a behavior change
-Resume condition: satisfied — Align CI's `macos-15` matrix leg runs the `m5_owned_json` integration target on every pull request, and its required job is green at the revision align-llm pins
+Resume condition: satisfied — Align CI's `macos-15` matrix leg runs the `m5_owned_json` integration target on every platform-required pull request, its required aggregate fails closed, and the job is green at the revision align-llm pins; trusted docs-only pull requests targeting `main` are the explicit non-executable exception
 Align commit or pull request: PR #887, merged as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; adopted through Align `main` at `f57b986bc9326ba8d75dad5dbe4c6531c0f872b6`
 align-llm verification: complete — the managed compiler/runtime materializes, `c7-owned-record-source-expiry-adoption` passes, the attested Darwin profile including `persisted-result-qualification` passes, and the supervised fresh-image capable graph passes at the adopted pin; publication merge evidence remains before `CLOSED`
 ```
@@ -5887,8 +5887,11 @@ MIR, runtime, and Request 9 contract make every decoded owner free-standing. The
 restores those two analysis facts to the existing contract. The complete 10-test owner passed
 locally and the required macOS Apple Silicon CI leg passed on the merged candidate. The remaining
 pin adoption and `make darwin-profile-gate` proof belong to align-llm. Align PR #888 then closed
-the upstream handoff without changing the implementation. PR #889 later changed only docs-only CI
-scope; the adopted latest `main` commit above contains all three merges.
+the upstream handoff without changing the implementation. PR #889 later added a trusted classifier
+that skips the complete platform matrix only for non-empty, addition/modification-only Markdown
+diffs targeting `main`; unknown paths, deletions, non-`main` bases, pushes, and executable changes
+continue to fail closed into the matrix. The adopted latest `main` commit above contains all three
+merges.
 
 ### align-llm verification (2026-08-26 — ALIGN_LLM_VERIFIED)
 
@@ -5971,8 +5974,10 @@ integration binary on a leg that already compiles the workspace and is not the c
 
 ### Acceptance criteria
 
-1. The `macos-15` leg of `build-and-test` executes `m5_owned_json` on every pull request and reports
-   its result as a required part of that leg.
+1. The `macos-15` leg of `build-and-test` executes `m5_owned_json` on every platform-required pull
+   request and reports its result through a required aggregate. A trusted classifier may exempt only
+   non-empty, addition/modification-only Markdown diffs targeting `main`; deletions, unknown paths,
+   non-`main` bases, pushes, and executable changes fail closed into the platform matrix.
 2. The step is green at the revision `align-llm` pins, so the two evidence sources agree.
 3. The `ubuntu-24.04` lint leg's critical-path duration is unchanged, and the bounded PR gate's
    selection is untouched unless Align chooses to widen it instead.

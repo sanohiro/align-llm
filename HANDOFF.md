@@ -46,8 +46,14 @@ file records durable project state.
   the earlier `2f33ac5` revision current. The register now names the selected pin and labels Request
   19's filing-time measurement historical. Because Align advanced during review, the accepted
   `dc321412` evidence above is now an intermediate checkpoint rather than publication evidence.
-- Pending at this checkpoint: commit the final evidence, inspect the review-repair delta, run
-  exact-head preflight, and publish. `CLOSED` waits for the resulting align-llm merge.
+- The final comprehensive review of `c2cb859` found two valid P2 classes: Request 20 still promised
+  its owner on every pull request even though the selected PR #889 workflow deliberately exempts
+  trusted docs-only `main` diffs, and Requests 16–18 lacked their already-merged align-llm
+  publication links. The repair narrows the CI contract to platform-required pull requests with the
+  exact fail-closed exception and records PR #98/#99 merge evidence; no executable or baseline-owned
+  path moves.
+- Pending at this checkpoint: commit and inspect the narrow review repair, run exact-head preflight,
+  and publish. `CLOSED` waits for the resulting align-llm merge.
 
 ## Merged checkpoint: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
 
