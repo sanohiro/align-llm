@@ -42,7 +42,7 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`2f33ac5c33a898a7894af58322852632ce6ffe42`, adopted in `f344ea9`. The reviewed
+`f57b986bc9326ba8d75dad5dbe4c6531c0f872b6`, selected by the active Request 20 pin wave. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
@@ -5790,7 +5790,8 @@ literals of the C6 artifact records declared in `src/prompt_artifacts.align`. Se
 that unit is fast; code generation for the same unit is roughly three orders of magnitude slower and
 allocates over a gigabyte.
 
-Measured at the currently pinned Align revision `2f33ac5c33a898a7894af58322852632ce6ffe42`
+The filing-time measurement below is historical evidence from Align revision
+`2f33ac5c33a898a7894af58322852632ce6ffe42`, not a measurement of the current pin
 (`alignc 0.5.0`, release build), native `linux/aarch64`, 8 logical CPUs:
 
 ```text

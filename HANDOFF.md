@@ -7,8 +7,10 @@ file records durable project state.
 
 - Work is on `agent/request20-align-pin-final`, based on align-llm `main` at `0a8b9cf`. Align Request 20
   shipped in Align PR #887 as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; PR #888 then closed
-  its upstream handoff. Align `main` is now `dc3214129692e9be36dea4f046ed11373cc355bd`, and
-  `.align-revision` adopts that exact latest commit.
+  its upstream handoff. A later docs-only CI merge, PR #889, moved Align `main` to
+  `f57b986bc9326ba8d75dad5dbe4c6531c0f872b6`; `.align-revision` now selects that exact latest
+  commit. The compiler/runtime payload is expected to be unchanged, but pin-bound evidence must be
+  regenerated against the new identity.
 - The upstream response is verified, not inferred from the PR summary: the required `macos-15`
   Apple Silicon job ran `align_driver --test m5_owned_json` and all 10 rows passed. The same PR
   repairs the storage-generation regression that made `JsonOwnedDecode` retain its input and arena
@@ -38,8 +40,14 @@ file records durable project state.
   attestation 3,627 ms, lifecycle 2,490 ms, self-test 13,641 ms, trust mutations 12,433 ms,
   runtime replacements 23,543 ms, boundary profile 282,585 ms, worker aggregate 412,486 ms, and
   cleanup 1,359 ms. Request 20 is `ALIGN_LLM_VERIFIED` at the adopted pin.
-- Pending at this checkpoint: commit the evidence record, perform one comprehensive review, run the
-  exact-head executable preflight, and publish. `CLOSED` waits for the resulting align-llm merge.
+- The first comprehensive review of `2caae5f` found one valid P2: the request register still called
+  the earlier `2f33ac5` revision current. The register now names the selected pin and labels Request
+  19's filing-time measurement historical. Because Align advanced during review, the accepted
+  `dc321412` evidence above is now an intermediate checkpoint rather than publication evidence.
+- Pending at this checkpoint: commit the `f57b986b` source identity, materialize and verify it,
+  regenerate the native Linux baseline chain, rerun the Darwin and supervised capable gates, update
+  the final evidence, run exact-head preflight, and publish. `CLOSED` waits for the resulting
+  align-llm merge.
 
 ## Merged checkpoint: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
 
