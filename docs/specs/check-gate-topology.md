@@ -4295,6 +4295,12 @@ After the last command succeeds the script writes the identity block to stdout a
 object (sorted keys, two-space indent, one trailing LF) followed by the `darwin profile gate: PASS`
 line. `--json-only` suppresses the human lines so the block can be captured verbatim.
 
+The block is written to be committed. This repository carries no machine-specific paths, so the
+emitter itself replaces the caller's home-directory prefix with `${HOME}` in every emitted string
+and records that substitution in the `path_redaction` field; digests, versions, and byte lengths —
+the actual trust content — are untouched. The recorded block is therefore the emitted bytes, not a
+human edit of them.
+
 ### 10.6 Public-contract ledger
 
 | Field | `scripts/check-darwin-profile` / `make darwin-profile-gate` | `scripts/align-toolchain attest compiler` |

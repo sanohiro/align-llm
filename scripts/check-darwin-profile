@@ -348,6 +348,24 @@ def acceptance_commands(make: str, compiler: str) -> tuple[tuple[str, tuple[str,
     )
 
 
+def redact(value: object, home: str) -> object:
+    """Replace the caller's home prefix in every emitted string.
+
+    The block is written to be committed as durable evidence, and this repository does not carry
+    machine-specific paths. Digests, versions, and byte lengths are the trust content; a home
+    directory is not, so the emitter redacts it rather than leaving a human to edit the block.
+    """
+    if isinstance(value, str):
+        if value == home:
+            return "${HOME}"
+        return value.replace(f"{home}/", "${HOME}/")
+    if isinstance(value, list):
+        return [redact(item, home) for item in value]
+    if isinstance(value, dict):
+        return {key: redact(item, home) for key, item in value.items()}
+    return value
+
+
 def gate(report: bool) -> dict[str, object]:
     host = host_identity()
     repository = repository_identity()
@@ -370,9 +388,10 @@ def gate(report: bool) -> dict[str, object]:
             )
         commands.append(record)
 
-    return {
+    block = {
         "profile": PROFILE,
         "profile_schema_version": PROFILE_SCHEMA_VERSION,
+        "path_redaction": "${HOME}",
         "host": host,
         "repository": repository,
         "align_revision": toolchain["revision"],
@@ -382,6 +401,8 @@ def gate(report: bool) -> dict[str, object]:
         "make": make,
         "commands": commands,
     }
+    home = os.environ.get("HOME")
+    return block if not home else redact(block, home)  # type: ignore[return-value]
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
