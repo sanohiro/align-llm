@@ -22,8 +22,8 @@
         "artifact_kind": "CORPUS_REVISION",
         "source_kind": "FILE_SET",
         "source_repository_id": "",
-        "source_sha256": "95a0488af816de0ae8554dfd07ee77cfd74950c26cd5c40065e8fb9f81278d26",
-        "content_sha256": "a717c9d74954e279027b3e4668b03139fdadc308d960935b05bf7f6bbe312260"
+        "source_sha256": "15efa89e0894feff4b8c9f6143736bae9c2e48d600ec3339063576ce248cd862",
+        "content_sha256": "89375c1cbaa79e6a432cc690172f32bb5f4f13382f8ff3f7587c4441c91e4890"
       },
       "evaluation_provider_kind": "LOCAL_OPENAI",
       "evaluation_provider_model": "qwen2.5-coder-7b-instruct-q4_k_m",
@@ -31,7 +31,7 @@
       "acceptance_policy_sha256": "7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3",
       "base_prompt_sha256": "a9c23b5ab11aa3b03514db43d4b994ad2f79dbc0040376231f4931e41ff9da0a",
       "repo_prompt_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21",
-      "content_sha256": "ed5507312c510055169203a2d317cb219d5dd93aa458d69e317852e8597857b4"
+      "content_sha256": "84f3fed4bf3128a93f061c7dbc477491feaa23530c82e01231745191d2ec5283"
     },
     "parent_activation_id": "",
     "parent_activation_sha256": "",
@@ -71,7 +71,7 @@
     "rollback_target_activation_id": "",
     "rollback_target_activation_sha256": "",
     "decision_reason": "",
-    "content_sha256": "5d8bee7ada5675498d7b1a3011f5745862f09e0b8567fbb98a03648206c37c69"
+    "content_sha256": "3cd8ce1e887a9ae0b4da6092df3b1d2e60ac8a5bc7c7b4fd05ae932ba554578c"
   },
-  "content_sha256": "2a37f7a8b12b03cb841792cd1982f13ce4782d938e4a58a4159ab1cf2642283b"
+  "content_sha256": "c93732c52bf357dc6930d68a459639a5c29f5b77df3b11c1b968d8dac78da5d5"
 }
