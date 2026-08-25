@@ -208,15 +208,20 @@ def host_identity() -> dict[str, object]:
         raise ProfileError("host", f"this profile requires Darwin, not {uname.system}")
     if uname.machine != "arm64":
         raise ProfileError("host", f"this profile requires native arm64, not {uname.machine}")
-    translated = subprocess.run(
-        ("/usr/sbin/sysctl", "-n", "sysctl.proc_translated"),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=PROBE_TIMEOUT_SECONDS,
-        close_fds=True,
-    )
+    try:
+        translated = subprocess.run(
+            ("/usr/sbin/sysctl", "-n", "sysctl.proc_translated"),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PROBE_TIMEOUT_SECONDS,
+            close_fds=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        # Fail closed in this phase rather than reporting a different one: an unusable `sysctl`
+        # means the gate cannot prove the run is untranslated.
+        raise ProfileError("host", f"cannot probe sysctl.proc_translated: {error}") from error
     # An absent key is the native answer on a host that predates Rosetta reporting; a present key
     # must read 0. Anything else is a translated interpreter and fails before the first child.
     value = translated.stdout.strip() if translated.returncode == 0 else "0"
@@ -402,7 +407,9 @@ def gate(report: bool) -> dict[str, object]:
         "commands": commands,
     }
     home = os.environ.get("HOME")
-    return block if not home else redact(block, home)  # type: ignore[return-value]
+    if not home or not home.startswith("/") or home == "/":
+        return block
+    return redact(block, home.rstrip("/"))  # type: ignore[return-value]
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
@@ -418,7 +425,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     except ProfileError as error:
         print(f"darwin profile gate: ERROR {error.phase} {error.detail}", file=sys.stderr)
         return 1
-    except OSError as error:
+    except (OSError, subprocess.SubprocessError) as error:
+        # The contract is one canonical line per failure, so no path may exit through a traceback.
         print(f"darwin profile gate: ERROR command {error}", file=sys.stderr)
         return 1
     print(json.dumps(block, indent=2, sort_keys=True))
