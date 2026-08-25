@@ -560,6 +560,12 @@ file records durable project state.
   -> prompt gate validator: PASS (exit 0)
   ```
 
+  The same qualification was re-run unchanged at the documentation head
+  `fd44514212c9989c5c60db1432822fb216f96018` and again after it, each time rebuilding the
+  generation child in run to the same digest and each time reporting `prompt gate validator: PASS`.
+  Every commit after `b336017` is Markdown only, so no input the validator, the preflight, or
+  either fresh leg consumes has moved.
+
 - **ADAPTER-ZOMBIE owner verification (2026-08-25).** Linux rows ran in a privileged
   `python:3.12-bookworm`-derived container with `bubblewrap`, and the Align-dependent rows in the
   `c6g2-measure:latest` image at the pinned compiler; the repaired scans are Linux-only, and all
