@@ -117,6 +117,60 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def reap_adopted_children() -> None:
+    """Wait for every orphan this process adopted as a subreaper, and nothing else."""
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+
+
+def descendant_scan_rows(module) -> None:
+    """The scan reports every live descendant and never an adopted zombie.
+
+    Loading the evaluator makes this process a subreaper, so an orphan that has already exited is
+    reparented here and stays a zombie until it is waited for. A zombie has terminated and cannot
+    escape containment, so counting it would fail containment for a process that no longer runs.
+    """
+    zombie = os.fork()
+    if zombie == 0:
+        os._exit(0)
+    deadline = time.monotonic() + 5.0
+    state = ""
+    while time.monotonic() < deadline:
+        state = next(
+            line for line in Path(f"/proc/{zombie}/status").read_text().splitlines()
+            if line.startswith("State:")
+        ).split()[1]
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    require(state == "Z", "the synthetic child never reached the zombie state")
+    require(
+        zombie not in module.owned_descendant_ids(),
+        "an adopted zombie was counted as a live descendant",
+    )
+    os.waitpid(zombie, 0)
+
+    live = subprocess.Popen(
+        [sys.executable, "-c", "import time\ntime.sleep(30)\n"], start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        seen = False
+        while time.monotonic() < deadline and not seen:
+            seen = live.pid in module.owned_descendant_ids()
+            if not seen:
+                time.sleep(0.01)
+        require(seen, "a live descendant was not reported by the scan")
+    finally:
+        live.kill()
+        live.wait()
+
+
 def load_result(path: Path, label: str):
     try:
         return json.loads(path.read_text())
@@ -307,6 +361,47 @@ def verify_descendant_cleanup_boundary() -> None:
         require(cleanup_calls == 1, "post-exit evaluator child cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "successful evaluator parent left a live descendant")
+
+        # The mirror of the row above: an orphan that has *already exited* is a zombie this
+        # subreaper adopted. It has terminated, so it cannot escape containment and the child still
+        # completes. The orphan leads its own session, because a zombie still holds its process
+        # group open and the private-group check is a separate contract.
+        reap_adopted_children()
+        cleanup_calls = 0
+        parent = (
+            "import os, time\n"
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    os.setsid()\n"
+            "    os._exit(0)\n"
+            "deadline = time.monotonic() + 5.0\n"
+            "state = ''\n"
+            "while time.monotonic() < deadline:\n"
+            "    state = next(\n"
+            "        line for line in open(f'/proc/{pid}/status', encoding='utf-8').read().splitlines()\n"
+            "        if line.startswith('State:')\n"
+            "    ).split()[1]\n"
+            "    if state == 'Z':\n"
+            "        break\n"
+            "    time.sleep(0.01)\n"
+            "raise SystemExit(0 if state == 'Z' else 5)\n"
+        )
+        try:
+            completed = module.run_child(
+                [sys.executable, "-c", parent], SOURCE, {}, 20_000_000_000, 0,
+            )
+        except module.ChildBoundaryError as failure:
+            raise RuntimeError(
+                f"an adopted zombie was treated as an escaped descendant: {failure.reason}"
+            ) from None
+        require(
+            completed.returncode == 0,
+            "the adopted-zombie fixture did not reach the zombie state",
+        )
+        require(cleanup_calls == 0, "an adopted zombie was treated as an escaped descendant")
+        reap_adopted_children()
+
+    descendant_scan_rows(module)
 
 
 def verify_workspace_ownership_boundary() -> None:

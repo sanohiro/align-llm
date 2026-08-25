@@ -107,6 +107,49 @@ def require(condition: bool, message: str):
         raise RuntimeError(message)
 
 
+def descendant_scan_rows(module) -> None:
+    """The scan reports every live descendant and never an adopted zombie.
+
+    Loading the verifier makes this process a subreaper, so an orphan that has already exited is
+    reparented here and stays a zombie until it is waited for. A zombie has terminated and cannot
+    escape containment, so counting it would fail containment for a process that no longer runs.
+    """
+    zombie = os.fork()
+    if zombie == 0:
+        os._exit(0)
+    deadline = time.monotonic() + 5.0
+    state = ""
+    while time.monotonic() < deadline:
+        state = next(
+            line for line in Path(f"/proc/{zombie}/status").read_text().splitlines()
+            if line.startswith("State:")
+        ).split()[1]
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    require(state == "Z", "the synthetic child never reached the zombie state")
+    require(
+        zombie not in module.owned_descendant_ids(),
+        "an adopted zombie was counted as a live descendant",
+    )
+    os.waitpid(zombie, 0)
+
+    live = subprocess.Popen(
+        [sys.executable, "-c", "import time\ntime.sleep(30)\n"], start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        seen = False
+        while time.monotonic() < deadline and not seen:
+            seen = live.pid in module.owned_descendant_ids()
+            if not seen:
+                time.sleep(0.01)
+        require(seen, "a live descendant was not reported by the scan")
+    finally:
+        live.kill()
+        live.wait()
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="prompt-source-verifier-") as directory:
         root = Path(directory)
@@ -453,6 +496,7 @@ def main() -> int:
         require(cleanup_calls == 1, "source verifier descendant cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "source verifier left a Git descendant alive")
+        descendant_scan_rows(module)
 
         tampered = request(llm, llm_head, align, align_head, corpus, corpus_head)
         tampered["expected_align_revision"] = "0" * 40

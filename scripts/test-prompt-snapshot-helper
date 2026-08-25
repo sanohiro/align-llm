@@ -56,6 +56,49 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def descendant_scan_rows(module) -> None:
+    """The scan reports every live descendant and never an adopted zombie.
+
+    Loading the helper makes this process a subreaper, so an orphan that has already exited is
+    reparented here and stays a zombie until it is waited for. A zombie has terminated and cannot
+    escape containment, so counting it would fail containment for a process that no longer runs.
+    """
+    zombie = os.fork()
+    if zombie == 0:
+        os._exit(0)
+    deadline = time.monotonic() + 5.0
+    state = ""
+    while time.monotonic() < deadline:
+        state = next(
+            line for line in Path(f"/proc/{zombie}/status").read_text().splitlines()
+            if line.startswith("State:")
+        ).split()[1]
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    require(state == "Z", "the synthetic child never reached the zombie state")
+    require(
+        zombie not in module.owned_descendant_ids(),
+        "an adopted zombie was counted as a live descendant",
+    )
+    os.waitpid(zombie, 0)
+
+    live = subprocess.Popen(
+        [sys.executable, "-c", "import time\ntime.sleep(30)\n"], start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        seen = False
+        while time.monotonic() < deadline and not seen:
+            seen = live.pid in module.owned_descendant_ids()
+            if not seen:
+                time.sleep(0.01)
+        require(seen, "a live descendant was not reported by the scan")
+    finally:
+        live.kill()
+        live.wait()
+
+
 def tree_digest(project: Path, relative: str) -> str:
     root = project / relative
     entries = [(relative, root, "D")]
@@ -342,6 +385,7 @@ def main() -> int:
         time.sleep(0.8)
         require(not marker.exists(), "snapshot helper left a Git descendant alive")
         module.reject_git_extensions = original_reject_git_extensions
+        descendant_scan_rows(module)
 
     print("prompt snapshot helper: PASS")
     return 0

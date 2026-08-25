@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,66 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ADAPTER = ROOT / "scripts" / "prompt-fixed-adapter.py"
+LINUX = sys.platform.startswith("linux")
+
+
+def process_state(pid: int) -> str:
+    return next(
+        line for line in Path(f"/proc/{pid}/status").read_text().splitlines()
+        if line.startswith("State:")
+    ).split()[1]
+
+
+def reap_adopted_children() -> None:
+    """Wait for every orphan this process adopted as a subreaper, and nothing else."""
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+
+
+def descendant_scan_rows(module) -> None:
+    """The scan reports every live descendant and never an adopted zombie.
+
+    Loading the adapter makes this process a subreaper, so an orphan that has
+    already exited is reparented here and stays a zombie until it is waited for.
+    A zombie has terminated and cannot escape containment, so counting it would
+    fail containment for a process that no longer runs.
+    """
+    zombie = os.fork()
+    if zombie == 0:
+        os._exit(0)
+    deadline = time.monotonic() + 5.0
+    state = ""
+    while time.monotonic() < deadline:
+        state = process_state(zombie)
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    require(state == "Z", "the synthetic child never reached the zombie state")
+    require(
+        zombie not in module.owned_descendant_ids(),
+        "an adopted zombie was counted as a live descendant",
+    )
+    os.waitpid(zombie, 0)
+
+    live = subprocess.Popen(
+        [sys.executable, "-c", "import time\ntime.sleep(30)\n"], start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        seen = False
+        while time.monotonic() < deadline and not seen:
+            seen = live.pid in module.owned_descendant_ids()
+            if not seen:
+                time.sleep(0.01)
+        require(seen, "a live descendant was not reported by the scan")
+    finally:
+        live.kill()
+        live.wait()
 
 
 def canonical(value):
@@ -210,6 +271,45 @@ def main() -> int:
         require(cleanup_calls == 1, "fixed adapter descendant cleanup was not exactly once")
         time.sleep(0.8)
         require(not marker.exists(), "fixed adapter left a runner descendant alive")
+
+        if LINUX:
+            reap_adopted_children()
+            descendant_scan_rows(module)
+
+            # End to end: a runner whose own child exits before the runner does leaves an orphan
+            # that this subreaper adopts as a zombie. It has terminated, so the contained run is
+            # still a clean pass rather than a containment failure. The orphan leads its own
+            # session, so it is only reachable through the descendant scan: a zombie still holds
+            # its process group open, and the private-group check is a separate contract.
+            zombie_runner = root / "zombie-runner.py"
+            zombie_runner.write_text(
+                "import os, time\n"
+                "from pathlib import Path\n"
+                "pid = os.fork()\n"
+                "if pid == 0:\n"
+                "    os.setsid()\n"
+                "    os._exit(0)\n"
+                "deadline = time.monotonic() + 5.0\n"
+                "state = ''\n"
+                "while time.monotonic() < deadline:\n"
+                "    state = next(\n"
+                "        line for line in Path(f'/proc/{pid}/status').read_text().splitlines()\n"
+                "        if line.startswith('State:')\n"
+                "    ).split()[1]\n"
+                "    if state == 'Z':\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "raise SystemExit(0 if state == 'Z' else 5)\n"
+            )
+            select_runner(zombie_runner)
+            outcome, cleanup_passed, containment_passed, _, _, _ = module.execute_fixture(
+                "CANDIDATE", 20_000_000_000,
+            )
+            require(
+                outcome == "PASS" and cleanup_passed and containment_passed,
+                "an adopted zombie descendant was reported as a containment failure",
+            )
+            reap_adopted_children()
 
         bounded_runner = root / "bounded-runner.py"
         bounded_runner.write_text(

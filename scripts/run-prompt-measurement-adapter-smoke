@@ -237,13 +237,16 @@ class Fixture:
 
     def write_child(
         self, *, exit_code: int = 0, body: str | None = None, sleep: float = 0.0,
-        content: str | None = None,
+        content: str | None = None, prologue: str = "",
     ) -> None:
         """A synthetic generation child with exactly the `./main prompt generate` boundary.
 
         The real child is `src/prompt_generate.align`, whose own end-to-end behaviour is owned by
         `prompt-generate-smoke`. This synthetic child exists so the handoff failure rows —
         truncation, nonzero exit, timeout — are deterministic and platform-independent.
+
+        `prologue` runs before anything else in the child. It is how a containment row shapes this
+        child's own process tree before the adapter inspects it.
         """
         response = (
             body if body is not None
@@ -251,8 +254,9 @@ class Fixture:
         )
         self.child_path.write_text(
             "#!/usr/bin/env python3\n"
-            "import hashlib, json, sys, time\n"
-            f"time.sleep({sleep!r})\n"
+            "import hashlib, json, os, sys, time\n"
+            + prologue
+            + f"time.sleep({sleep!r})\n"
             "request = json.loads(open(sys.argv[3], encoding='utf-8').read())\n"
             "response = {\n"
             "  'schema_version': 1, 'artifact_kind': 'PROMPT_GENERATION_RESPONSE',\n"
@@ -885,6 +889,82 @@ def launch_rows(root: Path) -> list[str]:
         f"post-admission-replacement: the replacement crossed the retained boundary: {result!r}",
     )
     covered.append("post-admission-replacement")
+
+    # The descendant scan reports every live descendant and never an adopted zombie. This process
+    # is a subreaper because the adapter is loaded here, so an orphan that has already exited is
+    # reparented here and stays a zombie until it is waited for. A zombie has terminated and cannot
+    # escape containment; counting it fails containment for a process that no longer runs, which is
+    # exactly what a recent Git's detached auto-maintenance produced above.
+    reap_adopted_children()
+    zombie = os.fork()
+    if zombie == 0:
+        os._exit(0)
+    deadline = time.monotonic() + 5.0
+    state = ""
+    while time.monotonic() < deadline:
+        state = next(
+            line for line in Path(f"/proc/{zombie}/status").read_text().splitlines()
+            if line.startswith("State:")
+        ).split()[1]
+        if state == "Z":
+            break
+        time.sleep(0.01)
+    require(state == "Z", "adopted-zombie-descendant: the synthetic child never became a zombie")
+    require(
+        zombie not in module.owned_descendant_ids(),
+        "adopted-zombie-descendant: an adopted zombie was counted as a live descendant",
+    )
+    os.waitpid(zombie, 0)
+    covered.append("adopted-zombie-descendant")
+
+    live = subprocess.Popen(
+        [sys.executable, "-c", "import time\ntime.sleep(30)\n"], start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        seen = False
+        while time.monotonic() < deadline and not seen:
+            seen = live.pid in module.owned_descendant_ids()
+            if not seen:
+                time.sleep(0.01)
+        require(seen, "live-descendant-detected: a live descendant was not reported by the scan")
+    finally:
+        live.kill()
+        live.wait()
+    covered.append("live-descendant-detected")
+
+    # A generation child that leaves an already-exited orphan behind is still a clean pass: the
+    # adopted zombie cannot escape containment. The orphan leads its own session, so it is only
+    # reachable through the descendant scan: a zombie still holds its process group open, and the
+    # private-group check is a separate contract.
+    fixture = Fixture(root, "generation-child-adopted-zombie")
+    fixture.write_child(
+        prologue=(
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    os.setsid()\n"
+            "    os._exit(0)\n"
+            "deadline = time.monotonic() + 5.0\n"
+            "while time.monotonic() < deadline:\n"
+            "    state = next(\n"
+            "        line for line in open(f'/proc/{pid}/status', encoding='utf-8').read().splitlines()\n"
+            "        if line.startswith('State:')\n"
+            "    ).split()[1]\n"
+            "    if state == 'Z':\n"
+            "        break\n"
+            "    time.sleep(0.01)\n"
+            "assert state == 'Z'\n"
+        ),
+    )
+    fixture.request()
+    completed, result = fixture.invoke()
+    require(
+        completed.returncode == 0 and result is not None and result["status"] == "PASS"
+        and result["failure_kind"] == "NONE" and result["containment_passed"]
+        and result["cleanup_passed"],
+        f"generation-child-adopted-zombie: an adopted zombie failed containment: {result!r}",
+    )
+    covered.append("generation-child-adopted-zombie")
 
     # The two-process handoff failure rows.
     fixture = Fixture(root, "child-nonzero-exit")

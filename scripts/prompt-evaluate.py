@@ -318,28 +318,49 @@ def process_group_exists(group: int) -> bool:
 
 
 def descendant_process_ids(root_pids: set[int]) -> set[int]:
+    """Return the live descendants of `root_pids` from the /proc parent links.
+
+    A zombie (`State: Z`) has already terminated and holds only a process-table
+    slot until someone waits for it, so it cannot escape containment and is
+    never reported. Under `PR_SET_CHILD_SUBREAPER` an adopted orphan that has
+    already exited becomes a permanent zombie child of this process, and
+    counting it would report a containment failure for a process that no longer
+    runs. Zombies are still traversed, so a live entry parented to one is still
+    reported. An entry that exits between the directory scan and the status read
+    is skipped by the same `OSError` path.
+    """
     parents: dict[int, list[int]] = {}
+    zombies: set[int] = set()
     if not sys.platform.startswith("linux"):
         return set()
     for status_path in Path("/proc").glob("[0-9]*/status"):
         try:
             pid = int(status_path.parent.name)
+            status_lines = status_path.read_text(encoding="utf-8").splitlines()
             parent_line = next(
-                line for line in status_path.read_text(encoding="utf-8").splitlines()
-                if line.startswith("PPid:")
+                line for line in status_lines if line.startswith("PPid:")
             )
             parent = int(parent_line.split()[1])
-        except (OSError, StopIteration, ValueError):
+            state_line = next(
+                line for line in status_lines if line.startswith("State:")
+            )
+            state = state_line.split()[1]
+        except (IndexError, OSError, StopIteration, ValueError):
             continue
+        if state == "Z":
+            zombies.add(pid)
         parents.setdefault(parent, []).append(pid)
     descendants: set[int] = set()
+    visited: set[int] = set()
     pending = list(root_pids)
     while pending:
         parent = pending.pop()
         for child in parents.get(parent, []):
-            if child not in descendants:
-                descendants.add(child)
+            if child not in visited:
+                visited.add(child)
                 pending.append(child)
+                if child not in zombies:
+                    descendants.add(child)
     return descendants
 
 
