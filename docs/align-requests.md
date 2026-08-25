@@ -42,7 +42,7 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`19c3db144c462bf7d6784f88d64cc124229b7ec2`. The reviewed
+`2f33ac5c33a898a7894af58322852632ce6ffe42`, adopted in `f344ea9`. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-25): Requests 1, 3–6 are CLOSED; Requests 2, 7, 8, and 10–18 are ALIGN_LLM_VERIFIED; only Request 9 remains ALIGN_MERGED.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, advancing Request 2. Request 9's adoption remains with C7 and is already contained in the pinned Align merge recorded below.
+> **Status (2026-08-25): Requests 1, 3–6 are CLOSED; Requests 2 and 7–18 are ALIGN_LLM_VERIFIED; only Request 19 remains PROPOSED.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, advancing Request 2. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, advancing Request 9 to `ALIGN_LLM_VERIFIED` at the unchanged pin.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -4148,14 +4148,14 @@ running after every checkpoint. Adoption does not silently inherit another consu
 ## Request 9 — `core.json`: owned text fields and runtime-sized text arrays
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
-Blocked gate or slice: C7's named `C7-PERSISTED-RESULT` consumer capability remains blocked only on its own adoption gate; the reviewed consumer design is `docs/specs/c7-persisted-result.md`; C6 remains independent
-Independent work that may continue: application designs, C6 work, other Align requests, and any consumer that does not require the direct-owned JSON shape
-Resume condition: the C7-PERSISTED-RESULT branch runs the named C7 adoption fixture against the existing pin `19c3db144c462bf7d6784f88d64cc124229b7ec2`, which already contains implementation PR #852, before product code consumes the surface; it implements the consumer on the same branch and closes with the original C7 lifetime/artifact qualification plus one final `make ci`. No sibling rebuild or pin bump is required unless a later prerequisite joins the wave.
+Blocking: no
+Blocked gate or slice: none; the `C7-PERSISTED-RESULT` consumer in `src/persisted_result.align` and `src/main.align` consumes the shipped owned-JSON surface
+Independent work that may continue: all work
+Resume condition: complete
 Align commit or pull request: accepted Align plan `../align/docs/impl/24-owned-json-plan.md`; design PR #851 merged as `7f435ae9b228fc9a4ce047e9d64d5b99feeea60c`; implementation PR #852 merged as `2bb93a93a2f30da1daabd5b65d83863dab617560`
-align-llm verification: pending
+align-llm verification: the named C7 adoption target `c7-owned-record-source-expiry-adoption` (`scripts/run-c7-owned-record-source-expiry-adoption`, `src/c7_owned_record_source_expiry_adoption.align`) passes at the unchanged pin `2f33ac5c33a898a7894af58322852632ce6ffe42` — 3 parsed fixtures, 12 example rows, 45 adoption rows — covering section 6.1 source expiry for every retained direct field, the three optional-note states, the section 6.3 Move-carrier transfer set, the normative owned-path golden byte pair, bounded canonical encode at exact fit and both rejection rows, and direct `array<string>` cleanup through replacement, move-out, and a mid-array recoverable failure. The consumer that first uses the shipped surface is `src/persisted_result.align` with `src/main.align`, and the C7 lifetime/artifact qualification `make persisted-result-qualification` passes at the same pin: 11 boundary rows, 256 generated PASS and 32 generated FAIL differential cases with 0 unexpected divergences, 38 malformed inputs, 29 artifact mutations, 10 golden rows, the intentional source mutation detected with 5 divergent and 38 agreeing cases, 749 bounded children. **The final supervised `make ci` leg is met.** At head `36c8568897802afe6744edf6177dbb089d887b5a`, `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` exits 0 with `fresh image profile smoke: PASS` and `fresh worker qualification: PASS (installed profile only)`. That request is the trusted image entrypoint's `make --no-print-directory ci`, so the whole `capable-checks` graph — including this capability's `persisted-result-smoke` member — ran inside the authenticated fresh worker. Phases: `docker-daemon` 913 ms, `image-build` 16,526 ms, `image-attestation` 3,342 ms, `profile-lifecycle` 2,594 ms, `profile-self-test` 14,713 ms, `trust-mutations` 12,892 ms, `runtime-replacements` 27,036 ms, `boundary-profile` 412,666 ms, **`worker-aggregate` pass after 365,567 ms**, `cleanup` 1,380 ms; whole installed profile 858,251 ms. The first supervised run of the newly admitted lane member failed the post-aggregate workspace-overlay check and was repaired in `36c8568`; the pull request's GitHub `Installed Ubuntu 24.04 fresh-image profile (x86_64)` and `(aarch64)` checks are the publication CI evidence for the merge head, following the Request 2 precedent recorded for PR #103. Platform caveat: C7 ACCEPTANCE evidence (the §11 environment matrix) still requires the x86_64 baseline environment and reviewed C7-P profiles for the aarch64 targets — Request 9's register advancement is about the owned-JSON surface adoption, which is complete; no C7 platform acceptance is claimed from these aarch64 runs.
 ```
 
 ### Align implementation (2026-08-17 — merged #852)
@@ -4179,9 +4179,11 @@ this owned route; Request 13 owns any later recursive C6 graph widening.
 
 The Align-side release build completed on merged `main` with exactly
 `cargo build --release --workspace`. The shipped surface is contained in the current pin
-`19c3db144c462bf7d6784f88d64cc124229b7ec2`; Request 9 remains pending only for the
-`C7-PERSISTED-RESULT` adoption fixture, consumer lifetime/artifact qualification, and final
-`make ci`; those steps own advancement to `ALIGN_LLM_VERIFIED` and `CLOSED`.
+`2f33ac5c33a898a7894af58322852632ce6ffe42`, adopted by align-llm in `f344ea9`; the earlier pin
+`19c3db144c462bf7d6784f88d64cc124229b7ec2` already contained it and no pin bump was required for
+this request. The `C7-PERSISTED-RESULT` adoption fixture, consumer lifetime/artifact qualification,
+and final `make ci` are complete and are recorded above, which advances Request 9 to
+`ALIGN_LLM_VERIFIED`; `CLOSED` remains owned by the merged capability's shipped-surface record.
 
 ### Motivation
 

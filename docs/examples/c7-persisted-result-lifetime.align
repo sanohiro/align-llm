@@ -1,0 +1,125 @@
+// Request 9 adoption example for `docs/specs/c7-persisted-result.md` sections 6.1 and 6.3.
+//
+// It is the readable form of the section 6.1 source/lifetime sequence: a helper owns the whole
+// input document, the owned JSON decode materializes a free-standing record, the helper's `string`
+// owner ends with its scope, and only then does the caller read or move each retained direct
+// field. `src/c7_owned_record_source_expiry_adoption.align` is the executable owner with the exact
+// byte vectors; this file is the checked-in illustration that `alignc fmt` parses.
+//
+// It uses only the surface Align Request 9 shipped in PR #852, which the `.align-revision` pin
+// contains: direct declared-record decode, canonical encode, and bounded canonical encode over the
+// closed owned graph. `make check` does not compile this file and nothing imports it.
+
+module c7_persisted_result_lifetime
+
+import core.json
+
+// Section 4.4 normative input bytes, the two section 4.1 optional-note variants, and the
+// malformed document the section 6.3 `else` join consumes.
+C7_INPUT_ESCAPED := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2,\"note\":\"quote:\\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t NUL:\\u0000 emoji:😀\"}"
+C7_INPUT_EMPTY_NOTE := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2,\"note\":\"\"}"
+C7_INPUT_NO_NOTE := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2}"
+C7_INPUT_WRONG_SCALAR := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":\"two\",\"note\":\"quote:\\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t NUL:\\u0000 emoji:😀\"}"
+
+// Section 4.1. Direct owned `string` and direct `Option<string>` fields only; every other field is
+// a Copy JSON scalar. Section 1.3 keeps `array<string>`, nested records, and every other aggregate
+// owner out of this first C7 consumer, even though Request 9 also ships the direct text array.
+C7VerificationInput {
+  schema_version: i64,
+  artifact_kind: string,
+  case_id: string,
+  algorithm: string,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+  note: Option<string>,
+}
+
+// Section 6.1 steps 1-3. This helper is the whole lifetime boundary: it owns the document, decodes
+// it, and returns. The `document` owner ends with this scope, so the returned record cannot borrow
+// it. The real consumer replaces the `.clone()` with `fs.read_file`, which returns the same owned
+// `string`.
+fn decode_input(source: str) -> Result<C7VerificationInput, Error> {
+  document := source.clone()
+  input: C7VerificationInput := json.decode(document)?
+  return Ok(input)
+}
+
+// Section 6.3. The raw `Result<C7VerificationInput, Error>` is an ordinary Move value: it may be
+// bound with an explicit type and returned while the document owner is still live in the same
+// scope.
+fn decode_input_raw(source: str) -> Result<C7VerificationInput, Error> {
+  document := source.clone()
+  raw: Result<C7VerificationInput, Error> := json.decode(document)
+  return raw
+}
+
+// Section 6.3. The same raw carrier crosses a parameter boundary exactly once.
+fn forward(raw: Result<C7VerificationInput, Error>) -> Result<C7VerificationInput, Error> {
+  return raw
+}
+
+// Section 6.3. Explicit typed `map_err` transfer, then `?` consumes the mapped result.
+fn keep_error(value: Error) -> Error {
+  return value
+}
+
+fn decode_input_mapped(source: str) -> Result<C7VerificationInput, Error> {
+  raw: Result<C7VerificationInput, Error> := json.decode(source)
+  mapped: Result<C7VerificationInput, Error> := raw.map_err(keep_error)
+  input: C7VerificationInput := mapped?
+  return Ok(input)
+}
+
+// Section 6.1: the optional text owner is moved out of the retained record, which nulls its source.
+fn note_bytes(value: Option<string>) -> i64 {
+  match value {
+    Some(text) => { return text.len() },
+    None => { return -1 },
+  }
+}
+
+// Section 6.3 `else` join: a malformed document releases every owner that is already live.
+fn case_id_or_fallback(source: str) -> string {
+  input := decode_input(source) else {
+    return "DECODE-ERROR".clone()
+  }
+  return input.case_id
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+
+  // Every read and move below happens after `decode_input`'s document owner has expired.
+  input := decode_input(C7_INPUT_ESCAPED)?
+  print(input.artifact_kind)
+  print(input.case_id)
+  print(input.algorithm)
+  print(input.expected)
+
+  // Section 4.4: the retained record re-encodes to the exact canonical source bytes, including the
+  // escaped quote and backslash, the embedded NUL, and the multibyte emoji.
+  print(json.encode(input))
+
+  // Section 4.1: `None` is omitted by canonical encoding and `Some("")` is an explicit empty JSON
+  // string.
+  print(note_bytes(input.note))
+  empty_note := decode_input(C7_INPUT_EMPTY_NOTE)?
+  print(note_bytes(empty_note.note))
+  omitted_note := decode_input(C7_INPUT_NO_NOTE)?
+  print(note_bytes(omitted_note.note))
+
+  // Section 6.3 Move-carrier transfers over the raw result.
+  bound := decode_input_raw(C7_INPUT_ESCAPED)?
+  forwarded := forward(json.decode(C7_INPUT_ESCAPED))?
+  mapped := decode_input_mapped(C7_INPUT_ESCAPED)?
+  print(bound.case_id)
+  print(forwarded.case_id)
+  print(mapped.case_id)
+  print(case_id_or_fallback(C7_INPUT_WRONG_SCALAR))
+  return Ok(())
+}

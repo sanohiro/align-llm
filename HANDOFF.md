@@ -3,10 +3,119 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active checkpoint (2026-08-25)
+## Active capability: C7-PERSISTED-RESULT (2026-08-25)
 
-- C6-MEASURED (C6e/C6g1/C6g2) is implemented on branch `agent/c6-measured` and is not yet
-  published. One comprehensive adversarial review returned request-changes at
+- C6-MEASURED merged as align-llm PR #103 (`c9a510d`). The active capability is now
+  C7-PERSISTED-RESULT on branch `agent/c7-persisted-result`, per
+  `docs/specs/c7-persisted-result.md`. All three implementation slices are landed — `cb3459b`
+  (Request 9 adoption checkpoint), `1d066ff` (product consumer), `1e5797b` (qualification plus lane
+  admission) — the `Makefile` and lane topology are final for this wave, the identity-bound
+  baseline chain is re-finalized on top of them, and the capability is in publication wrap-up.
+- **Landed: the mandatory Request 9 adoption checkpoint.**
+  `src/c7_owned_record_source_expiry_adoption.align`,
+  `scripts/run-c7-owned-record-source-expiry-adoption`, and the `.PHONY` Make target
+  `c7-owned-record-source-expiry-adoption` implement the section 6.1 fixture
+  `c7-owned-record-source-expiry-adoption` against the real shipped surface at the unchanged pin
+  `2f33ac5c33a898a7894af58322852632ce6ffe42`. It covers section 6.1 source expiry for every
+  retained direct field, the three optional-note states, the section 6.3 Move-carrier transfer set,
+  the Request 9 normative owned-path golden byte pair, bounded canonical encode at exact fit and
+  both rejection rows, and direct `array<string>` cleanup through replacement, move-out, and a
+  mid-array recoverable failure. `docs/examples/c7-persisted-result-syntax.align` and
+  `docs/examples/c7-persisted-result-lifetime.align` are the section 12.1 checked-in fixtures; the
+  runner owns their pinned `alignc fmt` parser-only check together with the normative
+  `docs/examples/request9-owned-json-syntax.align`.
+- **Landed: the product consumer.** `src/persisted_result.align` implements the section 4 records,
+  the section 5 `bounded-bucket-v1` algorithm and the six ordered verifier recomputations, the
+  section 6 ownership/lifetime boundary, the section 7 whole-file publication limitation, the
+  section 8.1/8.2 precedence tables, and the section 3.1 `persist_file`/`verify_file`/
+  `VerificationSummary` surface. `src/main.align` adds the two exact selectors, the section 3.3
+  seven-line summary, and the valid-semantic-`FAIL` nonzero exit after publication. Six focused
+  `.PHONY` smoke targets (`c7-persisted-result-{cli,lifetime,owned-move,wire,noncanonical-input,
+  independent-destinations}-smoke`) and `scripts/c7_persisted_result_fixtures.py` are the bounded
+  functional evidence; they join no aggregate, so `gate-topology-check` stays green. The section
+  4.4 golden vectors reproduce byte-for-byte end to end: `input_sha256` `6de733d4...`,
+  `content_sha256` `a0160d36...`, and the external `result_sha256` `8fb29a72...`.
+- **Landed: the qualification slice and the bounded functional owner.**
+  `scripts/run-persisted-result-qualification` owns its own independent reference (ordered field
+  tables, Request 7 escape grammar, `bounded-bucket-v1`; it imports neither the Align module nor
+  `scripts/c7_persisted_result_fixtures.py`), the section 10.2 boundary table, the seed-`20260803`
+  corpus of 256 PASS + 32 FAIL differential cases, 38 malformed inputs against both a fresh and an
+  existing sentinel destination, 29 artifact mutations including digest-consistent semantic
+  mutations, and the temporary `else if raw < upper_bound` -> `<=` source mutation built in a
+  private copy of the tree. `scripts/run-persisted-result-smoke` drives the six member runners as
+  one bounded functional owner and prints its own cost. Both follow the section 9.4 boundary: the
+  Make recipe resolves the compiler and product at the repository root and passes them explicitly.
+- **Aggregate admission decision: `persisted-result-smoke` is now a hosted member.** Its measured
+  cost is 3.6 s for all six runners at the pinned compiler, so section 12's "small stable
+  integration regression" test is satisfied. `Makefile`, `scripts/check-gate-topology` (oracle plus
+  self-test literals), and `docs/specs/check-gate-topology.md` (prose plus oracle block) changed
+  together, and `docs/specs/c7-persisted-result.md` section 12 records the decision.
+  `persisted-result-qualification` (8.7 s plus one whole-program compile) stays outside every
+  aggregate by design.
+- **The qualification found and repaired one real contract deviation.** Sections 8.1/8.2 row 3 and
+  the section 8.3 matrix require `Err(Invalid)` for a malformed document, but the shipped
+  `core.json` decoder returns its own `Error.Code(_)`, which `decode_input`/`decode_result`
+  propagated unchanged — the CLI exited 1 (`NotFound`-class) instead of 2 (`Invalid`) for every
+  malformed input and artifact. Both helpers now apply the section 6.3 typed `map_err`; section 8.1
+  states the rule explicitly. A genuinely absent file still maps to the row-2 filesystem error
+  (exit 1). Negative control: a temporary rebuild with the mapping reverted fails the qualification
+  at `malformed input empty-file: exit 1 != 2`.
+- **One measured section 9.4 correction.** The 64 KiB per-stream capture bound is unreachable for
+  the mutation build: the pinned compiler writes 105,234 bytes of whole-program advisory warnings to
+  stderr, and the exact build vector admits no suppressing option. Section 9.4 now keeps 64 KiB for
+  product children and sets 1 MiB for a compiler child, with the same overflow -> terminate,
+  kill-if-needed, wait, close -> gate failure behavior.
+- **Landed: the wrap-up.** The identity-bound canonical baseline chain is re-finalized against the
+  final `Makefile`, and the supervised capable gate is green at the repaired head `36c8568`
+  (`fresh worker qualification: PASS (installed profile only)`). That run is the capability's final
+  `make ci` evidence and it advanced `docs/align-requests.md` Request 9 to `ALIGN_LLM_VERIFIED`.
+  What remains is one fresh comprehensive review and the English pull request with the section 12
+  evidence.
+- **The first supervised run of the admitted lane member found one real defect (`36c8568`).**
+  Admitting `persisted-result-smoke` to `HOSTED_CHECK_TARGETS` put it in the capable aggregate for
+  the first time, and that aggregate failed with `fresh compiler: ERROR CHILD aggregate` while the
+  check graph itself exited 0. `ALIGN_LLM_AGGREGATE_DIAGNOSTIC=1` reported
+  `DIAGNOSTIC worker stderr captured=38 shown=38` and no aggregate-child output at all, which is
+  what located the fault: the `make` child succeeded and the worker's *post*-aggregate overlay check
+  rejected the run, because it admits exactly one workspace-overlay entry, `main`.
+  `scripts/run-persisted-result-smoke` built its member-runner environment as an explicit map and
+  applied section 9.4's product-child rule to the member runners themselves, dropping every
+  sandbox-owned value the aggregate exports — including `PYTHONDONTWRITEBYTECODE=1`. Each member
+  runner does `import c7_persisted_result_fixtures`, so CPython wrote `scripts/__pycache__/` into
+  the workspace overlay and the gate failed on the second entry. The owner now forwards `HOME`,
+  `TMPDIR`, `PYTHONHOME`, `PYTHONNOUSERSITE`, and `PYTHONDONTWRITEBYTECODE` when the caller supplies
+  them, and section 9.4 records the rule. This is the same root-cause class as `3768ad8`: a child
+  launcher rebuilding the environment from fixed literals instead of the aggregate's own values.
+  Class audit: `run-persisted-result-qualification` launches only the product and the compiler — no
+  `bash`/`python3` child, no import, no workspace write — and stays outside every aggregate, so it
+  has no instance of the defect and is unchanged.
+- **The section 4.4 golden vectors reproduce exactly.** The decoded C7 input re-encodes
+  byte-for-byte to the section 4.4 `input bytes` line, and the Request 9 `OwnedTask` pair
+  reproduces its canonical output including `u64::MAX`, embedded NUL, and multibyte text. The
+  section 4.4 `input_sha256`, `content_sha256`, and external `result_sha256` values were
+  independently recomputed from the document's own literal bytes and match. No Align gap was found;
+  no new `docs/align-requests.md` entry is required by this checkpoint.
+- **Resolved: the identity-bound canonical baseline chain is re-finalized.** Admitting
+  `persisted-result-smoke` to `HOSTED_CHECK_TARGETS` changed `Makefile`, which
+  `docs/specs/check-gate-topology.md` records as a baseline artifact, so the previous chain went red
+  with `working-tree Makefile differs from the baseline source commit`. The replacement chain is
+  source `1e5797b3b451c79a48bd28f78edbd47b8540f9ec`, oracle
+  `32e1442a5470f6c25862e290b6c2495ee8c2df0b`, and finalization
+  `2fe903625816bd4738293e94497f88d43c42b5d9`; it was appended, never amended, and
+  `python3 scripts/check-baseline-chain` reports `baseline chain: PASS` at the final head.
+  `make gate-topology-check` is green at the admitted lane state.
+- **Platform-profile verdict for planning.** Section 11 and section 12.1 make
+  `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` *required* C7 acceptance environments, but
+  C7-P requires each one's reviewed platform profile before it may enter C7 adoption or provide C7
+  evidence; the Section 9 x86_64 profile substitutes for neither. This macOS host is
+  `aarch64-apple-darwin` with no reviewed C7-P profile, so its runs are development evidence for
+  the checkpoint only. They are not C7 acceptance evidence, and the capability gate still needs the
+  x86_64 baseline environment plus a reviewed C7-P profile per non-x86 target.
+
+## Merged checkpoint: C6-MEASURED (2026-08-25)
+
+- C6-MEASURED (C6e/C6g1/C6g2) was implemented on branch `agent/c6-measured` and merged as
+  align-llm PR #103 (`c9a510d`). One comprehensive adversarial review returned request-changes at
   `535be1087622dfd05481503d5f5d933555c06953`; every finding was accepted and repaired, and the
   consolidated repair is `baf8c24` (validator bindings, adapter deadline and redaction order),
   `3ca42d8` (claim narrowing and lane/post-freeze records), `1d27b5f` (frozen-chain rebind),
@@ -286,6 +395,81 @@ file records durable project state.
 
 ## Latest durable verification
 
+- **C7-PERSISTED-RESULT baseline chain re-finalization (2026-08-25).** Recorded on native Linux
+  `aarch64` inside the privileged `c6g2-measure:latest` container run with `--init`, `bubblewrap`
+  installed at run time, as a non-root `runner` uid with `umask 022` and
+  `PYTHONDONTWRITEBYTECODE=1`, with `chown -R runner:runner /opt/align`, on a clean `git clone` of
+  the committed source head. In that container `python3 scripts/check-gate-topology --self-test`
+  (**PASS**) and `make gate-topology-check` (**PASS**) ran first, proving the admitted lane bytes and
+  the `exact_environment()` self-test copy moved together in `1e5797b`. `record-baseline.py` then
+  recorded both deterministic-reference samples as passing: 130,939,292-139,880,709 ns, median
+  135,410,000 ns, at Align pin `2f33ac5c33a898a7894af58322852632ce6ffe42`. The replacement chain is
+  source `1e5797b3b451c79a48bd28f78edbd47b8540f9ec`, oracle
+  `32e1442a5470f6c25862e290b6c2495ee8c2df0b`, and finalization
+  `2fe903625816bd4738293e94497f88d43c42b5d9` — appended, never amended — and
+  `python3 scripts/check-baseline-chain` reports `baseline chain: PASS`. The oracle projection
+  produced in the container and the copy committed on the host are byte-identical
+  (SHA-256 `4ecff07744fe4fc37c1052304fbe2a9593a0672c23232133b0c52e22678d4191`).
+- **C7-PERSISTED-RESULT supervised capable gate, green, at head
+  `36c8568897802afe6744edf6177dbb089d887b5a` (2026-08-25).** `python3
+  scripts/run-fresh-worker-qualification --installed-profile-only --require-docker`: **PASS**,
+  exit 0, `fresh image profile smoke: PASS` then `fresh worker qualification: PASS (installed
+  profile only)`. Phases: `docker-daemon` 913 ms, `image-build` 16,526 ms, `image-attestation`
+  3,342 ms, `profile-lifecycle` 2,594 ms, `profile-self-test` 14,713 ms, `trust-mutations`
+  12,892 ms, `runtime-replacements` 27,036 ms, `boundary-profile` 412,666 ms,
+  **`worker-aggregate` pass after 365,567 ms**, `cleanup` 1,380 ms; whole installed profile
+  858,251 ms. Run with the default environment and no diagnostic opt-in. This is the first green
+  supervised run that includes `persisted-result-smoke`, and it is the capability's final `make ci`
+  evidence; the only later commit on the branch is the documentation update, which changes no
+  executable input. Per section 11/12.1 it is not C7 platform acceptance evidence: this host is
+  `aarch64` with no reviewed C7-P profile.
+- **Environment facts learned while getting that run green; none is repository state.** (1) A failed
+  installed-profile run leaves `/sys/fs/cgroup/align-llm-fresh/<uid>` behind in the Docker VM, and
+  the next run then fails `profile-lifecycle` in about 0.5 s with
+  `FileExistsError: '/sys/fs/cgroup/align-llm-fresh/12345'`; remove that directory from a
+  `--privileged --cgroupns=host` container before retrying. (2) `boundary-profile` builds the
+  pinned Align compiler twice from source and failed twice with the generic
+  `json-scan adoption: ERROR toolchain` while the Docker VM had roughly 17 GiB free, then passed at
+  412 s with roughly 31 GiB free; treat that message as a capacity signal first. (3) Do not prune
+  the BuildKit cache to make room: two consecutive runs then hit the 1,800 s `image-build` budget
+  downloading LLVM 22 from `apt.llvm.org`. Warming the cache once with a direct
+  `docker build -f image/fresh/Dockerfile` (which fails only at the late build-key layer) restored
+  a 16-28 s cached `image-build`.
+- **Container environment fact: the topology self-test needs a reaping PID 1.** In the same image
+  started **without** `--init`, `python3 scripts/check-gate-topology --self-test` fails
+  reproducibly (three of three attempts) with
+  `hanging child cleanup failed: ... lifecycle_errors=('process-group-remains',)`, because `sleep
+  infinity` as PID 1 never reaps the orphan the case kills, and the zombie keeps its process group
+  alive. With `--init` the same command passes. This is an environment fact, not repository state,
+  and it is the same unreaped-descendant class as the `d7f1ff6` adapter fix.
+- **C7-PERSISTED-RESULT publication host checks at head `36c8568` (macOS `aarch64-apple-darwin`,
+  managed pinned toolchain `2f33ac5c33a898a7894af58322852632ce6ffe42`, 2026-08-25).** `gmake check`
+  (23 units per-unit), `gmake gate-topology-check` (`check gate topology: PASS`), `gmake
+  format-check`, `git diff --check`, `python3 scripts/check-baseline-chain` (`baseline chain:
+  PASS`), `gmake persisted-result-smoke` (**PASS**, 3.1 s for six runners), `gmake
+  persisted-result-qualification` (**PASS**, same corpus counts as below, 9.2 s), and `gmake
+  c7-owned-record-source-expiry-adoption` (**PASS**, 3 parsed fixtures, 12 example rows, 45 adoption
+  rows): all PASS. Section 11 names `LIBRARY_PATH` as this host's Align build-gate linker input, so
+  every C7 target here runs with
+  `LIBRARY_PATH=$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib` exported; without it the
+  bounded functional owner fails closed before its first child. The only later commit is the
+  documentation update, which is Markdown-only.
+- **C7-PERSISTED-RESULT qualification slice, host (macOS `aarch64-apple-darwin`, managed pinned
+  toolchain `2f33ac5c33a898a7894af58322852632ce6ffe42`, 2026-08-25).** `gmake check` (23 units
+  per-unit), `gmake format-check`, `gmake gate-topology-check` (`check gate topology: PASS` at the
+  admitted lane), `git diff --check`, `gmake persisted-result-smoke` (**PASS**, 3.5-3.6 s for six
+  runners), `gmake persisted-result-qualification` (**PASS**: 11 boundary, 256 generated PASS, 32
+  generated FAIL, 38 malformed inputs, 29 result mutations, 10 golden rows, 0 unexpected
+  divergences, source mutation detected with 5 divergent and 38 agreeing cases, 749 bounded
+  children, 8.7 s), and the regression set `gmake c7-owned-record-source-expiry-adoption` plus all
+  six `c7-persisted-result-*-smoke` targets: PASS. `python3 scripts/check-baseline-chain` was red by
+  design at that checkpoint (`working-tree Makefile differs from the baseline source commit`) and is
+  green again after the wrap-up re-finalization recorded below.
+  `python3 scripts/check-gate-topology --self-test` fails on this host in
+  its `reader-start cleanup` process-lifecycle case with `sigkill-PermissionError`; the same failure
+  reproduces at the unmodified `HEAD` copy, so it is a pre-existing macOS-host limitation, not a
+  lane-admission regression. Per section 11/12.1 this host has no reviewed C7-P profile, so these
+  runs are development evidence, not C7 acceptance evidence.
 - **C6-MEASURED supervised gate, green, at head `3768ad8af68bb50ee3129ff392f6ba86ac89e071`
   (2026-08-25).** `python3 scripts/run-fresh-worker-qualification --installed-profile-only
   --require-docker --align-repo <path-to-sibling-align-checkout>`: **PASS**, exit 0,
@@ -632,23 +816,53 @@ file records durable project state.
 
 ## Next actions
 
-1. **Publish C6-MEASURED from `agent/c6-measured` at head `3768ad8`.** Nothing blocks it any more:
-   the supervised `make ci` gate is green at that exact head and the host checks pass there too.
-   The branch now carries three kinds of change, and the review must cover all of them: the
-   C6-MEASURED wave itself, the image-owned diagnostic seam (`e4c7e45` — native launchers, the
-   control plane, the worker's environment admission, two owner smokes, and the
-   `docs/specs/check-gate-topology.md` contract), and the measurement-adapter tool-root repair
-   (`3768ad8`). Run one fresh comprehensive review of the whole diff, then publish an English pull
-   request carrying the narrowed measured claim, the per-cell matrix, the validator transcript, the
-   named-qualification status of `prompt-gate-check` and `prompt-verifier-smoke`, and the exact
-   supervised-gate phase table recorded above. The seam touches an authoritative specification, so
-   it is a governance-relevant part of the diff, not an incidental one.
-2. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+0. **Publish C7-PERSISTED-RESULT from `agent/c7-persisted-result`.** Every implementation slice, the
+   re-finalized identity-bound baseline chain, the supervised capable gate, and the host owner
+   checks are complete and recorded above; nothing blocks publication. Run one fresh comprehensive
+   review of the whole diff — it spans an authoritative specification (`docs/specs/c7-persisted-
+   result.md`), governance (`docs/align-requests.md` Request 9), and product code, so it is a
+   governance-relevant diff — then publish the English pull request carrying the three slices, the
+   section 12 lane-admission decision and its measured cost, the qualification numbers, the
+   qualification-discovered exit-2 decode-error-class repair, the section 9.4 compiler capture-bound
+   correction, the baseline chain triple, and the exact supervised-gate phase table. Record the C7-P
+   platform-profile caveat rather than claiming aarch64 C7 acceptance from these runs. The shared
+   final classifier still owes its stamp at the exact unchanged publication head: the branch selects
+   executable preflight (`scope: fresh-image`), so run
+   `python3 scripts/pre-pr --owner-test persisted-result-qualification -- gmake
+   --no-print-directory persisted-result-qualification`, which also runs `align-toolchain
+   ensure source`/`verify`, `hosted-checks`, `run-fresh-worker-qualification`, and the installed
+   profile with `--align-repo`. Export
+   `LIBRARY_PATH=$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib` on this host first, and
+   clear any `/sys/fs/cgroup/align-llm-fresh/<uid>` residue before the installed-profile leg.
+
+1. **C7-P — the reviewed aarch64 platform profiles.** This is the next roadmap-eligible design
+   capability. Section 12 item 1 of `docs/specs/c7-persisted-result.md` makes
+   `aarch64-unknown-linux-gnu` (Ubuntu 24.04-arm) and `aarch64-apple-darwin` (macOS 15) *required*
+   C7 acceptance environments, and each needs its own reviewed platform-profile design and
+   implementation — compiler/runtime construction, namespace or process boundary, toolchain inputs,
+   and exact acceptance commands — before it may enter C7 adoption or provide C7 evidence. The
+   Section 9 x86_64 profile substitutes for neither. It changes an ownership/process boundary and a
+   persisted profile identity, so it triggers the proportional design gate: settle the
+   public-contract ledger and closure matrix under `docs/specs/` before coding.
+2. **Adapter-zombie follow-up from PR #103 (`d7f1ff6`).** That commit repaired one row: the
+   in-process `post-admission-replacement` measurement-adapter case now waits for anything the
+   harness adopted as a subreaper, and its Git fixture refuses background maintenance. The latent
+   class is wider and is not yet audited: any in-process harness that enables
+   `PR_SET_CHILD_SUBREAPER` before a containment or process-group scan must reap adopted orphans
+   first, and any fixture that runs `git commit` under such a harness can fork a detached
+   auto-maintenance child on a recent Git. The container self-test finding recorded above
+   (`process-group-remains` without a reaping PID 1) is the same class observed from the other side.
+   Audit the class across the harnesses and give the scans an explicit reap-then-scan seam.
+3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
-3. Merged historical item: the register/HANDOFF reconciliation branch
+4. Merged historical item: C6-MEASURED was published from `agent/c6-measured` and merged as PR #103
+   (`c9a510d`) with its narrowed measured claim, the per-cell matrix, the validator transcript, the
+   named-qualification status of `prompt-gate-check` and `prompt-verifier-smoke`, and the supervised
+   phase table recorded above.
+5. Merged historical item: the register/HANDOFF reconciliation branch
    `agent/reconcile-request-register` recorded the passed C6-EVALUATION capable gate and advanced
    Requests 11 and 14.
-4. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
+6. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
    provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
    policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
    linked rollback. The triggered design gate is satisfied: §11.3 of
@@ -660,15 +874,16 @@ file records durable project state.
    adoption target, C6g asset paths, and the gate-validator identity).
    Implementation may start immediately against that ledger; no further design pull request is
    required.
-6. Request 2 (plaintext/TLS provider timeouts) is adopted and recorded `ALIGN_LLM_VERIFIED`: its
+7. Request 2 (plaintext/TLS provider timeouts) is adopted and recorded `ALIGN_LLM_VERIFIED`: its
    named `c6e-request2-adoption` owner and the wave's capable gate both pass at the pin
-   `2f33ac5c33a898a7894af58322852632ce6ffe42` and at the review-repaired head. Its final `make ci`
-   leg is open while the fresh-worker aggregate blocker above stands, and the register records that
-   openly. Do not infer a provider-quality claim beyond this wave's measured gate; §11.3's
-   "What the measured claim is and is not" is the delivered result.
-7. After C6-MEASURED, begin C7-PERSISTED-RESULT per `docs/specs/c7-persisted-result.md` and adopt
-   Request 9 through the named C7 adoption fixture before product code consumes the owned-JSON
-   surface.
+   `2f33ac5c33a898a7894af58322852632ce6ffe42` and at the review-repaired head, and its final
+   supervised `make ci` leg is met and recorded in the register. Do not infer a provider-quality
+   claim beyond this wave's measured gate; §11.3's "What the measured claim is and is not" is the
+   delivered result.
+8. Completed historical item: C7-PERSISTED-RESULT was begun after C6-MEASURED per
+   `docs/specs/c7-persisted-result.md`, and Request 9 was adopted through the named C7 adoption
+   fixture before product code consumed the owned-JSON surface. Request 9 is now
+   `ALIGN_LLM_VERIFIED`; only Request 19 remains `PROPOSED`.
 
 ## Recovery and preservation
 

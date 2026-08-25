@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+
+# c7-persisted-result-noncanonical-input-smoke.
+#
+# `docs/specs/c7-persisted-result.md` section 13 names this runner for the "Input canonical bytes",
+# "Input schema/range precedence", "Malformed input cleanup", "Early `?`/return paths", and
+# "Existing destination on invalid input" rows. Section 10.3 requires every malformed input to fail
+# before creating or changing its destination, with the destination bytes compared before and
+# after.
+#
+# The corpus is a representative bounded subset of section 10.3. The complete generated,
+# differential, and mutation corpus stays with the separate qualification slice named in section
+# 12.
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+work_dir="$(mktemp -d)"
+trap 'rm -rf "${work_dir}"' EXIT
+
+python3 - "${project_root}" "${work_dir}" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
+import c7_persisted_result_fixtures as fixtures
+
+fixtures.require_golden()
+work = Path(sys.argv[2])
+valid, artifact, _ = fixtures.expected_pair("upper-equal", 4, 5, 0, 9, 2, None)
+(work / "valid.json").write_bytes(valid.encode("utf-8"))
+(work / "expected.json").write_bytes(artifact.encode("utf-8"))
+
+# The sentinel destination already exists with bytes no C7 publication could produce. Every case
+# below is invoked with this destination, so the runner can prove no invalid input touched it.
+(work / "sentinel.json").write_bytes(b"SENTINEL-DESTINATION-BYTES")
+
+head = '{"schema_version":1,"artifact_kind":"C7_VERIFICATION_INPUT","case_id":"upper-equal"'
+tail = ',"algorithm":"bounded-bucket-v1","left":4,"right":5,"lower_bound":0,"upper_bound":9,"expected":2}'
+
+cases: list[tuple[str, bytes]] = [
+    # Lexical and shape failures, rejected by the read or the adopted JSON decoder.
+    ("empty-file", b""),
+    ("truncated-object", valid[:-8].encode("utf-8")),
+    ("wrong-top-level-shape", b"[]"),
+    ("invalid-utf8", b'{"schema_version":1,"artifact_kind":"\xff"}'),
+    (
+        "malformed-escape",
+        (head + ',"algorithm":"bounded-bucket-v1","left":4,"right":5,"lower_bound":0'
+         ',"upper_bound":9,"expected":2,"note":"\\q"}').encode("utf-8"),
+    ),
+    (
+        "lone-surrogate",
+        (head + ',"algorithm":"bounded-bucket-v1","left":4,"right":5,"lower_bound":0'
+         ',"upper_bound":9,"expected":2,"note":"\\ud800"}').encode("utf-8"),
+    ),
+    ("duplicate-declared-key", (head + ',"case_id":"upper-equal"' + tail).encode("utf-8")),
+    ("trailing-non-whitespace", (valid + "trailing").encode("utf-8")),
+    # Noncanonical byte representations of an otherwise decodable record: section 8.1 row 4.
+    ("unknown-key", (head + ',"extra":1' + tail).encode("utf-8")),
+    (
+        "reordered-keys",
+        ('{"artifact_kind":"C7_VERIFICATION_INPUT","schema_version":1,"case_id":"upper-equal"'
+         + tail).encode("utf-8"),
+    ),
+    ("leading-whitespace", (" " + valid).encode("utf-8")),
+    ("trailing-whitespace", (valid + "\n").encode("utf-8")),
+    (
+        "null-optional-spelling",
+        (head + ',"algorithm":"bounded-bucket-v1","left":4,"right":5,"lower_bound":0'
+         ',"upper_bound":9,"expected":2,"note":null}').encode("utf-8"),
+    ),
+    ("oversized-document", (head + ',"padding":"' + "a" * 5000 + '"' + tail).encode("utf-8")),
+    # Domain failures: section 8.1 row 5, in declaration order.
+    ("wrong-schema-version", fixtures.encode_input(
+        "upper-equal", 4, 5, 0, 9, 2, None, schema_version=2).encode("utf-8")),
+    ("wrong-artifact-kind", fixtures.encode_input(
+        "upper-equal", 4, 5, 0, 9, 2, None, artifact_kind=fixtures.RESULT_KIND).encode("utf-8")),
+    ("empty-case-id", fixtures.encode_input("", 4, 5, 0, 9, 2).encode("utf-8")),
+    ("uppercase-case-id", fixtures.encode_input("Upper-Equal", 4, 5, 0, 9, 2).encode("utf-8")),
+    ("case-id-leading-dot", fixtures.encode_input(".upper", 4, 5, 0, 9, 2).encode("utf-8")),
+    ("oversized-case-id", fixtures.encode_input("a" * 65, 4, 5, 0, 9, 2).encode("utf-8")),
+    ("wrong-algorithm", fixtures.encode_input(
+        "upper-equal", 4, 5, 0, 9, 2, None, algorithm="bounded-bucket-v2").encode("utf-8")),
+    ("operand-above-range", fixtures.encode_input(
+        "upper-equal", 1_000_001, 5, 0, 9, 2).encode("utf-8")),
+    ("operand-negative", fixtures.encode_input("upper-equal", -1, 5, 0, 9, 2).encode("utf-8")),
+    ("bound-above-range", fixtures.encode_input(
+        "upper-equal", 4, 5, 0, 2_000_001, 2).encode("utf-8")),
+    ("reversed-bounds", fixtures.encode_input("upper-equal", 4, 5, 9, 0, 2).encode("utf-8")),
+    ("expected-above-range", fixtures.encode_input("upper-equal", 4, 5, 0, 9, 3).encode("utf-8")),
+    ("oversized-note", fixtures.encode_input(
+        "upper-equal", 4, 5, 0, 9, 2, "n" * 257).encode("utf-8")),
+    # Wrong JSON scalar shapes for declared integers.
+    (
+        "string-scalar",
+        (head + ',"algorithm":"bounded-bucket-v1","left":4,"right":5,"lower_bound":0'
+         ',"upper_bound":9,"expected":"2"}').encode("utf-8"),
+    ),
+    (
+        "fractional-scalar",
+        (head + ',"algorithm":"bounded-bucket-v1","left":4.0,"right":5,"lower_bound":0'
+         ',"upper_bound":9,"expected":2}').encode("utf-8"),
+    ),
+    # A path that does not exist maps the filesystem error before any write.
+    ("absent-input", None),
+]
+
+names = []
+for name, payload in cases:
+    names.append(name)
+    if payload is not None:
+        (work / f"case-{name}.json").write_bytes(payload)
+(work / "case-order.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
+PY
+
+case_paths=()
+while IFS= read -r name; do
+  case_paths+=("${work_dir}/case-${name}.json")
+done <"${work_dir}/case-order.txt"
+
+"${compiler}" run "${project_root}/src/c7_persisted_result_noncanonical_input_smoke.align" \
+  "${work_dir}/sentinel.json" \
+  "${work_dir}/valid.json" \
+  "${work_dir}/fresh-result.json" \
+  "${case_paths[@]}" >"${work_dir}/observed.txt"
+
+python3 - "${work_dir}" <<'PY'
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+names = (work / "case-order.txt").read_text(encoding="utf-8").splitlines()
+
+expected_rows = ["REJECTED"] * len(names)
+expected_rows += ["sentinel/present", "true", "valid/verdict", "ACCEPTED"]
+
+raw = (work / "observed.txt").read_bytes()
+if not raw.endswith(b"\n"):
+    raise SystemExit("c7 persisted result noncanonical input smoke: output is not newline terminated")
+observed_rows = raw.decode("utf-8").split("\n")[:-1]
+if len(observed_rows) != len(expected_rows):
+    raise SystemExit(
+        "c7 persisted result noncanonical input smoke: expected "
+        f"{len(expected_rows)} rows, observed {len(observed_rows)}"
+    )
+for index, (want, got) in enumerate(zip(expected_rows, observed_rows)):
+    label = names[index] if index < len(names) else expected_rows[index]
+    if want != got:
+        raise SystemExit(
+            f"c7 persisted result noncanonical input smoke: case {label} expected {want}, "
+            f"observed {got}"
+        )
+
+sentinel = (work / "sentinel.json").read_bytes()
+if sentinel != b"SENTINEL-DESTINATION-BYTES":
+    raise SystemExit(
+        f"c7 persisted result noncanonical input smoke: the destination changed: {sentinel!r}"
+    )
+
+produced = (work / "fresh-result.json").read_bytes()
+expected = (work / "expected.json").read_bytes()
+if produced != expected:
+    raise SystemExit(
+        "c7 persisted result noncanonical input smoke: the recovery artifact is not canonical\n"
+        f"  expected: {expected!r}\n"
+        f"  observed: {produced!r}"
+    )
+
+print(
+    f"c7 persisted result noncanonical input smoke: {len(names)} malformed, noncanonical, and "
+    "out-of-domain inputs rejected with an untouched destination PASS"
+)
+PY

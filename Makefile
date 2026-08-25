@@ -14,7 +14,7 @@ ENTRY := src/main.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
 CODING_CORPUS := eval/tasks/coding-v1.json
 
-override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke c6e-request2-adoption
+override HOSTED_CHECK_TARGETS := gate-topology-check format-check check build eval-smoke loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke c6e-request2-adoption persisted-result-smoke
 override CAPABLE_ONLY_CHECK_TARGETS := eval-coding baseline-check c6-evaluation-adoption
 override SERIAL_CHECK_AGGREGATES := hosted-checks capable-checks ci
 override REQUESTED_SERIAL_CHECK_AGGREGATES := \
@@ -33,7 +33,7 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption ci
+.PHONY: check run build fmt format-check eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification ci
 
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
@@ -289,6 +289,87 @@ c6-borrowed-option-adoption: c6-borrowed-array-adoption
 
 c6-borrowed-array-adoption:
 	./scripts/run-c6-borrowed-array-adoption
+
+c7-owned-record-source-expiry-adoption:
+	./scripts/run-c7-owned-record-source-expiry-adoption
+
+# C7-PERSISTED-RESULT bounded functional smokes. Each one remains its own focused target; the
+# bounded functional owner admitted to the hosted list by the docs/specs/c7-persisted-result.md
+# section 12 measured decision is `persisted-result-smoke`, which drives all six.
+c7-persisted-result-cli-smoke: build
+	./scripts/run-c7-persisted-result-cli-smoke
+
+c7-persisted-result-lifetime-smoke:
+	./scripts/run-c7-persisted-result-lifetime-smoke
+
+c7-persisted-result-owned-move-smoke:
+	./scripts/run-c7-persisted-result-owned-move-smoke
+
+c7-persisted-result-wire-smoke:
+	./scripts/run-c7-persisted-result-wire-smoke
+
+c7-persisted-result-noncanonical-input-smoke:
+	./scripts/run-c7-persisted-result-noncanonical-input-smoke
+
+c7-persisted-result-independent-destinations-smoke:
+	./scripts/run-c7-persisted-result-independent-destinations-smoke
+
+# docs/specs/c7-persisted-result.md section 9.4 acceptance-runner process boundary. Both C7 runners
+# resolve the selected compiler and the product executable here, at the repository root, before any
+# child changes its working directory. The selection order is the repository order: the
+# authenticated fresh compiler when required, an explicit `ALIGNC`, an explicit `ALIGN_REPO`
+# release/debug compiler, then the managed `.align-revision` release compiler. There is no implicit
+# sibling or `PATH` fallback, and the `scripts/alignc` selector wrapper is never passed to a child.
+define c7_resolve_and_run
+@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
+  if [ "$${ALIGNC:-}" != "/tools/fresh-alignc" ]; then \
+    printf '%s\n' "$(1): the fresh profile requires the authenticated launcher" >&2; \
+    exit 1; \
+  fi; \
+  compiler=/tools/fresh-alignc; \
+else \
+  if [ -n "$${ALIGNC:-}" ]; then \
+    selected="$${ALIGNC}"; \
+  elif [ -n "$${ALIGN_REPO:-}" ]; then \
+    if [ -x "$${ALIGN_REPO}/target/release/alignc" ]; then \
+      selected="$${ALIGN_REPO}/target/release/alignc"; \
+    elif [ -x "$${ALIGN_REPO}/target/debug/alignc" ]; then \
+      selected="$${ALIGN_REPO}/target/debug/alignc"; \
+    else \
+      printf '%s\n' "$(1): alignc was not found in explicit ALIGN_REPO=$${ALIGN_REPO}" >&2; \
+      exit 127; \
+    fi; \
+  else \
+    selected="$$(./scripts/align-toolchain ensure compiler)"; \
+  fi; \
+  compiler="$$(realpath -e "$$selected" 2>/dev/null || realpath "$$selected")"; \
+  if [ "$$compiler" = "$(CURDIR)/scripts/alignc" ]; then \
+    printf '%s\n' "$(1): the scripts/alignc selector wrapper is not a child compiler" >&2; \
+    exit 1; \
+  fi; \
+  case "$$compiler" in /*) ;; *) \
+    printf '%s\n' "$(1): the selected compiler is not an absolute path" >&2; exit 1;; esac; \
+  if [ ! -f "$$compiler" ] || [ ! -x "$$compiler" ]; then \
+    printf '%s\n' "$(1): the selected compiler is not a regular executable" >&2; exit 1; \
+  fi; \
+fi; \
+product="$$(realpath -e "$(CURDIR)/main" 2>/dev/null || realpath "$(CURDIR)/main")"; \
+if [ ! -f "$$product" ] || [ ! -x "$$product" ]; then \
+  printf '%s\n' "$(1): the product executable is not a regular executable" >&2; exit 1; \
+fi; \
+./scripts/$(1) "$$compiler" "$$product"
+endef
+
+# The docs/specs/c7-persisted-result.md section 12 bounded functional owner. Its measured cost
+# admitted it to HOSTED_CHECK_TARGETS; the six member smokes remain individually invocable.
+persisted-result-smoke: build
+	$(call c7_resolve_and_run,run-persisted-result-smoke)
+
+# The section 12 focused qualification. It owns the independent reference, the seeded differential
+# corpus, the malformed/mutation corpus, and the temporary source mutation, and it deliberately
+# stays outside every routine hosted/capable aggregate.
+persisted-result-qualification: build
+	$(call c7_resolve_and_run,run-persisted-result-qualification)
 
 ci:
 	@exit 1

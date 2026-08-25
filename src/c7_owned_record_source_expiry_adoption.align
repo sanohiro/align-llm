@@ -1,0 +1,261 @@
+module c7_owned_record_source_expiry_adoption
+
+import core.json
+
+// C7-PERSISTED-RESULT adoption checkpoint for Align Request 9 (`ALIGN_MERGED` at Align PR #852,
+// contained in the `.align-revision` pin). It runs before any C7 product code consumes the
+// owned-JSON surface, as `docs/specs/c7-persisted-result.md` section 6.1 and section 12 require.
+//
+// Every row below exercises the shipped surface only: direct declared-record decode, canonical
+// encode, and bounded canonical encode over the closed owned graph. The expected output is owned
+// by `scripts/run-c7-owned-record-source-expiry-adoption`, which holds the same normative byte
+// vectors independently of this module.
+
+// Section 4.4 normative input bytes and the section 4.1 optional-note variants, plus the two
+// malformed documents the section 6.3 failure joins consume.
+C7_INPUT_ESCAPED := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2,\"note\":\"quote:\\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t NUL:\\u0000 emoji:😀\"}"
+C7_INPUT_EMPTY_NOTE := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2,\"note\":\"\"}"
+C7_INPUT_NO_NOTE := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2}"
+C7_INPUT_NULL_NOTE := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2,\"note\":null}"
+C7_INPUT_INTERIOR := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"interior\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":3,\"lower_bound\":0,\"upper_bound\":9,\"expected\":1}"
+C7_INPUT_WRONG_SCALAR := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":\"two\",\"note\":\"quote:\\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t NUL:\\u0000 emoji:😀\"}"
+C7_INPUT_TRAILING_BYTES := "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2,\"note\":\"quote:\\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t NUL:\\u0000 emoji:😀\"}trailing"
+
+// Request 9 normative owned-path golden input, its three optional-note vectors, and the
+// mid-array failure vector that proves direct text-array cleanup.
+TASK_INPUT := "{\"id\":\"task-1\",\"priority\":-7,\"attempts\":3,\"limit\":18446744073709551615,\"enabled\":true,\"argv\":[\"\",\"quote:\\\" slash:\\/ backslash:\\\\ controls:\\b\\f\\n\\r\\t\",\"nul:\\u0000\",\"emoji:\\ud83d\\ude00\"],\"note\":\"\\u20ac\"}"
+TASK_INPUT_NO_NOTE := "{\"id\":\"task-1\",\"priority\":-7,\"attempts\":3,\"limit\":18446744073709551615,\"enabled\":true,\"argv\":[]}"
+TASK_INPUT_NULL_NOTE := "{\"id\":\"task-1\",\"priority\":-7,\"attempts\":3,\"limit\":18446744073709551615,\"enabled\":true,\"argv\":[],\"note\":null}"
+TASK_INPUT_EMPTY_NOTE := "{\"id\":\"task-1\",\"priority\":-7,\"attempts\":3,\"limit\":18446744073709551615,\"enabled\":true,\"argv\":[],\"note\":\"\"}"
+TASK_INPUT_BAD_ARRAY_ELEMENT := "{\"id\":\"task-1\",\"priority\":-7,\"attempts\":3,\"limit\":18446744073709551615,\"enabled\":true,\"argv\":[\"\",\"quote:\\\" slash:\\/ backslash:\\\\ controls:\\b\\f\\n\\r\\t\",7,\"emoji:\\ud83d\\ude00\"],\"note\":\"\\u20ac\"}"
+
+// `docs/specs/c7-persisted-result.md` section 4.1. Direct owned `string` and direct
+// `Option<string>` fields with Copy `i64` scalars; no `str`, `array<str>`, nested record, or other
+// aggregate owner.
+C7VerificationInput {
+  schema_version: i64,
+  artifact_kind: string,
+  case_id: string,
+  algorithm: string,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+  note: Option<string>,
+}
+
+// `docs/align-requests.md` Request 9 normative owned-path golden record. It adds the accepted
+// unsigned/boolean Copy widths and the direct `array<string>` owner that acceptance item 9
+// requires, which the C7 product record deliberately excludes.
+OwnedTask {
+  id: string,
+  priority: i64,
+  attempts: u16,
+  limit: u64,
+  enabled: bool,
+  argv: array<string>,
+  note: Option<string>,
+}
+
+// Section 6.1 steps 1-3. The helper owns the whole document, decodes it, and returns; the input
+// `string` owner ends with this scope, so every field the caller reads afterwards is free-standing.
+fn decode_from_owned_document(source: str) -> Result<C7VerificationInput, Error> {
+  document := source.clone()
+  value: C7VerificationInput := json.decode(document)?
+  return Ok(value)
+}
+
+// Section 6.3 raw-`Result` bind and return. The raw carrier is transferred while the owned
+// document is still live inside this scope, and it outlives that owner.
+fn decode_raw_from_owned_document(source: str) -> Result<C7VerificationInput, Error> {
+  document := source.clone()
+  raw: Result<C7VerificationInput, Error> := json.decode(document)
+  return raw
+}
+
+// Section 6.3 raw-`Result` parameter transfer.
+fn pass_raw(raw: Result<C7VerificationInput, Error>) -> Result<C7VerificationInput, Error> {
+  return raw
+}
+
+// Section 6.3 direct raw-`Result` return of the decode expression itself.
+fn return_raw(source: str) -> Result<C7VerificationInput, Error> {
+  return json.decode(source)
+}
+
+// Section 6.3 explicit typed `map_err` transfer.
+fn keep_error(value: Error) -> Error {
+  return value
+}
+
+fn decode_via_map_err(source: str) -> Result<C7VerificationInput, Error> {
+  raw: Result<C7VerificationInput, Error> := json.decode(source)
+  mapped: Result<C7VerificationInput, Error> := raw.map_err(keep_error)
+  value: C7VerificationInput := mapped?
+  return Ok(value)
+}
+
+// Section 6.3 raw-`Result` reassignment. The first `Ok` owner is dropped before the second is
+// installed.
+fn decode_with_reassigned_raw(first: str, second: str) -> Result<C7VerificationInput, Error> {
+  mut raw: Result<C7VerificationInput, Error> := json.decode(first)
+  raw = json.decode(second)
+  return raw
+}
+
+// Section 6.3 `if` branch join over two owned decodes.
+fn decode_branch(pick_first: bool, first: str, second: str) -> Result<C7VerificationInput, Error> {
+  if pick_first {
+    return json.decode(first)
+  }
+  return json.decode(second)
+}
+
+// Section 6.3 `else` join: a malformed document releases every owner that is already live.
+fn case_id_or_fallback(source: str) -> string {
+  value := decode_from_owned_document(source) else {
+    return "DECODE-ERROR".clone()
+  }
+  return value.case_id
+}
+
+// Section 6.3 `match` join over the raw carrier.
+fn expected_or_sentinel(source: str) -> i64 {
+  raw: Result<C7VerificationInput, Error> := json.decode(source)
+  match raw {
+    Ok(value) => { return value.expected },
+    Err(_) => { return -1 },
+  }
+}
+
+// Section 6.1: the optional text field is read only after the source owner has expired.
+fn note_bytes(value: Option<string>) -> i64 {
+  match value {
+    Some(text) => { return text.len() },
+    None => { return -1 },
+  }
+}
+
+// Section 6.1: a retained direct `string` field is moved out of the record after its document
+// expired.
+fn text_bytes(value: string) -> i64 {
+  return value.len()
+}
+
+fn failed(source: str) -> i64 {
+  value := decode_from_owned_document(source) else {
+    return 1
+  }
+  return 0 - value.expected
+}
+
+// Request 9 acceptance item 9: direct text-array move-out through a call boundary.
+fn take_task(value: OwnedTask) -> OwnedTask {
+  return value
+}
+
+fn task_failed(source: str) -> i64 {
+  raw: Result<OwnedTask, Error> := json.decode(source)
+  match raw {
+    Ok(value) => { return 0 - value.argv.len() },
+    Err(_) => { return 1 },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 {
+    return Err(Error.Invalid)
+  }
+
+  // Rows 1-11. Section 6.1 source expiry: the escaped/NUL/UTF-8 note vector survives its document.
+  escaped := decode_from_owned_document(C7_INPUT_ESCAPED)?
+  print(escaped.artifact_kind)
+  print(escaped.case_id)
+  print(escaped.algorithm)
+  print(escaped.schema_version)
+  print(escaped.left)
+  print(escaped.right)
+  print(escaped.lower_bound)
+  print(escaped.upper_bound)
+  print(escaped.expected)
+  print(json.encode(escaped))
+  print(note_bytes(escaped.note))
+
+  // Rows 12-17. Section 6.1 `Some(empty)`, omitted `None`, and `null` `None` after source expiry.
+  empty_note := decode_from_owned_document(C7_INPUT_EMPTY_NOTE)?
+  print(json.encode(empty_note))
+  print(note_bytes(empty_note.note))
+  omitted_note := decode_from_owned_document(C7_INPUT_NO_NOTE)?
+  print(json.encode(omitted_note))
+  print(note_bytes(omitted_note.note))
+  null_note := decode_from_owned_document(C7_INPUT_NULL_NOTE)?
+  print(json.encode(null_note))
+  print(note_bytes(null_note.note))
+
+  // Rows 18-24. Request 9 normative owned-path golden pair, bounded encode, and the accepted
+  // unsigned/boolean Copy domain.
+  task: OwnedTask := json.decode(TASK_INPUT)?
+  canonical := json.encode(task)
+  print(canonical)
+  bounded := json.encode_bounded(task, canonical.len())?
+  print(bounded)
+  print(match json.encode_bounded(task, canonical.len() - 1) { Ok(_) => 0, Err(_) => 1 })
+  print(match json.encode_bounded(task, -1) { Ok(_) => 0, Err(_) => 1 })
+  print(task.argv.len())
+  print(template "{task.attempts} {task.limit} {task.enabled} {task.priority}")
+
+  // Row 25. Acceptance item 6: decode -> encode -> decode keeps the semantic owned value while
+  // the first record and the reloaded record are independently live.
+  reloaded: OwnedTask := json.decode(canonical)?
+  print(json.encode(reloaded))
+
+  // Rows 26-28. The three normative optional-note states of the owned golden record.
+  omitted_task: OwnedTask := json.decode(TASK_INPUT_NO_NOTE)?
+  print(json.encode(omitted_task))
+  null_task: OwnedTask := json.decode(TASK_INPUT_NULL_NOTE)?
+  print(json.encode(null_task))
+  empty_task: OwnedTask := json.decode(TASK_INPUT_EMPTY_NOTE)?
+  print(json.encode(empty_task))
+
+  // Rows 29-31. Request 9 acceptance item 9 direct text-array cleanup: replacement drops the live
+  // four-element spine and its elements, move-out transfers them exactly once, and a mid-array
+  // recoverable failure releases every element that is already live.
+  mut replaced: OwnedTask := json.decode(TASK_INPUT)?
+  replaced = json.decode(TASK_INPUT_NO_NOTE)?
+  print(replaced.argv.len())
+  moved := take_task(reloaded)
+  print(moved.argv.len())
+  print(task_failed(TASK_INPUT_BAD_ARRAY_ELEMENT))
+
+  // Rows 32-40. Section 6.3 Move-carrier transfer set over `Result<C7VerificationInput, Error>`.
+  bound := decode_raw_from_owned_document(C7_INPUT_ESCAPED)?
+  print(bound.case_id)
+  passed := pass_raw(json.decode(C7_INPUT_ESCAPED))?
+  print(passed.case_id)
+  returned := return_raw(C7_INPUT_ESCAPED)?
+  print(returned.case_id)
+  reassigned := decode_with_reassigned_raw(C7_INPUT_ESCAPED, C7_INPUT_INTERIOR)?
+  print(reassigned.case_id)
+  mapped := decode_via_map_err(C7_INPUT_ESCAPED)?
+  print(mapped.case_id)
+  branched := decode_branch(false, C7_INPUT_ESCAPED, C7_INPUT_INTERIOR)?
+  print(branched.case_id)
+  print(case_id_or_fallback(C7_INPUT_WRONG_SCALAR))
+  print(expected_or_sentinel(C7_INPUT_TRAILING_BYTES))
+  print(failed(C7_INPUT_WRONG_SCALAR))
+
+  // Rows 41-46. Sections 6.1 and 6.3 move-out of every retained direct field after the source
+  // document has expired, and the source nulling each move performs. Row 11 already moved
+  // `escaped.note`, so the record row 10 encoded with its note now encodes without it, and the
+  // donor record below encodes with three empty text fields once all four owners are transferred
+  // out.
+  print(json.encode(escaped))
+  donor := decode_from_owned_document(C7_INPUT_ESCAPED)?
+  print(text_bytes(donor.artifact_kind))
+  print(text_bytes(donor.case_id))
+  print(text_bytes(donor.algorithm))
+  print(note_bytes(donor.note))
+  print(json.encode(donor))
+  return Ok(())
+}

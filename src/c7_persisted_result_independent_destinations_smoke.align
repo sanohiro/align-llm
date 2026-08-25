@@ -1,0 +1,56 @@
+module c7_persisted_result_independent_destinations_smoke
+
+import persisted_result
+import std.fs
+
+// `c7-persisted-result-independent-destinations-smoke` (`docs/specs/c7-persisted-result.md`
+// sections 9.2 and 13).
+//
+// It closes the "Same-process operation pairs" row and the section 9.2 matrix rows that are
+// supported: serialized `persist_file` + `persist_file` with distinct input/output paths, and
+// `verify_file` + `verify_file` over the same and distinct paths. The module owns no shared
+// mutable state, so the two publications are independent in one process.
+//
+// Two processes sharing one output path stay an unsupported caller condition; this smoke does not
+// exercise it and claims no lock or last-writer guarantee.
+
+fn status_label(value: persisted_result.VerificationStatus) -> str {
+  match value {
+    Pass => { return "PASS" },
+    Fail => { return "FAIL" },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 {
+    return Err(Error.Invalid)
+  }
+  first_input := args[1]
+  first_result := args[2]
+  second_input := args[3]
+  second_result := args[4]
+
+  first := persisted_result.persist_file(first_input, first_result)?
+  second := persisted_result.persist_file(second_input, second_result)?
+  print("first/status")
+  print(status_label(first.status))
+  print(first.expected)
+  print(first.observed)
+  print("second/status")
+  print(status_label(second.status))
+  print(second.expected)
+  print(second.observed)
+
+  // Neither publication disturbed the other destination.
+  first_again := persisted_result.verify_file(first_result)?
+  second_again := persisted_result.verify_file(second_result)?
+  print("first-verify/status")
+  print(status_label(first_again.status))
+  print("second-verify/status")
+  print(status_label(second_again.status))
+  print("first/bytes")
+  print(fs.read_file(first_result)?)
+  print("second/bytes")
+  print(fs.read_file(second_result)?)
+  return Ok(())
+}

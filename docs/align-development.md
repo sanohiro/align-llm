@@ -285,3 +285,93 @@ make verify-loop-smoke
 The repair patch is deliberately an input boundary, not a model implementation. A future provider
 can consume `repair_prompt` and return an equivalent patch without changing verification, timeout,
 or result handling.
+
+## Persisted-result development
+
+The C7-PERSISTED-RESULT consumer is `src/persisted_result.align`, specified by
+`docs/specs/c7-persisted-result.md`. It decodes one declared verification input into an owned
+record, lets the input document and every borrowed view expire, publishes one canonical result
+artifact with a content-bound digest, and verifies that artifact with an independent recomputation.
+
+An input document is one canonical `C7_VERIFICATION_INPUT` record:
+
+```json
+{
+  "schema_version": 1,
+  "artifact_kind": "C7_VERIFICATION_INPUT",
+  "case_id": "upper-equal",
+  "algorithm": "bounded-bucket-v1",
+  "left": 4,
+  "right": 5,
+  "lower_bound": 0,
+  "upper_bound": 9,
+  "expected": 2,
+  "note": "optional, at most 256 bytes"
+}
+```
+
+The wire is canonical: declaration order, no leading or trailing whitespace, no final newline, and
+an omitted `note` for `None`. A decoded record is re-encoded and compared byte-for-byte with the
+file, so unknown fields, reordered keys, whitespace, and a `null` optional spelling are all
+rejected. Both paths must be nonempty, NUL-free, and at most 4,096 bytes, and the two path strings
+must not be byte-identical.
+
+Only an exact-string overlap between the two paths is rejected. An aliased destination that
+resolves to the same file under a different spelling — a symbolic link, a hard link, `./` or `..`
+segments, or any other alternative path to the input — passes that check, and publication then
+creates/truncates that file, destroying the input. Pass two distinct real paths.
+
+Run the two commands with:
+
+```sh
+./main --persist-result <input.json> <result.json>
+./main --verify-result <result.json>
+```
+
+Each prints the same seven-line summary block (`persisted-result:`, `status:`, `PASS` or `FAIL`,
+`expected:`, the value, `observed:`, the value). `PASS` exits 0. A valid semantic `FAIL` is
+persisted data: the artifact is written and reloaded and the summary is printed, and only then does
+the CLI take its `Error.Invalid` exit. Malformed input, invalid artifact data, path validation, and
+operating-system failures return an error with no summary block. Publication uses the whole-file
+`std.fs.write_file` boundary, so a failed write may leave the caller-owned destination absent or
+partial; nothing is removed or restored on that path.
+
+The six bounded functional smokes remain individually invocable:
+
+```sh
+make c7-persisted-result-cli-smoke
+make c7-persisted-result-lifetime-smoke
+make c7-persisted-result-owned-move-smoke
+make c7-persisted-result-wire-smoke
+make c7-persisted-result-noncanonical-input-smoke
+make c7-persisted-result-independent-destinations-smoke
+```
+
+Their fixture vectors live in `scripts/c7_persisted_result_fixtures.py`, an independent ordered
+field table, escape grammar, and bucket reference.
+
+`make persisted-result-smoke` is the bounded functional owner: it drives all six runners as one
+target and prints its own wall-clock cost. That measured cost is the section 12 admission datum, and
+at 3.6 s for the six runners it admitted the target to `HOSTED_CHECK_TARGETS`. The six member
+targets themselves stay out of every aggregate, so the aggregate runs the set exactly once.
+
+`make persisted-result-qualification` is the focused qualification and deliberately stays outside
+every routine hosted and capable aggregate. It owns an independent Python reference (its own ordered
+field tables, Request 7 escape grammar, and `bounded-bucket-v1` reimplementation, sharing nothing
+with the smoke fixture module), the section 10.2 boundary table, the seeded generated differential
+corpus at seed `20260803` (256 PASS and 32 FAIL cases), the malformed-input and artifact-mutation
+corpora, and the temporary source mutation that rewrites the single `else if raw < upper_bound`
+comparison to `<=` in a private copy of the tree, rebuilds it with the selected compiler, and
+requires the differential corpus to detect it. It never mutates the working tree. Run it when the
+algorithm, wire, digest, validation order, or verifier boundary changes, and before publishing such
+a change:
+
+```sh
+make persisted-result-qualification
+```
+
+Both targets follow the section 9.4 process boundary: the Make recipe resolves the selected compiler
+and the built product at the repository root and passes both as explicit arguments, so no child
+rediscovers a compiler from a temporary tree, `PATH`, or a sibling checkout, and every child runs
+with an explicit environment map, separate bounded stdout/stderr capture, and a fixed 60-second
+timeout.
