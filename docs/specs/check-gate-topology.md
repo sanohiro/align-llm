@@ -4178,6 +4178,13 @@ CI's macOS leg links against. Native execution is a precondition, not an observa
 `platform.machine()` must be `arm64` and `sysctl.proc_translated` must be absent or `0`, so a
 Rosetta-translated interpreter fails the gate before any child starts.
 
+The tool versions above are recorded, not range-checked. Reproduction is by matching the recorded
+identity block, so the gate hard-rejects only what it must prove for the block to mean anything:
+Darwin on native `arm64`, a clean repository head, the attested managed toolchain at the pin, the
+three declared Homebrew formulae with readable declared libraries, GNU Make (anything else is
+rejected outright), and the exact `LIBRARY_PATH`. Everything else is bound by digest and version in
+the emitted block.
+
 The profile explicitly does not claim:
 
 - **Kernel-mediated containment.** There is no user namespace, no overlay mount, no delegated

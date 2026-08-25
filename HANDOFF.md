@@ -477,7 +477,12 @@ file records durable project state.
   `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the same head: `python3
   scripts/run-fresh-worker-qualification` **PASS** (focused; installed profile deferred; 23 focused
   rows including `check-gate-topology --self-test`), `python3 scripts/test-development-preflight`
-  PASS, and `python3 scripts/test-align-toolchain` PASS.
+  PASS, and `python3 scripts/test-align-toolchain` PASS. Both the preflight and the installed
+  profile were then re-run at the publication head `cab6755b55b6fb6d94317d3fbfa518cb0ed12061` with
+  the same results — preflight phases `darwin-profile-gate` 15,143 ms, `hosted-checks` 50,434 ms,
+  the same Darwin-only `fresh-focused` failure; installed profile **PASS** with `boundary-profile`
+  255,854 ms and **`worker-aggregate` pass after 379,459 ms**. Only this documentation commit
+  follows that head.
 - **C7-P target-local aarch64 Linux gate, green, at head
   `09294dec94924e0363f0443cc671751dd8174186` (2026-08-25).** Native Linux
   `aarch64` in the privileged `c6g2-measure:latest` container with `--init`, non-root with
