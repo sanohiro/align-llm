@@ -931,31 +931,27 @@ availability, the privileged flag, and `--init` are environment facts recorded i
 
 ### 11.3 Discharge record — `aarch64-apple-darwin`
 
-The Section 10 profile gate passed on this development host at head
-`3e9b27e9af04d4eae616dffb812c8db926d938d8`, the branch's final executable state — the review-repair
-commit that closed the gate's own failure paths, which is itself a section 10.4 re-run trigger. The
-only later commits are this record and the handoff update; both are Markdown and neither changes an
-executable input, a fresh-image classifier input, or a C7 owner boundary. A gate run binds the head
-it ran at, so the record can never be the commit that carries it; what section 10.4 requires, and
-what holds here, is that no executable input moves after the recorded head. Under this repository's
-merge-commit integration that recorded head stays a reachable ancestor of the integration commit, so
-the binding survives the merge; a rebase, squash, or amend would invalidate it and require a fresh
-run.
+The Section 10 profile gate was re-run for the Request 20 pin adoption at clean head
+`863ab0d333209fbd90bec0dd4e4148ef56f167f7`. That head contains the latest pinned Align
+`f57b986bc9326ba8d75dad5dbe4c6531c0f872b6`, the native Linux replacement baseline chain, and no
+later executable change. The commits after the recorded head only record this emitted block,
+Request 20's lifecycle result, and the durable handoff. A gate run binds the head it ran at, so the
+record cannot be the commit that carries it; under merge-commit integration the recorded head stays
+a reachable ancestor. A rebase, squash, amend, or later executable change invalidates the record.
 
-The record is the block the gate emitted, not a transcription of it; `${HOME}` is the emitter's own
-path redaction, and every digest, version, and byte length is verbatim. Any host reproducing these
-identities satisfies the profile.
+The record below is the block the gate emitted. `${HOME}` is the emitter's own path redaction;
+every digest, version, byte length, command, status, and duration is verbatim.
 
 ```json
 {
-  "align_revision": "2f33ac5c33a898a7894af58322852632ce6ffe42",
+  "align_revision": "f57b986bc9326ba8d75dad5dbe4c6531c0f872b6",
   "commands": [
     {
       "argv": [
         "/opt/homebrew/bin/gmake",
         "check"
       ],
-      "duration_ms": 1266,
+      "duration_ms": 4677,
       "label": "/opt/homebrew/bin/gmake check",
       "status": 0
     },
@@ -964,17 +960,17 @@ identities satisfies the profile.
         "/opt/homebrew/bin/gmake",
         "build"
       ],
-      "duration_ms": 276,
+      "duration_ms": 5960,
       "label": "/opt/homebrew/bin/gmake build",
       "status": 0
     },
     {
       "argv": [
-        "${HOME}/.cache/align-llm/align/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42/target/release/alignc",
+        "${HOME}/.cache/align-llm/align/dev-v1/f57b986bc9326ba8d75dad5dbe4c6531c0f872b6/target/release/alignc",
         "check-per-unit",
         "src/main.align"
       ],
-      "duration_ms": 1166,
+      "duration_ms": 4568,
       "label": "alignc check-per-unit src/main.align",
       "status": 0
     },
@@ -992,7 +988,7 @@ identities satisfies the profile.
         "/opt/homebrew/bin/gmake",
         "persisted-result-qualification"
       ],
-      "duration_ms": 9325,
+      "duration_ms": 11138,
       "label": "/opt/homebrew/bin/gmake persisted-result-qualification",
       "status": 0
     }
@@ -1068,43 +1064,29 @@ identities satisfies the profile.
   "profile_schema_version": 1,
   "repository": {
     "git_version": "git version 2.50.1 (Apple Git-155)",
-    "head": "3e9b27e9af04d4eae616dffb812c8db926d938d8",
+    "head": "863ab0d333209fbd90bec0dd4e4148ef56f167f7",
     "worktree": "clean"
   },
   "toolchain": {
     "attestation_schema_version": 1,
-    "compiler_bytes": 8905168,
-    "compiler_path": "${HOME}/.cache/align-llm/align/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42/target/release/alignc",
-    "compiler_sha256": "82e6bea0933332291012f5de43a2a65c02e8dda7dfe990602de3cce3e30c0908",
+    "compiler_bytes": 10404768,
+    "compiler_path": "${HOME}/.cache/align-llm/align/dev-v1/f57b986bc9326ba8d75dad5dbe4c6531c0f872b6/target/release/alignc",
+    "compiler_sha256": "ea90318886ebcc9ed9e29b11ea3065c9d91160fea61b0be285d3196ffa1d084e",
     "compiler_version": "alignc 0.5.0",
     "generation": "dev-v1",
-    "revision": "2f33ac5c33a898a7894af58322852632ce6ffe42",
-    "root": "${HOME}/.cache/align-llm/align/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42",
+    "revision": "f57b986bc9326ba8d75dad5dbe4c6531c0f872b6",
+    "root": "${HOME}/.cache/align-llm/align/dev-v1/f57b986bc9326ba8d75dad5dbe4c6531c0f872b6",
     "runtime_bytes": 11816304,
-    "runtime_path": "${HOME}/.cache/align-llm/align/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42/target/release/libalign_runtime.a",
+    "runtime_path": "${HOME}/.cache/align-llm/align/dev-v1/f57b986bc9326ba8d75dad5dbe4c6531c0f872b6/target/release/libalign_runtime.a",
     "runtime_sha256": "0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211"
   }
 }
 ```
 
-Reproducing command, from the repository root with the Section 10 linker input exported:
-
-```text
-LIBRARY_PATH="$(brew --prefix)/lib:$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib" \
-  make darwin-profile-gate
-```
-
-**What this discharges and what it does not.** It discharges section 11's requirement that
-`aarch64-apple-darwin` have a reviewed platform profile and a passing target-local gate before it
-provides C7 evidence, so C7 runs on a host reproducing this block are acceptance evidence rather
-than development evidence. It claims no containment: there is no namespace, no cgroup, and no
-`sandbox-exec`, and Section 10.1 states the complete non-claim list. It is not evidence for any
-other target, and it is not a substitute for the Section 9 supervised aggregate.
-
-The target-local nature of Request 9's owned descriptor is Align's contract. C7 does not invent a
-portable binary layout or compare compiler descriptors. Per-unit and whole-program checks must
-prove the imported `persisted_result` interface is the same as the implementation unit on each
-declared target.
+All five acceptance commands passed against the same attested compiler/runtime pair. The
+qualification exercises the Request 9 owned-JSON consumer on native Apple Silicon; Align PR #887's
+separate required macOS job supplies the compiler-side 10-row owner. Timings are diagnostics only,
+not a performance claim.
 
 ## 12. Capability delivery and acceptance ownership
 

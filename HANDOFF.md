@@ -3,7 +3,59 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
+## Active capability: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
+
+- Work is on `agent/request20-align-pin-final`, based on align-llm `main` at `0a8b9cf`. Align Request 20
+  shipped in Align PR #887 as `fa3f03f15f0b1d876683343233f440bce6ea27c5`; PR #888 then closed
+  its upstream handoff. A later docs-only CI merge, PR #889, moved Align `main` to
+  `f57b986bc9326ba8d75dad5dbe4c6531c0f872b6`; `.align-revision` now selects that exact latest
+  commit. The compiler/runtime source payload is unchanged, but the managed binary and every
+  pin-bound record still require evidence against the new identity.
+- The upstream response is verified, not inferred from the PR summary: the required `macos-15`
+  Apple Silicon job ran `align_driver --test m5_owned_json` and all 10 rows passed. The same PR
+  repairs the storage-generation regression that made `JsonOwnedDecode` retain its input and arena
+  facts even though the shipped owner is free-standing.
+- The managed release compiler/runtime materializes at the selected latest pin on native macOS arm64 with
+  `LLVM_CONFIG=/opt/homebrew/opt/llvm@22/bin/llvm-config`. The first original client fixture passes:
+  `gmake --no-print-directory c7-owned-record-source-expiry-adoption` reports 3 parsed fixtures,
+  12 example rows, and 45 adoption rows.
+- The Darwin profile passed at clean latest-pin head `863ab0d333209fbd90bec0dd4e4148ef56f167f7`:
+  `check` 4,677 ms, `build` 5,960 ms, direct `check-per-unit` 4,568 ms,
+  `persisted-result-smoke` 3,534 ms, and `persisted-result-qualification` 11,138 ms. The attested
+  compiler digest is `ea90318886ebcc9ed9e29b11ea3065c9d91160fea61b0be285d3196ffa1d084e`;
+  runtime digest is
+  `0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211`.
+- The first supervised aggregate correctly rejected the canonical baseline's old Align pin. A
+  replacement chain was then mistakenly measured on macOS, where the corpus-fixed
+  `/usr/bin/python3` is 3.9 and cannot parse the runner's `float | None` annotation. The recorder
+  deliberately persisted two complete FAIL samples, and the negative smoke exposed their null
+  aggregate timing. That non-passing chain (`026e3b1` -> `7d24042` -> `1a8b026`) is preserved as
+  failed evidence and must not be published as canonical proof.
+- The latest accepted replacement was recorded as non-root on native Linux aarch64 in the privileged
+  `c6g2-measure:latest` helper with CPython 3.12 and bubblewrap. Both deterministic-reference
+  samples passed (133,219,500–141,093,417 ns; median 137,156,458 ns). The strict chain is source
+  `3714b371e09ca2937981d9098a167c43084bc0f3`, oracle
+  `7080b61f9a4b5b6542b77524f0f6c7b42786b801`, and finalization
+  `863ab0d333209fbd90bec0dd4e4148ef56f167f7`; `check-baseline-chain` and `verify-baseline.py` pass.
+  The preceding `dc321412` Linux chain remains a valid intermediate pin checkpoint, not canonical.
+- The final supervised fresh-image profile passes at `863ab0d`. Phases: image build 33,852 ms,
+  attestation 3,354 ms, lifecycle 2,426 ms, self-test 14,769 ms, trust mutations 12,336 ms,
+  runtime replacements 21,554 ms, boundary profile 274,947 ms, worker aggregate 424,471 ms, and
+  cleanup 1,272 ms. Request 20 is `ALIGN_LLM_VERIFIED` at the selected latest pin.
+- The first comprehensive review of `2caae5f` found one valid P2: the request register still called
+  the earlier `2f33ac5` revision current. The register now names the selected pin and labels Request
+  19's filing-time measurement historical. Because Align advanced during review, the accepted
+  `dc321412` evidence above is now an intermediate checkpoint rather than publication evidence.
+- The final comprehensive review of `c2cb859` found two valid P2 classes: Request 20 still promised
+  its owner on every pull request even though the selected PR #889 workflow deliberately exempts
+  trusted docs-only `main` diffs, and Requests 16–18 lacked their already-merged align-llm
+  publication links. The repair narrows the CI contract to platform-required pull requests with the
+  exact fail-closed exception and records PR #98/#99 merge evidence; no executable or baseline-owned
+  path moves.
+- Pending at this checkpoint: inspect the narrow review-repair commits, run exact-head preflight,
+  and publish. `CLOSED` waits for the resulting align-llm merge.
+
+## Merged checkpoint: ADAPTER-ZOMBIE — descendant-scan containment repair (2026-08-25)
 
 - C7-P merged as align-llm PR #105 (`a4f8663`). The active capability is ADAPTER-ZOMBIE on branch
   `agent/adapter-zombie-descendants`, which closes follow-up item 2 below — the latent
@@ -1281,81 +1333,16 @@ file records durable project state.
 
 ## Next actions
 
-0. **Publish C7-PERSISTED-RESULT from `agent/c7-persisted-result`.** Every implementation slice, the
-   re-finalized identity-bound baseline chain, the supervised capable gate, and the host owner
-   checks are complete and recorded above; nothing blocks publication. Run one fresh comprehensive
-   review of the whole diff — it spans an authoritative specification (`docs/specs/c7-persisted-
-   result.md`), governance (`docs/align-requests.md` Request 9), and product code, so it is a
-   governance-relevant diff — then publish the English pull request carrying the three slices, the
-   section 12 lane-admission decision and its measured cost, the qualification numbers, the
-   qualification-discovered exit-2 decode-error-class repair, the section 9.4 compiler capture-bound
-   correction, the baseline chain triple, and the exact supervised-gate phase table. Record the C7-P
-   platform-profile caveat rather than claiming aarch64 C7 acceptance from these runs. The shared
-   final classifier still owes its stamp at the exact unchanged publication head: the branch selects
-   executable preflight (`scope: fresh-image`), so run
-   `python3 scripts/pre-pr --owner-test persisted-result-qualification -- gmake
-   --no-print-directory persisted-result-qualification`, which also runs `align-toolchain
-   ensure source`/`verify`, `hosted-checks`, `run-fresh-worker-qualification`, and the installed
-   profile with `--align-repo`. Export
-   `LIBRARY_PATH=$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib` on this host first, and
-   clear any `/sys/fs/cgroup/align-llm-fresh/<uid>` residue before the installed-profile leg.
-
-1. **C7-P — the reviewed aarch64 platform profiles.** This is the next roadmap-eligible design
-   capability. Section 12 item 1 of `docs/specs/c7-persisted-result.md` makes
-   `aarch64-unknown-linux-gnu` (Ubuntu 24.04-arm) and `aarch64-apple-darwin` (macOS 15) *required*
-   C7 acceptance environments, and each needs its own reviewed platform-profile design and
-   implementation — compiler/runtime construction, namespace or process boundary, toolchain inputs,
-   and exact acceptance commands — before it may enter C7 adoption or provide C7 evidence. The
-   Section 9 x86_64 profile substitutes for neither. It changes an ownership/process boundary and a
-   persisted profile identity, so it triggers the proportional design gate: settle the
-   public-contract ledger and closure matrix under `docs/specs/` before coding.
-2. **Closed by ADAPTER-ZOMBIE, with one deliberate remainder.** The adapter-zombie follow-up from
-   PR #103 (`d7f1ff6`) is discharged for the containment class: all six scans named in that
-   diagnosis now omit an entry only at `State: Z` with `Threads: 1`, so a fully terminated adopted
-   orphan can no longer be reported as an escaped descendant, a zombie leader whose group still
-   holds a live worker thread still is, and no harness needs a reap-then-scan seam to get a correct
-   verdict. The remainder is `eval/runners/run-coding-task.py`, which carries the same scan under a
-   **different** contract: its `validation_process_usage` counts entries against
-   `MAX_VALIDATION_PROCESSES = 256`, so an adopted zombie inflates a resource budget rather than
-   failing containment, and its other two consumers only kill (a no-op on a zombie). It was left
-   alone because it is a distinct failure domain and because it is a frozen `FILE_SET` corpus
-   member — changing its bytes forces another chain rebind and another provider-backed
-   re-measurement. Repair it inside a capability that already pays that cost, or when the
-   validation process budget is next revisited. **The deferral is a plan decision, not just this
-   note:** §1.2 of `docs/specs/c6-prompt-context-optimizer.md` records it with the same owner and
-   resume condition, and the §10.1g ledger row no longer names the coding runner as an owner of the
-   live-entry rule.
-3. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+1. Commit REQUEST20-PIN's evidence record, review the stable candidate, run the exact-head
+   executable preflight, and publish with merge-commit integration.
+2. After the pin capability merges, close Request 20 with the merged align-llm publication evidence.
+3. Start Request 19, the only remaining proposed Align request and the highest-priority upstream
+   capability.
+4. Preserve the deliberate `eval/runners/run-coding-task.py` zombie-counting deferral until a
+   capability already rebinds and re-measures the frozen coding corpus or revisits the validation
+   process budget.
+5. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
-4. Merged historical item: C6-MEASURED was published from `agent/c6-measured` and merged as PR #103
-   (`c9a510d`) with its narrowed measured claim, the per-cell matrix, the validator transcript, the
-   named-qualification status of `prompt-gate-check` and `prompt-verifier-smoke`, and the supervised
-   phase table recorded above.
-5. Merged historical item: the register/HANDOFF reconciliation branch
-   `agent/reconcile-request-register` recorded the passed C6-EVALUATION capable gate and advanced
-   Requests 11 and 14.
-6. Historical: C6-MEASURED (C6e, C6g1, C6g2) was begun as the next consumer capability: bounded
-   provider proposal, declared decoding, secret redaction, real consumer, frozen corpus and
-   policies, real parent/candidate comparison, checked-in gate evidence, accept decision, and
-   linked rollback. The triggered design gate is satisfied: §11.3 of
-   `docs/specs/c6-prompt-context-optimizer.md` is the settled public-contract ledger and closure
-   matrix (new `prompt_experiment` surface and `PromptExperimentStatus`, the
-   `PromptExperimentRequest` record, reuse of the settled kind-`OPPORTUNITY` text artifact,
-   credential/redaction surface, provider error mapping with the `Error.Code(-1)` limit sentinel,
-   shared seed extension and `pub` serializer exports, parameterized transport cap, Request 2
-   adoption target, C6g asset paths, and the gate-validator identity).
-   Implementation may start immediately against that ledger; no further design pull request is
-   required.
-7. Request 2 (plaintext/TLS provider timeouts) is adopted and recorded `ALIGN_LLM_VERIFIED`: its
-   named `c6e-request2-adoption` owner and the wave's capable gate both pass at the pin
-   `2f33ac5c33a898a7894af58322852632ce6ffe42` and at the review-repaired head, and its final
-   supervised `make ci` leg is met and recorded in the register. Do not infer a provider-quality
-   claim beyond this wave's measured gate; §11.3's "What the measured claim is and is not" is the
-   delivered result.
-8. Completed historical item: C7-PERSISTED-RESULT was begun after C6-MEASURED per
-   `docs/specs/c7-persisted-result.md`, and Request 9 was adopted through the named C7 adoption
-   fixture before product code consumed the owned-JSON surface. Request 9 is now
-   `ALIGN_LLM_VERIFIED`; only Request 19 remains `PROPOSED`.
 
 ## Recovery and preservation
 
