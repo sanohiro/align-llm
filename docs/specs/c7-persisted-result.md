@@ -810,23 +810,296 @@ The minimum C7 acceptance environment is the repository's pinned Align environme
   `./Configure --prefix="$OPENSSL_PREFIX" --libdir=lib shared no-tests`, `make`, and
   `make install_sw`; the resulting `LIBRARY_PATH`, `LD_LIBRARY_PATH`, and
   `PKG_CONFIG_PATH` are the only OpenSSL paths admitted to the runner;
-- macOS uses the Align CI's native `openssl@3` Homebrew dependency and its
-  `LIBRARY_PATH=$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib` setup;
 - the exact Align revision recorded in `.align-revision`, materialized as the managed release
   compiler and runtime before adoption.
 
-The common fresh-compiler topology in Section 9 of `docs/specs/check-gate-topology.md` is only the
-Linux x86_64 platform profile. The sibling Align release targets `aarch64-unknown-linux-gnu` on
-Ubuntu 24.04-arm and `aarch64-apple-darwin` on macOS 15 are required C7 acceptance environments,
-not supplementary evidence, because Request 9 makes target-local natural ownership/layout behavior
-part of its contract. Before either non-x86 environment can enter C7 adoption or provide C7 evidence,
-it needs its own reviewed platform-profile design and implementation, including the compiler/runtime
-construction, namespace or process boundary, toolchain inputs, and exact acceptance commands. The
-x86_64 Section 9 profile is not evidence for either target. Each native environment must run the C7
-focused target against a compiler and runtime rebuilt at the exact pinned revision after its own
-profile passes. A newer compiler, host, or generic OpenSSL 3.0 installation is not a substitute for
-the named build configurations. The C7 artifact itself contains no target or ABI field; the adoption
-result is bound externally to the tested compiler revision, platform profile, and environment.
+That list is the Linux minimum environment. The `aarch64-apple-darwin` target's own toolchain
+inputs, including its Homebrew `openssl@3`/`zstd`/`llvm` identities and the `LIBRARY_PATH` the Align
+build gate requires there, belong to the Darwin profile and are stated in section 11.1 and in
+Section 10 of `docs/specs/check-gate-topology.md`.
+
+Section 9 of `docs/specs/check-gate-topology.md` is the common fresh-compiler topology for native
+Linux, and section 9.1 claims both the `x86_64` and the `aarch64` row of its architecture table. It
+is not a macOS profile and never becomes one. For C7 the two facts are separate: the arm topology
+exists, but C7 evidence on `aarch64-unknown-linux-gnu` additionally requires the reuse condition
+stated at the end of that section's platform paragraph — the profile's native aarch64 owner passing
+at the exact C7 head — which section 11.2 below discharges. The sibling Align release targets
+`aarch64-unknown-linux-gnu` on Ubuntu 24.04-arm and `aarch64-apple-darwin` on macOS 15 are required
+C7 acceptance environments, not supplementary evidence, because Request 9 makes target-local natural
+ownership/layout behavior part of its contract. Before either non-x86 environment can enter C7
+adoption or provide C7 evidence, it needs its own reviewed platform profile, including the
+compiler/runtime construction, namespace or process boundary, toolchain inputs, and exact acceptance
+commands. Each native environment must run the C7 focused targets against a compiler and runtime
+**rebuilt or materialized** at the exact pinned revision after its own profile passes — the same
+wording section 12.1 uses, because the requirement is revision identity, not a particular way of
+producing the binary. What each profile owes is a verifiable statement of which it did: the checkout
+revision is verified, and the binary is recorded by digest. A newer compiler, host, or generic
+OpenSSL 3.0 installation is not a substitute for the named build configurations. The C7 artifact
+itself contains no target or ABI field; the adoption result is bound externally to the tested
+compiler revision, platform profile, and environment.
+
+### 11.1 Platform profiles, owners, and gate cadence
+
+| Target | Owning profile | Target-local gate | Cadence | Status |
+| --- | --- | --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md` | The installed fresh-image profile plus the supervised `make ci` graph | Per capability gate, as Section 9 already defines | Available; unchanged by this wave |
+| `aarch64-unknown-linux-gnu` | Section 9 of `docs/specs/check-gate-topology.md`, reused under its own stated condition | `persisted-result-smoke` and `persisted-result-qualification`, run natively at the exact head against a pinned-revision compiler and runtime | Named focused qualification: pin bump, C7 owner-boundary change, or explicit audit | Discharged in section 11.2 |
+| `aarch64-apple-darwin` | Section 10 of `docs/specs/check-gate-topology.md` | `make darwin-profile-gate` (`scripts/check-darwin-profile`), whose five acceptance commands include both C7 targets | Named focused qualification: pin bump, C7 owner-boundary change, or explicit audit | Discharged in section 11.3 |
+
+Neither aarch64 gate is a per-pull-request check and neither joins `hosted-checks`,
+`capable-checks`, or `ci`; both are named focused qualifications in the sense of `CLAUDE.md`'s
+verification categories, where platform suites run when their owner boundary changes or an audit
+requires them. The Darwin profile is deliberately minimal: it claims a process boundary and digest
+attestation, never Linux containment parity, and explicitly no `sandbox-exec`. Its full scope,
+non-claims, identity inputs, contract, and ledger are Section 10 of
+`docs/specs/check-gate-topology.md`; this section records only the discharge evidence.
+
+### 11.2 Discharge record — `aarch64-unknown-linux-gnu`
+
+Section 9.1 of `docs/specs/check-gate-topology.md` lets C7's aarch64 Linux environment reuse the
+common fresh-compiler topology "only after this profile's native aarch64 owner passes at the exact
+C7 head". Both halves of that condition are now recorded.
+
+**The profile's native aarch64 owner at the exact C7 head.** The C7-PERSISTED-RESULT reviewed head
+is `e14ba33e041f4e23c80696146b05c9306b399af1` (align-llm pull request #104, merged as
+`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`). At that exact head the hosted check
+`Installed Ubuntu 24.04 fresh-image profile (aarch64)` concluded `success` — workflow run
+`32814437108`, job `97699828694` — beside the `x86_64` profile and the pinned-compiler check. That
+is the Section 9 profile's own native aarch64 owner, run at the C7 head rather than reused from an
+earlier one.
+
+**Pinned-revision compiler and runtime, native aarch64 Linux.** The target-local gate below ran
+against a native `aarch64-unknown-linux-gnu` build of the exact pinned revision, verified and
+attested by `scripts/align-toolchain attest compiler` through the managed layout.
+
+Be exact about what that attestation does and does not establish. The binaries are the measurement
+image's own native pinned build, presented to the helper through the managed toolchain layout at
+`/opt/align-managed/dev-v1/<revision>/`; this record does not claim a fresh `cargo build` performed
+inside the recorded run. What `attest` verifies is the *checkout*: the managed source directory is
+at the exact pinned revision, is clean, and carries both build outputs, and the compiler answers
+`--version`. The *binary* provenance is recorded, not derived — the SHA-256 and byte length below
+are what a reproducing host must match. That is exactly the "rebuilt or materialized" case section
+11 admits, and it is why the digests, and not the phrase "rebuilt", are the trust content:
+
+```json
+{
+  "attestation_schema_version": 1,
+  "compiler_bytes": 9700904,
+  "compiler_path": "/opt/align-managed/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42/target/release/alignc",
+  "compiler_sha256": "7507770f2d5c36e94730fee3290446d7751d1ea83ecac00801086261ecfcf100",
+  "compiler_version": "alignc 0.5.0",
+  "generation": "dev-v1",
+  "revision": "2f33ac5c33a898a7894af58322852632ce6ffe42",
+  "root": "/opt/align-managed/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42",
+  "runtime_bytes": 29271106,
+  "runtime_path": "/opt/align-managed/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42/target/release/libalign_runtime.a",
+  "runtime_sha256": "8718943f29a9a3f9ba12b38c18eeeb3e70db9bbfdb034e78bf03c49a222a755d"
+}
+```
+
+**Target-local profile gate.** Recorded on native Linux `aarch64` in the privileged
+`c6g2-measure:latest` container started with `--init`, as a non-root uid with `umask 022` and
+`PYTHONDONTWRITEBYTECODE=1`, on a clean `git clone` of the committed head
+`09294dec94924e0363f0443cc671751dd8174186`, with `ALIGN_TOOLCHAIN_ROOT` naming the managed root
+above and no `ALIGNC`/`ALIGN_REPO` override. Host: Linux 6.11.11-linuxkit aarch64, CPython 3.12.3,
+GNU Make 4.3, Git 2.43.0.
+
+| Command | Result | Wall clock |
+| --- | --- | --- |
+| `python3 scripts/check-gate-topology --self-test` | `check gate topology self-test: PASS` | 5,685 ms |
+| `make gate-topology-check` | `check gate topology: PASS` | 33 ms |
+| `make check` | `ok: checked 23 unit(s) per-unit` | 1,687 ms |
+| `make build` | `alignc: built executable: main` | 5,829 ms |
+| `<attested-alignc> check-per-unit src/main.align` | `ok: checked 23 unit(s) per-unit` | 1,637 ms |
+| `make persisted-result-smoke` | **PASS**, 6 bounded functional runners, 0.5 s of runner wall clock | 747 ms |
+| `make persisted-result-qualification` | **PASS**: 11 boundary, 256 generated PASS, 32 generated FAIL, 38 malformed inputs, 29 result mutations, 10 golden rows, 0 unexpected divergences, source mutation detected with 5 divergent and 38 agreeing cases, 749 bounded children, `target aarch64-linux` | 7,179 ms |
+| `python3 scripts/check-baseline-chain` | `baseline chain: PASS` | 36 ms |
+
+The qualification's own `target aarch64-linux` line is the runner's target observation, so the
+generated corpus, the malformed and mutation corpora, and the intentionally mutated source were all
+exercised against a target-local build. Timings are diagnostics, not a performance claim.
+
+Commits after that head change `scripts/check-darwin-profile`'s error paths, add its failure-path
+owner `scripts/test-check-darwin-profile`, and update documentation. They touch no C7 module,
+runner, fixture, or Make target — and none of them is an input the classifier owns for the fresh
+image — so this record stands for the branch.
+
+**Non-claims.** This record does not claim a Section 9 supervised `make ci` on aarch64 at this head;
+that aggregate is the capability gate's business and its aarch64 owner is the hosted check named
+above. The container is a measurement environment, not repository state, and `bubblewrap`
+availability, the privileged flag, and `--init` are environment facts recorded in `HANDOFF.md`.
+
+### 11.3 Discharge record — `aarch64-apple-darwin`
+
+The Section 10 profile gate passed on this development host at head
+`3e9b27e9af04d4eae616dffb812c8db926d938d8`, the branch's final executable state — the review-repair
+commit that closed the gate's own failure paths, which is itself a section 10.4 re-run trigger. The
+only later commits are this record and the handoff update; both are Markdown and neither changes an
+executable input, a fresh-image classifier input, or a C7 owner boundary. A gate run binds the head
+it ran at, so the record can never be the commit that carries it; what section 10.4 requires, and
+what holds here, is that no executable input moves after the recorded head. Under this repository's
+merge-commit integration that recorded head stays a reachable ancestor of the integration commit, so
+the binding survives the merge; a rebase, squash, or amend would invalidate it and require a fresh
+run.
+
+The record is the block the gate emitted, not a transcription of it; `${HOME}` is the emitter's own
+path redaction, and every digest, version, and byte length is verbatim. Any host reproducing these
+identities satisfies the profile.
+
+```json
+{
+  "align_revision": "2f33ac5c33a898a7894af58322852632ce6ffe42",
+  "commands": [
+    {
+      "argv": [
+        "/opt/homebrew/bin/gmake",
+        "check"
+      ],
+      "duration_ms": 1266,
+      "label": "/opt/homebrew/bin/gmake check",
+      "status": 0
+    },
+    {
+      "argv": [
+        "/opt/homebrew/bin/gmake",
+        "build"
+      ],
+      "duration_ms": 276,
+      "label": "/opt/homebrew/bin/gmake build",
+      "status": 0
+    },
+    {
+      "argv": [
+        "${HOME}/.cache/align-llm/align/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42/target/release/alignc",
+        "check-per-unit",
+        "src/main.align"
+      ],
+      "duration_ms": 1166,
+      "label": "alignc check-per-unit src/main.align",
+      "status": 0
+    },
+    {
+      "argv": [
+        "/opt/homebrew/bin/gmake",
+        "persisted-result-smoke"
+      ],
+      "duration_ms": 3534,
+      "label": "/opt/homebrew/bin/gmake persisted-result-smoke",
+      "status": 0
+    },
+    {
+      "argv": [
+        "/opt/homebrew/bin/gmake",
+        "persisted-result-qualification"
+      ],
+      "duration_ms": 9325,
+      "label": "/opt/homebrew/bin/gmake persisted-result-qualification",
+      "status": 0
+    }
+  ],
+  "homebrew": {
+    "formulae": {
+      "llvm": {
+        "cellar_path": "/opt/homebrew/Cellar/llvm/22.1.8",
+        "opt_prefix": "/opt/homebrew/opt/llvm",
+        "version": "22.1.8"
+      },
+      "openssl@3": {
+        "cellar_path": "/opt/homebrew/Cellar/openssl@3/3.6.3",
+        "opt_prefix": "/opt/homebrew/opt/openssl@3",
+        "version": "3.6.3"
+      },
+      "zstd": {
+        "cellar_path": "/opt/homebrew/Cellar/zstd/1.5.7_1",
+        "opt_prefix": "/opt/homebrew/opt/zstd",
+        "version": "1.5.7_1"
+      }
+    },
+    "prefix": "/opt/homebrew"
+  },
+  "host": {
+    "machine": "arm64",
+    "macos_build_version": "25F84",
+    "macos_product_version": "26.5.2",
+    "proc_translated": 0,
+    "python_version": "3.14.6",
+    "release": "25.5.0",
+    "system": "Darwin"
+  },
+  "library_path": {
+    "libraries": [
+      {
+        "bytes": 884992,
+        "formula": "openssl@3",
+        "path": "/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib",
+        "resolved_path": "/opt/homebrew/Cellar/openssl@3/3.6.3/lib/libssl.3.dylib",
+        "sha256": "4c3c554adc8ace6ec2245b4962b181451d245edfab92c3a09fc7b3be094e7438"
+      },
+      {
+        "bytes": 4846032,
+        "formula": "openssl@3",
+        "path": "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib",
+        "resolved_path": "/opt/homebrew/Cellar/openssl@3/3.6.3/lib/libcrypto.3.dylib",
+        "sha256": "34bc039f5c725691e757ef42d26f1709830b18046c3ad6d93985153c83d0bbbc"
+      },
+      {
+        "bytes": 649648,
+        "formula": "zstd",
+        "path": "/opt/homebrew/opt/zstd/lib/libzstd.dylib",
+        "resolved_path": "/opt/homebrew/Cellar/zstd/1.5.7_1/lib/libzstd.1.5.7.dylib",
+        "sha256": "e2847c4613b386683c234913ae3b7b04299254096caf7616e3b3cd9bb97a39ab"
+      },
+      {
+        "bytes": 163648752,
+        "formula": "llvm",
+        "path": "/opt/homebrew/opt/llvm/lib/libLLVM.dylib",
+        "resolved_path": "/opt/homebrew/Cellar/llvm/22.1.8/lib/libLLVM.dylib",
+        "sha256": "21be63841572f7f00e754426f389ec6bf6b704fc1993b890e276a82df894257c"
+      }
+    ],
+    "value": "/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib"
+  },
+  "make": {
+    "path": "/opt/homebrew/bin/gmake",
+    "version": "GNU Make 4.4.1"
+  },
+  "path_redaction": "${HOME}",
+  "profile": "darwin-aarch64-v1",
+  "profile_schema_version": 1,
+  "repository": {
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "head": "3e9b27e9af04d4eae616dffb812c8db926d938d8",
+    "worktree": "clean"
+  },
+  "toolchain": {
+    "attestation_schema_version": 1,
+    "compiler_bytes": 8905168,
+    "compiler_path": "${HOME}/.cache/align-llm/align/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42/target/release/alignc",
+    "compiler_sha256": "82e6bea0933332291012f5de43a2a65c02e8dda7dfe990602de3cce3e30c0908",
+    "compiler_version": "alignc 0.5.0",
+    "generation": "dev-v1",
+    "revision": "2f33ac5c33a898a7894af58322852632ce6ffe42",
+    "root": "${HOME}/.cache/align-llm/align/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42",
+    "runtime_bytes": 11816304,
+    "runtime_path": "${HOME}/.cache/align-llm/align/dev-v1/2f33ac5c33a898a7894af58322852632ce6ffe42/target/release/libalign_runtime.a",
+    "runtime_sha256": "0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211"
+  }
+}
+```
+
+Reproducing command, from the repository root with the Section 10 linker input exported:
+
+```text
+LIBRARY_PATH="$(brew --prefix)/lib:$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib" \
+  make darwin-profile-gate
+```
+
+**What this discharges and what it does not.** It discharges section 11's requirement that
+`aarch64-apple-darwin` have a reviewed platform profile and a passing target-local gate before it
+provides C7 evidence, so C7 runs on a host reproducing this block are acceptance evidence rather
+than development evidence. It claims no containment: there is no namespace, no cgroup, and no
+`sandbox-exec`, and Section 10.1 states the complete non-claim list. It is not evidence for any
+other target, and it is not a substitute for the Section 9 supervised aggregate.
 
 The target-local nature of Request 9's owned descriptor is Align's contract. C7 does not invent a
 portable binary layout or compare compiler descriptors. Per-unit and whole-program checks must
@@ -841,9 +1114,17 @@ boundaries:
 
 1. **C7-P — target platform profiles.** A platform profile is independently installable and has a
    distinct host-image failure domain. Before C7 evidence is claimed on aarch64 Linux or aarch64
-   macOS, that target's reviewed profile must be implemented, the sibling compiler/runtime rebuilt
-   at the pinned revision, and the target-local profile gate passed. The x86_64 Section 9 profile
-   cannot substitute for another target.
+   macOS, that target's reviewed profile must be implemented, the compiler/runtime rebuilt or
+   materialized at the pinned revision, and the target-local profile gate passed. The x86_64
+   Section 9 profile cannot substitute for another target. **This wave delivers C7-P for both
+   targets.** `aarch64-unknown-linux-gnu` reuses the Section 9 topology under that section's own
+   stated condition, discharged in section 11.2. `aarch64-apple-darwin` gets a new, deliberately
+   minimal profile — Section 10 of `docs/specs/check-gate-topology.md` — implemented as
+   `scripts/check-darwin-profile` behind `make darwin-profile-gate`, with
+   `scripts/align-toolchain attest compiler` as its toolchain-identity source, discharged in
+   section 11.3. Both gates are named focused qualifications, not lane members, so neither changes
+   the topology oracle; the Make target addition does re-finalize the identity-bound canonical
+   baseline chain.
 2. **C7-PERSISTED-RESULT — complete product consumer.** After Request 9 is `ALIGN_MERGED` and the
    applicable platform profile is available, adopt the exact owned-record surface and implement the
    records, decode/encode lifetime boundary, digest identity, algorithm, `persist_file`/
@@ -902,7 +1183,10 @@ blocked records.
 | `eval/` C7 fixtures | Acceptance owner | Canonical boundary inputs/expected bytes only after adopted encoder behavior is fixed |
 | `docs/examples/c7-persisted-result-syntax.align` | Syntax/adoption owner | Declarations and calls separately; parser-only check |
 | `docs/examples/c7-persisted-result-lifetime.align` | Request 9 adoption owner | Direct source-owner expiry before every retained field read/move; parser/runtime adoption fixture |
-| `Makefile` | Check-topology owner | Focused commands; aggregate inclusion only after the bounded-smoke admission decision |
+| `scripts/check-darwin-profile` | C7-P Darwin profile owner | Host/toolchain/library identity validation, the five acceptance commands as bounded children, and the emitted identity block |
+| `scripts/test-check-darwin-profile` | C7-P Darwin profile failure-path owner | The construction, malformed-input, early-exit, and cleanup cells a passing gate run never reaches; no Make target, per the `scripts/test-align-toolchain` precedent |
+| `scripts/align-toolchain` | Managed-toolchain owner | The `attest compiler` subcommand: the read-only digest identity of the managed compiler and runtime at the pin |
+| `Makefile` | Check-topology owner | Focused commands; aggregate inclusion only after the bounded-smoke admission decision; the focused `darwin-profile-gate` target joins no aggregate |
 | `scripts/check-gate-topology` | Topology oracle owner | Update only if aggregate membership changes |
 | `docs/specs/check-gate-topology.md` | Topology design owner | Record the admission decision and baseline implications when applicable |
 | `docs/align-development.md` | Developer-guide owner | Command and adoption instructions |
@@ -961,7 +1245,9 @@ not a missing owner.
 | Structural Align compiler cache identity | N/A: C7 owns no compiler/cache artifact | Request 9/Align owns descriptor identity; C7 uses no application cache | N/A with this reason; adoption compiler checks remain required |
 | Artifact schema/wire identity | C7 plan and module | Field order/types/version/content digest agree | canonical golden vectors, schema mutation |
 | Producer-owned inspection fields | C7 module | Every persisted field is constructed from explicit input or deterministic algorithm; no reflection/source read | producer table below and independent reference comparison |
-| Minimum tool/platform compatibility | adoption Make/CI owner | Pin and test every named native environment; no supplementary host substitutes for a required target | named environments in §11 and hosted evidence |
+| Minimum tool/platform compatibility | adoption Make/CI owner; C7-P profile owners | Pin and test every named native environment; no supplementary host substitutes for a required target | named environments in §11, the §11.1 profile table, the §11.2/§11.3 discharge records, and hosted evidence |
+| Platform-gate failure paths | `scripts/check-darwin-profile` | Every failure — construction, malformed toolchain input, early exit, and cleanup — exits through the one canonical `darwin profile gate: ERROR <phase> <detail>` prefix line with bounded continuation lines and no partial identity block on stdout | `python3 scripts/test-check-darwin-profile`, whose cells are the failure-path closure matrix in §10.6 of `docs/specs/check-gate-topology.md` |
+| Platform-gate toolchain identity | `scripts/align-toolchain attest compiler` | Read-only canonical attestation of the managed compiler and runtime at the pin; a dirty or unverifiable checkout is rejected and prints no block | `python3 scripts/test-align-toolchain` attestation cases |
 | Performance benchmark | N/A for this capability | No threshold or speed claim | Later C7 benchmark design required before a performance claim |
 | Syntax examples | docs/adoption owner | Declaration and positional-call examples parse separately | `alignc fmt docs/examples/c7-persisted-result-syntax.align` |
 | Milestone ordering | C7 design owner | Shipped Request 9 surface and platform profile precede dependent implementation; internal checkpoints remain on the capability branch | capability commits and focused acceptance evidence |

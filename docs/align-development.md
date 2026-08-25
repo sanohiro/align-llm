@@ -375,3 +375,50 @@ and the built product at the repository root and passes both as explicit argumen
 rediscovers a compiler from a temporary tree, `PATH`, or a sibling checkout, and every child runs
 with an explicit environment map, separate bounded stdout/stderr capture, and a fixed 60-second
 timeout.
+
+## The aarch64 platform-profile gates
+
+C7 evidence is target-bound, so each required non-x86 environment has its own reviewed profile.
+Both gates are named focused qualifications: run them at a `.align-revision` pin bump, at a change
+to a C7 owner boundary, or for an explicit audit. Neither joins an aggregate.
+
+On `aarch64-apple-darwin`, run the Section 10 profile gate of `docs/specs/check-gate-topology.md`.
+`LIBRARY_PATH` is this target's Align build-gate linker input, and the gate fails closed — with the
+exact expected value in its diagnostic — when it is absent or different:
+
+```sh
+LIBRARY_PATH="$(brew --prefix)/lib:$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib" \
+  make darwin-profile-gate
+```
+
+It validates host identity (Darwin, native `arm64`, untranslated), a clean repository head, the
+managed toolchain digests at the pin, the Homebrew `llvm`/`openssl@3`/`zstd` identities, and the
+declared dylib digests; then it runs `check`, `build`, a direct `check-per-unit`,
+`persisted-result-smoke`, and `persisted-result-qualification` as bounded children and prints one
+canonical JSON identity block. Add `--json-only` when capturing that block. Its own toolchain
+identity source is available separately:
+
+```sh
+python3 scripts/align-toolchain attest compiler
+```
+
+That reads the managed checkout only — it never fetches or builds; run `scripts/align-toolchain
+ensure compiler` first if the pin is not materialized yet.
+
+A passing gate run is evidence for the success path only, so the gate's failure paths have their own
+focused owner. It imports the gate as a module and substitutes its named seams, so it runs anywhere —
+no Homebrew, no managed toolchain, no Darwin host — and it covers construction, malformed toolchain
+input, early exit, and cleanup, asserting that each leaves through the one canonical
+`darwin profile gate: ERROR <phase> <detail>` prefix line with no partial block on stdout. Like
+`scripts/test-align-toolchain` it has no Make target; run both directly when their owners change:
+
+```sh
+python3 scripts/test-check-darwin-profile
+python3 scripts/test-align-toolchain
+```
+
+On `aarch64-unknown-linux-gnu`, the target-local gate is `make persisted-result-smoke` and
+`make persisted-result-qualification` run natively against a compiler and runtime built at the exact
+pin, after the Section 9 profile's native aarch64 owner has passed at the head being claimed.
+Sections 11.1 to 11.3 of `docs/specs/c7-persisted-result.md` hold the profile table and both
+discharge records.

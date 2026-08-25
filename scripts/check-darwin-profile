@@ -1,0 +1,541 @@
+#!/usr/bin/env python3
+"""The `aarch64-apple-darwin` platform-profile gate.
+
+Section 10 of `docs/specs/check-gate-topology.md` is the contract. This gate has no kernel-mediated
+containment to offer on this target and does not pretend otherwise: its trust content is digest
+attestation. It binds the host, the repository head, the managed pinned toolchain, the Homebrew
+formulae, and the exact linker inputs to digests, then runs the fixed acceptance sequence as bounded
+children and emits that binding as one canonical JSON identity block. Any host reproducing the
+recorded identities satisfies the profile.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import select
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Sequence
+
+
+PROJECT = Path(__file__).resolve().parent.parent
+PROFILE = "darwin-aarch64-v1"
+PROFILE_SCHEMA_VERSION = 1
+CHILD_TIMEOUT_SECONDS = 1800
+PROBE_TIMEOUT_SECONDS = 120
+# Section 10.3: the same per-stream bound section 9.4 of docs/specs/c7-persisted-result.md sets for
+# a compiler child, because `check` and `build` emit whole-program advisory diagnostics.
+CAPTURE_LIMIT = 1024 * 1024
+REPORT_LIMIT = 8192
+READ_CHUNK = 8192
+DIGEST_CHUNK = 1024 * 1024
+FORMULAE = ("llvm", "openssl@3", "zstd")
+# The declared linker inputs behind LIBRARY_PATH. Each is digested at its resolved real path.
+DECLARED_LIBRARIES = (
+    ("openssl@3", "lib/libssl.3.dylib"),
+    ("openssl@3", "lib/libcrypto.3.dylib"),
+    ("zstd", "lib/libzstd.dylib"),
+    ("llvm", "lib/libLLVM.dylib"),
+)
+# LIBRARY_PATH is `<brew-prefix>/lib` followed by these formulae's `lib` directories, in order.
+LIBRARY_PATH_FORMULAE = ("openssl@3", "zstd")
+# Sandbox- and caller-owned execution inputs. They are forwarded when supplied, never reinvented
+# from literals: a child that rebuilds them selects a different cache root or writes where its
+# caller does not allow.
+FORWARDED_NAMES = ("HOME", "TMPDIR", "XDG_CACHE_HOME", "ALIGN_TOOLCHAIN_ROOT")
+# Compiler selectors that would break the attested binding: the profile attests the managed
+# toolchain, so an override must fail closed rather than silently select something else. Any value
+# at all is an override, because both name a path.
+REJECTED_NAMES = ("ALIGNC", "ALIGN_REPO")
+# `ALIGN_LLM_FRESH_COMPILER` is not a path: it is the `Makefile`'s own on/off selector, read there
+# as `${ALIGN_LLM_FRESH_COMPILER:-0} = 1`. Only the enabled value selects a different compiler, so
+# an explicit `0` means exactly what "unset" means and must not fail a run that selected nothing.
+FRESH_COMPILER_NAME = "ALIGN_LLM_FRESH_COMPILER"
+FRESH_COMPILER_OFF = ("", "0")
+# The attestation shape `scripts/align-toolchain attest compiler` promises. The gate validates it
+# before reading any field: a shape drift must produce the canonical error line, not a KeyError
+# traceback from deep inside block assembly.
+ATTESTATION_SCHEMA_VERSION = 1
+ATTESTATION_TEXT_FIELDS = (
+    "generation",
+    "revision",
+    "root",
+    "compiler_path",
+    "compiler_sha256",
+    "compiler_version",
+    "runtime_path",
+    "runtime_sha256",
+)
+ATTESTATION_INTEGER_FIELDS = ("compiler_bytes", "runtime_bytes")
+
+
+class ProfileError(RuntimeError):
+    def __init__(self, phase: str, detail: str) -> None:
+        super().__init__(f"{phase} {detail}")
+        self.phase = phase
+        self.detail = detail
+
+
+def probe(arguments: Sequence[str], phase: str) -> str:
+    """One small identity command. Its output is an identity input, never a stream to bound."""
+    try:
+        result = subprocess.run(
+            arguments,
+            cwd=PROJECT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PROBE_TIMEOUT_SECONDS,
+            close_fds=True,
+        )
+    except OSError as error:
+        raise ProfileError(phase, f"cannot execute {arguments[0]}: {error}") from error
+    except subprocess.TimeoutExpired as error:
+        raise ProfileError(phase, f"{arguments[0]} did not complete in time") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "no diagnostic"
+        raise ProfileError(phase, f"{arguments[0]} failed with status {result.returncode}: {detail}")
+    return result.stdout.strip()
+
+
+def probe_value(arguments: Sequence[str], phase: str) -> str:
+    """One identity probe whose empty output is itself drift, not an identity.
+
+    Every caller of this helper records the result as a bound identity, so an empty answer would
+    silently bind nothing. Failing here keeps that case on the canonical error line instead of
+    letting a later `splitlines()[0]`, `Path("")`, or JSON decode raise.
+    """
+    value = probe(arguments, phase)
+    if not value:
+        raise ProfileError(phase, f"{arguments[0]} produced no output")
+    return value
+
+
+def digest_file(path: Path, phase: str) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    length = 0
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(DIGEST_CHUNK)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                length += len(chunk)
+    except OSError as error:
+        raise ProfileError(phase, f"cannot read {path}: {error}") from error
+    return digest.hexdigest(), length
+
+
+def child_environment(library_path: str) -> dict[str, str]:
+    search_path = os.environ.get("PATH")
+    if not search_path:
+        raise ProfileError("command", "the gate environment supplies no PATH for its children")
+    environment = {
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": search_path,
+        "LIBRARY_PATH": library_path,
+        "PYTHONDONTWRITEBYTECODE": os.environ.get("PYTHONDONTWRITEBYTECODE", "1"),
+    }
+    for name in FORWARDED_NAMES:
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    return environment
+
+
+def bounded_tail(buffer: bytearray) -> str:
+    tail = bytes(buffer[-REPORT_LIMIT:])
+    return tail.decode("utf-8", "replace").strip()
+
+
+def run_command(
+    label: str, arguments: Sequence[str], environment: dict[str, str]
+) -> dict[str, object]:
+    """One acceptance child: no shell, no inherited descriptors, bounded streams, fixed timeout."""
+    started = time.monotonic_ns()
+    try:
+        child = subprocess.Popen(
+            list(arguments),
+            cwd=PROJECT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(),
+        )
+    except OSError as error:
+        raise ProfileError("command", f"{label}: cannot execute {arguments[0]}: {error}") from error
+
+    streams = {child.stdout: bytearray(), child.stderr: bytearray()}
+    deadline = started + CHILD_TIMEOUT_SECONDS * 1_000_000_000
+    timed_out = False
+    try:
+        open_streams = [handle for handle in streams if handle is not None]
+        while open_streams:
+            remaining = (deadline - time.monotonic_ns()) / 1_000_000_000
+            if remaining <= 0:
+                timed_out = True
+                break
+            ready, _, _ = select.select(open_streams, (), (), min(remaining, 1.0))
+            for handle in ready:
+                # Read the raw descriptor: a buffered `read1` can leave data that `select` will
+                # never report again, which is a stall, not a bound.
+                chunk = os.read(handle.fileno(), READ_CHUNK)
+                if not chunk:
+                    open_streams.remove(handle)
+                    continue
+                buffer = streams[handle]
+                buffer.extend(chunk)
+                if len(buffer) > CAPTURE_LIMIT:
+                    del buffer[: len(buffer) - CAPTURE_LIMIT]
+        if timed_out:
+            status = None
+        else:
+            try:
+                status = child.wait(timeout=max(0.0, (deadline - time.monotonic_ns()) / 1e9))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                status = None
+    finally:
+        if timed_out or child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+        for handle in streams:
+            if handle is not None:
+                handle.close()
+
+    duration_ms = (time.monotonic_ns() - started) // 1_000_000
+    if timed_out:
+        raise ProfileError(
+            "command", f"{label}: no completion within {CHILD_TIMEOUT_SECONDS} s; child terminated"
+        )
+    if status != 0:
+        out = bounded_tail(streams[child.stdout])
+        err = bounded_tail(streams[child.stderr])
+        raise ProfileError("command", f"{label}: exit {status}\nstdout: {out}\nstderr: {err}")
+    return {
+        "label": label,
+        "argv": list(arguments),
+        "status": status,
+        "duration_ms": duration_ms,
+    }
+
+
+def host_identity() -> dict[str, object]:
+    uname = platform.uname()
+    if uname.system != "Darwin":
+        raise ProfileError("host", f"this profile requires Darwin, not {uname.system}")
+    if uname.machine != "arm64":
+        raise ProfileError("host", f"this profile requires native arm64, not {uname.machine}")
+    try:
+        translated = subprocess.run(
+            ("/usr/sbin/sysctl", "-n", "sysctl.proc_translated"),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PROBE_TIMEOUT_SECONDS,
+            close_fds=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        # Fail closed in this phase rather than reporting a different one: an unusable `sysctl`
+        # means the gate cannot prove the run is untranslated.
+        raise ProfileError("host", f"cannot probe sysctl.proc_translated: {error}") from error
+    # An absent key is the native answer on a host that predates Rosetta reporting; a present key
+    # must read 0. Anything else is a translated interpreter and fails before the first child.
+    value = translated.stdout.strip() if translated.returncode == 0 else "0"
+    if value != "0":
+        raise ProfileError("host", f"sysctl.proc_translated is {value}: this run is translated")
+    return {
+        "system": uname.system,
+        "release": uname.release,
+        "machine": uname.machine,
+        "proc_translated": int(value),
+        "macos_product_version": probe_value(("/usr/bin/sw_vers", "-productVersion"), "host"),
+        "macos_build_version": probe_value(("/usr/bin/sw_vers", "-buildVersion"), "host"),
+        "python_version": platform.python_version(),
+    }
+
+
+def repository_identity() -> dict[str, object]:
+    git = shutil.which("git")
+    if git is None:
+        raise ProfileError("repository", "git is not available on PATH")
+    head = probe_value((git, "-C", os.fspath(PROJECT), "rev-parse", "HEAD"), "repository")
+    status = probe(
+        (git, "-C", os.fspath(PROJECT), "status", "--porcelain=v1", "--untracked-files=all"),
+        "repository",
+    )
+    if status:
+        raise ProfileError(
+            "repository", "the working tree is not clean; the gate must bind an exact head"
+        )
+    return {
+        "head": head,
+        "worktree": "clean",
+        "git_version": probe_value((git, "--version"), "repository"),
+    }
+
+
+def validated_attestation(raw: str) -> dict[str, object]:
+    """Admit only the attestation shape this gate knows how to bind.
+
+    The block quotes the attestation verbatim and the gate launches its children with the attested
+    compiler path, so an unexpected shape must fail here — before any child starts and while the
+    phase is still `toolchain` — rather than surfacing as a `KeyError` or an `AttributeError` while
+    the identity block is assembled.
+    """
+    try:
+        attestation = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ProfileError("toolchain", f"the attestation is not JSON: {error}") from error
+    if not isinstance(attestation, dict):
+        raise ProfileError(
+            "toolchain", f"the attestation is a JSON {type(attestation).__name__}, not an object"
+        )
+    version = attestation.get("attestation_schema_version")
+    if version != ATTESTATION_SCHEMA_VERSION:
+        raise ProfileError(
+            "toolchain",
+            f"the attestation schema version is {version!r}, not {ATTESTATION_SCHEMA_VERSION}",
+        )
+    for field in ATTESTATION_TEXT_FIELDS:
+        value = attestation.get(field)
+        if not isinstance(value, str) or not value:
+            raise ProfileError(
+                "toolchain", f"the attestation field {field} is not a non-empty string"
+            )
+    for field in ATTESTATION_INTEGER_FIELDS:
+        value = attestation.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ProfileError(
+                "toolchain", f"the attestation field {field} is not a non-negative integer"
+            )
+    return attestation
+
+
+def toolchain_identity() -> dict[str, object]:
+    for name in REJECTED_NAMES:
+        if os.environ.get(name):
+            raise ProfileError(
+                "toolchain", f"{name} is set; this profile attests only the managed toolchain"
+            )
+    fresh = os.environ.get(FRESH_COMPILER_NAME)
+    if fresh is not None and fresh.strip() not in FRESH_COMPILER_OFF:
+        raise ProfileError(
+            "toolchain",
+            f"{FRESH_COMPILER_NAME} is {fresh!r}; this profile attests only the managed toolchain",
+        )
+    try:
+        pin = (PROJECT / ".align-revision").read_text(encoding="ascii").strip()
+    except OSError as error:
+        raise ProfileError("toolchain", f"cannot read .align-revision: {error}") from error
+    except ValueError as error:
+        # `UnicodeDecodeError` is a `ValueError`, not an `OSError`: a pin file with a non-ASCII
+        # byte is a readable file the gate must still reject on the canonical line.
+        raise ProfileError("toolchain", f".align-revision is not ASCII: {error}") from error
+    raw = probe_value(
+        (sys.executable, os.fspath(PROJECT / "scripts" / "align-toolchain"), "attest", "compiler"),
+        "toolchain",
+    )
+    attestation = validated_attestation(raw)
+    if attestation["revision"] != pin:
+        raise ProfileError("toolchain", "the attested revision differs from .align-revision")
+    return attestation
+
+
+def homebrew_identity() -> tuple[dict[str, object], dict[str, str]]:
+    brew = shutil.which("brew")
+    if brew is None:
+        raise ProfileError("homebrew", "brew is not available on PATH")
+    prefix = probe_value((brew, "--prefix"), "homebrew")
+    formulae: dict[str, object] = {}
+    opt_prefixes: dict[str, str] = {}
+    for name in FORMULAE:
+        opt = probe_value((brew, "--prefix", name), "homebrew")
+        cellar = Path(opt).resolve()
+        if not cellar.is_dir():
+            raise ProfileError("homebrew", f"{name} resolves to {cellar}, which is not a directory")
+        opt_prefixes[name] = opt
+        formulae[name] = {
+            "opt_prefix": opt,
+            "cellar_path": os.fspath(cellar),
+            "version": cellar.name,
+        }
+    return {"prefix": prefix, "formulae": formulae}, opt_prefixes
+
+
+def library_identity(prefix: str, opt_prefixes: dict[str, str]) -> dict[str, object]:
+    expected = ":".join(
+        [f"{prefix}/lib", *(f"{opt_prefixes[name]}/lib" for name in LIBRARY_PATH_FORMULAE)]
+    )
+    actual = os.environ.get("LIBRARY_PATH")
+    if actual != expected:
+        raise ProfileError(
+            "library-path",
+            "LIBRARY_PATH is the Align build gate's linker input on this target and must be "
+            f"exactly:\n  LIBRARY_PATH={expected}\nobserved: {actual!r}",
+        )
+    libraries = []
+    for name, relative in DECLARED_LIBRARIES:
+        path = Path(opt_prefixes[name]) / relative
+        resolved = path.resolve()
+        if not resolved.is_file():
+            raise ProfileError("library-path", f"{path} is not a regular file")
+        digest, length = digest_file(resolved, "library-path")
+        libraries.append(
+            {
+                "formula": name,
+                "path": os.fspath(path),
+                "resolved_path": os.fspath(resolved),
+                "sha256": digest,
+                "bytes": length,
+            }
+        )
+    return {"value": expected, "libraries": libraries}
+
+
+def make_identity() -> dict[str, str]:
+    """Resolve GNU Make, trying `gmake` before `make`.
+
+    A candidate is *rejected*, never fatal, when it cannot be run, reports a nonzero status, prints
+    nothing, or does not announce GNU Make: on a host where `/usr/bin/make` is GNU Make and `gmake`
+    is a broken shim, the second candidate is the right answer. Only an exhausted list fails, and it
+    fails on the canonical line with the reason each candidate was rejected.
+    """
+    rejected: list[str] = []
+    for candidate in ("gmake", "make"):
+        resolved = shutil.which(candidate)
+        if resolved is None:
+            rejected.append(f"{candidate}: not on PATH")
+            continue
+        try:
+            banner = probe((resolved, "--version"), "make")
+        except ProfileError as error:
+            rejected.append(f"{resolved}: {error.detail}")
+            continue
+        lines = banner.splitlines()
+        if not lines:
+            rejected.append(f"{resolved}: --version printed nothing")
+            continue
+        first = lines[0].strip()
+        if not first.startswith("GNU Make"):
+            rejected.append(f"{resolved}: {first!r} is not GNU Make")
+            continue
+        return {"path": resolved, "version": first}
+    raise ProfileError("make", "no GNU Make was found as gmake or make: " + "; ".join(rejected))
+
+
+def acceptance_commands(make: str, compiler: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Section 10.5: the fixed, ordered acceptance sequence."""
+    return (
+        (f"{make} check", (make, "check")),
+        (f"{make} build", (make, "build")),
+        (
+            "alignc check-per-unit src/main.align",
+            (compiler, "check-per-unit", "src/main.align"),
+        ),
+        (f"{make} persisted-result-smoke", (make, "persisted-result-smoke")),
+        (f"{make} persisted-result-qualification", (make, "persisted-result-qualification")),
+    )
+
+
+def redact(value: object, home: str) -> object:
+    """Replace the caller's home prefix in every emitted string.
+
+    The block is written to be committed as durable evidence, and this repository does not carry
+    machine-specific paths. Digests, versions, and byte lengths are the trust content; a home
+    directory is not, so the emitter redacts it rather than leaving a human to edit the block.
+    """
+    if isinstance(value, str):
+        if value == home:
+            return "${HOME}"
+        return value.replace(f"{home}/", "${HOME}/")
+    if isinstance(value, list):
+        return [redact(item, home) for item in value]
+    if isinstance(value, dict):
+        return {key: redact(item, home) for key, item in value.items()}
+    return value
+
+
+def gate(report: bool) -> dict[str, object]:
+    host = host_identity()
+    repository = repository_identity()
+    toolchain = toolchain_identity()
+    homebrew, opt_prefixes = homebrew_identity()
+    libraries = library_identity(str(homebrew["prefix"]), opt_prefixes)
+    make = make_identity()
+
+    environment = child_environment(str(libraries["value"]))
+    commands = []
+    for label, arguments in acceptance_commands(make["path"], str(toolchain["compiler_path"])):
+        if report:
+            print(f"darwin profile gate: running {label}", file=sys.stderr, flush=True)
+        record = run_command(label, arguments, environment)
+        if report:
+            print(
+                f"darwin profile gate: {label} exit 0 in {record['duration_ms']} ms",
+                file=sys.stderr,
+                flush=True,
+            )
+        commands.append(record)
+
+    block = {
+        "profile": PROFILE,
+        "profile_schema_version": PROFILE_SCHEMA_VERSION,
+        "path_redaction": "${HOME}",
+        "host": host,
+        "repository": repository,
+        "align_revision": toolchain["revision"],
+        "toolchain": toolchain,
+        "homebrew": homebrew,
+        "library_path": libraries,
+        "make": make,
+        "commands": commands,
+    }
+    home = os.environ.get("HOME")
+    if not home or not home.startswith("/") or home == "/":
+        return block
+    return redact(block, home.rstrip("/"))  # type: ignore[return-value]
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--json-only",
+        action="store_true",
+        help="emit only the identity block, so it can be captured verbatim",
+    )
+    values = parser.parse_args(sys.argv[1:] if arguments is None else arguments)
+    try:
+        block = gate(report=not values.json_only)
+    except ProfileError as error:
+        print(f"darwin profile gate: ERROR {error.phase} {error.detail}", file=sys.stderr)
+        return 1
+    except (OSError, subprocess.SubprocessError) as error:
+        # The contract is one canonical line per failure, so no path may exit through a traceback.
+        print(f"darwin profile gate: ERROR command {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(block, indent=2, sort_keys=True))
+    if not values.json_only:
+        print("darwin profile gate: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

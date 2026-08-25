@@ -69,7 +69,7 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it on pin changes and
 when its owning boundary changes.
 
-> **Status (2026-08-25): Requests 1, 3–6 are CLOSED; Requests 2 and 7–18 are ALIGN_LLM_VERIFIED; only Request 19 remains PROPOSED.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, advancing Request 2. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, advancing Request 9 to `ALIGN_LLM_VERIFIED` at the unchanged pin.
+> **Status (2026-08-25): Requests 1, 3–6 are CLOSED; Requests 2 and 7–18 are ALIGN_LLM_VERIFIED; Requests 19 and 20 remain PROPOSED, and neither blocks.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, advancing Requests 11 and 14 to `ALIGN_LLM_VERIFIED`. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, advancing Request 2. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, advancing Request 9 to `ALIGN_LLM_VERIFIED` at the unchanged pin. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executes no test binary, so Request 9's own `m5_owned_json` boundary regressions never run on macOS even though its contract is target-local.
 > **Request 1 (`std.process` capture) — COMPLETE** across #630/#631/#632 (bar the deferred bytes tier):
 > `c := process.command(cmd,args)` + `c.cwd(dir)` + `c.timeout_ns(ns)` + `c.env(name,value)` +
 > `c.env_clear()` → `out := c.run()?` with `out.code()/.stdout()/.stderr()`. A timeout kills the child's
@@ -5858,6 +5858,85 @@ concentrates and not as a required design:
    `scripts/check-gate-topology`, and `docs/specs/check-gate-topology.md` in one change, and
    `python3 scripts/run-fresh-worker-qualification --installed-profile-only --require-docker` passes
    at that head with the aggregate back inside its historical cost.
+
+---
+
+## Request 20 — CI: run the owned-JSON boundary regressions on the macOS matrix leg
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none — align-llm's own aarch64-apple-darwin profile gate exercises the shipped surface from the client side, and the Linux legs cover the compiler-side regressions
+Independent work that may continue: all of it; this asks for detection coverage in Align CI, not for a behavior change
+Resume condition: Align CI's `macos-15` matrix leg runs the `m5_owned_json` integration target on every pull request, and one green macOS run exists at the revision align-llm pins
+Align commit or pull request: pending
+align-llm verification: pending — the client-side proof stays `make darwin-profile-gate` at the adopted pin, whose `persisted-result-qualification` command exercises the Request 9 owned surface on `aarch64-apple-darwin`; that gate is coverage for the consumer, not for Align's own boundary regressions
+```
+
+### Motivation and current sibling evidence
+
+Request 9's contract is explicitly target-local: `align-llm`'s C7 design records that natural
+ownership and layout behavior per target is part of what the owned-JSON surface promises, which is
+why `docs/specs/c7-persisted-result.md` section 11 makes `aarch64-apple-darwin` a *required* C7
+acceptance environment rather than supplementary evidence. Align's own boundary regressions for that
+surface, however, never execute on macOS.
+
+At the pinned revision `2f33ac5c33a898a7894af58322852632ce6ffe42`:
+
+- `.github/workflows/ci.yml` declares one `build-and-test` matrix with three legs — `ubuntu-24.04`
+  (`lint: true`), `ubuntu-24.04-arm` (`lint: false`), and `macos-15` (`lint: false`).
+- The only step in that job that executes any test binary is `Bounded PR test gate`
+  (`run: scripts/test-pr.sh`), and it is guarded by `if: matrix.lint`. The full test gate is
+  therefore x86_64-lint-only. The two non-lint legs run `Build compiler and runtime`,
+  `Build release compiler`, and `Smoke test packaged command`, which compile `examples/hello.align`
+  and exercise the packaged `alignc`/`align-repl` pair. Useful, but not a regression suite.
+- `scripts/test-pr.sh` selects its integration targets explicitly: `--test effect_fail_closed`,
+  `--test examples`, `--test m0`, and `--test summary`, plus the listed libraries. Request 9's own
+  owner, `crates/align_driver/tests/m5_owned_json.rs` (586 lines; named as
+  `m5_owned_json::formation_and_target_routing` in the closure table of
+  `docs/impl/24-owned-json-plan.md`), is not in that selection.
+- `.github/workflows/nightly.yml` is where it does run: `run-suite-binaries.sh` executes every
+  workspace test binary, on `runs-on: ubuntu-24.04` only.
+
+So today a macOS-specific regression in owned text fields, runtime-sized text arrays, or their
+cleanup transitions would first be observed by a client — concretely by `align-llm`'s
+`persisted-result-qualification` on its Darwin profile gate — instead of by Align's own CI. That is
+the inverse of the intended order, and it is exactly the class of gap this register exists to
+record: non-blocking today, cheap to close, expensive to discover late.
+
+### Requested change
+
+Add one focused test step to the `macos-15` matrix leg of `build-and-test`, running the
+`m5_owned_json` integration target against the workspace that leg already builds:
+
+```yaml
+- name: Owned-JSON boundary regressions (macOS)
+  if: runner.os == 'macOS'
+  run: scripts/cargo.sh test -p align_driver --test m5_owned_json --locked
+```
+
+The exact step name, guard spelling, and whether the same step also joins `ubuntu-24.04-arm` are
+Align's call; the request is that the owned-JSON boundary regressions execute on the macOS leg. No
+public surface, no test content, and no other leg's behavior changes. The marginal cost is one
+integration binary on a leg that already compiles the workspace and is not the critical path — the
+`lint` leg is.
+
+### Public-contract ledger
+
+| Surface | Exact result/error and precedence | Ownership, allocation, effects, and identity | First real-client acceptance |
+| --- | --- | --- | --- |
+| `m5_owned_json` test target | Unchanged. Same assertions, same pass/fail meaning; this request changes only where they execute | CI-only. No compiler, runtime, or standard-library behavior changes, and no generated-program identity moves | The `macos-15` leg is green with the step present at the revision `align-llm` pins, and `align-llm`'s `make darwin-profile-gate` passes at that same pin |
+
+### Acceptance criteria
+
+1. The `macos-15` leg of `build-and-test` executes `m5_owned_json` on every pull request and reports
+   its result as a required part of that leg.
+2. The step is green at the revision `align-llm` pins, so the two evidence sources agree.
+3. The `ubuntu-24.04` lint leg's critical-path duration is unchanged, and the bounded PR gate's
+   selection is untouched unless Align chooses to widen it instead.
+4. `align-llm`'s `make darwin-profile-gate` continues to pass at the adopted pin, with its recorded
+   identity block, as the independent client-side observation.
 
 ---
 

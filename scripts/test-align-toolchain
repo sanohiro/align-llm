@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -81,6 +83,19 @@ def main() -> int:
         require((temporary / "build.log").read_text(encoding="ascii") == "build\n", "warm ensure rebuilt Align")
         require(run((helper, "verify"), cwd=project, environment=environment).stdout.strip() == revision, "verify returned the wrong revision")
 
+        attestation = json.loads(run((helper, "attest", "compiler"), cwd=project, environment=environment).stdout)
+        managed = Path(first).parents[2]
+        require(attestation["attestation_schema_version"] == 1, "attestation schema version changed")
+        require(attestation["revision"] == revision and attestation["generation"] == "dev-v1", "attestation named the wrong pin")
+        require(attestation["root"] == str(managed) and attestation["compiler_path"] == first, "attestation named the wrong paths")
+        require(attestation["compiler_version"] == "alignc fixture", "attestation recorded the wrong compiler version")
+        for kind, relative in (("compiler", "target/release/alignc"), ("runtime", "target/release/libalign_runtime.a")):
+            content = (managed / relative).read_bytes()
+            require(attestation[f"{kind}_sha256"] == hashlib.sha256(content).hexdigest(), f"attested {kind} digest is not the file digest")
+            require(attestation[f"{kind}_bytes"] == len(content), f"attested {kind} length is not the file length")
+        require(json.loads(run((helper, "attest", "compiler"), cwd=project, environment=environment).stdout) == attestation, "attestation is not reproducible")
+        require((temporary / "build.log").read_text(encoding="ascii") == "build\n", "attest rebuilt Align")
+
         wrapper_environment = dict(environment)
         wrapper_environment.pop("ALIGNC", None)
         wrapper_environment.pop("ALIGN_REPO", None)
@@ -106,6 +121,9 @@ def main() -> int:
         (managed_source / "untracked").write_text("dirty\n", encoding="ascii")
         rejected = subprocess.run((helper, "verify"), cwd=project, env=environment, text=True, capture_output=True, check=False)
         require(rejected.returncode != 0 and "dirty" in rejected.stderr, "dirty managed checkout was admitted")
+        rejected_attestation = subprocess.run((helper, "attest", "compiler"), cwd=project, env=environment, text=True, capture_output=True, check=False)
+        require(rejected_attestation.returncode != 0 and "dirty" in rejected_attestation.stderr, "dirty managed checkout was attested")
+        require(not rejected_attestation.stdout, "rejected attestation still printed a block")
         (managed_source / "untracked").unlink()
         archive = managed_source / "target" / "release" / "libalign_runtime.a"
         archive_bytes = archive.read_bytes()

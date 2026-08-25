@@ -3,14 +3,75 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: C7-PERSISTED-RESULT (2026-08-25)
+## Active capability: C7-P — aarch64 platform profiles (2026-08-25)
 
-- C6-MEASURED merged as align-llm PR #103 (`c9a510d`). The active capability is now
-  C7-PERSISTED-RESULT on branch `agent/c7-persisted-result`, per
+- C7-PERSISTED-RESULT merged as align-llm PR #104 (`a52b9ac`). The active capability is C7-P on
+  branch `agent/c7p-aarch64-profiles`, the two reviewed non-x86 platform profiles that section 11
+  of `docs/specs/c7-persisted-result.md` requires before either aarch64 target may provide C7
+  evidence. **Both are now discharged and the branch is ready for publication.**
+- **Settled and implemented: the `aarch64-apple-darwin` profile.** Section 10 of
+  `docs/specs/check-gate-topology.md` is the contract. It is deliberately minimal — a process
+  boundary plus digest attestation — and explicitly claims no kernel-mediated containment, **no
+  `sandbox-exec`**, no fresh compiler, no aggregate membership, and no other target. Trust content
+  is the attested identity: managed compiler/runtime digests at the pin, `.align-revision`,
+  repository head and cleanliness, Homebrew `llvm`/`openssl@3`/`zstd` identities, the resolved dylib
+  digests behind `LIBRARY_PATH`, and host identity including a non-translated `arm64` check.
+  `scripts/check-darwin-profile` (behind the `.PHONY` `make darwin-profile-gate`) validates those in
+  a fixed order, runs `check`, `build`, a direct `check-per-unit`, `persisted-result-smoke`, and
+  `persisted-result-qualification` as bounded children, and emits the identity block itself;
+  `scripts/align-toolchain attest compiler` is the toolchain-identity source and reuses `verify()`.
+- **Discharged: the `aarch64-unknown-linux-gnu` reuse condition.** Section 9.1's condition ("only
+  after this profile's native aarch64 owner passes at the exact C7 head") is met by the
+  `Installed Ubuntu 24.04 fresh-image profile (aarch64)` check concluding `success` at the exact C7
+  head `e14ba33` (run `32814437108`, job `97699828694`), and the target-local C7 gate then passed
+  natively on aarch64 Linux at this branch's head. `docs/specs/c7-persisted-result.md` sections 11.2
+  and 11.3 hold both records, including the two emitted attestation blocks.
+- **Cadence, deliberately.** Both gates are named focused qualifications — run at a pin bump, a C7
+  owner-boundary change, or an explicit audit — not per-pull-request checks. Neither joins
+  `hosted-checks`, `capable-checks`, or `ci`, so `scripts/check-gate-topology`'s `EXPECTED` bytes and
+  the topology oracle are untouched and `make gate-topology-check` passes unchanged.
+- **The `Makefile` change re-finalized the identity-bound baseline chain.** Adding
+  `darwin-profile-gate` changed a recorded baseline artifact. The replacement chain is source
+  `9fd3ab64433e526d3af5c647ab933e8bfc365103`, oracle
+  `3605b27ccbe1089f5ed2cb06294806a85d247cf1`, and finalization
+  `f72e71f077e43d2943f9b9572c4367b9091888c4`; it was appended, never amended, and
+  `python3 scripts/check-baseline-chain` reports `baseline chain: PASS` at the branch head on both
+  the host and inside the container.
+- **New Align request.** `docs/align-requests.md` Request 20 (`PROPOSED`, medium, non-blocking):
+  Align CI's `macos-15` matrix leg executes no test binary — the bounded PR test gate is guarded by
+  `if: matrix.lint`, and `scripts/test-pr.sh` does not select `m5_owned_json` even there, so
+  Request 9's own boundary regressions run only in the ubuntu-only nightly full suite. Request 9's
+  contract is target-local, so this asks upstream to run that focused target on the macOS leg.
+- **Environment fact for the local preflight on this host, not repository state.** `/usr/bin/make`
+  is GNU Make 3.81 and cannot parse this `Makefile` (`Makefile:220: *** multiple target patterns`),
+  while the repository requires GNU Make 4.3 or newer. `scripts/pre-pr`'s executable plan invokes a
+  bare `make`, so run it with a directory containing a `make` symlink to `gmake` ahead of
+  `/usr/bin` on `PATH`. The profile gate itself is unaffected: it resolves `gmake` before `make` and
+  rejects anything that does not report GNU Make.
+- **Reviewed and repaired.** One fresh comprehensive adversarial review of head `9119549` returned
+  request-changes with nine findings (F1-F9); all nine were accepted. The consolidated repair is
+  `3e9b27e` — three uncaught-exception paths in `scripts/check-darwin-profile` (empty `--version`
+  output, attestation shape drift, a non-ASCII `.align-revision`), the `gmake --version` fall-through
+  and the `ALIGN_LLM_FRESH_COMPILER=0` selector, the new failure-path owner
+  `scripts/test-check-darwin-profile`, and the specification repairs — followed by the gate
+  re-emission commit. `scripts/test-check-darwin-profile` has no Make target, per the
+  `scripts/test-align-toolchain` precedent, so the `Makefile` and the identity-bound canonical
+  baseline chain are untouched by the repair.
+- Next actions, in order: (1) publish the English pull request citing sections 11.2/11.3 and the
+  verification table below; (2) after merge,
+  the adapter-zombie follow-up recorded under the merged C6-EVALUATION notes — the `c6f2` fixture
+  poll race and the container's unreaped-descendant class both want a deterministic seam rather than
+  a timing window; (3) then the next eligible roadmap capability.
+
+## Merged checkpoint: C7-PERSISTED-RESULT (2026-08-25)
+
+- C6-MEASURED merged as align-llm PR #103 (`c9a510d`). C7-PERSISTED-RESULT was implemented on
+  branch `agent/c7-persisted-result` and merged as align-llm PR #104 (`a52b9ac`), per
   `docs/specs/c7-persisted-result.md`. All three implementation slices are landed — `cb3459b`
   (Request 9 adoption checkpoint), `1d066ff` (product consumer), `1e5797b` (qualification plus lane
-  admission) — the `Makefile` and lane topology are final for this wave, the identity-bound
-  baseline chain is re-finalized on top of them, and the capability is in publication wrap-up.
+  admission) — the lane topology is final for that wave and its identity-bound baseline chain was
+  re-finalized on top of it. C7-P then changed the `Makefile` again and re-finalized the chain a
+  second time; the current chain is recorded in the active capability above.
 - **Landed: the mandatory Request 9 adoption checkpoint.**
   `src/c7_owned_record_source_expiry_adoption.align`,
   `scripts/run-c7-owned-record-source-expiry-adoption`, and the `.PHONY` Make target
@@ -104,13 +165,12 @@ file records durable project state.
   `2fe903625816bd4738293e94497f88d43c42b5d9`; it was appended, never amended, and
   `python3 scripts/check-baseline-chain` reports `baseline chain: PASS` at the final head.
   `make gate-topology-check` is green at the admitted lane state.
-- **Platform-profile verdict for planning.** Section 11 and section 12.1 make
-  `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` *required* C7 acceptance environments, but
-  C7-P requires each one's reviewed platform profile before it may enter C7 adoption or provide C7
-  evidence; the Section 9 x86_64 profile substitutes for neither. This macOS host is
-  `aarch64-apple-darwin` with no reviewed C7-P profile, so its runs are development evidence for
-  the checkpoint only. They are not C7 acceptance evidence, and the capability gate still needs the
-  x86_64 baseline environment plus a reviewed C7-P profile per non-x86 target.
+- **Platform-profile verdict, now superseded by C7-P.** Section 11 and section 12.1 make
+  `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` *required* C7 acceptance environments, and
+  during that wave neither had a reviewed profile, so every run on this macOS host was development
+  evidence only. C7-P delivered both profiles and recorded their discharge in sections 11.2 and
+  11.3, so a host reproducing the recorded identities now produces C7 acceptance evidence rather
+  than development evidence. The x86_64 Section 9 profile still substitutes for neither target.
 
 ## Merged checkpoint: C6-MEASURED (2026-08-25)
 
@@ -288,12 +348,12 @@ file records durable project state.
   graph-and-codec capability pinned to Align merge `a440970ac81118ed2169f600b2b3c06fcb9cde7`.
 - The register records Requests 2, 7, 8, and 10–18 as `ALIGN_LLM_VERIFIED`; the merged C6-EVALUATION
   gate advanced Requests 11 and 14, and C6-MEASURED Slice E advanced Request 2 once
-  `c6e-request2-adoption` and the wave's final capable gate both passed. Only Request 9 remains
-  `ALIGN_MERGED`, for its later named C7 owned-JSON consumer; that surface is already contained in
-  the current pin, so no pin bump is required to adopt it. C6-MEASURED then added Request 19, a
-  compiler code-generation performance gap, as the register's only `PROPOSED` entry; it is
-  non-blocking because its consumer was demoted out of the hosted lane. Every other open Align
-  request has a merged Align-side surface, and none is `ACCEPTED` or `IMPLEMENTING`.
+  `c6e-request2-adoption` and the wave's final capable gate both passed. Request 9 advanced to
+  `ALIGN_LLM_VERIFIED` in the merged C7-PERSISTED-RESULT wave at the unchanged pin. C6-MEASURED
+  added Request 19, a compiler code-generation performance gap, and C7-P added Request 20, the
+  missing macOS leg for Request 9's own `m5_owned_json` boundary regressions in Align CI; those two
+  are the register's only `PROPOSED` entries and neither blocks. Every other open Align request has
+  a merged Align-side surface, and none is `ACCEPTED` or `IMPLEMENTING`.
 - The merged C6-EVALUATION capability drives the deterministic two-task corpus through source/workspace verification,
   alternating parent/candidate execution, fixed contained adapters, before/after snapshots, strict
   prefix verification, and immutable result/evidence publication. Invalid pre-execution inputs are
@@ -395,6 +455,87 @@ file records durable project state.
 
 ## Latest durable verification
 
+- **C7-P Darwin platform-profile gate, green, re-emitted at the review-repaired head
+  `3e9b27e9af04d4eae616dffb812c8db926d938d8` (macOS `aarch64-apple-darwin`, 2026-08-25).** The
+  repair changed the gate's own owner, which section 10.4 names as a re-run trigger, so the
+  section 11.3 record is the block from this run, not the superseded `41b2f43` one.
+  `LIBRARY_PATH="$(brew --prefix)/lib:$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib"
+  make darwin-profile-gate`: **PASS**. Five acceptance commands, all exit 0 — `gmake check`
+  1,266 ms, `gmake build` 276 ms, direct `alignc check-per-unit src/main.align` 1,166 ms,
+  `gmake persisted-result-smoke` 3,534 ms, `gmake persisted-result-qualification` 9,325 ms. Attested
+  identity: managed compiler `82e6bea0933332291012f5de43a2a65c02e8dda7dfe990602de3cce3e30c0908`,
+  runtime archive `0c26b938060e747d63886f5f98c07953b69b52d2b572a538373642b96cb75211`, pin
+  `2f33ac5c33a898a7894af58322852632ce6ffe42`, Homebrew `llvm 22.1.8`, `openssl@3 3.6.3`,
+  `zstd 1.5.7_1`, macOS 26.5.2 (`25F84`), Darwin 25.5.0 `arm64`, `proc_translated 0`, GNU Make
+  4.4.1. The complete emitted block is section 11.3 of `docs/specs/c7-persisted-result.md`.
+- **C7-P publication preflight and fresh-profile evidence (2026-08-25).** At head
+  `4d8aa33f3dff5553043ade5ef8eb87712d5a451c`, `python3 scripts/pre-pr --owner-test
+  darwin-profile-gate -- python3 scripts/check-darwin-profile` classified the wave `fresh-image`
+  (the `Makefile` and `eval/*` artifacts changed) and passed `darwin-profile-gate` (15,388 ms),
+  `managed-align-ensure`, `pinned-align-build`, and `hosted-checks` (50,594 ms). Its `fresh-focused`
+  leg **cannot run on Darwin**: `scripts/run-fresh-source-identity-smoke` reads `/proc/self/fd`, and
+  the identical failure reproduces at the base commit `a52b9ac` in a clean worktree, so it is a
+  pre-existing host limitation rather than a wave regression. Both fresh legs were therefore run
+  where they belong. **Installed profile, host Docker:** `python3
+  scripts/run-fresh-worker-qualification --installed-profile-only --require-docker --align-repo
+  <managed-pin-source>`: **PASS**, `fresh image profile smoke: PASS` then `fresh worker
+  qualification: PASS (installed profile only)`. Phases: `docker-daemon` 552 ms, `image-build`
+  23,200 ms, `image-attestation` 3,680 ms, `profile-lifecycle` 2,405 ms, `profile-self-test`
+  14,771 ms, `trust-mutations` 12,064 ms, `runtime-replacements` 21,692 ms, `boundary-profile`
+  246,632 ms, **`worker-aggregate` pass after 363,821 ms**, `cleanup` 1,292 ms. That is this wave's
+  `make ci` evidence. **Focused qualification, native Linux `aarch64`** in the privileged
+  `c6g2-measure:latest` container with `--init`, `bubblewrap`, `clang`, and `unzip`, non-root with
+  `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the same head: `python3
+  scripts/run-fresh-worker-qualification` **PASS** (focused; installed profile deferred; 23 focused
+  rows including `check-gate-topology --self-test`), `python3 scripts/test-development-preflight`
+  PASS, and `python3 scripts/test-align-toolchain` PASS. Both the preflight and the installed
+  profile were then re-run at `cab6755b55b6fb6d94317d3fbfa518cb0ed12061` with
+  the same results — preflight phases `darwin-profile-gate` 15,143 ms, `hosted-checks` 50,434 ms,
+  the same Darwin-only `fresh-focused` failure; installed profile **PASS** with `boundary-profile`
+  255,854 ms and **`worker-aggregate` pass after 379,459 ms**.
+- **Why the two Linux legs are not re-run for the review repair, stated as a head delta.** Both
+  compensating legs are owned by the fresh-image classifier in `scripts/verification_scope.py`. The
+  complete delta from `4d8aa33` (focused fresh-worker qualification, native Linux `aarch64`) and
+  from `cab6755` (installed profile, host Docker) to the publication head is `HANDOFF.md`,
+  `docs/align-development.md`, `docs/specs/c7-persisted-result.md`,
+  `docs/specs/check-gate-topology.md`, `scripts/check-darwin-profile`, and the added
+  `scripts/test-check-darwin-profile`. `owns_fresh_image()` returns false for every one of them —
+  neither the Darwin gate nor its owner test is a `FRESH_IMAGE_PATTERNS` entry — so no input either
+  leg consumes has moved and both green runs stand. The publication preflight still classifies the
+  wave `fresh-image`, because the `Makefile` and `eval/*` changed earlier in the branch; its
+  per-phase table and the Darwin `fresh-focused` `N/A` reason are recorded in the pull request.
+- **C7-P target-local aarch64 Linux gate, green, at head
+  `09294dec94924e0363f0443cc671751dd8174186` (2026-08-25).** Native Linux
+  `aarch64` in the privileged `c6g2-measure:latest` container with `--init`, non-root with
+  `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean clone of the committed head, with the
+  image's native pinned build presented through the managed toolchain layout (compiler
+  `7507770f2d5c36e94730fee3290446d7751d1ea83ecac00801086261ecfcf100`, runtime
+  `8718943f29a9a3f9ba12b38c18eeeb3e70db9bbfdb034e78bf03c49a222a755d`). `check-gate-topology
+  --self-test` PASS (5,685 ms), `make gate-topology-check` PASS, `make check` 23 units per-unit,
+  `make build`, direct `check-per-unit`, `make persisted-result-smoke` **PASS** (747 ms),
+  `make persisted-result-qualification` **PASS** (7,179 ms; same corpus counts as the host, with the
+  runner's own `target aarch64-linux` observation), and `python3 scripts/check-baseline-chain`
+  `baseline chain: PASS`. Section 11.2 holds the full record.
+- **C7-P host publication checks at the repaired head `3e9b27e` (macOS, managed pinned toolchain,
+  2026-08-25).** `gmake check` (23 units per-unit), `gmake gate-topology-check` (`check gate
+  topology: PASS`, the `EXPECTED` lane bytes unchanged because `darwin-profile-gate` joins no
+  aggregate), `gmake format-check`, `git diff --check`, `python3 scripts/test-align-toolchain`
+  (managed checkout plus the attestation cases), `python3 scripts/test-check-darwin-profile` (the
+  new failure-path owner: construction, malformed input, early exit, and cleanup PASS), and
+  `python3 scripts/check-baseline-chain` (`baseline chain: PASS`): all PASS. Negative controls for
+  the new owner: reverting each of the four repairs it covers makes it fail with the exact escaped
+  exception type.
+- **C7-P baseline chain re-finalization (2026-08-25).** Recorded on native Linux `aarch64` in the
+  privileged `c6g2-measure:latest` container with `--init` and `bubblewrap` installed at run time,
+  as a non-root uid with `umask 022` and `PYTHONDONTWRITEBYTECODE=1`, on a clean `git clone` of the
+  source commit. `check-gate-topology --self-test` and `make gate-topology-check` ran first, both
+  PASS. `record-baseline.py` then recorded both deterministic-reference samples as passing:
+  134,035,875-140,845,834 ns, median 137,440,854 ns, at the unchanged pin. The replacement chain is
+  source `9fd3ab64433e526d3af5c647ab933e8bfc365103`, oracle
+  `3605b27ccbe1089f5ed2cb06294806a85d247cf1`, and finalization
+  `f72e71f077e43d2943f9b9572c4367b9091888c4` — appended, never amended. The oracle projection
+  produced in the container and the copy committed on the host are byte-identical (SHA-256
+  `4335765eec6d715349d9239faadf448c449eeb2756c4c01302b14fb19ebdc417`).
 - **C7-PERSISTED-RESULT baseline chain re-finalization (2026-08-25).** Recorded on native Linux
   `aarch64` inside the privileged `c6g2-measure:latest` container run with `--init`, `bubblewrap`
   installed at run time, as a non-root `runner` uid with `umask 022` and
