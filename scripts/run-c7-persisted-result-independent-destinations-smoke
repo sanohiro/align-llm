@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+# c7-persisted-result-independent-destinations-smoke.
+#
+# `docs/specs/c7-persisted-result.md` section 9.2 names this runner for the supported same-process
+# pairs: serialized `persist_file` + `persist_file` with distinct input/output paths, and repeated
+# read-only `verify_file` calls. Section 13's "Same-process operation pairs" row is closed here.
+#
+# Two processes sharing one output path remain an unsupported caller condition. This runner does
+# not exercise it and claims no lock or last-writer guarantee.
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+work_dir="$(mktemp -d)"
+trap 'rm -rf "${work_dir}"' EXIT
+
+python3 - "${project_root}" "${work_dir}" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
+import c7_persisted_result_fixtures as fixtures
+
+fixtures.require_golden()
+work = Path(sys.argv[2])
+first_input, first_artifact, first_status = fixtures.expected_pair("interior", 4, 3, 0, 9, 1, "")
+second_input, second_artifact, second_status = fixtures.expected_pair(
+    "expected-mismatch", 2, 3, 0, 9, 2, fixtures.ESCAPED_NOTE
+)
+if first_status != "PASS" or second_status != "FAIL":
+    raise SystemExit("c7 persisted result independent destinations smoke: fixture statuses drifted")
+if first_artifact == second_artifact:
+    raise SystemExit("c7 persisted result independent destinations smoke: fixtures are not distinct")
+(work / "first.input.json").write_bytes(first_input.encode("utf-8"))
+(work / "second.input.json").write_bytes(second_input.encode("utf-8"))
+(work / "first.expected.json").write_bytes(first_artifact.encode("utf-8"))
+(work / "second.expected.json").write_bytes(second_artifact.encode("utf-8"))
+PY
+
+"${compiler}" run "${project_root}/src/c7_persisted_result_independent_destinations_smoke.align" \
+  "${work_dir}/first.input.json" "${work_dir}/first.result.json" \
+  "${work_dir}/second.input.json" "${work_dir}/second.result.json" \
+  >"${work_dir}/observed.txt"
+
+python3 - "${work_dir}" <<'PY'
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+first_expected = (work / "first.expected.json").read_bytes()
+second_expected = (work / "second.expected.json").read_bytes()
+
+expected_rows = [
+    "first/status", "PASS", "1", "1",
+    "second/status", "FAIL", "2", "1",
+    "first-verify/status", "PASS",
+    "second-verify/status", "FAIL",
+    "first/bytes", first_expected.decode("utf-8"),
+    "second/bytes", second_expected.decode("utf-8"),
+]
+
+raw = (work / "observed.txt").read_bytes()
+if not raw.endswith(b"\n"):
+    raise SystemExit(
+        "c7 persisted result independent destinations smoke: output is not newline terminated"
+    )
+observed_rows = raw.decode("utf-8").split("\n")[:-1]
+if observed_rows != expected_rows:
+    raise SystemExit(
+        "c7 persisted result independent destinations smoke: printed rows mismatch\n"
+        f"  expected: {expected_rows!r}\n"
+        f"  observed: {observed_rows!r}"
+    )
+
+if (work / "first.result.json").read_bytes() != first_expected:
+    raise SystemExit(
+        "c7 persisted result independent destinations smoke: the first destination is not canonical"
+    )
+if (work / "second.result.json").read_bytes() != second_expected:
+    raise SystemExit(
+        "c7 persisted result independent destinations smoke: the second destination is not canonical"
+    )
+
+print(
+    "c7 persisted result independent destinations smoke: two serialized publications to distinct "
+    "destinations and repeated read-only verification stay independent PASS"
+)
+PY

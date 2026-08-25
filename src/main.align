@@ -9,6 +9,7 @@ import model
 import provider
 import repo_index
 import patch_eval
+import persisted_result
 import prompt_evaluate
 import prompt_experiment
 import prompt_generate
@@ -25,6 +26,8 @@ fn print_help() {
   print(project.name())
   print("Local LLM coding infrastructure written in Align")
   print("Usage: main [--version | --status | --selfcheck | --index <repo> <index.json> [timeout-ns] | --select-tests <repo> <changed-path> <tests.json> [timeout-ns] | --evaluate-patch <repo> <patch.diff> <evaluation.json> [timeout-ns] | --verify-loop <task.json> <result.json> | --eval [corpus] | --loop]")
+  print("       main --persist-result <input.json> <result.json>")
+  print("       main --verify-result <result.json>")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
@@ -359,6 +362,56 @@ fn prompt_state_demo(args: array<str>) -> Result<(), Error> {
   return Ok(())
 }
 
+// C7-PERSISTED-RESULT CLI adapter (`docs/specs/c7-persisted-result.md` sections 3.2 and 3.3).
+fn c7_selector(value: str) -> bool {
+  return value == "--persist-result" || value == "--verify-result"
+}
+
+// The section 3.2 dispatch contract: exact arity first, then the rejection of a second C7
+// selector in an operand position, and only then the module's own path validation and file work.
+// No option parser consumes a path operand as a hidden flag, and no ambient option, environment
+// variable, locale, or seed reaches the module.
+fn persisted_result_demo(args: array<str>) -> Result<(), Error> {
+  persist := args[1] == "--persist-result"
+  if persist {
+    if args.len() != 4 {
+      return Err(Error.Invalid)
+    }
+    if c7_selector(args[2]) || c7_selector(args[3]) {
+      return Err(Error.Invalid)
+    }
+  } else {
+    if args.len() != 3 {
+      return Err(Error.Invalid)
+    }
+    if c7_selector(args[2]) {
+      return Err(Error.Invalid)
+    }
+  }
+  summary := if persist {
+    persisted_result.persist_file(args[2], args[3])?
+  } else {
+    persisted_result.verify_file(args[2])?
+  }
+  // Section 3.3 stable summary: exactly seven logical lines, in this order.
+  print("persisted-result:")
+  print("status:")
+  match summary.status {
+    Pass => print("PASS"),
+    Fail => print("FAIL"),
+  }
+  print("expected:")
+  print(summary.expected)
+  print("observed:")
+  print(summary.observed)
+  // A valid semantic FAIL is persisted and reported data; the CLI maps it to the existing
+  // `Error.Invalid` process exit after the artifact has been written and reloaded.
+  match summary.status {
+    Pass => { return Ok(()) },
+    Fail => { return Err(Error.Invalid) },
+  }
+}
+
 // A repair provider that declines to fix anything (always gives up). It lets the loop's control
 // exits be demonstrated without a model: an already-passing check needs no provider, and a
 // persistently failing check ends in GAVE_UP on the first iteration. A real provider (LLM + patch
@@ -489,7 +542,11 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                         if args[1] == "--loop" {
                           loop_demo()
                         } else {
-                          print_help()
+                          if c7_selector(args[1]) {
+                            persisted_result_demo(args)?
+                          } else {
+                            print_help()
+                          }
                         }
                       }
                     }

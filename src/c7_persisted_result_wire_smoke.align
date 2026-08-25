@@ -1,0 +1,41 @@
+module c7_persisted_result_wire_smoke
+
+import persisted_result
+import std.fs
+
+// `c7-persisted-result-wire-smoke` (`docs/specs/c7-persisted-result.md` section 13).
+//
+// It closes the "JSON escape/NUL/UTF-8", "SHA-256 input identity", "Content digest preimage",
+// "Result canonical bytes", "Output write success", and "Artifact schema/wire identity" rows, and
+// the section 13.2 note-state discriminators (`None`, `Some("")`, escaped/NUL/UTF-8 `Some`).
+//
+// Every fixture byte vector and every expected artifact byte vector is owned by
+// `scripts/run-c7-persisted-result-wire-smoke`, which builds them from the section 4.4 normative
+// vectors independently of this module. The module persists each pair and echoes the exact bytes
+// the publication boundary wrote.
+
+fn status_label(value: persisted_result.VerificationStatus) -> str {
+  match value {
+    Pass => { return "PASS" },
+    Fail => { return "FAIL" },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() < 3 {
+    return Err(Error.Invalid)
+  }
+  mut index := 1
+  loop {
+    if index + 1 >= args.len() {
+      break
+    }
+    summary := persisted_result.persist_file(args[index], args[index + 1])?
+    print(status_label(summary.status))
+    // The artifact is read back as its own owner; the record built during publication is already
+    // gone. The canonical wire has no final newline, so one `print` is one exact line.
+    print(fs.read_file(args[index + 1])?)
+    index = index + 2
+  }
+  return Ok(())
+}

@@ -1,0 +1,69 @@
+module c7_persisted_result_lifetime_smoke
+
+import persisted_result
+import std.fs
+
+// `c7-persisted-result-lifetime-smoke` (`docs/specs/c7-persisted-result.md` section 13).
+//
+// It closes the "Input decode construction", "Input source expiry", "Result source expiry",
+// "Repeated standalone verify", and section 9.2 `persist_file` + `verify_file` rows: the input
+// document is removed after `persist_file` returns and the artifact still verifies, twice, from
+// its own bytes alone.
+//
+// The runner owns the fixture bytes and the expected rows; this module only reports what the
+// public API returned.
+
+fn status_label(value: persisted_result.VerificationStatus) -> str {
+  match value {
+    Pass => { return "PASS" },
+    Fail => { return "FAIL" },
+  }
+}
+
+fn outcome(value: Result<persisted_result.VerificationSummary, Error>) -> str {
+  match value {
+    Ok(_) => { return "ACCEPTED" },
+    Err(_) => { return "REJECTED" },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 3 {
+    return Err(Error.Invalid)
+  }
+  input_path := args[1]
+  result_path := args[2]
+
+  persisted := persisted_result.persist_file(input_path, result_path)?
+  print("persist/status")
+  print(status_label(persisted.status))
+  print(persisted.expected)
+  print(persisted.observed)
+
+  // Section 6.1: the acceptance fixture deletes the original input after `persist_file` returns
+  // and before the standalone verifier runs. A passing verification in that state is the required
+  // observable proof that no result field still points into the input document.
+  fs.remove(input_path)?
+  print("input/present")
+  print(fs.exists(input_path))
+
+  first := persisted_result.verify_file(result_path)?
+  print("verify-1/status")
+  print(status_label(first.status))
+  print(first.expected)
+  print(first.observed)
+
+  // Section 9.2: repeated standalone verification is read-only and deterministic.
+  second := persisted_result.verify_file(result_path)?
+  print("verify-2/status")
+  print(status_label(second.status))
+  print(second.expected)
+  print(second.observed)
+
+  // The removed input is not an artifact; verification of it must fail and must not write.
+  print("verify-removed-input")
+  print(outcome(persisted_result.verify_file(input_path)))
+  print("result/present")
+  print(fs.exists(result_path))
+  return Ok(())
+}

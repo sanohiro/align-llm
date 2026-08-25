@@ -20,8 +20,23 @@ file records durable project state.
   mid-array recoverable failure. `docs/examples/c7-persisted-result-syntax.align` and
   `docs/examples/c7-persisted-result-lifetime.align` are the section 12.1 checked-in fixtures; the
   runner owns their pinned `alignc fmt` parser-only check together with the normative
-  `docs/examples/request9-owned-json-syntax.align`. No product code consumes the surface yet:
-  `src/persisted_result.align` and the two CLI selectors are the next slice.
+  `docs/examples/request9-owned-json-syntax.align`.
+- **Landed: the product consumer.** `src/persisted_result.align` implements the section 4 records,
+  the section 5 `bounded-bucket-v1` algorithm and the six ordered verifier recomputations, the
+  section 6 ownership/lifetime boundary, the section 7 whole-file publication limitation, the
+  section 8.1/8.2 precedence tables, and the section 3.1 `persist_file`/`verify_file`/
+  `VerificationSummary` surface. `src/main.align` adds the two exact selectors, the section 3.3
+  seven-line summary, and the valid-semantic-`FAIL` nonzero exit after publication. Six focused
+  `.PHONY` smoke targets (`c7-persisted-result-{cli,lifetime,owned-move,wire,noncanonical-input,
+  independent-destinations}-smoke`) and `scripts/c7_persisted_result_fixtures.py` are the bounded
+  functional evidence; they join no aggregate, so `gate-topology-check` stays green. The section
+  4.4 golden vectors reproduce byte-for-byte end to end: `input_sha256` `6de733d4...`,
+  `content_sha256` `a0160d36...`, and the external `result_sha256` `8fb29a72...`.
+- **Next action: `scripts/run-persisted-result-qualification`** — the independent Python reference
+  at seed `20260803`, the 256 PASS + 32 FAIL generated differential corpus, the full section 10.3
+  malformed/mutation corpus, and the temporary `else if raw < upper_bound` -> `<=` source mutation.
+  The unique source pattern that mutation replaces exists exactly once in
+  `src/persisted_result.align`.
 - **The section 4.4 golden vectors reproduce exactly.** The decoded C7 input re-encodes
   byte-for-byte to the section 4.4 `input bytes` line, and the Request 9 `OwnedTask` pair
   reproduces its canonical output including `u64::MAX`, embedded NUL, and multibyte text. The
@@ -34,9 +49,9 @@ file records durable project state.
   `python3 scripts/check-baseline-chain` now reports
   `working-tree Makefile differs from the baseline source commit`. It passed at the pre-change tree.
   Re-finalize the source -> oracle -> finalization chain once this capability's `Makefile` is final
-  (the consumer slice still adds `persisted-result-smoke` and `persisted-result-qualification`), on
-  a capable native Linux host, appended and never rewritten. `gate-topology-check` stays green
-  because the new target joins no aggregate list.
+  (the qualification slice still adds `persisted-result-qualification`), on a capable native Linux
+  host, appended and never rewritten. `gate-topology-check` stays green because the new targets
+  join no aggregate list.
 - **Platform-profile verdict for planning.** Section 11 and section 12.1 make
   `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` *required* C7 acceptance environments, but
   C7-P requires each one's reviewed platform profile before it may enter C7 adoption or provide C7

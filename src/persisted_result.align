@@ -1,0 +1,539 @@
+module persisted_result
+
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+
+// C7-PERSISTED-RESULT: the owned verification result and its artifact verifier.
+//
+// `docs/specs/c7-persisted-result.md` is the settled public-contract ledger for this module. It
+// owns section 4's two declared records, section 5's fixed `bounded-bucket-v1` algorithm and its
+// six ordered verifier recomputations, section 6's ownership/lifetime boundary, section 7's
+// whole-file publication limitation, and section 8's deterministic validation precedence.
+//
+// The module consumes the Align Request 9 owned-JSON surface adopted by
+// `src/c7_owned_record_source_expiry_adoption.align`: both records hold only direct `string`,
+// direct `Option<string>`, and Copy `i64` fields, so a decoded record is free-standing and
+// outlives the document it was decoded from. Nothing here borrows a source document past the
+// helper that owns it.
+
+// Section 4.3 scalar and text domains, section 3.2 path bounds, and section 4.4's canonical
+// record bound. Every bound is an application validation bound; `fs.read_file` remains the
+// shipped whole-file read and claims no bounded allocation.
+SCHEMA_VERSION := 1
+INPUT_KIND := "C7_VERIFICATION_INPUT"
+RESULT_KIND := "C7_PERSISTED_RESULT"
+ALGORITHM := "bounded-bucket-v1"
+STATUS_PASS := "PASS"
+STATUS_FAIL := "FAIL"
+FAIL_DIAGNOSTIC := "expected does not match observed"
+OPERAND_MAX := 1_000_000
+BOUND_MAX := 2_000_000
+BUCKET_MAX := 2
+CASE_ID_MAX_BYTES := 64
+NOTE_MAX_BYTES := 256
+PATH_MAX_BYTES := 4096
+RECORD_MAX_BYTES := 4096
+DIGEST_BYTES := 64
+
+// Section 4.1. Direct owned text and Copy scalars only: no `str`, no `array<string>`, no nested
+// record, and no other aggregate owner.
+C7VerificationInput {
+  schema_version: i64,
+  artifact_kind: string,
+  case_id: string,
+  algorithm: string,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+  note: Option<string>,
+}
+
+// Section 4.2. The canonical field sequence is this declaration sequence; `content_sha256` is
+// last because it is the field the section 5.2 preimage blanks.
+C7PersistedResult {
+  schema_version: i64,
+  artifact_kind: string,
+  case_id: string,
+  algorithm: string,
+  status: string,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+  observed: i64,
+  input_sha256: string,
+  note: Option<string>,
+  diagnostic: Option<string>,
+  content_sha256: string,
+}
+
+// Section 3.1. The public summary is Copy so neither public function exposes a Move record.
+pub VerificationStatus { Pass, Fail }
+
+pub VerificationSummary {
+  status: VerificationStatus,
+  expected: i64,
+  observed: i64,
+}
+
+fn digest_text(value: str) -> string {
+  digest := crypto.sha256(value)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+// Section 3.2 path rule: nonempty UTF-8 (guaranteed by `str`), no embedded NUL, at most 4,096
+// bytes. It is an application bound, not a promise about host filesystem limits.
+fn valid_path(value: str) -> bool {
+  if value.len() <= 0 || value.len() > PATH_MAX_BYTES {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    if bytes[index] == 0 {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+// Section 4.3 `case_id`: ASCII `[a-z0-9][a-z0-9._-]{0,63}` with no case folding and no Unicode
+// normalization.
+fn valid_case_id(value: str) -> bool {
+  if value.len() <= 0 || value.len() > CASE_ID_MAX_BYTES {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    b := bytes[index]
+    lower := b >= 0x61 && b <= 0x7a
+    digit := b >= 0x30 && b <= 0x39
+    if index == 0 {
+      if !lower && !digit {
+        return false
+      }
+    } else {
+      if !lower && !digit && b != 0x2e && b != 0x5f && b != 0x2d {
+        return false
+      }
+    }
+    index = index + 1
+  }
+  return true
+}
+
+// Section 4.3 digest lexical form: exactly 64 lowercase ASCII hexadecimal bytes.
+fn valid_digest(value: str) -> bool {
+  if value.len() != DIGEST_BYTES {
+    return false
+  }
+  bytes := value.bytes()
+  mut index := 0
+  loop {
+    if index >= bytes.len() {
+      break
+    }
+    b := bytes[index]
+    if !((b >= 0x30 && b <= 0x39) || (b >= 0x61 && b <= 0x66)) {
+      return false
+    }
+    index = index + 1
+  }
+  return true
+}
+
+// Section 4.3 `note`: the optional text is moved in, measured, and moved back out, so the byte
+// bound is checked without cloning the value or hiding its owner.
+fn checked_note(value: Option<string>) -> Result<Option<string>, Error> {
+  match value {
+    Some(text) => {
+      if text.len() > NOTE_MAX_BYTES {
+        return Err(Error.Invalid)
+      }
+      return Ok(Some(text))
+    },
+    None => { return Ok(None) },
+  }
+}
+
+// The verifier's read-only note domain check. The optional owner is consumed here because the
+// verifier never republishes the note.
+fn note_within_bound(value: Option<string>) -> bool {
+  match value {
+    Some(text) => { return text.len() <= NOTE_MAX_BYTES },
+    None => { return true },
+  }
+}
+
+// Section 5.1 diagnostic rule: `None` for `PASS`, exactly one fixed sentence for `FAIL`.
+fn diagnostic_matches(value: Option<string>, failed: bool) -> bool {
+  match value {
+    Some(text) => { return failed && text == FAIL_DIAGNOSTIC },
+    None => { return !failed },
+  }
+}
+
+// Section 5.1. The two strict `<` comparisons are the algorithm contract: equality at the lower
+// endpoint enters bucket 1 and equality at the upper endpoint enters bucket 2. Operand and bound
+// ranges are validated before this call, so `left + right` is at most 2,000,000.
+fn bounded_bucket(left: i64, right: i64, lower_bound: i64, upper_bound: i64) -> i64 {
+  raw := left + right
+  if raw < lower_bound {
+    return 0
+  } else if raw < upper_bound {
+    return 1
+  } else {
+    return 2
+  }
+}
+
+// Section 8.1 row 5, in declaration order. The text fields are borrowed, never moved, so the
+// caller's owned record stays intact for the algorithm and the result construction.
+fn validate_input(
+  schema_version: i64,
+  artifact_kind: str,
+  case_id: str,
+  algorithm: str,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+) -> bool {
+  if schema_version != SCHEMA_VERSION {
+    return false
+  }
+  if artifact_kind != INPUT_KIND {
+    return false
+  }
+  if !valid_case_id(case_id) {
+    return false
+  }
+  if algorithm != ALGORITHM {
+    return false
+  }
+  if left < 0 || left > OPERAND_MAX {
+    return false
+  }
+  if right < 0 || right > OPERAND_MAX {
+    return false
+  }
+  if lower_bound < 0 || lower_bound > BOUND_MAX {
+    return false
+  }
+  if upper_bound < 0 || upper_bound > BOUND_MAX {
+    return false
+  }
+  if lower_bound > upper_bound {
+    return false
+  }
+  if expected < 0 || expected > BUCKET_MAX {
+    return false
+  }
+  return true
+}
+
+// Section 8.2 row 7 for the reloaded artifact. The persisted record repeats the input domains and
+// adds `observed`; `status`, `diagnostic`, and both digests are checked by their own rows.
+fn validate_result_domains(
+  schema_version: i64,
+  case_id: str,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+  observed: i64,
+  input_sha256: str,
+) -> bool {
+  if schema_version != SCHEMA_VERSION {
+    return false
+  }
+  if !valid_case_id(case_id) {
+    return false
+  }
+  if left < 0 || left > OPERAND_MAX {
+    return false
+  }
+  if right < 0 || right > OPERAND_MAX {
+    return false
+  }
+  if lower_bound < 0 || lower_bound > BOUND_MAX {
+    return false
+  }
+  if upper_bound < 0 || upper_bound > BOUND_MAX {
+    return false
+  }
+  if lower_bound > upper_bound {
+    return false
+  }
+  if expected < 0 || expected > BUCKET_MAX {
+    return false
+  }
+  if observed < 0 || observed > BUCKET_MAX {
+    return false
+  }
+  if !valid_digest(input_sha256) {
+    return false
+  }
+  return true
+}
+
+// Section 8.1 row 2 and section 8.2 row 2. `fs.read_file` is the shipped whole-file read; the
+// 4,096-byte check below is the section 4.3 canonical-record bound applied after the read, not a
+// bounded-allocation guarantee.
+fn read_document(path: str) -> Result<string, Error> {
+  document := fs.read_file(path)?
+  if document.len() > RECORD_MAX_BYTES {
+    return Err(Error.Invalid)
+  }
+  return Ok(document)
+}
+
+// Section 6.1 steps 1-3. The helper clones the caller's view into its own document owner, decodes
+// a free-standing record through the Request 9 owned direct-record path, and returns after that
+// owner has been dropped.
+fn decode_input(source: str) -> Result<C7VerificationInput, Error> {
+  document := source.clone()
+  value: C7VerificationInput := json.decode(document)?
+  return Ok(value)
+}
+
+fn decode_result(source: str) -> Result<C7PersistedResult, Error> {
+  document := source.clone()
+  value: C7PersistedResult := json.decode(document)?
+  return Ok(value)
+}
+
+// Section 8.1 row 6. The canonical input bytes are the bytes row 4 already proved identical to
+// the source document, so this digest binds the exact canonical input file bytes.
+fn digest_input(canonical: str) -> string {
+  return digest_text(canonical)
+}
+
+// Section 8.1 row 8 and section 13.1. Every persisted field comes from the validated owned input
+// or from the deterministic algorithm; the content digest starts blank and is finalized by
+// `finalize_digest`.
+fn make_result(
+  case_id: string,
+  algorithm: string,
+  note: Option<string>,
+  input_sha256: string,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+  observed: i64,
+) -> C7PersistedResult {
+  failed := observed != expected
+  status := if failed { STATUS_FAIL } else { STATUS_PASS }
+  diagnostic: Option<string> := if failed { Some(FAIL_DIAGNOSTIC.clone()) } else { None }
+  return C7PersistedResult {
+    schema_version: SCHEMA_VERSION,
+    artifact_kind: RESULT_KIND.clone(),
+    case_id: case_id,
+    algorithm: algorithm,
+    status: status.clone(),
+    left: left,
+    right: right,
+    lower_bound: lower_bound,
+    upper_bound: upper_bound,
+    expected: expected,
+    observed: observed,
+    input_sha256: input_sha256,
+    note: note,
+    diagnostic: diagnostic,
+    content_sha256: "".clone(),
+  }
+}
+
+// Section 8.1 row 9 and section 6.2. The preimage is the complete record with only this field
+// blank; assigning the finalized digest drops the blank owner exactly once.
+fn finalize_digest(value: C7PersistedResult) -> Result<C7PersistedResult, Error> {
+  if value.content_sha256.len() != 0 {
+    return Err(Error.Invalid)
+  }
+  preimage := json.encode_bounded(value, RECORD_MAX_BYTES)?
+  digest := digest_text(preimage)
+  if !valid_digest(digest) {
+    return Err(Error.Invalid)
+  }
+  mut finalized := value
+  finalized.content_sha256 = digest
+  return Ok(finalized)
+}
+
+// Section 8.1 rows 2-9 and section 6.1 steps 1-4. The document owner and the decoded input record
+// both expire with this scope; only the free-standing result record is returned.
+fn stage_result(input_path: str) -> Result<C7PersistedResult, Error> {
+  document := read_document(input_path)?
+  decoded := decode_input(document)?
+  canonical := json.encode_bounded(decoded, RECORD_MAX_BYTES)?
+  // Section 8.1 row 4 and section 4.4: the artifact contract is stricter than the decoder's
+  // unknown-field tolerance, so two byte representations can never share one content identity.
+  if canonical != document {
+    return Err(Error.Invalid)
+  }
+  if !validate_input(
+    decoded.schema_version,
+    decoded.artifact_kind,
+    decoded.case_id,
+    decoded.algorithm,
+    decoded.left,
+    decoded.right,
+    decoded.lower_bound,
+    decoded.upper_bound,
+    decoded.expected,
+  ) {
+    return Err(Error.Invalid)
+  }
+  note := checked_note(decoded.note)?
+  input_sha256 := digest_input(canonical)
+  // The Copy scalars are read out first; every remaining owned field is then moved into the
+  // result exactly once, so the input record holds nothing when it is dropped below.
+  left := decoded.left
+  right := decoded.right
+  lower_bound := decoded.lower_bound
+  upper_bound := decoded.upper_bound
+  expected := decoded.expected
+  observed := bounded_bucket(left, right, lower_bound, upper_bound)
+  staged := make_result(
+    decoded.case_id,
+    decoded.algorithm,
+    note,
+    input_sha256,
+    left,
+    right,
+    lower_bound,
+    upper_bound,
+    expected,
+    observed,
+  )
+  return finalize_digest(staged)
+}
+
+// Section 8.1 rows 10-11 and section 7. One whole-file `write_file` call publishes the final
+// canonical bytes; there is no temporary file, no rename, and no hidden cleanup. The result owner
+// and the final byte owner are both released here, including on the write failure path, before
+// the caller reloads the artifact.
+fn publish_result(output_path: str, value: C7PersistedResult) -> Result<(), Error> {
+  final_bytes := json.encode_bounded(value, RECORD_MAX_BYTES)?
+  return fs.write_file(output_path, final_bytes)
+}
+
+// Section 8.2 rows 2-6. The artifact document owner expires with this scope, so the caller
+// recomputes the algorithm from a record that no longer references the file bytes.
+fn load_result(result_path: str) -> Result<C7PersistedResult, Error> {
+  document := read_document(result_path)?
+  mut value := decode_result(document)?
+  // Row 4: unrecognized v1 data is never interpreted.
+  if value.schema_version != SCHEMA_VERSION {
+    return Err(Error.Invalid)
+  }
+  if value.artifact_kind != RESULT_KIND {
+    return Err(Error.Invalid)
+  }
+  if value.algorithm != ALGORITHM {
+    return Err(Error.Invalid)
+  }
+  if value.status != STATUS_PASS && value.status != STATUS_FAIL {
+    return Err(Error.Invalid)
+  }
+  if !valid_digest(value.input_sha256) || !valid_digest(value.content_sha256) {
+    return Err(Error.Invalid)
+  }
+  // Row 5: recompute the content identity before any semantic field is trusted.
+  claimed := value.content_sha256.clone()
+  value.content_sha256 = "".clone()
+  preimage := json.encode_bounded(value, RECORD_MAX_BYTES)?
+  if digest_text(preimage) != claimed {
+    return Err(Error.Invalid)
+  }
+  // Row 6: restore the supplied digest and compare the canonical encoding with the file bytes.
+  value.content_sha256 = claimed
+  canonical := json.encode_bounded(value, RECORD_MAX_BYTES)?
+  if canonical != document {
+    return Err(Error.Invalid)
+  }
+  return Ok(value)
+}
+
+// Section 8.2 rows 7-9 and section 5.2 recomputations 4-6. Nothing stored in the artifact is
+// trusted: `observed`, `status`, and `diagnostic` are all recomputed from the decoded operands.
+fn summarize_result(value: C7PersistedResult) -> Result<VerificationSummary, Error> {
+  if !validate_result_domains(
+    value.schema_version,
+    value.case_id,
+    value.left,
+    value.right,
+    value.lower_bound,
+    value.upper_bound,
+    value.expected,
+    value.observed,
+    value.input_sha256,
+  ) {
+    return Err(Error.Invalid)
+  }
+  if !note_within_bound(value.note) {
+    return Err(Error.Invalid)
+  }
+  observed := bounded_bucket(value.left, value.right, value.lower_bound, value.upper_bound)
+  if observed != value.observed {
+    return Err(Error.Invalid)
+  }
+  failed := observed != value.expected
+  expected_status := if failed { STATUS_FAIL } else { STATUS_PASS }
+  if value.status != expected_status {
+    return Err(Error.Invalid)
+  }
+  if !diagnostic_matches(value.diagnostic, failed) {
+    return Err(Error.Invalid)
+  }
+  status := if failed { VerificationStatus.Fail } else { VerificationStatus.Pass }
+  return Ok(VerificationSummary {
+      status: status,
+      expected: value.expected,
+      observed: observed,
+    })
+}
+
+// Section 3.1. Decode one declared verification input, let its document and every decoder-owned
+// view expire, publish one canonical result artifact, and reload that artifact through the
+// independent verifier. A valid semantic `FAIL` is `Ok(Fail)`, not an error.
+pub fn persist_file(input_path: str, output_path: str) -> Result<VerificationSummary, Error> {
+  // Section 8.1 row 1: exact-string distinctness is checked before any file operation. Physical
+  // alias detection through symlinks, hard links, or other spellings is explicitly not claimed.
+  if !valid_path(input_path) || !valid_path(output_path) {
+    return Err(Error.Invalid)
+  }
+  if input_path == output_path {
+    return Err(Error.Invalid)
+  }
+  publish_result(output_path, stage_result(input_path)?)?
+  // Section 8.1 row 12: the original result owner is gone; verification reads a fresh artifact
+  // owner and never reads the input again.
+  return verify_file(output_path)
+}
+
+// Section 3.1. Read-only verification of one persisted artifact. It never writes, never removes a
+// malformed artifact, and never reloads `input_sha256`'s source path.
+pub fn verify_file(result_path: str) -> Result<VerificationSummary, Error> {
+  if !valid_path(result_path) {
+    return Err(Error.Invalid)
+  }
+  return summarize_result(load_result(result_path)?)
+}

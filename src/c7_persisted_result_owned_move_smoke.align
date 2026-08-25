@@ -1,0 +1,92 @@
+module c7_persisted_result_owned_move_smoke
+
+import persisted_result
+import std.fs
+
+// `c7-persisted-result-owned-move-smoke` (`docs/specs/c7-persisted-result.md` section 13).
+//
+// It closes the "Result construction", "Replacement/drop of `content_sha256`", "Semantic
+// PASS/FAIL", "Diagnostic relation", "Branch joins", "Output write failure", "Malformed result
+// cleanup", "Result invariant recomputation", and "Same-path input/output" rows — the section 6.3
+// construction and control-flow set the adoption slice deferred to this consumer.
+//
+// The mutated artifacts and every expected verdict are owned by
+// `scripts/run-c7-persisted-result-owned-move-smoke`; this module only reports what the public
+// API returned and whether each destination exists afterwards.
+
+fn status_label(value: persisted_result.VerificationStatus) -> str {
+  match value {
+    Pass => { return "PASS" },
+    Fail => { return "FAIL" },
+  }
+}
+
+fn outcome(value: Result<persisted_result.VerificationSummary, Error>) -> str {
+  match value {
+    Ok(_) => { return "ACCEPTED" },
+    Err(_) => { return "REJECTED" },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() < 7 {
+    return Err(Error.Invalid)
+  }
+  pass_input := args[1]
+  pass_result := args[2]
+  fail_input := args[3]
+  fail_result := args[4]
+  unwritable_result := args[5]
+  recovery_result := args[6]
+
+  // Branch join 1: `observed == expected` builds a `PASS` record whose diagnostic owner is `None`.
+  passed := persisted_result.persist_file(pass_input, pass_result)?
+  print("pass/status")
+  print(status_label(passed.status))
+  print(passed.expected)
+  print(passed.observed)
+
+  // Branch join 2: a valid semantic `FAIL` is published data, so the API still returns `Ok`. The
+  // diagnostic owner is the one fixed sentence and the artifact reloads through the verifier.
+  failed := persisted_result.persist_file(fail_input, fail_result)?
+  print("fail/status")
+  print(status_label(failed.status))
+  print(failed.expected)
+  print(failed.observed)
+  reloaded := persisted_result.verify_file(fail_result)?
+  print("fail-reload/status")
+  print(status_label(reloaded.status))
+
+  // Section 8.1 row 11 and section 7: a failing whole-file write returns the mapped error and
+  // performs no hidden remove or restoration. The staged result and the final byte owner are both
+  // released on that failure path, so the very next publication of the same input succeeds.
+  print("write-failure/verdict")
+  print(outcome(persisted_result.persist_file(pass_input, unwritable_result)))
+  print("write-failure/destination-present")
+  print(fs.exists(unwritable_result))
+  print("write-failure/recovery")
+  print(outcome(persisted_result.persist_file(pass_input, recovery_result)))
+
+  // Section 8.1 row 1: exact-string path overlap is rejected before any file operation, so the
+  // input document survives unchanged.
+  print("same-path/verdict")
+  print(outcome(persisted_result.persist_file(pass_input, pass_input)))
+  print("same-path/input-present")
+  print(fs.exists(pass_input))
+
+  // Section 8.2 rows 5-9: no stored digest, `observed`, `status`, or `diagnostic` is trusted. Each
+  // mutated artifact is rejected read-only, and the untouched artifact still verifies afterwards.
+  mut index := 7
+  loop {
+    if index >= args.len() {
+      break
+    }
+    print(outcome(persisted_result.verify_file(args[index])))
+    index = index + 1
+  }
+
+  final_check := persisted_result.verify_file(pass_result)?
+  print("final-verify/status")
+  print(status_label(final_check.status))
+  return Ok(())
+}

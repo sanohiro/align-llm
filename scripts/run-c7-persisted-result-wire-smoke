@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+
+# c7-persisted-result-wire-smoke.
+#
+# `docs/specs/c7-persisted-result.md` section 13 names this runner for the canonical wire rows:
+# the escape/NUL/UTF-8 grammar, the input digest identity, the blank-digest content preimage, the
+# result canonical bytes, the successful publication write, and the artifact schema/wire identity.
+# It also covers the section 13.2 note discriminators: omitted `None`, `Some("")`, and the section
+# 4.4 escaped/NUL/UTF-8 `Some`.
+#
+# The expected bytes come from `scripts/c7_persisted_result_fixtures.py`, an independent ordered
+# field table and escape grammar. They are never derived by parsing the produced artifact.
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+work_dir="$(mktemp -d)"
+trap 'rm -rf "${work_dir}"' EXIT
+
+python3 - "${project_root}" "${work_dir}" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
+import c7_persisted_result_fixtures as fixtures
+
+fixtures.require_golden()
+work = Path(sys.argv[2])
+names = []
+statuses = []
+for name, note in (
+    ("escaped", fixtures.ESCAPED_NOTE),
+    ("empty-note", ""),
+    ("omitted-note", None),
+):
+    source, artifact, status = fixtures.expected_pair("upper-equal", 4, 5, 0, 9, 2, note)
+    (work / f"{name}.input.json").write_bytes(source.encode("utf-8"))
+    (work / f"{name}.expected.json").write_bytes(artifact.encode("utf-8"))
+    names.append(name)
+    statuses.append(status)
+
+# Section 10.2 boundary corpus. It is the checked-in bounded subset of the algorithm evidence:
+# both endpoint equalities, the maximum safe addition, the empty middle interval, and the valid
+# semantic FAIL. The generated differential corpus and the source mutation stay with the separate
+# qualification slice.
+for case_id, left, right, lower_bound, upper_bound, expected in (
+    ("zero", 0, 0, 0, 1, 1),
+    ("lower-equal", 2, 3, 5, 9, 1),
+    ("lower-below", 1, 1, 5, 9, 0),
+    ("interior", 4, 3, 0, 9, 1),
+    ("upper-equal", 4, 5, 0, 9, 2),
+    ("upper-above", 8, 5, 0, 9, 2),
+    ("operand-max", 1_000_000, 1_000_000, 0, 2_000_000, 2),
+    ("single-point", 7, 0, 7, 7, 2),
+    ("expected-mismatch", 2, 3, 0, 9, 2),
+):
+    source, artifact, status = fixtures.expected_pair(
+        case_id, left, right, lower_bound, upper_bound, expected
+    )
+    name = f"boundary-{case_id}"
+    (work / f"{name}.input.json").write_bytes(source.encode("utf-8"))
+    (work / f"{name}.expected.json").write_bytes(artifact.encode("utf-8"))
+    names.append(name)
+    statuses.append(status)
+
+(work / "case-order.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
+(work / "case-status.txt").write_text("\n".join(statuses) + "\n", encoding="utf-8")
+PY
+
+case_paths=()
+while IFS= read -r name; do
+  case_paths+=("${work_dir}/${name}.input.json" "${work_dir}/${name}.result.json")
+done <"${work_dir}/case-order.txt"
+
+"${compiler}" run "${project_root}/src/c7_persisted_result_wire_smoke.align" \
+  "${case_paths[@]}" >"${work_dir}/observed.txt"
+
+python3 - "${project_root}" "${work_dir}" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
+import c7_persisted_result_fixtures as fixtures
+
+work = Path(sys.argv[2])
+names = (work / "case-order.txt").read_text(encoding="utf-8").splitlines()
+statuses = (work / "case-status.txt").read_text(encoding="utf-8").splitlines()
+
+expected_rows = []
+for name, status in zip(names, statuses):
+    expected_rows.append(status)
+    expected_rows.append((work / f"{name}.expected.json").read_bytes().decode("utf-8"))
+
+raw = (work / "observed.txt").read_bytes()
+if not raw.endswith(b"\n"):
+    raise SystemExit("c7 persisted result wire smoke: output is not newline terminated")
+observed_rows = raw.decode("utf-8").split("\n")[:-1]
+if observed_rows != expected_rows:
+    raise SystemExit(
+        "c7 persisted result wire smoke: printed rows mismatch\n"
+        f"  expected: {expected_rows!r}\n"
+        f"  observed: {observed_rows!r}"
+    )
+
+for name in names:
+    produced = (work / f"{name}.result.json").read_bytes()
+    expected = (work / f"{name}.expected.json").read_bytes()
+    if produced != expected:
+        raise SystemExit(
+            f"c7 persisted result wire smoke: {name} artifact bytes mismatch\n"
+            f"  expected: {expected!r}\n"
+            f"  observed: {produced!r}"
+        )
+    if produced.endswith(b"\n") or produced.startswith(b" "):
+        raise SystemExit(f"c7 persisted result wire smoke: {name} artifact is not canonical")
+
+# Section 4.4 normative digests, asserted against the exact published file bytes.
+golden_input = (work / "escaped.input.json").read_bytes()
+golden_result = (work / "escaped.result.json").read_bytes()
+checks = (
+    ("input_sha256", hashlib.sha256(golden_input).hexdigest(), fixtures.GOLDEN_INPUT_SHA256),
+    ("result_sha256", hashlib.sha256(golden_result).hexdigest(), fixtures.GOLDEN_RESULT_SHA256),
+)
+for label, actual, expected in checks:
+    if actual != expected:
+        raise SystemExit(
+            f"c7 persisted result wire smoke: golden {label} mismatch: "
+            f"expected {expected}, observed {actual}"
+        )
+carried = golden_result.decode("utf-8")
+if f'"input_sha256":"{fixtures.GOLDEN_INPUT_SHA256}"' not in carried:
+    raise SystemExit("c7 persisted result wire smoke: the artifact does not carry the input digest")
+if f'"content_sha256":"{fixtures.GOLDEN_CONTENT_SHA256}"' not in carried:
+    raise SystemExit(
+        "c7 persisted result wire smoke: the artifact does not carry the golden content digest"
+    )
+
+print(
+    "c7 persisted result wire smoke: escape/NUL/UTF-8 grammar, three optional-note states, "
+    f"the {len(names) - 3} section 10.2 boundary cases, canonical declaration order, and the "
+    "section 4.4 golden digests PASS"
+)
+PY

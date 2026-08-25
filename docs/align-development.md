@@ -285,3 +285,64 @@ make verify-loop-smoke
 The repair patch is deliberately an input boundary, not a model implementation. A future provider
 can consume `repair_prompt` and return an equivalent patch without changing verification, timeout,
 or result handling.
+
+## Persisted-result development
+
+The C7-PERSISTED-RESULT consumer is `src/persisted_result.align`, specified by
+`docs/specs/c7-persisted-result.md`. It decodes one declared verification input into an owned
+record, lets the input document and every borrowed view expire, publishes one canonical result
+artifact with a content-bound digest, and verifies that artifact with an independent recomputation.
+
+An input document is one canonical `C7_VERIFICATION_INPUT` record:
+
+```json
+{
+  "schema_version": 1,
+  "artifact_kind": "C7_VERIFICATION_INPUT",
+  "case_id": "upper-equal",
+  "algorithm": "bounded-bucket-v1",
+  "left": 4,
+  "right": 5,
+  "lower_bound": 0,
+  "upper_bound": 9,
+  "expected": 2,
+  "note": "optional, at most 256 bytes"
+}
+```
+
+The wire is canonical: declaration order, no leading or trailing whitespace, no final newline, and
+an omitted `note` for `None`. A decoded record is re-encoded and compared byte-for-byte with the
+file, so unknown fields, reordered keys, whitespace, and a `null` optional spelling are all
+rejected. Both paths must be nonempty, NUL-free, and at most 4,096 bytes, and the two path strings
+must not be byte-identical.
+
+Run the two commands with:
+
+```sh
+./main --persist-result <input.json> <result.json>
+./main --verify-result <result.json>
+```
+
+Each prints the same seven-line summary block (`persisted-result:`, `status:`, `PASS` or `FAIL`,
+`expected:`, the value, `observed:`, the value). `PASS` exits 0. A valid semantic `FAIL` is
+persisted data: the artifact is written and reloaded and the summary is printed, and only then does
+the CLI take its `Error.Invalid` exit. Malformed input, invalid artifact data, path validation, and
+operating-system failures return an error with no summary block. Publication uses the whole-file
+`std.fs.write_file` boundary, so a failed write may leave the caller-owned destination absent or
+partial; nothing is removed or restored on that path.
+
+The bounded functional smokes are focused targets and deliberately join no aggregate:
+
+```sh
+make c7-persisted-result-cli-smoke
+make c7-persisted-result-lifetime-smoke
+make c7-persisted-result-owned-move-smoke
+make c7-persisted-result-wire-smoke
+make c7-persisted-result-noncanonical-input-smoke
+make c7-persisted-result-independent-destinations-smoke
+```
+
+Their fixture vectors live in `scripts/c7_persisted_result_fixtures.py`, an independent ordered
+field table, escape grammar, and bucket reference. The generated differential corpus, the full
+artifact-mutation corpus, and the intentionally mutated source case belong to the separate
+`persisted-result-qualification` slice.

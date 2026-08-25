@@ -1,0 +1,49 @@
+module c7_persisted_result_noncanonical_input_smoke
+
+import persisted_result
+import std.fs
+
+// `c7-persisted-result-noncanonical-input-smoke` (`docs/specs/c7-persisted-result.md` section 13).
+//
+// It closes the "Input canonical bytes", "Input schema/range precedence", "Malformed input
+// cleanup", "Early `?`/return paths", and "Existing destination on invalid input" rows: every
+// malformed, noncanonical, or out-of-domain input is rejected before section 8.1 row 10, so the
+// sentinel destination is never created or changed.
+//
+// The corpus and its expected verdicts are owned by
+// `scripts/run-c7-persisted-result-noncanonical-input-smoke`. This module reports one verdict per
+// candidate input and finally proves the same destination still accepts a valid input.
+
+fn outcome(value: Result<persisted_result.VerificationSummary, Error>) -> str {
+  match value {
+    Ok(_) => { return "ACCEPTED" },
+    Err(_) => { return "REJECTED" },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() < 4 {
+    return Err(Error.Invalid)
+  }
+  sentinel_path := args[1]
+  valid_input := args[2]
+  fresh_result := args[3]
+
+  mut index := 4
+  loop {
+    if index >= args.len() {
+      break
+    }
+    print(outcome(persisted_result.persist_file(args[index], sentinel_path)))
+    index = index + 1
+  }
+
+  // The rejected corpus above left the sentinel destination untouched; the runner compares its
+  // bytes before and after. A valid input published to a fresh destination proves the module is
+  // still usable after every early return.
+  print("sentinel/present")
+  print(fs.exists(sentinel_path))
+  print("valid/verdict")
+  print(outcome(persisted_result.persist_file(valid_input, fresh_result)))
+  return Ok(())
+}
