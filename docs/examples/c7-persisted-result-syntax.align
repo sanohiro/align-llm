@@ -1,0 +1,86 @@
+// Parser-only syntax fixture for `docs/specs/c7-persisted-result.md` sections 3.1, 4.1, and 4.2.
+//
+// Section 3.1 requires that the public declarations and the positional calls stay separate and
+// that this file passes the pinned `alignc fmt` parser-only check before any C7 implementation
+// code is accepted. `scripts/run-c7-owned-record-source-expiry-adoption` owns that check.
+//
+// This is not a product module. `make check` does not compile it, `scripts/check-format` does not
+// scan it, and nothing imports it. Section 12.1 assigns the real implementation to
+// `src/persisted_result.align` in the consumer slice; the two function bodies below are deliberate
+// placeholders so the section 3.1 signatures parse. They are not the `bounded-bucket-v1`
+// algorithm.
+
+module c7_persisted_result_syntax
+
+import core.json
+
+// Section 4.1 input record. Direct owned `string` and direct `Option<string>` fields with Copy
+// `i64` scalars. No `str`, `array<str>`, `array<string>`, nested record, or other aggregate owner.
+C7VerificationInput {
+  schema_version: i64,
+  artifact_kind: string,
+  case_id: string,
+  algorithm: string,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+  note: Option<string>,
+}
+
+// Section 4.2 persisted result record. The canonical field sequence is this declaration sequence.
+C7PersistedResult {
+  schema_version: i64,
+  artifact_kind: string,
+  case_id: string,
+  algorithm: string,
+  status: string,
+  left: i64,
+  right: i64,
+  lower_bound: i64,
+  upper_bound: i64,
+  expected: i64,
+  observed: i64,
+  input_sha256: string,
+  note: Option<string>,
+  diagnostic: Option<string>,
+  content_sha256: string,
+}
+
+// Section 3.1 module API declarations. `str` in a signature is a borrowed call view that neither
+// function retains. `VerificationSummary` carries only Copy fields, so no Move record crosses the
+// public result boundary.
+pub VerificationStatus { Pass, Fail }
+
+pub VerificationSummary {
+  status: VerificationStatus,
+  expected: i64,
+  observed: i64,
+}
+
+pub fn persist_file(input_path: str, output_path: str) -> Result<VerificationSummary, Error> {
+  return Err(Error.Invalid)
+}
+
+pub fn verify_file(result_path: str) -> Result<VerificationSummary, Error> {
+  return Err(Error.Invalid)
+}
+
+// Section 3.1 positional calls, shown separately from the declarations above. No
+// expression-position type argument and no `Owned*` JSON marker type appears in either form.
+fn persist_then_verify(input_path: str, output_path: str) -> Result<(), Error> {
+  summary := persist_file(input_path, output_path)?
+  checked := verify_file(output_path)?
+  print(summary.expected)
+  print(checked.observed)
+  return Ok(())
+}
+
+// Section 4.4 canonical wire access. The declared-record form is the same context-inferred call the
+// pinned `core.json` surface ships; the encoder view is consumed inside this scope only.
+fn canonical_bytes(document: str) -> Result<(), Error> {
+  input: C7VerificationInput := json.decode(document)?
+  print(json.encode(input))
+  return Ok(())
+}

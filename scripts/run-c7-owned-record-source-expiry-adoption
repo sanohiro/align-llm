@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+
+# C7-PERSISTED-RESULT adoption checkpoint for Align Request 9.
+#
+# docs/specs/c7-persisted-result.md section 6.1 names `c7-owned-record-source-expiry-adoption` as
+# the fixture that must pass against the shipped owned-JSON surface before any C7 product code
+# consumes it. This runner owns three things:
+#
+#   1. the pinned `alignc fmt` parser-only check that section 3.1 and section 13 require for the
+#      checked-in syntax fixtures, including the normative Request 9 fixture that item 11 names;
+#   2. the runtime rows of the section 6.1 lifetime example;
+#   3. the exact byte vectors of the executable adoption fixture.
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+work_dir="$(mktemp -d)"
+trap 'rm -rf "${work_dir}"' EXIT
+
+for example in \
+  docs/examples/request9-owned-json-syntax.align \
+  docs/examples/c7-persisted-result-syntax.align \
+  docs/examples/c7-persisted-result-lifetime.align; do
+  if ! "${compiler}" fmt "${project_root}/${example}" | cmp -s - "${project_root}/${example}"; then
+    printf '%s\n' \
+      "c7 owned record source expiry adoption: ${example} does not parse cleanly or is unformatted" >&2
+    exit 1
+  fi
+done
+
+"${compiler}" run "${project_root}/docs/examples/c7-persisted-result-lifetime.align" \
+  >"${work_dir}/lifetime.txt"
+"${compiler}" run "${project_root}/src/c7_owned_record_source_expiry_adoption.align" \
+  >"${work_dir}/adoption.txt"
+
+python3 - "${work_dir}/lifetime.txt" "${work_dir}/adoption.txt" <<'PY'
+import sys
+from pathlib import Path
+
+# The byte vectors below are transcribed from the normative documents, not derived from the Align
+# fixtures:
+#
+#   * C7_INPUT_* comes from docs/specs/c7-persisted-result.md section 4.4 ("input bytes"), plus the
+#     three optional-note variants that section 4.1 and section 6.1 name.
+#   * TASK_* comes from the docs/align-requests.md Request 9 normative owned-path golden pair and
+#     its omitted/null/Some("") optional-note vectors.
+#
+# Every comparison is over exact UTF-8 bytes before the CLI newline.
+
+C7_INPUT_ESCAPED = "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2,\"note\":\"quote:\\\" slash:/ backslash:\\\\ controls:\\\\b\\\\f\\\\n\\\\r\\\\t NUL:\\u0000 emoji:😀\"}"
+C7_INPUT_EMPTY_NOTE = "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2,\"note\":\"\"}"
+C7_INPUT_NO_NOTE = "{\"schema_version\":1,\"artifact_kind\":\"C7_VERIFICATION_INPUT\",\"case_id\":\"upper-equal\",\"algorithm\":\"bounded-bucket-v1\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2}"
+C7_INPUT_MOVED_TEXT = "{\"schema_version\":1,\"artifact_kind\":\"\",\"case_id\":\"\",\"algorithm\":\"\",\"left\":4,\"right\":5,\"lower_bound\":0,\"upper_bound\":9,\"expected\":2}"
+TASK_CANONICAL = "{\"id\":\"task-1\",\"priority\":-7,\"attempts\":3,\"limit\":18446744073709551615,\"enabled\":true,\"argv\":[\"\",\"quote:\\\" slash:/ backslash:\\\\ controls:\\b\\f\\n\\r\\t\",\"nul:\\u0000\",\"emoji:😀\"],\"note\":\"€\"}"
+TASK_NO_NOTE = "{\"id\":\"task-1\",\"priority\":-7,\"attempts\":3,\"limit\":18446744073709551615,\"enabled\":true,\"argv\":[]}"
+TASK_EMPTY_NOTE = "{\"id\":\"task-1\",\"priority\":-7,\"attempts\":3,\"limit\":18446744073709551615,\"enabled\":true,\"argv\":[],\"note\":\"\"}"
+
+LIFETIME_EXPECTED = [
+    ("example/artifact_kind", "C7_VERIFICATION_INPUT"),
+    ("example/case_id", "upper-equal"),
+    ("example/algorithm", "bounded-bucket-v1"),
+    ("example/expected", "2"),
+    ("example/canonical-round-trip", C7_INPUT_ESCAPED),
+    ("example/note-bytes", "64"),
+    ("example/some-empty-bytes", "0"),
+    ("example/omitted-bytes", "-1"),
+    ("example/raw-bind-and-return", "upper-equal"),
+    ("example/raw-parameter", "upper-equal"),
+    ("example/typed-map-err", "upper-equal"),
+    ("example/else-join-on-malformed", "DECODE-ERROR"),
+]
+
+ADOPTION_EXPECTED = [
+    # Section 6.1 source expiry: every retained direct field of the escaped/NUL/UTF-8 vector is
+    # read after the helper's owned input document has expired.
+    ("expiry/artifact_kind", "C7_VERIFICATION_INPUT"),
+    ("expiry/case_id", "upper-equal"),
+    ("expiry/algorithm", "bounded-bucket-v1"),
+    ("expiry/schema_version", "1"),
+    ("expiry/left", "4"),
+    ("expiry/right", "5"),
+    ("expiry/lower_bound", "0"),
+    ("expiry/upper_bound", "9"),
+    ("expiry/expected", "2"),
+    ("expiry/canonical-round-trip", C7_INPUT_ESCAPED),
+    ("expiry/note-bytes", "64"),
+    # Section 6.1 optional states after source expiry.
+    ("expiry/some-empty-canonical", C7_INPUT_EMPTY_NOTE),
+    ("expiry/some-empty-bytes", "0"),
+    ("expiry/omitted-canonical", C7_INPUT_NO_NOTE),
+    ("expiry/omitted-bytes", "-1"),
+    ("expiry/null-canonical", C7_INPUT_NO_NOTE),
+    ("expiry/null-bytes", "-1"),
+    # Request 9 normative owned-path golden pair and bounded canonical encode.
+    ("golden/canonical", TASK_CANONICAL),
+    ("golden/bounded-exact-fit", TASK_CANONICAL),
+    ("golden/bounded-one-byte-under", "1"),
+    ("golden/bounded-negative-limit", "1"),
+    ("golden/argv-len", "4"),
+    ("golden/copy-scalars", "3 18446744073709551615 true -7"),
+    ("golden/decode-encode-decode", TASK_CANONICAL),
+    ("golden/omitted-note", TASK_NO_NOTE),
+    ("golden/null-note", TASK_NO_NOTE),
+    ("golden/some-empty-note", TASK_EMPTY_NOTE),
+    # Request 9 acceptance item 9 direct text-array cleanup.
+    ("text-array/replacement-argv-len", "0"),
+    ("text-array/move-out-argv-len", "4"),
+    ("text-array/mid-array-failure", "1"),
+    # Section 6.3 Move-carrier transfer set over Result<C7VerificationInput, Error>.
+    ("move/raw-bind-and-return", "upper-equal"),
+    ("move/raw-parameter", "upper-equal"),
+    ("move/raw-direct-return", "upper-equal"),
+    ("move/raw-reassignment", "interior"),
+    ("move/typed-map-err", "upper-equal"),
+    ("move/branch-join", "interior"),
+    ("move/else-join-on-malformed", "DECODE-ERROR"),
+    ("move/match-join-on-trailing-bytes", "-1"),
+    ("move/early-return-on-malformed", "1"),
+    # Section 6.1/6.3 move-out of each retained direct field and its source nulling.
+    ("move/option-source-nulled", C7_INPUT_NO_NOTE),
+    ("move/artifact_kind-bytes", "21"),
+    ("move/case_id-bytes", "11"),
+    ("move/algorithm-bytes", "17"),
+    ("move/note-bytes", "64"),
+    ("move/text-sources-nulled", C7_INPUT_MOVED_TEXT),
+]
+
+
+def compare(name: str, path: str, expected: list[tuple[str, str]]) -> int:
+    raw = Path(path).read_bytes()
+    if raw and not raw.endswith(b"\n"):
+        raise SystemExit(
+            f"c7 owned record source expiry adoption: {name} output is not newline terminated"
+        )
+    observed_rows = raw.split(b"\n")[:-1]
+    if len(observed_rows) != len(expected):
+        raise SystemExit(
+            f"c7 owned record source expiry adoption: {name} expected "
+            f"{len(expected)} rows, observed {len(observed_rows)}"
+        )
+    for index, ((label, want), got) in enumerate(zip(expected, observed_rows), start=1):
+        if got != want.encode("utf-8"):
+            raise SystemExit(
+                f"c7 owned record source expiry adoption: {name} row {index} ({label}) mismatch\n"
+                f"  expected: {want.encode('utf-8')!r}\n"
+                f"  observed: {got!r}"
+            )
+    return len(expected)
+
+
+lifetime_rows = compare("lifetime example", sys.argv[1], LIFETIME_EXPECTED)
+adoption_rows = compare("adoption fixture", sys.argv[2], ADOPTION_EXPECTED)
+print(
+    "c7 owned record source expiry adoption: PASS "
+    f"(3 parsed fixtures, {lifetime_rows} example rows, {adoption_rows} adoption rows)"
+)
+PY

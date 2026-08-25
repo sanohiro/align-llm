@@ -3,6 +3,48 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Active capability: C7-PERSISTED-RESULT (2026-08-25)
+
+- C6-MEASURED merged as align-llm PR #103 (`c9a510d`). The active capability is now
+  C7-PERSISTED-RESULT on branch `agent/c7-persisted-result`, per
+  `docs/specs/c7-persisted-result.md`.
+- **Landed: the mandatory Request 9 adoption checkpoint.**
+  `src/c7_owned_record_source_expiry_adoption.align`,
+  `scripts/run-c7-owned-record-source-expiry-adoption`, and the `.PHONY` Make target
+  `c7-owned-record-source-expiry-adoption` implement the section 6.1 fixture
+  `c7-owned-record-source-expiry-adoption` against the real shipped surface at the unchanged pin
+  `2f33ac5c33a898a7894af58322852632ce6ffe42`. It covers section 6.1 source expiry for every
+  retained direct field, the three optional-note states, the section 6.3 Move-carrier transfer set,
+  the Request 9 normative owned-path golden byte pair, bounded canonical encode at exact fit and
+  both rejection rows, and direct `array<string>` cleanup through replacement, move-out, and a
+  mid-array recoverable failure. `docs/examples/c7-persisted-result-syntax.align` and
+  `docs/examples/c7-persisted-result-lifetime.align` are the section 12.1 checked-in fixtures; the
+  runner owns their pinned `alignc fmt` parser-only check together with the normative
+  `docs/examples/request9-owned-json-syntax.align`. No product code consumes the surface yet:
+  `src/persisted_result.align` and the two CLI selectors are the next slice.
+- **The section 4.4 golden vectors reproduce exactly.** The decoded C7 input re-encodes
+  byte-for-byte to the section 4.4 `input bytes` line, and the Request 9 `OwnedTask` pair
+  reproduces its canonical output including `u64::MAX`, embedded NUL, and multibyte text. The
+  section 4.4 `input_sha256`, `content_sha256`, and external `result_sha256` values were
+  independently recomputed from the document's own literal bytes and match. No Align gap was found;
+  no new `docs/align-requests.md` entry is required by this checkpoint.
+- **Blocker for the capability gate, not for this checkpoint: the identity-bound canonical baseline
+  chain is invalidated.** Adding the Make target changed `Makefile`, which
+  `docs/specs/check-gate-topology.md` records as a baseline artifact, so
+  `python3 scripts/check-baseline-chain` now reports
+  `working-tree Makefile differs from the baseline source commit`. It passed at the pre-change tree.
+  Re-finalize the source -> oracle -> finalization chain once this capability's `Makefile` is final
+  (the consumer slice still adds `persisted-result-smoke` and `persisted-result-qualification`), on
+  a capable native Linux host, appended and never rewritten. `gate-topology-check` stays green
+  because the new target joins no aggregate list.
+- **Platform-profile verdict for planning.** Section 11 and section 12.1 make
+  `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` *required* C7 acceptance environments, but
+  C7-P requires each one's reviewed platform profile before it may enter C7 adoption or provide C7
+  evidence; the Section 9 x86_64 profile substitutes for neither. This macOS host is
+  `aarch64-apple-darwin` with no reviewed C7-P profile, so its runs are development evidence for
+  the checkpoint only. They are not C7 acceptance evidence, and the capability gate still needs the
+  x86_64 baseline environment plus a reviewed C7-P profile per non-x86 target.
+
 ## Active checkpoint (2026-08-25)
 
 - C6-MEASURED (C6e/C6g1/C6g2) is implemented on branch `agent/c6-measured` and is not yet
@@ -631,6 +673,15 @@ file records durable project state.
   installed-profile evidence; the native ARM owners are the local acceptance route.
 
 ## Next actions
+
+0. **Continue C7-PERSISTED-RESULT on `agent/c7-persisted-result`.** The Request 9 adoption
+   checkpoint above has landed and passes, so the consumer slice may start: implement
+   `src/persisted_result.align` (records, validation order, `bounded-bucket-v1`, digest identity,
+   `persist_file`/`verify_file`), the two `src/main.align` CLI selectors and the stable summary
+   block, then `scripts/run-persisted-result-smoke` and
+   `scripts/run-persisted-result-qualification`. Re-finalize the canonical baseline chain once that
+   slice's `Makefile` is final, and record the C7-P platform-profile verdict above in the pull
+   request rather than claiming aarch64 acceptance evidence.
 
 1. **Publish C6-MEASURED from `agent/c6-measured` at head `3768ad8`.** Nothing blocks it any more:
    the supervised `make ci` gate is green at that exact head and the host checks pass there too.
