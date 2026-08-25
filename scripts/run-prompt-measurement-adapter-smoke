@@ -57,6 +57,18 @@ def fixture_tool_path(values: Mapping[str, str] | None = None) -> str:
     )
 
 
+# The Git fixture must not start background work. `git commit` runs auto maintenance, and a recent
+# Git detaches that run *before* it decides whether any task is due, so even a one-object
+# repository forks a process that is orphaned immediately. Git 2.47 does this and Git 2.39 does
+# not, which is why the row below failed only on a host carrying a recent Git. Loading the adapter
+# enables `PR_SET_CHILD_SUBREAPER` on this harness process, so this process adopts that orphan
+# and — never having waited for it — keeps it as a zombie for the rest of the run. The
+# `post-admission-replacement` row runs the adapter inside this process, where an adopted zombie is
+# indistinguishable from a descendant the generation child left behind and fails the containment
+# check. Refusing background maintenance keeps the harness's own process tree exactly what it
+# spawned, which is what that row must present to the adapter.
+NO_BACKGROUND_MAINTENANCE = ("-c", "gc.auto=0", "-c", "maintenance.auto=false")
+
 RENDERED_TEXT = "Repair round_to_minutes so an exact half minute rounds away from zero."
 
 # The launch rows drive the adapter against a real pinned corpus fixture, because the settled
@@ -145,6 +157,24 @@ def raw_digest(path: Path) -> str:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def reap_adopted_children() -> None:
+    """Wait for every orphan this harness process has adopted, and for nothing else.
+
+    Loading the adapter enables `PR_SET_CHILD_SUBREAPER` here, so this process inherits any orphan
+    a child leaves behind and an inherited orphan that exits stays a zombie until this process
+    waits for it. Reaping is the adopter's duty, and the only in-process row must not hand the
+    adapter a process tree carrying one. Every call site is a point where no launched child of this
+    harness is still running, so this waits for adopted processes only.
+    """
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
 
 
 def load_adapter():
@@ -673,15 +703,19 @@ def edit_format_rows(module) -> list[str]:
             "GIT_COMMITTER_NAME": "smoke", "GIT_COMMITTER_EMAIL": "smoke@invalid",
         }
         for argv in (
-            ["git", "init", "-q", "--initial-branch=main"],
-            ["git", "add", "--all"],
-            ["git", "commit", "-q", "-m", "fixture"],
+            ["init", "-q", "--initial-branch=main"],
+            ["add", "--all"],
+            ["commit", "-q", "-m", "fixture"],
         ):
-            subprocess.run(argv, cwd=source, env=environment, check=True, capture_output=True)
+            subprocess.run(
+                ["git", *NO_BACKGROUND_MAINTENANCE, *argv],
+                cwd=source, env=environment, check=True, capture_output=True,
+            )
         patch_path = scratch / "candidate.patch"
         patch_path.write_bytes(raw)
         applied = subprocess.run(
-            ["git", "apply", str(patch_path)], cwd=source, env=environment, capture_output=True,
+            ["git", *NO_BACKGROUND_MAINTENANCE, "apply", str(patch_path)],
+            cwd=source, env=environment, capture_output=True,
         )
         require(
             applied.returncode == 0
@@ -807,6 +841,11 @@ def launch_rows(root: Path) -> list[str]:
 
     # A post-admission replacement of the public pathname never runs: only the retained descriptor
     # is launched, and the retained input verifies unchanged after the child returns.
+    # This is the one row that runs the adapter inside the harness process, so the harness's own
+    # process tree is the tree the adapter's containment check sees. Nothing this harness launched
+    # is still running here; any process still present is one this subreaper adopted, and reaping
+    # it is this process's own duty rather than a containment failure of the generation child.
+    reap_adopted_children()
     fixture = Fixture(root, "post-admission-replacement")
     fixture.request()
     module = load_adapter()
