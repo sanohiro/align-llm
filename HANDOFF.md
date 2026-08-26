@@ -63,6 +63,11 @@ file records durable project state.
   - `gmake expert-trace-smoke`: 95 fixtures plus a real transcript excerpt, PASS.
   - `gmake gguf-smoke`: PASS. `gmake model-ir-smoke`: PASS.
   - `gmake gate-topology-check`: PASS. `gmake format-check`: PASS. `gmake fmt`: no diff.
+  - `make expert-trace-smoke gate-topology-check` on **Linux** (aarch64, Python 3.12.3): PASS. The
+    first Linux run of the new owner failed in `destination-path-guard`, which probed a 4097-byte
+    destination with `Path.exists()`: `stat` answers `ENAMETOOLONG`, which Python 3.12 re-raises and
+    3.13 swallows, so the case passed on this macOS host and aborted in the container. The guard now
+    reads the working directory instead of probing the impossible name.
   - `git diff --check` and `git diff --check d8d4ef6..HEAD`: clean. The checked-in excerpt's
     truncation markers end in a significant space, so `eval/fixtures/expert-trace/*.txt -whitespace`
     is now in `.gitattributes` (the `corpus-file-set.manifest` precedent) rather than the markers

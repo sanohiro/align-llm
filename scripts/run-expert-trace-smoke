@@ -508,7 +508,11 @@ for label, bad_destination in (("empty", ""), ("over-length", "x" * 4097)):
     if bad.returncode != 2 or bad.stdout != b"":
         fail("destination-path-guard: an %s destination must exit 2 with no output (saw %d, %r)"
              % (label, bad.returncode, bad.stdout[:80]))
-if (work_dir / ("x" * 4097)).exists():
+# Not `(work_dir / ("x" * 4097)).exists()`: a 4097-byte final component is longer than any
+# supported name, so `stat` answers `ENAMETOOLONG` rather than "absent" and `Path.exists` re-raises
+# it on Python 3.12 (3.13 swallows it). The guard is about a *created* entry, so read the directory
+# instead of probing the impossible name.
+if any(entry.name.startswith("x") for entry in work_dir.iterdir()):
     fail("destination-path-guard: an over-length destination created a file")
 
 sentinel = work_dir / "sentinel.json"
