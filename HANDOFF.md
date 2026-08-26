@@ -7,7 +7,7 @@ file records durable project state.
 
 - Branch `agent/r1-qwen-model-ir`, based on the R0-GGUF-INSPECT chain (head `dcd8801`, merging as
   PR #121 onto `main`). The authoritative design ledger is `docs/specs/r1-qwen-model-ir.md`,
-  committed at `07b8474`. **Implementation is complete in the working tree**: `src/gguf.align` gains
+  committed at `631b2ce`. **Implementation is complete in the working tree**: `src/gguf.align` gains
   the public `GgufTable` producer surface (`read_table` plus nine accessors and two geometry
   functions), `src/frontend_qwen.align` is a new module owning Qwen2 architecture knowledge, and
   `src/main.align` gains the `--model-ir` arm. Not yet committed.

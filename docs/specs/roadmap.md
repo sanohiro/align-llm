@@ -79,7 +79,7 @@ The current forward delivery order is:
    Qwen2.5-Coder-7B Q4_K_M model and passed: 29 metadata KV pairs, 339 tensors, `data_offset`
    5,953,536, `bytes_read` 6,291,456.
 10. **R1-QWEN-MODEL-IR — Qwen2 Model IR and Block IR. Active.** The next Track B capability, on
-    branch `agent/r1-qwen-model-ir` (ledger commit `07b8474`). It turns one real Qwen2-architecture
+    branch `agent/r1-qwen-model-ir` (ledger commit `631b2ce`). It turns one real Qwen2-architecture
     GGUF file into the Model IR and Block IR that `docs/specs/align-llm.md` section 5 places between
     the GGUF reader and the layout planner. `docs/specs/r1-qwen-model-ir.md` is the authoritative
     plan and owns the contract ledger, closure matrix, and fixture design.
