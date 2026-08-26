@@ -4508,7 +4508,7 @@ C6c2 owner and a `.PHONY` public target, but became a named focused qualificatio
 revision `2f33ac5c33a898a7894af58322852632ce6ffe42` needed roughly 720 s and 1,525,732 KiB to
 code-generate it. Align Request 19 closed that compiler-side gap in PR #891. At adopted Align merge
 `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`, the same fixture completes in 13.27 s at 264,560 KiB
-on the filing host and prints the unchanged PASS line. It therefore rejoins `HOSTED_CHECK_TARGETS`
+on the Align benchmark host and prints the unchanged PASS line. It therefore rejoins `HOSTED_CHECK_TARGETS`
 in its original position after `prompt-score-prefix-smoke`; `hosted-checks`, `capable-checks`, and
 `ci` again reach it. Restoring it changes the same lane bytes an addition would, so this adoption
 refreshes `scripts/check-gate-topology`, the `docs/specs/check-gate-topology.md` oracle, and the

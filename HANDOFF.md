@@ -22,9 +22,15 @@ file records durable project state.
   hosted checks take 41,714 ms, focused fresh-worker owners take 24,118 ms, the native boundary
   profile passes in 160,704 ms, and the supervised worker's complete `make ci` passes in
   370,529 ms. The installed profile completes in 763,510 ms and records the exact-head stamp.
-- Request 19 is `ALIGN_LLM_VERIFIED`. Pending: commit this evidence, run the one comprehensive
-  review, repair any valid finding class, rerun exact-head preflight, publish, and merge. Request 20
-  is closed by publication PR #107.
+- The comprehensive review of `db92646` returned three P2 findings. The direct adopted-pin fixture
+  measurement now closes the performance-evidence class: check is 2.214 s / 126,192 KiB and build is
+  12.786 s / 259,720 KiB on native Linux x86_64, a 5.78x wall-clock ratio, with exact output. The
+  topology and baseline-chain cells were clean.
+- Request 19 remains `ALIGN_MERGED` until the pin-bump native aarch64 Linux and Apple Silicon C7
+  qualifications pass at the exact adoption head. Pending: commit the accepted non-platform review
+  repairs to establish that clean head, run and record both platform qualifications, run exact-head
+  preflight with the review disposition, publish, and merge. Request 20 is closed by publication PR
+  #107.
 
 ## Merged checkpoint: REQUEST20-PIN — adopt Align's macOS owned-JSON CI repair (2026-08-25)
 
@@ -1356,15 +1362,18 @@ file records durable project state.
 
 ## Next actions
 
-1. Commit REQUEST20-PIN's evidence record, review the stable candidate, run the exact-head
-   executable preflight, and publish with merge-commit integration.
-2. After the pin capability merges, close Request 20 with the merged align-llm publication evidence.
-3. Start Request 19, the only remaining proposed Align request and the highest-priority upstream
-   capability.
-4. Preserve the deliberate `eval/runners/run-coding-task.py` zombie-counting deferral until a
+1. Commit the accepted Request 19 performance/lifecycle/handoff review repairs to establish the
+   clean head that the platform records will bind.
+2. Run Request 19's native aarch64 Linux pin-bump profile and its
+   `persisted-result-smoke`/`persisted-result-qualification` owners at the exact adoption head.
+3. Run `make darwin-profile-gate` on native Apple Silicon at the same pin and exact adoption head,
+   then record both emitted platform identities and advance Request 19 to `ALIGN_LLM_VERIFIED`.
+4. Run exact-head executable preflight with the review disposition, publish with merge-commit
+   integration, and close Request 19 after the merge.
+5. Preserve the deliberate `eval/runners/run-coding-task.py` zombie-counting deferral until a
    capability already rebinds and re-measures the frozen coding corpus or revisits the validation
    process budget.
-5. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
+6. Give `c6f2-request14-adoption`'s publication-race fixtures a deterministic seam instead of a
    poll.
 
 ## Recovery and preservation
